@@ -373,9 +373,8 @@ source:
   kernel: tileops/kernels/attention/gqa_bwd.py
   kernel_map:
     gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-    gqa_bwd_kernel: GQABwdKernel
-    gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
-  op: tileops/ops/attention/mha.py
+    gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
+  op: tileops/ops/attention/gqa.py
 ```
 
 - Optional when `status: spec-only`. Required when `status: implemented`.

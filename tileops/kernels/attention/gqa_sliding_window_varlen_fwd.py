@@ -25,7 +25,6 @@ from tileops.kernels.online_softmax import (
 )
 
 __all__ = [
-    'GQASlidingWindowVarlenFwdKernel',
     'GQASlidingWindowVarlenFwdWgmmaPipelinedKernel',
 ]
 
@@ -329,41 +328,6 @@ class _GQASlidingWindowVarlenFwdKernelBase(Kernel):
             self.config["num_stages"], self.config["threads"],
             max_seqlen_q,
             q, k, v, cu_seqlens_q, cu_seqlens_k)
-
-
-class GQASlidingWindowVarlenFwdKernel(_GQASlidingWindowVarlenFwdKernelBase):
-    """Variable-length GQA sliding window forward kernel (sm80/89/90)."""
-    supported_archs: list[int] = [80, 89, 90]
-
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 64,
-            "block_n": 64 if self.dim <= 128 else 32,
-            "num_stages": 1,
-            "threads": 128,
-        }
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        configs = list(
-            itertools.product([32, 64, 128], [32, 64, 128], [1, 2, 3],
-                              [128, 256]))
-        return [{'block_m': c[0], 'block_n': c[1], 'num_stages': c[2],
-                 'threads': c[3]} for c in configs]
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-        max_seqlen_q: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._call_wrapped(
-            _gqa_sw_fwd_varlen_wrapped_kernel,
-            q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
 
 
 # ── WGMMA Pipelined (SM90) ────────────────────────────────────────────────────

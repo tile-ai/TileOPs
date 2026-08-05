@@ -1029,8 +1029,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
     if K % block_k != 0:
         raise ValueError(
             f"GroupedGemmPersistent3WGKernel requires K-alignment "
-            f"(K={K} must be divisible by block_k={block_k}). "
-            f"Use GroupedGemmPersistentKernel for K-unaligned shapes."
+            f"(K={K} must be divisible by block_k={block_k})."
         )
 
     @tilelang.jit(

@@ -1,14 +1,11 @@
 """Correctness tests for GroupedGemmPersistent3WGKernel.
 
-Verifies 3WG produces same output as the 2WG reference.
+Verifies 3WG matches a PyTorch grouped-GEMM oracle.
 """
 import pytest
 import torch
 
-from tileops.kernels.grouped_gemm import (
-    GroupedGemmPersistent3WGKernel,
-    GroupedGemmPersistentKernel,
-)
+from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
@@ -39,6 +36,21 @@ def make_inputs(T, E, top_k, N, K, dtype, distribution="uniform", seed=42):
     return A, B, sizes, offsets, numel
 
 
+def torch_grouped_gemm(A, B, sizes, offsets):
+    """PyTorch oracle: per-expert ``A[rows] @ B[e].T`` over a tight row packing.
+
+    Accumulates in fp32 and casts back, matching the kernel's fp32 accumulator.
+    """
+    out = torch.empty(A.shape[0], B.shape[1], dtype=A.dtype, device=A.device)
+    for e in range(B.shape[0]):
+        start, count = int(offsets[e]), int(sizes[e])
+        if count == 0:
+            continue
+        rows = A[start:start + count].float()
+        out[start:start + count] = (rows @ B[e].float().T).to(A.dtype)
+    return out
+
+
 @pytest.mark.smoke
 def test_import():
     assert GroupedGemmPersistent3WGKernel is not None
@@ -58,16 +70,14 @@ def test_output_shape():
 
 @pytest.mark.nightly
 @pytest.mark.parametrize("dist", ["uniform", "skewed"])
-def test_against_2wg_reference(dist):
+def test_against_torch_reference(dist):
     T, E, top_k, N, K = 512, 8, 2, 256, 128
     numel = T * top_k
     A, B, sizes, offsets, _ = make_inputs(T, E, top_k, N, K, torch.bfloat16, dist)
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_ref = ref(A, B, sizes, offsets)
+    C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
 
@@ -81,11 +91,9 @@ def test_correctness_stages(num_stages):
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     cfg = {"block_m": 64, "block_n": 128, "block_k": 64,    # block_n reduced from 256 to fit num_stages>=3
            "num_stages": num_stages, "threads": 384, "group_size_m": 1}
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
-    C_ref = ref(A, B, sizes, offsets)
+    C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
 
@@ -110,11 +118,9 @@ def test_partial_m_tile():
     torch.manual_seed(0)
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
     B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_ref = ref(A, B, sizes, offsets)
+    C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
 
@@ -133,11 +139,9 @@ def test_max_waves_edge_case():
     numel = 3 * sm * block_m + 31
     T_count = numel
     A, B, sizes, offsets, _ = make_inputs(T_count, E, 1, N, K, torch.bfloat16, "uniform")
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_ref = ref(A, B, sizes, offsets)
+    C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
 
@@ -167,11 +171,9 @@ def test_cooperative_correctness(cfg, dist):
     numel = T_count * top_k
     A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, dist)
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
-    C_ref = ref(A, B, sizes, offsets)
+    C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
 
@@ -203,11 +205,9 @@ def test_cooperative_partial_m_tile():
     torch.manual_seed(0)
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
     B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
-    C_ref = ref(A, B, sizes, offsets)
+    C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
 
