@@ -8,6 +8,7 @@ composite kernel-map overrides, and ``Op.autotune`` kernel discovery.
 import warnings
 
 import pytest
+import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import op_base
@@ -184,3 +185,37 @@ class TestAutotune:
 
         FakeOp().autotune()
         assert sorted(tuned) == ["k1", "k2"]
+
+    def test_autotune_reaches_kernels_held_in_a_cache(self):
+        """Ops that build at forward time keep kernels in a dict, not a slot."""
+        tuned: list[str] = []
+
+        class FakeKernel(Kernel):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+
+            def forward(self):
+                return None
+
+            def autotune(self, warmup=25, rep=50):
+                tuned.append(self.name)
+
+        class CachingOp(Op):
+            def __init__(self):
+                self._kernel_cache = {
+                    ((8,), torch.float16): FakeKernel("fp16"),
+                    ((8,), torch.bfloat16): FakeKernel("bf16"),
+                }
+                # A backward op caches its kernels as one entry per dtype.
+                self._pair_cache = {torch.float16: (FakeKernel("pre"), FakeKernel("bwd"))}
+
+            def forward(self, *a, **kw):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        CachingOp().autotune()
+        assert sorted(tuned) == ["bf16", "bwd", "fp16", "pre"]

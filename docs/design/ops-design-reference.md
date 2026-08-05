@@ -280,7 +280,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 | Attribute      | Type                                 | Purpose                                                                                      |
 | -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `kernel`       | `Kernel`                             | Kernel instance used by `forward()`                                                          |
+| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per dtype uses a cache instead    |
 | `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                             |
 | `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                            |
 | `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
