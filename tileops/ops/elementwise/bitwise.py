@@ -46,7 +46,6 @@ class _BoolStorageBitwiseBinaryOp(BinaryOp):
         input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
-        self.dtype = input.dtype
         entry = self._entry(input.dtype)
         if entry.bool_storage:
             result = entry.kernel(

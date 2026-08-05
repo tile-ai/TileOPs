@@ -9,9 +9,10 @@ from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
+from ._base import KernelEntry, _PerDtypeKernels, resolve_output_dtype
 
 
-class PreluFwdOp(Op):
+class PreluFwdOp(_PerDtypeKernels, Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
     Channel dimension follows PyTorch convention: dimension 1 for inputs
@@ -49,14 +50,18 @@ class PreluFwdOp(Op):
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+        self._init_entries()
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map[self._op_name](
-                self.N_total, self.num_channels, self.inner_size, dtype,
-            )
-        return self._kernel_cache[dtype]
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        kernel = self.kernel_map[self._op_name](
+            self.N_total, self.num_channels, self.inner_size, dtype,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
 
     @property
     def default_kernel_map(self):
@@ -68,8 +73,7 @@ class PreluFwdOp(Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = input.shape
-        self.dtype = input.dtype
-        return self._get_kernel(input.dtype)(
+        return self._entry(input.dtype).kernel(
             input.contiguous().reshape(-1), weight.contiguous().reshape(-1),
         ).reshape(orig_shape)
 

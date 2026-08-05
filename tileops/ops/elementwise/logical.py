@@ -58,7 +58,6 @@ class LogicalNotFwdOp(UnaryOp):
         )
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        self.dtype = input.dtype
         entry = self._entry(input.dtype)
         if entry.bool_storage:
             orig_shape = input.shape

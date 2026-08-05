@@ -144,18 +144,21 @@ def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 def test_fused_gated_rejects_integer_dtype() -> None:
-    """Fused gated ops are float-only and must reject integer dtypes early."""
+    """Fused gated ops are float-only; the rejection follows the tensor."""
+    op = GeluAndMulFwdOp(M=16, N=16)
+    x = torch.zeros(16, 32, device="cuda", dtype=torch.int32)
     with pytest.raises(ValueError, match="does not support dtype"):
-        GeluAndMulFwdOp(M=16, N=16)
+        op(x)
 
 
 @pytest.mark.smoke
-def test_fused_gated_rejects_runtime_dtype_mismatch() -> None:
-    """Runtime inputs should match the construction-time dtype contract."""
+def test_fused_gated_serves_two_dtypes_from_one_instance() -> None:
+    """The element type comes from the tensor, so both are valid on one op."""
     op = SiluAndMulFwdOp(M=16, N=8)
-    x = torch.randn(16, 16, device="cuda", dtype=torch.float32)
-    with pytest.raises(ValueError, match="Expected x.dtype"):
-        op(x)
+    for dtype in (torch.float16, torch.float32):
+        x = torch.randn(16, 16, device="cuda", dtype=dtype)
+        assert op(x).dtype == dtype
+    assert len(op._entries) == 2
 
 
 # Strategy selection tests

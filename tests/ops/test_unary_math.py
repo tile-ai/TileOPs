@@ -488,10 +488,12 @@ def test_round_decimals_validates_input() -> None:
     cpu_x = torch.ones(2, dtype=torch.float32)
     with pytest.raises(ValueError, match="CUDA tensor"):
         op(cpu_x, decimals=2)
-    # Wrong dtype must raise.
-    wrong_dtype = torch.ones(2, device="cuda", dtype=torch.float16)
+    # float16 is in the manifest union, so the same instance accepts it.
+    assert op(torch.ones(2, device="cuda", dtype=torch.float16), decimals=2).dtype \
+        == torch.float16
+    # A dtype outside the union must still raise.
     with pytest.raises(ValueError, match="dtype"):
-        op(wrong_dtype, decimals=2)
+        op(torch.ones(2, device="cuda", dtype=torch.float64), decimals=2)
     # Wrong numel must raise.
     wrong_numel = torch.ones(4, device="cuda", dtype=torch.float32)
     with pytest.raises(ValueError, match="elements"):
@@ -523,10 +525,11 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
         x = torch.randint(-1000, 1001, (n_total,), device="cuda", dtype=dtype)
         x = torch.where(x == 0, torch.ones_like(x), x)
     op = ReciprocalFwdOp(N_total=n_total)
-    assert op.output_dtype == torch.float32, (
-        f"ReciprocalFwdOp({dtype}).output_dtype must be float32, got {op.output_dtype}"
-    )
     out = op(x)
+    entry_out = op._entry(dtype).output_dtype
+    assert entry_out == torch.float32, (
+        f"ReciprocalFwdOp({dtype}) must promote to float32, got {entry_out}"
+    )
     assert out.dtype == torch.float32, (
         f"output dtype must be float32 for int input, got {out.dtype}"
     )
@@ -555,10 +558,14 @@ def test_reciprocal_int_metadata_preserves_input_dtype(
     """
     n_total = 4
     op = ReciprocalFwdOp(N_total=n_total)
+    x = torch.ones(n_total, device="cuda", dtype=dtype)
+    op(x)
+    # Metadata describes the most recent call: the caller's integer dtype in,
+    # float32 out.
     assert op.dtype == dtype, (
-        f"op.dtype must keep declared input dtype, got {op.dtype}"
+        f"op.dtype must report the most recent input dtype, got {op.dtype}"
     )
-    assert op.output_dtype == torch.float32
+    assert op._entry(dtype).output_dtype == torch.float32
     expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
     assert int(op.total_memory) == expected_bytes, (
         f"total_memory must charge int input bytes + float32 output "
@@ -571,16 +578,17 @@ def test_reciprocal_int_metadata_preserves_input_dtype(
 
 @pytest.mark.smoke
 def test_reciprocal_int_input_validation() -> None:
-    """ReciprocalFwdOp(int dtype) must validate the user input dtype.
+    """One instance serves integer and float inputs, and rejects the rest.
 
-    A float32 tensor handed to an op constructed with ``dtype=int32`` must
-    raise rather than silently bypass promotion: the op's contract is
-    ``input.dtype == declared dtype``.
+    Promotion is per call, so float32 and int32 are both valid and land on
+    different entries; a dtype outside the manifest union still raises.
     """
     op = ReciprocalFwdOp(N_total=4)
-    wrong = torch.ones(4, device="cuda", dtype=torch.float32)
+    assert op(torch.ones(4, device="cuda", dtype=torch.float32)).dtype == torch.float32
+    assert op(torch.ones(4, device="cuda", dtype=torch.int32)).dtype == torch.float32
+    assert len(op._entries) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
-        op(wrong)
+        op(torch.ones(4, device="cuda", dtype=torch.float64))
 
 
 if __name__ == "__main__":

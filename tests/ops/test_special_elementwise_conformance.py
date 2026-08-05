@@ -45,8 +45,8 @@ def test_where_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import WhereFwdOp
     init_params = list(inspect.signature(WhereFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(WhereFwdOp.forward).parameters.keys())
-    # __init__: self, condition, input, other, dtype, ...
-    assert init_params[1:5] == ["condition", "input", "other", "dtype"], init_params
+    # __init__: self, condition, input, other, ... (no dtype: PyTorch has none)
+    assert init_params[1:4] == ["condition", "input", "other"], init_params
     # forward: self, condition, input, other
     assert fwd_params[1:] == ["condition", "input", "other"], fwd_params
 
@@ -109,7 +109,7 @@ def test_clamp_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import ClampFwdOp
     init_params = list(inspect.signature(ClampFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(ClampFwdOp.forward).parameters.keys())
-    assert init_params[1:5] == ["input", "min", "max", "dtype"], init_params
+    assert init_params[1:4] == ["input", "min", "max"], init_params
     assert fwd_params[1:] == ["input", "min", "max"], fwd_params
 
 
@@ -219,7 +219,7 @@ def test_clamp_scalar_init_signature_pytorch_aligned():
     assert "input" in init_params
     assert "min" in init_params
     assert "max" in init_params
-    assert "dtype" in init_params
+    assert "dtype" not in init_params, "element type comes from the tensors"
     # forward only takes input (manifest params are bound at __init__)
     assert fwd_params[1:] == ["input"], fwd_params
 
@@ -246,7 +246,7 @@ def test_clamp_min_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import ClampMinFwdOp
     init_params = list(inspect.signature(ClampMinFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(ClampMinFwdOp.forward).parameters.keys())
-    assert init_params[1:4] == ["input", "min", "dtype"], init_params
+    assert init_params[1:3] == ["input", "min"], init_params
     assert fwd_params[1:] == ["input", "min"], fwd_params
 
 
@@ -272,7 +272,7 @@ def test_clamp_max_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import ClampMaxFwdOp
     init_params = list(inspect.signature(ClampMaxFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(ClampMaxFwdOp.forward).parameters.keys())
-    assert init_params[1:4] == ["input", "max", "dtype"], init_params
+    assert init_params[1:3] == ["input", "max"], init_params
     assert fwd_params[1:] == ["input", "max"], fwd_params
 
 
@@ -402,7 +402,7 @@ def test_masked_fill_tensor_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import MaskedFillFwdOp
     init_params = list(inspect.signature(MaskedFillFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(MaskedFillFwdOp.forward).parameters.keys())
-    assert init_params[1:5] == ["input", "mask", "value", "dtype"], init_params
+    assert init_params[1:4] == ["input", "mask", "value"], init_params
     assert fwd_params[1:] == ["input", "mask", "value"], fwd_params
 
 
@@ -427,7 +427,7 @@ def test_masked_fill_scalar_init_signature_pytorch_aligned():
     assert "input" in init_params
     assert "mask" in init_params
     assert "value" in init_params
-    assert "dtype" in init_params
+    assert "dtype" not in init_params, "element type comes from the tensors"
     assert fwd_params[1:] == ["input", "mask"], fwd_params
 
 

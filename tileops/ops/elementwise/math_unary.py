@@ -107,7 +107,6 @@ class ReciprocalFwdOp(UnaryOp):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         """Promote here, past the boundary, so the caller's dtype stays visible."""
-        self.dtype = input.dtype
         entry = self._entry(input.dtype)
         flat = input.contiguous().reshape(-1)
         if entry.compute_dtype != input.dtype:
@@ -183,7 +182,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         self._validate_input(input)
         # Integer dtypes are no-ops regardless of decimals (rounding an int
         # produces the same int). Match the float-path identity contract.
-        if self.dtype in _MANIFEST_INT_DTYPES:
+        if input.dtype in _MANIFEST_INT_DTYPES:
             return input.clone()
         # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
         # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
@@ -191,7 +190,8 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         # at the end restores the op's contract dtype. The manifest's
         # ``kernel_map`` continues to describe the round-to-nearest-integer
         # kernel that handles the ``decimals=0`` fast path above.
-        return torch.round(input.float(), decimals=decimals).to(self.dtype)
+        # Metadata only; the cast target comes from the tensor.
+        return torch.round(input.float(), decimals=decimals).to(input.dtype)
 
 
 class TruncFwdOp(_IntIdentityUnaryOp):

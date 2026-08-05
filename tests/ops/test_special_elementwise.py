@@ -3,6 +3,8 @@
 Covers L1 smoke correctness (fp16, 1M) and L4 edge cases (fp32, 4K).
 """
 
+import inspect
+
 import pytest
 import torch
 
@@ -233,7 +235,7 @@ class AlibiFixture(FixtureBase):
 def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import AlibiFwdOp
 
-    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads)
+    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
     out = op()
 
     # Reference: slope_h = 2^(-8*(h+1)/H), bias = -slope * |i - j|
@@ -265,7 +267,7 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
 
     from tileops.ops.elementwise import SinusoidalFwdOp
 
-    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model)
+    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
     out = op()
 
     # Reference
@@ -450,17 +452,19 @@ def test_independent_special_rejects_non_float_dtype() -> None:
     pytest.param("SoftplusFwdOp", {"beta": 1.0, "threshold": 20.0}, id="softplus"),
     pytest.param("ClampScalarFwdOp", {"min": -0.5, "max": 0.5}, id="clamp"),
 ])
-def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
-    """forward() must raise ValueError when input dtype mismatches."""
+def test_forward_accepts_every_supported_dtype(op_cls: str, kwargs: dict) -> None:
+    """One instance serves each dtype the manifest declares, and rejects others."""
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
     if cls.__name__ == "ClampScalarFwdOp":
         op = cls(input=(1024,), **kwargs)
     else:
         op = cls(N_total=1024, **kwargs)
-    x = torch.randn(1024, device="cuda", dtype=torch.float32)
+    for dtype in (torch.float16, torch.float32):
+        x = torch.randn(1024, device="cuda", dtype=dtype)
+        assert op(x).dtype == dtype
     with pytest.raises(ValueError, match="dtype"):
-        op(x)
+        op(torch.randn(1024, device="cuda", dtype=torch.float64))
 
 
 @pytest.mark.smoke
@@ -489,15 +493,20 @@ def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("MaskedFillScalarFwdOp", {"value": -100.0}, id="masked_fill"),
 ])
-def test_masked_fill_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
-    """MaskedFillFwdOp forward() must raise ValueError when input dtype mismatches."""
+def test_masked_fill_forward_rejects_unsupported_dtype(op_cls: str, kwargs: dict) -> None:
+    """The manifest union is the gate; float32 is inside it and must be accepted."""
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
     op = cls(input=(1024,), mask=(1024,), **kwargs)
-    x = torch.randn(1024, device="cuda", dtype=torch.float32)
     mask = torch.ones(1024, device="cuda", dtype=torch.bool)
+    args = () if "value" in kwargs else (torch.tensor(0.0, device="cuda"),)
+    for dtype in (torch.float16, torch.float32):
+        x = torch.randn(1024, device="cuda", dtype=dtype)
+        extra = tuple(a.to(dtype) for a in args)
+        assert op(x, mask, *extra).dtype == dtype
+    bad = torch.randn(1024, device="cuda", dtype=torch.float64)
     with pytest.raises(ValueError, match="dtype"):
-        op(x, mask)
+        op(bad, mask, *tuple(a.to(torch.float64) for a in args))
 
 
 @pytest.mark.smoke
@@ -515,7 +524,17 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
         op(x, mask)
 
 
-# Negative tests: __init__() scalar parameter validation
+
+def _takes_one_tensor(op) -> bool:
+    """Clamp/activation ops take just the input; masked-fill also takes a mask."""
+    return "mask" not in inspect.signature(type(op).forward).parameters
+
+
+def _bool_mask(n: int = 1024) -> torch.Tensor:
+    return torch.zeros(n, device="cuda", dtype=torch.bool)
+
+
+# Negative tests: scalar parameter validation, at first use
 
 
 @pytest.mark.smoke
@@ -536,9 +555,16 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
                  id="clamp-max"),
 ])
 def test_scalar_param_rejects_unrepresentable(make_op) -> None:
-    """__init__ must reject scalar params that overflow the kernel dtype."""
-    with pytest.raises((ValueError, TypeError)):
-        make_op()
+    """A scalar that overflows the element type must be rejected.
+
+    The scalar is baked into the kernel, so it can only be checked against a
+    dtype — which arrives with the tensors. 1e6 is finite in float32 and
+    overflows float16, so the same op accepts one and rejects the other.
+    """
+    op = make_op()
+    fp16 = torch.zeros(1024, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="not representable"):
+        op(fp16) if _takes_one_tensor(op) else op(fp16, _bool_mask())
 
 
 @pytest.mark.smoke
@@ -701,26 +727,29 @@ def test_masked_fill_rejects_when_pytorch_rejects(
     with pytest.raises(Exception):  # noqa: B017
         pytorch_tensor.masked_fill(pytorch_mask, fill_value)
 
-    with pytest.raises(Exception):  # noqa: B017
-        MaskedFillScalarFwdOp(
-            input=(1024,), mask=(1024,), value=fill_value,
-        )
+    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=fill_value)
+    x = torch.zeros(1024, device="cuda", dtype=dtype)
+    mask = torch.zeros(1024, device="cuda", dtype=torch.bool)
+    with pytest.raises((ValueError, TypeError)):
+        op(x, mask)
 
 
 @pytest.mark.smoke
 def test_elu_rejects_infinite_alpha() -> None:
-    """EluFwdOp must reject infinite alpha."""
+    """EluFwdOp must reject infinite alpha, when the element type is known."""
     from tileops.ops.elementwise import EluFwdOp
+    op = EluFwdOp(N_total=1024, alpha=float("inf"))
     with pytest.raises(ValueError, match="finite"):
-        EluFwdOp(N_total=1024, alpha=float("inf"))
+        op(torch.zeros(1024, device="cuda", dtype=torch.float16))
 
 
 @pytest.mark.smoke
 def test_softplus_rejects_non_numeric_beta() -> None:
     """SoftplusFwdOp must reject non-numeric beta."""
     from tileops.ops.elementwise import SoftplusFwdOp
+    op = SoftplusFwdOp(N_total=1024, beta="bad")
     with pytest.raises(TypeError, match="int/float"):
-        SoftplusFwdOp(N_total=1024, beta="bad")
+        op(torch.zeros(1024, device="cuda", dtype=torch.float16))
 
 
 if __name__ == "__main__":

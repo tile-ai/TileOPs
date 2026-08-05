@@ -22,7 +22,13 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import BinaryOp, _AlphaScaledBinaryOp
+from ._base import (
+    BinaryOp,
+    KernelEntry,
+    _AlphaScaledBinaryOp,
+    _PerDtypeKernels,
+    resolve_output_dtype,
+)
 
 
 class AddFwdOp(_AlphaScaledBinaryOp):
@@ -182,7 +188,7 @@ class MinimumFwdOp(BinaryOp):
     kernel_cls = MinimumFwdKernel
 
 
-class LerpTensorFwdOp(Op):
+class LerpTensorFwdOp(_PerDtypeKernels, Op):
     """Tensor-weight lerp: out = input + weight * (end - input).
 
     Conforms to the Tensor-weight overload of ``torch.lerp`` —
@@ -228,20 +234,24 @@ class LerpTensorFwdOp(Op):
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+        self._init_entries()
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            if dtype not in self._SUPPORTED_DTYPES:
-                names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
-                raise ValueError(
-                    f"LerpTensorFwdOp does not support dtype {dtype}. "
-                    f"Supported: [{names}]"
-                )
-            self._kernel_cache[dtype] = self.kernel_map[self._op_name](
-                self.N_total, dtype, tune=self.tune,
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        if dtype not in self._SUPPORTED_DTYPES:
+            names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
+            raise ValueError(
+                f"LerpTensorFwdOp does not support dtype {dtype}. "
+                f"Supported: [{names}]"
             )
-        return self._kernel_cache[dtype]
+        kernel = self.kernel_map[self._op_name](
+            self.N_total, dtype, tune=self.tune,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -264,8 +274,7 @@ class LerpTensorFwdOp(Op):
         a_flat = self._expand_flat(input, out_shape)
         b_flat = self._expand_flat(end, out_shape)
         w_flat = self._expand_flat(weight, out_shape)
-        self.dtype = a_flat.dtype
-        result = self._get_kernel(a_flat.dtype)(a_flat, b_flat, w_flat)
+        result = self._entry(a_flat.dtype).kernel(a_flat, b_flat, w_flat)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(

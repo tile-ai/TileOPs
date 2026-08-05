@@ -55,7 +55,7 @@ def test_install_kernel_map_auto_discovery_incompatible_raises_same_class() -> N
     import tileops.ops.elementwise as mod
 
     base_cls = mod.ReluFwdOp
-    base_inst = base_cls(N_total=8, dtype=torch.float16)
+    base_inst = base_cls(N_total=8)
     (key, default_kernel_cls), = base_inst.default_kernel_map.items()
     incompatible_archs = _make_incompatible_arch_list()
 
@@ -68,7 +68,7 @@ def test_install_kernel_map_auto_discovery_incompatible_raises_same_class() -> N
             return {key: IncompatibleKernel}
 
     with pytest.raises(ValueError, match="not supported on architecture"):
-        AutoDiscoveredIncompatibleOp(N_total=8, dtype=torch.float16)
+        AutoDiscoveredIncompatibleOp(N_total=8)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -95,7 +95,7 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     overridden = cls(
         N_total=n_total, kernel_map={key: MarkerKernel},
     )
-    assert isinstance(overridden.kernel, MarkerKernel)
+    assert isinstance(overridden._entry(torch.float16).kernel, MarkerKernel)
 
     torch.manual_seed(0)
     x = torch.randn(n_total, dtype=dtype, device="cuda")
