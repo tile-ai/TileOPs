@@ -19,6 +19,36 @@ __all__ = ["ArgreduceKernel"]
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
 _WARP_SIZE = 32
 _NUM_ACCUMULATORS = 4
+#: Rows shorter than this finish faster in one block than they do split: the
+#: partial pass plus the final pass costs more than the serial scan it removes.
+_SPLIT_MIN_N = 32768
+#: A chunk below two passes of a block (256 threads x 4 accumulators) leaves
+#: the block underfed, and measured several times slower than a coarser split.
+_MIN_CHUNK = 2048
+#: Splitting past this stops paying: the partial pass is already short and the
+#: final pass grows with the number of chunks.
+_MAX_ROW_SPLIT = 16
+
+
+def _row_split_candidates(N: int) -> list[int]:
+    """Splits worth ranking for a row of *N*, coarsest first.
+
+    Bounded below by ``_MIN_CHUNK`` so no candidate underfeeds a block.
+    """
+    ceiling = max(1, N // _MIN_CHUNK)
+    return [c for c in (8, 16, 32, 64) if c <= ceiling] or [1]
+
+
+def _plan_row_split(N: int) -> int:
+    """Chunks per row for the multi-CTA layout; 1 means the row stays whole.
+
+    The split depends on the row length alone. What it removes is one block's
+    serial scan, which is set by ``N``; how many rows there are changes how many
+    blocks run, not how long each one takes.
+    """
+    if N < _SPLIT_MIN_N:
+        return 1
+    return max(1, min(_MAX_ROW_SPLIT, N // _MIN_CHUNK))
 
 
 def _lanes_per_row(n: int) -> int:
@@ -276,14 +306,20 @@ def _argreduce_multicta_partial_kernel(
     N: int,
     op_kind: str,
     dtype: str,
-    ctas_per_row: int,
 ):
-    """Build the partial stage for rows split across multiple blocks."""
-    chunk_size = (N + ctas_per_row - 1) // ctas_per_row
-    num_partials = M * ctas_per_row
+    """Build the partial stage for rows split across multiple blocks.
+
+    ``ctas_per_row`` is a tuning parameter: how far to split a row trades the
+    block's serial scan against a wider final pass, and where that trade lands
+    depends on the shape. The autotuner measures this stage alone, which ranks
+    the candidates the same way the pair does — the final pass costs the same
+    whatever the split.
+    """
 
     @tilelang.jit(out_idx=[1, 2])
-    def _func(threads: int):
+    def _func(threads: int, ctas_per_row: int):
+        chunk_size = (N + ctas_per_row - 1) // ctas_per_row
+        num_partials = M * ctas_per_row
         num_warps = threads // _WARP_SIZE
         iterations = (chunk_size + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
         (
@@ -368,9 +404,13 @@ def _argreduce_multicta_final_kernel(
     rows_per_block = 8
     threads = rows_per_block * _WARP_SIZE
 
+    # A lane walks its share of the row's partials, so the split is free to be
+    # wider than a warp; reading one partial per lane would drop the rest.
+    partials_per_lane = -(-ctas_per_row // _WARP_SIZE)
+
     @tilelang.jit(out_idx=[2])
     def _func():
-        set_identity, _, _, _, warp_reduce = _make_pair_ops(op_kind, N)
+        set_identity, _, update, _, warp_reduce = _make_pair_ops(op_kind, N)
 
         @T.prim_func
         def main(
@@ -386,9 +426,16 @@ def _argreduce_multicta_final_kernel(
                 best_index = T.alloc_local((1,), "int32")
                 set_identity(best_value, best_index, 0)
 
-                if row < M and lane < ctas_per_row:
-                    best_value[0] = partial_values[row * ctas_per_row + lane]
-                    best_index[0] = partial_indices[row * ctas_per_row + lane]
+                for step in T.serial(partials_per_lane):
+                    partial = step * _WARP_SIZE + lane
+                    if row < M and partial < ctas_per_row:
+                        update(
+                            best_value,
+                            best_index,
+                            0,
+                            partial_values[row * ctas_per_row + partial],
+                            partial_indices[row * ctas_per_row + partial],
+                        )
 
                 warp_reduce(best_value, best_index, 5, _WARP_SIZE)
                 if row < M and lane == 0:
@@ -415,8 +462,8 @@ def _argreduce_fwd_wrapped(
         return _argreduce_cta_kernel(M, N, op_kind, dtype_str)(threads)(x)
     if strategy == "multi_cta":
         partial_values, partial_indices = _argreduce_multicta_partial_kernel(
-            M, N, op_kind, dtype_str, ctas_per_row
-        )(threads)(x)
+            M, N, op_kind, dtype_str
+        )(threads, ctas_per_row)(x)
         return _argreduce_multicta_final_kernel(M, N, op_kind, ctas_per_row)()(
             partial_values, partial_indices
         )
@@ -467,14 +514,10 @@ class ArgreduceKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
-        self.ctas_per_row = 1
 
-        if N >= 32768 and M < 64:
+        if _plan_row_split(N) > 1:
             self.strategy = "multi_cta"
-            self.ctas_per_row = min(32, (N + 4095) // 4096)
-            self.kernel = _argreduce_multicta_partial_kernel(
-                M, N, op_kind, self.dtype_str, self.ctas_per_row
-            )
+            self.kernel = _argreduce_multicta_partial_kernel(M, N, op_kind, self.dtype_str)
         elif N >= 4096:
             self.strategy = "cta"
             self.kernel = _argreduce_cta_kernel(M, N, op_kind, self.dtype_str)
@@ -503,12 +546,20 @@ class ArgreduceKernel(Kernel):
             block_m, threads = 1, 256
         else:
             threads = block_m * lanes
-        return self._knobs({"block_m": block_m, "threads": threads})
+        return self._knobs(
+            {"block_m": block_m, "threads": threads, "ctas_per_row": _plan_row_split(self.N)}
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self.strategy in {"cta", "multi_cta"}:
-            candidates = [{"block_m": 1, "threads": t} for t in (128, 256, 512)]
+        if self.strategy == "multi_cta":
+            candidates = [
+                {"threads": t, "ctas_per_row": c}
+                for t in (128, 256, 512)
+                for c in _row_split_candidates(self.N)
+            ]
+        elif self.strategy == "cta":
+            candidates = [{"threads": t} for t in (128, 256, 512)]
         else:
             lanes = _lanes_per_row(self.N)
             candidates = []
@@ -524,7 +575,7 @@ class ArgreduceKernel(Kernel):
             self.op_kind,
             self.dtype_str,
             self.strategy,
-            self.ctas_per_row,
+            self.config.get("ctas_per_row", 1),
             self.config.get("block_m", 1),
             self.config["threads"],
             x,
