@@ -640,7 +640,6 @@ def bench_kernel(
         )
 
     _bench_meta.timing = None
-    _bench_meta.inputs_cloned = True
     _bench_meta.input_policy = None
     _bench_meta.input_policy_seed = None
     _bench_meta.cupti_begin_tolerance_us = _cupti_window_begin_tolerance_ns() / 1000.0
@@ -685,7 +684,6 @@ def bench_kernel(
 
         def _run(i):
             return fn()
-    _bench_meta.inputs_cloned = arg_pool is not None or not has_args
 
     def _prepare_iteration(i):
         _prepare_args(i)
@@ -908,8 +906,6 @@ class BenchmarkBase(Generic[W], ABC):
         fallback_reason = getattr(_bench_meta, "fallback_reason", None)
         if fallback_reason is not None:
             result["fallback_reason"] = fallback_reason
-        if getattr(_bench_meta, "inputs_cloned", True) is False:
-            result["inputs_cloned"] = False
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9

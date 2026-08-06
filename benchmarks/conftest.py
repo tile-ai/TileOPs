@@ -15,7 +15,6 @@ _BENCH_PROVENANCE_KEYS = (
     "input_policy",
     "input_policy_seed",
     "fallback_reason",
-    "inputs_cloned",
 )
 
 
