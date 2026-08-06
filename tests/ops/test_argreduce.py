@@ -532,5 +532,146 @@ def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_kind", "dtype"),
+    [("argmax", torch.float16), ("argmin", torch.bfloat16)],
+)
+def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
+    """The multi-CTA path supports the LM-head workload without tiling skips."""
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
+    op = op_cls(dim=-1)
+    ref = getattr(torch, op_kind)(x, dim=-1)
+    y = _call(op, x)
+    assert torch.equal(y, ref), f"large-N {op_kind} mismatch: {(y != ref).sum().item()}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
+def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
+    """Pair reduction preserves PyTorch's first-index and NaN behavior."""
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.tensor(
+        [
+            [1.0, float("nan"), 3.0, float("nan"), 3.0],
+            [2.0, 2.0, -1.0, -1.0, 0.0],
+        ],
+        dtype=torch.float32,
+        device="cuda",
+    )
+    op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
+    op = op_cls(dim=-1)
+    ref = getattr(torch, op_kind)(x, dim=-1)
+    y = _call(op, x)
+    assert torch.equal(y, ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
+@pytest.mark.parametrize("n", [8, 4096, 40960])
+def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
+    """Two NaNs tie, so the lower index wins — on every reduction layout.
+
+    No float comparison can express this: every comparison between two NaNs is
+    false, so an ordering that leans on them returns whichever lane merged
+    first. The three row lengths select the warp, CTA and multi-CTA paths, and
+    the NaNs sit far enough apart to land in different lanes.
+    """
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.arange(1, n + 1, dtype=torch.float32, device="cuda")
+    first, second = n // 4, n // 2
+    x[first] = float("nan")
+    x[second] = float("nan")
+
+    op = (ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp)(dim=-1)
+    ref = getattr(torch, op_kind)(x)
+    got = _call(op, x)
+    assert got.item() == ref.item() == first, (
+        f"{op_kind} n={n}: got {got.item()}, torch {ref.item()}, expected {first}"
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("ctas_per_row", [31, 33, 64])
+def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
+    """A split wider than a warp must still see every partial.
+
+    The final pass assigns partials to lanes; reading one each would drop
+    everything past lane 31 and return an index from the wrong chunk. Splits
+    are chosen by the tuner, so nothing bounds them to a warp.
+    """
+    from tileops.kernels.reduction import argreduce as kernels
+
+    M, N = 3, 65536
+    x = torch.randn(M, N, dtype=torch.float16, device="cuda")
+    # Put the extremes in high chunks, which only a full sweep of the partials
+    # can reach, and a NaN in another so the tie rules run there too.
+    chunk = N // ctas_per_row
+    x[0, min(N - 1, chunk * (ctas_per_row - 1) + 7)] = 100.0
+    x[1, min(N - 1, chunk * (ctas_per_row // 2) + 3)] = -100.0
+    x[2, min(N - 1, chunk * (ctas_per_row - 2) + 1)] = float("nan")
+
+    partial = kernels._argreduce_multicta_partial_kernel(M, N, "argmax", "float16")
+    final = kernels._argreduce_multicta_final_kernel(M, N, "argmax", ctas_per_row)
+    values, indices = partial(256, ctas_per_row)(x)
+    got = final()(values, indices)
+    torch.testing.assert_close(got, torch.argmax(x, dim=-1))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("shape, dim, expect_strided", [
+    ((4, 128, 4096), 0, True),      # short strided axis: read it in place
+    ((1, 32768, 8), 1, False),      # long strided axis: transposing wins
+])
+def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
+    """A strided axis is read in place only while walking it stays cheap.
+
+    Output-parallel gives one thread the whole axis, so choosing it on
+    contiguity alone makes a long axis orders of magnitude slower.
+    """
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
+
+    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    op = ArgmaxFwdOp(dim=dim)
+    torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
+    strategies = {k.strategy for k in op._kernel_cache.values()}
+    assert ("output" in strategies) is expect_strided, strategies
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, n, inner_stride, strategy", [
+    (4, 1024, 1, "warp"),
+    (4, 8192, 1, "cta"),
+    (4, 65536, 1, "multi_cta"),
+    (4096, 4, 4096, "output"),
+])
+def test_argreduce_tuning_space_matches_its_kernel(
+    m: int, n: int, inner_stride: int, strategy: str,
+) -> None:
+    """A strategy may only offer knobs its own kernel takes.
+
+    The four layouts are built from different JIT signatures, so one shared
+    config space hands at least one of them a parameter it would reject.
+    """
+    from tileops.kernels.reduction.argreduce import ArgreduceKernel
+
+    kernel = ArgreduceKernel(m, n, "argmax", torch.float16, inner_stride=inner_stride)
+    assert kernel.strategy == strategy
+    accepted = set(kernel.kernel.signature.parameters)
+    assert set(kernel.default_config) <= accepted
+    for candidate in kernel.autotune_configs:
+        assert set(candidate) <= accepted, (
+            f"{strategy}: candidate {candidate} names a knob outside {accepted}"
+        )
+    assert kernel.default_config in kernel.autotune_configs, (
+        "tuning cannot be worse than not tuning: the default must be a candidate"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
