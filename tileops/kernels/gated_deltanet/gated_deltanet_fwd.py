@@ -19,6 +19,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.linear_attn_autotune import (
+    default_h_block_v,
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
@@ -306,15 +307,12 @@ class GatedDeltaNetFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # bv=32 V-tiling for chunk_size>=64; bv=16 has numerical issues in fp16.
-        # Fall back to no tiling for smaller chunks.
-        h_block_v = 32 if self.chunk_size >= 64 else 0
         return {
             "fused_num_stages": 2,
             "fused_threads": 256,
             "h_num_stages": 2,
             "h_threads": 256,
-            "h_block_v": h_block_v,
+            "h_block_v": default_h_block_v(self.dim_v, self.chunk_size),
             "o_threads": 256,
         }
 

@@ -48,6 +48,8 @@ class _StubKernel:
 
     @property
     def default_config(self) -> dict:
+        # h_block_v deliberately ignores dim_v divisibility, so a sweep that
+        # took its fallback width from here would return an unbuildable one.
         return {
             "fused_num_stages": 2,
             "fused_threads": 256,
@@ -157,6 +159,48 @@ def test_v_tiling_is_not_offered_below_the_minimum_chunk_size() -> None:
 def test_v_tile_width_must_divide_dim_v() -> None:
     assert la.h_block_v_candidates(48, 64) == (0,)
     assert la.h_block_v_candidates(64, 64) == (0, 32)
+
+
+def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> None:
+    """The fallback width must come from the candidates, not from default_config.
+
+    At dim_v=48 a tiled width of 32 gives the recurrence a V grid of
+    ``48 // 32 == 1`` tile, covering 32 of 48 columns. The width must therefore
+    stay out of the returned config even when no candidate could be tuned.
+    """
+    kernel = _StubKernel(chunk_size=64, dim_v=48)
+    kernel.results = {("fused", 0): (None, None), ("h", 0): (None, None),
+                      ("o", 0): (None, None)}
+
+    config = _run(kernel)
+
+    assert kernel.default_config["h_block_v"] == 32, "stub must diverge for this to bite"
+    assert config["h_block_v"] == 0
+    assert config in la.delta_rule_fwd_autotune_configs(48, 64)
+
+
+def test_default_h_block_v_takes_the_narrowest_buildable_tiled_width() -> None:
+    assert la.default_h_block_v(64, 64) == 32
+    assert la.default_h_block_v(48, 64) == 0  # 32 does not divide 48
+    assert la.default_h_block_v(64, 32) == 0  # chunk below the tiling minimum
+
+
+@pytest.mark.parametrize(
+    "kernel_cls",
+    [deltanet_fwd.DeltaNetFwdKernel, gated_deltanet_fwd.GatedDeltaNetFwdKernel],
+)
+@pytest.mark.parametrize("dim_v, chunk_size", [(64, 64), (48, 64), (64, 32), (96, 64)])
+def test_default_config_width_is_one_the_kernel_builds(
+    kernel_cls, dim_v: int, chunk_size: int
+) -> None:
+    """The untuned width must be declared too, or forward truncates the V range."""
+    kernel = kernel_cls(
+        batch=1, head=1, seq_len=128, chunk_size=chunk_size, dim_k=64, dim_v=dim_v,
+        dtype="bfloat16",
+    )
+
+    assert kernel.config["h_block_v"] in la.h_block_v_candidates(dim_v, chunk_size)
+    assert kernel.config in kernel.autotune_configs
 
 
 def test_both_forward_kernels_share_one_sweep_implementation() -> None:
