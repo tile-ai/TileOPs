@@ -1,6 +1,9 @@
 """Arg-reduction operators (argmax, argmin)."""
 
-from typing import Dict, Optional
+from math import prod
+from typing import Dict, Optional, Tuple, Union
+
+import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.argreduce import ArgreduceKernel
@@ -10,7 +13,45 @@ from .reduce import _ReduceOpBase
 __all__ = ["ArgmaxFwdOp", "ArgminFwdOp"]
 
 
-class ArgmaxFwdOp(_ReduceOpBase):
+class _ArgreduceOpBase(_ReduceOpBase):
+    """Reduce a non-last axis in place rather than transposing to reach it.
+
+    The base transposes so the reduction axis is last, which copies the whole
+    tensor. When the input is contiguous the copy is avoidable: the output axis
+    is the contiguous one, so a kernel that assigns a thread per output element
+    and strides along the reduction axis reads the original buffer coalesced.
+    Only the preparation differs, so that is all this overrides.
+    """
+
+    def _get_or_create_strided_kernel(self, M: int, N: int, inner_stride: int, dtype):
+        key = (M, N, dtype, inner_stride)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map[self._kernel_key](
+                M, N, self._op_kind, dtype, inner_stride=inner_stride,
+                tune=self._tune, **self._build_kernel_kwargs(),
+            )
+        return self._kernel_cache[key]
+
+    def _prepare_input(
+        self, x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Size, Union[int, list], object]:
+        if self.dim is None or not x.is_contiguous():
+            return super()._prepare_input(x)
+        if self.dim < -x.ndim or self.dim >= x.ndim:
+            return super()._prepare_input(x)  # the base raises with the right message
+        dim = self.dim % x.ndim
+        inner_stride = prod(x.shape[dim + 1:])
+        if inner_stride == 1:
+            return super()._prepare_input(x)
+
+        N = x.shape[dim]
+        M = prod(s for i, s in enumerate(x.shape) if i != dim)
+        self._last_roofline_mn = (M, N)
+        kernel = self._get_or_create_strided_kernel(M, N, inner_stride, x.dtype)
+        return x.reshape(-1), x.shape, dim, kernel
+
+
+class ArgmaxFwdOp(_ArgreduceOpBase):
     """Argmax reduction along an arbitrary dim, returning int64 indices.
 
     Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.  M and N are
@@ -65,7 +106,7 @@ class ArgmaxFwdOp(_ReduceOpBase):
 
 
 
-class ArgminFwdOp(_ReduceOpBase):
+class ArgminFwdOp(_ArgreduceOpBase):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
     Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.  M and N are

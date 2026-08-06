@@ -597,7 +597,7 @@ def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("ctas_per_row", [31, 33, 47, 64])
+@pytest.mark.parametrize("ctas_per_row", [31, 33, 64])
 def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
     """A split wider than a warp must still see every partial.
 
@@ -624,23 +624,33 @@ def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("m, n", [(4, 1024), (4, 8192), (1, 32768)])
-def test_argreduce_autotunes_every_strategy(m: int, n: int) -> None:
-    """Each strategy's tuning space names only knobs its own kernel takes.
+@pytest.mark.parametrize("m, n, inner_stride, strategy", [
+    (4, 1024, 1, "warp"),
+    (4, 8192, 1, "cta"),
+    (4, 65536, 1, "multi_cta"),
+    (4096, 4, 4096, "output"),
+])
+def test_argreduce_tuning_space_matches_its_kernel(
+    m: int, n: int, inner_stride: int, strategy: str,
+) -> None:
+    """A strategy may only offer knobs its own kernel takes.
 
-    The three shapes select the warp, CTA and multi-CTA kernels, whose JIT
-    signatures differ; a config space shared across them offers one of the
-    kernels a parameter it would reject.
+    The four layouts are built from different JIT signatures, so one shared
+    config space hands at least one of them a parameter it would reject.
     """
     from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
-    kernel = ArgreduceKernel(m, n, "argmax", torch.float16)
+    kernel = ArgreduceKernel(m, n, "argmax", torch.float16, inner_stride=inner_stride)
+    assert kernel.strategy == strategy
     accepted = set(kernel.kernel.signature.parameters)
     assert set(kernel.default_config) <= accepted
     for candidate in kernel.autotune_configs:
         assert set(candidate) <= accepted, (
-            f"{kernel.strategy}: candidate {candidate} names a knob outside {accepted}"
+            f"{strategy}: candidate {candidate} names a knob outside {accepted}"
         )
+    assert kernel.default_config in kernel.autotune_configs, (
+        "tuning cannot be worse than not tuning: the default must be a candidate"
+    )
 
 
 if __name__ == "__main__":

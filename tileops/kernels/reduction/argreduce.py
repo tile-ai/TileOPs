@@ -29,11 +29,9 @@ _NUM_ACCUMULATORS = 4
 #   M=256 cta   1.4x  multi 1.5x  multi 2.4x
 #   M=1024 cta  1.3x  cta   1.1x  cta   1.05x
 #
-#: Rows this short only pay to split when there are too few of them to occupy
-#: the device at all.
+#: A row shorter than this is a handful of passes; splitting cannot save more
+#: than the second pass costs.
 _SPLIT_MIN_N = 32768
-#: Below this many rows the device is idle whatever the row length.
-_ROWS_TOO_FEW = 4
 #: Above this many rows the blocks already queue, and splitting only adds the
 #: final pass.
 _ROWS_SATURATED = 512
@@ -41,21 +39,29 @@ _ROWS_SATURATED = 512
 _MIN_CHUNK = 512
 
 
-def _row_split_candidates(N: int) -> list[int]:
-    """Splits worth ranking for a row of *N*, coarsest first."""
+def _row_split_candidates(M: int, N: int) -> list[int]:
+    """Splits worth ranking for a row of *N*, including the untuned default.
+
+    Leaving the default out lets tuning come back slower than not tuning.
+    """
     ceiling = max(1, N // _MIN_CHUNK)
-    return [c for c in (4, 8, 16, 32, 64) if c <= ceiling] or [1]
+    candidates = {c for c in (4, 8, 16, 32, 64) if c <= ceiling}
+    candidates.add(_plan_row_split(M, N))
+    return sorted(candidates)
 
 
 def _splits_row(M: int, N: int) -> bool:
     """Whether a row is worth splitting across blocks.
 
     Splitting trades one block's serial scan for a second pass over the
-    partials. It wins while the rows alone leave the device underused, and
-    stops winning once they queue on their own.
+    partials. It wins while the row is long enough for the scan to dominate
+    that pass and the rows alone leave the device underused.
+
+    The surface this approximates is not monotonic — 4 rows of 8192 want the
+    split while 16 do not — so the rule is deliberately the conservative one:
+    it declines a win on a few mid-sized shapes rather than taking a loss on
+    short ones, which is where `dim=None` and small tensors land.
     """
-    if M <= _ROWS_TOO_FEW:
-        return True
     return N >= _SPLIT_MIN_N and M < _ROWS_SATURATED
 
 
@@ -254,6 +260,68 @@ def _argreduce_warp_kernel(M: int, N: int, op_kind: str, dtype: str):
 
 
 @functools.lru_cache(maxsize=64)
+def _argreduce_output_kernel(
+    M: int,
+    N: int,
+    inner_stride: int,
+    op_kind: str,
+    dtype: str,
+):
+    """Build the output-parallel kernel for a contiguous non-last-axis reduction.
+
+    The reduction axis is strided here and the output axis is contiguous, so a
+    thread takes an output element and walks the axis: adjacent threads then
+    read adjacent addresses. Transposing into a last-axis layout instead copies
+    the whole tensor and hands a row of ``N`` elements to a block built for long
+    rows — on the manifest's 3d workload the copy alone is nearly half the time.
+    """
+    iterations = (N + _NUM_ACCUMULATORS - 1) // _NUM_ACCUMULATORS
+
+    @tilelang.jit(out_idx=[1])
+    def _func(block_m: int, threads: int):
+        set_identity, init_accumulators, update, merge_accumulators, _ = _make_pair_ops(
+            op_kind, N
+        )
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M * N,), dtype],
+            out: T.Tensor[(M,), "int64"],  # noqa: F821
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid:
+                tx = T.get_thread_binding()
+                row = pid * block_m + tx
+                outer = row // inner_stride
+                inner = row % inner_stride
+
+                values = T.alloc_local((_NUM_ACCUMULATORS,), "float32")
+                indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
+                best_value = T.alloc_local((1,), "float32")
+                best_index = T.alloc_local((1,), "int32")
+                init_accumulators(values, indices)
+
+                for iteration in T.serial(iterations):
+                    for accumulator in T.serial(_NUM_ACCUMULATORS):
+                        index = iteration * _NUM_ACCUMULATORS + accumulator
+                        if row < M and index < N:
+                            offset = outer * N * inner_stride + index * inner_stride + inner
+                            update(
+                                values,
+                                indices,
+                                accumulator,
+                                T.cast(x[offset], "float32"),
+                                index,
+                            )
+
+                merge_accumulators(values, indices, best_value, best_index)
+                if row < M:
+                    out[row] = T.cast(best_index[0], "int64")
+
+        return main
+
+    return _func
+
+
 def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build the block-per-row kernel used for long rows."""
 
@@ -330,9 +398,10 @@ def _argreduce_multicta_partial_kernel(
 
     ``ctas_per_row`` is a tuning parameter: how far to split a row trades the
     block's serial scan against a wider final pass, and where that trade lands
-    depends on the shape. The autotuner measures this stage alone, which ranks
-    the candidates the same way the pair does — the final pass costs the same
-    whatever the split.
+    depends on the shape. The autotuner measures this stage alone. The final
+    pass does grow slowly with the split (1.7 us at 32 chunks against 2.5 us at
+    64 on the lm-head shape), so the ranking can differ from the pair's at the
+    margin; measured, that has moved the choice once, by 0.3%.
     """
 
     @tilelang.jit(out_idx=[1, 2])
@@ -472,11 +541,16 @@ def _argreduce_fwd_wrapped(
     op_kind: str,
     dtype_str: str,
     strategy: str,
+    inner_stride: int,
     ctas_per_row: int,
     block_m: int,
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
+    if strategy == "output":
+        return _argreduce_output_kernel(M, N, inner_stride, op_kind, dtype_str)(
+            block_m, threads
+        )(x)
     if strategy == "cta":
         return _argreduce_cta_kernel(M, N, op_kind, dtype_str)(threads)(x)
     if strategy == "multi_cta":
@@ -496,6 +570,7 @@ def _(
     op_kind,
     dtype_str,
     strategy,
+    inner_stride,
     ctas_per_row,
     block_m,
     threads,
@@ -515,6 +590,7 @@ class ArgreduceKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        inner_stride: int = 1,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
@@ -533,8 +609,14 @@ class ArgreduceKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.inner_stride = inner_stride
 
-        if _splits_row(M, N):
+        if inner_stride > 1:
+            # The reduction axis is strided, so a thread takes an output element
+            # rather than a block taking a row.
+            self.strategy = "output"
+            self.kernel = _argreduce_output_kernel(M, N, inner_stride, op_kind, self.dtype_str)
+        elif _splits_row(M, N):
             self.strategy = "multi_cta"
             self.kernel = _argreduce_multicta_partial_kernel(M, N, op_kind, self.dtype_str)
         elif N >= 4096:
@@ -563,6 +645,8 @@ class ArgreduceKernel(Kernel):
         block_m = max(1, target_threads // lanes)
         if self.strategy in {"cta", "multi_cta"}:
             block_m, threads = 1, 256
+        elif self.strategy == "output":
+            block_m, threads = 256, 256
         else:
             threads = block_m * lanes
         return self._knobs(
@@ -575,10 +659,12 @@ class ArgreduceKernel(Kernel):
             candidates = [
                 {"threads": t, "ctas_per_row": c}
                 for t in (128, 256, 512)
-                for c in _row_split_candidates(self.N)
+                for c in _row_split_candidates(self.M, self.N)
             ]
         elif self.strategy == "cta":
             candidates = [{"threads": t} for t in (128, 256, 512)]
+        elif self.strategy == "output":
+            candidates = [{"block_m": t, "threads": t} for t in (128, 256, 512, 1024)]
         else:
             lanes = _lanes_per_row(self.N)
             candidates = []
@@ -588,12 +674,15 @@ class ArgreduceKernel(Kernel):
         return [self._knobs(candidate) for candidate in candidates]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.M == 0:
+            return torch.empty((0,), dtype=torch.int64, device=x.device)
         return _argreduce_fwd_wrapped(
             self.M,
             self.N,
             self.op_kind,
             self.dtype_str,
             self.strategy,
+            self.inner_stride,
             self.config.get("ctas_per_row", 1),
             self.config.get("block_m", 1),
             self.config["threads"],
