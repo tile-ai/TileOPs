@@ -162,7 +162,7 @@ def _kernels_by_cpu_window(trace: dict) -> list[list[dict]]:
 
 
 def _cupti_window_begin_tolerance_ns() -> int:
-    value_us = float(os.getenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "2.0"))
+    value_us = float(os.getenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "32.0"))
     return int(value_us * 1000)
 
 
@@ -170,7 +170,7 @@ def _cupti_window_end_tolerance_ns() -> int:
     # CUPTI CPU and activity timestamps can disagree by a few microseconds at
     # the tail of very short multi-kernel calls. Keep this below the repeat
     # guard so the widened attribution window cannot reach the next prepare.
-    value_us = float(os.getenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "8.0"))
+    value_us = float(os.getenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "32.0"))
     return int(value_us * 1000)
 
 
