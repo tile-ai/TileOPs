@@ -624,6 +624,26 @@ def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("shape, dim, expect_strided", [
+    ((4, 128, 4096), 0, True),      # short strided axis: read it in place
+    ((1, 32768, 8), 1, False),      # long strided axis: transposing wins
+])
+def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
+    """A strided axis is read in place only while walking it stays cheap.
+
+    Output-parallel gives one thread the whole axis, so choosing it on
+    contiguity alone makes a long axis orders of magnitude slower.
+    """
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
+
+    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    op = ArgmaxFwdOp(dim=dim)
+    torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
+    strategies = {k.strategy for k in op._kernel_cache.values()}
+    assert ("output" in strategies) is expect_strided, strategies
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("m, n, inner_stride, strategy", [
     (4, 1024, 1, "warp"),
     (4, 8192, 1, "cta"),

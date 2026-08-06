@@ -29,6 +29,9 @@ _NUM_ACCUMULATORS = 4
 #   M=256 cta   1.4x  multi 1.5x  multi 2.4x
 #   M=1024 cta  1.3x  cta   1.1x  cta   1.05x
 #
+#: Thresholds below are measured on H200, not derived; the grid behind each is
+#: in the commit that introduced it.
+#:
 #: A row shorter than this is a handful of passes; splitting cannot save more
 #: than the second pass costs.
 _SPLIT_MIN_N = 32768
@@ -37,17 +40,15 @@ _SPLIT_MIN_N = 32768
 _ROWS_SATURATED = 512
 #: A chunk shorter than this cannot amortize its share of the final pass.
 _MIN_CHUNK = 512
+#: Output-parallel gives a thread the whole axis to walk, so it pays only while
+#: that walk is short; it loses from N=32 up.
+_STRIDED_AXIS_MAX_N = 16
 
 
-def _row_split_candidates(M: int, N: int) -> list[int]:
-    """Splits worth ranking for a row of *N*, including the untuned default.
-
-    Leaving the default out lets tuning come back slower than not tuning.
-    """
+def _row_split_candidates(N: int) -> list[int]:
+    """Splits worth ranking for a row of *N*, coarsest first."""
     ceiling = max(1, N // _MIN_CHUNK)
-    candidates = {c for c in (4, 8, 16, 32, 64) if c <= ceiling}
-    candidates.add(_plan_row_split(M, N))
-    return sorted(candidates)
+    return sorted({c for c in (4, 8, 16, 32, 64) if c <= ceiling} or {1})
 
 
 def _splits_row(M: int, N: int) -> bool:
@@ -322,6 +323,7 @@ def _argreduce_output_kernel(
     return _func
 
 
+@functools.lru_cache(maxsize=64)
 def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build the block-per-row kernel used for long rows."""
 
@@ -396,12 +398,10 @@ def _argreduce_multicta_partial_kernel(
 ):
     """Build the partial stage for rows split across multiple blocks.
 
-    ``ctas_per_row`` is a tuning parameter: how far to split a row trades the
-    block's serial scan against a wider final pass, and where that trade lands
-    depends on the shape. The autotuner measures this stage alone. The final
-    pass does grow slowly with the split (1.7 us at 32 chunks against 2.5 us at
-    64 on the lm-head shape), so the ranking can differ from the pair's at the
-    margin; measured, that has moved the choice once, by 0.3%.
+    ``ctas_per_row`` is a tuning parameter: the trade between the block's serial
+    scan and a wider final pass moves with the shape. The tuner measures this
+    stage alone; the final pass grows slowly with the split, so its ranking can
+    differ from the pair's at the margin (measured once, by 0.3%).
     """
 
     @tilelang.jit(out_idx=[1, 2])
@@ -611,9 +611,9 @@ class ArgreduceKernel(Kernel):
         self.dtype = dtype
         self.inner_stride = inner_stride
 
-        if inner_stride > 1:
-            # The reduction axis is strided, so a thread takes an output element
-            # rather than a block taking a row.
+        if inner_stride > 1 and N <= _STRIDED_AXIS_MAX_N:
+            # A short strided axis: a thread takes an output element and walks
+            # the axis, which reads coalesced and skips the transpose.
             self.strategy = "output"
             self.kernel = _argreduce_output_kernel(M, N, inner_stride, op_kind, self.dtype_str)
         elif _splits_row(M, N):
@@ -659,7 +659,7 @@ class ArgreduceKernel(Kernel):
             candidates = [
                 {"threads": t, "ctas_per_row": c}
                 for t in (128, 256, 512)
-                for c in _row_split_candidates(self.M, self.N)
+                for c in _row_split_candidates(self.N)
             ]
         elif self.strategy == "cta":
             candidates = [{"threads": t} for t in (128, 256, 512)]
@@ -671,7 +671,13 @@ class ArgreduceKernel(Kernel):
             for target_threads in (64, 128, 256, 512):
                 block_m = max(1, target_threads // lanes)
                 candidates.append({"block_m": block_m, "threads": block_m * lanes})
-        return [self._knobs(candidate) for candidate in candidates]
+        # Tuning may not come back worse than not tuning, so the default is
+        # always among the candidates.
+        default = self.default_config
+        ranked = [self._knobs(candidate) for candidate in candidates]
+        if default not in ranked:
+            ranked.append(default)
+        return ranked
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.M == 0:

@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction.argreduce import ArgreduceKernel
+from tileops.kernels.reduction.argreduce import _STRIDED_AXIS_MAX_N, ArgreduceKernel
 
 from .reduce import _ReduceOpBase
 
@@ -45,6 +45,11 @@ class _ArgreduceOpBase(_ReduceOpBase):
             return super()._prepare_input(x)
 
         N = x.shape[dim]
+        if N > _STRIDED_AXIS_MAX_N:
+            # A long axis is faster transposed and reduced in parallel than
+            # walked serially by one thread per output.
+            return super()._prepare_input(x)
+
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
         self._last_roofline_mn = (M, N)
         kernel = self._get_or_create_strided_kernel(M, N, inner_stride, x.dtype)
