@@ -597,6 +597,33 @@ def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("ctas_per_row", [31, 33, 47, 64])
+def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
+    """A split wider than a warp must still see every partial.
+
+    The final pass assigns partials to lanes; reading one each would drop
+    everything past lane 31 and return an index from the wrong chunk. Splits
+    are chosen by the tuner, so nothing bounds them to a warp.
+    """
+    from tileops.kernels.reduction import argreduce as kernels
+
+    M, N = 3, 65536
+    x = torch.randn(M, N, dtype=torch.float16, device="cuda")
+    # Put the extremes in high chunks, which only a full sweep of the partials
+    # can reach, and a NaN in another so the tie rules run there too.
+    chunk = N // ctas_per_row
+    x[0, min(N - 1, chunk * (ctas_per_row - 1) + 7)] = 100.0
+    x[1, min(N - 1, chunk * (ctas_per_row // 2) + 3)] = -100.0
+    x[2, min(N - 1, chunk * (ctas_per_row - 2) + 1)] = float("nan")
+
+    partial = kernels._argreduce_multicta_partial_kernel(M, N, "argmax", "float16")
+    final = kernels._argreduce_multicta_final_kernel(M, N, "argmax", ctas_per_row)
+    values, indices = partial(256, ctas_per_row)(x)
+    got = final()(values, indices)
+    torch.testing.assert_close(got, torch.argmax(x, dim=-1))
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("m, n", [(4, 1024), (4, 8192), (1, 32768)])
 def test_argreduce_autotunes_every_strategy(m: int, n: int) -> None:
     """Each strategy's tuning space names only knobs its own kernel takes.

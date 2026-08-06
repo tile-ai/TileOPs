@@ -19,36 +19,55 @@ __all__ = ["ArgreduceKernel"]
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
 _WARP_SIZE = 32
 _NUM_ACCUMULATORS = 4
-#: Rows shorter than this finish faster in one block than they do split: the
-#: partial pass plus the final pass costs more than the serial scan it removes.
+# Where splitting a row pays, measured on H200 (132 SMs) over M x N with CUPTI
+# kernel time, best split against the block-per-row kernel:
+#
+#         N=8192      N=32768     N=102400
+#   M=4   multi 3.3x  multi 7.3x  multi 4.2x
+#   M=16  cta   1.4x  multi 1.7x  multi 3.6x
+#   M=64  cta   1.4x  multi 1.5x  multi 3.8x
+#   M=256 cta   1.4x  multi 1.5x  multi 2.4x
+#   M=1024 cta  1.3x  cta   1.1x  cta   1.05x
+#
+#: Rows this short only pay to split when there are too few of them to occupy
+#: the device at all.
 _SPLIT_MIN_N = 32768
-#: A chunk below two passes of a block (256 threads x 4 accumulators) leaves
-#: the block underfed, and measured several times slower than a coarser split.
-_MIN_CHUNK = 2048
-#: Splitting past this stops paying: the partial pass is already short and the
-#: final pass grows with the number of chunks.
-_MAX_ROW_SPLIT = 16
+#: Below this many rows the device is idle whatever the row length.
+_ROWS_TOO_FEW = 4
+#: Above this many rows the blocks already queue, and splitting only adds the
+#: final pass.
+_ROWS_SATURATED = 512
+#: A chunk shorter than this cannot amortize its share of the final pass.
+_MIN_CHUNK = 512
 
 
 def _row_split_candidates(N: int) -> list[int]:
-    """Splits worth ranking for a row of *N*, coarsest first.
-
-    Bounded below by ``_MIN_CHUNK`` so no candidate underfeeds a block.
-    """
+    """Splits worth ranking for a row of *N*, coarsest first."""
     ceiling = max(1, N // _MIN_CHUNK)
-    return [c for c in (8, 16, 32, 64) if c <= ceiling] or [1]
+    return [c for c in (4, 8, 16, 32, 64) if c <= ceiling] or [1]
 
 
-def _plan_row_split(N: int) -> int:
-    """Chunks per row for the multi-CTA layout; 1 means the row stays whole.
+def _splits_row(M: int, N: int) -> bool:
+    """Whether a row is worth splitting across blocks.
 
-    The split depends on the row length alone. What it removes is one block's
-    serial scan, which is set by ``N``; how many rows there are changes how many
-    blocks run, not how long each one takes.
+    Splitting trades one block's serial scan for a second pass over the
+    partials. It wins while the rows alone leave the device underused, and
+    stops winning once they queue on their own.
     """
-    if N < _SPLIT_MIN_N:
+    if M <= _ROWS_TOO_FEW:
+        return True
+    return N >= _SPLIT_MIN_N and M < _ROWS_SATURATED
+
+
+def _plan_row_split(M: int, N: int) -> int:
+    """Chunks per row when untuned; 1 means the row stays whole.
+
+    Only a default — the split is a tuning parameter, and the best value moves
+    with the shape by more than an order of magnitude.
+    """
+    if not _splits_row(M, N):
         return 1
-    return max(1, min(_MAX_ROW_SPLIT, N // _MIN_CHUNK))
+    return max(1, min(16, N // _MIN_CHUNK))
 
 
 def _lanes_per_row(n: int) -> int:
@@ -515,7 +534,7 @@ class ArgreduceKernel(Kernel):
         self.op_kind = op_kind
         self.dtype = dtype
 
-        if _plan_row_split(N) > 1:
+        if _splits_row(M, N):
             self.strategy = "multi_cta"
             self.kernel = _argreduce_multicta_partial_kernel(M, N, op_kind, self.dtype_str)
         elif N >= 4096:
@@ -547,7 +566,7 @@ class ArgreduceKernel(Kernel):
         else:
             threads = block_m * lanes
         return self._knobs(
-            {"block_m": block_m, "threads": threads, "ctas_per_row": _plan_row_split(self.N)}
+            {"block_m": block_m, "threads": threads, "ctas_per_row": _plan_row_split(self.M, self.N)}
         )
 
     @property
