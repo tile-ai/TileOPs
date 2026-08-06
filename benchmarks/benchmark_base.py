@@ -194,16 +194,21 @@ def _select_expected_sequence(
     kernels: list[dict],
     expected_sequence: tuple[str, ...],
 ) -> list[dict] | None:
-    """Select the discovered business kernel sequence from a noisy window."""
+    """Select a complete discovered kernel sequence from one logical call.
+
+    Every kernel activity attributed to the call must belong to the discovered
+    sequence. Silently discarding an unknown activity could underestimate the
+    call when a dynamic path launches an extra kernel before or after the
+    expected sequence.
+    """
     if not expected_sequence:
         return None
 
     expected_count = len(expected_sequence)
-    expected_name_set = set(expected_sequence)
-    candidates = [
-        kernel for kernel in kernels
-        if str(kernel["name"]) in expected_name_set
-    ]
+    if len(kernels) != expected_count:
+        return None
+
+    candidates = kernels
     candidate_names = _kernel_sequence(candidates)
 
     for start_idx in range(len(candidates) - expected_count + 1):

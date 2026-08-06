@@ -10,8 +10,13 @@ import torch
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
+    _NativeCuptiAttributionError,
+    _ShiftingTensorPool,
+    _attributed_mean_latency_ms,
     _bench_meta,
     _kernel_span_us,
+    _kernels_by_cpu_window,
+    _select_expected_sequence,
     bench_kernel,
     workloads_to_params,
 )
@@ -157,6 +162,137 @@ def test_kernel_span_uses_activity_envelope():
         {"name": "second", "start_ns": 5000, "end_ns": 7000},
     ]
     assert _kernel_span_us(kernels) == 8.0
+
+
+def _kernel(name: str, start_ns: int, end_ns: int) -> dict:
+    return {"name": name, "start_ns": start_ns, "end_ns": end_ns}
+
+
+def test_kernels_by_cpu_window_applies_boundary_tolerances(monkeypatch):
+    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "2")
+    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "8")
+    trace = {
+        "cpu_windows": [
+            {"repeat": 0, "begin_ns": 10_000, "end_ns": 20_000},
+            {"repeat": 1, "begin_ns": 40_000, "end_ns": 50_000},
+        ],
+        "kernels": [
+            _kernel("begin-edge", 8_000, 9_000),
+            _kernel("end-edge", 20_000, 28_000),
+            _kernel("outside", 28_001, 29_000),
+            _kernel("next", 40_000, 41_000),
+        ],
+    }
+
+    grouped = _kernels_by_cpu_window(trace)
+
+    assert [_kernel_sequence_names(group) for group in grouped] == [
+        ["begin-edge", "end-edge"],
+        ["next"],
+    ]
+
+
+def _kernel_sequence_names(kernels: list[dict]) -> list[str]:
+    return [str(kernel["name"]) for kernel in kernels]
+
+
+def test_select_expected_sequence_accepts_exact_and_concurrent_reorder():
+    exact = [_kernel("a", 1_000, 2_000), _kernel("b", 2_000, 3_000)]
+    reordered = [_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)]
+
+    assert _select_expected_sequence(exact, ("a", "b")) == exact
+    assert _select_expected_sequence(reordered, ("a", "b")) == reordered
+
+
+def test_select_expected_sequence_handles_duplicate_kernel_names():
+    kernels = [
+        _kernel("a", 1_000, 2_000),
+        _kernel("b", 1_500, 3_000),
+        _kernel("a", 2_000, 2_500),
+    ]
+
+    assert _select_expected_sequence(kernels, ("a", "a", "b")) == kernels
+    assert _select_expected_sequence(kernels, ("a", "b", "b")) is None
+
+
+@pytest.mark.parametrize(
+    "actual",
+    [
+        [_kernel("a", 1_000, 2_000)],
+        [
+            _kernel("a", 1_000, 2_000),
+            _kernel("b", 2_000, 3_000),
+            _kernel("unexpected", 3_000, 4_000),
+        ],
+        [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
+    ],
+)
+def test_select_expected_sequence_rejects_incomplete_or_changed_call(actual):
+    assert _select_expected_sequence(actual, ("a", "b")) is None
+
+
+def test_attributed_latency_requires_every_repeat(monkeypatch):
+    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "0")
+    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "0")
+    trace = {
+        "dropped": 0,
+        "cpu_windows": [
+            {"repeat": 0, "begin_ns": 1_000, "end_ns": 10_000},
+            {"repeat": 1, "begin_ns": 20_000, "end_ns": 30_000},
+        ],
+        "kernels": [
+            _kernel("a", 2_000, 4_000),
+            _kernel("b", 3_000, 8_000),
+            _kernel("a", 21_000, 22_000),
+            _kernel("b", 23_000, 29_000),
+        ],
+    }
+
+    latency_ms = _attributed_mean_latency_ms(trace, ("a", "b"), n_repeat=2)
+
+    assert latency_ms == pytest.approx(0.007)
+    assert _bench_meta.cupti_sampled_calls == 2
+    assert _bench_meta.cupti_expected_kernel_count == 2
+
+    trace["kernels"].append(_kernel("unexpected", 29_000, 29_500))
+    with pytest.raises(
+        _NativeCuptiAttributionError,
+        match="attributed 1/2 complete expected kernel sequences",
+    ):
+        _attributed_mean_latency_ms(trace, ("a", "b"), n_repeat=2)
+
+
+def test_attributed_latency_rejects_dropped_records():
+    with pytest.raises(_NativeCuptiAttributionError, match="dropped 1 records"):
+        _attributed_mean_latency_ms(
+            {"dropped": 1, "cpu_windows": [], "kernels": []},
+            ("a",),
+            n_repeat=1,
+        )
+
+
+def test_shifting_tensor_pool_preserves_layout_values_and_alignment():
+    source = torch.arange(24, dtype=torch.float32).reshape(4, 6).T
+    pool = _ShiftingTensorPool((source, 7), total_iterations=3, seed=123)
+    pointers = []
+
+    for _ in range(3):
+        shifted, scalar = pool.next_args()
+        assert scalar == 7
+        assert shifted.stride() == source.stride()
+        torch.testing.assert_close(shifted, source)
+        pointers.append(shifted.data_ptr())
+        shifted.zero_()
+
+    assert len(set(pointers)) == 3
+    assert all(
+        (pointer - pointers[0]) % _ShiftingTensorPool._POOL_ALIGNMENT == 0
+        for pointer in pointers[1:]
+    )
+    expected = torch.arange(24, dtype=torch.float32).reshape(4, 6).T
+    torch.testing.assert_close(source, expected)
+    with pytest.raises(RuntimeError, match="ShiftingTensorPool exhausted"):
+        pool.next_args()
 
 
 @pytest.mark.smoke
