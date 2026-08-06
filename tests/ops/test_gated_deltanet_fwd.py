@@ -162,6 +162,8 @@ def test_gated_deltanet_fwd(
     ref_o = test.ref_program(*inputs)
     op_o, _S, _Aw, _Au = op(*inputs)
     torch.testing.assert_close(op_o, ref_o, **tols)
+    if tune:
+        assert op.kernel.config in op.kernel.autotune_configs
 
 
 if __name__ == "__main__":

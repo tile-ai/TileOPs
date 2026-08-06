@@ -115,7 +115,9 @@ class DeltaNetFwdFixture(FixtureBase):
             pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, True, marks=pytest.mark.full,
+            # chunk_size=64 is the smallest chunk for which the sweep offers a
+            # tiled recurrence, so this case covers the V-tile width comparison.
+            pytest.param(2, 128, 2, 64, 64, 64, torch.bfloat16, True, marks=pytest.mark.full,
                          id="full-bf16-tuned"),
         ]),
     ]
@@ -140,6 +142,10 @@ def test_deltanet_fwd(
     ref_o = test.ref_program(*inputs)
     op_o, _S, _Aw, _Au, _w, _u = op(*inputs)
     torch.testing.assert_close(op_o, ref_o, **tols)
+    if tune:
+        # The forward above already proves the selected config builds and runs;
+        # this pins it to the declared candidate set the sweep draws from.
+        assert op.kernel.config in op.kernel.autotune_configs
 
 
 if __name__ == "__main__":

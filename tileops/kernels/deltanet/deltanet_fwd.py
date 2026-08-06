@@ -20,6 +20,10 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.linear_attn_autotune import (
+    delta_rule_fwd_autotune_configs,
+    tune_delta_rule_fwd,
+)
 
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
@@ -288,88 +292,20 @@ class DeltaNetFwdKernel(Kernel):
             "o_threads": 256,
         }
 
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return delta_rule_fwd_autotune_configs(self.dim_v, self.chunk_size)
+
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Autotune each sub-kernel independently and merge best configs."""
-        from tilelang.autotuner import autotune as tl_autotune
-        from tilelang.profiler import do_bench as _do_bench
-
-        B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
-        DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
-
-        # --- Tune fused_prepare_compute_w_u ---
-        fused_configs = [
-            {"num_stages": ns, "threads": t}
-            for ns in [1, 2] for t in [128, 256]
-        ]
-        print(f"Autotuning fused_prepare_compute_w_u ({len(fused_configs)} configs)...")
-        fused_jit = fused_prepare_compute_w_u_tl(B, H, S, BC, DK, DV, dt)
-        _fused_at = dict(configs=fused_configs, warmup=warmup, rep=rep)
-        _fused_dns = list(self._autotune_initial_kwargs(fused_jit, fused_configs[0]).keys())
-        if _fused_dns:
-            _fused_at["do_not_specialize"] = _fused_dns
-        tuned_fused = self._call_autotuned_kernel(
-            tl_autotune(**_fused_at)(fused_jit),
-            fused_jit,
-            fused_configs[0],
+        """Tune the three sub-kernels independently and merge the winners."""
+        self.config = tune_delta_rule_fwd(
+            self,
+            fused_builder=fused_prepare_compute_w_u_tl,
+            h_builder=_h_recurrence_tl,
+            o_builder=_output_o_tl,
+            warmup=warmup,
+            rep=rep,
         )
-        fused_best = tuned_fused.config
-        print(f"  Best: {fused_best}")
-
-        # --- Tune h_recurrence ---
-        best_h_latency = float("inf")
-        best_h_cfg = None
-        bv_candidates = [bv for bv in [0, 32] if DV % (bv or DV) == 0]
-        for bv in bv_candidates:
-            h_configs = [
-                {"num_stages": ns, "threads": t}
-                for ns in [1, 2] for t in [128, 256]
-            ]
-            label = f"block_v={bv}" if bv else "block_v=0 (no tile)"
-            print(f"Autotuning h_recurrence {label} ({len(h_configs)} configs)...")
-            h_jit = _h_recurrence_tl(B, H, S, BC, DK, DV, dt, block_v=bv)
-            _h_at = dict(configs=h_configs, warmup=warmup, rep=rep)
-            _h_dns = list(self._autotune_initial_kwargs(h_jit, h_configs[0]).keys())
-            if _h_dns:
-                _h_at["do_not_specialize"] = _h_dns
-            tuned_h = self._call_autotuned_kernel(
-                tl_autotune(**_h_at)(h_jit),
-                h_jit,
-                h_configs[0],
-            )
-            if tuned_h.config is not None:
-                lat = _do_bench(tuned_h, warmup=warmup, rep=rep)
-                print(f"  Best: {tuned_h.config}, latency={lat:.4f} ms")
-                if lat < best_h_latency:
-                    best_h_latency = lat
-                    best_h_cfg = {**tuned_h.config, "block_v": bv}
-        h_best = best_h_cfg or {"num_stages": 2, "threads": 256, "block_v": 32}
-        print(f"  Overall best h_recurrence: {h_best}")
-
-        # --- Tune output_o ---
-        o_configs = [{"threads": t} for t in [64, 128, 256]]
-        print(f"Autotuning output_o ({len(o_configs)} configs)...")
-        o_jit = _output_o_tl(B, H, S, BC, DK, DV, dt)
-        _o_at = dict(configs=o_configs, warmup=warmup, rep=rep)
-        _o_dns = list(self._autotune_initial_kwargs(o_jit, o_configs[0]).keys())
-        if _o_dns:
-            _o_at["do_not_specialize"] = _o_dns
-        tuned_o = self._call_autotuned_kernel(
-            tl_autotune(**_o_at)(o_jit),
-            o_jit,
-            o_configs[0],
-        )
-        o_best = tuned_o.config
-        print(f"  Best: {o_best}")
-
-        self.config = {
-            "fused_num_stages": fused_best["num_stages"],
-            "fused_threads": fused_best["threads"],
-            "h_num_stages": h_best["num_stages"],
-            "h_threads": h_best["threads"],
-            "h_block_v": h_best.get("block_v", 32),
-            "o_threads": o_best["threads"],
-        }
-        print(f"DeltaNetFwdKernel autotuned config: {self.config}")
 
     def forward(
         self,
