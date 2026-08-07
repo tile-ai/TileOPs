@@ -30,11 +30,10 @@ BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
 BENCH_PROVENANCE_KEYS = (
     "timing",
+    "benchmark_protocol",
     "cupti_sampled_calls",
     "cupti_expected_kernel_count",
-    "cupti_begin_tolerance_us",
-    "cupti_end_tolerance_us",
-    "cupti_repeat_guard_us",
+    "cupti_case_margin_us",
     "input_policy",
     "input_policy_seed",
     "fallback_reason",
@@ -373,8 +372,7 @@ def summarize_bench_provenance(bench_ops: dict) -> list[dict]:
         "count": 0,
         "sampled": [],
         "expected": [],
-        "guard": set(),
-        "tolerance": set(),
+        "case_margin": set(),
         "fallback": 0,
     })
 
@@ -384,6 +382,7 @@ def summarize_bench_provenance(bench_ops: dict) -> list[dict]:
         key = (
             role,
             provenance.get("timing", "unknown"),
+            provenance.get("benchmark_protocol", "unknown"),
             provenance.get("input_policy", "unknown"),
         )
         d = grouped[key]
@@ -394,13 +393,9 @@ def summarize_bench_provenance(bench_ops: dict) -> list[dict]:
         expected = provenance.get("cupti_expected_kernel_count")
         if isinstance(expected, (int, float)):
             d["expected"].append(int(expected))
-        guard = provenance.get("cupti_repeat_guard_us")
-        if guard is not None:
-            d["guard"].add(guard)
-        begin = provenance.get("cupti_begin_tolerance_us")
-        end = provenance.get("cupti_end_tolerance_us")
-        if begin is not None or end is not None:
-            d["tolerance"].add((begin, end))
+        case_margin = provenance.get("cupti_case_margin_us")
+        if case_margin is not None:
+            d["case_margin"].add(case_margin)
         if provenance.get("fallback_reason"):
             d["fallback"] += 1
 
@@ -416,23 +411,28 @@ def summarize_bench_provenance(bench_ops: dict) -> list[dict]:
                 add(str(tag), bl.get("provenance"))
 
     rows = []
-    for (role, timing, input_policy), d in grouped.items():
+    for (role, timing, benchmark_protocol, input_policy), d in grouped.items():
         sampled = d["sampled"]
         expected = d["expected"]
         rows.append({
             "role": role,
             "timing": timing,
+            "benchmark_protocol": benchmark_protocol,
             "input_policy": input_policy,
             "count": d["count"],
             "sampled_min": min(sampled) if sampled else None,
             "sampled_max": max(sampled) if sampled else None,
             "expected_min": min(expected) if expected else None,
             "expected_max": max(expected) if expected else None,
-            "guard": _format_set(d["guard"]),
-            "tolerance": _format_tolerance_set(d["tolerance"]),
+            "case_margin": _format_set(d["case_margin"]),
             "fallback": d["fallback"],
         })
-    return sorted(rows, key=lambda r: (r["role"], r["timing"], r["input_policy"]))
+    return sorted(
+        rows,
+        key=lambda r: (
+            r["role"], r["timing"], r["benchmark_protocol"], r["input_policy"]
+        ),
+    )
 
 
 def _format_set(values: set) -> str:
@@ -619,18 +619,18 @@ def generate_report(
         if provenance_rows:
             lines.append("## Benchmark Timing Provenance")
             lines.append("")
-            lines.append("| Role | Timing | Input Policy | Entries | Sampled Calls |"
-                         " Expected Kernels | Guard us | Tolerance begin/end us |"
+            lines.append("| Role | Timing | Protocol | Input Policy | Entries | Sampled Calls |"
+                         " Expected Kernels | Case Margin us |"
                          " Fallbacks |")
-            lines.append("|:-----|:-------|:-------------|--------:|:--------------|"
-                         ":-----------------|:---------|:-----------------------|----------:|")
+            lines.append("|:-----|:-------|:---------|:-------------|--------:|:--------------|"
+                         ":-----------------|:---------------|----------:|")
             for row in provenance_rows:
                 sampled = _format_range(row["sampled_min"], row["sampled_max"])
                 expected = _format_range(row["expected_min"], row["expected_max"])
                 lines.append(
-                    f"| {row['role']} | {row['timing']} | {row['input_policy']} "
-                    f"| {row['count']} | {sampled} | {expected} | {row['guard']} "
-                    f"| {row['tolerance']} | {row['fallback']} |"
+                    f"| {row['role']} | {row['timing']} | {row['benchmark_protocol']} "
+                    f"| {row['input_policy']} | {row['count']} | {sampled} | {expected} "
+                    f"| {row['case_margin']} | {row['fallback']} |"
                 )
             lines.append("")
 
