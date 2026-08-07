@@ -209,7 +209,13 @@ def _build_gqa_prefill_dense_kernel(
     The square fast path wins when its H200 contract holds; otherwise the
     geometry and element type pick a dense slot key. Callers reach a
     dense-prefill kernel through this step without constructing an ``Op``.
+
+    Raises:
+        ValueError: if *dtype* is not a supported dense-prefill element type.
+            Both selectors below merely decline an unsupported element type,
+            so an unguarded call would silently land on the generic dense slot.
     """
+    _validate_attention_dtype(dtype)
     if _supports_gqa_prefill_square_dense(
             batch,
             heads,
@@ -387,7 +393,6 @@ class GroupedQueryAttentionFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         kernel = self._kernel_cache.get(dtype)
         if kernel is None:
-            _validate_attention_dtype(dtype)
             kernel = _build_gqa_prefill_dense_kernel(
                 self.kernel_map,
                 batch=self.batch,

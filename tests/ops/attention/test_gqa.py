@@ -560,7 +560,7 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op(
     pytest.param(1, 256, 8, 2, 128, id="dense-causal"),
     pytest.param(1, 128, 8, 2, 64, id="dense-dim64"),
 ])
-def test_gqa_fwd_bshd_wrapper_kernel_matches_packed_dense_prefill(
+def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
     batch: int,
     seq_len: int,
     heads: int,
@@ -568,8 +568,19 @@ def test_gqa_fwd_bshd_wrapper_kernel_matches_packed_dense_prefill(
     dim: int,
     dtype: torch.dtype,
 ) -> None:
-    """The wrapper lands on the same kernel the packed dense prefill op would."""
-    wrapper = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True)
+    """Both callers build the chosen slot with the arguments that slot expects.
+
+    Comparing the built classes alone would miss a mistyped ``max_seqlen_kv``,
+    ``sm_scale`` or ``softcap``. Two assertions are needed and neither implies
+    the other: the recorded call must match the slot's documented argument
+    list, which guards the shared build step both callers run; and the two
+    callers must record the same call, which guards each caller's own argument
+    assembly. The expected slot is not hard-coded — whichever branch the
+    machine's fast-path contract selects, both sides must select it alike.
+    """
+    sm_scale, softcap = 0.125, 3.5
+    wrapper = GroupedQueryAttentionFwdOp(
+        batch, heads, heads_kv, seq_len, dim, True, sm_scale=sm_scale, softcap=softcap)
     packed = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,
@@ -579,10 +590,67 @@ def test_gqa_fwd_bshd_wrapper_kernel_matches_packed_dense_prefill(
         max_seqlen_kv=seq_len,
         is_causal=True,
         dtype=dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
         backend="dense",
     )
 
-    assert wrapper._get_kernel(dtype).__class__ is packed._get_dense_prefill_kernel().__class__
+    def record_builds(op: Op) -> list:
+        calls: list = []
+
+        def recorder(slot: str):
+
+            def build(*args: object, **kwargs: object) -> str:
+                calls.append((slot, args, kwargs))
+                return f"built:{slot}"
+
+            return build
+
+        for slot in op.kernel_map:
+            op.kernel_map[slot] = recorder(slot)
+        return calls
+
+    wrapper_calls = record_builds(wrapper)
+    packed_calls = record_builds(packed)
+
+    wrapper._get_kernel(dtype)
+    packed._get_dense_prefill_kernel()
+
+    assert len(wrapper_calls) == 1
+    slot, args, kwargs = wrapper_calls[0]
+    # The square slot derives its key length from a single seq_len; the dense
+    # slots take both. Getting this wrong is the failure the test exists for.
+    if slot == "gqa_prefill_square_fwd_kernel":
+        assert args == (batch, heads, heads_kv, seq_len, dim, True, dtype)
+    else:
+        assert args == (batch, heads, heads_kv, seq_len, seq_len, dim, True, dtype)
+    assert kwargs == {"sm_scale": sm_scale, "softcap": softcap, "tune": False}
+
+    assert wrapper_calls == packed_calls
+
+
+@pytest.mark.smoke
+def test_build_gqa_prefill_dense_kernel_rejects_unsupported_dtype() -> None:
+    """The build step refuses an element type neither selector supports.
+
+    Both selectors decline rather than raise, so without this guard an
+    unsupported element type would quietly build the generic dense slot.
+    """
+    with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
+        gqa_module._build_gqa_prefill_dense_kernel(
+            {},
+            batch=1,
+            heads=8,
+            heads_kv=2,
+            max_seqlen_q=128,
+            max_seqlen_kv=128,
+            dim=128,
+            is_causal=True,
+            dtype=torch.float32,
+            sm_scale=1.0,
+            softcap=0.0,
+            tune=False,
+        )
 
 
 @pytest.mark.smoke
