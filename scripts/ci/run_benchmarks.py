@@ -90,7 +90,14 @@ sys.exit(rc)
 class Child:
     """One bench child process plus its status pipe."""
 
-    def __init__(self, code: str, argv: list[str], log_path: Path, status_path: Path):
+    def __init__(
+        self,
+        code: str,
+        argv: list[str],
+        log_path: Path,
+        status_path: Path,
+        env_overrides: dict[str, str] | None = None,
+    ):
         read_fd, write_fd = os.pipe()
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
@@ -101,7 +108,11 @@ class Child:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 pass_fds=(write_fd,),
-                env={**os.environ, "TILEOPS_COLLECT_STATUS": str(status_path)},
+                env={
+                    **os.environ,
+                    "TILEOPS_COLLECT_STATUS": str(status_path),
+                    **(env_overrides or {}),
+                },
             )
         finally:
             os.close(log_fd)
@@ -329,8 +340,20 @@ def main() -> int:
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
             argv = ["-q", bench_files[index], "--assert=plain", f"--junit-xml={fragment}"]
+            case_trace_dir = (
+                dump_dir.resolve()
+                / "cupti_traces"
+                / f"{index:03d}_{Path(bench_files[index]).stem}"
+            )
             return Child(
-                _CHILD, argv, work_dir / f"{index:03d}.log", work_dir / f"{index:03d}.collect"
+                _CHILD,
+                argv,
+                work_dir / f"{index:03d}.log",
+                work_dir / f"{index:03d}.collect",
+                env_overrides={
+                    "TILEOPS_CUPTI_BENCH_FILE": bench_files[index],
+                    "TILEOPS_CUPTI_CASE_TRACE_DIR": str(case_trace_dir),
+                },
             )
 
         def run_child(index: int, bench_file: str, child: Child) -> None:

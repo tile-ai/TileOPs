@@ -1,17 +1,18 @@
 import gc
+import os
 
 import pytest
 import torch
 
+from benchmarks import native_cupti
 from benchmarks.benchmark_base import BenchmarkReport, _bench_results
 
 _BENCH_PROVENANCE_KEYS = (
     "timing",
+    "benchmark_protocol",
     "cupti_sampled_calls",
     "cupti_expected_kernel_count",
-    "cupti_begin_tolerance_us",
-    "cupti_end_tolerance_us",
-    "cupti_repeat_guard_us",
+    "cupti_case_margin_us",
     "input_policy",
     "input_policy_seed",
     "fallback_reason",
@@ -58,7 +59,16 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_runtest_call(item):
     """After bench test execution, attach perf data to the item as properties."""
     _bench_results.entries = []
+    case_session_started = False
     try:
+        if item.path.name.startswith("bench_"):
+            try:
+                native_cupti.start_case_session(item.nodeid)
+                case_session_started = True
+            except native_cupti.NativeCUPTIError:
+                allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
+                if not allow_fallback:
+                    raise
         yield
         entries = getattr(_bench_results, "entries", [])
         if not entries:
@@ -123,5 +133,9 @@ def pytest_runtest_call(item):
                 if tl > 0 and bl_latency > 0:
                     item.user_properties.append((f"{tag}_ratio", f"{bl_latency / tl:.4f}"))
     finally:
-        _bench_results.entries = []
-        _release_cuda_cache_after_case()
+        try:
+            if case_session_started:
+                native_cupti.stop_case_session()
+        finally:
+            _bench_results.entries = []
+            _release_cuda_cache_after_case()

@@ -10,13 +10,12 @@ import torch
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
-    _NativeCuptiAttributionError,
-    _ShiftingTensorPool,
     _attributed_mean_latency_ms,
     _bench_meta,
     _kernel_span_us,
-    _kernels_by_cpu_window,
+    _NativeCUPTIAttributionError,
     _select_expected_sequence,
+    _ShiftingTensorPool,
     bench_kernel,
     workloads_to_params,
 )
@@ -168,40 +167,18 @@ def _kernel(name: str, start_ns: int, end_ns: int) -> dict:
     return {"name": name, "start_ns": start_ns, "end_ns": end_ns}
 
 
-def test_kernels_by_cpu_window_applies_boundary_tolerances(monkeypatch):
-    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "2")
-    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "8")
-    trace = {
-        "cpu_windows": [
-            {"repeat": 0, "begin_ns": 10_000, "end_ns": 20_000},
-            {"repeat": 1, "begin_ns": 40_000, "end_ns": 50_000},
-        ],
-        "kernels": [
-            _kernel("begin-edge", 8_000, 9_000),
-            _kernel("end-edge", 20_000, 28_000),
-            _kernel("outside", 28_001, 29_000),
-            _kernel("next", 40_000, 41_000),
-        ],
-    }
-
-    grouped = _kernels_by_cpu_window(trace)
-
-    assert [_kernel_sequence_names(group) for group in grouped] == [
-        ["begin-edge", "end-edge"],
-        ["next"],
-    ]
-
-
-def _kernel_sequence_names(kernels: list[dict]) -> list[str]:
-    return [str(kernel["name"]) for kernel in kernels]
-
-
 def test_select_expected_sequence_accepts_exact_and_concurrent_reorder():
     exact = [_kernel("a", 1_000, 2_000), _kernel("b", 2_000, 3_000)]
     reordered = [_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)]
 
     assert _select_expected_sequence(exact, ("a", "b")) == exact
     assert _select_expected_sequence(reordered, ("a", "b")) == reordered
+
+
+def test_select_expected_sequence_rejects_serial_reorder():
+    reordered = [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)]
+
+    assert _select_expected_sequence(reordered, ("a", "b")) is None
 
 
 def test_select_expected_sequence_handles_duplicate_kernel_names():
@@ -231,15 +208,9 @@ def test_select_expected_sequence_rejects_incomplete_or_changed_call(actual):
     assert _select_expected_sequence(actual, ("a", "b")) is None
 
 
-def test_attributed_latency_requires_every_repeat(monkeypatch):
-    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "0")
-    monkeypatch.setenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "0")
+def test_attributed_latency_requires_every_repeat():
     trace = {
         "dropped": 0,
-        "cpu_windows": [
-            {"repeat": 0, "begin_ns": 1_000, "end_ns": 10_000},
-            {"repeat": 1, "begin_ns": 20_000, "end_ns": 30_000},
-        ],
         "kernels": [
             _kernel("a", 2_000, 4_000),
             _kernel("b", 3_000, 8_000),
@@ -256,16 +227,70 @@ def test_attributed_latency_requires_every_repeat(monkeypatch):
 
     trace["kernels"].append(_kernel("unexpected", 29_000, 29_500))
     with pytest.raises(
-        _NativeCuptiAttributionError,
-        match="attributed 1/2 complete expected kernel sequences",
+        _NativeCUPTIAttributionError,
+        match="activity count does not match",
     ):
         _attributed_mean_latency_ms(trace, ("a", "b"), n_repeat=2)
 
 
-def test_attributed_latency_rejects_dropped_records():
-    with pytest.raises(_NativeCuptiAttributionError, match="dropped 1 records"):
+def test_case_sequence_attribution_excludes_prepare_and_preserves_operator_gap():
+    trace = {
+        "dropped": 0,
+        "kernels": [
+            _kernel("copy", 1_000, 2_000),
+            _kernel("fill", 2_100, 3_000),
+            _kernel("op-a", 4_000, 6_000),
+            _kernel("op-b", 9_000, 10_000),
+            _kernel("copy", 20_000, 21_000),
+            _kernel("fill", 21_100, 22_000),
+            _kernel("op-a", 23_000, 24_000),
+            _kernel("op-b", 29_000, 31_000),
+        ],
+    }
+
+    latency_ms = _attributed_mean_latency_ms(
+        trace,
+        ("op-a", "op-b"),
+        n_repeat=2,
+        expected_prepare_sequence=("copy", "fill"),
+    )
+
+    # Operator envelopes are 6 us and 8 us. Prepare kernels are validated but
+    # excluded, while the 3/5 us inter-kernel gaps remain part of op latency.
+    assert latency_ms == pytest.approx(0.007)
+
+
+@pytest.mark.parametrize(
+    "kernels",
+    [
+        [
+            _kernel("fill", 1_000, 2_000),
+            _kernel("op", 3_000, 4_000),
+            _kernel("fill", 5_000, 6_000),
+        ],
+        [
+            _kernel("fill", 1_000, 2_000),
+            _kernel("op", 3_000, 4_000),
+            _kernel("extra", 4_100, 4_200),
+            _kernel("fill", 5_000, 6_000),
+            _kernel("op", 7_000, 8_000),
+        ],
+    ],
+)
+def test_case_sequence_attribution_fails_closed_on_missing_or_extra_activity(kernels):
+    with pytest.raises(_NativeCUPTIAttributionError, match="activity count does not match"):
         _attributed_mean_latency_ms(
-            {"dropped": 1, "cpu_windows": [], "kernels": []},
+            {"dropped": 0, "kernels": kernels},
+            ("op",),
+            n_repeat=2,
+            expected_prepare_sequence=("fill",),
+        )
+
+
+def test_attributed_latency_rejects_dropped_records():
+    with pytest.raises(_NativeCUPTIAttributionError, match="dropped 1 records"):
+        _attributed_mean_latency_ms(
+            {"dropped": 1, "kernels": []},
             ("a",),
             n_repeat=1,
         )

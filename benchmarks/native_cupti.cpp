@@ -14,12 +14,6 @@ namespace py = pybind11;
 
 namespace {
 
-struct CpuWindow {
-  int repeat;
-  uint64_t begin;
-  uint64_t end;
-};
-
 struct KernelRecord {
   std::string name;
   uint64_t start;
@@ -33,7 +27,6 @@ struct KernelRecord {
 std::mutex g_mutex;
 bool g_active = false;
 bool g_callbacks_registered = false;
-std::vector<CpuWindow> g_windows;
 std::vector<KernelRecord> g_kernels;
 size_t g_dropped = 0;
 
@@ -103,7 +96,6 @@ void buffer_completed(CUcontext ctx, uint32_t stream_id, uint8_t* buffer,
 
 void reset_state() {
   std::lock_guard<std::mutex> lock(g_mutex);
-  g_windows.clear();
   g_kernels.clear();
   g_dropped = 0;
 }
@@ -137,35 +129,8 @@ void stop() {
   g_active = false;
 }
 
-void begin_repeat(int repeat) {
-  uint64_t t = timestamp();
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_windows.push_back({repeat, t, 0});
-}
-
-void end_repeat(int repeat) {
-  uint64_t t = timestamp();
-  std::lock_guard<std::mutex> lock(g_mutex);
-  for (auto it = g_windows.rbegin(); it != g_windows.rend(); ++it) {
-    if (it->repeat == repeat && it->end == 0) {
-      it->end = t;
-      return;
-    }
-  }
-  g_windows.push_back({repeat, 0, t});
-}
-
 py::dict results() {
   std::lock_guard<std::mutex> lock(g_mutex);
-
-  py::list windows;
-  for (const auto& w : g_windows) {
-    py::dict d;
-    d["repeat"] = w.repeat;
-    d["begin_ns"] = w.begin;
-    d["end_ns"] = w.end;
-    windows.append(d);
-  }
 
   py::list kernels;
   for (const auto& k : g_kernels) {
@@ -181,9 +146,58 @@ py::dict results() {
   }
 
   py::dict out;
-  out["cpu_windows"] = windows;
   out["kernels"] = kernels;
   out["dropped"] = g_dropped;
+  return out;
+}
+
+py::dict checkpoint() {
+  if (!g_active) {
+    throw std::runtime_error("native CUPTI collector is not active");
+  }
+
+  // Every benchmark iteration synchronizes before a checkpoint.  A forced
+  // flush therefore only publishes completed activity records; it does not
+  // stop/restart collection or introduce work into the measured GPU span.
+  cudaError_t cuda_status = cudaDeviceSynchronize();
+  if (cuda_status != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("cudaDeviceSynchronize failed: ") +
+        cudaGetErrorString(cuda_status));
+  }
+  CUPTI_CHECK(cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED));
+
+  std::lock_guard<std::mutex> lock(g_mutex);
+  py::dict out;
+  out["kernel_index"] = g_kernels.size();
+  out["dropped"] = g_dropped;
+  out["timestamp_ns"] = timestamp();
+  return out;
+}
+
+py::dict results_range(size_t begin, size_t end, size_t dropped_begin) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (begin > end || end > g_kernels.size()) {
+    throw std::runtime_error("invalid native CUPTI activity range");
+  }
+
+  py::list kernels;
+  for (size_t i = begin; i < end; ++i) {
+    const auto& k = g_kernels[i];
+    py::dict d;
+    d["name"] = k.name;
+    d["start_ns"] = k.start;
+    d["end_ns"] = k.end;
+    d["correlation_id"] = k.correlation;
+    d["device_id"] = k.device;
+    d["context_id"] = k.context;
+    d["stream_id"] = k.stream;
+    kernels.append(d);
+  }
+
+  py::dict out;
+  out["kernels"] = kernels;
+  out["dropped"] = g_dropped >= dropped_begin ? g_dropped - dropped_begin : g_dropped;
   return out;
 }
 
@@ -192,8 +206,8 @@ py::dict results() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("start", &start);
   m.def("stop", &stop);
-  m.def("begin_repeat", &begin_repeat);
-  m.def("end_repeat", &end_repeat);
   m.def("timestamp", &timestamp);
+  m.def("checkpoint", &checkpoint);
+  m.def("results_range", &results_range);
   m.def("results", &results);
 }

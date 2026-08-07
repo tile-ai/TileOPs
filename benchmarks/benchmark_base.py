@@ -1,5 +1,4 @@
 import contextlib
-import json
 import logging
 import os
 import random
@@ -9,7 +8,6 @@ import threading
 from abc import ABC, abstractmethod
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -55,11 +53,10 @@ _bench_results = threading.local()
 # Latest bench_kernel measurement metadata; deviations from the default
 # protocol are surfaced in results by BenchmarkBase._build_result.
 _bench_meta = threading.local()
-_trace_dump_counter = 0
 _cuda_runtime = None
 
 
-class _NativeCuptiAttributionError(Exception):
+class _NativeCUPTIAttributionError(Exception):
     """Native CUPTI trace could not be attributed to logical benchmark calls."""
 
 
@@ -142,50 +139,6 @@ class _ShiftingTensorPool:
         return tuple(result)
 
 
-def _kernels_by_cpu_window(trace: dict) -> list[list[dict]]:
-    """Group CUPTI kernel activities by per-repeat CPU attribution windows."""
-    windows = _valid_cpu_windows(trace)
-    kernels = sorted(
-        trace.get("kernels", []),
-        key=lambda k: (int(k["start_ns"]), int(k["end_ns"])),
-    )
-    begin_tolerance_ns = _cupti_window_begin_tolerance_ns()
-    end_tolerance_ns = _cupti_window_end_tolerance_ns()
-    grouped: list[list[dict]] = []
-    for _, begin_ns, end_ns in windows:
-        grouped.append([
-            k for k in kernels
-            if begin_ns - begin_tolerance_ns <= int(k["start_ns"])
-            and int(k["end_ns"]) <= end_ns + end_tolerance_ns
-        ])
-    return grouped
-
-
-def _cupti_window_begin_tolerance_ns() -> int:
-    value_us = float(os.getenv("TILEOPS_CUPTI_WINDOW_BEGIN_TOLERANCE_US", "24.0"))
-    return int(value_us * 1000)
-
-
-def _cupti_window_end_tolerance_ns() -> int:
-    # CUPTI CPU and activity timestamps can disagree by a few microseconds at
-    # the tail of very short multi-kernel calls. Keep this below the repeat
-    # guard so the widened attribution window cannot reach the next prepare.
-    value_us = float(os.getenv("TILEOPS_CUPTI_WINDOW_END_TOLERANCE_US", "24.0"))
-    return int(value_us * 1000)
-
-
-def _valid_cpu_windows(trace: dict) -> list[tuple[int, int, int]]:
-    windows = sorted(
-        (
-            (int(w["repeat"]), int(w["begin_ns"]), int(w["end_ns"]))
-            for w in trace.get("cpu_windows", [])
-            if int(w.get("begin_ns", 0)) > 0 and int(w.get("end_ns", 0)) > 0
-        ),
-        key=lambda item: item[0],
-    )
-    return windows
-
-
 def _kernel_sequence(kernels: list[dict]) -> tuple[str, ...]:
     return tuple(str(k["name"]) for k in kernels)
 
@@ -208,49 +161,37 @@ def _select_expected_sequence(
     if len(kernels) != expected_count:
         return None
 
-    candidates = kernels
-    candidate_names = _kernel_sequence(candidates)
+    actual_sequence = _kernel_sequence(kernels)
+    if actual_sequence == expected_sequence:
+        return kernels
+    if Counter(actual_sequence) != Counter(expected_sequence):
+        return None
 
-    for start_idx in range(len(candidates) - expected_count + 1):
-        end_idx = start_idx + expected_count
-        if candidate_names[start_idx:end_idx] == expected_sequence:
-            return candidates[start_idx:end_idx]
+    # CUPTI may publish concurrently executing kernels in either start-time
+    # order. Accept an inversion only when the two activities overlap; a
+    # reordered serial launch is a real sequence change and must fail closed.
+    expected_positions: dict[str, list[int]] = {}
+    for position, name in enumerate(expected_sequence):
+        expected_positions.setdefault(name, []).append(position)
+    seen: Counter[str] = Counter()
+    actual_to_expected = []
+    for name in actual_sequence:
+        occurrence = seen[name]
+        actual_to_expected.append(expected_positions[name][occurrence])
+        seen[name] += 1
 
-    expected_counts = Counter(expected_sequence)
-    best: list[dict] | None = None
-    best_score: tuple[int, float] | None = None
-    for start_idx in range(len(candidates) - expected_count + 1):
-        end_idx = start_idx + expected_count
-        names = candidate_names[start_idx:end_idx]
-        if Counter(names) != expected_counts:
-            continue
-        selected = candidates[start_idx:end_idx]
-        score = (
-            _relative_order_score(names, expected_sequence),
-            -_kernel_span_us(selected),
-        )
-        if best_score is None or score > best_score:
-            best_score = score
-            best = selected
-
-    return best
-
-
-def _relative_order_score(
-    actual: tuple[str, ...],
-    expected: tuple[str, ...],
-) -> int:
-    """Longest-common-subsequence score for deterministic tie breaking."""
-    previous = [0] * (len(expected) + 1)
-    for actual_name in actual:
-        current = [0] * (len(expected) + 1)
-        for idx, expected_name in enumerate(expected, start=1):
-            if actual_name == expected_name:
-                current[idx] = previous[idx - 1] + 1
-            else:
-                current[idx] = max(previous[idx], current[idx - 1])
-        previous = current
-    return previous[-1]
+    for left in range(expected_count):
+        for right in range(left + 1, expected_count):
+            if actual_to_expected[left] <= actual_to_expected[right]:
+                continue
+            left_kernel = kernels[left]
+            right_kernel = kernels[right]
+            if (
+                int(left_kernel["end_ns"]) <= int(right_kernel["start_ns"])
+                or int(right_kernel["end_ns"]) <= int(left_kernel["start_ns"])
+            ):
+                return None
+    return kernels
 
 
 def _kernel_span_us(kernels: list[dict]) -> float:
@@ -276,264 +217,107 @@ def _format_sequence(seq: tuple[str, ...]) -> str:
     return " -> ".join(names[:2] + ["..."] + names[-2:])
 
 
-def _trace_diagnostic(
-    trace: dict,
-    *,
-    expected_sequence: tuple[str, ...] | None = None,
-    max_examples: int = 4,
-) -> str:
-    grouped = _kernels_by_cpu_window(trace)
-    sequences = [_kernel_sequence(kernels) for kernels in grouped]
-    sequence_counts = Counter(sequences)
-    kernels = sorted(
+def _ordered_trace_kernels(trace: dict) -> list[dict]:
+    return sorted(
         trace.get("kernels", []),
-        key=lambda k: (int(k["start_ns"]), int(k["end_ns"])),
+        key=lambda kernel: (int(kernel["start_ns"]), int(kernel["end_ns"])),
     )
-    windows = _valid_cpu_windows(trace)
 
-    parts = [
-        f"windows={len(trace.get('cpu_windows', []))}",
-        f"grouped_windows={len(grouped)}",
-        f"kernels={len(kernels)}",
-        f"dropped={int(trace.get('dropped', 0))}",
-        f"begin_tolerance_us={_cupti_window_begin_tolerance_ns() / 1000.0:.3f}",
-        f"end_tolerance_us={_cupti_window_end_tolerance_ns() / 1000.0:.3f}",
-    ]
-    if expected_sequence is not None:
-        selected = [
-            _select_expected_sequence(kernels, expected_sequence)
-            for kernels in grouped
-        ]
-        matched = sum(1 for kernels in selected if kernels is not None)
-        parts.append(f"matched={matched}/{len(grouped)}")
-        parts.append(f"expected=[{_format_sequence(expected_sequence)}]")
 
-    common = []
-    for seq, count in sequence_counts.most_common(max_examples):
-        common.append(f"{count}x[{_format_sequence(seq)}]")
-    if common:
-        parts.append("sequences=" + "; ".join(common))
-
-    examples = []
-    for idx, kernels_in_window in enumerate(grouped[:max_examples]):
-        seq = _kernel_sequence(kernels_in_window)
-        examples.append(f"r{idx}:len={len(seq)}[{_format_sequence(seq)}]")
-    if examples:
-        parts.append("examples=" + "; ".join(examples))
-
-    unmatched = []
-    for idx, (repeat, begin_ns, end_ns) in enumerate(windows):
-        if idx >= len(sequences):
-            continue
-        if expected_sequence is None:
-            bad = idx > 0 and sequences[idx] != sequences[0]
-        else:
-            bad = _select_expected_sequence(grouped[idx], expected_sequence) is None
-        if not bad:
-            continue
-
-        span_us = (end_ns - begin_ns) / 1000.0
-        nearby = sorted(
-            kernels,
-            key=lambda k: _distance_to_window_us(k, begin_ns, end_ns),
-        )[:3]
-        nearby_text = []
-        for k in nearby:
-            start_delta = (int(k["start_ns"]) - begin_ns) / 1000.0
-            end_delta = (int(k["end_ns"]) - end_ns) / 1000.0
-            nearby_text.append(
-                f"{_short_kernel_name(str(k['name']))}"
-                f"(start-begin={start_delta:.1f}us,end-end={end_delta:.1f}us)"
+def _stable_discovery_sequence(traces: list[dict], phase: str) -> tuple[str, ...]:
+    for trace in traces:
+        if int(trace.get("dropped", 0)) != 0:
+            raise _NativeCUPTIAttributionError(
+                f"CUPTI dropped {trace['dropped']} records during {phase} discovery"
             )
-        unmatched.append(
-            f"r{repeat}:span={span_us:.1f}us seq=[{_format_sequence(sequences[idx])}] "
-            f"near=" + ",".join(nearby_text)
+    groups = [_ordered_trace_kernels(trace) for trace in traces]
+    sequences = [_kernel_sequence(kernels) for kernels in groups]
+    if not sequences or any(not sequence for sequence in sequences):
+        raise _NativeCUPTIAttributionError(
+            f"CUPTI discovery found no CUDA kernel sequence for {phase}"
         )
-        if len(unmatched) >= max_examples:
-            break
-    if unmatched:
-        parts.append("unmatched=" + "; ".join(unmatched))
-    return "; ".join(parts)
-
-
-def _trace_window_analysis(
-    trace: dict,
-    *,
-    expected_sequence: tuple[str, ...] | None = None,
-    nearest: int = 5,
-) -> list[dict]:
-    grouped = _kernels_by_cpu_window(trace)
-    sequences = [_kernel_sequence(kernels) for kernels in grouped]
-    kernels = sorted(
-        trace.get("kernels", []),
-        key=lambda k: (int(k["start_ns"]), int(k["end_ns"])),
-    )
-
-    rows: list[dict] = []
-    for idx, (repeat, begin_ns, end_ns) in enumerate(_valid_cpu_windows(trace)):
-        seq = sequences[idx] if idx < len(sequences) else ()
-        selected = (
-            _select_expected_sequence(grouped[idx], expected_sequence)
-            if expected_sequence is not None and idx < len(grouped)
-            else None
+    expected = sequences[0]
+    if any(
+        _select_expected_sequence(kernels, expected) is None
+        for kernels in groups[1:]
+    ):
+        rendered = "; ".join(_format_sequence(sequence) for sequence in sequences)
+        raise _NativeCUPTIAttributionError(
+            f"CUPTI discovery saw inconsistent {phase} sequences: {rendered}"
         )
-        matched = (
-            selected is not None
-            if expected_sequence is not None
-            else idx == 0 or seq == sequences[0]
-        )
-        near = []
-        for k in sorted(
-            kernels,
-            key=lambda item: _distance_to_window_us(item, begin_ns, end_ns),
-        )[:nearest]:
-            near.append({
-                "name": str(k["name"]),
-                "start_ns": int(k["start_ns"]),
-                "end_ns": int(k["end_ns"]),
-                "start_minus_begin_us": (int(k["start_ns"]) - begin_ns) / 1000.0,
-                "end_minus_end_us": (int(k["end_ns"]) - end_ns) / 1000.0,
-                "contained": begin_ns - _cupti_window_begin_tolerance_ns() <= int(k["start_ns"])
-                and int(k["end_ns"]) <= end_ns + _cupti_window_end_tolerance_ns(),
-                "distance_to_window_us": _distance_to_window_us(k, begin_ns, end_ns),
-            })
-        rows.append({
-            "repeat": repeat,
-            "begin_ns": begin_ns,
-            "end_ns": end_ns,
-            "span_us": (end_ns - begin_ns) / 1000.0,
-            "sequence": list(seq),
-            "selected_sequence": (
-                list(_kernel_sequence(selected)) if selected is not None else None
-            ),
-            "matched": matched,
-            "nearest_kernels": near,
-        })
-    return rows
+    return expected
 
 
-def _dump_trace(
-    phase: str,
-    trace: dict,
-    *,
-    expected_sequence: tuple[str, ...] | None = None,
-    reason: str,
-) -> str | None:
-    dump_dir = os.getenv("TILEOPS_CUPTI_TRACE_DUMP_DIR")
-    if not dump_dir:
-        return None
-
-    global _trace_dump_counter
-    _trace_dump_counter += 1
-    path = Path(dump_dir)
-    path.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    out = path / f"cupti_trace_{os.getpid()}_{_trace_dump_counter:04d}_{phase}_{stamp}.json"
-    payload = {
-        "phase": phase,
-        "reason": reason,
-        "expected_sequence": list(expected_sequence) if expected_sequence is not None else None,
-        "diagnostic": _trace_diagnostic(trace, expected_sequence=expected_sequence),
-        "window_analysis": _trace_window_analysis(
-            trace,
-            expected_sequence=expected_sequence,
-        ),
-        "trace": trace,
-    }
-    out.write_text(json.dumps(payload, indent=2, default=str))
-    return str(out)
-
-
-def _distance_to_window_us(kernel: dict, begin_ns: int, end_ns: int) -> float:
-    start_ns = int(kernel["start_ns"])
-    kernel_end_ns = int(kernel["end_ns"])
-    if begin_ns <= start_ns and kernel_end_ns <= end_ns:
-        return 0.0
-    if kernel_end_ns < begin_ns:
-        return (begin_ns - kernel_end_ns) / 1000.0
-    if start_ns > end_ns:
-        return (start_ns - end_ns) / 1000.0
-    return min(abs(start_ns - begin_ns), abs(kernel_end_ns - end_ns)) / 1000.0
-
-
-def _discover_expected_sequence(
+def _discover_expected_sequences(
     run_one: Callable[[int], None],
     prepare_one: Callable[[int], None],
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     n_discovery = int(os.getenv("TILEOPS_CUPTI_DISCOVERY_REPEATS", "3"))
-    trace = native_cupti.collect_repeats(run_one, n_discovery, prepare_one=prepare_one)
-    if int(trace.get("dropped", 0)) != 0:
-        raise _NativeCuptiAttributionError(
-            f"CUPTI dropped {trace['dropped']} records during discovery"
-        )
-
-    sequences = [_kernel_sequence(kernels) for kernels in _kernels_by_cpu_window(trace)]
-    if not sequences or any(len(seq) == 0 for seq in sequences):
-        reason = "CUPTI discovery found no CUDA kernel sequence"
-        dumped = _dump_trace("discovery", trace, reason=reason)
-        suffix = f"; trace_dump={dumped}" if dumped else ""
-        raise _NativeCuptiAttributionError(
-            reason + "; " + _trace_diagnostic(trace) + suffix
-        )
-    first = sequences[0]
-    if any(seq != first for seq in sequences[1:]):
-        reason = "CUPTI discovery saw inconsistent kernel sequences across repeats"
-        dumped = _dump_trace("discovery", trace, reason=reason)
-        suffix = f"; trace_dump={dumped}" if dumped else ""
-        raise _NativeCuptiAttributionError(
-            reason + "; " + _trace_diagnostic(trace) + suffix
-        )
-    return first
+    prepare_traces, operator_traces = native_cupti.collect_discovery(
+        run_one,
+        n_discovery,
+        prepare_one,
+    )
+    return (
+        _stable_discovery_sequence(prepare_traces, "prepare"),
+        _stable_discovery_sequence(operator_traces, "operator"),
+    )
 
 
 def _attributed_mean_latency_ms(
     trace: dict,
     expected_sequence: tuple[str, ...],
     n_repeat: int,
+    expected_prepare_sequence: tuple[str, ...] = (),
 ) -> float:
     if int(trace.get("dropped", 0)) != 0:
-        raise _NativeCuptiAttributionError(
+        raise _NativeCUPTIAttributionError(
             f"CUPTI dropped {trace['dropped']} records during timing"
         )
 
     samples_us: list[float] = []
-    grouped = _kernels_by_cpu_window(trace)
-    for kernels in grouped:
-        selected = _select_expected_sequence(kernels, expected_sequence)
-        if selected is None:
+    kernels = _ordered_trace_kernels(trace)
+    prepare_count = len(expected_prepare_sequence)
+    operator_count = len(expected_sequence)
+    cycle_count = prepare_count + operator_count
+    expected_total = n_repeat * cycle_count
+
+    if cycle_count == 0 or len(kernels) != expected_total:
+        raise _NativeCUPTIAttributionError(
+            "CUPTI timing activity count does not match the deterministic "
+            f"op-sequence ledger: got {len(kernels)}, expected {expected_total} "
+            f"({n_repeat} x ({prepare_count} prepare + {operator_count} operator))"
+        )
+
+    for repeat in range(n_repeat):
+        begin = repeat * cycle_count
+        prepare = kernels[begin:begin + prepare_count]
+        operator = kernels[begin + prepare_count:begin + cycle_count]
+        prepare_ok = (
+            not expected_prepare_sequence
+            or _select_expected_sequence(prepare, expected_prepare_sequence) is not None
+        )
+        selected = _select_expected_sequence(operator, expected_sequence)
+        if not prepare_ok or selected is None:
             continue
         samples_us.append(_kernel_span_us(selected))
 
     if not samples_us:
         reason = "CUPTI timing found no complete expected kernel sequence"
-        dumped = _dump_trace(
-            "timing",
-            trace,
-            expected_sequence=expected_sequence,
-            reason=reason,
-        )
-        suffix = f"; trace_dump={dumped}" if dumped else ""
-        raise _NativeCuptiAttributionError(
-            reason + "; "
-            + _trace_diagnostic(trace, expected_sequence=expected_sequence)
-            + suffix
+        raise _NativeCUPTIAttributionError(
+            reason + f"; kernels={len(kernels)}; "
+            f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
+            f"operator=[{_format_sequence(expected_sequence)}]"
         )
     if len(samples_us) != n_repeat:
         reason = (
             f"CUPTI timing attributed {len(samples_us)}/{n_repeat} complete "
             "expected kernel sequences"
         )
-        dumped = _dump_trace(
-            "timing",
-            trace,
-            expected_sequence=expected_sequence,
-            reason=reason,
-        )
-        suffix = f"; trace_dump={dumped}" if dumped else ""
-        raise _NativeCuptiAttributionError(
-            reason + "; "
-            + _trace_diagnostic(trace, expected_sequence=expected_sequence)
-            + suffix
+        raise _NativeCUPTIAttributionError(
+            reason + f"; kernels={len(kernels)}; "
+            f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
+            f"operator=[{_format_sequence(expected_sequence)}]"
         )
 
     _bench_meta.cupti_sampled_calls = len(samples_us)
@@ -596,12 +380,14 @@ def _native_output_suppressor():
 # NVIDIA SOL-ExecBench–style benchmark
 
 
-def bench_kernel(
+def _bench_kernel_impl(
     fn: Callable,
     args: tuple[Any, ...] = (),
     n_warmup: int = 10,
     n_repeat: int = 50,
     n_trials: int = 3,
+    *,
+    cupti_setup_error: RuntimeError | None = None,
 ) -> float:
     """Benchmark a GPU callable with CUPTI activity timing.
 
@@ -647,9 +433,8 @@ def bench_kernel(
     _bench_meta.timing = None
     _bench_meta.input_policy = None
     _bench_meta.input_policy_seed = None
-    _bench_meta.cupti_begin_tolerance_us = _cupti_window_begin_tolerance_ns() / 1000.0
-    _bench_meta.cupti_end_tolerance_us = _cupti_window_end_tolerance_ns() / 1000.0
-    _bench_meta.cupti_repeat_guard_us = native_cupti.repeat_guard_us()
+    _bench_meta.benchmark_protocol = "native-cupti-case-sequence-v1"
+    _bench_meta.cupti_case_margin_us = native_cupti.case_window_margin_us()
     _bench_meta.cupti_sampled_calls = None
     _bench_meta.cupti_expected_kernel_count = None
     _bench_meta.fallback_reason = None
@@ -696,8 +481,9 @@ def bench_kernel(
         cache.zero_()
         torch.cuda.synchronize()
 
-    # First call and warmup are outside CUPTI timing. They absorb CUDA context
-    # init, module/library lazy init, JIT/autotune, and allocator growth.
+    # First call and warmup are present in the op trace but outside every
+    # activity-index timing segment. They absorb module/library lazy init,
+    # JIT/autotune, and allocator growth.
     _prepare_iteration(0)
     _run(0)
     torch.cuda.synchronize()
@@ -709,8 +495,13 @@ def bench_kernel(
 
     trial_means: list[float] = []
     try:
+        if cupti_setup_error is not None:
+            raise cupti_setup_error
         with _native_output_suppressor():
-            expected_sequence = _discover_expected_sequence(_run, _prepare_iteration)
+            prepare_sequence, expected_sequence = _discover_expected_sequences(
+                _run,
+                _prepare_iteration,
+            )
             for _ in range(n_trials):
                 trace = native_cupti.collect_repeats(
                     _run,
@@ -718,10 +509,15 @@ def bench_kernel(
                     prepare_one=_prepare_iteration,
                 )
                 trial_means.append(
-                    _attributed_mean_latency_ms(trace, expected_sequence, n_repeat)
+                    _attributed_mean_latency_ms(
+                        trace,
+                        expected_sequence,
+                        n_repeat,
+                        prepare_sequence,
+                    )
                 )
-        _bench_meta.timing = "native-cupti"
-    except _NativeCuptiAttributionError as exc:
+        _bench_meta.timing = "native-cupti-case-sequence"
+    except _NativeCUPTIAttributionError as exc:
         # Check if cuda-events fallback is allowed
         allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
 
@@ -742,9 +538,7 @@ def bench_kernel(
             "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.", exc,
         )
         trial_means = []
-    except RuntimeError as exc:
-        if "CUPTI" not in str(exc):
-            raise
+    except native_cupti.NativeCUPTIError as exc:
         allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
         if not allow_fallback:
             raise
@@ -783,6 +577,69 @@ def bench_kernel(
 
     trial_means.sort()
     return trial_means[len(trial_means) // 2]
+
+
+def bench_kernel(
+    fn: Callable,
+    args: tuple[Any, ...] = (),
+    n_warmup: int = 10,
+    n_repeat: int = 50,
+    n_trials: int = 3,
+) -> float:
+    """Run one op segment inside a case-scoped CUPTI activity session."""
+    if not isinstance(args, tuple):
+        raise TypeError(
+            f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
+            "Check that gen_inputs() returns a tuple."
+        )
+
+    setup_error: RuntimeError | None = None
+    owns_case_session = not native_cupti.case_session_active()
+    if owns_case_session:
+        try:
+            # Standalone callers outside pytest still get a correctly scoped
+            # session. Benchmark pytest cases are opened by conftest instead.
+            native_cupti.start_case_session("standalone")
+        except native_cupti.NativeCUPTIError as exc:
+            setup_error = exc
+
+    op_index = native_cupti.begin_op() if setup_error is None else None
+    error: BaseException | None = None
+
+    try:
+        return _bench_kernel_impl(
+            fn,
+            args=args,
+            n_warmup=n_warmup,
+            n_repeat=n_repeat,
+            n_trials=n_trials,
+            cupti_setup_error=setup_error,
+        )
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        try:
+            if op_index is not None:
+                native_cupti.finish_op(
+                    op_index,
+                    status="failed" if error is not None else "passed",
+                    error=str(error) if error is not None else None,
+                )
+        except Exception:
+            if error is None:
+                raise
+            _logger.exception("Failed to close native CUPTI op ledger after op failure")
+        finally:
+            if owns_case_session and native_cupti.case_session_active():
+                try:
+                    native_cupti.stop_case_session()
+                except Exception:
+                    if error is None:
+                        raise
+                    _logger.exception(
+                        "Failed to close native CUPTI session after case failure"
+                    )
 
 
 def _get_env_metadata() -> list[str]:
@@ -887,21 +744,18 @@ class BenchmarkBase(Generic[W], ABC):
         timing = getattr(_bench_meta, "timing", None)
         if timing is not None and timing != "cupti":
             result["timing"] = timing
+        benchmark_protocol = getattr(_bench_meta, "benchmark_protocol", None)
+        if benchmark_protocol is not None:
+            result["benchmark_protocol"] = benchmark_protocol
         sampled_calls = getattr(_bench_meta, "cupti_sampled_calls", None)
         if sampled_calls is not None:
             result["cupti_sampled_calls"] = sampled_calls
         expected_kernel_count = getattr(_bench_meta, "cupti_expected_kernel_count", None)
         if expected_kernel_count is not None:
             result["cupti_expected_kernel_count"] = expected_kernel_count
-        begin_tolerance = getattr(_bench_meta, "cupti_begin_tolerance_us", None)
-        if begin_tolerance is not None:
-            result["cupti_begin_tolerance_us"] = begin_tolerance
-        end_tolerance = getattr(_bench_meta, "cupti_end_tolerance_us", None)
-        if end_tolerance is not None:
-            result["cupti_end_tolerance_us"] = end_tolerance
-        repeat_guard = getattr(_bench_meta, "cupti_repeat_guard_us", None)
-        if repeat_guard is not None:
-            result["cupti_repeat_guard_us"] = repeat_guard
+        case_margin = getattr(_bench_meta, "cupti_case_margin_us", None)
+        if case_margin is not None:
+            result["cupti_case_margin_us"] = case_margin
         input_policy = getattr(_bench_meta, "input_policy", None)
         if input_policy is not None:
             result["input_policy"] = input_policy
