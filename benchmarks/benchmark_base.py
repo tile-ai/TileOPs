@@ -62,6 +62,18 @@ class _CuptiProjectionError(Exception):
 # so its device event cannot fall inside a window regardless of how the
 # projection behaves; kernels the timed call launches do.
 _KERNEL_REGION = "tileops_bench_kernel"
+_CUPTI_DUMMY_REGION = "tileops_bench_dummy"
+
+# CUPTI 28 may return bad timestamps for a growing prefix of kernel activities
+# after Kineto re-registers its timestamp callback for each profiler session.
+# Sacrifice a dynamically sized prefix of unmeasured calls so the annotated
+# measurement region remains complete. The learned count is retained on the
+# benchmark thread across bench_kernel() calls because the faulty CUPTI state
+# survives across profiler sessions in the same process.
+_CUPTI_DUMMY_INITIAL = 1
+_CUPTI_DUMMY_SAFETY_MARGIN = 2
+_CUPTI_DUMMY_MAX = 100
+_CUPTI_PROJECTION_RETRIES = 3
 
 
 def _sum_kernel_time_us(kineto_results):
@@ -75,20 +87,26 @@ def _sum_kernel_time_us(kineto_results):
     is ~16x slower (~130ms of Python parsing/tree-building) for large traces.
 
     Returns:
-        ``(total_us, n_regions)``: summed kernel time in microseconds and the
-        number of annotation windows. The caller checks ``n_regions ==
-        n_repeat`` to confirm the scope projected on every iteration.
+        ``(total_us, repeat_indices)``: summed kernel time in microseconds and
+        the repeat indices whose annotation windows were projected.  Keeping
+        the indices makes a projection failure actionable instead of only
+        reporting an aggregate window count.
     """
     import bisect
 
-    windows: list[tuple[int, int]] = []
+    windows: list[tuple[int, int, Optional[int]]] = []
     kernels: list[tuple[int, int]] = []  # (start_ns, duration_ns)
     for evt in kineto_results.events():
         if evt.device_type() != DeviceType.CUDA:
             continue
         if evt.is_user_annotation():
-            if evt.name() == _KERNEL_REGION:
-                windows.append((evt.start_ns(), evt.end_ns()))
+            name = evt.name()
+            if name == _KERNEL_REGION or name.startswith(f"{_KERNEL_REGION}:"):
+                repeat_index = None
+                if name != _KERNEL_REGION:
+                    with contextlib.suppress(ValueError):
+                        repeat_index = int(name.rsplit(":", 1)[1])
+                windows.append((evt.start_ns(), evt.end_ns(), repeat_index))
             continue
         kernels.append((evt.start_ns(), evt.duration_ns()))
 
@@ -102,7 +120,38 @@ def _sum_kernel_time_us(kineto_results):
         idx = bisect.bisect_right(starts, start_ns) - 1
         if idx >= 0 and start_ns < ends[idx]:
             total_us += dur_ns / 1000.0
-    return total_us, len(windows)
+    return total_us, [w[2] for w in windows]
+
+
+def _projected_region_indices(kineto_results, region: str) -> list[int]:
+    """Return indices of projected GPU annotations for *region*."""
+    prefix = f"{region}:"
+    projected = []
+    for evt in kineto_results.events():
+        if evt.device_type() != DeviceType.CUDA or not evt.is_user_annotation():
+            continue
+        name = evt.name()
+        if not name.startswith(prefix):
+            continue
+        with contextlib.suppress(ValueError):
+            projected.append(int(name.rsplit(":", 1)[1]))
+    return projected
+
+
+def _next_dummy_count(
+    dummy_count: int,
+    projected_dummy_indices: list[int],
+    projected_repeat_indices: list[int],
+    n_repeat: int,
+) -> int:
+    """Size the next sacrificial prefix from this profiler's missing regions."""
+    projected_dummy = len(set(projected_dummy_indices))
+    projected_repeat = len(set(projected_repeat_indices))
+    missing_prefix = max(0, dummy_count - projected_dummy) + max(0, n_repeat - projected_repeat)
+    return min(
+        _CUPTI_DUMMY_MAX,
+        max(_CUPTI_DUMMY_INITIAL, missing_prefix + _CUPTI_DUMMY_SAFETY_MARGIN),
+    )
 
 
 # L2 cache flush buffer (sized to actual L2, allocated lazily)
@@ -187,6 +236,16 @@ def bench_kernel(
             "Check that gen_inputs() returns a tuple."
         )
 
+    # Thread-local state survives across benchmark calls in the same pytest
+    # process, so clear the previous case's fallback diagnostic up front.
+    _bench_meta.fallback_error = None
+    _bench_meta.cupti_dummy_calls = []
+    _bench_meta.cupti_corrupted_prefixes = []
+    _bench_meta.cupti_projection_retries = 0
+    _bench_meta.cupti_dummy_history = []
+    if not hasattr(_bench_meta, "cupti_dummy_count"):
+        _bench_meta.cupti_dummy_count = _CUPTI_DUMMY_INITIAL
+
     cache = _get_l2_flush_cache()
     has_args = len(args) > 0
 
@@ -236,43 +295,97 @@ def bench_kernel(
     trial_means: list[float] = []
     try:
         with _native_output_suppressor():
-            for _ in range(n_trials):
-                with torch.profiler.profile(
-                    # CPU activity is required for Kineto to project the
-                    # annotation window; it never adds device time.
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                ) as profiler:
-                    for i in range(n_repeat):
-                        cache.zero_()
-                        torch.cuda.synchronize()
-                        with torch.profiler.record_function(_KERNEL_REGION):
-                            _run(i)
-                        torch.cuda.synchronize()
-                total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
-                # Untrustworthy trace → CUDA-events fallback; genuine CUDA
-                # errors and OOM propagate.
-                if n_regions != n_repeat:
-                    # Count actual CUDA kernels for diagnostics
+            for trial_index in range(n_trials):
+                for attempt in range(_CUPTI_PROJECTION_RETRIES + 1):
+                    dummy_count = _bench_meta.cupti_dummy_count
+                    with torch.profiler.profile(
+                        # CPU activity is required for Kineto to project the
+                        # annotation window; it never adds device time.
+                        activities=[
+                            torch.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.CUDA,
+                        ],
+                    ) as profiler:
+                        # These annotated calls deliberately absorb the bad
+                        # activity prefix. They are excluded from total_us.
+                        for i in range(dummy_count):
+                            cache.zero_()
+                            torch.cuda.synchronize()
+                            with torch.profiler.record_function(f"{_CUPTI_DUMMY_REGION}:{i}"):
+                                _run(i)
+                            torch.cuda.synchronize()
+                        for i in range(n_repeat):
+                            cache.zero_()
+                            torch.cuda.synchronize()
+                            with torch.profiler.record_function(f"{_KERNEL_REGION}:{i}"):
+                                _run(i)
+                            torch.cuda.synchronize()
+
+                    kineto_results = profiler.profiler.kineto_results
+                    total_us, repeat_indices = _sum_kernel_time_us(kineto_results)
+                    projected = [i for i in repeat_indices if i is not None]
+                    dummy_indices = _projected_region_indices(kineto_results, _CUPTI_DUMMY_REGION)
+                    _bench_meta.cupti_dummy_count = _next_dummy_count(
+                        dummy_count, dummy_indices, projected, n_repeat
+                    )
+
+                    missing = sorted(set(range(n_repeat)) - set(projected))
+                    missing_dummy = max(0, dummy_count - len(set(dummy_indices)))
+                    corrupted_prefix = missing_dummy + len(missing)
+                    _bench_meta.cupti_corrupted_prefixes.append(corrupted_prefix)
+                    duplicate = sorted({i for i in projected if projected.count(i) > 1})
+                    projection_complete = (
+                        not missing and not duplicate and len(projected) == n_repeat
+                    )
+                    _bench_meta.cupti_dummy_history.append(
+                        f"t{trial_index + 1}a{attempt + 1}:"
+                        f"dummy={dummy_count},corrupt={corrupted_prefix},"
+                        f"timed={len(projected)}/{n_repeat},"
+                        f"ok={int(projection_complete)}"
+                    )
+                    if projection_complete:
+                        _bench_meta.cupti_dummy_calls.append(dummy_count)
+                        trial_means.append((total_us / n_repeat) * 1e-3)
+                        break
+
+                    # Untrustworthy trace: retry with the newly learned dummy
+                    # prefix before falling back to CUDA events.
                     n_cuda_kernels = sum(
-                        1 for evt in profiler.profiler.kineto_results.events()
+                        1
+                        for evt in kineto_results.events()
                         if evt.device_type() == DeviceType.CUDA and not evt.is_user_annotation()
                     )
                     _logger.debug(
-                        "CUPTI projection mismatch: %d annotation windows vs %d repeats "
-                        "(%d CUDA kernels captured). This may indicate torch.profiler "
-                        "instability in the current environment. Falling back to CUDA events.",
-                        n_regions, n_repeat, n_cuda_kernels,
+                        "CUPTI projection mismatch on attempt %d/%d: "
+                        "%d/%d annotation windows, %d dummies, next=%d "
+                        "(%d CUDA kernels captured)",
+                        attempt + 1,
+                        _CUPTI_PROJECTION_RETRIES + 1,
+                        len(projected),
+                        n_repeat,
+                        dummy_count,
+                        _bench_meta.cupti_dummy_count,
+                        n_cuda_kernels,
                     )
-                    raise _CuptiProjectionError(
-                        f"{n_regions}/{n_repeat} annotation windows projected, "
-                        f"{n_cuda_kernels} CUDA kernels captured"
-                    )
-                trial_means.append((total_us / n_repeat) * 1e-3)
+                    if attempt == _CUPTI_PROJECTION_RETRIES:
+                        details = [
+                            f"trial {trial_index + 1}/{n_trials}",
+                            f"attempt {attempt + 1}/{_CUPTI_PROJECTION_RETRIES + 1}",
+                            f"{len(projected)}/{n_repeat} annotation windows projected",
+                            f"dummy calls={dummy_count}",
+                            f"next dummy calls={_bench_meta.cupti_dummy_count}",
+                            f"missing repeats (1-based)={[i + 1 for i in missing]}",
+                        ]
+                        if duplicate:
+                            details.append(
+                                f"duplicate repeats (1-based)={[i + 1 for i in duplicate]}"
+                            )
+                        details.append(f"{n_cuda_kernels} CUDA kernels captured")
+                        raise _CuptiProjectionError(", ".join(details))
+                    _bench_meta.cupti_projection_retries += 1
         _bench_meta.timing = "cupti"
     except _CuptiProjectionError as exc:
+        _bench_meta.fallback_error = str(exc)
         # Check if cuda-events fallback is allowed
         allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1") == "1"
 
@@ -288,7 +401,8 @@ def bench_kernel(
             "CUPTI projection failed (%s); falling back to CUDA-events "
             "timing, which includes ~50-60us launch overhead per call. "
             "Latency will be inflated by ~6-7x for fast kernels (<10us). "
-            "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.", exc,
+            "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.",
+            exc,
         )
         trial_means = []
 
@@ -423,6 +537,20 @@ class BenchmarkBase(Generic[W], ABC):
         timing = getattr(_bench_meta, "timing", None)
         if timing is not None and timing != "cupti":
             result["timing"] = timing
+        fallback_error = getattr(_bench_meta, "fallback_error", None)
+        if fallback_error is not None:
+            result["fallback_error"] = fallback_error
+        dummy_calls = getattr(_bench_meta, "cupti_dummy_calls", [])
+        if dummy_calls:
+            result["cupti_dummy_calls"] = max(dummy_calls)
+        corrupted_prefixes = getattr(_bench_meta, "cupti_corrupted_prefixes", [])
+        if corrupted_prefixes:
+            result["cupti_corrupted_prefix"] = max(corrupted_prefixes)
+        projection_retries = getattr(_bench_meta, "cupti_projection_retries", 0)
+        result["cupti_projection_retries"] = projection_retries
+        dummy_history = getattr(_bench_meta, "cupti_dummy_history", [])
+        if dummy_history:
+            result["cupti_dummy_history"] = ";".join(dummy_history)
         if getattr(_bench_meta, "inputs_cloned", True) is False:
             result["inputs_cloned"] = False
         flops = self.calculate_flops()
@@ -524,7 +652,6 @@ class ManifestBenchmark(BenchmarkBase[Any]):
         bm = ManifestBenchmark("SumFwdOp", op, workload)
         result = bm.profile(op, *inputs)
     """
-
     def __init__(
         self,
         op_name: str,
@@ -597,6 +724,7 @@ class BenchmarkReport:
     All methods are static — use as BenchmarkReport.record(...).
     Call clear() at session start, dump() at session end.
     """
+
     _records: dict = {}
 
     @staticmethod
