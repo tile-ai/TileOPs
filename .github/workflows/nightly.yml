@@ -61,10 +61,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner"
+            exit 1
+          fi
+
           # The benchmark needs exclusive access to one card. A second visible
           # GPU means the container is misprovisioned, and work landing on it
           # perturbs these timings.
-          gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
+          # Count non-blank lines rather than newlines: output without a
+          # trailing newline undercounts, which would let a second card pass.
+          if ! gpu_indices=$(nvidia-smi --query-gpu=index --format=csv,noheader); then
+            echo "::error::nvidia-smi failed to report GPU indices"
+            exit 1
+          fi
+          gpu_count=$(printf '%s\n' "${gpu_indices}" | grep -c '[^[:space:]]' || true)
           if [ "${gpu_count}" -ne 1 ]; then
             echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
             nvidia-smi --query-gpu=index,name --format=csv,noheader
@@ -399,9 +410,20 @@ jobs:
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
 
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner"
+            exit 1
+          fi
+
           # This runner is provisioned with exactly one card; more than one
           # means the container is misprovisioned.
-          gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
+          # Count non-blank lines rather than newlines: output without a
+          # trailing newline undercounts, which would let a second card pass.
+          if ! gpu_indices=$(nvidia-smi --query-gpu=index --format=csv,noheader); then
+            echo "::error::nvidia-smi failed to report GPU indices"
+            exit 1
+          fi
+          gpu_count=$(printf '%s\n' "${gpu_indices}" | grep -c '[^[:space:]]' || true)
           if [ "${gpu_count}" -ne 1 ]; then
             echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
             nvidia-smi --query-gpu=index,name --format=csv,noheader
