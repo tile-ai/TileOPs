@@ -41,6 +41,10 @@ An op that probes the device in `__init__` states, in code, that it knows where 
 
 Choosing a slot by the *semantics* of the call stays with the op: `AvgPool2dFwdOp._use_spatial_fast_path` reads `ceil_mode` / `count_include_pad` to pick the general or the spatial slot, and that is the op's own contract. Choosing among *implementations* of one slot is not — that belongs with the implementations being considered.
 
+Where one slot has several implementations, each answers for itself. `Kernel.applies(call)` states the region an implementation serves — positively, never by excluding a sibling, and never by architecture, which `supported_archs` already answers. `Op.select_kernel_key` returns the one that applies; the implementation marked `Kernel.general` is used only where no specialised one is. Key order decides nothing: no applicable implementation is an error, and two specialised ones claiming one call is an ambiguity error rather than a silent preference. A `kernel_map=` replacement is asked the same question as the class it replaced, so a specialisation can be swapped without the general implementation naming it.
+
+That rule is implementation choice within one slot and nothing else. Choosing the slot sits above it; dtype specialization (`Kernel.specialize`) sits beside it. Neither is expressed through it.
+
 `self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
 
 `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes. It is the only dtype gate; an op does not compare an incoming tensor against a dtype it was constructed with, because there is no such dtype. Roofline timing and formula semantics are defined in [roofline.md](roofline.md). See [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
