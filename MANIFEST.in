@@ -1,0 +1,10 @@
+# setuptools-scm includes every git-tracked file in the sdist by default;
+# prune development-only trees so the sdist ships only what a build needs.
+prune tests
+prune benchmarks
+prune docs
+prune assets
+prune workloads
+prune .github
+prune .claude
+prune .foundry

@@ -55,13 +55,41 @@ jobs:
         run: bash scripts/ci/install_tileops.sh
         shell: bash
 
-      - name: Run benchmark ops
-        id: benchmark_tests
-        continue-on-error: true
+      # Keep this out of the benchmark step below: that step sets
+      # continue-on-error, which would swallow a failure here.
+      - name: Validate GPU exclusivity and clock
         run: |
           set -euo pipefail
 
-          # Validate GPU frequency
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner"
+            exit 1
+          fi
+
+          # The benchmark needs exclusive access to one card. A second visible
+          # GPU means the container is misprovisioned, and work landing on it
+          # perturbs these timings.
+          # Count non-blank rows rather than newlines: output without a trailing
+          # newline undercounts, which would let a second card pass. Counted in
+          # the shell so gpu_count is always a number — a pipeline here could
+          # fail into an empty value, and the comparison below would then error
+          # out inside an `if`, where set -e does not fire, and pass the guard.
+          if ! gpu_indices=$(nvidia-smi --query-gpu=index --format=csv,noheader); then
+            echo "::error::nvidia-smi failed to report GPU indices"
+            exit 1
+          fi
+          gpu_count=0
+          while IFS= read -r gpu_row; do
+            if [ -n "${gpu_row//[[:space:]]/}" ]; then
+              gpu_count=$((gpu_count + 1))
+            fi
+          done <<< "${gpu_indices}"
+          if [ "${gpu_count}" -ne 1 ]; then
+            echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
+            nvidia-smi --query-gpu=index,name --format=csv,noheader
+            exit 1
+          fi
+
           TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do
@@ -69,11 +97,18 @@ jobs:
             echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
             if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
             if [ "${i}" -eq "${RETRIES}" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz, got ${gpu_clock} MHz."
               exit 1
             fi
             sleep 2
           done
+        shell: bash
+
+      - name: Run benchmark ops
+        id: benchmark_tests
+        continue-on-error: true
+        run: |
+          set -euo pipefail
 
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Runtime cache env:"
@@ -366,6 +401,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # setuptools-scm needs full history; a shallow clone yields the fallback.
+          fetch-depth: 0
 
       - name: Verify nightly runner environment
         run: scripts/ci/verify_nightly_runner.sh
@@ -379,20 +417,6 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
-
-          # Validate GPU frequency
-          TARGET_CLOCK_MHZ=1500
-          RETRIES=5
-          for i in $(seq 1 "${RETRIES}"); do
-            gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
-            echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
-            if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
-            if [ "${i}" -eq "${RETRIES}" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
-              exit 1
-            fi
-            sleep 2
-          done
 
           python3 -m pip install -c constraints.txt build pytest pytest-timeout
 

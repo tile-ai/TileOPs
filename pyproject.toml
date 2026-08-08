@@ -1,6 +1,6 @@
 [project]
 name = "tileops"
-version = "0.0.1.dev2"
+dynamic = ["version"]
 description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
@@ -17,13 +17,13 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["llm", "inference", "gpu", "kernel", "tiling"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -54,15 +54,25 @@ bench = [
 ]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# setuptools>=77 is the floor for SPDX `license = "MIT"` expressions.
+requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+# Used when there is no git metadata (sdist tarballs, vendored copies). It must
+# not carry a `.devN` suffix: setuptools-scm derives the dev distance from the
+# commit count, and errors out rather than accept a pre-set one.
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.setuptools.package-data]
-tileops = ["kernels/moe/_atomic_helper.h", "manifest/*.yaml"]
+# Kernel headers and YAML data are opened at run time by path relative to
+# __file__, so all of them must ship. Stated by extension, not by name, so a new
+# resource is covered on arrival. Enforced by scripts/ci/check_dist_contents.py.
+tileops = ["**/*.h", "**/*.yaml"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
@@ -102,23 +112,34 @@ select = [
     "RUF022",
     # pydoclint: a documented parameter the signature does not have
     "DOC102",
+    # flake8-tidy-imports: banned APIs only. Selected as the exact rule, not the
+    # whole TID family, because TID252 (relative imports) has standing violations.
+    "TID251",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]
 ignore = [
-    # ambiguous name
+    # E741 (ambiguous variable name): single-letter tensor-dimension names
+    # (l, I) mirror the math notation in kernel signatures.
     "E741",
-    # line too long (allow some flexibility)
+    # E501 (line too long): line-length is already capped at 100 by the
+    # formatter; long kernel launch expressions may exceed it deliberately.
     "E501",
-    # key in dict.keys()
+    # SIM118 (key in dict.keys()): explicit .keys() is kept where it clarifies
+    # that only names, not values, are consumed.
     "SIM118",
-    # memory leaks
+    # B019 (lru_cache on methods can leak memory): kernel builders are cached
+    # by design — the cache holding compiled kernels alive is the point.
     "B019",
-    # No such file or directory
+    # E902 (I/O error while linting a path): environment noise (broken
+    # symlinks, transient files), not a property of the source.
     "E902",
-    # pep8-naming: allow 'import as T'
+    # N812 (lowercase imported as non-lowercase): the TileLang idiom is
+    # `import tilelang.language as T`.
     "N812",
-    # pep8-naming: ignore naming convention violations (common in ML/kernel code)
+    # N801/N802/N803/N806 (PEP 8 naming): kernel code names classes, functions,
+    # arguments, and locals after math symbols and hardware terms (Q, K, V,
+    # block_M), which are case-significant.
     "N801",  # Class name should use CapWords convention
     "N802",  # Function name should be lowercase
     "N803",  # Argument name should be lowercase
@@ -127,6 +148,11 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["tileops"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Resolved through the import graph, so an alias other than the usual `T` is
+# caught too.
+"tilelang.language.Buffer".msg = "deprecated; use T.Tensor(shape, dtype)"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]

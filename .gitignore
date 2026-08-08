@@ -71,6 +71,7 @@ docs/plans/
 .foundry/runs/
 .foundry/migrations/
 .foundry/plan/
+.foundry/specs/
 .foundry/config.local.json
 
 CLAUDE.local.md
