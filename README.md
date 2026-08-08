@@ -49,7 +49,7 @@ TileOPs is under active development and is installed from source; PyPI releases 
 - PyTorch >= 2.1, < 2.11 (CI validates 2.10)
 - CUDA Toolkit 12.x
 - NVIDIA GPU: **Hopper** (SM_90)
-- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11)
+- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11 at main snapshot `afcebed1`)
 
 ### From source
 
@@ -68,6 +68,22 @@ Verify:
 ```bash
 python -m pytest tests/ -q    # requires a CUDA GPU
 ```
+
+### Docker (dev image)
+
+A prebuilt development image ships the full stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and all benchmark baselines (FlashAttention-2/3, vLLM, flash-linear-attention) preinstalled:
+
+```bash
+docker run --rm -it --gpus all \
+  -v "$(pwd)":/workspace -w /workspace \
+  ghcr.io/tile-ai/tileops-runner:afcebed1-torch2.10-dev
+
+# inside the container
+pip install -e . --no-deps
+python -m pytest tests/ -q
+```
+
+The `-dev` tag tracks the TileLang commit CI validates (`<tilelang-sha>-torch2.10-dev`); pull the tag matching the Prerequisites line above.
 
 ## Quick Start
 

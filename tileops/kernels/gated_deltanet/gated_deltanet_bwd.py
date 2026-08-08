@@ -18,6 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.v_tile import resolve_block_v
 
 from .gated_deltanet_fwd import _LOG2E
 
@@ -367,9 +368,7 @@ def _dh_recurrence_bwd_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
-    BV = dim_v if block_v <= 0 else block_v
-    if dim_v % BV != 0:
-        raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({BV})")
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -516,9 +515,7 @@ def _reduce_dh_recurrence_partials_tl(
     the full backward hot path.
     """
     block_C = chunk_size
-    BV = dim_v if block_v <= 0 else block_v
-    if dim_v % BV != 0:
-        raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({BV})")
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -637,9 +634,7 @@ def _dh_correction_from_carry_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
-    BV = dim_v if block_v <= 0 else block_v
-    if dim_v % BV != 0:
-        raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({BV})")
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -761,9 +756,7 @@ def _dh_segment_summary_tl(
     if num_chunks % segment_chunks != 0:
         raise ValueError("num_chunks must be divisible by segment_chunks")
     num_segments = num_chunks // segment_chunks
-    BV = dim_v if block_v <= 0 else block_v
-    if dim_v % BV != 0:
-        raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({BV})")
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -844,9 +837,7 @@ def _dh_segment_boundary_scan_tl(
     if num_chunks % segment_chunks != 0:
         raise ValueError("num_chunks must be divisible by segment_chunks")
     num_segments = num_chunks // segment_chunks
-    BV = dim_v if block_v <= 0 else block_v
-    if dim_v % BV != 0:
-        raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({BV})")
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -914,9 +905,7 @@ def _dh_segment_local_carry_tl(
     if num_chunks % segment_chunks != 0:
         raise ValueError("num_chunks must be divisible by segment_chunks")
     num_segments = num_chunks // segment_chunks
-    BV = dim_v if block_v <= 0 else block_v
-    if dim_v % BV != 0:
-        raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({BV})")
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -1033,7 +1022,7 @@ def _gated_deltanet_bwd_wrapped_kernel(
         dim_v,
         dtype,
     )(parallel_threads)
-    recurrence_bv = dim_v if recurrence_block_v <= 0 else recurrence_block_v
+    recurrence_bv = resolve_block_v(dim_v, recurrence_block_v)
     num_v_tiles = dim_v // recurrence_bv
     reduce_dh_partials_fn = (
         _reduce_dh_recurrence_partials_tl(

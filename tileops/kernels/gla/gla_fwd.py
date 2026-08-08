@@ -7,6 +7,7 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.v_tile import GEMM_MIN_N
 
 LOG2_E = 1.44269504
 
@@ -101,6 +102,11 @@ def _gla_fwd_h_kernel(
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
     dim_v_part = dim_v // num_v_partitions
+    if dim_v_part < GEMM_MIN_N:
+        raise ValueError(
+            f"dim_v ({dim_v}) split across num_v_partitions "
+            f"({num_v_partitions}) gives a {dim_v_part}-column T.gemm B "
+            f"operand, below the minimum N extent ({GEMM_MIN_N})")
     dim_k_part = dim_k // num_k_partitions
     num_kv = num_k_partitions * num_v_partitions
 

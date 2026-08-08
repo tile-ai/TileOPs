@@ -16,6 +16,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.v_tile import resolve_block_v
 
 from .gated_deltanet_fwd import (
     _LOG2E,
@@ -987,7 +988,7 @@ def _prefill_h_recurrence_bthd_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
-    BV = dim_v if block_v <= 0 else block_v
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -1165,7 +1166,7 @@ def _prefill_group_transition_summary_bthd_tl(
     num_chunks = seq_len // block_C
     num_groups = num_chunks // group_chunks
     dim_aug = dim_v + dim_k
-    BV = block_v
+    BV = resolve_block_v(dim_aug, block_v)
     num_v_tiles = dim_aug // BV
 
     @tilelang.jit(
@@ -1274,7 +1275,7 @@ def _prefill_dense_group_start_scan_bthd_tl(
 ):
     accum_dtype = "float32"
     dim_aug = dim_v + dim_k
-    BV = block_v
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -1338,7 +1339,7 @@ def _prefill_grouped_replay_bthd_tl(
     block_C = chunk_size
     num_chunks = seq_len // block_C
     num_groups = num_chunks // group_chunks
-    BV = block_v
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -1717,13 +1718,9 @@ class GatedDeltaNetPrefillFwdKernel(Kernel):
             }
 
         if self.chunk_size >= 128 and 1 < streams <= 8:
-            h_block_v = 8
+            h_block_v = 16
             h_num_stages = 2
             h_threads = 64
-        elif self.chunk_size >= 64 and streams <= 4:
-            h_block_v = 8
-            h_num_stages = 2
-            h_threads = 128
         elif self.chunk_size >= 64 and streams <= 48:
             h_block_v = 16
             h_num_stages = 2
