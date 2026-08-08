@@ -14,7 +14,7 @@ from tileops.kernels.online_softmax import (
     make_rescale,
 )
 
-from .call_spec import WS_ARCH, square_ws_prefill_region
+from .call_spec import ATTENTION_DTYPES, WS_ARCH, square_ws_prefill_region
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = [
@@ -841,7 +841,7 @@ class GQAFwdWsPersistentCausalKernel(PackedPrefillKernel):
     def _validate_spec(self) -> None:
         if not self.is_causal:
             raise ValueError("GQAFwdWsPersistentCausalKernel only supports causal forward.")
-        if not self._is_attention_dtype(self.dtype):
+        if self.dtype not in ATTENTION_DTYPES:
             raise ValueError("GQAFwdWsPersistentCausalKernel currently supports float16/bfloat16 only.")
         if self.max_seqlen_q != self.max_seqlen_kv:
             raise ValueError(

@@ -20,7 +20,12 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
-from .call_spec import WS_ARCH, causal_ws_prefill_region, square_ws_prefill_region
+from .call_spec import (
+    ATTENTION_DTYPES,
+    WS_ARCH,
+    causal_ws_prefill_region,
+    square_ws_prefill_region,
+)
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAPrefillFwdWsPersistentCausalKernel"]
@@ -378,7 +383,7 @@ class GQAPrefillFwdWsPersistentCausalKernel(PackedPrefillKernel):
             raise ValueError("GQAPrefillFwdWsPersistentCausalKernel only supports causal prefill.")
         if self.dim != 128:
             raise ValueError("GQAPrefillFwdWsPersistentCausalKernel currently requires dim == 128.")
-        if not self._is_attention_dtype(self.dtype):
+        if self.dtype not in ATTENTION_DTYPES:
             raise ValueError(
                 "GQAPrefillFwdWsPersistentCausalKernel currently supports float16 and bfloat16 only."
             )

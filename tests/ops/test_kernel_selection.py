@@ -232,13 +232,6 @@ class _Everything(Kernel):
         return None
 
 
-class _AlsoEverything(Kernel):
-    """A second one, so the two collide."""
-
-    def forward(self, *args: object, **kwargs: object) -> None:
-        return None
-
-
 class _General(Kernel):
     """The implementation behind the specialised ones."""
 
@@ -263,7 +256,7 @@ class _NeverApplies(Kernel):
 def test_two_implementations_claiming_one_call_is_an_error() -> None:
     """Overlap is reported, never resolved by the order the keys are written in."""
     op = _prefill_op()
-    op.kernel_map = {"a": _Everything, "b": _AlsoEverything}
+    op.kernel_map = {"a": _Everything, "b": _Everything}
     call = op.attention_call(is_fp8=False, is_uniform=True)
 
     with pytest.raises(ValueError, match="dispatch is ambiguous"):
@@ -297,7 +290,14 @@ def test_a_replacement_is_never_silently_stood_in_for() -> None:
 
 @pytest.mark.smoke
 def test_one_replacement_winning_while_another_is_refused_is_the_callers_own_doing() -> None:
-    """Both candidates are the caller's, so no shipped kernel stands in for either."""
+    """Both candidates are the caller's, so no shipped kernel stands in for either.
+
+    The only guard on the second half of that rule. The test above pins that a
+    refused replacement is not stood in for; this one pins that the refusal is
+    about *standing in*, not about the refusal itself — weakening the rule to
+    "any refused replacement is an error" passes every other test in the repo
+    and fails only here.
+    """
     op = _prefill_op()
     op.kernel_map = {"a": _NeverApplies, "b": _Everything}
     op._overridden_keys = frozenset({"a", "b"})

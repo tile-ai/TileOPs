@@ -1,22 +1,8 @@
 """Which dispatch key an attention call takes.
 
-Two steps, and nothing else.
-
-**Semantic slot choice.** ``backend`` is a user-visible attention parameter —
-``auto``, ``dense``, ``varlen``, ``fp8``, ``sliding_window`` — naming an
-algorithm or precision variant. A request that contradicts the knob is refused
-here, with a message naming the contradiction, because the caller asked for
-something the request cannot be.
-
-**Capability filtering.** Every implementation of a dispatch key answers
-``supports(call)`` for itself: the architecture from ``supported_archs``, the
-region from ``applies``. Regions of one key are disjoint, so no candidate is
-preferred over another and no order is consulted. Zero survivors is an error;
-so is more than one.
-
-Nothing here builds or calls a kernel. Every implementation of a key shares one
-constructor and one call, so the op does both directly and this module never
-grows a per-implementation adapter.
+The keys implementing each attention slot, and the check that a request does not
+contradict the user-visible ``backend`` parameter. Choosing among the keys is
+``Op.select_kernel_key``; see docs/design/ops-design.md § Kernel selection.
 """
 
 

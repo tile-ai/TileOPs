@@ -1,17 +1,8 @@
 """The facts of one attention call, and the regions kernels answer for.
 
-An attention kernel class answers two questions about a call before it is built:
-whether the device can run it (``supported_archs``) and whether the call falls in
-the region the implementation serves. The second question needs the call, so the
-record describing a call lives here, next to the kernels that read it, rather
-than in the op layer that fills it in.
-
-The region helpers below are shared by more than one kernel class. Each states
-positively what its owner serves; a general implementation says so with
-``Kernel.general`` rather than by excluding the specialised ones, and
-architecture is not part of a region because ``supported_archs`` already answers
-it. Keeping the shared geometry in one place stops two readings of one boundary
-from drifting apart.
+``AttentionCall`` is what an op states about a call; the region helpers are the
+predicates kernel classes answer ``applies`` with, kept here because more than
+one class reads each. See docs/design/ops-design.md § Kernel selection.
 """
 
 import dataclasses

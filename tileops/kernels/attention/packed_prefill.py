@@ -1,19 +1,10 @@
 """The packed GQA prefill slot: one constructor, one call, one result.
 
-Every implementation of packed prefill — dense, warp-specialized causal, H200
-square causal, variable-length, sliding-window, FP8 — is built from the same
-semantic facts and called the same way:
-
     kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale) -> o
 
-Tensors are packed THD throughout. An implementation that computes on a BSHD
-view takes that view itself; one that reads descale tensors expands them itself;
-one that produces a log-sum-exp keeps it. None of that reaches the op, which is
-why op-side selection needs no per-implementation adapter.
-
-Fields an implementation does not use are still accepted, because they are facts
-about the call rather than about the implementation. What differs between
-implementations is only the region each serves, which each states in ``applies``.
+Tensors are packed THD throughout, and an implementation accepts the whole spec
+whether or not it reads every field. See docs/design/ops-design.md § Kernel
+selection.
 """
 
 from typing import Optional, Tuple
@@ -21,7 +12,6 @@ from typing import Optional, Tuple
 import torch
 
 from ..kernel_base import Kernel
-from .call_spec import ATTENTION_DTYPES
 
 __all__ = ["PackedPrefillKernel"]
 
@@ -105,7 +95,3 @@ class PackedPrefillKernel(Kernel):
     ) -> torch.Tensor:
         """Run packed prefill and return the semantic output only."""
         raise NotImplementedError
-
-    @staticmethod
-    def _is_attention_dtype(dtype: Optional[torch.dtype]) -> bool:
-        return dtype in ATTENTION_DTYPES

@@ -1660,19 +1660,17 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     def applies(cls, call) -> bool:
         return bool(call.fuse_rope) and call.cache_dtype == call.dtype
 
-    def _validate_spec(self) -> None:
-        if self.rotary_dim is None or self.max_position is None:
-            raise ValueError(
-                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires max_position and rotary_dim")
-        if self.rotary_dim <= 0 or self.rotary_dim % 2 != 0 or self.rotary_dim > self.dim:
-            raise ValueError("rotary_dim must be positive, even, and <= dim")
-
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune both launches: the append pass is part of this implementation."""
         super().autotune(warmup=warmup, rep=rep)
         self._append.autotune(warmup=warmup, rep=rep)
 
     def _build_program(self) -> None:
+        if self.rotary_dim is None or self.max_position is None:
+            raise ValueError(
+                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires max_position and rotary_dim")
+        if self.rotary_dim <= 0 or self.rotary_dim % 2 != 0 or self.rotary_dim > self.dim:
+            raise ValueError("rotary_dim must be positive, even, and <= dim")
         self._append = GQAPrefillPagedWithKVCacheRopeAppendKernel(
             batch=self.batch,
             heads_kv=self.heads_kv,

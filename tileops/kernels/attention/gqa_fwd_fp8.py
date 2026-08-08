@@ -11,7 +11,7 @@ from tileops.kernels.online_softmax import (
     make_online_softmax_with_score_scale,
 )
 
-from .call_spec import uses_sliding_window
+from .call_spec import ATTENTION_DTYPES, uses_sliding_window
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel"]
@@ -762,7 +762,7 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires "
                 "max_seqlen_q % 128 == 0."
             )
-        if not self._is_attention_dtype(self.dtype):
+        if self.dtype not in ATTENTION_DTYPES:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel outputs float16 or bfloat16."
             )

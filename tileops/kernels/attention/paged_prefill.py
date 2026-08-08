@@ -1,16 +1,12 @@
 """The paged GQA prefill slot: one constructor, one call, one result.
 
-Every implementation — plain cache, FP8 cache, fused rotary position embedding
-(RoPE) — is built from the same semantic facts and called the same way:
-
     kernel(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale,
            cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q,
            cos_table, sin_table) -> o
 
-Arguments an implementation does not read are facts about the call rather than
-about the implementation, so they are still accepted. A fused-RoPE
-implementation runs its cache-append pass itself: appending and attending are
-two launches of one semantic operation, not two candidates to choose between.
+An implementation accepts the whole spec whether or not it reads every field,
+and one that appends to the cache does so itself. See
+docs/design/ops-design.md § Kernel selection.
 """
 
 from typing import Optional
@@ -57,12 +53,8 @@ class PagedPrefillKernel(Kernel):
         self.softcap = softcap
         self.max_position = max_position
         self.rotary_dim = rotary_dim
-        self._validate_spec()
         self._build_program()
         self.init_config(config, tune)
-
-    def _validate_spec(self) -> None:
-        """Reject a spec this implementation cannot honour. Override as needed."""
 
     def _build_program(self) -> None:
         """Build whatever the implementation launches beyond its wrapped call."""
