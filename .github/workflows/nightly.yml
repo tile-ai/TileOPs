@@ -69,13 +69,21 @@ jobs:
           # The benchmark needs exclusive access to one card. A second visible
           # GPU means the container is misprovisioned, and work landing on it
           # perturbs these timings.
-          # Count non-blank lines rather than newlines: output without a
-          # trailing newline undercounts, which would let a second card pass.
+          # Count non-blank rows rather than newlines: output without a trailing
+          # newline undercounts, which would let a second card pass. Counted in
+          # the shell so gpu_count is always a number — a pipeline here could
+          # fail into an empty value, and the comparison below would then error
+          # out inside an `if`, where set -e does not fire, and pass the guard.
           if ! gpu_indices=$(nvidia-smi --query-gpu=index --format=csv,noheader); then
             echo "::error::nvidia-smi failed to report GPU indices"
             exit 1
           fi
-          gpu_count=$(printf '%s\n' "${gpu_indices}" | grep -c '[^[:space:]]' || true)
+          gpu_count=0
+          while IFS= read -r gpu_row; do
+            if [ -n "${gpu_row//[[:space:]]/}" ]; then
+              gpu_count=$((gpu_count + 1))
+            fi
+          done <<< "${gpu_indices}"
           if [ "${gpu_count}" -ne 1 ]; then
             echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
             nvidia-smi --query-gpu=index,name --format=csv,noheader
