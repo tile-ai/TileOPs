@@ -71,7 +71,7 @@ python -m pytest tests/ -q    # requires a CUDA GPU
 
 ### Docker (dev image)
 
-A prebuilt development image ships the full CI stack — CUDA 12.9, PyTorch 2.10 (cu129), the exact TileLang commit CI validates, and the benchmark baselines (FlashAttention-2/3, vLLM, flash-linear-attention) — with a root user and a plain `bash` entrypoint (no CI runner inside):
+A prebuilt development image ships the full stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and all benchmark baselines (FlashAttention-2/3, vLLM, flash-linear-attention) preinstalled:
 
 ```bash
 docker run --rm -it --gpus all \
