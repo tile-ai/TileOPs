@@ -188,9 +188,6 @@ class Kernel(ABC):
             autotune_kwargs["supply_prog"] = supply_prog
         autotuned_kernel_fn = autotune(**autotune_kwargs)(jit_kernel)
 
-        # Seed required tunable JIT parameters for TileLang's pre-autotune
-        # validation/binding step. Candidate configs still override these
-        # initial values during the actual autotune run.
         return self._call_autotuned_kernel(autotuned_kernel_fn, jit_kernel, seed_config)
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
@@ -205,6 +202,5 @@ class Kernel(ABC):
         tuned_kernel = self.tune_jit_kernel(
             self.kernel, self.autotune_configs, warmup=warmup, rep=rep)
 
-        # Extract and store the best config
         self.config = tuned_kernel.config
         print(f'Best config: {self.config}')
