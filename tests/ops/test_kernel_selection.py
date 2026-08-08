@@ -69,6 +69,11 @@ _PREFILL_DISPATCH = [
     ("noncausal-dim128", {"is_causal": False}, {}, "gqa_prefill_fwd_kernel"),
     ("small-causal-work", {"batch": 1, "heads": 8, "heads_kv": 8, "max_seqlen_q": 128,
                            "max_seqlen_kv": 128}, {}, "gqa_prefill_causal_fwd_kernel"),
+    # backend='auto' on a plain request — uniform, not FP8, no window. The rows
+    # below state what 'auto' does when a variant claims it; these two state
+    # what it does when none does, which is the request most callers make.
+    ("auto-uniform-square", {"backend": "auto"}, {}, "gqa_prefill_square_fwd_kernel"),
+    ("auto-uniform-dense", {"backend": "auto", "dim": 64}, {}, "gqa_prefill_fwd_kernel"),
     ("auto-ragged", {"backend": "auto"}, {"is_uniform": False},
      "gqa_prefill_varlen_fwd_kernel"),
     ("explicit-varlen", {"backend": "varlen"}, {}, "gqa_prefill_varlen_fwd_kernel"),
