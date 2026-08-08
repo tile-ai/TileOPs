@@ -18,6 +18,7 @@ Output:
   output           [T, H]     bf16/fp16
 """
 
+import functools
 from typing import Optional
 
 import tilelang
@@ -30,6 +31,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["MoeUnpermuteKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unpermute_kernel(
     num_tokens: int,
     top_k: int,

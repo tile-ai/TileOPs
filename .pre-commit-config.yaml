@@ -61,6 +61,13 @@ repos:
         files: ^(tileops|tests|benchmarks|scripts)/
         exclude: ^tileops/manifest/
         types: [text]
+      - id: deprecated-tir-api-lint
+        name: deprecated TIR API lint
+        entry: python scripts/lint/deprecated_tir_api_lint.py
+        language: python
+        files: ^(tileops|tests|benchmarks|scripts)/
+        exclude: ^tileops/manifest/
+        types: [text]
 
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22

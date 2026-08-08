@@ -33,7 +33,7 @@ def test_payload_api_signature(preserve_trace_state):
     @tilelang.jit(out_idx=trace.out_idx(1))
     def build1():
         @T.prim_func
-        def kernel(out: T.Buffer((16,), "float32")):
+        def kernel(out: T.Tensor((16,), "float32")):
             with T.Kernel(1, threads=16), trace.range("test", payload=0):
                 pass
         return trace.finalize(kernel)
@@ -50,7 +50,7 @@ def test_payload_with_range_start_end(preserve_trace_state, tmp_path):
     @tilelang.jit(out_idx=trace.out_idx(1))
     def build():
         @T.prim_func
-        def kernel(out: T.Buffer((16,), "float32")):
+        def kernel(out: T.Tensor((16,), "float32")):
             with T.Kernel(1, threads=16):
                 tx = T.get_thread_binding()
                 # Test range_start accepts payload
@@ -88,7 +88,7 @@ def test_payload_backward_compatibility(preserve_trace_state):
     @tilelang.jit(out_idx=trace.out_idx(1))
     def build():
         @T.prim_func
-        def kernel(out: T.Buffer((16,), "float32")):
+        def kernel(out: T.Tensor((16,), "float32")):
             with T.Kernel(1, threads=16):
                 # Old code without payload should still work
                 with trace.range("test"):
@@ -122,7 +122,7 @@ def test_implicit_thread_blocks_with_payload_e2e(preserve_trace_state, tmp_path)
     @tilelang.jit(out_idx=trace.out_idx(1))
     def build():
         @T.prim_func
-        def kernel(out: T.Buffer((16,), "float32")):
+        def kernel(out: T.Tensor((16,), "float32")):
             # Use simple T.Kernel(..., threads=16) - no explicit threadIdx.x binding
             # This triggers the __tl_thread_idx_x() writer-election fallback
             with T.Kernel(1, threads=16):
@@ -171,7 +171,7 @@ def test_dynamic_payload_runtime_expr(preserve_trace_state, tmp_path):
     @tilelang.jit(out_idx=trace.out_idx(1))
     def build():
         @T.prim_func
-        def kernel(out: T.Buffer((4,), "float32")):
+        def kernel(out: T.Tensor((4,), "float32")):
             # Use simple T.Kernel with threads=4
             with T.Kernel(1, threads=4):
                 tx = T.get_thread_binding()
