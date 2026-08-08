@@ -138,6 +138,13 @@ class GroupedQueryAttentionFwdOp(Op):
                  softcap: Optional[float] = None,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
+        # Nothing downstream validates these: this op builds its kernel itself,
+        # so a zero heads_kv would surface as ZeroDivisionError inside a region.
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if batch <= 0:
+            raise ValueError("batch must be positive")
+        if seq_len <= 0:
+            raise ValueError("seq_len must be positive")
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
