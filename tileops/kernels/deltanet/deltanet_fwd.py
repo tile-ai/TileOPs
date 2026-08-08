@@ -25,6 +25,7 @@ from tileops.kernels.linear_attn_autotune import (
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
+from tileops.kernels.v_tile import resolve_block_v
 
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
@@ -56,7 +57,7 @@ def _h_recurrence_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
-    BV = dim_v if block_v <= 0 else block_v
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
@@ -294,7 +295,7 @@ class DeltaNetFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return delta_rule_fwd_autotune_configs(self.dim_v, self.chunk_size)
+        return delta_rule_fwd_autotune_configs(self.dim_v)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Tune the three sub-kernels independently and merge the winners."""

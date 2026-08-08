@@ -318,7 +318,7 @@ class GatedDeltaNetFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return delta_rule_fwd_autotune_configs(self.dim_v, self.chunk_size)
+        return delta_rule_fwd_autotune_configs(self.dim_v)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Tune the three sub-kernels independently and merge the winners."""

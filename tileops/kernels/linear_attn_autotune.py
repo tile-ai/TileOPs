@@ -9,11 +9,13 @@ merges the winners into the single flat config the wrapped kernel reads.
 import itertools
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from tileops.kernels.v_tile import resolve_block_v
+
 __all__ = [
     "H_BLOCK_V_WIDTHS",
-    "MIN_TILED_CHUNK_SIZE",
     "OUTPUT_CONFIGS",
     "PIPELINE_CONFIGS",
+    "TILED_DEFAULT_MIN_CHUNK_SIZE",
     "default_h_block_v",
     "delta_rule_fwd_autotune_configs",
     "h_block_v_candidates",
@@ -36,57 +38,64 @@ OUTPUT_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
 #: 16 is absent because it loses too much precision in fp16.
 H_BLOCK_V_WIDTHS: Tuple[int, ...] = (0, 32)
 
-#: Smallest chunk size for which a tiled recurrence is offered. Below it the
-#: kernels only build the untiled recurrence, so the sweep must not select a
-#: tiled width the kernel cannot run.
-MIN_TILED_CHUNK_SIZE: int = 64
+#: Chunk length at or above which the untuned recurrence prefers a tiled width.
+#: Carried over from the per-kernel defaults this module replaced, which stated
+#: no reason for it. No builder enforces it, so it stays a default preference
+#: and does not narrow what the sweep may try.
+TILED_DEFAULT_MIN_CHUNK_SIZE: int = 64
 
 
-def h_block_v_candidates(dim_v: int, chunk_size: int) -> Tuple[int, ...]:
-    """Return the recurrence V-tile widths buildable at this shape.
+def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
+    """Return the recurrence V-tile widths buildable at this value dimension.
+
+    Whether a width is buildable is ``resolve_block_v``'s question — minimum
+    gemm N extent and divisibility — so ask it rather than restate its rules
+    here, which is what keeps the candidate set from drifting from what the
+    recurrence will accept.
 
     Args:
-        dim_v: Value dimension; a tile width must divide it.
-        chunk_size: Chunk length; tiled widths need ``MIN_TILED_CHUNK_SIZE``.
+        dim_v: Value dimension.
     """
-    return tuple(
-        block_v
-        for block_v in H_BLOCK_V_WIDTHS
-        if dim_v % (block_v or dim_v) == 0
-        and (block_v == 0 or chunk_size >= MIN_TILED_CHUNK_SIZE)
-    )
+    buildable = []
+    for block_v in H_BLOCK_V_WIDTHS:
+        try:
+            resolve_block_v(dim_v, block_v)
+        except ValueError:
+            continue
+        buildable.append(block_v)
+    return tuple(buildable)
 
 
 def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     """Return the V-tile width the recurrence runs with when it is not tuned.
 
-    Prefers the narrowest tiled width the shape allows, since tiling is what
-    keeps the recurrence's state within shared memory, and falls back to no
-    tiling when the shape supports no tiled width. Sharing
-    ``h_block_v_candidates`` with the sweep is what keeps the untuned width and
-    the tuned candidates from disagreeing: a width that divides ``dim_v`` for
-    neither is one the recurrence would build with a V grid too short to cover
-    every column.
+    Prefers the narrowest buildable tiled width, since tiling is what keeps the
+    recurrence's state within shared memory, and falls back to no tiling when
+    the shape supports none. Short chunks take no tiling — a preference the
+    per-kernel defaults carried without stating a reason, kept here rather than
+    imposed on the sweep, which is free to measure a tiled width and win.
 
     Args:
         dim_v: Value dimension.
         chunk_size: Chunk length.
     """
-    tiled = [block_v for block_v in h_block_v_candidates(dim_v, chunk_size) if block_v]
+    if chunk_size < TILED_DEFAULT_MIN_CHUNK_SIZE:
+        return 0
+    tiled = [block_v for block_v in h_block_v_candidates(dim_v) if block_v]
     return min(tiled) if tiled else 0
 
 
-def delta_rule_fwd_autotune_configs(dim_v: int, chunk_size: int) -> List[Dict[str, int]]:
-    """Return every merged config the sweep can select at this shape.
+def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
+    """Return every merged config the sweep can select at this value dimension.
 
     The three sub-kernels are tuned independently, so the reachable set is their
     product. Declaring it is what makes ``init_config(tune=True)`` reach
     ``autotune`` instead of falling back to ``default_config``, and it gives a
-    test a set to check the selected config against.
+    test a set to check the selected config against. Chunk length does not enter:
+    it steers the untuned default, not what the sweep may build.
 
     Args:
         dim_v: Value dimension.
-        chunk_size: Chunk length.
     """
     return [
         {
@@ -100,7 +109,7 @@ def delta_rule_fwd_autotune_configs(dim_v: int, chunk_size: int) -> List[Dict[st
         for fused, recurrence, block_v, output in itertools.product(
             PIPELINE_CONFIGS,
             PIPELINE_CONFIGS,
-            h_block_v_candidates(dim_v, chunk_size),
+            h_block_v_candidates(dim_v),
             OUTPUT_CONFIGS,
         )
     ]
@@ -165,7 +174,7 @@ def tune_delta_rule_fwd(
     Returns:
         A config with the flat ``fused_`` / ``h_`` / ``o_`` keys the wrapped
         kernel reads. It is always a member of
-        ``delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)``.
+        ``delta_rule_fwd_autotune_configs(kernel.dim_v)``.
     """
     shape = (
         kernel.batch,
@@ -194,7 +203,7 @@ def tune_delta_rule_fwd(
     # let an untuned width the sweep never offers escape through the fallback.
     h_block_v = default_h_block_v(kernel.dim_v, kernel.chunk_size)
     best_latency = float("inf")
-    for block_v in h_block_v_candidates(kernel.dim_v, kernel.chunk_size):
+    for block_v in h_block_v_candidates(kernel.dim_v):
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
         config, latency = _tune_sub_kernel(
             kernel,

@@ -137,7 +137,7 @@ def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
     kernel = _StubKernel()
-    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)
+    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v)
 
     assert _run(kernel) in declared
     kernel.results = {("fused", 0): (None, None), ("h", 0): (None, None),
@@ -145,20 +145,27 @@ def test_selected_config_is_always_a_declared_candidate() -> None:
     assert _run(kernel) in declared
 
 
-def test_v_tiling_is_not_offered_below_the_minimum_chunk_size() -> None:
-    """A tiled recurrence the kernel does not build must stay out of the sweep."""
+def test_short_chunks_still_sweep_the_tiled_width() -> None:
+    """The chunk preference steers the untuned default, not the sweep.
+
+    A width the recurrence can build stays measurable at any chunk length; only
+    the default declines it below the threshold.
+    """
     kernel = _StubKernel(chunk_size=32)
 
     config = _run(kernel)
 
-    assert la.h_block_v_candidates(64, 32) == (0,)
-    assert [build.get("block_v") for name, build, _ in kernel.sweeps if name == "h"] == [0]
-    assert config["h_block_v"] == 0
+    assert la.h_block_v_candidates(64) == (0, 32)
+    assert [build.get("block_v") for name, build, _ in kernel.sweeps if name == "h"] == [0, 32]
+    assert la.default_h_block_v(64, 32) == 0
+    assert config["h_block_v"] in la.h_block_v_candidates(64)
 
 
-def test_v_tile_width_must_divide_dim_v() -> None:
-    assert la.h_block_v_candidates(48, 64) == (0,)
-    assert la.h_block_v_candidates(64, 64) == (0, 32)
+def test_v_tile_candidates_are_the_widths_the_recurrence_accepts() -> None:
+    """The candidate set is whatever ``resolve_block_v`` admits, nothing else."""
+    assert la.h_block_v_candidates(48) == (0,)  # 32 does not divide 48
+    assert la.h_block_v_candidates(64) == (0, 32)
+    assert la.h_block_v_candidates(8) == ()  # below the minimum gemm N extent
 
 
 def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> None:
@@ -176,13 +183,13 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
 
     assert kernel.default_config["h_block_v"] == 32, "stub must diverge for this to bite"
     assert config["h_block_v"] == 0
-    assert config in la.delta_rule_fwd_autotune_configs(48, 64)
+    assert config in la.delta_rule_fwd_autotune_configs(48)
 
 
 def test_default_h_block_v_takes_the_narrowest_buildable_tiled_width() -> None:
     assert la.default_h_block_v(64, 64) == 32
     assert la.default_h_block_v(48, 64) == 0  # 32 does not divide 48
-    assert la.default_h_block_v(64, 32) == 0  # chunk below the tiling minimum
+    assert la.default_h_block_v(64, 32) == 0  # short chunk prefers no tiling
 
 
 @pytest.mark.parametrize(
@@ -199,7 +206,7 @@ def test_default_config_width_is_one_the_kernel_builds(
         dtype="bfloat16",
     )
 
-    assert kernel.config["h_block_v"] in la.h_block_v_candidates(dim_v, chunk_size)
+    assert kernel.config["h_block_v"] in la.h_block_v_candidates(dim_v)
     assert kernel.config in kernel.autotune_configs
 
 
@@ -228,7 +235,7 @@ def test_tune_true_reaches_the_sweep(monkeypatch, kernel_cls) -> None:
     )
 
     assert calls == [kernel_cls.__name__]
-    assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64, 64)
+    assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)
 
 
 if __name__ == "__main__":

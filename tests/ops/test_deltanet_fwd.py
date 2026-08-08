@@ -115,8 +115,8 @@ class DeltaNetFwdFixture(FixtureBase):
             pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            # chunk_size=64 is the smallest chunk for which the sweep offers a
-            # tiled recurrence, so this case covers the V-tile width comparison.
+            # chunk_size=64 is where the untuned default takes a tiled width, so
+            # the tuned run has to beat a tiled baseline rather than no tiling.
             pytest.param(2, 128, 2, 64, 64, 64, torch.bfloat16, True, marks=pytest.mark.full,
                          id="full-bf16-tuned"),
         ]),
