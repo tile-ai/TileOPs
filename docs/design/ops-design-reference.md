@@ -32,6 +32,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 | `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                            |
 | `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
 | `input_shapes` | `Optional[list[tuple]]`              | Expected input tensor shapes (for introspection and non-runtime consumers)                   |
+| `tune`         | `bool`                               | Whether kernels this op builds tune themselves; read by a factory when it runs               |
 | `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
 
 Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-driven methods (codegen-emitted by concrete ops): `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
@@ -46,7 +47,7 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 | `built_kernels(role)`                     | Read-only view of a role's entries; empty before its first build. Introspection only, never dispatch  |
 | `kernel_delegates()`                      | The ops whose kernels this op runs. Default `()`; a composite op overrides it                         |
 | `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: entries and delegates                                      |
-| `autotune()`                              | Tunes the built kernels `iter_kernels()` yields                                                       |
+| `autotune()`                              | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later builds tune too              |
 
 ### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
 

@@ -52,7 +52,7 @@ class GemmOp(Op):
     ) -> None:
         self.trans_a = trans_a
         self.trans_b = trans_b
-        self._tune = tune
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
         # (m, n, k, dtype) -> Kernel instance; built lazily on first use.
         # Fast path: skip re-inference when the input signature is unchanged.
@@ -112,7 +112,7 @@ class GemmOp(Op):
             kernel = self.get_or_build_kernel(
                 "gemv_kernel",
                 (mode, m, n, k, dtype),
-                lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self._tune),
+                lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
             )
             return mode, kernel
 
@@ -120,7 +120,7 @@ class GemmOp(Op):
             "gemm_kernel",
             (m, n, k, dtype),
             lambda: self.kernel_map["gemm_kernel"](
-                m, n, k, dtype, tune=self._tune, trans_a=self.trans_a, trans_b=self.trans_b
+                m, n, k, dtype, tune=self.tune, trans_a=self.trans_a, trans_b=self.trans_b
             ),
         )
         return "gemm", kernel
@@ -172,7 +172,7 @@ class GemmFp8Op(Op):
         if out_dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(f"GemmFp8Op outputs torch.float16 or torch.bfloat16, got {out_dtype}")
         self.out_dtype = out_dtype
-        self._tune = tune
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
@@ -291,7 +291,7 @@ class GemmFp8Op(Op):
             kernel_name,
             (m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
             lambda: self.kernel_map[kernel_name](
-                m, n, k, dtype, self.out_dtype, tune=self._tune),
+                m, n, k, dtype, self.out_dtype, tune=self.tune),
         )
 
     def forward(
@@ -354,7 +354,7 @@ class GemmW4A16Op(Op):
                 f"GemmW4A16Op currently supports group_size={GROUP_SIZE}, got {group_size}"
             )
         self.group_size = group_size
-        self._tune = tune
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
@@ -452,7 +452,7 @@ class GemmW4A16Op(Op):
             "gemm_w4a16_kernel",
             (m, n, k, dtype, self.group_size),
             lambda: self.kernel_map["gemm_w4a16_kernel"](
-                m, n, k, dtype, tune=self._tune, group_size=self.group_size
+                m, n, k, dtype, tune=self.tune, group_size=self.group_size
             ),
         )
 
