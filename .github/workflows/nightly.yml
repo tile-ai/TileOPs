@@ -55,13 +55,27 @@ jobs:
         run: bash scripts/ci/install_tileops.sh
         shell: bash
 
-      - name: Run benchmark ops
-        id: benchmark_tests
-        continue-on-error: true
+      # Its own step, deliberately: the benchmark below runs with
+      # continue-on-error so a failing bench file does not fail the nightly,
+      # and a guard sharing that step would have its exit swallowed by the
+      # same setting. A runner that cannot produce trustworthy numbers must
+      # stop the job.
+      - name: Validate GPU exclusivity and clock
         run: |
           set -euo pipefail
 
-          # Validate GPU frequency
+          # The runner is provisioned with exactly one card, and the timings
+          # below are only meaningful with exclusive access to it. A second
+          # visible GPU means the container is misprovisioned and whatever
+          # else lands on the other cards can perturb these numbers, so treat
+          # the count as part of the guard rather than assuming it.
+          gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
+          if [ "${gpu_count}" -ne 1 ]; then
+            echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
+            nvidia-smi --query-gpu=index,name --format=csv,noheader
+            exit 1
+          fi
+
           TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do
@@ -69,11 +83,18 @@ jobs:
             echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
             if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
             if [ "${i}" -eq "${RETRIES}" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz, got ${gpu_clock} MHz."
               exit 1
             fi
             sleep 2
           done
+        shell: bash
+
+      - name: Run benchmark ops
+        id: benchmark_tests
+        continue-on-error: true
+        run: |
+          set -euo pipefail
 
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Runtime cache env:"
@@ -384,6 +405,18 @@ jobs:
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
 
+          # The runner is provisioned with exactly one card, and the timings
+          # below are only meaningful with exclusive access to it. A second
+          # visible GPU means the container is misprovisioned and whatever
+          # else lands on the other cards can perturb these numbers, so treat
+          # the count as part of the guard rather than assuming it.
+          gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
+          if [ "${gpu_count}" -ne 1 ]; then
+            echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
+            nvidia-smi --query-gpu=index,name --format=csv,noheader
+            exit 1
+          fi
+
           # Validate GPU frequency
           TARGET_CLOCK_MHZ=1500
           RETRIES=5
@@ -392,7 +425,7 @@ jobs:
             echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
             if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
             if [ "${i}" -eq "${RETRIES}" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz, got ${gpu_clock} MHz."
               exit 1
             fi
             sleep 2
