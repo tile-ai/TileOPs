@@ -105,6 +105,27 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
         op._get_kernel(torch.float16)
 
 
+@pytest.mark.smoke
+def test_single_implementation_slot_is_refused_at_first_build() -> None:
+    """A slot with one implementation reports the same class as a slot with several.
+
+    Nothing selects here — there is no second candidate to pass over — so the
+    refusal comes from the kernel as it is built. It must still be a
+    ``ValueError``, or a caller would need two excepts for one condition.
+    """
+    import tileops.ops.elementwise as mod
+
+    (key, default_kernel_cls), = mod.ReluFwdOp(N_total=8).default_kernel_map.items()
+
+    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
+        supported_archs = _make_incompatible_arch_list()
+
+    op = mod.ReluFwdOp(N_total=8, kernel_map={key: IncompatibleKernel})
+
+    with pytest.raises(ValueError, match="is built for architectures"):
+        op(torch.randn(8, device="cuda", dtype=torch.float16))
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
