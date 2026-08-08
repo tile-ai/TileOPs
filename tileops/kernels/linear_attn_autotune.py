@@ -70,19 +70,31 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     """Return the V-tile width the recurrence runs with when it is not tuned.
 
     Prefers the narrowest buildable tiled width, since tiling is what keeps the
-    recurrence's state within shared memory, and falls back to no tiling when
-    the shape supports none. Short chunks take no tiling — a preference the
-    per-kernel defaults carried without stating a reason, kept here rather than
-    imposed on the sweep, which is free to measure a tiled width and win.
+    recurrence's state within shared memory. Short chunks take no tiling — a
+    preference the per-kernel defaults carried without stating a reason, kept
+    here rather than imposed on the sweep, which is free to measure a tiled
+    width and win.
+
+    The width is drawn from the candidates rather than written out again, so
+    the untuned config stays inside the set ``delta_rule_fwd_autotune_configs``
+    declares. A shape with no buildable width has no default to give.
 
     Args:
         dim_v: Value dimension.
         chunk_size: Chunk length.
+
+    Raises:
+        ValueError: if no V-tile width is buildable at *dim_v*.
     """
-    if chunk_size < TILED_DEFAULT_MIN_CHUNK_SIZE:
-        return 0
-    tiled = [block_v for block_v in h_block_v_candidates(dim_v) if block_v]
-    return min(tiled) if tiled else 0
+    candidates = h_block_v_candidates(dim_v)
+    if not candidates:
+        raise ValueError(
+            f"no buildable recurrence V-tile width for dim_v={dim_v}; "
+            f"widths are {H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v")
+    tiled = [block_v for block_v in candidates if block_v]
+    if tiled and chunk_size >= TILED_DEFAULT_MIN_CHUNK_SIZE:
+        return min(tiled)
+    return 0 if 0 in candidates else min(tiled)
 
 
 def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:

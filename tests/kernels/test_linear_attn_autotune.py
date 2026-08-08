@@ -186,6 +186,25 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
     assert config in la.delta_rule_fwd_autotune_configs(48)
 
 
+def test_default_h_block_v_is_always_a_declared_candidate() -> None:
+    """The untuned width must be one the sweep also declares.
+
+    The default is what ``init_config`` falls back to, so a width outside the
+    declared set would be one no candidate check could have vetted.
+    """
+    for dim_v in (64, 48):
+        declared = {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(dim_v)}
+        for chunk_size in (32, 64):
+            assert la.default_h_block_v(dim_v, chunk_size) in declared
+
+
+def test_default_h_block_v_refuses_a_shape_with_no_buildable_width() -> None:
+    """Below the minimum gemm N extent there is no width to default to."""
+    assert la.h_block_v_candidates(8) == ()
+    with pytest.raises(ValueError, match="no buildable"):
+        la.default_h_block_v(8, 64)
+
+
 def test_default_h_block_v_takes_the_narrowest_buildable_tiled_width() -> None:
     assert la.default_h_block_v(64, 64) == 32
     assert la.default_h_block_v(48, 64) == 0  # 32 does not divide 48
