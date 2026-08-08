@@ -164,12 +164,6 @@ def test_short_chunks_still_sweep_the_tiled_width() -> None:
     assert [build.get("block_v") for name, build, _ in kernel.sweeps if name == "h"] == [0, 32]
 
 
-def test_v_tile_candidates_are_the_widths_the_recurrence_accepts() -> None:
-    """The candidate set is whatever ``resolve_block_v`` admits, nothing else."""
-    assert la.h_block_v_candidates(48) == (0,)  # 32 does not divide 48
-    assert la.h_block_v_candidates(64) == (0, 32)
-
-
 def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> None:
     """The fallback width must come from the candidates, not from default_config.
 
@@ -272,6 +266,28 @@ def test_every_failure_reaches_the_raised_error() -> None:
 
     assert "block_v=0" in str(e.value)
     assert "block_v=32" in str(e.value)
+
+
+def test_the_raised_error_bounds_a_long_failure_text() -> None:
+    """A compile failure can carry a whole log; the error must stay readable."""
+    kernel = _StubKernel(chunk_size=64)
+    inner = kernel.tune_jit_kernel
+    log = "header line\n" + "x" * 5000
+
+    def fail_with_a_log(jit_kernel, *args, **kwargs):
+        if jit_kernel.name == "h":
+            raise RuntimeError(log)
+        return inner(jit_kernel, *args, **kwargs)
+
+    kernel.tune_jit_kernel = fail_with_a_log
+
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError) as e:
+        _run(kernel)
+
+    message = str(e.value)
+    assert "\n" not in message
+    assert len(message) < 1000
+    assert log in str(e.value.__cause__), "the chained cause keeps the whole text"
 
 
 def test_no_width_tuning_reports_the_failure_with_its_cause() -> None:

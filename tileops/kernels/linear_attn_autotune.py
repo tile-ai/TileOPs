@@ -167,14 +167,15 @@ def _tune_sub_kernel(
 
 
 def _summarize(exc: Exception) -> str:
-    """Return a bounded one-line form; compile failures carry a whole nvcc log.
+    """Return a bounded one-line form of *exc*.
 
-    Trimmed to a prefix rather than to the first line: tilelang's first line is
-    the same generic sentence for every width, and the diagnostic that tells
-    them apart is below it.
+    Which width failed is carried by the label beside this, not by the text:
+    tilelang reports every failed sweep with the same sentence. The text is
+    still worth keeping for everything else that can be raised here, bounded
+    because it may be a whole compiler log, and sliced before it is joined so
+    that log is never materialized whole.
     """
-    body = " ".join(str(exc).split())
-    return f"{type(exc).__name__}: {body[:400]}"
+    return f"{type(exc).__name__}: {' '.join(str(exc)[:1000].split())[:200]}"
 
 
 def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
