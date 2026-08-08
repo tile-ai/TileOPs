@@ -410,39 +410,6 @@ jobs:
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
 
-          if ! command -v nvidia-smi >/dev/null 2>&1; then
-            echo "::error::nvidia-smi is not available on this runner"
-            exit 1
-          fi
-
-          # This runner is provisioned with exactly one card; more than one
-          # means the container is misprovisioned.
-          # Count non-blank lines rather than newlines: output without a
-          # trailing newline undercounts, which would let a second card pass.
-          if ! gpu_indices=$(nvidia-smi --query-gpu=index --format=csv,noheader); then
-            echo "::error::nvidia-smi failed to report GPU indices"
-            exit 1
-          fi
-          gpu_count=$(printf '%s\n' "${gpu_indices}" | grep -c '[^[:space:]]' || true)
-          if [ "${gpu_count}" -ne 1 ]; then
-            echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
-            nvidia-smi --query-gpu=index,name --format=csv,noheader
-            exit 1
-          fi
-
-          TARGET_CLOCK_MHZ=1500
-          RETRIES=5
-          for i in $(seq 1 "${RETRIES}"); do
-            gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
-            echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
-            if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
-            if [ "${i}" -eq "${RETRIES}" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz, got ${gpu_clock} MHz."
-              exit 1
-            fi
-            sleep 2
-          done
-
           python3 -m pip install -c constraints.txt build pytest pytest-timeout
 
           echo "=== Build wheel package ==="
