@@ -18,14 +18,11 @@ _Entry = TypeVar("_Entry")
 
 
 def _entry_kernels(entry: object) -> "list[Kernel]":
-    """Return the kernels one slot entry holds, descending through containers.
+    """Return the kernels one slot entry holds.
 
-    An entry is a kernel when the specialization is nothing but a kernel. An op
-    that builds several kernels together — preprocess plus backward, say —
-    makes them one entry as a tuple, and one whose specialization carries more
-    than kernels makes it a frozen record, so the search descends through
-    sequences and dataclass instances alike. An entry that hides its kernel
-    from this traversal is invisible to ``iter_kernels`` and so to ``autotune``.
+    An entry is a kernel, a sequence of kernels built together, or a dataclass
+    carrying them alongside what else the specialization implies. An entry that
+    hides its kernels from this walk is invisible to ``autotune``.
     """
     if isinstance(entry, Kernel):
         return [entry]
@@ -217,20 +214,12 @@ class Op(ABC):
                 the ``kernel_map`` dispatch key whose kernel *factory* builds.
             key: What the entry is specialized for, typically
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype.
-            factory: Zero-argument callable building the entry. Called only on a
-                miss. It may return one kernel, a tuple of kernels built
-                together, or a frozen record carrying kernels plus whatever else
-                the specialization implies.
+            factory: Zero-argument callable building the entry, called only on
+                a miss. See ``_entry_kernels`` for what an entry may hold.
 
         Returns:
             The stored entry, identical across calls with the same
             ``(slot, key)``.
-
-        Example:
-            >>> kernel = op.get_or_build_kernel(  # doctest: +SKIP
-            ...     "rms_norm_fwd_kernel",
-            ...     (op._cache_key(x.shape), x.dtype),
-            ...     lambda: op.kernel_map["rms_norm_fwd_kernel"](M, N, x.dtype))
         """
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo

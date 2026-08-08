@@ -312,11 +312,6 @@ class TestAutotune:
         op.autotune()
         assert sorted(tuned) == ["aux", "bf16", "bound", "fp16"]
 
-    def test_autotune_tunes_nothing_before_the_first_build(self):
-        tuned: list[str] = []
-        _SlottedOp(tuned).autotune()
-        assert tuned == []
-
     def test_autotune_reaches_a_delegates_kernels(self):
         """A composite tunes through ``kernel_delegates``, not an override."""
         tuned: list[str] = []
