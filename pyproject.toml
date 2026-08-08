@@ -59,12 +59,9 @@ requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
-# Builds outside a git checkout (sdist tarballs, vendored copies) must not
-# fail; they fall back to this version instead.
-#
-# The value must not carry a `.devN` suffix: setuptools-scm derives the dev
-# distance itself from the commit count, so a pre-set distance is a value it
-# cannot bump and it errors out rather than guessing.
+# Used when there is no git metadata (sdist tarballs, vendored copies). It must
+# not carry a `.devN` suffix: setuptools-scm derives the dev distance from the
+# commit count, and errors out rather than accept a pre-set one.
 fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
@@ -73,10 +70,9 @@ exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.setuptools.package-data]
 # Kernel headers and YAML data are opened at run time by path relative to
-# __file__, so every one of them has to ship. These globs are the declared
-# contract, stated by extension so a new resource is covered the day it lands
-# and so the set does not depend on a file-finder plugin being active.
-# scripts/ci/check_dist_contents.py enforces it against the built wheel.
+# __file__, so all of them must ship. Stated by extension rather than by name
+# so a new resource is covered the day it lands, and so the set does not depend
+# on a file-finder plugin being active. Enforced by scripts/ci/check_dist_contents.py.
 tileops = ["**/*.h", "**/*.yaml"]
 
 [tool.codespell]

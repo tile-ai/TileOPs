@@ -19,10 +19,10 @@ default shipped-source trees (``tileops/``, ``tests/``, ``benchmarks/``,
 is found.
 """
 
-import argparse
 import re
 import sys
-from pathlib import Path
+
+from _common import run
 
 # A hash-number token, captured with its full hex extent so a CSS hex color
 # (#fff, #1234, #191a16, #11223344) can be recognized and exempted.
@@ -35,8 +35,6 @@ _PLAIN_PATTERNS = (
     ("follow-up marker", re.compile(r"[Ff]ollow-up:\s*#[0-9]+")),
 )
 
-DEFAULT_ROOTS = ("tileops", "tests", "benchmarks", "scripts")
-DEFAULT_EXCLUDE = "tileops/manifest"
 
 
 def _hash_number_violations(line: str) -> list[str]:
@@ -63,37 +61,8 @@ def lint_text(text: str) -> list[tuple[int, str]]:
     return findings
 
 
-def _default_files() -> list[Path]:
-    files = []
-    for root in DEFAULT_ROOTS:
-        root_path = Path(root)
-        if not root_path.is_dir():
-            continue
-        for path in sorted(root_path.rglob("*")):
-            if not path.is_file():
-                continue
-            if path.as_posix().startswith(DEFAULT_EXCLUDE + "/"):
-                continue
-            files.append(path)
-    return files
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*", type=Path)
-    args = parser.parse_args(argv)
-
-    files = args.files or _default_files()
-    exit_code = 0
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue  # binary or unreadable: not shipped text source
-        for lineno, message in lint_text(text):
-            print(f"{path}:{lineno}: {message}")
-            exit_code = 1
-    return exit_code
+    return run(lint_text, __doc__, argv)
 
 
 if __name__ == "__main__":

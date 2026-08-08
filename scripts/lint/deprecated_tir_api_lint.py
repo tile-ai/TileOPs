@@ -1,87 +1,92 @@
 #!/usr/bin/env python3
-"""Lint shipped source for deprecated TIR spellings.
+"""Lint shipped Python for deprecated TIR spellings.
 
 Both forms below still parse, so nothing fails until a toolchain bump drops
-them; a check is what keeps them from drifting back in. Flags, per line:
+them; a check is what keeps them from drifting back in. Flags, in code only:
 
-- The superseded parameter type — the one named after a buffer rather than a
-  tensor. The supported spelling is ``T.Tensor(shape, dtype)``; the signature
-  is identical, so correcting a site is a rename.
+- ``T.Buffer`` as a parameter type. The supported spelling is
+  ``T.Tensor(shape, dtype)``; the signature is identical, so correcting a site
+  is a rename.
 - ``T.reinterpret`` called with a string literal first, the deprecated
   dtype-first order. The supported spelling puts the value first:
   ``T.reinterpret(value, dtype)``.
 
+Comments and string literals are skipped, so prose naming a deprecated form —
+this docstring included — is not a violation, while real usage anywhere in the
+tree still is. A file that will not tokenize falls back to a raw line scan
+rather than going unchecked.
+
 Usage: ``deprecated_tir_api_lint.py [FILE ...]``. With no arguments, scans the
-default shipped-source trees (``tileops/``, ``tests/``, ``benchmarks/``,
-``scripts/``) excluding ``tileops/manifest/``. Exits 1 when any violation
-is found.
+default shipped-source trees excluding ``tileops/manifest/``. Exits 1 when any
+violation is found.
 """
 
-import argparse
+import io
 import re
 import sys
-from pathlib import Path
+import tokenize
 
-# Assembled from parts so this file does not trip its own check.
-_DEPRECATED_BUFFER_TYPE = "T." + "Buffer"
+from _common import run
 
+# ``T . Buffer`` is legal Python, so tolerate whitespace around the dot.
+_DOT = r"\s*\.\s*"
 _PATTERNS = (
     (
-        re.compile(rf"\b{re.escape(_DEPRECATED_BUFFER_TYPE)}\b"),
-        f"deprecated {_DEPRECATED_BUFFER_TYPE}; use T.Tensor(shape, dtype)",
+        re.compile(rf"\bT{_DOT}Buffer\b"),
+        "deprecated T.Buffer; use T.Tensor(shape, dtype)",
     ),
     (
         # A quote as the first argument means the dtype was passed first.
-        re.compile(r"\bT\.reinterpret\(\s*[\"']"),
+        re.compile(rf"\bT{_DOT}reinterpret\(\s*[\"']"),
         "deprecated dtype-first T.reinterpret; use T.reinterpret(value, dtype)",
     ),
 )
 
-DEFAULT_ROOTS = ("tileops", "tests", "benchmarks", "scripts")
-DEFAULT_EXCLUDE = "tileops/manifest"
+
+def _blank_comments_and_strings(text: str) -> dict[int, str] | None:
+    """Return each line with comment and string-literal content blanked out.
+
+    Quote characters survive so the dtype-first ``T.reinterpret("f16", x)``
+    shape stays recognizable; only what is written *inside* a literal — where
+    a deprecated spelling is prose, not usage — is erased. Blanking rather
+    than deleting keeps column positions intact. Returns None when the source
+    will not tokenize.
+    """
+    lines = dict(enumerate(text.splitlines(), start=1))
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError, ValueError):
+        return None
+    for token in tokens:
+        if token.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        keep_quotes = token.type == tokenize.STRING
+        (start_row, start_col), (end_row, end_col) = token.start, token.end
+        for row in range(start_row, end_row + 1):
+            line = lines.get(row, "")
+            begin = start_col if row == start_row else 0
+            finish = end_col if row == end_row else len(line)
+            span = line[begin:finish]
+            blanked = "".join(c if keep_quotes and c in "\"'" else " " for c in span)
+            lines[row] = line[:begin] + blanked + line[finish:]
+    return lines
 
 
 def lint_text(text: str) -> list[tuple[int, str]]:
     """Return ``(line_number, message)`` pairs for every violation in ``text``."""
+    scanned = _blank_comments_and_strings(text)
+    if scanned is None:  # untokenizable: scan raw so the file is not skipped
+        scanned = dict(enumerate(text.splitlines(), start=1))
     findings = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for lineno in sorted(scanned):
         for pattern, message in _PATTERNS:
-            if pattern.search(line):
+            if pattern.search(scanned[lineno]):
                 findings.append((lineno, message))
     return findings
 
 
-def _default_files() -> list[Path]:
-    files = []
-    for root in DEFAULT_ROOTS:
-        root_path = Path(root)
-        if not root_path.is_dir():
-            continue
-        for path in sorted(root_path.rglob("*")):
-            if not path.is_file():
-                continue
-            if path.as_posix().startswith(DEFAULT_EXCLUDE + "/"):
-                continue
-            files.append(path)
-    return files
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*", type=Path)
-    args = parser.parse_args(argv)
-
-    files = args.files or _default_files()
-    exit_code = 0
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue  # binary or unreadable: not shipped text source
-        for lineno, message in lint_text(text):
-            print(f"{path}:{lineno}: {message}")
-            exit_code = 1
-    return exit_code
+    return run(lint_text, __doc__, argv, suffixes=(".py",))
 
 
 if __name__ == "__main__":
