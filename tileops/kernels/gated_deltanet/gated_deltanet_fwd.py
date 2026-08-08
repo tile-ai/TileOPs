@@ -18,6 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.v_tile import resolve_block_v
 
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
@@ -51,7 +52,7 @@ def _h_recurrence_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
-    BV = dim_v if block_v <= 0 else block_v
+    BV = resolve_block_v(dim_v, block_v)
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
