@@ -7,6 +7,7 @@ merges the winners into the single flat config the wrapped kernel reads.
 """
 
 import itertools
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from tileops.kernels.v_tile import resolve_block_v
@@ -244,10 +245,9 @@ def tune_delta_rule_fwd(
     )
 
     h_config: Optional[Dict[str, int]] = None
-    # Derived here rather than read from default_config: this is the one key
-    # whose valid set depends on the shape, so taking it from the kernel would
-    # let an untuned width the sweep never offers escape through the fallback.
-    h_block_v = default_h_block_v(kernel.dim_v, kernel.chunk_size)
+    h_block_v: Optional[int] = None
+    built: List[int] = []
+    build_error: Optional[Exception] = None
     best_latency = float("inf")
     for block_v in h_block_v_candidates(kernel.dim_v):
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
@@ -264,12 +264,29 @@ def tune_delta_rule_fwd(
             # resolve_block_v answers what the tile geometry allows; shared
             # memory limits and codegen failures surface only on build, and
             # they disqualify this width rather than the whole sweep.
-            print(f"  {label} unavailable: {type(exc).__name__}: {exc}")
+            build_error = exc
+            warnings.warn(  # noqa: B028
+                f"{label} unavailable, dropping it from the sweep: "
+                f"{type(exc).__name__}: {exc}")
             continue
+        built.append(block_v)
         if config is None or latency is None:
             continue
         if latency < best_latency:
             h_config, h_block_v, best_latency = config, block_v, latency
+
+    if not built:
+        # Every width failed to build, so there is none to fall back to. The
+        # width is not the caller's to choose, so report the build failure
+        # rather than return a config naming a width just proved unbuildable.
+        raise RuntimeError(
+            f"no recurrence V-tile width built for dim_v={kernel.dim_v}") from build_error
+    if h_block_v is None:
+        # Nothing tuned, but something built. The untuned preference only
+        # counts if it was one of them; otherwise take the first width that
+        # built, which candidate order makes the untiled one where buildable.
+        preferred = default_h_block_v(kernel.dim_v, kernel.chunk_size)
+        h_block_v = preferred if preferred in built else built[0]
 
     o_config, _ = _tune_sub_kernel(
         kernel, "output_o", o_builder(*shape), OUTPUT_CONFIGS, warmup, rep

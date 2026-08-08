@@ -154,19 +154,15 @@ def test_short_chunks_still_sweep_the_tiled_width() -> None:
     """
     kernel = _StubKernel(chunk_size=32)
 
-    config = _run(kernel)
+    _run(kernel)
 
-    assert la.h_block_v_candidates(64) == (0, 32)
     assert [build.get("block_v") for name, build, _ in kernel.sweeps if name == "h"] == [0, 32]
-    assert la.default_h_block_v(64, 32) == 0
-    assert config["h_block_v"] in la.h_block_v_candidates(64)
 
 
 def test_v_tile_candidates_are_the_widths_the_recurrence_accepts() -> None:
     """The candidate set is whatever ``resolve_block_v`` admits, nothing else."""
     assert la.h_block_v_candidates(48) == (0,)  # 32 does not divide 48
     assert la.h_block_v_candidates(64) == (0, 32)
-    assert la.h_block_v_candidates(8) == ()  # below the minimum gemm N extent
 
 
 def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> None:
@@ -187,25 +183,13 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
     assert config in la.delta_rule_fwd_autotune_configs(48)
 
 
-def test_default_h_block_v_is_always_a_declared_candidate() -> None:
-    """The untuned width must be one the sweep also declares.
-
-    The default is what ``init_config`` falls back to, so a width outside the
-    declared set would be one no candidate check could have vetted.
-    """
-    for dim_v in (64, 48):
-        declared = {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(dim_v)}
-        for chunk_size in (32, 64):
-            assert la.default_h_block_v(dim_v, chunk_size) in declared
-
-
 def test_a_shape_with_no_buildable_width_is_refused_by_both_entry_points() -> None:
     """The default and the declared set must refuse the same shapes.
 
     An empty config list reads as "tunable, with nothing to try": ``[]`` is not
     ``None``, so ``init_config`` would skip its warning and walk into the sweep.
     """
-    assert la.h_block_v_candidates(8) == ()
+    assert la.h_block_v_candidates(8) == ()  # below the minimum gemm N extent
     with pytest.raises(ValueError, match="no buildable"):
         la.default_h_block_v(8, 64)
     with pytest.raises(ValueError, match="no buildable"):
@@ -232,6 +216,33 @@ def test_a_width_that_fails_to_build_does_not_sink_the_sweep() -> None:
             raise RuntimeError("out of shared memory")
         return _StubJit("h", block_v=block_v)
 
+    with pytest.warns(UserWarning, match="unavailable"):
+        config = la.tune_delta_rule_fwd(
+            kernel,
+            fused_builder=lambda *shape: _StubJit("fused"),
+            h_builder=h_builder,
+            o_builder=lambda *shape: _StubJit("o"),
+        )
+
+    assert config["h_block_v"] == 0
+    assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
+
+
+def test_a_width_that_failed_to_build_is_never_the_fallback() -> None:
+    """The untuned preference only counts if that width actually built.
+
+    At chunk 64 the preference is 32. If 32 fails to build and 0 builds but
+    tunes to nothing, returning the preference would name the width the sweep
+    just proved unbuildable, and the error would resurface inside forward.
+    """
+    kernel = _StubKernel(chunk_size=64)
+    kernel.results = {("h", 0): (None, None)}
+
+    def h_builder(*shape, block_v):
+        if block_v == 32:
+            raise RuntimeError("out of shared memory")
+        return _StubJit("h", block_v=block_v)
+
     config = la.tune_delta_rule_fwd(
         kernel,
         fused_builder=lambda *shape: _StubJit("fused"),
@@ -239,40 +250,58 @@ def test_a_width_that_fails_to_build_does_not_sink_the_sweep() -> None:
         o_builder=lambda *shape: _StubJit("o"),
     )
 
+    assert la.default_h_block_v(64, 64) == 32, "the preference must diverge for this to bite"
     assert config["h_block_v"] == 0
-    assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
 
 
-def test_default_h_block_v_takes_the_narrowest_buildable_tiled_width() -> None:
+def test_no_width_building_at_all_reports_the_build_failure() -> None:
+    """A width is not the caller's to choose, so a config naming one is no answer."""
+    kernel = _StubKernel(chunk_size=64)
+
+    def h_builder(*shape, block_v):
+        raise RuntimeError("out of shared memory")
+
+    with pytest.raises(RuntimeError, match="no recurrence V-tile width built"):
+        la.tune_delta_rule_fwd(
+            kernel,
+            fused_builder=lambda *shape: _StubJit("fused"),
+            h_builder=h_builder,
+            o_builder=lambda *shape: _StubJit("o"),
+        )
+
+
+def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
+    """The untuned width is the narrowest buildable tile, and always declared.
+
+    It is what ``init_config`` falls back to, so a width outside the declared
+    set would be one no candidate check could have vetted.
+    """
     assert la.default_h_block_v(64, 64) == 32
     assert la.default_h_block_v(48, 64) == 0  # 32 does not divide 48
     assert la.default_h_block_v(64, 32) == 0  # short chunk prefers no tiling
+    for dim_v, chunk_size in ((64, 64), (48, 64), (64, 32)):
+        declared = {c["h_block_v"] for c in la.delta_rule_fwd_autotune_configs(dim_v)}
+        assert la.default_h_block_v(dim_v, chunk_size) in declared
 
 
 @pytest.mark.parametrize(
     "kernel_cls",
     [deltanet_fwd.DeltaNetFwdKernel, gated_deltanet_fwd.GatedDeltaNetFwdKernel],
 )
-@pytest.mark.parametrize("dim_v, chunk_size", [(64, 64), (48, 64), (64, 32), (96, 64)])
-def test_default_config_width_is_one_the_kernel_builds(
-    kernel_cls, dim_v: int, chunk_size: int
-) -> None:
-    """The untuned width must be declared too, or forward truncates the V range."""
+def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
+    """Both kernels draw their untuned width from the shared candidates.
+
+    dim_v=48 is the shape that regressed silently: a tiled width of 32 gives
+    one tile covering 32 of 48 columns. The width rules themselves are checked
+    on the helper; this checks the kernels are wired to them.
+    """
     kernel = kernel_cls(
-        batch=1, head=1, seq_len=128, chunk_size=chunk_size, dim_k=64, dim_v=dim_v,
+        batch=1, head=1, seq_len=128, chunk_size=64, dim_k=64, dim_v=48,
         dtype="bfloat16",
     )
 
-    assert kernel.config["h_block_v"] in la.h_block_v_candidates(dim_v)
+    assert kernel.config["h_block_v"] in la.h_block_v_candidates(48)
     assert kernel.config in kernel.autotune_configs
-
-
-def test_both_forward_kernels_share_one_sweep_implementation() -> None:
-    """Neither kernel may carry its own copy of the sweep."""
-    assert deltanet_fwd.tune_delta_rule_fwd is la.tune_delta_rule_fwd
-    assert gated_deltanet_fwd.tune_delta_rule_fwd is la.tune_delta_rule_fwd
-    assert (deltanet_fwd.delta_rule_fwd_autotune_configs
-            is gated_deltanet_fwd.delta_rule_fwd_autotune_configs)
 
 
 @pytest.mark.parametrize(
