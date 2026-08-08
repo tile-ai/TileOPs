@@ -122,13 +122,8 @@ def test_fastest_v_tile_width_wins() -> None:
     assert (config["h_num_stages"], config["h_threads"]) == (2, 256)
 
 
-def test_untunable_launch_params_fall_back_but_the_width_does_not() -> None:
-    """Launch params keep their default; the V-tile width takes the safe one.
-
-    A width with no measurement has no evidence it compiles — that is how a
-    per-candidate build failure reaches us — so the untuned preference is not
-    taken on faith. Candidate order puts the untiled width first.
-    """
+def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
+    """An autotuner that returns without a result leaves every key at its default."""
     kernel = _StubKernel()
     kernel.results = {
         ("fused", 0): (None, None),
@@ -139,8 +134,7 @@ def test_untunable_launch_params_fall_back_but_the_width_does_not() -> None:
 
     config = _run(kernel)
 
-    assert kernel.default_config["h_block_v"] == 32, "the preference must diverge to bite"
-    assert config == {**kernel.default_config, "h_block_v": 0}
+    assert config == kernel.default_config
 
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
@@ -209,27 +203,24 @@ def test_widths_resolving_to_one_tile_are_a_single_candidate() -> None:
     assert {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(32)} == {0}
 
 
-def test_a_width_that_fails_to_build_does_not_sink_the_sweep() -> None:
-    """resolve_block_v cannot see shared-memory or codegen failures.
+def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
+    """Compilation happens inside the autotuner, which raises when none survives.
 
-    Those surface only when the width is built, and they disqualify that width,
-    not the whole sweep — the other width must still be measured and win.
+    That failure is this width's, so it is dropped with a warning and the other
+    width still wins — the sweep aborting would waste a usable width.
     """
     kernel = _StubKernel(chunk_size=64)
-    failing = {"h": 32}
+    inner = kernel.tune_jit_kernel
 
-    def h_builder(*shape, block_v):
-        if block_v == failing["h"]:
-            raise RuntimeError("out of shared memory")
-        return _StubJit("h", block_v=block_v)
+    def fail_wide_tile(jit_kernel, *args, **kwargs):
+        if jit_kernel.build_kwargs.get("block_v") == 32:
+            raise RuntimeError("Auto-tuning failed: No configuration successfully compiled")
+        return inner(jit_kernel, *args, **kwargs)
+
+    kernel.tune_jit_kernel = fail_wide_tile
 
     with pytest.warns(UserWarning, match="unavailable"):
-        config = la.tune_delta_rule_fwd(
-            kernel,
-            fused_builder=lambda *shape: _StubJit("fused"),
-            h_builder=h_builder,
-            o_builder=lambda *shape: _StubJit("o"),
-        )
+        config = _run(kernel)
 
     assert config["h_block_v"] == 0
     assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
@@ -244,59 +235,41 @@ def test_a_width_that_failed_to_build_is_never_the_fallback() -> None:
     """
     kernel = _StubKernel(chunk_size=64)
     kernel.results = {("h", 0): (None, None)}
-
-    def h_builder(*shape, block_v):
-        if block_v == 32:
-            raise RuntimeError("out of shared memory")
-        return _StubJit("h", block_v=block_v)
-
-    config = la.tune_delta_rule_fwd(
-        kernel,
-        fused_builder=lambda *shape: _StubJit("fused"),
-        h_builder=h_builder,
-        o_builder=lambda *shape: _StubJit("o"),
-    )
-
-    assert la.default_h_block_v(64, 64) == 32, "the preference must diverge for this to bite"
-    assert config["h_block_v"] == 0
-
-
-def test_a_tuning_failure_is_not_reported_as_a_dropped_width() -> None:
-    """Only the builder call is width-specific.
-
-    A failure inside the autotuner is the device's or the tuner's; reporting it
-    as a dropped width would hide it behind a config that looks tuned.
-    """
-    kernel = _StubKernel()
     inner = kernel.tune_jit_kernel
 
-    def explode_on_recurrence(jit_kernel, *args, **kwargs):
-        # Only the recurrence, so the failure lands inside the width loop —
-        # the fused sub-kernel is tuned before it and would mask this.
+    def fail_wide_tile(jit_kernel, *args, **kwargs):
+        if jit_kernel.build_kwargs.get("block_v") == 32:
+            raise RuntimeError("Auto-tuning failed: No configuration successfully compiled")
+        return inner(jit_kernel, *args, **kwargs)
+
+    kernel.tune_jit_kernel = fail_wide_tile
+
+    assert la.default_h_block_v(64, 64) == 32, "the preference must diverge for this to bite"
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="no recurrence V-tile"):
+        _run(kernel)
+
+
+def test_no_width_tuning_reports_the_failure_with_its_cause() -> None:
+    """A width is not the caller's to choose, so a config naming one is no answer.
+
+    A failure that is not width-specific looks the same from here, so it is not
+    lost either: it is what the raised error chains.
+    """
+    kernel = _StubKernel(chunk_size=64)
+    inner = kernel.tune_jit_kernel
+
+    def fail_every_width(jit_kernel, *args, **kwargs):
         if jit_kernel.name == "h":
             raise RuntimeError("device lost")
         return inner(jit_kernel, *args, **kwargs)
 
-    kernel.tune_jit_kernel = explode_on_recurrence
+    kernel.tune_jit_kernel = fail_every_width
 
-    with pytest.raises(RuntimeError, match="device lost"):
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="no recurrence V-tile") as e:
         _run(kernel)
 
-
-def test_no_width_building_at_all_reports_the_build_failure() -> None:
-    """A width is not the caller's to choose, so a config naming one is no answer."""
-    kernel = _StubKernel(chunk_size=64)
-
-    def h_builder(*shape, block_v):
-        raise RuntimeError("out of shared memory")
-
-    with pytest.raises(RuntimeError, match="no recurrence V-tile width could be built"):
-        la.tune_delta_rule_fwd(
-            kernel,
-            fused_builder=lambda *shape: _StubJit("fused"),
-            h_builder=h_builder,
-            o_builder=lambda *shape: _StubJit("o"),
-        )
+    assert isinstance(e.value.__cause__, RuntimeError)
+    assert "device lost" in str(e.value.__cause__)
 
 
 def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
