@@ -49,7 +49,7 @@ TileOPs is under active development and is installed from source; PyPI releases 
 - PyTorch >= 2.1, < 2.11 (CI validates 2.10)
 - CUDA Toolkit 12.x
 - NVIDIA GPU: **Hopper** (SM_90)
-- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11)
+- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11 at main snapshot `afcebed1`)
 
 ### From source
 

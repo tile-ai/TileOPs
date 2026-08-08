@@ -6,6 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.quantize_utils import _tir_packed_to_unsigned_convert
 
 GROUP_SIZE = 128
 
@@ -22,11 +23,6 @@ def _gemm_w4a16_kernel(
 ) -> Callable:
     if k % group_size != 0:
         raise ValueError(f"K must be divisible by group_size={group_size}, got {k}")
-
-    # Imported at build time, not module scope: the symbol is private to
-    # tilelang and absent from some releases in the supported range, and
-    # tileops.ops.__init__ imports this module eagerly through gemm.py.
-    from tilelang.quantize import _tir_packed_to_unsigned_convert
 
     decode_unsigned_int4 = _tir_packed_to_unsigned_convert("uint", 8)
 
