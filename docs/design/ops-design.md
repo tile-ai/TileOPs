@@ -51,11 +51,11 @@ kernel = self.get_or_build_kernel(
 )
 ```
 
-The factory runs on the first miss for that key and never again. What stays at the call site is the one op-specific thing — how the kernel is constructed — and nothing else. An op MUST NOT hold a cache dict of its own: a second dict is a second slot, and L1 already gives slots names.
+The factory runs on the first miss for that key and never again. What stays at the call site is the one op-specific thing — how the kernel is constructed — and nothing else. An op MUST NOT hold a kernel cache dict of its own: a second dict is a second slot, and L1 already gives slots names.
 
 A slot entry may hold more than one kernel. An op that builds a preprocess kernel together with its backward kernel returns both from one factory as a tuple, or as a frozen record when the specialization carries more than kernels; the entry, not the kernel, is the unit built once. Two kernels whose keys differ — an attention kernel keyed by element type and a cache-append kernel keyed by the same — are two slots, not one entry.
 
-`iter_kernels()` enumerates what an op holds: every slot entry, plus `self.kernel` for an op that binds one directly. Enumeration is explicit, never reflection over attributes. An op that runs a kernel built by another op returns that op from `kernel_delegates()`, and enumeration descends through it. `autotune()` tunes exactly what `iter_kernels()` yields, so a composite op reaches its delegates' kernels without overriding `autotune()`.
+`iter_kernels()` enumerates what an op holds: every slot entry, plus `self.kernel` for an op that binds one directly. Enumeration is explicit, never reflection over attributes. An op that runs a kernel built by another op returns that op from `kernel_delegates()` — whether the delegate is fixed at construction or itself selected per specialization — and enumeration descends through it. `autotune()` tunes exactly what `iter_kernels()` yields, so a composite op reaches its delegates' kernels without overriding `autotune()`.
 
 ## Scaffolding an Op from a Manifest Entry
 

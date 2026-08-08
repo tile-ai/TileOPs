@@ -10,9 +10,9 @@
 
 - Update `docs/design/ops-design.md` whenever you add/modify an intermediate base class, change a kernel-dispatch pattern, or introduce a new class-variable protocol.
 
-- Every kernel an op builds after construction goes through `Op.get_or_build_kernel(slot, key, factory)`. An op MUST NOT declare a cache dict, a lazily-assigned kernel attribute, or any other get-or-build of its own — including for an auxiliary kernel. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
+- Every kernel an op builds after construction goes through `Op.get_or_build_kernel(slot, key, factory)`. An op MUST NOT declare a kernel cache dict, a lazily-assigned kernel attribute, or any other kernel get-or-build of its own — including for an auxiliary kernel. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
 
-- An op that runs kernels built by another op returns that op from `kernel_delegates()`. Overriding `autotune()` to reach a delegate, or exposing a delegate's cache so reflection finds it, is prohibited.
+- An op that runs kernels built by another op returns that op from `kernel_delegates()`, whether the delegate is fixed at construction or built per specialization. Overriding `autotune()` to reach a delegate, or exposing a delegate's cache so reflection finds it, is prohibited.
 
 - A new op family inheriting `Op` directly: first check whether an existing family's `forward()` flow already fits before creating a new base class. Record the decision in the PR.
 
