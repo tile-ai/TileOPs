@@ -595,7 +595,7 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op(
     assert op(q, k, v).shape == q.shape
 
     assert builds == 1
-    assert list(op._kernel_cache) == [torch.float16]
+    assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [torch.float16]
     assert _op_valued_attrs(op) == []
 
 
