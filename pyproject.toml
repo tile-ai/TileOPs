@@ -72,7 +72,12 @@ where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.setuptools.package-data]
-tileops = ["kernels/moe/_atomic_helper.h", "manifest/*.yaml"]
+# Kernel headers and YAML data are opened at run time by path relative to
+# __file__, so every one of them has to ship. These globs are the declared
+# contract, stated by extension so a new resource is covered the day it lands
+# and so the set does not depend on a file-finder plugin being active.
+# scripts/ci/check_dist_contents.py enforces it against the built wheel.
+tileops = ["**/*.h", "**/*.yaml"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"

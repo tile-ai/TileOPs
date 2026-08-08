@@ -2,9 +2,12 @@
 
 Each case assembles a synthetic repo root plus wheel/sdist archives in a tmp
 directory, then runs the checker against them — never against the live repo
-or a real build.
+or a real build. The fixture repo carries one resource of each kind the
+package ships at runtime: a nested-package header, a hardware perf profile,
+and manifest YAMLs.
 """
 
+import io
 import subprocess
 import sys
 import tarfile
@@ -18,19 +21,26 @@ pytestmark = pytest.mark.smoke
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
-MANIFEST_YAMLS = ["attention.yaml", "gemm.yaml"]
-HEADER = "tileops/kernels/moe/_atomic_helper.h"
+MANIFEST_YAMLS = ["tileops/manifest/attention.yaml", "tileops/manifest/gemm.yaml"]
+NESTED_HEADER = "tileops/kernels/attention/_anchor_helper.h"
+MOE_HEADER = "tileops/kernels/moe/_atomic_helper.h"
+PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
+
+# Every tracked non-.py file the fixture package ships.
+RESOURCES = [*MANIFEST_YAMLS, NESTED_HEADER, MOE_HEADER, PERF_PROFILE]
+SOURCES = ["tileops/__init__.py", "tileops/perf/profile.py"]
+
+WHEEL_OK = [*RESOURCES, *SOURCES]
+SDIST_OK = [*RESOURCES, *SOURCES, "LICENSE", "README.md", "pyproject.toml"]
 
 
 def make_repo(tmp_path: Path) -> Path:
+    """Write a source tree holding every fixture resource. Not a git repo."""
     repo = tmp_path / "repo"
-    manifest_dir = repo / "tileops" / "manifest"
-    manifest_dir.mkdir(parents=True)
-    for name in MANIFEST_YAMLS:
-        (manifest_dir / name).write_text("ops: {}\n")
-    header = repo / HEADER
-    header.parent.mkdir(parents=True)
-    header.write_text("// helper\n")
+    for rel in RESOURCES + SOURCES:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("content\n")
     (repo / "LICENSE").write_text("MIT\n")
     (repo / "README.md").write_text("# tileops\n")
     return repo
@@ -38,7 +48,7 @@ def make_repo(tmp_path: Path) -> Path:
 
 def make_wheel(dist_dir: Path, entries: list[str]) -> Path:
     dist_dir.mkdir(parents=True, exist_ok=True)
-    wheel = dist_dir / "tileops-0.1.dev1+gabc1234-py3-none-any.whl"
+    wheel = dist_dir / "tileops-0.0.1.dev1+gabc1234-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as zf:
         for entry in entries:
             zf.writestr(entry, "content\n")
@@ -46,24 +56,15 @@ def make_wheel(dist_dir: Path, entries: list[str]) -> Path:
 
 
 def make_sdist(dist_dir: Path, entries: list[str]) -> Path:
-    import io
-
     dist_dir.mkdir(parents=True, exist_ok=True)
-    sdist = dist_dir / "tileops-0.1.dev1+gabc1234.tar.gz"
+    sdist = dist_dir / "tileops-0.0.1.dev1+gabc1234.tar.gz"
     with tarfile.open(sdist, "w:gz") as tf:
         for entry in entries:
             data = b"content\n"
-            info = tarfile.TarInfo(f"tileops-0.1.dev1+gabc1234/{entry}")
+            info = tarfile.TarInfo(f"tileops-0.0.1.dev1+gabc1234/{entry}")
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
     return sdist
-
-
-WHEEL_OK = [f"tileops/manifest/{n}" for n in MANIFEST_YAMLS] + [HEADER, "tileops/__init__.py"]
-SDIST_OK = (
-    [f"tileops/manifest/{n}" for n in MANIFEST_YAMLS]
-    + [HEADER, "LICENSE", "README.md", "pyproject.toml"]
-)
 
 
 def run_check(repo: Path, dist_dir: Path) -> subprocess.CompletedProcess:
@@ -81,51 +82,66 @@ def run_check(repo: Path, dist_dir: Path) -> subprocess.CompletedProcess:
     )
 
 
-def test_complete_dist_passes(tmp_path):
+def build_dist(tmp_path: Path, wheel_entries, sdist_entries) -> tuple[Path, Path]:
     repo = make_repo(tmp_path)
     dist = tmp_path / "dist"
-    make_wheel(dist, WHEEL_OK)
-    make_sdist(dist, SDIST_OK)
+    make_wheel(dist, wheel_entries)
+    make_sdist(dist, sdist_entries)
+    return repo, dist
+
+
+def test_complete_dist_passes(tmp_path):
+    repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_wheel_missing_manifest_yaml_fails(tmp_path):
-    repo = make_repo(tmp_path)
-    dist = tmp_path / "dist"
-    incomplete = [e for e in WHEEL_OK if not e.endswith("gemm.yaml")]
-    make_wheel(dist, incomplete)
-    make_sdist(dist, SDIST_OK)
+@pytest.mark.parametrize(
+    "dropped",
+    [NESTED_HEADER, PERF_PROFILE, MANIFEST_YAMLS[1]],
+    ids=["nested-package-header", "perf-profile", "manifest-yaml"],
+)
+def test_wheel_missing_any_resource_fails(tmp_path, dropped):
+    """Every tracked non-.py resource is required, whatever its subpackage."""
+    repo, dist = build_dist(tmp_path, [e for e in WHEEL_OK if e != dropped], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1
-    assert "gemm.yaml" in result.stdout
+    assert dropped in result.stdout
 
 
-def test_wheel_missing_header_fails(tmp_path):
-    repo = make_repo(tmp_path)
-    dist = tmp_path / "dist"
-    make_wheel(dist, [e for e in WHEEL_OK if e != HEADER])
-    make_sdist(dist, SDIST_OK)
+def test_all_missing_resources_are_reported(tmp_path):
+    """A wheel short several resources names each one, not just the first."""
+    dropped = [NESTED_HEADER, PERF_PROFILE]
+    repo, dist = build_dist(tmp_path, [e for e in WHEEL_OK if e not in dropped], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1
-    assert "_atomic_helper.h" in result.stdout
+    for entry in dropped:
+        assert entry in result.stdout
+
+
+def test_expected_set_comes_from_git_when_available(tmp_path):
+    """With git present the expectation follows the index, not the working tree."""
+    repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", *RESOURCES, *SOURCES], cwd=repo, check=True)
+    # Untracked, so it is not part of the shipped resource set.
+    scratch = repo / "tileops" / "perf" / "profiles" / "scratch.yaml"
+    scratch.write_text("draft\n")
+
+    result = run_check(repo, dist)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "git" in result.stdout
 
 
 def test_sdist_missing_license_fails(tmp_path):
-    repo = make_repo(tmp_path)
-    dist = tmp_path / "dist"
-    make_wheel(dist, WHEEL_OK)
-    make_sdist(dist, [e for e in SDIST_OK if e != "LICENSE"])
+    repo, dist = build_dist(tmp_path, WHEEL_OK, [e for e in SDIST_OK if e != "LICENSE"])
     result = run_check(repo, dist)
     assert result.returncode == 1
     assert "LICENSE" in result.stdout
 
 
 def test_sdist_with_pruned_directory_fails(tmp_path):
-    repo = make_repo(tmp_path)
-    dist = tmp_path / "dist"
-    make_wheel(dist, WHEEL_OK)
-    make_sdist(dist, SDIST_OK + ["tests/test_leak.py"])
+    repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK + ["tests/test_leak.py"])
     result = run_check(repo, dist)
     assert result.returncode == 1
     assert "tests/" in result.stdout

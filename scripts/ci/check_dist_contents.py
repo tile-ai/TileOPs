@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Assert the built sdist and wheel ship the files the package needs.
 
-Wheel: every ``tileops/manifest/*.yaml`` present in the repo, plus
-``tileops/kernels/moe/_atomic_helper.h``. A manifest YAML missing from the
-wheel means an installed package silently loses ops.
+Wheel: every tracked non-``.py`` file under ``tileops/`` must be present.
+Those files — kernel headers and YAML data — are opened at run time by path
+relative to ``__file__``, so one missing from the wheel is an install that
+imports cleanly and then fails on first use. The expected set is derived
+from ``git ls-files`` at run time rather than listed here, so a resource
+added later is covered the day it lands.
 
-Sdist: the manifest YAMLs, ``LICENSE``, and ``README.md`` — and none of the
-pruned trees (``tests/``, ``benchmarks/``, ``docs/``, ``assets/``,
-``workloads/``, ``.github/``).
+Sdist: the manifest YAMLs, ``LICENSE``, and ``README.md`` must be present,
+and the development-only trees (``tests/``, ``benchmarks/``, ``docs/``,
+``assets/``, ``workloads/``, and tooling directories) must be absent.
 
 Stdlib only (``zipfile``/``tarfile``), so it runs identically in CI and on a
 developer machine: ``python scripts/ci/check_dist_contents.py`` after
@@ -15,12 +18,13 @@ developer machine: ``python scripts/ci/check_dist_contents.py`` after
 """
 
 import argparse
+import subprocess
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
-WHEEL_EXTRA_REQUIRED = ("tileops/kernels/moe/_atomic_helper.h",)
+PACKAGE_DIR = "tileops"
 SDIST_EXTRA_REQUIRED = ("LICENSE", "README.md")
 SDIST_FORBIDDEN_PREFIXES = (
     "tests/",
@@ -32,16 +36,51 @@ SDIST_FORBIDDEN_PREFIXES = (
     ".claude/",
     ".foundry/",
 )
+# Build residue that lives beside the sources but is not a shipped resource.
+_IGNORED_DIRS = frozenset({"__pycache__", ".egg-info"})
 
 
-def repo_manifest_yamls(repo_root: Path) -> list[str]:
-    """Return repo-relative paths of every manifest YAML, sorted."""
-    manifest_dir = repo_root / "tileops" / "manifest"
-    return sorted(f"tileops/manifest/{p.name}" for p in manifest_dir.glob("*.yaml"))
+def _tracked_resources_from_git(repo_root: Path) -> list[str] | None:
+    """Return tracked non-``.py`` paths under the package, or None without git."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "--", PACKAGE_DIR],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    paths = [line for line in completed.stdout.splitlines() if line and not line.endswith(".py")]
+    return sorted(paths) if paths else None
+
+
+def _resources_from_source_tree(repo_root: Path) -> list[str]:
+    """Return non-``.py`` paths under the package by walking the source tree."""
+    package = repo_root / PACKAGE_DIR
+    paths = []
+    for path in package.rglob("*"):
+        if not path.is_file() or path.suffix == ".py":
+            continue
+        rel = path.relative_to(repo_root)
+        if any(part in _IGNORED_DIRS or part.endswith(".egg-info") for part in rel.parts):
+            continue
+        paths.append(rel.as_posix())
+    return sorted(paths)
+
+
+def expected_resources(repo_root: Path) -> tuple[list[str], str]:
+    """Return the resources the wheel must ship, and the source they came from."""
+    tracked = _tracked_resources_from_git(repo_root)
+    if tracked is not None:
+        return tracked, "git ls-files"
+    return _resources_from_source_tree(repo_root), "source-tree walk (git unavailable)"
 
 
 def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
-    """Return one error string per required file missing from the wheel."""
+    """Return one error string per required resource missing from the wheel."""
     with zipfile.ZipFile(wheel_path) as zf:
         names = set(zf.namelist())
     return [f"wheel {wheel_path.name}: missing {entry}" for entry in required if entry not in names]
@@ -82,20 +121,24 @@ def main(argv: list[str] | None = None) -> int:
     if not sdists:
         errors.append(f"no sdist (*.tar.gz) found in {args.dist_dir}")
 
-    manifest_yamls = repo_manifest_yamls(args.repo_root)
-    if not manifest_yamls:
-        errors.append(f"no manifest YAMLs found under {args.repo_root}/tileops/manifest")
+    resources, source = expected_resources(args.repo_root)
+    print(f"expected {len(resources)} shipped resources under {PACKAGE_DIR}/ (from {source})")
+    if not resources:
+        errors.append(f"no non-.py resources found under {args.repo_root}/{PACKAGE_DIR}")
 
-    wheel_required = manifest_yamls + list(WHEEL_EXTRA_REQUIRED)
+    manifest_yamls = [
+        r for r in resources if r.startswith(f"{PACKAGE_DIR}/manifest/") and r.endswith(".yaml")
+    ]
     sdist_required = manifest_yamls + list(SDIST_EXTRA_REQUIRED)
     for wheel in wheels:
-        errors.extend(check_wheel(wheel, wheel_required))
+        errors.extend(check_wheel(wheel, resources))
     for sdist in sdists:
         errors.extend(check_sdist(sdist, sdist_required, SDIST_FORBIDDEN_PREFIXES))
 
     for error in errors:
         print(error)
     if errors:
+        print(f"{len(errors)} problem(s) found")
         return 1
     checked = [p.name for p in wheels + sdists]
     print(f"dist contents OK: {', '.join(checked)}")
