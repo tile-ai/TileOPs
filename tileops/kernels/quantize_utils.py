@@ -1,10 +1,8 @@
 """TIR helpers for unpacking low-precision integers from packed storage.
 
-Vendored from the quantize package of tile-ai/tilelang (file
-``quantization.py``) at commit ``afcebed1`` — identical at ``65dbc98``, the
-last commit before the package's removal in tilelang#2761. Only the
-unsigned-unpack helper needed by the w4a16 GEMM kernel is vendored; behavior
-is unchanged from upstream.
+Vendored verbatim from the quantize package of tile-ai/tilelang (file
+``quantization.py``, commit ``afcebed1``; the package was removed upstream
+in tilelang#2761).
 """
 
 import tilelang  # noqa: F401  # registers the vendored "tvm" module on import
