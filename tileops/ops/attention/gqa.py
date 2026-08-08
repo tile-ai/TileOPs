@@ -189,6 +189,67 @@ def _supports_gqa_prefill_square_dense(
     )
 
 
+def _build_gqa_prefill_dense_kernel(
+    kernel_map: Dict[str, Kernel],
+    *,
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    max_seqlen_q: int,
+    max_seqlen_kv: int,
+    dim: int,
+    is_causal: bool,
+    dtype: torch.dtype,
+    sm_scale: float,
+    softcap: float,
+    tune: bool,
+) -> Kernel:
+    """Select and build the dense-prefill kernel for one geometry and element type.
+
+    Raises:
+        ValueError: if *dtype* is unsupported — both selectors below merely
+            decline, so an unguarded call would land on the generic dense slot.
+    """
+    _validate_attention_dtype(dtype)
+    if _supports_gqa_prefill_square_dense(
+            batch,
+            heads,
+            heads_kv,
+            max_seqlen_q,
+            max_seqlen_kv,
+            dim,
+            is_causal,
+            dtype,
+            h200=is_h200(),
+    ):
+        return kernel_map["gqa_prefill_square_fwd_kernel"](
+            batch,
+            heads,
+            heads_kv,
+            max_seqlen_q,
+            dim,
+            is_causal,
+            dtype,
+            sm_scale=sm_scale,
+            softcap=softcap,
+            tune=tune,
+        )
+    dense_key = _select_gqa_prefill_dense_kernel_key(dim, is_causal, dtype)
+    return kernel_map[dense_key](
+        batch,
+        heads,
+        heads_kv,
+        max_seqlen_q,
+        max_seqlen_kv,
+        dim,
+        is_causal,
+        dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        tune=tune,
+    )
+
+
 def _select_gqa_prefill_kernel_key(
     *,
     backend: str,
@@ -244,15 +305,19 @@ def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dty
     return cache_dtype
 
 
+def _validate_positive(**values: int) -> None:
+    """Raise for the first named value that is not positive; the name appears
+    in the message, so pass the caller's own parameter name."""
+    for name, value in values.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+
+
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
-    if heads <= 0:
-        raise ValueError("heads must be positive")
-    if heads_kv <= 0:
-        raise ValueError("heads_kv must be positive")
+    _validate_positive(heads=heads, heads_kv=heads_kv)
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if dim <= 0:
-        raise ValueError("dim must be positive")
+    _validate_positive(dim=dim)
 
 
 def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
@@ -269,8 +334,7 @@ def _score_softcap(softcap: Optional[float]) -> float:
 
 def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     rotary_dim = dim if rotary_dim is None else rotary_dim
-    if rotary_dim <= 0:
-        raise ValueError("rotary_dim must be positive")
+    _validate_positive(rotary_dim=rotary_dim)
     if rotary_dim % 2 != 0:
         raise ValueError("rotary_dim must be even")
     if rotary_dim > dim:
@@ -299,6 +363,8 @@ class GroupedQueryAttentionFwdOp(Op):
                  softcap: Optional[float] = None,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        _validate_positive(batch=batch, seq_len=seq_len)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -309,7 +375,6 @@ class GroupedQueryAttentionFwdOp(Op):
         self.softcap = _score_softcap(softcap)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._prefill_ops: Dict[torch.dtype, "GroupedQueryAttentionPrefillFwdOp"] = {}
         self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     @property
@@ -320,37 +385,22 @@ class GroupedQueryAttentionFwdOp(Op):
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
-    def _prefill_op_for(self, dtype: torch.dtype) -> "GroupedQueryAttentionPrefillFwdOp":
-        """Packed prefill op for *dtype*, whose ctor dtype is the output element type."""
-        op = self._prefill_ops.get(dtype)
-        if op is None:
-            op = GroupedQueryAttentionPrefillFwdOp(
-                batch=self.batch,
-                heads=self.heads,
-                heads_kv=self.heads_kv,
-                dim=self.dim,
-                max_seqlen_q=self.seq_len,
-                max_seqlen_kv=self.seq_len,
-                dtype=dtype,
-                is_causal=self.is_causal,
-                sm_scale=self.sm_scale,
-                softcap=self.softcap,
-                backend="dense",
-                kernel_map=self.kernel_map,
-                tune=self.tune,
-            )
-            self._prefill_ops[dtype] = op
-        return op
-
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         kernel = self._kernel_cache.get(dtype)
         if kernel is None:
-            _validate_attention_dtype(dtype)
-            prefill_op = self._prefill_op_for(dtype)
-            kernel = (
-                prefill_op._get_square_dense_kernel()
-                if prefill_op._uses_square_dense_fast_path()
-                else prefill_op._get_dense_kernel()
+            kernel = _build_gqa_prefill_dense_kernel(
+                self.kernel_map,
+                batch=self.batch,
+                heads=self.heads,
+                heads_kv=self.heads_kv,
+                max_seqlen_q=self.seq_len,
+                max_seqlen_kv=self.seq_len,
+                dim=self.dim,
+                is_causal=self.is_causal,
+                dtype=dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=self.tune,
             )
             self._kernel_cache[dtype] = kernel
         return kernel
@@ -417,12 +467,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         tune: bool = False,
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if max_seqlen_q <= 0:
-            raise ValueError("max_seqlen_q must be positive")
-        if max_seqlen_kv <= 0:
-            raise ValueError("max_seqlen_kv must be positive")
+        _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         if is_causal and max_seqlen_q > max_seqlen_kv:
             raise ValueError("causal prefill requires max_seqlen_q <= max_seqlen_kv")
         if window_size_left != -1 and window_size_left < 0:
@@ -454,8 +499,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.backend = backend
         self.validate_uniform_cu_seqlens = validate_uniform_cu_seqlens
         self.tune = tune
-        self._dense_kernel = None
-        self._square_dense_kernel = None
+        self._dense_prefill_kernel = None
         self._varlen_kernel = None
         self._sliding_window_varlen_kernel = None
         self._fp8_kernel = None
@@ -584,53 +628,24 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         fp8_dtype = getattr(torch, "float8_e4m3fn", None)
         return fp8_dtype is not None and tensor.dtype == fp8_dtype
 
-    def _get_dense_kernel(self) -> Kernel:
-        if self._dense_kernel is None:
-            dense_key = _select_gqa_prefill_dense_kernel_key(
-                self.dim, self.is_causal, self.dtype)
-            self._dense_kernel = self.kernel_map[dense_key](
-                self.batch,
-                self.heads,
-                self.heads_kv,
-                self.max_seqlen_q,
-                self.max_seqlen_kv,
-                self.dim,
-                self.is_causal,
-                self.dtype,
+    def _get_dense_prefill_kernel(self) -> Kernel:
+        """Dense-prefill kernel for this op's geometry and output element type."""
+        if self._dense_prefill_kernel is None:
+            self._dense_prefill_kernel = _build_gqa_prefill_dense_kernel(
+                self.kernel_map,
+                batch=self.batch,
+                heads=self.heads,
+                heads_kv=self.heads_kv,
+                max_seqlen_q=self.max_seqlen_q,
+                max_seqlen_kv=self.max_seqlen_kv,
+                dim=self.dim,
+                is_causal=self.is_causal,
+                dtype=self.dtype,
                 sm_scale=self.sm_scale,
                 softcap=self.softcap,
                 tune=self.tune,
             )
-        return self._dense_kernel
-
-    def _uses_square_dense_fast_path(self) -> bool:
-        return _supports_gqa_prefill_square_dense(
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            self.max_seqlen_q,
-            self.max_seqlen_kv,
-            self.dim,
-            self.is_causal,
-            self.dtype,
-            h200=is_h200(),
-        )
-
-    def _get_square_dense_kernel(self) -> Kernel:
-        if self._square_dense_kernel is None:
-            self._square_dense_kernel = self.kernel_map["gqa_prefill_square_fwd_kernel"](
-                self.batch,
-                self.heads,
-                self.heads_kv,
-                self.max_seqlen_q,
-                self.dim,
-                self.is_causal,
-                self.dtype,
-                sm_scale=self.sm_scale,
-                softcap=self.softcap,
-                tune=self.tune,
-            )
-        return self._square_dense_kernel
+        return self._dense_prefill_kernel
 
     def _get_varlen_kernel(self) -> Kernel:
         if self._varlen_kernel is None:
@@ -753,12 +768,8 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             q_bshd = q.view(self.batch, self.max_seqlen_q, self.heads, self.dim)
             k_bshd = k.view(self.batch, self.max_seqlen_kv, self.heads_kv, self.dim)
             v_bshd = v.view(self.batch, self.max_seqlen_kv, self.heads_kv, self.dim)
-            kernel = (
-                self._get_square_dense_kernel()
-                if self._uses_square_dense_fast_path()
-                else self._get_dense_kernel()
-            )
-            out = _attention_output(kernel(q_bshd, k_bshd, v_bshd))
+            out = _attention_output(
+                self._get_dense_prefill_kernel()(q_bshd, k_bshd, v_bshd))
             self._record_roofline(q, k, cu_seqlens_q, cu_seqlens_kv)
             return out.reshape(q.shape)
 
@@ -807,12 +818,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         tune: bool = False,
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if max_seqlen_q <= 0:
-            raise ValueError("max_seqlen_q must be positive")
-        if max_seqlen_kv <= 0:
-            raise ValueError("max_seqlen_kv must be positive")
+        _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1020,16 +1026,11 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             rotary_dim = _rope_rotary_dim(dim, rotary_dim)
             if max_position is None:
                 raise ValueError("max_position is required when fuse_rope=True")
-            if max_position <= 0:
-                raise ValueError("max_position must be positive")
+            _validate_positive(max_position=max_position)
         elif rotary_dim is not None:
             raise ValueError("rotary_dim requires fuse_rope=True")
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if max_pages_per_req <= 0:
-            raise ValueError("max_pages_per_req must be positive")
-        if page_size <= 0:
-            raise ValueError("page_size must be positive")
+        _validate_positive(
+            batch=batch, max_pages_per_req=max_pages_per_req, page_size=page_size)
         if page_size & (page_size - 1) != 0:
             raise ValueError("page_size must be a power of two")
         cache_dtype = _paged_cache_dtype(cache_dtype)
@@ -1508,8 +1509,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
-        if page_size <= 0:
-            raise ValueError("page_size must be positive")
+        _validate_positive(page_size=page_size)
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
 

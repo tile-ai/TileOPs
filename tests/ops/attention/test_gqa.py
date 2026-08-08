@@ -1,4 +1,5 @@
 
+import dataclasses
 from typing import Optional
 
 import pytest
@@ -18,12 +19,14 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
+from tileops.ops.attention import gqa as gqa_module
 from tileops.ops.attention.gqa import (
     _select_gqa_fwd_kernel_cls,
     _select_gqa_paged_prefill_kernel_keys,
     _select_gqa_prefill_dense_kernel_key,
     _select_gqa_prefill_kernel_key,
 )
+from tileops.ops.op_base import Op
 from tileops.utils import is_h200
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdWorkload,
@@ -314,8 +317,7 @@ def test_gqa_prefill_fwd_square_uses_square_fast_path(dtype: torch.dtype) -> Non
         backend="dense",
     )
 
-    assert op._uses_square_dense_fast_path()
-    assert op._get_square_dense_kernel().__class__.__name__ == "GQAFwdWsPersistentCausalKernel"
+    assert op._get_dense_prefill_kernel().__class__.__name__ == "GQAFwdWsPersistentCausalKernel"
 
 
 @pytest.mark.parametrize("sm_scale, softcap", [
@@ -344,8 +346,7 @@ def test_gqa_prefill_fwd_square_feature_variants_use_square_fast_path(
         backend="dense",
     )
 
-    assert op._uses_square_dense_fast_path()
-    assert op._get_square_dense_kernel().__class__.__name__ == "GQAFwdWsPersistentCausalKernel"
+    assert op._get_dense_prefill_kernel().__class__.__name__ == "GQAFwdWsPersistentCausalKernel"
 
 
 @pytest.mark.parametrize("seq_len_q, seq_len_kv, sm_scale, softcap", [
@@ -375,8 +376,8 @@ def test_gqa_prefill_fwd_q_lt_kv_uses_prefill_ws_kernel(
         backend="dense",
     )
 
-    assert not op._uses_square_dense_fast_path()
-    assert op._get_dense_kernel().__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+    assert op._get_dense_prefill_kernel().__class__.__name__ == (
+        "GQAPrefillFwdWsPersistentCausalKernel")
 
 
 @pytest.mark.smoke
@@ -501,8 +502,7 @@ def test_gqa_prefill_fwd_explicit_dense_can_skip_uniform_validation(
     monkeypatch.setattr(op, "_validate_dtypes", lambda *args, **kwargs: None)
     monkeypatch.setattr(op, "_validate_common_shapes", lambda *args, **kwargs: None)
     monkeypatch.setattr(op, "_uniform_cu_seqlens", fail_uniform_check)
-    monkeypatch.setattr(op, "_uses_square_dense_fast_path", lambda: False)
-    monkeypatch.setattr(op, "_get_dense_kernel", lambda: fake_dense_kernel)
+    monkeypatch.setattr(op, "_get_dense_prefill_kernel", lambda: fake_dense_kernel)
 
     out = op(q, k, v, cu, cu, q_scale, k_scale, v_scale)
     assert out.shape == q.shape
@@ -524,29 +524,204 @@ def test_gqa_prefill_fwd_auto_backend_requires_uniform_validation() -> None:
         )
 
 
+def _holds_op(value: object, depth: int = 0) -> bool:
+    """Whether *value* is or reaches an ``Op``, descending the same containers
+    and depth as ``op_base._iter_kernels``."""
+    if isinstance(value, Op):
+        return True
+    if depth >= 2:
+        return False
+    if isinstance(value, dict):
+        return any(_holds_op(item, depth + 1) for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return any(_holds_op(item, depth + 1) for item in value)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return any(
+            _holds_op(getattr(value, field.name), depth + 1)
+            for field in dataclasses.fields(value))
+    return False
+
+
+def _record_kernel_builds(op: Op) -> list:
+    """Replace each of *op*'s kernel slots with a recorder of its build call.
+
+    Returns the list the recorders append ``(slot, args, kwargs)`` to.
+    """
+    calls: list = []
+
+    def recorder(slot: str):
+
+        def build(*args: object, **kwargs: object) -> str:
+            calls.append((slot, args, kwargs))
+            return f"built:{slot}"
+
+        return build
+
+    for slot in op.kernel_map:
+        op.kernel_map[slot] = recorder(slot)
+    return calls
+
+
+def _op_valued_attrs(op: Op) -> list:
+    """Names of *op*'s attributes that are or reach an ``Op``; scans ``dir``
+    so properties and class-bound attributes are covered."""
+    return sorted(name for name in dir(op)
+                  if not name.startswith("__") and _holds_op(getattr(op, name, None)))
+
+
 @pytest.mark.smoke
-def test_gqa_fwd_bshd_wrapper_uses_dense_kernel_without_uniform_check(
+def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The wrapper reaches a kernel through the dense-prefill build step alone."""
     batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
     q = torch.empty(batch, seq_len, heads, dim, dtype=torch.float16)
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float16)
     v = torch.empty_like(k)
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True)
-
-    def fail_uniform_check(*args: object, **kwargs: object) -> bool:
-        pytest.fail("BSHD wrapper should not inspect packed cu_seqlens")
+    builds = 0
 
     def fake_dense_kernel(*args: torch.Tensor) -> torch.Tensor:
         return torch.empty_like(args[0])
 
-    prefill_op = op._prefill_op_for(torch.float16)
-    monkeypatch.setattr(prefill_op, "_uniform_cu_seqlens", fail_uniform_check)
-    monkeypatch.setattr(prefill_op, "_uses_square_dense_fast_path", lambda: False)
-    monkeypatch.setattr(prefill_op, "_get_dense_kernel", lambda: fake_dense_kernel)
+    def count_build(*args: object, **kwargs: object) -> object:
+        nonlocal builds
+        builds += 1
+        return fake_dense_kernel
 
-    out = op(q, k, v)
-    assert out.shape == q.shape
+    monkeypatch.setattr(gqa_module, "_build_gqa_prefill_dense_kernel", count_build)
+
+    assert op(q, k, v).shape == q.shape
+    assert op(q, k, v).shape == q.shape
+
+    assert builds == 1
+    assert list(op._kernel_cache) == [torch.float16]
+    assert _op_valued_attrs(op) == []
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, h200, expected_slot", [
+    pytest.param(4, 512, 32, 8, 128, True, "gqa_prefill_square_fwd_kernel", id="square"),
+    pytest.param(4, 512, 32, 8, 128, False, "gqa_prefill_causal_fwd_kernel", id="declines-off-h200"),
+    pytest.param(1, 256, 8, 2, 128, True, "gqa_prefill_causal_fwd_kernel", id="declines-work-items"),
+    pytest.param(4, 384, 64, 16, 128, True, "gqa_prefill_causal_fwd_kernel", id="declines-m-blocks"),
+    pytest.param(4, 512, 32, 8, 64, True, "gqa_prefill_fwd_kernel", id="declines-dim"),
+])
+def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: int,
+    seq_len: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    h200: bool,
+    expected_slot: str,
+) -> None:
+    """Both callers record the identical build call for the expected slot.
+
+    ``is_h200`` is pinned so every case runs on any machine. Each case's
+    geometry reaches the guard its id names — an earlier guard would mask
+    it otherwise.
+    """
+    dtype = torch.float16
+    sm_scale, softcap = 0.125, 3.5
+    monkeypatch.setattr(gqa_module, "is_h200", lambda: h200)
+    wrapper = GroupedQueryAttentionFwdOp(
+        batch, heads, heads_kv, seq_len, dim, True, sm_scale=sm_scale, softcap=softcap)
+    packed = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        is_causal=True,
+        dtype=dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        backend="dense",
+    )
+
+    wrapper_calls = _record_kernel_builds(wrapper)
+    packed_calls = _record_kernel_builds(packed)
+
+    wrapper._get_kernel(dtype)
+    packed._get_dense_prefill_kernel()
+
+    assert len(wrapper_calls) == 1
+    slot, args, kwargs = wrapper_calls[0]
+    assert slot == expected_slot
+    # The square slot takes one seq_len; the dense slots take q and kv both.
+    if expected_slot == "gqa_prefill_square_fwd_kernel":
+        assert args == (batch, heads, heads_kv, seq_len, dim, True, dtype)
+    else:
+        assert args == (batch, heads, heads_kv, seq_len, seq_len, dim, True, dtype)
+    assert kwargs == {"sm_scale": sm_scale, "softcap": softcap, "tune": False}
+
+    assert wrapper_calls == packed_calls
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
+    """A non-square geometry passes q and kv lengths in their own places —
+    the square parity test above cannot tell them apart."""
+    batch, heads, heads_kv, dim = 1, 8, 2, 128
+    max_seqlen_q, max_seqlen_kv = 128, 256
+    packed = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_kv=max_seqlen_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        backend="dense",
+    )
+    calls = _record_kernel_builds(packed)
+
+    packed._get_dense_prefill_kernel()
+
+    assert calls == [("gqa_prefill_causal_fwd_kernel",
+                      (batch, heads, heads_kv, max_seqlen_q, max_seqlen_kv, dim, True,
+                       torch.float16), {
+                           "sm_scale": packed.sm_scale,
+                           "softcap": 0.0,
+                           "tune": False
+                       })]
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
+    """Nothing downstream validates; a zero ``heads_kv`` would surface as
+    ``ZeroDivisionError`` at ``heads % heads_kv``."""
+    with pytest.raises(ValueError, match="heads_kv must be positive"):
+        GroupedQueryAttentionFwdOp(1, 8, 0, 64, 64, True)
+    with pytest.raises(ValueError, match="batch must be positive"):
+        GroupedQueryAttentionFwdOp(0, 8, 2, 64, 64, True)
+    with pytest.raises(ValueError, match="seq_len must be positive"):
+        GroupedQueryAttentionFwdOp(1, 8, 2, 0, 64, True)
+
+
+@pytest.mark.smoke
+def test_build_gqa_prefill_dense_kernel_rejects_unsupported_dtype() -> None:
+    """Both selectors decline rather than raise, so the build step must
+    refuse unsupported element types itself."""
+    with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
+        gqa_module._build_gqa_prefill_dense_kernel(
+            {},
+            batch=1,
+            heads=8,
+            heads_kv=2,
+            max_seqlen_q=128,
+            max_seqlen_kv=128,
+            dim=128,
+            is_causal=True,
+            dtype=torch.float32,
+            sm_scale=1.0,
+            softcap=0.0,
+            tune=False,
+        )
 
 
 @pytest.mark.smoke
@@ -585,8 +760,7 @@ def test_gqa_prefill_fwd_auto_backend_checks_uniform_cu_seqlens(
     monkeypatch.setattr(op, "_validate_dtypes", lambda *args, **kwargs: None)
     monkeypatch.setattr(op, "_validate_common_shapes", lambda *args, **kwargs: None)
     monkeypatch.setattr(op, "_uniform_cu_seqlens", count_uniform_check)
-    monkeypatch.setattr(op, "_uses_square_dense_fast_path", lambda: False)
-    monkeypatch.setattr(op, "_get_dense_kernel", lambda: fake_dense_kernel)
+    monkeypatch.setattr(op, "_get_dense_prefill_kernel", lambda: fake_dense_kernel)
 
     out = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
     assert out.shape == q.shape
@@ -697,7 +871,8 @@ def test_gqa_prefill_fwd_ws_path_matches_reference(
         sm_scale=sm_scale,
         softcap=softcap,
     )
-    assert op._get_dense_kernel().__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+    assert op._get_dense_prefill_kernel().__class__.__name__ == (
+        "GQAPrefillFwdWsPersistentCausalKernel")
     output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
