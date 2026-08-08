@@ -34,9 +34,23 @@ def test_deprecated_buffer_annotation_fails(tmp_path):
     assert "T.Tensor" in result.stdout
 
 
-def test_spaced_buffer_spelling_fails(tmp_path):
-    """``T . Buffer`` parses the same, so the check must not hinge on spacing."""
-    result = run_lint(tmp_path, 'x: T . Buffer((8,), "float32") = None\n')
+@pytest.mark.parametrize(
+    "source",
+    [
+        'x: T . Buffer((8,), "float32") = None\n',
+        'x: T\t.\tBuffer((8,), "float32") = None\n',
+        'x: (T\n .\n Buffer((8,), "float32")) = None\n',
+    ],
+    ids=["spaces", "tabs", "newlines"],
+)
+def test_layout_does_not_hide_a_violation(tmp_path, source):
+    """All of these parse to the same attribute access, so all must be flagged."""
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 1
+
+
+def test_space_before_call_paren_fails(tmp_path):
+    result = run_lint(tmp_path, 'bits = T.reinterpret ("float16", x)\n')
     assert result.returncode == 1
 
 
@@ -56,6 +70,8 @@ def test_value_first_reinterpret_passes(tmp_path):
         'bits = T.reinterpret(x, "float16")\n'
         'handle = T.reinterpret(T.uint64(0), dtype="handle")\n'
         "packed = T.reinterpret(hval, T.uint16)\n"
+        # A value that is merely string-producing is still a value.
+        'joined = T.reinterpret("abc" + str(x), "float16")\n'
     )
     result = run_lint(tmp_path, content)
     assert result.returncode == 0, result.stdout

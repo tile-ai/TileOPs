@@ -2,7 +2,7 @@
 """Lint shipped Python for deprecated TIR spellings.
 
 Both forms below still parse, so nothing fails until a toolchain bump drops
-them; a check is what keeps them from drifting back in. Flags, in code only:
+them; a check is what keeps them from drifting back in. Flags:
 
 - ``T.Buffer`` as a parameter type. The supported spelling is
   ``T.Tensor(shape, dtype)``; the signature is identical, so correcting a site
@@ -11,88 +11,88 @@ them; a check is what keeps them from drifting back in. Flags, in code only:
   dtype-first order. The supported spelling puts the value first:
   ``T.reinterpret(value, dtype)``.
 
-Comments and string literals are skipped, so prose naming a deprecated form —
-this docstring included — is not a violation, while real usage anywhere in the
-tree still is. A file that will not tokenize falls back to a raw line scan
-rather than going unchecked.
+Detection works on the parsed syntax tree, not on the raw text, which is what
+makes it indifferent to how the source is laid out: whitespace or newlines
+around the dot, a space before the call parenthesis, and prose naming a
+deprecated form in a comment, string, or this very docstring are all handled by
+construction rather than by a pattern per spelling. A file that will not parse
+falls back to a text scan rather than going unchecked.
 
 Usage: ``deprecated_tir_api_lint.py [FILE ...]``. With no arguments, scans the
 default shipped-source trees excluding ``tileops/manifest/``. Exits 1 when any
 violation is found.
 """
 
-import io
+import ast
 import re
 import sys
-import tokenize
 
 from _common import run
 
-# ``T . Buffer`` is legal Python, so tolerate whitespace around the dot.
-_DOT = r"\s*\.\s*"
-_PATTERNS = (
-    (
-        re.compile(rf"\bT{_DOT}Buffer\b"),
-        "deprecated T.Buffer; use T.Tensor(shape, dtype)",
-    ),
-    (
-        # A string literal as the first argument means the dtype was passed
-        # first; the optional letters cover prefixes such as f, r and b.
-        re.compile(rf"\bT{_DOT}reinterpret\(\s*[A-Za-z]*[\"']"),
-        "deprecated dtype-first T.reinterpret; use T.reinterpret(value, dtype)",
-    ),
+_NAMESPACE = "T"
+_BUFFER_MESSAGE = "deprecated T.Buffer; use T.Tensor(shape, dtype)"
+_REINTERPRET_MESSAGE = "deprecated dtype-first T.reinterpret; use T.reinterpret(value, dtype)"
+
+# Only for sources that will not parse, where there is no tree to inspect.
+_FALLBACK_PATTERNS = (
+    (re.compile(r"\bT\s*\.\s*Buffer\b"), _BUFFER_MESSAGE),
+    (re.compile(r"\bT\s*\.\s*reinterpret\s*\(\s*[A-Za-z]*[\"']"), _REINTERPRET_MESSAGE),
 )
 
-# Python 3.12 splits f-strings into start/middle/end tokens; the literal text
-# arrives as FSTRING_MIDDLE rather than STRING. Older versions emit one STRING.
-_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
+
+def _is_namespace_attribute(node: ast.AST, attr: str) -> bool:
+    """True when ``node`` is the attribute ``T.<attr>``."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attr
+        and isinstance(node.value, ast.Name)
+        and node.value.id == _NAMESPACE
+    )
 
 
-def _blank_comments_and_strings(text: str) -> dict[int, str] | None:
-    """Return each line with comment and string-literal content blanked out.
+def _is_string_expression(node: ast.AST) -> bool:
+    """True for a literal string or an f-string, the dtype-shaped arguments.
 
-    Quote characters survive so the dtype-first ``T.reinterpret("f16", x)``
-    shape stays recognizable; only what is written *inside* a literal — where
-    a deprecated spelling is prose, not usage — is erased. Blanking rather
-    than deleting keeps column positions intact. Returns None when the source
-    will not tokenize.
+    A concatenation or a call that happens to produce a string is not one:
+    ``T.reinterpret("abc" + str(x), "f16")`` passes a value first and is
+    correct.
     """
-    lines = dict(enumerate(text.splitlines(), start=1))
-    try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
-    except (tokenize.TokenError, SyntaxError, IndentationError, ValueError):
-        return None
-    blankable = {tokenize.COMMENT, tokenize.STRING}
-    if _FSTRING_MIDDLE is not None:
-        blankable.add(_FSTRING_MIDDLE)
-    for token in tokens:
-        if token.type not in blankable:
-            continue
-        # Only a whole STRING token carries its own quotes; f-string literal
-        # text does not, so blanking it wholesale is right.
-        keep_quotes = token.type == tokenize.STRING
-        (start_row, start_col), (end_row, end_col) = token.start, token.end
-        for row in range(start_row, end_row + 1):
-            line = lines.get(row, "")
-            begin = start_col if row == start_row else 0
-            finish = end_col if row == end_row else len(line)
-            span = line[begin:finish]
-            blanked = "".join(c if keep_quotes and c in "\"'" else " " for c in span)
-            lines[row] = line[:begin] + blanked + line[finish:]
-    return lines
+    return isinstance(node, ast.JoinedStr) or (
+        isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+
+
+def _lint_tree(tree: ast.AST) -> list[tuple[int, str]]:
+    findings = []
+    for node in ast.walk(tree):
+        if _is_namespace_attribute(node, "Buffer"):
+            findings.append((node.lineno, _BUFFER_MESSAGE))
+        elif (
+            isinstance(node, ast.Call)
+            and _is_namespace_attribute(node.func, "reinterpret")
+            and node.args
+            and _is_string_expression(node.args[0])
+        ):
+            findings.append((node.lineno, _REINTERPRET_MESSAGE))
+    return sorted(findings)
+
+
+def _lint_text_fallback(text: str) -> list[tuple[int, str]]:
+    findings = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in _FALLBACK_PATTERNS:
+            if pattern.search(line):
+                findings.append((lineno, message))
+    return findings
 
 
 def lint_text(text: str) -> list[tuple[int, str]]:
     """Return ``(line_number, message)`` pairs for every violation in ``text``."""
-    scanned = _blank_comments_and_strings(text)
-    if scanned is None:  # untokenizable: scan raw so the file is not skipped
-        scanned = dict(enumerate(text.splitlines(), start=1))
-    findings = []
-    for lineno in sorted(scanned):
-        for pattern, message in _PATTERNS:
-            if pattern.search(scanned[lineno]):
-                findings.append((lineno, message))
-    return findings
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return _lint_text_fallback(text)
+    return _lint_tree(tree)
 
 
 def main(argv: list[str] | None = None) -> int:
