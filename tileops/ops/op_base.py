@@ -1,7 +1,8 @@
 import dataclasses
 import warnings
 from abc import ABC, abstractmethod
-from typing import Hashable, Optional, Union
+from types import MappingProxyType
+from typing import Callable, Hashable, Iterator, Mapping, Optional, Sequence, TypeVar, Union
 
 import torch
 
@@ -13,27 +14,26 @@ from .compile_boundary import register_instance
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
-def _iter_kernels(value: object, _depth: int = 0) -> "list[Kernel]":
-    """Return the kernels *value* holds, descending through its containers.
+_Entry = TypeVar("_Entry")
 
-    A kernel cache is a dict keyed by shape and dtype. An op that builds
-    several kernels together (preprocess plus backward, say) stores a tuple
-    per entry, and one whose specialization carries more than a kernel stores
-    a record, so the search goes two levels down through dicts, sequences and
-    dataclass instances alike. A cache value that hides its kernel from this
-    traversal is invisible to ``autotune``.
+
+def _entry_kernels(entry: object) -> "list[Kernel]":
+    """Return the kernels one slot entry holds, descending through containers.
+
+    An entry is a kernel when the specialization is nothing but a kernel. An op
+    that builds several kernels together — preprocess plus backward, say —
+    makes them one entry as a tuple, and one whose specialization carries more
+    than kernels makes it a frozen record, so the search descends through
+    sequences and dataclass instances alike. An entry that hides its kernel
+    from this traversal is invisible to ``iter_kernels`` and so to ``autotune``.
     """
-    if isinstance(value, Kernel):
-        return [value]
-    if _depth >= 2:
-        return []
-    if isinstance(value, dict):
-        return [k for v in value.values() for k in _iter_kernels(v, _depth + 1)]
-    if isinstance(value, (tuple, list)):
-        return [k for v in value for k in _iter_kernels(v, _depth + 1)]
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return [k for f in dataclasses.fields(value)
-                for k in _iter_kernels(getattr(value, f.name), _depth + 1)]
+    if isinstance(entry, Kernel):
+        return [entry]
+    if isinstance(entry, (tuple, list)):
+        return [k for item in entry for k in _entry_kernels(item)]
+    if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
+        return [k for f in dataclasses.fields(entry)
+                for k in _entry_kernels(getattr(entry, f.name))]
     return []
 
 
@@ -56,7 +56,7 @@ class Op(ABC):
 
     Attributes:
         kernel: single kernel, for ops that hold one; ops that build per
-            dtype keep a cache instead
+            specialization use ``get_or_build_kernel`` slots instead
         dtype: Data type for computation (e.g., torch.float16)
         device: Device for computation (e.g., 'cuda')
         input_shapes: Expected input tensor shapes
@@ -195,24 +195,94 @@ class Op(ABC):
         # registration point for the compile dispatch boundary.
         self._instance_key = register_instance(self)
 
+    def get_or_build_kernel(
+        self,
+        slot: str,
+        key: Hashable,
+        factory: Callable[[], _Entry],
+    ) -> _Entry:
+        """Return the entry at ``(slot, key)``, calling *factory* once on a miss.
+
+        This is the Op layer's only get-or-build: an op names the slot it is
+        asking about and the specialization it wants, and supplies the one thing
+        that is its own — how the kernel is constructed. Slots are created on
+        first use, so no constructor declares one.
+
+        Args:
+            slot: The kernel role, one per kernel the op holds. Conventionally
+                the ``kernel_map`` dispatch key whose kernel *factory* builds.
+            key: What the entry is specialized for, typically
+                ``(self._cache_key(*input_shapes), dtype)`` or just the dtype.
+            factory: Zero-argument callable building the entry. Called only on a
+                miss. It may return one kernel, a tuple of kernels built
+                together, or a frozen record carrying kernels plus whatever else
+                the specialization implies.
+
+        Returns:
+            The stored entry, identical across calls with the same
+            ``(slot, key)``.
+
+        Example:
+            >>> kernel = op.get_or_build_kernel(  # doctest: +SKIP
+            ...     "rms_norm_fwd_kernel",
+            ...     (op._cache_key(x.shape), x.dtype),
+            ...     lambda: op.kernel_map["rms_norm_fwd_kernel"](M, N, x.dtype))
+        """
+        slots = self.__dict__.setdefault("_kernel_slots", {})
+        entries = slots.setdefault(slot, {})
+        if key not in entries:
+            entries[key] = factory()
+        return entries[key]
+
+    def built_kernels(self, slot: str) -> Mapping[Hashable, object]:
+        """Return a read-only view of the entries built in *slot* so far.
+
+        Empty before the slot's first build. For introspection — tests,
+        benchmark reporting — never for dispatch: an execution path asks
+        ``get_or_build_kernel`` so a miss builds rather than raises.
+        """
+        return MappingProxyType(self.__dict__.get("_kernel_slots", {}).get(slot, {}))
+
+    def kernel_delegates(self) -> Sequence["Op"]:
+        """Return the ops whose kernels this op runs.
+
+        A composite op — one that resolves its call through another op rather
+        than building the kernel itself — overrides this so enumeration reaches
+        the delegate. Default: this op builds everything it runs.
+        """
+        return ()
+
+    def iter_kernels(self) -> Iterator[Kernel]:
+        """Yield every kernel the op holds, each one once.
+
+        Enumeration is explicit: the entries of every slot, then ``self.kernel``
+        for an op that binds one directly, then the same walk over each
+        ``kernel_delegates()`` entry. A kernel bound to any other attribute is
+        not searched for — an op that holds one puts it in a slot.
+        """
+        seen: set[int] = set()
+        for kernel in self._walk_kernels():
+            if id(kernel) not in seen:
+                seen.add(id(kernel))
+                yield kernel
+
+    def _walk_kernels(self) -> Iterator[Kernel]:
+        """Yield the kernels this op and its delegates hold, duplicates included."""
+        for entries in self.__dict__.get("_kernel_slots", {}).values():
+            for entry in entries.values():
+                yield from _entry_kernels(entry)
+        yield from _entry_kernels(self.__dict__.get("kernel"))
+        for delegate in self.kernel_delegates():
+            yield from delegate._walk_kernels()
+
     def autotune(self) -> None:
         """Autotune every kernel the op holds.
 
-        An op that builds its kernels at forward time keeps them in a cache
-        keyed by shape and dtype, so the search covers the values of dict
-        attributes and the items of tuple/list attributes as well as kernels
-        bound directly. Only kernels already built are tuned; a cache the op
-        has not populated yet has nothing to tune.
+        Only kernels already built are tuned: a slot the op has not populated
+        yet has nothing to tune.
         """
-        seen: set[int] = set()
-        for attr_name in dir(self):
-            # ``__dict__`` would re-yield every kernel bound as an attribute.
-            if attr_name.startswith("__"):
-                continue
-            for kernel in _iter_kernels(getattr(self, attr_name, None)):
-                if id(kernel) not in seen:
-                    seen.add(id(kernel))
-                    kernel.autotune()
+        for kernel in self.iter_kernels():
+            kernel.autotune()
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:

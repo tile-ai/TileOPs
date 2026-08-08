@@ -2,9 +2,11 @@
 
 Covers ``Op._cache_key`` default behavior, the runtime warning fired when
 a subclass with empty ``_static_axes`` does not override ``_cache_key``,
-composite kernel-map overrides, and ``Op.autotune`` kernel discovery.
+composite kernel-map overrides, the ``get_or_build_kernel`` primitive, and
+the explicit kernel enumeration ``Op.autotune`` runs over.
 """
 
+import dataclasses
 import warnings
 
 import pytest
@@ -15,6 +17,21 @@ from tileops.ops import op_base
 from tileops.ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
+
+
+class _RecordingKernel(Kernel):
+    """Kernel that records its name when tuned, so autotune order is visible."""
+
+    def __init__(self, name: str, tuned: list):
+        super().__init__()
+        self.name = name
+        self._tuned = tuned
+
+    def forward(self):
+        return None
+
+    def autotune(self, warmup=25, rep=50):
+        self._tuned.append(self.name)
 
 
 @pytest.fixture(autouse=True)
@@ -153,69 +170,162 @@ class TestCompositeKernelMapOverride:
         assert "extra" not in op.kernel_map
 
 
+class _SlottedOp(Op):
+    """Op whose forward-built kernels all go through ``get_or_build_kernel``."""
+
+    def __init__(self, tuned: list):
+        self._tuned = tuned
+        self.builds: list[tuple[str, object]] = []
+
+    @property
+    def default_kernel_map(self):
+        return {}
+
+    def forward(self, *a, **kw):
+        return None
+
+    def build(self, slot: str, key, name: str):
+        def factory():
+            self.builds.append((slot, key))
+            return _RecordingKernel(name, self._tuned)
+
+        return self.get_or_build_kernel(slot, key, factory)
+
+
+class TestGetOrBuildKernel:
+    """``Op.get_or_build_kernel`` is the single get-or-build in the Op layer."""
+
+    def test_factory_runs_once_per_key(self):
+        op = _SlottedOp([])
+        first = op.build("fwd", torch.float16, "fp16")
+        again = op.build("fwd", torch.float16, "fp16")
+        assert again is first
+        assert op.builds == [("fwd", torch.float16)]
+
+    def test_distinct_keys_build_distinct_entries(self):
+        op = _SlottedOp([])
+        fp16 = op.build("fwd", torch.float16, "fp16")
+        bf16 = op.build("fwd", torch.bfloat16, "bf16")
+        assert fp16 is not bf16
+        assert set(op.built_kernels("fwd")) == {torch.float16, torch.bfloat16}
+
+    def test_same_key_in_distinct_slots_does_not_collide(self):
+        """An auxiliary kernel keyed by the same dtype is a second slot."""
+        op = _SlottedOp([])
+        attention = op.build("attention", torch.float16, "attention")
+        append = op.build("append", torch.float16, "append")
+        assert attention is not append
+        assert list(op.built_kernels("append")) == [torch.float16]
+
+    def test_built_kernels_is_empty_before_the_first_build(self):
+        assert dict(_SlottedOp([]).built_kernels("fwd")) == {}
+
+    def test_built_kernels_view_rejects_mutation(self):
+        op = _SlottedOp([])
+        op.build("fwd", torch.float16, "fp16")
+        with pytest.raises(TypeError):
+            op.built_kernels("fwd")[torch.bfloat16] = object()
+
+
+class TestIterKernels:
+    """``Op.iter_kernels`` is the explicit enumeration ``autotune`` runs over."""
+
+    def test_yields_slot_entries_including_bundles(self):
+        tuned: list[str] = []
+
+        @dataclasses.dataclass(frozen=True)
+        class Entry:
+            kernel: Kernel
+            compute_dtype: torch.dtype
+
+        class BundleOp(_SlottedOp):
+            def populate(self):
+                self.get_or_build_kernel(
+                    "pair", torch.float16,
+                    lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)))
+                self.get_or_build_kernel(
+                    "entry", torch.bfloat16,
+                    lambda: Entry(_RecordingKernel("record", tuned), torch.float32))
+
+        op = BundleOp(tuned)
+        op.populate()
+        assert sorted(k.name for k in op.iter_kernels()) == ["bwd", "pre", "record"]
+
+    def test_yields_the_directly_bound_kernel(self):
+        tuned: list[str] = []
+        op = _SlottedOp(tuned)
+        op.kernel = _RecordingKernel("bound", tuned)
+        assert [k.name for k in op.iter_kernels()] == ["bound"]
+
+    def test_ignores_kernels_bound_to_other_attributes(self):
+        """Enumeration is explicit: an unregistered attribute is not searched."""
+        tuned: list[str] = []
+        op = _SlottedOp(tuned)
+        op.some_other_attribute = _RecordingKernel("hidden", tuned)
+        assert list(op.iter_kernels()) == []
+
+    def test_deduplicates_a_kernel_reachable_twice(self):
+        tuned: list[str] = []
+        op = _SlottedOp(tuned)
+        op.kernel = op.build("fwd", torch.float16, "fp16")
+        assert [k.name for k in op.iter_kernels()] == ["fp16"]
+
+    def test_descends_into_delegates(self):
+        tuned: list[str] = []
+        delegate = _SlottedOp(tuned)
+        delegate.build("fwd", torch.float16, "delegate")
+
+        class CompositeOp(_SlottedOp):
+            def kernel_delegates(self):
+                return (delegate,)
+
+        composite = CompositeOp(tuned)
+        composite.build("own", torch.float16, "own")
+        assert sorted(k.name for k in composite.iter_kernels()) == ["delegate", "own"]
+
+    def test_deduplicates_a_kernel_shared_with_a_delegate(self):
+        """A composite that caches the kernel its delegate built tunes it once."""
+        tuned: list[str] = []
+        delegate = _SlottedOp(tuned)
+        shared = delegate.build("fwd", torch.float16, "shared")
+
+        class CompositeOp(_SlottedOp):
+            def kernel_delegates(self):
+                return (delegate,)
+
+        composite = CompositeOp(tuned)
+        composite.get_or_build_kernel("fwd", torch.float16, lambda: shared)
+        assert [k.name for k in composite.iter_kernels()] == ["shared"]
+
+
 class TestAutotune:
-    """``Op.autotune`` tunes every Kernel-typed attribute and nothing else."""
+    """``Op.autotune`` tunes exactly what ``iter_kernels`` yields."""
 
-    def test_autotune_dispatches_to_each_kernel_attribute(self):
+    def test_autotune_tunes_the_bound_kernel_and_every_slot_entry(self):
         tuned: list[str] = []
+        op = _SlottedOp(tuned)
+        op.kernel = _RecordingKernel("bound", tuned)
+        op.build("fwd", torch.float16, "fp16")
+        op.build("fwd", torch.bfloat16, "bf16")
+        op.build("aux", torch.float16, "aux")
 
-        class FakeKernel(Kernel):
-            def __init__(self, name):
-                super().__init__()
-                self.name = name
+        op.autotune()
+        assert sorted(tuned) == ["aux", "bf16", "bound", "fp16"]
 
-            def forward(self):
-                return None
-
-            def autotune(self, warmup=25, rep=50):
-                tuned.append(self.name)
-
-        class FakeOp(Op):
-            def __init__(self):
-                self.k1 = FakeKernel("k1")
-                self.k2 = FakeKernel("k2")
-                self.not_a_kernel = object()
-
-            def forward(self, *a, **kw):
-                return None
-
-            @property
-            def default_kernel_map(self):
-                return {}
-
-        FakeOp().autotune()
-        assert sorted(tuned) == ["k1", "k2"]
-
-    def test_autotune_reaches_kernels_held_in_a_cache(self):
-        """Ops that build at forward time keep kernels in a dict, not a slot."""
+    def test_autotune_tunes_nothing_before_the_first_build(self):
         tuned: list[str] = []
+        _SlottedOp(tuned).autotune()
+        assert tuned == []
 
-        class FakeKernel(Kernel):
-            def __init__(self, name):
-                super().__init__()
-                self.name = name
+    def test_autotune_reaches_a_delegates_kernels(self):
+        """A composite tunes through ``kernel_delegates``, not an override."""
+        tuned: list[str] = []
+        delegate = _SlottedOp(tuned)
+        delegate.build("fwd", torch.float16, "delegate")
 
-            def forward(self):
-                return None
+        class CompositeOp(_SlottedOp):
+            def kernel_delegates(self):
+                return (delegate,)
 
-            def autotune(self, warmup=25, rep=50):
-                tuned.append(self.name)
-
-        class CachingOp(Op):
-            def __init__(self):
-                self._kernel_cache = {
-                    ((8,), torch.float16): FakeKernel("fp16"),
-                    ((8,), torch.bfloat16): FakeKernel("bf16"),
-                }
-                # A backward op caches its kernels as one entry per dtype.
-                self._pair_cache = {torch.float16: (FakeKernel("pre"), FakeKernel("bwd"))}
-
-            def forward(self, *a, **kw):
-                return None
-
-            @property
-            def default_kernel_map(self):
-                return {}
-
-        CachingOp().autotune()
-        assert sorted(tuned) == ["bf16", "bwd", "fp16", "pre"]
+        CompositeOp(tuned).autotune()
+        assert tuned == ["delegate"]
