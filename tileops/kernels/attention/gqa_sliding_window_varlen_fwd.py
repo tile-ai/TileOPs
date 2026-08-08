@@ -17,12 +17,14 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+
+from .call_spec import uses_sliding_window
+from .packed_prefill import PackedPrefillKernel
 
 __all__ = [
     'GQASlidingWindowVarlenFwdWgmmaPipelinedKernel',
@@ -102,44 +104,27 @@ def _make_apply_mask(is_causal, has_window, window_size_left, window_size_right,
 
 
 
-class _GQASlidingWindowVarlenFwdKernelBase(Kernel):
+class _GQASlidingWindowVarlenFwdKernelBase(PackedPrefillKernel):
     """Shared base for variable-length GQA sliding window forward kernels."""
 
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        window_size_left: int = -1,
-        window_size_right: int = -1,
-        dtype: torch.dtype = torch.float16,
-        accum_dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.window_size_left = window_size_left
-        self.window_size_right = window_size_right
-        self.dtype = dtype
-        self.accum_dtype = accum_dtype
-        # total_q / total_k are not known at init; resolved per forward() call.
-        self.init_config(config, tune)
+    @classmethod
+    def applies(cls, call) -> bool:
+        return (
+            uses_sliding_window(call)
+            and not call.is_fp8
+            and call.backend in ("auto", "sliding_window")
+        )
+
+    def _build_program(self) -> None:
+        # Specialized on the packed totals, which are known per call.
+        self.kernel = None
 
     @property
     def _accum_dtype_str(self) -> str:
         return "float" if self.accum_dtype == torch.float32 else "double"
 
-    def _call_wrapped(self, wrapped_fn, q, k, v, cu_seqlens_q, cu_seqlens_k,
-                      max_seqlen_q) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _call_wrapped(self, wrapped_fn, q, k, v, cu_seqlens_q,
+                      cu_seqlens_k) -> Tuple[torch.Tensor, torch.Tensor]:
         total_q, total_k = q.shape[0], k.shape[0]
         return wrapped_fn(
             self.batch, self.heads, self.heads_kv, total_q, total_k, self.dim,
@@ -147,7 +132,7 @@ class _GQASlidingWindowVarlenFwdKernelBase(Kernel):
             self.dtype_str, self._accum_dtype_str,
             self.config["block_m"], self.config["block_n"],
             self.config["num_stages"], self.config["threads"],
-            max_seqlen_q,
+            self.max_seqlen_q,
             q, k, v, cu_seqlens_q, cu_seqlens_k)
 
 
@@ -383,9 +368,12 @@ class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         k: torch.Tensor,
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-        max_seqlen_q: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._call_wrapped(
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        output, _ = self._call_wrapped(
             _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel,
-            q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
+            q, k, v, cu_seqlens_q, cu_seqlens_kv)
+        return output

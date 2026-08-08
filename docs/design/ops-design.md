@@ -31,7 +31,15 @@ Op                          ← L1: thin base, shared by all ops
 
 An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
 
-The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
+The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
+
+### Kernel selection
+
+**Construction reads no device property.**
+
+An op that probes the device in `__init__` states, in code, that it knows where it will run. Most ops do not: the tensors arrive later, they may be on a device the process has not touched yet, and on hardware other than the one being probed the probe is not merely wrong but unavailable. So installing the kernel map resolves classes only, and a target that cannot run the op is refused when a kernel is first selected, built or called — by the kernel, which owns its `supported_archs`.
+
+Choosing a slot by the *semantics* of the call stays with the op: `AvgPool2dFwdOp._use_spatial_fast_path` reads `ceil_mode` / `count_include_pad` to pick the general or the spatial slot, and that is the op's own contract. Choosing among *implementations* of one slot is not — that belongs with the implementations being considered.
 
 `self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
 

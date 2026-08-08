@@ -270,11 +270,12 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
 
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
+    ) -> torch.Tensor:
+        output, _ = _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
             self.is_causal, self.window_size_left, self.window_size_right,
             self.dtype_str,
             self.config["block_m"], self.config["block_n"],
             self.config["num_stages"], self.config["threads"],
             q, k, v)
+        return output

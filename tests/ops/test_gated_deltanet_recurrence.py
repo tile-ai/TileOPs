@@ -186,6 +186,11 @@ def test_gated_deltanet_decode_raw_cuda_dispatch_handles_capability_errors(monke
         raise RuntimeError("mock capability failure")
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", _raise_capability_error)
+    # The architecture is cached per device after the first successful probe, so
+    # a failing probe is only reachable while the cache is cold — which is the
+    # case this asserts. Another test in the session may have warmed it.
+    from tileops.utils import forget_device_properties
+    forget_device_properties()
 
     assert not GatedDeltaNetDecodeOp._should_use_raw_cuda_decode(
         128,

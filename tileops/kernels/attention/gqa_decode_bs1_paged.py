@@ -22,6 +22,7 @@ from tileops.kernels.attention.gqa_decode_paged import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
+from .call_spec import decode_bs1_region
 from .gqa_decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
@@ -181,6 +182,15 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        # The page-tile question is asked of this class, so a kernel_map
+        # override answers for its own tiling rather than for the shipped one.
+        return (
+            decode_bs1_region(call)
+            and cls.block_n_for_page_size(call.page_size) is not None
+        )
 
     @staticmethod
     def block_n_for_page_size(page_size: int) -> Optional[int]:
