@@ -4,6 +4,10 @@ from typing import Any, Callable, Dict, Optional
 import torch
 from tilelang.autotuner import autotune
 
+#: Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
+#: supplier. Distinct from ``None``, which means "no supplier".
+_INHERIT_SUPPLY_PROG = object()
+
 
 class Kernel(ABC):
     dtype: Optional[torch.dtype] = None
@@ -139,6 +143,53 @@ class Kernel(ABC):
             **self._autotune_initial_kwargs(kernel=kernel, config=config)
         )
 
+    def tune_jit_kernel(
+        self,
+        jit_kernel: Callable,
+        configs: list[dict],
+        warmup: int = 25,
+        rep: int = 50,
+        seed_config: Optional[Dict[str, Any]] = None,
+        supply_prog: Optional[Callable] = _INHERIT_SUPPLY_PROG,
+    ) -> Any:
+        """Benchmark *configs* against one JIT kernel and return the winner.
+
+        A kernel built from several sub-kernels tunes each one on its own
+        candidate list, so the JIT object and the candidates are arguments here
+        rather than being read from ``self.kernel`` / ``self.autotune_configs``.
+
+        Args:
+            jit_kernel: The ``@tilelang.jit``-decorated builder to tune.
+            configs: Candidate configs handed to TileLang's autotuner.
+            warmup: Warmup iterations per candidate.
+            rep: Timed iterations per candidate.
+            seed_config: Config supplying the seeded JIT parameter values;
+                ``default_config`` when omitted.
+            supply_prog: Input supplier for the candidates. Defaults to
+                ``autotune_supply_prog``, which is written against
+                ``self.kernel``; a sub-kernel taking different inputs must pass
+                its own, since the whole-kernel supplier would feed it the
+                wrong ones. Pass ``None`` for no supplier.
+
+        Returns:
+            The tuned kernel, carrying the winning ``config`` and its measured
+            ``latency``.
+        """
+        # Pass do_not_specialize so TileLang excludes the seeded JIT parameters
+        # from the cache key; without this, the seed values read as "already
+        # tuned" and the benchmarking sweep is skipped (returning config=None).
+        seeds = self._autotune_initial_kwargs(jit_kernel, seed_config)
+        autotune_kwargs: Dict[str, Any] = dict(configs=configs, warmup=warmup, rep=rep)
+        if seeds:
+            autotune_kwargs["do_not_specialize"] = list(seeds)
+        if supply_prog is _INHERIT_SUPPLY_PROG:
+            supply_prog = self.autotune_supply_prog
+        if supply_prog is not None:
+            autotune_kwargs["supply_prog"] = supply_prog
+        autotuned_kernel_fn = autotune(**autotune_kwargs)(jit_kernel)
+
+        return self._call_autotuned_kernel(autotuned_kernel_fn, jit_kernel, seed_config)
+
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
@@ -148,26 +199,8 @@ class Kernel(ABC):
                 "Set 'self.kernel' in __init__ before calling init_config with tune=True.")
         print(f'Start autotuning {self.__class__.__name__}...')
 
-        # Apply autotune decorator to the kernel function.
-        # Pass do_not_specialize so TileLang 0.1.11 excludes the seeded JIT
-        # parameters from the cache key; without this, providing the default
-        # config values below would cause the autotuner to treat them as
-        # "already tuned" and skip the benchmarking sweep entirely
-        # (returning config=None).
-        tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
-        autotune_kwargs: Dict[str, Any] = dict(
-            configs=self.autotune_configs, warmup=warmup, rep=rep)
-        if tunable_params:
-            autotune_kwargs["do_not_specialize"] = tunable_params
-        if self.autotune_supply_prog is not None:
-            autotune_kwargs["supply_prog"] = self.autotune_supply_prog
-        autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
+        tuned_kernel = self.tune_jit_kernel(
+            self.kernel, self.autotune_configs, warmup=warmup, rep=rep)
 
-        # Seed required tunable JIT parameters for TileLang's pre-autotune
-        # validation/binding step. Candidate configs still override these
-        # initial values during the actual autotune run.
-        tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
-
-        # Extract and store the best config
         self.config = tuned_kernel.config
         print(f'Best config: {self.config}')
