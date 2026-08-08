@@ -7,6 +7,7 @@ tuned. ``tests/ops/test_deltanet_fwd.py`` covers the same helper on the device.
 """
 
 import inspect
+import sys
 
 import pytest
 
@@ -123,20 +124,21 @@ def test_fastest_v_tile_width_wins() -> None:
 
 def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
     """An autotuner that returns without a result leaves every key at its default."""
-    # dim_v=48, where the stub's default_config width (32) is not buildable,
-    # so taking it straight from there would be visible.
-    kernel = _StubKernel(chunk_size=64, dim_v=48)
+    # dim_v=64 offers two widths, so the untuned preference (32) differs from
+    # the first that compiled (0) and the choice between them is visible.
+    kernel = _StubKernel(chunk_size=64, dim_v=64)
     kernel.results = {
         ("fused", 0): (None, None),
         ("h", 0): (None, None),
+        ("h", 32): (None, None),
         ("o", 0): (None, None),
     }
 
     config = _run(kernel)
 
-    assert kernel.default_config["h_block_v"] == 32
-    assert config == {**kernel.default_config, "h_block_v": la.default_h_block_v(48, 64)}
-    assert config["h_block_v"] == 0
+    assert la.h_block_v_candidates(64) == (0, 32), "both widths must compile for this to bite"
+    assert config == {**kernel.default_config, "h_block_v": la.default_h_block_v(64, 64)}
+    assert config["h_block_v"] == 32
 
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
@@ -324,6 +326,8 @@ def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
 
     assert kernel.config["h_block_v"] in la.h_block_v_candidates(48)
     assert kernel.config in kernel.autotune_configs
+    # Nothing else fails if a kernel grows its own copy of the sweep.
+    assert sys.modules[kernel_cls.__module__].tune_delta_rule_fwd is la.tune_delta_rule_fwd
 
 
 @pytest.mark.parametrize(

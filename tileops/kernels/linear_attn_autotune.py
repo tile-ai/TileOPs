@@ -166,10 +166,15 @@ def _tune_sub_kernel(
     return config, latency
 
 
-def _first_line(exc: Exception) -> str:
-    """Return a one-line summary; compile failures carry a whole nvcc log."""
-    head = str(exc).strip().splitlines()
-    return f"{type(exc).__name__}: {head[0][:200] if head else ''}"
+def _summarize(exc: Exception) -> str:
+    """Return a bounded one-line form; compile failures carry a whole nvcc log.
+
+    Trimmed to a prefix rather than to the first line: tilelang's first line is
+    the same generic sentence for every width, and the diagnostic that tells
+    them apart is below it.
+    """
+    body = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {body[:400]}"
 
 
 def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
@@ -273,7 +278,7 @@ def tune_delta_rule_fwd(
         if not compiled:
             raise RuntimeError(
                 f"no recurrence V-tile width tuned for dim_v={kernel.dim_v}: "
-                + "; ".join(f"{label}: {_first_line(exc)}" for label, exc in failures)
+                + "; ".join(f"{label}: {_summarize(exc)}" for label, exc in failures)
             ) from failures[-1][1]
         # Compiled but unmeasured: the untuned width answers if it is one.
         preferred = default_h_block_v(kernel.dim_v, kernel.chunk_size)
