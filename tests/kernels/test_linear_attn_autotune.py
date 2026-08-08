@@ -7,6 +7,7 @@ tuned. ``tests/ops/test_deltanet_fwd.py`` covers the same helper on the device.
 """
 
 import inspect
+import sys
 
 import pytest
 
@@ -121,8 +122,13 @@ def test_fastest_v_tile_width_wins() -> None:
     assert (config["h_num_stages"], config["h_threads"]) == (2, 256)
 
 
-def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
-    """A sub-kernel the autotuner cannot tune must not leave the config unbuildable."""
+def test_untunable_launch_params_fall_back_but_the_width_does_not() -> None:
+    """Launch params keep their default; the V-tile width takes the safe one.
+
+    A width with no measurement has no evidence it compiles — that is how a
+    per-candidate build failure reaches us — so the untuned preference is not
+    taken on faith. Candidate order puts the untiled width first.
+    """
     kernel = _StubKernel()
     kernel.results = {
         ("fused", 0): (None, None),
@@ -133,7 +139,8 @@ def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
 
     config = _run(kernel)
 
-    assert config == kernel.default_config
+    assert kernel.default_config["h_block_v"] == 32, "the preference must diverge to bite"
+    assert config == {**kernel.default_config, "h_block_v": 0}
 
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
@@ -254,6 +261,28 @@ def test_a_width_that_failed_to_build_is_never_the_fallback() -> None:
     assert config["h_block_v"] == 0
 
 
+def test_a_tuning_failure_is_not_reported_as_a_dropped_width() -> None:
+    """Only the builder call is width-specific.
+
+    A failure inside the autotuner is the device's or the tuner's; reporting it
+    as a dropped width would hide it behind a config that looks tuned.
+    """
+    kernel = _StubKernel()
+    inner = kernel.tune_jit_kernel
+
+    def explode_on_recurrence(jit_kernel, *args, **kwargs):
+        # Only the recurrence, so the failure lands inside the width loop —
+        # the fused sub-kernel is tuned before it and would mask this.
+        if jit_kernel.name == "h":
+            raise RuntimeError("device lost")
+        return inner(jit_kernel, *args, **kwargs)
+
+    kernel.tune_jit_kernel = explode_on_recurrence
+
+    with pytest.raises(RuntimeError, match="device lost"):
+        _run(kernel)
+
+
 def test_no_width_building_at_all_reports_the_build_failure() -> None:
     """A width is not the caller's to choose, so a config naming one is no answer."""
     kernel = _StubKernel(chunk_size=64)
@@ -261,7 +290,7 @@ def test_no_width_building_at_all_reports_the_build_failure() -> None:
     def h_builder(*shape, block_v):
         raise RuntimeError("out of shared memory")
 
-    with pytest.raises(RuntimeError, match="no recurrence V-tile width built"):
+    with pytest.raises(RuntimeError, match="no recurrence V-tile width could be built"):
         la.tune_delta_rule_fwd(
             kernel,
             fused_builder=lambda *shape: _StubJit("fused"),
@@ -271,15 +300,12 @@ def test_no_width_building_at_all_reports_the_build_failure() -> None:
 
 
 def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
-    """The untuned width is the narrowest buildable tile, and always declared.
-
-    It is what ``init_config`` falls back to, so a width outside the declared
-    set would be one no candidate check could have vetted.
-    """
+    """Always declared: it is what ``init_config`` falls back to."""
     assert la.default_h_block_v(64, 64) == 32
+    assert la.default_h_block_v(96, 64) == 32  # 32 divides 96
     assert la.default_h_block_v(48, 64) == 0  # 32 does not divide 48
     assert la.default_h_block_v(64, 32) == 0  # short chunk prefers no tiling
-    for dim_v, chunk_size in ((64, 64), (48, 64), (64, 32)):
+    for dim_v, chunk_size in ((64, 64), (96, 64), (48, 64), (64, 32)):
         declared = {c["h_block_v"] for c in la.delta_rule_fwd_autotune_configs(dim_v)}
         assert la.default_h_block_v(dim_v, chunk_size) in declared
 
@@ -302,6 +328,9 @@ def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
 
     assert kernel.config["h_block_v"] in la.h_block_v_candidates(48)
     assert kernel.config in kernel.autotune_configs
+    # No second copy of the sweep may reappear in either kernel module.
+    module = sys.modules[kernel_cls.__module__]
+    assert module.tune_delta_rule_fwd is la.tune_delta_rule_fwd
 
 
 @pytest.mark.parametrize(
