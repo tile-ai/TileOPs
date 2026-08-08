@@ -523,6 +523,24 @@ def test_gqa_prefill_fwd_auto_backend_requires_uniform_validation() -> None:
         )
 
 
+def _holds_op(value: object, depth: int = 0) -> bool:
+    """Whether *value* is an ``Op`` or reaches one through its containers.
+
+    The shape to catch is a cache of child ops, not an op bound directly to an
+    attribute, so testing the attribute value alone would pass on a dict of
+    them. Descends two levels like ``op_base._iter_kernels``.
+    """
+    if isinstance(value, Op):
+        return True
+    if depth >= 2:
+        return False
+    if isinstance(value, dict):
+        return any(_holds_op(item, depth + 1) for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return any(_holds_op(item, depth + 1) for item in value)
+    return False
+
+
 @pytest.mark.smoke
 def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op(
     monkeypatch: pytest.MonkeyPatch,
@@ -550,35 +568,44 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op(
 
     assert builds == 1
     assert list(op._kernel_cache) == [torch.float16]
-    assert not any(isinstance(value, Op) for value in vars(op).values())
+    assert not any(_holds_op(value) for value in vars(op).values())
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim", [
-    pytest.param(4, 512, 32, 8, 128, id="square-fast-path"),
-    pytest.param(1, 256, 8, 2, 128, id="dense-causal"),
-    pytest.param(1, 128, 8, 2, 64, id="dense-dim64"),
+@pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, h200, expected_slot", [
+    pytest.param(4, 512, 32, 8, 128, True, "gqa_prefill_square_fwd_kernel", id="square"),
+    pytest.param(4, 512, 32, 8, 128, False, "gqa_prefill_causal_fwd_kernel", id="dense-causal"),
+    pytest.param(1, 128, 8, 2, 64, False, "gqa_prefill_fwd_kernel", id="dense-dim64"),
 ])
 def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
+    monkeypatch: pytest.MonkeyPatch,
     batch: int,
     seq_len: int,
     heads: int,
     heads_kv: int,
     dim: int,
-    dtype: torch.dtype,
+    h200: bool,
+    expected_slot: str,
 ) -> None:
-    """Both callers build the chosen slot with the arguments that slot expects.
+    """Both callers build the expected slot with the arguments that slot expects.
 
     Comparing the built classes alone would miss a mistyped ``max_seqlen_kv``,
     ``sm_scale`` or ``softcap``. Two assertions are needed and neither implies
     the other: the recorded call must match the slot's documented argument
     list, which guards the shared build step both callers run; and the two
     callers must record the same call, which guards each caller's own argument
-    assembly. The expected slot is not hard-coded — whichever branch the
-    machine's fast-path contract selects, both sides must select it alike.
+    assembly.
+
+    ``is_h200`` is pinned so each branch is reached on every machine. Left to
+    the runner, the square case would fall through to a dense slot off H200 and
+    the square argument list would go unasserted there.
+
+    One element type suffices: neither selector branches between ``float16``
+    and ``bfloat16``, so a second would add nodes without a distinct path.
     """
+    dtype = torch.float16
     sm_scale, softcap = 0.125, 3.5
+    monkeypatch.setattr(gqa_module, "is_h200", lambda: h200)
     wrapper = GroupedQueryAttentionFwdOp(
         batch, heads, heads_kv, seq_len, dim, True, sm_scale=sm_scale, softcap=softcap)
     packed = GroupedQueryAttentionPrefillFwdOp(
@@ -618,9 +645,10 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
 
     assert len(wrapper_calls) == 1
     slot, args, kwargs = wrapper_calls[0]
-    # The square slot derives its key length from a single seq_len; the dense
-    # slots take both. Getting this wrong is the failure the test exists for.
-    if slot == "gqa_prefill_square_fwd_kernel":
+    assert slot == expected_slot
+    # The square slot takes one seq_len; the dense slots take q and kv both.
+    # Getting this wrong is the failure the test exists for.
+    if expected_slot == "gqa_prefill_square_fwd_kernel":
         assert args == (batch, heads, heads_kv, seq_len, dim, True, dtype)
     else:
         assert args == (batch, heads, heads_kv, seq_len, seq_len, dim, True, dtype)
