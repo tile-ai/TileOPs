@@ -1,6 +1,6 @@
 # Op Interface Design — Reference
 
-Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** (the fictional `ExampleCumsumFwdOp`, a cumulative-sum T2 op; nothing in it mirrors a shipped file), and **Common mistakes**. Non-slot content lives in the appendices.
+The contracts an op is built against: base-class attributes, family protocol variables, naming, parameter design, calling conventions, and what CI enforces.
 
 ## Slot Rules
 

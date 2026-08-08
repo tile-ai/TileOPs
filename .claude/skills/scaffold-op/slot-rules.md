@@ -98,21 +98,17 @@ design, calling conventions — live in
 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
-- **Rule.** Sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`;
-  (c) `self._kernel_cache: Dict[Hashable, Kernel] = {}`. **Construct no kernel here**, whatever the
-  op shape: the kernel is dtype-specialized and no dtype exists until `forward()` receives a
-  tensor. `dispatch_kernel` resolves the kernel *class* and checks the architecture, neither of
-  which needs a tensor.
+- **Rule.** Sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`.
+  **Construct no kernel here**, whatever the op shape: the kernel is dtype-specialized and no dtype
+  exists until `forward()` receives a tensor. `dispatch_kernel` resolves the kernel *class* and
+  checks the architecture, neither of which needs a tensor. **Declare no kernel cache here
+  either** — L1 owns get-or-build and creates the role's entry table on first use, per
+  [Kernel caching and enumeration](../../../docs/design/ops-design.md#kernel-caching-and-enumeration).
   - **Fully-static op** (every non-static axis committed at ctor): may precompute
     `self._infer_output_shapes(<input>_shape=(...))` when a caller needs output shapes before
     `forward()`. Shape inference is dtype-independent.
   - **Arbitrary-rank op** (at least one axis unknown until forward): defer `_infer_output_shapes`
     to `forward()`, once per unique input shape.
-  - Cache key: `(self._cache_key(*input_shapes), dtype)`.
-  - Cache value: the kernel when dtype is the whole story; otherwise one frozen record holding the
-    kernel plus what else the specialization implies (a compute dtype differing from the semantic
-    one, an output dtype no input supplies). Those fields MUST NOT live in `self.*` — a second
-    dtype leaves them describing the first.
 - **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. "Fully-static" iff every
   `signature.inputs` shape axis is a manifest `shape` dim name or a ctor-resolvable `static_dims`
   key; the distinction governs when shape inference runs, not when the kernel is built.
@@ -121,14 +117,13 @@ design, calling conventions — live in
   self.N = N
   self.dim = dim
   self.tune = tune
-  self.dispatch_kernel(kernel_map)
   # M unknown at init (only N committed via static_dims), and no dtype
   # is known at all; the kernel is built in forward() from both.
-  self._kernel_cache: Dict[Hashable, Kernel] = {}
+  self.dispatch_kernel(kernel_map)
   ```
 - **Common mistakes.** `_infer_output_shapes` before `dispatch_kernel`; hard-coding the kernel
-  class instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; omitting
-  the `_kernel_cache` initialisation — the first forward-time lookup then raises `AttributeError`.
+  class instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; declaring a
+  private cache dict instead of calling `Op.get_or_build_kernel` in `forward()`.
 
 ### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
 
@@ -156,14 +151,14 @@ design, calling conventions — live in
 - **Rule.** Sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` and normalise
   parameter-dependent axes via modulo (`dim = self.dim % x.ndim`); (c) validate each `static_dims`
   commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops bind
-  `self._static_axes`, then — whatever the op shape — look up or lazily build the kernel in
-  `self._kernel_cache`, keyed by `(self._cache_key(*input_shapes), <input>.dtype)`; (e)
+  `self._static_axes`, then — whatever the op shape — call
+  `self.get_or_build_kernel(<role>, <key>, <factory>)`; (e)
   `.contiguous()` then reshape to the kernel's 2D layout; (f) call the kernel; (g) restore the
   original shape.
 - **Derivation.** Validation expressions come from each `static_dims` entry's
   `<tensor>.shape[<axis>]` RHS. Axis normalisation mirrors the param evaluation in `static_dims` +
-  `shape_rules`. The cache key is whatever `_cache_key` projects — default, the tuple of
-  non-static-axis sizes — paired with the dtype-defining input's dtype. A kernel that pads
+  `shape_rules`. The role is the `kernel_map` dispatch key whose kernel the factory builds; the key
+  names every input the factory closes over. A kernel that pads
   internally returns the semantic shape, so the op does not trim.
 - **Example (arbitrary-rank).**
   ```python
@@ -184,23 +179,29 @@ design, calling conventions — live in
   # default _cache_key projects non-static axes; override for coarser
   # keying when kernel math permits (see Optional Hooks appendix).
   self.dtype = x.dtype
-  key = (self._cache_key(x.shape), x.dtype)
-  if key not in self._kernel_cache:
-      self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
+  kernel = self.get_or_build_kernel(
+      "example_cumsum_fwd",
+      (self._cache_key(x.shape), x.dtype),
+      lambda: self.kernel_map["example_cumsum_fwd"](
           M, self.N, "sum", x.dtype, tune=self.tune
-      )
-  kernel = self._kernel_cache[key]
+      ),
+  )
   orig_shape = x.shape
   x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
   y2 = kernel(x2)
   y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1 :], self.N)
   return y.movedim(-1, dim)
   ```
-- **Common mistakes.** Keying the cache on shape alone — a second dtype then silently reuses the
-  first dtype's kernel; reshaping before `.contiguous()`; hard-coding `x.shape[-1]` instead of the
+- **Entry.** The entry is the kernel when dtype is the whole story; when a specialization implies
+  more — a compute dtype differing from the semantic one, an output dtype no input supplies — it is
+  one frozen record holding them together. Those fields MUST NOT live in `self.*` attributes
+  written while building the kernel: a second dtype leaves them describing the first.
+- **Common mistakes.** Keying on shape alone — a second dtype then silently reuses the first
+  dtype's kernel; reshaping before `.contiguous()`; hard-coding `x.shape[-1]` instead of the
   normalised `x.shape[self.dim % x.ndim]`; binding `self._static_axes` before the axis is
-  non-negative; skipping the cache lookup so every forward rebuilds; trimming padded kernel output
-  in the op; not restoring the original shape.
+  non-negative; constructing the kernel outside the factory, or passing an already-built kernel
+  where a factory is expected — the build then runs on every call, hit or miss; trimming padded
+  kernel output in the op; not restoring the original shape.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 

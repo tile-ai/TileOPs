@@ -49,7 +49,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`slot-rules.md`](../../.claude/skills/scaffold-op/slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
 
 ### Step 1: File header + imports
 
