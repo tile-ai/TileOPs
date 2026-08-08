@@ -74,6 +74,10 @@ class Op(ABC):
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
+    # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
+    # that offer one, and what ``autotune()`` sets; a factory reads it when it
+    # runs, so it governs every build that follows.
+    tune: bool = False
 
     # Set of (input_index, axis) pairs identifying static (ctor-committed) axes.
     # `input_index` is the position in *input_shapes; `axis` is a non-negative
@@ -279,20 +283,24 @@ class Op(ABC):
             yield from delegate._walk_kernels()
 
     def autotune(self) -> None:
-        """Autotune every kernel the op holds.
+        """Put the op in tuned mode: what it holds now, and what it builds next.
 
-        Only kernels already built are tuned: a role the op has not populated
-        yet has nothing to tune.
+        Tuning is a lifecycle decision, not a property of one kernel, so it
+        applies to specializations that do not exist yet — an op tuned before
+        its first fp16 call is tuned when bf16 arrives later. Setting ``tune``
+        is what carries it: a factory reads the flag when it runs, so the
+        kernel it builds tunes itself, the same way ``tune=True`` at
+        construction does.
         """
-        # FIXME(staged-rollout): covers only kernels already built.
-        #
-        # Broken invariant: a call before the first forward must tune what gets
-        #   built later; today it is a silent no-op.
-        # Why: a request against a kernel that does not exist yet has nowhere
-        #   to live until entries carry pending state.
-        # Cleanup: honour a pending request at the build that satisfies it.
+        self._enter_tuned_mode()
         for kernel in self.iter_kernels():
             kernel.autotune()
+
+    def _enter_tuned_mode(self) -> None:
+        """Set ``tune`` on this op and on the ops it runs kernels through."""
+        self.tune = True
+        for delegate in self.kernel_delegates():
+            delegate._enter_tuned_mode()
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
