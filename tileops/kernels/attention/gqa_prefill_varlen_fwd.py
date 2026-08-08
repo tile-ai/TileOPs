@@ -17,13 +17,15 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
     LOG2E,
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+
+from .call_spec import uses_sliding_window
+from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
 
@@ -288,34 +290,28 @@ def _(
     return fake_o, fake_lse
 
 
-class GQAPrefillVarlenFwdKernel(Kernel):
+class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
+    """Ragged packed prefill: per-request ranges of unequal length.
+
+    Serves the requests the dense implementations cannot: a caller that asked
+    for the varlen algorithm explicitly, or an automatic choice whose packed
+    ranges are not uniform.
+    """
+
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        softcap: float = 0.0,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
-        self.init_config(config, tune)
+    @classmethod
+    def applies(cls, call) -> bool:
+        if call.is_fp8 or uses_sliding_window(call):
+            return False
+        if call.backend == "varlen":
+            return True
+        return call.backend == "auto" and not call.is_uniform
+
+    def _build_program(self) -> None:
+        # The program is specialized on the packed totals, which are known per
+        # call, so there is nothing to build until forward runs.
+        self.kernel = None
 
     @property
     def default_config(self) -> dict:
@@ -343,11 +339,12 @@ class GQAPrefillVarlenFwdKernel(Kernel):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        max_seqlen_q: int,
-        max_seqlen_kv: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         total_q, total_kv = q.shape[0], k.shape[0]
-        return _gqa_prefill_varlen_fwd_wrapped_kernel(
+        output, _ = _gqa_prefill_varlen_fwd_wrapped_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -362,11 +359,12 @@ class GQAPrefillVarlenFwdKernel(Kernel):
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
-            max_seqlen_kv,
+            self.max_seqlen_q,
+            self.max_seqlen_kv,
             q,
             k,
             v,
             cu_seqlens_q,
             cu_seqlens_kv,
         )
+        return output

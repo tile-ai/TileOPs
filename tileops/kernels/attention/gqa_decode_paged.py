@@ -406,6 +406,15 @@ def _(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: 
 
 class GQADecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
+    #: The implementation behind the specialised ones for this key.
+    general: bool = True
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        # The broad region: every paged decode call. The batch-1 paged kernel
+        # states the narrower one it serves, page-tile condition included, and
+        # wins wherever it applies.
+        return True
 
     def __init__(self,
                  batch,

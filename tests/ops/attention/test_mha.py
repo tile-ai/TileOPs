@@ -4,19 +4,34 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-import tileops.ops.attention.gqa as gqa_module
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention.call_spec import square_ws_prefill_region
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import MhaBwdWorkload, MhaFwdWorkload
 
 
 class _FakeDenseKernel(Kernel):
+    """Stands in for the general dense implementation.
+
+    A replacement declares its role the same way a shipped implementation does.
+    This one is the implementation behind the specialised ones, so it says so
+    rather than naming the fast path it yields to.
+    """
+
+    general = True
+
     def forward(self, *args: object, **kwargs: object) -> object:
         return None
 
 
 class _FakeSquareDenseKernel(Kernel):
+    """Stands in for the H200 square causal fast path."""
+
+    @classmethod
+    def applies(cls, call: object) -> bool:
+        return square_ws_prefill_region(call)
+
     def forward(self, *args: object, **kwargs: object) -> object:
         return None
 
@@ -131,7 +146,9 @@ def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
 def test_mha_fwd_preserves_gqa_square_dense_fast_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(gqa_module, "is_h200", lambda: True)
+    # The device fact reaches selection through the call record, which reads it
+    # from tileops.utils when the call is made.
+    monkeypatch.setattr("tileops.utils.is_h200", lambda *a, **k: True)
     op = MultiHeadAttentionFwdOp(
         batch=4,
         heads=64,

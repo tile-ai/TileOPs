@@ -1,8 +1,9 @@
-"""Tests for the shared ``_install_kernel_map`` validation path.
+"""Tests for the shared ``_install_kernel_map`` path.
 
-A user-supplied ``kernel_map`` and the auto-discovered ``default_kernel_map``
-must traverse the same validate-and-install path in the Op base, so that
-architecture-compatibility checks fire identically regardless of provenance.
+Installing the kernel map resolves classes only. It does not probe the device,
+so an op constructs wherever it is imported and a target that cannot run it is
+refused when a kernel is first selected — not at construction, where most ops
+do not yet know which device they will run on.
 """
 
 
@@ -14,7 +15,7 @@ from tileops.utils import get_sm_version
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
-    reason="install_kernel_map tests query CUDA arch via get_sm_version()",
+    reason="kernel-map install tests build kernels on the current device",
 )
 
 
@@ -27,48 +28,81 @@ def _make_incompatible_arch_list() -> list[int]:
     return incompatible
 
 
+def _decode_op(**kwargs: object):
+    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+
+    defaults = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
+    defaults.update(kwargs)
+    return GroupedQueryAttentionDecodeWithKVCacheFwdOp(**defaults)
+
+
 @pytest.mark.smoke
-def test_install_kernel_map_user_supplied_incompatible_raises_valueerror() -> None:
-    """User-supplied incompatible kernel raises ``ValueError`` (auto-discovery class)."""
+def test_construction_does_not_probe_the_device() -> None:
+    """Installing the kernel map reads no device property."""
     import tileops.ops.elementwise as mod
+    from tileops.ops import op_base
 
-    cls = mod.ReluFwdOp
-    inst = cls(N_total=8)
-    (key, default_kernel_cls), = inst.default_kernel_map.items()
-    incompatible_archs = _make_incompatible_arch_list()
+    assert not hasattr(op_base, "get_sm_version"), (
+        "op_base reaches for the device architecture again; construction must not "
+        "probe a device, because most ops do not yet know which one they will run on")
 
-    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
-        supported_archs = incompatible_archs
-
-    with pytest.raises(ValueError, match="not supported on architecture"):
-        cls(N_total=8, kernel_map={key: IncompatibleKernel})
+    mod.ReluFwdOp(N_total=8)
+    _decode_op()
 
 
 @pytest.mark.smoke
-def test_install_kernel_map_auto_discovery_incompatible_raises_same_class() -> None:
-    """Auto-discovery path raises the same ``ValueError`` on identical input.
+def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
+    """An override that cannot run here is named, not silently passed over.
 
-    Build an Op subclass whose ``default_kernel_map`` already points at an
-    arch-incompatible kernel; constructing it must raise the same class
-    that the user-supplied path produces.
+    The override is the reason the call was made; falling back to the stock
+    kernel would report a result the caller believes came from theirs.
     """
-    import tileops.ops.elementwise as mod
+    from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
 
-    base_cls = mod.ReluFwdOp
-    base_inst = base_cls(N_total=8)
-    (key, default_kernel_cls), = base_inst.default_kernel_map.items()
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
+    class IncompatibleBs1(GQADecodeBs1Kernel):
         supported_archs = incompatible_archs
 
-    class AutoDiscoveredIncompatibleOp(base_cls):  # type: ignore[misc, valid-type]
+    class IncompatibleGeneral(GQADecodeKernel):
+        supported_archs = incompatible_archs
+
+    op = _decode_op(kernel_map={
+        "gqa_decode_bs1_kernel": IncompatibleBs1,
+        "gqa_decode_kernel": IncompatibleGeneral,
+    })
+
+    with pytest.raises(ValueError, match="the kernel supplied for"):
+        op._get_kernel(torch.float16)
+
+
+@pytest.mark.smoke
+def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
+    """The auto-discovery path is refused at the same point, the same way."""
+    from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
+    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+
+    incompatible_archs = _make_incompatible_arch_list()
+
+    class IncompatibleBs1(GQADecodeBs1Kernel):
+        supported_archs = incompatible_archs
+
+    class IncompatibleGeneral(GQADecodeKernel):
+        supported_archs = incompatible_archs
+
+    class AutoDiscoveredIncompatibleOp(GroupedQueryAttentionDecodeWithKVCacheFwdOp):
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
-            return {key: IncompatibleKernel}
+            return {
+                "gqa_decode_bs1_kernel": IncompatibleBs1,
+                "gqa_decode_kernel": IncompatibleGeneral,
+            }
 
-    with pytest.raises(ValueError, match="not supported on architecture"):
-        AutoDiscoveredIncompatibleOp(N_total=8)
+    op = AutoDiscoveredIncompatibleOp(
+        batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
+
+    with pytest.raises(ValueError, match="no implementation serves this call"):
+        op._get_kernel(torch.float16)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

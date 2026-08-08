@@ -14,6 +14,9 @@ from tileops.kernels.online_softmax import (
     make_rescale,
 )
 
+from .call_spec import WS_ARCH, square_ws_prefill_region
+from .packed_prefill import PackedPrefillKernel
+
 __all__ = [
     "GQAFwdWsPersistentCausalKernel",
     "GQAFwdWsPersistentKernel",
@@ -785,7 +788,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
 
 class GQAFwdWsPersistentKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [WS_ARCH]
 
     def __init__(
         self,
@@ -822,44 +825,43 @@ class GQAFwdWsPersistentKernel(Kernel):
         return self.kernel(self.config["block_m"], self.config["block_n"])(q, k, v)
 
 
-class GQAFwdWsPersistentCausalKernel(Kernel):
-    supported_archs: list[int] = [90]
+class GQAFwdWsPersistentCausalKernel(PackedPrefillKernel):
+    """Square causal packed prefill, warp-specialized and persistent (H200).
 
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len: int,
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        softcap: float = 0.0,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        if not is_causal:
+    Serves the region where the persistent schedule fills the device: square
+    causal fp16/bf16 at head dim 128, tile-aligned, with enough work items.
+    """
+
+    supported_archs: list[int] = [WS_ARCH]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return square_ws_prefill_region(call)
+
+    def _validate_spec(self) -> None:
+        if not self.is_causal:
             raise ValueError("GQAFwdWsPersistentCausalKernel only supports causal forward.")
-        if dtype not in (torch.float16, torch.bfloat16):
+        if not self._is_attention_dtype(self.dtype):
             raise ValueError("GQAFwdWsPersistentCausalKernel currently supports float16/bfloat16 only.")
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len = seq_len
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
+        if self.max_seqlen_q != self.max_seqlen_kv:
+            raise ValueError(
+                "GQAFwdWsPersistentCausalKernel requires max_seqlen_q == max_seqlen_kv.")
+
+    def _build_program(self) -> None:
         self.kernel = _gqa_fwd_ws_persistent_causal_kernel(
-            batch, heads, heads_kv, seq_len, dim, self.sm_scale, self.softcap, self.dtype_str)
-        self.init_config(config, tune)
+            self.batch, self.heads, self.heads_kv, self.max_seqlen_q, self.dim,
+            self.sm_scale, self.softcap, self.dtype_str)
 
     @property
     def default_config(self) -> dict:
         return {"block_m": 128, "block_n": 128}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        return self.kernel(self.config["block_m"], self.config["block_n"])(q, k, v)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                cu_seqlens_q: torch.Tensor, cu_seqlens_kv: torch.Tensor,
+                q_scale: Optional[torch.Tensor] = None,
+                k_scale: Optional[torch.Tensor] = None,
+                v_scale: Optional[torch.Tensor] = None) -> torch.Tensor:
+        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
+        output = self.kernel(self.config["block_m"], self.config["block_n"])(
+            q_bshd, k_bshd, v_bshd)
+        return output.reshape(q.shape)
