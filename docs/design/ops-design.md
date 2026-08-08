@@ -31,7 +31,7 @@ Op                          ← L1: thin base, shared by all ops
 
 An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
 
-The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — and the kernel cache is keyed by shape *and* dtype. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
+The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
 
 `self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
 
@@ -51,11 +51,13 @@ kernel = self.get_or_build_kernel(
 )
 ```
 
-The factory runs on the first miss for that key and never again. What stays at the call site is the one op-specific thing — how the kernel is constructed — and nothing else. An op MUST NOT hold a kernel cache dict of its own: a second dict is a second slot, and L1 already gives slots names.
+The factory runs on the first miss for that key and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
 
-A slot entry may hold more than one kernel. An op that builds a preprocess kernel together with its backward kernel returns both from one factory as a tuple, or as a frozen record when the specialization carries more than kernels; the entry, not the kernel, is the unit built once. Two kernels whose keys differ — an attention kernel keyed by element type and a cache-append kernel keyed by the same — are two slots, not one entry.
+The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other belong in separate slots.
 
-`iter_kernels()` enumerates what an op holds: every slot entry, plus `self.kernel` for an op that binds one directly. Enumeration is explicit, never reflection over attributes. An op that runs a kernel built by another op returns that op from `kernel_delegates()` — whether the delegate is fixed at construction or itself selected per specialization — and enumeration descends through it. `autotune()` tunes exactly what `iter_kernels()` yields, so a composite op reaches its delegates' kernels without overriding `autotune()`.
+`iter_kernels()` enumerates slot entries and delegates explicitly, never by reflecting over attributes. An op that runs a kernel another op built declares that op in `kernel_delegates()`; a composite op therefore reaches its delegates' kernels without overriding `autotune()`.
+
+Reflection made this a guess rather than an answer: a kernel nested deeper than the traversal descended, or held in an attribute whose type the traversal did not recognise, was silently invisible to `autotune()`. Declaring what an op holds turns that silent omission into a missing override. The payoff is downstream — autotune, the validator and the benchmark harness enumerate built kernels through one interface instead of each learning every op's private cache shape.
 
 ## Scaffolding an Op from a Manifest Entry
 

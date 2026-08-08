@@ -45,8 +45,8 @@ Rationale and the slot / entry vocabulary: [ops-design.md § Kernel caching and 
 | `get_or_build_kernel(slot, key, factory)` | Return the entry at `(slot, key)`, calling `factory()` once on a miss. The only get-or-build in L1-L3 |
 | `built_kernels(slot)`                     | Read-only view of a slot's entries; empty before its first build. Introspection only, never dispatch  |
 | `kernel_delegates()`                      | The ops whose kernels this op runs. Default `()`; a composite op overrides it                         |
-| `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: slot entries, `self.kernel`, then delegates recursively    |
-| `autotune()`                              | Tunes exactly what `iter_kernels()` yields. Overriding it to reach a delegate is prohibited           |
+| `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: slot entries and delegates                                 |
+| `autotune()`                              | Tunes the built kernels `iter_kernels()` yields                                                       |
 
 ### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
 
@@ -116,7 +116,7 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
 - **Op with dynamic dims:** `_infer_output_shapes` called in `forward()` once dynamic dims resolve.
-- **Kernel construction:** always in `forward()`, through `get_or_build_kernel(slot, (_cache_key(*input_shapes), dtype), factory)`.
+- **Kernel construction:** always in `forward()`, through `get_or_build_kernel` — see [Slot S16](#slot-s16).
 - **`_validate_dtypes`:** runs on every `forward()` call, and is the only place an op rejects a dtype.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
