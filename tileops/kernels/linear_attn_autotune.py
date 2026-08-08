@@ -51,19 +51,43 @@ def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     Whether a width is buildable is ``resolve_block_v``'s question — minimum
     gemm N extent and divisibility — so ask it rather than restate its rules
     here, which is what keeps the candidate set from drifting from what the
-    recurrence will accept.
+    recurrence will accept. Widths resolving to the same tile are one
+    candidate: at ``dim_v == 32`` both 0 and 32 give a 32-column tile and the
+    same generated kernel, so offering both would build and time it twice.
 
     Args:
         dim_v: Value dimension.
     """
     buildable = []
+    resolved = set()
     for block_v in H_BLOCK_V_WIDTHS:
         try:
-            resolve_block_v(dim_v, block_v)
+            width = resolve_block_v(dim_v, block_v)
         except ValueError:
             continue
+        if width in resolved:
+            continue
+        resolved.add(width)
         buildable.append(block_v)
     return tuple(buildable)
+
+
+def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
+    """Return the buildable widths, refusing a shape that has none.
+
+    Both the untuned default and the declared config set answer for the same
+    shape, so they refuse the same shapes here rather than each deciding what
+    an empty candidate set means.
+
+    Raises:
+        ValueError: if no V-tile width is buildable at *dim_v*.
+    """
+    candidates = h_block_v_candidates(dim_v)
+    if not candidates:
+        raise ValueError(
+            f"no buildable recurrence V-tile width for dim_v={dim_v}; "
+            f"widths are {H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v")
+    return candidates
 
 
 def default_h_block_v(dim_v: int, chunk_size: int) -> int:
@@ -86,14 +110,12 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     Raises:
         ValueError: if no V-tile width is buildable at *dim_v*.
     """
-    candidates = h_block_v_candidates(dim_v)
-    if not candidates:
-        raise ValueError(
-            f"no buildable recurrence V-tile width for dim_v={dim_v}; "
-            f"widths are {H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v")
+    candidates = _require_h_block_v_candidates(dim_v)
     tiled = [block_v for block_v in candidates if block_v]
     if tiled and chunk_size >= TILED_DEFAULT_MIN_CHUNK_SIZE:
         return min(tiled)
+    # A shape whose only buildable width is tiled has no untiled width to
+    # prefer, so the preference yields to what the recurrence can build.
     return 0 if 0 in candidates else min(tiled)
 
 
@@ -108,6 +130,11 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
 
     Args:
         dim_v: Value dimension.
+
+    Raises:
+        ValueError: if no V-tile width is buildable at *dim_v*, so the shape is
+            refused here rather than declaring an empty set that reads as
+            "tunable, with nothing to try".
     """
     return [
         {
@@ -121,7 +148,7 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
         for fused, recurrence, block_v, output in itertools.product(
             PIPELINE_CONFIGS,
             PIPELINE_CONFIGS,
-            h_block_v_candidates(dim_v),
+            _require_h_block_v_candidates(dim_v),
             OUTPUT_CONFIGS,
         )
     ]
@@ -141,8 +168,15 @@ def _tune_sub_kernel(
     which is how a sub-kernel whose candidates all fail to build reports back.
     """
     print(f"Autotuning {label} ({len(configs)} configs)...")
+    # supply_prog=None, not the kernel's: a whole-kernel supplier is written
+    # against the forward's inputs, which are not this sub-kernel's.
     tuned = kernel.tune_jit_kernel(
-        jit_kernel, list(configs), warmup=warmup, rep=rep, seed_config=configs[0]
+        jit_kernel,
+        list(configs),
+        warmup=warmup,
+        rep=rep,
+        seed_config=configs[0],
+        supply_prog=None,
     )
     config = getattr(tuned, "config", None)
     latency = getattr(tuned, "latency", None)
@@ -217,14 +251,21 @@ def tune_delta_rule_fwd(
     best_latency = float("inf")
     for block_v in h_block_v_candidates(kernel.dim_v):
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
-        config, latency = _tune_sub_kernel(
-            kernel,
-            label,
-            h_builder(*shape, block_v=block_v),
-            PIPELINE_CONFIGS,
-            warmup,
-            rep,
-        )
+        try:
+            config, latency = _tune_sub_kernel(
+                kernel,
+                label,
+                h_builder(*shape, block_v=block_v),
+                PIPELINE_CONFIGS,
+                warmup,
+                rep,
+            )
+        except Exception as exc:  # noqa: BLE001 - one width failing must not sink the rest
+            # resolve_block_v answers what the tile geometry allows; shared
+            # memory limits and codegen failures surface only on build, and
+            # they disqualify this width rather than the whole sweep.
+            print(f"  {label} unavailable: {type(exc).__name__}: {exc}")
+            continue
         if config is None or latency is None:
             continue
         if latency < best_latency:

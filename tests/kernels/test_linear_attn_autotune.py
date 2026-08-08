@@ -59,8 +59,9 @@ class _StubKernel:
             "o_threads": 256,
         }
 
-    def tune_jit_kernel(self, jit_kernel, configs, warmup, rep, seed_config):
+    def tune_jit_kernel(self, jit_kernel, configs, warmup, rep, seed_config, supply_prog):
         assert seed_config is configs[0], "the sweep must seed from its first candidate"
+        assert supply_prog is None, "a sub-kernel sweep must not inherit the kernel's supplier"
         self.sweeps.append((jit_kernel.name, jit_kernel.build_kwargs, tuple(configs)))
         key = (jit_kernel.name, jit_kernel.build_kwargs.get("block_v", 0))
         config, latency = self.results.get(key, (configs[-1], 1.0))
@@ -198,11 +199,48 @@ def test_default_h_block_v_is_always_a_declared_candidate() -> None:
             assert la.default_h_block_v(dim_v, chunk_size) in declared
 
 
-def test_default_h_block_v_refuses_a_shape_with_no_buildable_width() -> None:
-    """Below the minimum gemm N extent there is no width to default to."""
+def test_a_shape_with_no_buildable_width_is_refused_by_both_entry_points() -> None:
+    """The default and the declared set must refuse the same shapes.
+
+    An empty config list reads as "tunable, with nothing to try": ``[]`` is not
+    ``None``, so ``init_config`` would skip its warning and walk into the sweep.
+    """
     assert la.h_block_v_candidates(8) == ()
     with pytest.raises(ValueError, match="no buildable"):
         la.default_h_block_v(8, 64)
+    with pytest.raises(ValueError, match="no buildable"):
+        la.delta_rule_fwd_autotune_configs(8)
+
+
+def test_widths_resolving_to_one_tile_are_a_single_candidate() -> None:
+    """At dim_v=32 both widths give a 32-column tile, so building both is waste."""
+    assert la.h_block_v_candidates(32) == (0,)
+    assert {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(32)} == {0}
+
+
+def test_a_width_that_fails_to_build_does_not_sink_the_sweep() -> None:
+    """resolve_block_v cannot see shared-memory or codegen failures.
+
+    Those surface only when the width is built, and they disqualify that width,
+    not the whole sweep — the other width must still be measured and win.
+    """
+    kernel = _StubKernel(chunk_size=64)
+    failing = {"h": 32}
+
+    def h_builder(*shape, block_v):
+        if block_v == failing["h"]:
+            raise RuntimeError("out of shared memory")
+        return _StubJit("h", block_v=block_v)
+
+    config = la.tune_delta_rule_fwd(
+        kernel,
+        fused_builder=lambda *shape: _StubJit("fused"),
+        h_builder=h_builder,
+        o_builder=lambda *shape: _StubJit("o"),
+    )
+
+    assert config["h_block_v"] == 0
+    assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
 
 
 def test_default_h_block_v_takes_the_narrowest_buildable_tiled_width() -> None:
