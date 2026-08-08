@@ -284,17 +284,13 @@ class Op(ABC):
         Only kernels already built are tuned: a role the op has not populated
         yet has nothing to tune.
         """
-        # FIXME(staged-rollout): autotune covers only kernels already built.
+        # FIXME(staged-rollout): covers only kernels already built.
         #
-        # Broken invariant: autotune is a lifecycle operation, so a call before
-        #   the first forward must arrange for kernels built later to be tuned.
-        #   Today it is a no-op, and the caller gets no signal that it was.
-        # Why: enumeration had to stop being reflection before the lifecycle
-        #   could be given a shape; a request recorded against a kernel that
-        #   does not exist yet needs somewhere to live that reflection had no
-        #   room for.
-        # Cleanup: when a pending-autotune request survives to the build that
-        #   satisfies it, drop this marker and the sentence above it.
+        # Broken invariant: a call before the first forward must tune what gets
+        #   built later; today it is a silent no-op.
+        # Why: a request against a kernel that does not exist yet has nowhere
+        #   to live until entries carry pending state.
+        # Cleanup: honour a pending request at the build that satisfies it.
         for kernel in self.iter_kernels():
             kernel.autotune()
 

@@ -578,16 +578,13 @@ def _extract_op_config(op: object) -> Optional[dict]:
     if op_config:
         return op_config
 
-    # FIXME(staged-rollout): reads a config attribute off the kernel object.
+    # FIXME(staged-rollout): reads `config` off the kernel object.
     #
-    # Broken invariant: an op's callers get its behaviour by calling it, not by
-    #   reading its kernel's attributes. Reporting reaches past that boundary,
-    #   so a kernel cannot rename or drop `config` without breaking benchmarks.
-    # Why: nothing yet reports what a call ran with. Enumeration told us which
-    #   kernels an op holds, which is what let this stop guessing at private
-    #   cache layouts, but it does not say what any of them were built for.
-    # Cleanup: when an op reports its own execution metadata, read that here
-    #   and stop touching the kernel.
+    # Broken invariant: callers reach an op by calling it, not by reading its
+    #   kernel's attributes.
+    # Why: nothing reports what a call ran with; enumeration names the kernels
+    #   but not what they were built for.
+    # Cleanup: read the op's own execution metadata once it reports any.
     for kernel in _op_kernels(op):
         op_config = getattr(kernel, "config", None)
         if op_config:
