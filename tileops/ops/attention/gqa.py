@@ -96,6 +96,34 @@ def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     return rotary_dim
 
 
+def _build_packed_prefill_kernel(
+    kernel_map: Dict[str, Kernel],
+    key: str,
+    call: AttentionCall,
+) -> Kernel:
+    """Construct the packed-prefill implementation *key* names.
+
+    Every implementation of the slot takes the same constructor, so one step
+    builds any of them and no caller carries a per-implementation argument list.
+    """
+    return kernel_map[key](
+        batch=call.batch,
+        heads=call.heads,
+        heads_kv=call.heads_kv,
+        max_seqlen_q=call.max_seqlen_q,
+        max_seqlen_kv=call.max_seqlen_kv,
+        dim=call.dim,
+        is_causal=call.is_causal,
+        dtype=call.dtype,
+        sm_scale=call.sm_scale,
+        softcap=call.softcap,
+        window_size_left=call.window_size_left,
+        window_size_right=call.window_size_right,
+        accum_dtype=call.accum_dtype,
+        tune=call.tune,
+    )
+
+
 class GroupedQueryAttentionFwdOp(Op):
     """Compatibility square GQA forward wrapper. Public layout: BSHD."""
 
@@ -120,8 +148,10 @@ class GroupedQueryAttentionFwdOp(Op):
         self.softcap = _score_softcap(softcap)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._prefill_ops: Dict[torch.dtype, "GroupedQueryAttentionPrefillFwdOp"] = {}
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+        # Packed ranges for a batch of equal-length requests, per device. Not a
+        # kernel cache: the dense implementations take the same packed call as
+        # every other, and a fixed-shape request supplies its ranges.
+        self._cu_seqlens: Dict[torch.device, torch.Tensor] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -131,43 +161,43 @@ class GroupedQueryAttentionFwdOp(Op):
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
-    def _prefill_op_for(self, dtype: torch.dtype) -> "GroupedQueryAttentionPrefillFwdOp":
-        """Packed prefill op for *dtype*, whose ctor dtype is the output element type."""
-        op = self._prefill_ops.get(dtype)
-        if op is None:
-            op = GroupedQueryAttentionPrefillFwdOp(
-                batch=self.batch,
-                heads=self.heads,
-                heads_kv=self.heads_kv,
-                dim=self.dim,
-                max_seqlen_q=self.seq_len,
-                max_seqlen_kv=self.seq_len,
-                dtype=dtype,
-                is_causal=self.is_causal,
-                sm_scale=self.sm_scale,
-                softcap=self.softcap,
-                backend="dense",
-                kernel_map=self.forwarded_overrides(),
-                tune=self.tune,
-            )
-            self._prefill_ops[dtype] = op
-        return op
+    def attention_call(self, dtype: torch.dtype) -> AttentionCall:
+        """State what one fixed-shape call is: a uniform dense packed request."""
+        return AttentionCall(
+            dtype=dtype,
+            batch=self.batch,
+            heads=self.heads,
+            heads_kv=self.heads_kv,
+            dim=self.dim,
+            max_seqlen_q=self.seq_len,
+            max_seqlen_kv=self.seq_len,
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+            backend="dense",
+            is_fp8=False,
+            is_uniform=True,
+            tune=self.tune,
+        )
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        """The dense prefill implementation this wrapper's calls land on.
+        """The dense prefill implementation this wrapper's calls land on."""
+        _validate_attention_dtype(dtype)
+        call = self.attention_call(dtype)
+        key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
 
-        Shares the packed prefill op's cache, so introspection and autotune see
-        the same object ``forward`` runs rather than a second compile of it.
-        """
-        kernel = self._kernel_cache.get(dtype)
-        if kernel is None:
-            _validate_attention_dtype(dtype)
-            prefill_op = self._prefill_op_for(dtype)
-            call = prefill_op.attention_call(is_fp8=False, is_uniform=True)
-            key = prefill_op.select_kernel_key(DENSE_PREFILL_KEYS, call)
-            kernel = prefill_op._kernel_for(key, call)
-            self._kernel_cache[dtype] = kernel
-        return kernel
+        def build() -> Kernel:
+            return _build_packed_prefill_kernel(self.kernel_map, key, call)
+
+        return self.get_or_build_kernel(key, dtype, build)
+
+    def _uniform_cu_seqlens(self, device: torch.device) -> torch.Tensor:
+        cu_seqlens = self._cu_seqlens.get(device)
+        if cu_seqlens is None:
+            cu_seqlens = torch.arange(
+                self.batch + 1, device=device, dtype=torch.int32) * self.seq_len
+            self._cu_seqlens[device] = cu_seqlens
+        return cu_seqlens
 
     def _infer_output_shapes(
         self,
@@ -197,8 +227,7 @@ class GroupedQueryAttentionFwdOp(Op):
         # A fixed-shape request is a uniform packed one; packing is a view, so
         # the wrapper reaches the packed prefill call rather than handing BSHD
         # tensors to a kernel whose signature is packed.
-        prefill_op = self._prefill_op_for(q.dtype)
-        cu_seqlens = prefill_op.uniform_cu_seqlens(self.seq_len, q.device)
+        cu_seqlens = self._uniform_cu_seqlens(q.device)
         output = self._get_kernel(q.dtype)(
             q.view(-1, self.heads, self.dim),
             k.view(-1, self.heads_kv, self.dim),
@@ -282,8 +311,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.tune = tune
         self._roofline_kwargs = None
         self._uniform_cu_cache: dict[tuple[int, torch.device, torch.dtype], torch.Tensor] = {}
-        # Keyed by dispatch key: this op fixes its element type at construction.
-        self._kernel_cache: Dict[str, Kernel] = {}
 
         self.dispatch_kernel(kernel_map)
 
@@ -326,31 +353,12 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         )
 
     def _kernel_for(self, key: str, call: AttentionCall) -> Kernel:
-        """Build the implementation *key* names, once per key.
+        """The implementation *key* names, built once for this element type."""
 
-        Every implementation of packed prefill takes the same constructor, so
-        there is one build here and no per-implementation argument list.
-        """
-        kernel = self._kernel_cache.get(key)
-        if kernel is None:
-            kernel = self.kernel_map[key](
-                batch=call.batch,
-                heads=call.heads,
-                heads_kv=call.heads_kv,
-                max_seqlen_q=call.max_seqlen_q,
-                max_seqlen_kv=call.max_seqlen_kv,
-                dim=call.dim,
-                is_causal=call.is_causal,
-                dtype=call.dtype,
-                sm_scale=call.sm_scale,
-                softcap=call.softcap,
-                window_size_left=call.window_size_left,
-                window_size_right=call.window_size_right,
-                accum_dtype=call.accum_dtype,
-                tune=call.tune,
-            )
-            self._kernel_cache[key] = kernel
-        return kernel
+        def build() -> Kernel:
+            return _build_packed_prefill_kernel(self.kernel_map, key, call)
+
+        return self.get_or_build_kernel(key, call.dtype, build)
 
     def _infer_output_shapes(
         self,
@@ -440,16 +448,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
                 raise ValueError(
                     f"{name} must have shape {expected_scale_shape}, got {tuple(tensor.shape)}"
                 )
-
-    def uniform_cu_seqlens(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Packed ranges for a batch of equal-length requests, built once."""
-        cache_key = (seq_len, device, torch.int32)
-        expected = self._uniform_cu_cache.get(cache_key)
-        if expected is None:
-            expected = torch.arange(
-                self.batch + 1, device=device, dtype=torch.int32) * seq_len
-            self._uniform_cu_cache[cache_key] = expected
-        return expected
 
     def _uniform_cu_seqlens(self, cu_seqlens: torch.Tensor, seq_len: int) -> bool:
         cache_key = (seq_len, cu_seqlens.device, cu_seqlens.dtype)
@@ -577,14 +575,12 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            _validate_attention_dtype(dtype)
-            self._kernel_cache[dtype] = self.kernel_map[
-                "gqa_prefill_varlen_fwd_kernel"
-            ](
+        _validate_attention_dtype(dtype)
+
+        def build() -> Kernel:
+            return self.kernel_map["gqa_prefill_varlen_fwd_kernel"](
                 batch=self.batch,
                 heads=self.heads,
                 heads_kv=self.heads_kv,
@@ -597,7 +593,8 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
                 softcap=self.softcap,
                 tune=self.tune,
             )
-        return self._kernel_cache[dtype]
+
+        return self.get_or_build_kernel("gqa_prefill_varlen_fwd_kernel", dtype, build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -809,7 +806,6 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -847,14 +843,14 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         )
 
     def _get_kernel(self, key: str, call: AttentionCall) -> Kernel:
-        """Build the implementation *key* names, once per element type.
+        """The implementation *key* names, built once per element type.
 
         Every implementation of paged prefill takes the same constructor, so
         there is one build here and no per-implementation argument list.
         """
-        kernel = self._kernel_cache.get(call.dtype)
-        if kernel is None:
-            kernel = self.kernel_map[key](
+
+        def build() -> Kernel:
+            return self.kernel_map[key](
                 batch=call.batch,
                 heads=call.heads,
                 heads_kv=call.heads_kv,
@@ -869,8 +865,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
                 rotary_dim=call.rotary_dim,
                 tune=call.tune,
             )
-            self._kernel_cache[call.dtype] = kernel
-        return kernel
+
+        return self.get_or_build_kernel(key, call.dtype, build)
 
     def _rope_tables(self, device: torch.device, dtype: torch.dtype):
         """Rotary tables for this op, or ``(None, None)`` when it fuses no RoPE."""
@@ -1097,22 +1093,26 @@ class GroupedQueryAttentionBwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, tuple[Kernel, Kernel]] = {}
 
     def _get_kernels(self, dtype: torch.dtype) -> tuple[Kernel, Kernel]:
-        """Return (preprocess, backward) kernels for *dtype*, building once."""
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = (
-                self.kernel_map["gqa_bwd_preprocess_kernel"](
-                    self.batch, self.heads, self.seq_len, self.dim, dtype,
-                    tune=self.tune,
-                ),
-                self.kernel_map["gqa_bwd_kernel"](
-                    self.batch, self.heads, self.heads_kv, self.seq_len,
-                    self.dim, self.is_causal, dtype, tune=self.tune,
-                ),
+        """Return (preprocess, backward) kernels for *dtype*, building once each."""
+
+        def build_preprocess() -> Kernel:
+            return self.kernel_map["gqa_bwd_preprocess_kernel"](
+                self.batch, self.heads, self.seq_len, self.dim, dtype,
+                tune=self.tune,
             )
-        return self._kernel_cache[dtype]
+
+        def build_backward() -> Kernel:
+            return self.kernel_map["gqa_bwd_kernel"](
+                self.batch, self.heads, self.heads_kv, self.seq_len,
+                self.dim, self.is_causal, dtype, tune=self.tune,
+            )
+
+        return (
+            self.get_or_build_kernel("gqa_bwd_preprocess_kernel", dtype, build_preprocess),
+            self.get_or_build_kernel("gqa_bwd_kernel", dtype, build_backward),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1165,17 +1165,18 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            _validate_attention_dtype(dtype)
-            call = self.attention_call(dtype)
-            key = self.select_kernel_key(DECODE_KEYS, call)
-            self._kernel_cache[dtype] = self.kernel_map[key](
+        _validate_attention_dtype(dtype)
+        call = self.attention_call(dtype)
+        key = self.select_kernel_key(DECODE_KEYS, call)
+
+        def build() -> Kernel:
+            return self.kernel_map[key](
                 call.batch, call.heads, call.heads_kv, call.seqlen_kv, call.dim, call.dtype,
                 sm_scale=call.sm_scale, softcap=call.softcap, tune=call.tune)
-        return self._kernel_cache[dtype]
+
+        return self.get_or_build_kernel(key, dtype, build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1245,18 +1246,19 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            _validate_attention_dtype(dtype)
-            call = self.attention_call(dtype)
-            key = self.select_kernel_key(PAGED_DECODE_KEYS, call)
-            self._kernel_cache[dtype] = self.kernel_map[key](
+        _validate_attention_dtype(dtype)
+        call = self.attention_call(dtype)
+        key = self.select_kernel_key(PAGED_DECODE_KEYS, call)
+
+        def build() -> Kernel:
+            return self.kernel_map[key](
                 call.batch, call.heads, call.heads_kv, call.seqlen_kv, call.dim,
                 call.page_size, call.dtype,
                 sm_scale=call.sm_scale, softcap=call.softcap, tune=call.tune)
-        return self._kernel_cache[dtype]
+
+        return self.get_or_build_kernel(key, dtype, build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1341,11 +1343,11 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["gqa_sliding_window_fwd_kernel"](
+
+        def build() -> Kernel:
+            return self.kernel_map["gqa_sliding_window_fwd_kernel"](
                 batch=self.batch,
                 heads=self.heads,
                 heads_kv=self.heads_kv,
@@ -1357,7 +1359,8 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
                 dtype=dtype,
                 tune=self.tune,
             )
-        return self._kernel_cache[dtype]
+
+        return self.get_or_build_kernel("gqa_sliding_window_fwd_kernel", dtype, build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1496,16 +1499,11 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype, max_seqlen_q: int) -> Kernel:
-        # The launch bound is a constructor fact for this slot, so the cache
-        # carries it alongside the element type.
-        key = (dtype, max_seqlen_q)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map[
-                "gqa_sliding_window_varlen_fwd_kernel"
-            ](
+
+        def build() -> Kernel:
+            return self.kernel_map["gqa_sliding_window_varlen_fwd_kernel"](
                 batch=self.batch,
                 heads=self.heads,
                 heads_kv=self.heads_kv,
@@ -1519,7 +1517,11 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
                 accum_dtype=self.accum_dtype,
                 tune=self.tune,
             )
-        return self._kernel_cache[key]
+
+        # The launch bound is a constructor fact for this slot, so the
+        # specialization carries it alongside the element type.
+        return self.get_or_build_kernel(
+            "gqa_sliding_window_varlen_fwd_kernel", (dtype, max_seqlen_q), build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

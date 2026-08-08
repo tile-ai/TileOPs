@@ -532,15 +532,12 @@ def test_gqa_fwd_bshd_wrapper_uses_dense_kernel_without_uniform_check(
     v = torch.empty_like(k)
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True)
 
-    def fail_uniform_check(*args: object, **kwargs: object) -> bool:
-        pytest.fail("BSHD wrapper should not inspect packed cu_seqlens")
-
     def fake_dense_kernel(*args: torch.Tensor) -> torch.Tensor:
         return torch.empty_like(args[0])
 
-    prefill_op = op._prefill_op_for(torch.float16)
-    monkeypatch.setattr(prefill_op, "_uniform_cu_seqlens", fail_uniform_check)
-    monkeypatch.setattr(op, "_kernel_cache", {torch.float16: fake_dense_kernel})
+    # The wrapper states its request is uniform rather than inspecting ranges,
+    # so it builds no comparison tensor and reads no cu_seqlens values.
+    monkeypatch.setattr(op, "_get_kernel", lambda dtype: fake_dense_kernel)
 
     out = op(q, k, v)
     assert out.shape == q.shape
