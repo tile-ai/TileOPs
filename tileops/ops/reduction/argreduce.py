@@ -29,7 +29,7 @@ class _ArgreduceOpBase(_ReduceOpBase):
             (M, N, dtype, inner_stride),
             lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype, inner_stride=inner_stride,
-                tune=self._tune, **self._build_kernel_kwargs(),
+                tune=self.tune, **self._build_kernel_kwargs(),
             ),
         )
 
