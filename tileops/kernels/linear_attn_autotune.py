@@ -171,11 +171,11 @@ def _summarize(exc: Exception) -> str:
 
     Which width failed is carried by the label beside this, not by the text:
     tilelang reports every failed sweep with the same sentence. The text is
-    still worth keeping for everything else that can be raised here, bounded
-    because it may be a whole compiler log, and sliced before it is joined so
-    that log is never materialized whole.
+    kept for everything else raised here, bounded because it may be a whole
+    compiler log. Bounded after collapsing whitespace, not before, or a long
+    blank preamble consumes the budget and leaves nothing.
     """
-    return f"{type(exc).__name__}: {' '.join(str(exc)[:1000].split())[:200]}"
+    return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
 
 
 def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:

@@ -285,8 +285,12 @@ def test_the_raised_error_bounds_a_long_failure_text() -> None:
         _run(kernel)
 
     message = str(e.value)
+    widths = len(la.h_block_v_candidates(kernel.dim_v))
     assert "\n" not in message
-    assert len(message) < 1000
+    # One bounded summary per width, so the bound scales with the candidate set
+    # rather than with however many widths happen to be offered today.
+    assert len(message) < 300 * widths
+    assert "x" * 300 not in message, "the log body must not survive whole"
     assert log in str(e.value.__cause__), "the chained cause keeps the whole text"
 
 
