@@ -39,25 +39,13 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 ### Kernel caching and enumeration
 
-L1 owns get-or-build. An op names a **slot** — one per kernel role it plays — and asks for the specialization identified by a **key**, supplying the factory that builds it:
+L1 owns get-or-build. An op names the **role** a kernel plays, the **key** identifying the specialization, and the factory that builds it. The factory runs on the first miss for that key and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
 
-```python
-kernel = self.get_or_build_kernel(
-    "example_cumsum_fwd",
-    (self._cache_key(x.shape), x.dtype),
-    lambda: self.kernel_map["example_cumsum_fwd"](
-        M, self.N, "sum", x.dtype, tune=self.tune
-    ),
-)
-```
+The key is opaque to L1 and must carry every input that can change what gets built. Naming the axes is the op's job, because only the op knows what its factory closes over.
 
-The factory runs on the first miss for that key and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
+The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other are separate roles.
 
-The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other belong in separate slots.
-
-`iter_kernels()` enumerates slot entries and delegates explicitly, never by reflecting over attributes. An op that runs a kernel another op built declares that op in `kernel_delegates()`; a composite op therefore reaches its delegates' kernels without overriding `autotune()`.
-
-Reflection made this a guess rather than an answer: a kernel nested deeper than the traversal descended, or held in an attribute whose type the traversal did not recognise, was silently invisible to `autotune()`. Declaring what an op holds turns that silent omission into a missing override. The payoff is downstream — autotune, the validator and the benchmark harness enumerate built kernels through one interface instead of each learning every op's private cache shape.
+`iter_kernels()` enumerates entries and delegates explicitly, never by reflecting over attributes. An op that runs a kernel another op built declares that op in `kernel_delegates()`, so a composite reaches its delegates' kernels without overriding `autotune()`. Reflection could only guess: a kernel nested deeper than the traversal descended, or held in an attribute whose type it did not recognise, was silently invisible. Declaring turns that silent omission into a missing declaration.
 
 ## Scaffolding an Op from a Manifest Entry
 
@@ -199,7 +187,7 @@ class ExampleCumsumFwdOp(Op):
         return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built through `self.get_or_build_kernel`, never through a cache dict the op owns. The kernel is built from `x.dtype`, and the slot key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the get-or-build call. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
+**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built through `self.get_or_build_kernel`, never through a cache dict the op owns. The kernel is built from `x.dtype`, and the key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the get-or-build call. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
 **Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
 

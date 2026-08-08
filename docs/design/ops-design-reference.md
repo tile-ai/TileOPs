@@ -27,7 +27,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 | Attribute      | Type                                 | Purpose                                                                                      |
 | -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per specialization uses a slot    |
+| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per specialization uses a role    |
 | `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                             |
 | `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                            |
 | `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
@@ -38,14 +38,14 @@ Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-drive
 
 #### Kernel caching and enumeration methods
 
-Rationale and the slot / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
+Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
 
 | Method                                    | Purpose                                                                                               |
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `get_or_build_kernel(slot, key, factory)` | Return the entry at `(slot, key)`, calling `factory()` once on a miss. The only get-or-build in L1-L3 |
-| `built_kernels(slot)`                     | Read-only view of a slot's entries; empty before its first build. Introspection only, never dispatch  |
+| `get_or_build_kernel(role, key, factory)` | Return the entry at `(role, key)`, calling `factory()` once on a miss. The only get-or-build in L1-L3 |
+| `built_kernels(role)`                     | Read-only view of a role's entries; empty before its first build. Introspection only, never dispatch  |
 | `kernel_delegates()`                      | The ops whose kernels this op runs. Default `()`; a composite op overrides it                         |
-| `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: slot entries and delegates                                 |
+| `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: entries and delegates                                      |
 | `autotune()`                              | Tunes the built kernels `iter_kernels()` yields                                                       |
 
 ### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
@@ -104,13 +104,13 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 
 **Dtype belongs to time point 3, never to 2.** The tensors carry it, so requiring the caller to restate it at construction only creates a second source that can disagree with the first. Constructing an op therefore commits to shape structure and nothing about element type.
 
-|                          | Fixed-rank op           | Arbitrary-rank op                                                           |
-| ------------------------ | ----------------------- | --------------------------------------------------------------------------- |
-| Manifest has `shape`     | yes                     | no                                                                          |
-| `__init__` shape source  | `shape` dimension names | `static_dims`                                                               |
-| Undeclared dimensions    | none                    | derived from tensor at forward time                                         |
-| Kernel construction time | forward (first call)    | forward (first encounter)                                                   |
-| Forward slot keying      | dtype                   | `(_cache_key(*input_shapes), dtype)` — default non-static axes, overridable |
+|                          | Fixed-rank op           | Arbitrary-rank op                                            |
+| ------------------------ | ----------------------- | ------------------------------------------------------------ |
+| Manifest has `shape`     | yes                     | no                                                           |
+| `__init__` shape source  | `shape` dimension names | `static_dims`                                                |
+| Undeclared dimensions    | none                    | derived from tensor at forward time                          |
+| Kernel construction time | forward (first call)    | forward (first encounter)                                    |
+| Forward keying           | dtype                   | opaque to L1; carries every input that changes what is built |
 
 ### Calling conventions
 

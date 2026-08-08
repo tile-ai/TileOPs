@@ -18,7 +18,7 @@ _Entry = TypeVar("_Entry")
 
 
 def _entry_kernels(entry: object) -> "list[Kernel]":
-    """Return the kernels one slot entry holds.
+    """Return the kernels one entry holds.
 
     An entry is a kernel, a sequence of kernels built together, or a dataclass
     carrying them alongside what else the specialization implies. An entry that
@@ -53,7 +53,7 @@ class Op(ABC):
 
     Attributes:
         kernel: single kernel, for ops that hold one; ops that build per
-            specialization use ``get_or_build_kernel`` slots instead
+            specialization use ``get_or_build_kernel`` instead
         dtype: Data type for computation (e.g., torch.float16)
         device: Device for computation (e.g., 'cuda')
         input_shapes: Expected input tensor shapes
@@ -67,10 +67,10 @@ class Op(ABC):
 
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
-    # Kernel slots, ``{slot: {key: entry}}``. Annotation only: the instance
+    # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
     # attribute appears on the first ``get_or_build_kernel`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
-    _kernel_slots: dict[str, dict[Hashable, object]]
+    _kernel_roles: dict[str, dict[Hashable, object]]
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
@@ -198,19 +198,19 @@ class Op(ABC):
 
     def get_or_build_kernel(
         self,
-        slot: str,
+        role: str,
         key: Hashable,
         factory: Callable[[], _Entry],
     ) -> _Entry:
-        """Return the entry at ``(slot, key)``, calling *factory* once on a miss.
+        """Return the entry at ``(role, key)``, calling *factory* once on a miss.
 
-        This is the Op layer's only get-or-build: an op names the slot it is
+        This is the Op layer's only get-or-build: an op names the role it is
         asking about and the specialization it wants, and supplies the one thing
         that is its own — how the kernel is constructed. Slots are created on
         first use, so no constructor declares one.
 
         Args:
-            slot: The kernel role, one per role the op plays. Conventionally
+            role: The kernel role this entry plays. Conventionally
                 the ``kernel_map`` dispatch key whose kernel *factory* builds.
             key: What the entry is specialized for, typically
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype.
@@ -219,32 +219,32 @@ class Op(ABC):
 
         Returns:
             The stored entry, identical across calls with the same
-            ``(slot, key)``.
+            ``(role, key)``.
         """
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo
         # cannot trace a method call on an instance ``__dict__``.
-        slots = getattr(self, "_kernel_slots", None)
-        if slots is None:
-            slots = {}
-            self._kernel_slots = slots
-        entries = slots.get(slot)
+        roles = getattr(self, "_kernel_roles", None)
+        if roles is None:
+            roles = {}
+            self._kernel_roles = roles
+        entries = roles.get(role)
         if entries is None:
             entries = {}
-            slots[slot] = entries
+            roles[role] = entries
         if key not in entries:
             entries[key] = factory()
         return entries[key]
 
-    def built_kernels(self, slot: str) -> Mapping[Hashable, object]:
-        """Return a read-only view of the entries built in *slot* so far.
+    def built_kernels(self, role: str) -> Mapping[Hashable, object]:
+        """Return a read-only view of the entries built for *role* so far.
 
-        Empty before the slot's first build. For introspection — tests,
+        Empty before the role's first build. For introspection — tests,
         benchmark reporting — never for dispatch: an execution path asks
         ``get_or_build_kernel`` so a miss builds rather than raises.
         """
-        slots = getattr(self, "_kernel_slots", None) or {}
-        return MappingProxyType(slots.get(slot, {}))
+        roles = getattr(self, "_kernel_roles", None) or {}
+        return MappingProxyType(roles.get(role, {}))
 
     def kernel_delegates(self) -> Sequence["Op"]:
         """Return the ops whose kernels this op runs.
@@ -258,10 +258,10 @@ class Op(ABC):
     def iter_kernels(self) -> Iterator[Kernel]:
         """Yield every kernel the op holds, each one once.
 
-        Enumeration is explicit: the entries of every slot, then ``self.kernel``
+        Enumeration is explicit: the entries of every role, then ``self.kernel``
         for an op that binds one directly, then the same walk over each
         ``kernel_delegates()`` entry. A kernel bound to any other attribute is
-        not searched for — an op that holds one puts it in a slot.
+        not searched for — an op that holds one builds it through a role.
         """
         seen: set[int] = set()
         for kernel in self._walk_kernels():
@@ -271,7 +271,7 @@ class Op(ABC):
 
     def _walk_kernels(self) -> Iterator[Kernel]:
         """Yield the kernels this op and its delegates hold, duplicates included."""
-        for entries in (getattr(self, "_kernel_slots", None) or {}).values():
+        for entries in (getattr(self, "_kernel_roles", None) or {}).values():
             for entry in entries.values():
                 yield from _entry_kernels(entry)
         yield from _entry_kernels(getattr(self, "kernel", None))
@@ -281,9 +281,20 @@ class Op(ABC):
     def autotune(self) -> None:
         """Autotune every kernel the op holds.
 
-        Only kernels already built are tuned: a slot the op has not populated
+        Only kernels already built are tuned: a role the op has not populated
         yet has nothing to tune.
         """
+        # FIXME(staged-rollout): autotune covers only kernels already built.
+        #
+        # Broken invariant: autotune is a lifecycle operation, so a call before
+        #   the first forward must arrange for kernels built later to be tuned.
+        #   Today it is a no-op, and the caller gets no signal that it was.
+        # Why: enumeration had to stop being reflection before the lifecycle
+        #   could be given a shape; a request recorded against a kernel that
+        #   does not exist yet needs somewhere to live that reflection had no
+        #   room for.
+        # Cleanup: when a pending-autotune request survives to the build that
+        #   satisfies it, drop this marker and the sentence above it.
         for kernel in self.iter_kernels():
             kernel.autotune()
 
