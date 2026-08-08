@@ -224,7 +224,7 @@ def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
     assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
     # When a width is dropped but the sweep survives, the warning is the only
     # diagnostic, so it is bounded the same way the raised error is.
-    dropped = str(warned[0].message)
+    dropped = next(str(w.message) for w in warned if "unavailable" in str(w.message))
     assert "\n" not in dropped and len(dropped) < 400
 
 
@@ -276,7 +276,8 @@ def test_the_raised_error_bounds_a_long_failure_text() -> None:
     """A compile failure can carry a whole log; the error must stay readable."""
     kernel = _StubKernel(chunk_size=64)
     inner = kernel.tune_jit_kernel
-    log = "header line\n" + "x" * 5000
+    # A padded preamble must not eat the slice and leave the summary empty.
+    log = "\n" * 30000 + "header line\n" + "x" * 5000
 
     def fail_with_a_log(jit_kernel, *args, **kwargs):
         if jit_kernel.name == "h":
@@ -291,6 +292,7 @@ def test_the_raised_error_bounds_a_long_failure_text() -> None:
     message = str(e.value)
     widths = len(la.h_block_v_candidates(kernel.dim_v))
     assert "\n" not in message
+    assert "header line" in message, "a padded preamble must not consume the summary"
     # One bounded summary per width, plus a fixed prefix naming the shape, so
     # the bound scales with the candidate set rather than with however many
     # widths happen to be offered today.

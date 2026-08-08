@@ -172,11 +172,11 @@ def _summarize(exc: Exception) -> str:
     Which width failed is carried by the label beside this, not by the text:
     tilelang reports every failed sweep with the same sentence. The text is
     kept for everything else raised here, bounded because it may be a whole
-    compiler log. The generous slice keeps a megabyte of it out of the split;
-    the bound is applied after the collapse, since applying it before lets a
-    blank preamble consume the budget and leave nothing.
+    compiler log. Leading blank text is stripped before the slice that keeps a
+    megabyte out of the collapse, so a padded preamble cannot eat the slice and
+    leave nothing behind; the budget itself is applied last.
     """
-    return f"{type(exc).__name__}: {' '.join(str(exc)[:20000].split())[:200]}"
+    return f"{type(exc).__name__}: {' '.join(str(exc).lstrip()[:20000].split())[:200]}"
 
 
 def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
