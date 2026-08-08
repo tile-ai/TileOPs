@@ -14,7 +14,7 @@ Op                          ← L1: thin base, shared by all ops
         └── ConcreteOp      ← L3: leaf class emitted by the scaffold
 ```
 
-- **L1 (`Op`):** shared host-side plumbing (dispatch, kernel caching, autotune) plus the contracts for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`).
+- **L1 (`Op`):** shared host-side plumbing (dispatch, get-or-build kernel caching, kernel enumeration, autotune) plus the contracts for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`).
 - **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring](#family-base-refactoring).
 - **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape); see [Family-Base Refactoring](#family-base-refactoring) for when a family graduates to L2.
 
@@ -37,6 +37,26 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes. It is the only dtype gate; an op does not compare an incoming tensor against a dtype it was constructed with, because there is no such dtype. Roofline timing and formula semantics are defined in [roofline.md](roofline.md). See [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
+### Kernel caching and enumeration
+
+L1 owns get-or-build. An op names a **slot** — one per kernel role it plays — and asks for the specialization identified by a **key**, supplying the factory that builds it:
+
+```python
+kernel = self.get_or_build_kernel(
+    "example_cumsum_fwd",
+    (self._cache_key(x.shape), x.dtype),
+    lambda: self.kernel_map["example_cumsum_fwd"](
+        M, self.N, "sum", x.dtype, tune=self.tune
+    ),
+)
+```
+
+The factory runs on the first miss for that key and never again. What stays at the call site is the one op-specific thing — how the kernel is constructed — and nothing else. An op MUST NOT hold a cache dict of its own: a second dict is a second slot, and L1 already gives slots names.
+
+A slot entry may hold more than one kernel. An op that builds a preprocess kernel together with its backward kernel returns both from one factory as a tuple, or as a frozen record when the specialization carries more than kernels; the entry, not the kernel, is the unit built once. Two kernels whose keys differ — an attention kernel keyed by element type and a cache-append kernel keyed by the same — are two slots, not one entry.
+
+`iter_kernels()` enumerates what an op holds: every slot entry, plus `self.kernel` for an op that binds one directly. Enumeration is explicit, never reflection over attributes. An op that runs a kernel built by another op returns that op from `kernel_delegates()`, and enumeration descends through it. `autotune()` tunes exactly what `iter_kernels()` yields, so a composite op reaches its delegates' kernels without overriding `autotune()`.
+
 ## Scaffolding an Op from a Manifest Entry
 
 The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
@@ -55,7 +75,7 @@ Provides:
 """
 
 import math
-from typing import Dict, Hashable, Optional
+from typing import Dict, Optional
 
 import torch
 
@@ -122,10 +142,9 @@ class ExampleCumsumFwdOp(Op):
         self.N = N
         self.dim = dim
         self.tune = tune
-        self.dispatch_kernel(kernel_map)
         # M is not a static_dim — deferred to forward() where x.ndim
         # is known and M is derived from the non-reduction axes.
-        self._kernel_cache: Dict[Hashable, Kernel] = {}
+        self.dispatch_kernel(kernel_map)
 ```
 
 **Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params`); no extras except `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
@@ -164,11 +183,12 @@ class ExampleCumsumFwdOp(Op):
         M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
         self.M = M  # stored for eval_roofline
         self.dtype = x.dtype  # ditto; the op commits to no dtype before this
-        key = ((M,), x.dtype)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
-                M, self.N, "sum", x.dtype, tune=self.tune)
-        kernel = self._kernel_cache[key]
+        kernel = self.get_or_build_kernel(
+            "example_cumsum_fwd",
+            ((M,), x.dtype),
+            lambda: self.kernel_map["example_cumsum_fwd"](
+                M, self.N, "sum", x.dtype, tune=self.tune),
+        )
         # Move reduction axis to last, reshape to (M, N), compute, restore.
         orig_shape = x.shape
         x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
@@ -177,7 +197,7 @@ class ExampleCumsumFwdOp(Op):
         return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built from `x.dtype`, and the cache key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
+**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built through `self.get_or_build_kernel`, never through a cache dict the op owns. The kernel is built from `x.dtype`, and the slot key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the get-or-build call. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
 **Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
 

@@ -27,7 +27,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 | Attribute      | Type                                 | Purpose                                                                                      |
 | -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per dtype uses a cache instead    |
+| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per specialization uses a slot    |
 | `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                             |
 | `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                            |
 | `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
@@ -35,6 +35,18 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 | `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
 
 Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-driven methods (codegen-emitted by concrete ops): `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
+
+#### Kernel caching and enumeration methods
+
+Rationale and the slot / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
+
+| Method                                    | Purpose                                                                                               |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `get_or_build_kernel(slot, key, factory)` | Return the entry at `(slot, key)`, calling `factory()` once on a miss. The only get-or-build in L1-L3 |
+| `built_kernels(slot)`                     | Read-only view of a slot's entries; empty before its first build. Introspection only, never dispatch  |
+| `kernel_delegates()`                      | The ops whose kernels this op runs. Default `()`; a composite op overrides it                         |
+| `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: slot entries, `self.kernel`, then delegates recursively    |
+| `autotune()`                              | Tunes exactly what `iter_kernels()` yields. Overriding it to reach a delegate is prohibited           |
 
 ### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
 
@@ -98,13 +110,13 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 | `__init__` shape source  | `shape` dimension names | `static_dims`                                                               |
 | Undeclared dimensions    | none                    | derived from tensor at forward time                                         |
 | Kernel construction time | forward (first call)    | forward (first encounter)                                                   |
-| Forward cache keying     | dtype                   | `(_cache_key(*input_shapes), dtype)` — default non-static axes, overridable |
+| Forward slot keying      | dtype                   | `(_cache_key(*input_shapes), dtype)` — default non-static axes, overridable |
 
 ### Calling conventions
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
 - **Op with dynamic dims:** `_infer_output_shapes` called in `forward()` once dynamic dims resolve.
-- **Kernel construction:** always in `forward()`, cached by `(_cache_key(*input_shapes), dtype)`.
+- **Kernel construction:** always in `forward()`, through `get_or_build_kernel(slot, (_cache_key(*input_shapes), dtype), factory)`.
 - **`_validate_dtypes`:** runs on every `forward()` call, and is the only place an op rejects a dtype.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
