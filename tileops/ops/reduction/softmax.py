@@ -65,7 +65,7 @@ class _SoftmaxBaseOp(Op):
         self.dim = dim
         self.N = N
         self.keepdim = False
-        self._tune = tune
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.kernel: object | None = None
         self._last_roofline_spec: tuple[int, int, torch.dtype] | None = None
@@ -205,7 +205,7 @@ class _SoftmaxBaseOp(Op):
             self._kernel_key,
             (M, N, dtype, device_index),
             lambda: self.kernel_map[self._kernel_key](
-                M, N, self._op_kind, dtype, tune=self._tune,
+                M, N, self._op_kind, dtype, tune=self.tune,
                 device_index=device_index,
             ),
         )

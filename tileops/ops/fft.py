@@ -34,7 +34,7 @@ class FFTC2COp(Op):
                  kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
         self.n = None
         self.dtype = None
-        self._tune = tune
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
         self._twiddle_cache: Dict[tuple[int, torch.dtype, int | None], tuple[torch.Tensor, torch.Tensor]] = {}
@@ -52,7 +52,7 @@ class FFTC2COp(Op):
             "fft_c2c_kernel",
             key,
             lambda: self.kernel_map["fft_c2c_kernel"](
-                n, batch_size, dtype, tune=self._tune,
+                n, batch_size, dtype, tune=self.tune,
             ),
         )
 

@@ -104,7 +104,7 @@ class _ReduceOpBase(Op):
         """
         self.dim = dim
         self.keepdim = keepdim
-        self._tune = tune
+        self.tune = tune
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: tuple[int, int] | None = None
@@ -405,7 +405,7 @@ class _ReduceOpBase(Op):
             (M, N, dtype),
             lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype,
-                tune=self._tune, **self._build_kernel_kwargs(),
+                tune=self.tune, **self._build_kernel_kwargs(),
             ),
         )
 
