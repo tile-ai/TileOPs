@@ -20,6 +20,7 @@ from tileops.ops import (
 )
 from tileops.ops.attention.selection import (
     DECODE_KEYS,
+    DENSE_PREFILL_KEYS,
     PACKED_PREFILL_KEYS,
     PAGED_DECODE_KEYS,
     PAGED_PREFILL_KEYS,
@@ -97,10 +98,8 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     if not is_h200():
         pytest.skip("the recorded dispatch table is the H200 one")
     op = GroupedQueryAttentionFwdOp(4, 32, 8, 512, 128, True)
-    prefill_op = op._prefill_op_for(torch.float16)
-    call = prefill_op.attention_call(is_fp8=False, is_uniform=True)
-    candidate = prefill_op.select_kernel_key(PACKED_PREFILL_KEYS, call)
-    assert candidate == "gqa_prefill_square_fwd_kernel"
+    call = op.attention_call(torch.float16)
+    assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
 
 
 @pytest.mark.smoke
