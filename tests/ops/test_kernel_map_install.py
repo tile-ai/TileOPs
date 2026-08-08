@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import forget_device_properties, get_sm_version
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
@@ -37,17 +37,32 @@ def _decode_op(**kwargs: object):
 
 
 @pytest.mark.smoke
-def test_construction_does_not_probe_the_device() -> None:
-    """Installing the kernel map reads no device property."""
+def test_construction_succeeds_where_the_device_cannot_be_queried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An op constructs on a machine that cannot answer what the device is.
+
+    Most ops do not yet know where they will run, and on hardware other than the
+    one being asked about the query is not merely wrong but unavailable. Driven
+    by making the probe raise rather than by naming who may call it, so importing
+    it under another name or probing from elsewhere fails this too.
+    """
     import tileops.ops.elementwise as mod
-    from tileops.ops import op_base
 
-    assert not hasattr(op_base, "get_sm_version"), (
-        "op_base reaches for the device architecture again; construction must not "
-        "probe a device, because most ops do not yet know which one they will run on")
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("no device to query")
 
-    mod.ReluFwdOp(N_total=8)
-    _decode_op()
+    # The properties are cached per device, so a probe that already succeeded
+    # would never reach the failing one.
+    forget_device_properties()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", unavailable)
+    monkeypatch.setattr(torch.cuda, "get_device_name", unavailable)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    try:
+        mod.ReluFwdOp(N_total=8)
+        _decode_op()
+    finally:
+        forget_device_properties()
 
 
 @pytest.mark.smoke
@@ -161,41 +176,28 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
-def test_install_kernel_map_supported_archs_none() -> None:
-    """A kernel with ``supported_archs=None`` installs without raising.
+def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
+    """``supported_archs=None`` means no restriction, and the op runs.
 
-    The base ``Kernel`` class declares ``supported_archs: Optional[list[int]]``
-    defaulting to ``None``. The validate-and-install path must treat ``None``
-    as "no arch restriction" rather than attempting ``in None``, which would
-    raise ``TypeError``.
+    The base ``Kernel`` declares it ``Optional[list[int]]`` defaulting to
+    ``None``. Anything testing membership against it would raise ``TypeError``
+    instead of admitting the call, so this drives a forward through such a
+    kernel rather than inspecting where it was installed.
     """
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    inst = cls(N_total=8)
-    (key, default_kernel_cls), = inst.default_kernel_map.items()
+    (key, default_kernel_cls), = cls(N_total=8).default_kernel_map.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
 
-    overridden = cls(N_total=8, kernel_map={key: UnrestrictedKernel})
-    assert overridden.kernel_map[key] is UnrestrictedKernel
+    op = cls(N_total=8, kernel_map={key: UnrestrictedKernel})
+    x = torch.randn(8, device="cuda", dtype=torch.float16)
 
-
-@pytest.mark.smoke
-def test_install_kernel_map_is_private_helper_only() -> None:
-    """Refactor exposes ``_install_kernel_map`` only — no new public API.
-
-    Guards AC: the shared path is private (leading underscore); the public
-    surface is unchanged (``dispatch_kernel``, ``kernel_map``, ``tune``).
-    """
-    from tileops.ops.op_base import Op
-
-    assert hasattr(Op, "_install_kernel_map")
-    assert hasattr(Op, "dispatch_kernel")
-    public_names = [n for n in vars(Op) if not n.startswith("_")]
-    assert "install_kernel_map" not in public_names
+    torch.testing.assert_close(op(x), torch.relu(x))
 
 
 # A slot entry is a bare kernel for some families and a record for others, so

@@ -33,20 +33,27 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _prefill_op(**overrides: object) -> GroupedQueryAttentionPrefillFwdOp:
-    kwargs = {
-        "batch": 4,
-        "heads": 32,
-        "heads_kv": 8,
-        "dim": 128,
-        "max_seqlen_q": 512,
-        "max_seqlen_kv": 512,
-        "is_causal": True,
-        "dtype": torch.float16,
-        "backend": "dense",
-    }
+_PREFILL_CTOR = {
+    "batch": 4,
+    "heads": 32,
+    "heads_kv": 8,
+    "dim": 128,
+    "max_seqlen_q": 512,
+    "max_seqlen_kv": 512,
+    "is_causal": True,
+    "dtype": torch.float16,
+    "backend": "dense",
+}
+
+
+def _op(cls: type, **overrides: object):
+    kwargs = dict(_PREFILL_CTOR)
     kwargs.update(overrides)
-    return GroupedQueryAttentionPrefillFwdOp(**kwargs)
+    return cls(**kwargs)
+
+
+def _prefill_op(**overrides: object) -> GroupedQueryAttentionPrefillFwdOp:
+    return _op(GroupedQueryAttentionPrefillFwdOp, **overrides)
 
 
 def _prefill_key(op: GroupedQueryAttentionPrefillFwdOp, **call_facts: object) -> str:
@@ -252,40 +259,61 @@ class _NeverApplies(Kernel):
         return None
 
 
+# Two real dispatch keys of the packed-prefill slot: _SPECIAL stands for a
+# specialised slot, _GENERAL for the one behind it. Which installation path a
+# test uses is part of what it says — an op declaring its own implementations
+# subclasses ``default_kernel_map``; a caller replacing one passes
+# ``kernel_map=``, which is what makes it an override.
+_SPECIAL = "gqa_prefill_causal_fwd_kernel"
+_GENERAL = "gqa_prefill_fwd_kernel"
+_RULE_KEYS = (_GENERAL, _SPECIAL)
+
+
+def _op_declaring(**declared: type) -> GroupedQueryAttentionPrefillFwdOp:
+    """An op whose own implementations are *declared*, so none is an override."""
+
+    class DeclaringOp(GroupedQueryAttentionPrefillFwdOp):
+
+        @property
+        def default_kernel_map(self) -> dict:
+            return dict(declared)
+
+    return _op(DeclaringOp)
+
+
 @pytest.mark.smoke
 def test_two_implementations_claiming_one_call_is_an_error() -> None:
     """Overlap is reported, never resolved by the order the keys are written in."""
-    op = _prefill_op()
-    op.kernel_map = {"a": _Everything, "b": _Everything}
+    op = _op_declaring(**{_SPECIAL: _Everything, _GENERAL: _Everything})
     call = op.attention_call(is_fp8=False, is_uniform=True)
 
     with pytest.raises(ValueError, match="dispatch is ambiguous"):
-        op.select_kernel_key(("a", "b"), call)
+        op.select_kernel_key(_RULE_KEYS, call)
 
 
 @pytest.mark.smoke
 def test_a_general_implementation_yields_to_a_specialised_one() -> None:
     """The general implementation runs only where no specialised one serves."""
-    op = _prefill_op()
-    op.kernel_map = {"special": _Everything, "general": _General}
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    serving = _op_declaring(**{_SPECIAL: _Everything, _GENERAL: _General})
+    call = serving.attention_call(is_fp8=False, is_uniform=True)
+    assert serving.select_kernel_key(_RULE_KEYS, call) == _SPECIAL
 
-    assert op.select_kernel_key(("general", "special"), call) == "special"
-
-    op.kernel_map = {"special": _NeverApplies, "general": _General}
-    assert op.select_kernel_key(("general", "special"), call) == "general"
+    declining = _op_declaring(**{_SPECIAL: _NeverApplies, _GENERAL: _General})
+    assert declining.select_kernel_key(_RULE_KEYS, call) == _GENERAL
 
 
 @pytest.mark.smoke
 def test_a_replacement_is_never_silently_stood_in_for() -> None:
-    """A shipped kernel must not take a refused replacement's place."""
-    op = _prefill_op()
-    op.kernel_map = {"special": _NeverApplies, "general": _General}
-    op._overridden_keys = frozenset({"special"})
+    """A shipped kernel must not take a refused replacement's place.
+
+    Only the specialised key is replaced, so the general one behind it is the
+    op's own and would otherwise stand in.
+    """
+    op = _prefill_op(kernel_map={_SPECIAL: _NeverApplies})
     call = op.attention_call(is_fp8=False, is_uniform=True)
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op.select_kernel_key(("general", "special"), call)
+        op.select_kernel_key(_RULE_KEYS, call)
 
 
 @pytest.mark.smoke
@@ -298,9 +326,7 @@ def test_one_replacement_winning_while_another_is_refused_is_the_callers_own_doi
     "any refused replacement is an error" passes every other test in the repo
     and fails only here.
     """
-    op = _prefill_op()
-    op.kernel_map = {"a": _NeverApplies, "b": _Everything}
-    op._overridden_keys = frozenset({"a", "b"})
+    op = _prefill_op(kernel_map={_SPECIAL: _NeverApplies, _GENERAL: _Everything})
     call = op.attention_call(is_fp8=False, is_uniform=True)
 
-    assert op.select_kernel_key(("a", "b"), call) == "b"
+    assert op.select_kernel_key(_RULE_KEYS, call) == _GENERAL
