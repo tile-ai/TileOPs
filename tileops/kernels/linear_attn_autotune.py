@@ -172,10 +172,11 @@ def _summarize(exc: Exception) -> str:
     Which width failed is carried by the label beside this, not by the text:
     tilelang reports every failed sweep with the same sentence. The text is
     kept for everything else raised here, bounded because it may be a whole
-    compiler log. Bounded after collapsing whitespace, not before, or a long
-    blank preamble consumes the budget and leaves nothing.
+    compiler log. The generous slice keeps a megabyte of it out of the split;
+    the bound is applied after the collapse, since applying it before lets a
+    blank preamble consume the budget and leave nothing.
     """
-    return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
+    return f"{type(exc).__name__}: {' '.join(str(exc)[:20000].split())[:200]}"
 
 
 def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
@@ -266,8 +267,7 @@ def tune_delta_rule_fwd(
             # autotuner, which raises when no candidate of this width survives.
             failures.append((label, exc))
             warnings.warn(  # noqa: B028
-                f"{label} unavailable, dropping it from the sweep: "
-                f"{type(exc).__name__}: {exc}")
+                f"{label} unavailable, dropping it from the sweep: {_summarize(exc)}")
             continue
         compiled.append(block_v)
         if config is None or latency is None:

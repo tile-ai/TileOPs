@@ -212,16 +212,20 @@ def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
 
     def fail_wide_tile(jit_kernel, *args, **kwargs):
         if jit_kernel.build_kwargs.get("block_v") == 32:
-            raise RuntimeError("Auto-tuning failed: No configuration successfully compiled")
+            raise RuntimeError("header line\n" + "x" * 5000)
         return inner(jit_kernel, *args, **kwargs)
 
     kernel.tune_jit_kernel = fail_wide_tile
 
-    with pytest.warns(UserWarning, match="unavailable"):
+    with pytest.warns(UserWarning, match="unavailable") as warned:
         config = _run(kernel)
 
     assert config["h_block_v"] == 0
     assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
+    # When a width is dropped but the sweep survives, the warning is the only
+    # diagnostic, so it is bounded the same way the raised error is.
+    dropped = str(warned[0].message)
+    assert "\n" not in dropped and len(dropped) < 400
 
 
 def test_a_width_that_compiled_is_used_even_when_another_failed() -> None:
@@ -287,9 +291,10 @@ def test_the_raised_error_bounds_a_long_failure_text() -> None:
     message = str(e.value)
     widths = len(la.h_block_v_candidates(kernel.dim_v))
     assert "\n" not in message
-    # One bounded summary per width, so the bound scales with the candidate set
-    # rather than with however many widths happen to be offered today.
-    assert len(message) < 300 * widths
+    # One bounded summary per width, plus a fixed prefix naming the shape, so
+    # the bound scales with the candidate set rather than with however many
+    # widths happen to be offered today.
+    assert len(message) < 250 * widths + 100
     assert "x" * 300 not in message, "the log body must not survive whole"
     assert log in str(e.value.__cause__), "the chained cause keeps the whole text"
 
