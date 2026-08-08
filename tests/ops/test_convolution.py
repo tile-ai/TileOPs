@@ -641,16 +641,16 @@ def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
         op.eval_roofline()
 
     op(x1, w1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     flops, nbytes = op.eval_roofline()
     assert flops > 0
     assert nbytes > 0
 
     op(x1, w1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
 
     op(x2, w2)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
 
 
 if __name__ == "__main__":

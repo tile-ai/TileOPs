@@ -183,7 +183,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
         assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
         10 * 8 * 32,
@@ -191,11 +191,11 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
     )
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     assert op.kernel is first_kernel
 
     run_case(3, 12, (2, 8), torch.bfloat16)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
         10 * 12 * 48,
@@ -229,7 +229,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
         assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
         10 * 8 * 32,
@@ -237,11 +237,11 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
     )
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     assert op.kernel is first_kernel
 
     run_case(3, 12, (2, 8), torch.bfloat16)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
         10 * 12 * 48,
@@ -273,7 +273,7 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
         assert torch.allclose(grad_bias, ref_grad_bias, atol=0.0, rtol=0.0)
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
         8 * 8 * 32,
@@ -281,11 +281,11 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
     )
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     assert op.kernel is first_kernel
 
     run_case(3, 12, (2, 8), torch.bfloat16)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
         8 * 12 * 48,

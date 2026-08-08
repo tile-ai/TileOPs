@@ -67,7 +67,6 @@ class _SoftmaxBaseOp(Op):
         self.keepdim = False
         self._tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, object] = {}
         self.kernel: object | None = None
         self._last_roofline_spec: tuple[int, int, torch.dtype] | None = None
 
@@ -202,14 +201,14 @@ class _SoftmaxBaseOp(Op):
         device_index: int | None = None,
     ) -> object:
         """Return a cached kernel for (M, N, dtype, device), creating one if needed."""
-        key = (M, N, dtype, device_index)
-        if key not in self._kernel_cache:
-            kernel_cls = self.kernel_map[self._kernel_key]
-            self._kernel_cache[key] = kernel_cls(
+        return self.get_or_build_kernel(
+            self._kernel_key,
+            (M, N, dtype, device_index),
+            lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype, tune=self._tune,
                 device_index=device_index,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     # Output reshaping
 

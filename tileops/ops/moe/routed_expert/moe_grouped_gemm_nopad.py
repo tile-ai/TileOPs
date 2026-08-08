@@ -51,15 +51,16 @@ class MoeGroupedGemmNopadFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["moe_grouped_gemm_kernel"](
+        return self.get_or_build_kernel(
+            "moe_grouped_gemm_kernel",
+            dtype,
+            lambda: self.kernel_map["moe_grouped_gemm_kernel"](
                 self.numel, self.num_experts, self.n, self.k,
                 dtype=dtype, tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

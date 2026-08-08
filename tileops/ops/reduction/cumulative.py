@@ -44,7 +44,6 @@ class CumulativeOp(Op):
         self.dim = dim
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple[int, int, torch.dtype, int | None], Kernel] = {}
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
 
     @property
@@ -77,11 +76,13 @@ class CumulativeOp(Op):
         every (M, N, dtype, device) it will feed the compiled callable.
         """
         key = (M, N, dtype, device_index)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
+        return self.get_or_build_kernel(
+            "cumulative_fwd",
+            key,
+            lambda: self.kernel_map["cumulative_fwd"](
                 M, N, self._op_kind, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _validate_and_normalize_dim(self, x: torch.Tensor) -> tuple[int, int, torch.dtype]:
         if not x.is_cuda:

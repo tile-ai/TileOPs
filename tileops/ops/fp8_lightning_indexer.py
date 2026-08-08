@@ -28,7 +28,6 @@ class FP8LightningIndexerOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -63,8 +62,10 @@ class FP8LightningIndexerOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["fp8_lightning_indexer_kernel"](
+        return self.get_or_build_kernel(
+            "fp8_lightning_indexer_kernel",
+            key,
+            lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
                 batch,
                 seq_len,
                 heads,
@@ -73,8 +74,8 @@ class FP8LightningIndexerOp(Op):
                 kv_group,
                 self.clean_logits,
                 config=self.config,
-                tune=self.tune)
-        return self._kernel_cache[key]
+                tune=self.tune),
+        )
 
     def _resolve_and_bind(
         self,

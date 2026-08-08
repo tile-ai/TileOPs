@@ -71,7 +71,6 @@ class DropoutOp(Op):
 
         # Always populate kernel_map for Op base class consistency
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple[int, torch.dtype, int | None], Kernel] = {}
         self.kernel = None
 
 
@@ -89,12 +88,13 @@ class DropoutOp(Op):
         return self.N_total * self.dtype.itemsize * 2
 
     def _get_kernel(self, x: torch.Tensor) -> Kernel:
-        key = (x.numel(), x.dtype, x.device.index)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map[self._op_name](
+        return self.get_or_build_kernel(
+            self._op_name,
+            (x.numel(), x.dtype, x.device.index),
+            lambda: self.kernel_map[self._op_name](
                 x.numel(), x.dtype, p=self.p, seed=self.seed, tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         self.N_total = x.numel()

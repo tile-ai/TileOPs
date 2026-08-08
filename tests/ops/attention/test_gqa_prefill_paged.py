@@ -625,4 +625,4 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
         atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
         torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
-    assert set(op._kernel_cache) == {torch.float16, torch.bfloat16}
+    assert set(op.built_kernels("gqa_prefill_paged_with_kv_cache_fwd_kernel")) == {torch.float16, torch.bfloat16}

@@ -38,7 +38,6 @@ class SSDStatePassingFwdOp(Op):
         self.dtype = None
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -64,8 +63,10 @@ class SSDStatePassingFwdOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["ssd_state_passing_fwd"](
+        return self.get_or_build_kernel(
+            "ssd_state_passing_fwd",
+            key,
+            lambda: self.kernel_map["ssd_state_passing_fwd"](
                 batch,
                 num_chunks,
                 n_heads,
@@ -73,8 +74,8 @@ class SSDStatePassingFwdOp(Op):
                 has_initial_states=self.has_initial_states,
                 dtype=dtype,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,

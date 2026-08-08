@@ -37,7 +37,6 @@ class FFTC2COp(Op):
         self._tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple[int, int, torch.dtype, int | None], Kernel] = {}
         self._twiddle_cache: Dict[tuple[int, torch.dtype, int | None], tuple[torch.Tensor, torch.Tensor]] = {}
         self.kernel = None
 
@@ -49,11 +48,13 @@ class FFTC2COp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (n, batch_size, dtype, device_index)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["fft_c2c_kernel"](
+        return self.get_or_build_kernel(
+            "fft_c2c_kernel",
+            key,
+            lambda: self.kernel_map["fft_c2c_kernel"](
                 n, batch_size, dtype, tune=self._tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     @staticmethod
     def _build_lut(

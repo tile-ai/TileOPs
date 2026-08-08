@@ -22,7 +22,6 @@ class FP8QuantOp(Op):
         self.in_dtype = None
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -39,10 +38,12 @@ class FP8QuantOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["fp8_quant_kernel"](
-                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune)
-        return self._kernel_cache[key]
+        return self.get_or_build_kernel(
+            "fp8_quant_kernel",
+            key,
+            lambda: self.kernel_map["fp8_quant_kernel"](
+                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune),
+        )
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if not input_tensor.is_cuda:

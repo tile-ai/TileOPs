@@ -26,7 +26,6 @@ class TopkSelectorOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -43,8 +42,10 @@ class TopkSelectorOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["topk_selector_kernel"](
+        return self.get_or_build_kernel(
+            "topk_selector_kernel",
+            key,
+            lambda: self.kernel_map["topk_selector_kernel"](
                 batch,
                 seq_len,
                 seq_len_kv,
@@ -52,8 +53,8 @@ class TopkSelectorOp(Op):
                 self.topk,
                 in_dtype,
                 self.out_dtype,
-                tune=self.tune)
-        return self._kernel_cache[key]
+                tune=self.tune),
+        )
 
     def forward(self, index_score, starts, ends) -> torch.Tensor:
         if not index_score.is_cuda:

@@ -638,17 +638,13 @@ class _PerDtypeKernels:
         ``shape`` is empty for ops whose shape is fixed at construction; ops
         that learn it from the tensor pass it so each shape keys its own entry.
         """
-        key = (dtype, *shape) if shape else dtype
-        entry = self._entries.get(key)
-        if entry is None:
-            entry = self._build_entry(dtype, *shape)
-            self._entries[key] = entry
+        entry = self.get_or_build_kernel(
+            self._op_name,
+            (dtype, *shape) if shape else dtype,
+            lambda: self._build_entry(dtype, *shape),
+        )
         self._note_call(dtype)
         return entry
-
-    def _init_entries(self) -> None:
-        """Subclass constructors call this instead of building a kernel."""
-        self._entries: Dict[object, KernelEntry] = {}
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> "KernelEntry":
         raise NotImplementedError(
@@ -686,7 +682,6 @@ class UnaryOp(_PerDtypeKernels, Op):
         self.N_total = N_total
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
         """Build one specialization for the semantic *dtype*."""
@@ -829,7 +824,6 @@ class BinaryOp(_PerDtypeKernels, Op):
         self.b_numel = prod(b_shape)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
         """Build one specialization for the semantic *dtype*."""
@@ -940,7 +934,6 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         self.N = N
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1105,7 +1098,6 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
         """
         self.N_total = N_total
         self.inplace = inplace
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
         kwargs = {}

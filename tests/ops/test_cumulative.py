@@ -184,11 +184,11 @@ def test_cumsum_dynamic_shape_kernel_cache() -> None:
     x2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
 
     op(x1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     op(x1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     op(x2)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
 
 
 # CumprodFwdOp tests

@@ -71,7 +71,6 @@ class DaCumsumFwdOp(Op):
         self.dt_max = dt_max
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -100,8 +99,10 @@ class DaCumsumFwdOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["da_cumsum_fwd"](
+        return self.get_or_build_kernel(
+            "da_cumsum_fwd",
+            key,
+            lambda: self.kernel_map["da_cumsum_fwd"](
                 batch,
                 num_chunks,
                 self.chunk_len,
@@ -113,8 +114,8 @@ class DaCumsumFwdOp(Op):
                 dt_min=self.dt_min,
                 dt_max=self.dt_max,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,

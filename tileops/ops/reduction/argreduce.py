@@ -24,13 +24,14 @@ class _ArgreduceOpBase(_ReduceOpBase):
     """
 
     def _get_or_create_strided_kernel(self, M: int, N: int, inner_stride: int, dtype):
-        key = (M, N, dtype, inner_stride)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map[self._kernel_key](
+        return self.get_or_build_kernel(
+            self._kernel_key,
+            (M, N, dtype, inner_stride),
+            lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype, inner_stride=inner_stride,
                 tune=self._tune, **self._build_kernel_kwargs(),
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _prepare_input(
         self, x: torch.Tensor,

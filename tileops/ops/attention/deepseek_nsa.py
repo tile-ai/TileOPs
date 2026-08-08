@@ -42,14 +42,15 @@ class NSATopkVarlenOp(Op):
 
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["nsa_topk_varlen_kernel"](
+        return self.get_or_build_kernel(
+            "nsa_topk_varlen_kernel",
+            dtype,
+            lambda: self.kernel_map["nsa_topk_varlen_kernel"](
                 **self._kernel_params, dtype=dtype,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -85,14 +86,15 @@ class NSAFwdVarlenOp(Op):
 
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["nsa_fwd_varlen_kernel"](
+        return self.get_or_build_kernel(
+            "nsa_fwd_varlen_kernel",
+            dtype,
+            lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
                 **self._kernel_params, dtype=dtype,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -142,14 +144,15 @@ class NSACmpFwdVarlenOp(Op):
 
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
+        return self.get_or_build_kernel(
+            "nsa_cmp_fwd_varlen_kernel",
+            dtype,
+            lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
                 **self._kernel_params, dtype=dtype,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

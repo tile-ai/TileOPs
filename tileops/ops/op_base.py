@@ -70,6 +70,10 @@ class Op(ABC):
 
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
+    # Kernel slots, ``{slot: {key: entry}}``. Annotation only: the instance
+    # attribute appears on the first ``get_or_build_kernel`` call, so an op that
+    # has built nothing carries no dict, and no constructor declares one.
+    _kernel_slots: dict[str, dict[Hashable, object]]
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
@@ -228,8 +232,17 @@ class Op(ABC):
             ...     (op._cache_key(x.shape), x.dtype),
             ...     lambda: op.kernel_map["rms_norm_fwd_kernel"](M, N, x.dtype))
         """
-        slots = self.__dict__.setdefault("_kernel_slots", {})
-        entries = slots.setdefault(slot, {})
+        # Plain attribute reads and dict lookups, no ``self.__dict__``: this
+        # runs inside a dynamo-traced forward on every cache hit, and dynamo
+        # cannot trace a method call on an instance ``__dict__``.
+        slots = getattr(self, "_kernel_slots", None)
+        if slots is None:
+            slots = {}
+            self._kernel_slots = slots
+        entries = slots.get(slot)
+        if entries is None:
+            entries = {}
+            slots[slot] = entries
         if key not in entries:
             entries[key] = factory()
         return entries[key]
@@ -241,7 +254,8 @@ class Op(ABC):
         benchmark reporting — never for dispatch: an execution path asks
         ``get_or_build_kernel`` so a miss builds rather than raises.
         """
-        return MappingProxyType(self.__dict__.get("_kernel_slots", {}).get(slot, {}))
+        slots = getattr(self, "_kernel_slots", None) or {}
+        return MappingProxyType(slots.get(slot, {}))
 
     def kernel_delegates(self) -> Sequence["Op"]:
         """Return the ops whose kernels this op runs.
@@ -268,10 +282,10 @@ class Op(ABC):
 
     def _walk_kernels(self) -> Iterator[Kernel]:
         """Yield the kernels this op and its delegates hold, duplicates included."""
-        for entries in self.__dict__.get("_kernel_slots", {}).values():
+        for entries in (getattr(self, "_kernel_slots", None) or {}).values():
             for entry in entries.values():
                 yield from _entry_kernels(entry)
-        yield from _entry_kernels(self.__dict__.get("kernel"))
+        yield from _entry_kernels(getattr(self, "kernel", None))
         for delegate in self.kernel_delegates():
             yield from delegate._walk_kernels()
 

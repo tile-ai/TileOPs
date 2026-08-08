@@ -98,7 +98,6 @@ class InstanceNormFwdOp(Op):
         self.D: Optional[int] = None
         self.M: Optional[int] = None
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel: Optional[Kernel] = None
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
@@ -181,11 +180,13 @@ class InstanceNormFwdOp(Op):
         device_index: Optional[int],
     ) -> Kernel:
         key = (M, D, dtype, device_index, self.eps, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["group_norm"](
+        kernel = self.get_or_build_kernel(
+            "group_norm",
+            key,
+            lambda: self.kernel_map["group_norm"](
                 M, D, self.eps, dtype, tune=self.tune,
-            )
-        kernel = self._kernel_cache[key]
+            ),
+        )
         self.kernel = kernel
         return kernel
 
@@ -315,7 +316,6 @@ class InstanceNormNoAffineFwdOp(Op):
         self.M: Optional[int] = None
         self._running_stats_broadcast_shape: Optional[list[int]] = None
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel: Optional[Kernel] = None
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
@@ -437,11 +437,13 @@ class InstanceNormNoAffineFwdOp(Op):
         device_index: Optional[int],
     ) -> Kernel:
         key = (M, D, dtype, device_index, self.eps, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["instance_norm_no_affine"](
+        kernel = self.get_or_build_kernel(
+            "instance_norm_no_affine",
+            key,
+            lambda: self.kernel_map["instance_norm_no_affine"](
                 M, D, self.eps, dtype, tune=self.tune,
-            )
-        kernel = self._kernel_cache[key]
+            ),
+        )
         self.kernel = kernel
         return kernel
 

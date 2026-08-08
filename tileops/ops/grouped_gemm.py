@@ -35,7 +35,6 @@ class GroupedGemmOp(Op):
         self.transpose_b = transpose_b
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -110,8 +109,10 @@ class GroupedGemmOp(Op):
             self.transpose_b,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["grouped_gemm_kernel"](
+        return self.get_or_build_kernel(
+            "grouped_gemm_kernel",
+            key,
+            lambda: self.kernel_map["grouped_gemm_kernel"](
                 batch_sum,
                 batch_count,
                 n,
@@ -119,8 +120,8 @@ class GroupedGemmOp(Op):
                 dtype=dtype,
                 transpose_a=self.transpose_a,
                 transpose_b=self.transpose_b,
-                tune=self.tune)
-        return self._kernel_cache[key]
+                tune=self.tune),
+        )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor,
                 batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor) -> torch.Tensor:

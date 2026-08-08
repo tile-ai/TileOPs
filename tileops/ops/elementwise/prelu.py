@@ -49,7 +49,6 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)

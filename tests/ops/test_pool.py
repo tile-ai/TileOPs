@@ -524,16 +524,16 @@ def test_avg_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
         op.eval_roofline()
 
     op(x1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     flops, nbytes = op.eval_roofline()
     assert flops > 0
     assert nbytes > 0
 
     op(x1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
 
     op(x2)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
 
 
 @pytest.mark.smoke
@@ -1250,16 +1250,16 @@ def test_max_pool_dynamic_shape_kernel_cache_and_roofline(
         op.eval_roofline()
 
     op(x1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     flops, nbytes = op.eval_roofline()
     assert flops > 0
     assert nbytes > 0
 
     op(x1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
 
     op(x2)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
 
 
 _MAX_POOL_COMPILE_CASES = [
@@ -1700,7 +1700,7 @@ def test_avg_pool2d_kernel_cache_separates_dtypes() -> None:
     shape = (1, 4, 16, 16)
     op(torch.randn(*shape, dtype=torch.float16, device="cuda"))
     op(torch.randn(*shape, dtype=torch.float32, device="cuda"))
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
 
 
 # ---------------------------------------------------------------------------

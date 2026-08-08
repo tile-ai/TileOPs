@@ -233,7 +233,7 @@ def test_instance_norm_lazily_specializes_per_device() -> None:
     )
     y = op(x_other, weight_other, bias_other)
     assert y.device == x_other.device
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
 
 
 @pytest.mark.smoke
@@ -254,17 +254,17 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
         assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     assert op.eval_roofline() == (
         5 * 2 * 8 * 16,
         (2 * 2 * 8 * 16 + 2 * 8) * torch.float16.itemsize,
     )
 
     run_case(2, 8, (4, 4), torch.float16)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
 
     run_case(3, 12, (2, 8), torch.bfloat16)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2
     assert op.eval_roofline() == (
         5 * 3 * 12 * 16,
         (2 * 3 * 12 * 16 + 2 * 12) * torch.bfloat16.itemsize,

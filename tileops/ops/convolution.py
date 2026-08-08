@@ -226,7 +226,6 @@ class Conv1dFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     @property
@@ -321,7 +320,8 @@ class Conv1dFwdOp(Op):
             self.has_bias,
             self.tune,
         )
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             kernel_kwargs = dict(
                 n=n,
                 c_in=c_in,
@@ -332,11 +332,11 @@ class Conv1dFwdOp(Op):
                 tune=self.tune,
             )
             if use_pointwise:
-                self._kernel_cache[key] = self.kernel_map["conv1d_pointwise_kernel"](
+                return self.kernel_map["conv1d_pointwise_kernel"](
                     **kernel_kwargs
                 )
             elif use_group:
-                self._kernel_cache[key] = self.kernel_map["group_conv1d_kernel"](
+                return self.kernel_map["group_conv1d_kernel"](
                     **kernel_kwargs,
                     kernel_l=kernel_l,
                     stride_l=self.stride,
@@ -347,14 +347,15 @@ class Conv1dFwdOp(Op):
                     c_out_g=c_out // self.groups,
                 )
             else:
-                self._kernel_cache[key] = self.kernel_map["conv1d_kernel"](
+                return self.kernel_map["conv1d_kernel"](
                     **kernel_kwargs,
                     kernel_l=kernel_l,
                     stride_l=self.stride,
                     pad_l=(pad_left, pad_right),
                     dilation_l=self.dilation,
                 )
-        return self._kernel_cache[key]
+
+        return self.get_or_build_kernel("conv1d_kernel", key, build)
 
     def forward(
         self,
@@ -622,7 +623,6 @@ class Conv2dFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     @property
@@ -763,7 +763,8 @@ class Conv2dFwdOp(Op):
             self.has_bias,
             self.tune,
         )
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             kernel_kwargs = dict(
                 n=n,
                 c_in=c_in,
@@ -779,11 +780,11 @@ class Conv2dFwdOp(Op):
                 tune=self.tune,
             )
             if use_pointwise:
-                self._kernel_cache[key] = self.kernel_map["conv2d_1x1_kernel"](
+                return self.kernel_map["conv2d_1x1_kernel"](
                     **kernel_kwargs
                 )
             elif use_symmetric:
-                self._kernel_cache[key] = self.kernel_map["conv2d_symmetric_kernel"](
+                return self.kernel_map["conv2d_symmetric_kernel"](
                     n=n,
                     c_in=c_in,
                     h=h,
@@ -798,7 +799,7 @@ class Conv2dFwdOp(Op):
                     tune=self.tune,
                 )
             elif use_group:
-                self._kernel_cache[key] = self.kernel_map["group_conv2d_kernel"](
+                return self.kernel_map["group_conv2d_kernel"](
                     **kernel_kwargs,
                     kernel_h=kernel_h,
                     kernel_w=kernel_w,
@@ -809,14 +810,15 @@ class Conv2dFwdOp(Op):
                     c_out_g=c_out // self.groups,
                 )
             else:
-                self._kernel_cache[key] = self.kernel_map["conv2d_kernel"](
+                return self.kernel_map["conv2d_kernel"](
                     **kernel_kwargs,
                     kernel_h=kernel_h,
                     kernel_w=kernel_w,
                     dilation_h=self.dilation[0],
                     dilation_w=self.dilation[1],
                 )
-        return self._kernel_cache[key]
+
+        return self.get_or_build_kernel("conv2d_kernel", key, build)
 
     def forward(
         self,
@@ -1143,7 +1145,6 @@ class Conv3dFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     @property
@@ -1270,7 +1271,8 @@ class Conv3dFwdOp(Op):
             self.has_bias,
             self.tune,
         )
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             kernel_kwargs = dict(
                 n=n,
                 c_in=c_in,
@@ -1295,17 +1297,18 @@ class Conv3dFwdOp(Op):
                 tune=self.tune,
             )
             if use_group:
-                self._kernel_cache[key] = self.kernel_map["group_conv3d_kernel"](
+                return self.kernel_map["group_conv3d_kernel"](
                     **kernel_kwargs,
                     groups=self.groups,
                     c_in_g=c_in_g,
                     c_out_g=c_out // self.groups,
                 )
             else:
-                self._kernel_cache[key] = self.kernel_map["conv3d_kernel"](
+                return self.kernel_map["conv3d_kernel"](
                     **kernel_kwargs
                 )
-        return self._kernel_cache[key]
+
+        return self.get_or_build_kernel("conv3d_kernel", key, build)
 
     def forward(
         self,

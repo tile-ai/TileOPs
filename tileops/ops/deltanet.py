@@ -50,7 +50,6 @@ class DeltaNetFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -70,8 +69,10 @@ class DeltaNetFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["DeltaNetFwdKernel"](
+        return self.get_or_build_kernel(
+            "DeltaNetFwdKernel",
+            key,
+            lambda: self.kernel_map["DeltaNetFwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -80,8 +81,8 @@ class DeltaNetFwdOp(Op):
                 dim_v,
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _bind_from_inputs(
         self,
@@ -169,7 +170,6 @@ class DeltaNetBwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -189,8 +189,10 @@ class DeltaNetBwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["DeltaNetBwdKernel"](
+        return self.get_or_build_kernel(
+            "DeltaNetBwdKernel",
+            key,
+            lambda: self.kernel_map["DeltaNetBwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -199,8 +201,8 @@ class DeltaNetBwdOp(Op):
                 dim_v,
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _bind_from_inputs(
         self,
@@ -325,8 +327,6 @@ class DeltaNetOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._fwd_kernel_cache: Dict[tuple, Kernel] = {}
-        self._bwd_kernel_cache: Dict[tuple, Kernel] = {}
         self.fwd_kernel = None
         self.bwd_kernel = None
 
@@ -379,16 +379,20 @@ class DeltaNetOp(Op):
             q.device.index,
             self.tune,
         )
-        if key not in self._fwd_kernel_cache:
-            kernel_dtype = Kernel.dtype_to_str(dtype)
-            self._fwd_kernel_cache[key] = self.kernel_map["DeltaNetFwdKernel"](
+        self.fwd_kernel = self.get_or_build_kernel(
+            "DeltaNetFwdKernel",
+            key,
+            lambda: self.kernel_map["DeltaNetFwdKernel"](
                 batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
-                dtype=kernel_dtype, tune=self.tune)
-            self._bwd_kernel_cache[key] = self.kernel_map["DeltaNetBwdKernel"](
+                dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+        )
+        self.bwd_kernel = self.get_or_build_kernel(
+            "DeltaNetBwdKernel",
+            key,
+            lambda: self.kernel_map["DeltaNetBwdKernel"](
                 batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
-                dtype=kernel_dtype, tune=self.tune)
-        self.fwd_kernel = self._fwd_kernel_cache[key]
-        self.bwd_kernel = self._bwd_kernel_cache[key]
+                dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+        )
 
     def forward(
         self,

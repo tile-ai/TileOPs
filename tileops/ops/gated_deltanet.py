@@ -109,7 +109,6 @@ class GatedDeltaNetFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -129,8 +128,10 @@ class GatedDeltaNetFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["GatedDeltaNetFwdKernel"](
+        return self.get_or_build_kernel(
+            "GatedDeltaNetFwdKernel",
+            key,
+            lambda: self.kernel_map["GatedDeltaNetFwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -139,8 +140,8 @@ class GatedDeltaNetFwdOp(Op):
                 dim_v,
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,
@@ -211,7 +212,6 @@ class GatedDeltaNetPrefillFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._active_sig: Optional[tuple] = None
         self.kernel = None
 
@@ -296,8 +296,10 @@ class GatedDeltaNetPrefillFwdOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["GatedDeltaNetPrefillFwdKernel"](
+        return self.get_or_build_kernel(
+            "GatedDeltaNetPrefillFwdKernel",
+            key,
+            lambda: self.kernel_map["GatedDeltaNetPrefillFwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -307,8 +309,8 @@ class GatedDeltaNetPrefillFwdOp(Op):
                 dtype=Kernel.dtype_to_str(dtype),
                 layout=self.layout,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _validate_shapes(
         self,
@@ -434,7 +436,6 @@ class GatedDeltaNetBwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -454,8 +455,10 @@ class GatedDeltaNetBwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["GatedDeltaNetBwdKernel"](
+        return self.get_or_build_kernel(
+            "GatedDeltaNetBwdKernel",
+            key,
+            lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -464,8 +467,8 @@ class GatedDeltaNetBwdOp(Op):
                 dim_v,
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,
@@ -559,8 +562,6 @@ class GatedDeltaNetOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._fwd_kernel_cache: Dict[tuple, Kernel] = {}
-        self._bwd_kernel_cache: Dict[tuple, Kernel] = {}
         self.fwd_kernel = None
         self.bwd_kernel = None
 
@@ -598,16 +599,20 @@ class GatedDeltaNetOp(Op):
             q.device.index,
             self.tune,
         )
-        if key not in self._fwd_kernel_cache:
-            kernel_dtype = Kernel.dtype_to_str(dtype)
-            self._fwd_kernel_cache[key] = self.kernel_map["GatedDeltaNetFwdKernel"](
+        self.fwd_kernel = self.get_or_build_kernel(
+            "GatedDeltaNetFwdKernel",
+            key,
+            lambda: self.kernel_map["GatedDeltaNetFwdKernel"](
                 batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
-                dtype=kernel_dtype, tune=self.tune)
-            self._bwd_kernel_cache[key] = self.kernel_map["GatedDeltaNetBwdKernel"](
+                dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+        )
+        self.bwd_kernel = self.get_or_build_kernel(
+            "GatedDeltaNetBwdKernel",
+            key,
+            lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
                 batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
-                dtype=kernel_dtype, tune=self.tune)
-        self.fwd_kernel = self._fwd_kernel_cache[key]
-        self.bwd_kernel = self._bwd_kernel_cache[key]
+                dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+        )
 
     def forward(
         self,
@@ -681,7 +686,6 @@ class GatedDeltaNetDecodeOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._active_sig: Optional[tuple] = None
         self.kernel = None
 
@@ -707,14 +711,15 @@ class GatedDeltaNetDecodeOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             if dtype == torch.float32:
                 kernel_cls = self.kernel_map["GatedDeltaNetDecodeFP32Kernel"]
             elif self._should_use_raw_cuda_decode(dim_k, dim_v, dtype, self.tune):
                 kernel_cls = self.kernel_map["GatedDeltaNetDecodeRawCudaFlaStyleKernel"]
             else:
                 kernel_cls = self.kernel_map["GatedDeltaNetDecodeKernel"]
-            self._kernel_cache[key] = kernel_cls(
+            return kernel_cls(
                 batch,
                 heads,
                 dim_k,
@@ -722,7 +727,8 @@ class GatedDeltaNetDecodeOp(Op):
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
             )
-        return self._kernel_cache[key]
+
+        return self.get_or_build_kernel("GatedDeltaNetDecodeKernel", key, build)
 
     def _infer_output_shapes(
         self,

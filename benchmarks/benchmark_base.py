@@ -10,6 +10,7 @@ from typing import (
     Any,
     Callable,
     Generic,
+    Iterator,
     Optional,
     TypeVar,
 )
@@ -549,44 +550,38 @@ class ManifestBenchmark(BenchmarkBase[Any]):
         return self._get_roofline()[1]
 
 
+def _op_kernels(op: object) -> Iterator[object]:
+    """Yield the kernels *op* holds.
+
+    An ``Op`` enumerates them itself through ``iter_kernels`` — slot entries and
+    a directly bound ``op.kernel`` alike. A baseline that is not an ``Op``
+    exposes at most a single ``kernel`` attribute.
+    """
+    iter_kernels = getattr(op, "iter_kernels", None)
+    if callable(iter_kernels):
+        yield from iter_kernels()
+        return
+    kernel = getattr(op, "kernel", None)
+    if kernel is not None:
+        yield kernel
+
+
 def _extract_op_config(op: object) -> Optional[dict]:
     """Return the kernel config for an Op instance, or None if unavailable.
 
-    Handles the three Op patterns currently used in tileops:
-
-      1. **Eager-init** (e.g. ``GemmOp``): ``op.kernel`` is a Kernel
-         instance set in ``__init__``.
-      2. **Lazy with dummy kernel** (e.g. ``FFTC2COp``): ``op.kernel`` is a
-         default Kernel and ``op._kernel_cache`` may hold others.
-      3. **Pure lazy cache** (e.g. ``_SoftmaxBaseOp`` and the spec-conformant
-         reduction ops): ``op._kernel_cache`` is the only source; ``op.kernel``
-         is unset.
-
-    A direct ``op.config`` attribute (legacy / explicit override) takes
-    precedence over kernel introspection.
+    A direct ``op.config`` attribute (explicit override) takes precedence over
+    kernel introspection. Otherwise the first config among the kernels the op
+    holds: kernels an op built share dtype and op kind, so the first is
+    sufficient for a report that records one entry per call.
     """
     op_config = getattr(op, "config", None)
     if op_config:
         return op_config
 
-    kernel = getattr(op, "kernel", None)
-    op_config = getattr(kernel, "config", None) if kernel is not None else None
-    if op_config:
-        return op_config
-
-    # Pure lazy-cache pattern: pick any cached kernel's config. All cached
-    # kernels for a given op share dtype/op_kind, so taking the first is
-    # sufficient for the benchmark report (which records one entry per call).
-    cache = getattr(op, "_kernel_cache", None)
-    if cache:
-        try:
-            first_kernel = next(iter(cache.values()))
-        except StopIteration:
-            first_kernel = None
-        if first_kernel is not None:
-            op_config = getattr(first_kernel, "config", None)
-            if op_config:
-                return op_config
+    for kernel in _op_kernels(op):
+        op_config = getattr(kernel, "config", None)
+        if op_config:
+            return op_config
 
     return None
 

@@ -69,14 +69,15 @@ class MeanPoolingForwardOp(Op):
 
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["mean_pooling_fwd_kernel"](
+        return self.get_or_build_kernel(
+            "mean_pooling_fwd_kernel",
+            dtype,
+            lambda: self.kernel_map["mean_pooling_fwd_kernel"](
                 **self._kernel_params, dtype=dtype,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -175,7 +176,6 @@ class _AvgPoolFwdOpBase(Op):
         self._has_explicit_spatial_kernel = (
             kernel_map is not None and self._spatial_slot in kernel_map
         )
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     @property
@@ -250,7 +250,8 @@ class _AvgPoolFwdOpBase(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             ks, st, pd = self._param_tuples()
             kernel_kwargs: Dict[str, object] = dict(n=n, c_in=c_in, dtype=dtype, tune=self.tune)
             for k, name in enumerate(_POOL_DIM_NAMES[self.ndim]):
@@ -259,16 +260,15 @@ class _AvgPoolFwdOpBase(Op):
                 kernel_kwargs[f"kernel_{name}"] = ks[k]
                 kernel_kwargs[f"stride_{name}"] = st[k]
                 kernel_kwargs[f"pad_{name}"] = pd[k]
-            if use_spatial_fast_path:
-                self._kernel_cache[key] = self.kernel_map[kernel_name](**kernel_kwargs)
-            else:
+            if not use_spatial_fast_path:
                 kernel_kwargs["ceil_mode"] = self.ceil_mode
                 kernel_kwargs["count_include_pad"] = self.count_include_pad
                 if self.ndim > 1:
                     # The 1d generic kernel has no divisor_override parameter.
                     kernel_kwargs["divisor_override"] = self.divisor_override
-                self._kernel_cache[key] = self.kernel_map[kernel_name](**kernel_kwargs)
-        return self._kernel_cache[key]
+            return self.kernel_map[kernel_name](**kernel_kwargs)
+
+        return self.get_or_build_kernel(kernel_name, key, build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -507,7 +507,6 @@ class _MaxPoolFwdOpBase(Op):
             raise NotImplementedError(
                 f"{self.__class__.__name__} requires {self._kernel_slot!r} in kernel_map"
             )
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     def _resolve_input(self, input: torch.Tensor) -> tuple:
@@ -560,7 +559,8 @@ class _MaxPoolFwdOpBase(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             kernel_kwargs: Dict[str, object] = dict(
                 n=n, c_in=c_in, ceil_mode=self.ceil_mode, dtype=dtype, tune=self.tune,
             )
@@ -571,8 +571,9 @@ class _MaxPoolFwdOpBase(Op):
                 kernel_kwargs[f"stride_{name}"] = self.stride[k]
                 kernel_kwargs[f"pad_{name}"] = self.padding[k]
                 kernel_kwargs[f"dilation_{name}"] = self.dilation[k]
-            self._kernel_cache[key] = self.kernel_map[self._kernel_slot](**kernel_kwargs)
-        return self._kernel_cache[key]
+            return self.kernel_map[self._kernel_slot](**kernel_kwargs)
+
+        return self.get_or_build_kernel(self._kernel_slot, key, build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -1014,7 +1015,6 @@ class _AdaptivePool2dFwdOpBase(Op):
             raise NotImplementedError(
                 f"{type(self).__name__} requires {self._kernel_slot!r} in kernel_map"
             )
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     def _resolve_out_dims(self, h_in: int, w_in: int) -> tuple[int, int]:
@@ -1065,8 +1065,10 @@ class _AdaptivePool2dFwdOpBase(Op):
         x = x.contiguous()
         dtype = x.dtype
         key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x), self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map[self._kernel_slot](
+        kernel = self.get_or_build_kernel(
+            self._kernel_slot,
+            key,
+            lambda: self.kernel_map[self._kernel_slot](
                 n=n,
                 c_in=c_in,
                 h_in=h_in,
@@ -1075,8 +1077,8 @@ class _AdaptivePool2dFwdOpBase(Op):
                 out_w=out_w,
                 dtype=dtype,
                 tune=self.tune,
-            )
-        kernel = self._kernel_cache[key]
+            ),
+        )
         self.kernel = kernel
         self.n = n
         self.c_in = c_in

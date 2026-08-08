@@ -56,7 +56,6 @@ class MoePermuteNopadFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.expert_map = expert_map
-        self._kernel_cache: Dict[tuple[int, int, int, int, torch.dtype, int | None], Kernel] = {}
 
     def eval_roofline(self) -> tuple[int, int]:
         if (
@@ -95,11 +94,13 @@ class MoePermuteNopadFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (total_tokens, top_k, num_experts, hidden_size, dtype, device_index)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["permute_nopad_kernel"](
+        return self.get_or_build_kernel(
+            "permute_nopad_kernel",
+            key,
+            lambda: self.kernel_map["permute_nopad_kernel"](
                 total_tokens, top_k, num_experts, hidden_size, dtype, self.expert_map
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,
