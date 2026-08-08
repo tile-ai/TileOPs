@@ -210,7 +210,7 @@ class Op(ABC):
         first use, so no constructor declares one.
 
         Args:
-            slot: The kernel role, one per kernel the op holds. Conventionally
+            slot: The kernel role, one per role the op plays. Conventionally
                 the ``kernel_map`` dispatch key whose kernel *factory* builds.
             key: What the entry is specialized for, typically
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype.
