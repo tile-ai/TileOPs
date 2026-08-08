@@ -55,16 +55,17 @@ bench = [
 
 [build-system]
 # setuptools>=77 is the floor for SPDX `license = "MIT"` expressions.
-# setuptools-scm is capped below 9: newer majors treat fallback_version as a
-# bumpable base in a tag-less repo and reject a `.devN` fallback outright,
-# instead of only using it when no scm metadata exists.
-requires = ["setuptools>=77", "setuptools-scm>=8,<9", "wheel"]
+requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 # Builds outside a git checkout (sdist tarballs, vendored copies) must not
-# fail; they fall back to the last hand-maintained version.
-fallback_version = "0.0.1.dev2"
+# fail; they fall back to this version instead.
+#
+# The value must not carry a `.devN` suffix: setuptools-scm derives the dev
+# distance itself from the commit count, so a pre-set distance is a value it
+# cannot bump and it errors out rather than guessing.
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["."]
