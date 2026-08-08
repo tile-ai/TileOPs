@@ -134,7 +134,10 @@ def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
 
     config = _run(kernel)
 
-    assert config == kernel.default_config
+    assert config == {
+        **kernel.default_config,
+        "h_block_v": la.default_h_block_v(kernel.dim_v, kernel.chunk_size),
+    }
 
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
@@ -226,12 +229,12 @@ def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
     assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
 
 
-def test_a_width_that_failed_to_build_is_never_the_fallback() -> None:
-    """The untuned preference only counts if that width actually built.
+def test_a_width_that_compiled_is_used_even_when_another_failed() -> None:
+    """The untuned preference only counts if that width compiled.
 
-    At chunk 64 the preference is 32. If 32 fails to build and 0 builds but
-    tunes to nothing, returning the preference would name the width the sweep
-    just proved unbuildable, and the error would resurface inside forward.
+    At chunk 64 the preference is 32. If 32's sweep raises and 0's returns
+    without a measurement, 0 still compiled — the autotuner would have raised
+    otherwise — so it answers, rather than naming 32 or refusing outright.
     """
     kernel = _StubKernel(chunk_size=64)
     kernel.results = {("h", 0): (None, None)}
@@ -245,8 +248,29 @@ def test_a_width_that_failed_to_build_is_never_the_fallback() -> None:
     kernel.tune_jit_kernel = fail_wide_tile
 
     assert la.default_h_block_v(64, 64) == 32, "the preference must diverge for this to bite"
-    with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="no recurrence V-tile"):
+    with pytest.warns(UserWarning, match="unavailable"):
+        config = _run(kernel)
+
+    assert config["h_block_v"] == 0
+
+
+def test_every_failure_reaches_the_raised_error() -> None:
+    """Warnings can be filtered away, so the error carries every cause itself."""
+    kernel = _StubKernel(chunk_size=64)
+    inner = kernel.tune_jit_kernel
+
+    def fail_each_differently(jit_kernel, *args, **kwargs):
+        if jit_kernel.name == "h":
+            raise RuntimeError(f"smem overflow at block_v={jit_kernel.build_kwargs['block_v']}")
+        return inner(jit_kernel, *args, **kwargs)
+
+    kernel.tune_jit_kernel = fail_each_differently
+
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError) as e:
         _run(kernel)
+
+    assert "block_v=0" in str(e.value)
+    assert "block_v=32" in str(e.value)
 
 
 def test_no_width_tuning_reports_the_failure_with_its_cause() -> None:

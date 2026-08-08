@@ -49,12 +49,9 @@ TILED_DEFAULT_MIN_CHUNK_SIZE: int = 64
 def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     """Return the recurrence V-tile widths buildable at this value dimension.
 
-    Whether a width is buildable is ``resolve_block_v``'s question — minimum
-    gemm N extent and divisibility — so ask it rather than restate its rules
-    here, which is what keeps the candidate set from drifting from what the
-    recurrence will accept. Widths resolving to the same tile are one
-    candidate: at ``dim_v == 32`` both 0 and 32 give a 32-column tile and the
-    same generated kernel, so offering both would build and time it twice.
+    Buildability is ``resolve_block_v``'s question, so ask it rather than
+    restate it. Widths resolving to the same tile are one candidate: at
+    ``dim_v == 32`` both 0 and 32 give a 32-column tile and the same kernel.
 
     Args:
         dim_v: Value dimension.
@@ -109,17 +106,15 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
 
     The three sub-kernels are tuned independently, so the reachable set is their
     product. Declaring it is what makes ``init_config(tune=True)`` reach
-    ``autotune`` instead of falling back to ``default_config``, and it gives a
-    test a set to check the selected config against. Chunk length does not enter:
-    it steers the untuned default, not what the sweep may build.
+    ``autotune`` at all. Chunk length does not enter: it steers the untuned
+    default, not what the sweep may build.
 
     Args:
         dim_v: Value dimension.
 
     Raises:
-        ValueError: if no V-tile width is buildable at *dim_v*, so the shape is
-            refused here rather than declaring an empty set that reads as
-            "tunable, with nothing to try".
+        ValueError: if no V-tile width is buildable at *dim_v*. An empty set
+            would read as "tunable, with nothing to try".
     """
     return [
         {
@@ -149,9 +144,10 @@ def _tune_sub_kernel(
 ) -> Tuple[Optional[Dict[str, int]], Optional[float]]:
     """Sweep one sub-kernel and return its ``(winning config, latency)``.
 
-    Either element is ``None`` when the autotuner returns without a result.
-    That is not how it reports every candidate failing to compile — it raises
-    for that, so a caller sweeping several variants must catch, not test.
+    Either element is ``None`` when the autotuner skipped the sweep because the
+    seeded parameters read as already tuned — the case ``do_not_specialize``
+    exists to prevent. It is not how every candidate failing to compile is
+    reported: that raises, so a caller sweeping variants must catch, not test.
     """
     print(f"Autotuning {label} ({len(configs)} configs)...")
     # supply_prog=None, not the kernel's: a whole-kernel supplier is written
@@ -191,8 +187,12 @@ def tune_delta_rule_fwd(
     autotuner cannot sweep it as a config key: each width is built and tuned
     separately, and the widths are then compared on the autotuner's own measured
     latency. A launch parameter the autotuner cannot tune keeps its
-    ``default_config`` value. The width is only kept from a sweep that measured
-    it; when every width failed, the failure is raised rather than answered.
+    ``default_config`` value. A width is kept only if its sweep returned, since
+    the autotuner raises when none of a width's candidates compile; when every
+    width failed, the failures are raised rather than answered. A failure that
+    is not the width's own — a device fault mid-sweep — is indistinguishable
+    from here and is attributed to that width, so it only surfaces if no width
+    survives.
 
     Args:
         kernel: The forward kernel being tuned. Supplies the shape, the default
@@ -239,7 +239,10 @@ def tune_delta_rule_fwd(
 
     h_config: Optional[Dict[str, int]] = None
     h_block_v: Optional[int] = None
-    sweep_error: Optional[Exception] = None
+    #: Widths whose sweep returned. The autotuner raises when no candidate of a
+    #: width compiles, so returning at all is the evidence that this one does.
+    compiled: List[int] = []
+    failures: List[Tuple[str, Exception]] = []
     best_latency = float("inf")
     for block_v in candidates:
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
@@ -248,32 +251,29 @@ def tune_delta_rule_fwd(
                 kernel, label, h_builder(*shape, block_v=block_v),
                 PIPELINE_CONFIGS, warmup, rep)
         except Exception as exc:  # noqa: BLE001 - one width must not sink the rest
-            # The whole attempt is guarded, not just the builder: the builder
-            # only wraps the kernel, and the compile happens inside the
+            # The builder only wraps the kernel; the compile is inside the
             # autotuner, which raises when no candidate of this width survives.
-            # A failure that is not width-specific is not lost — it is re-raised
-            # below if no width tunes.
-            sweep_error = exc
+            failures.append((label, exc))
             warnings.warn(  # noqa: B028
                 f"{label} unavailable, dropping it from the sweep: "
                 f"{type(exc).__name__}: {exc}")
             continue
+        compiled.append(block_v)
         if config is None or latency is None:
             continue
         if latency < best_latency:
             h_config, h_block_v, best_latency = config, block_v, latency
 
     if h_block_v is None:
-        if sweep_error is not None:
-            # Every width was tried and none tuned, so the last failure is the
-            # answer. Choosing a width here would bury it under a config that
-            # reads as tuned.
+        if not compiled:
             raise RuntimeError(
-                f"no recurrence V-tile width tuned for dim_v={kernel.dim_v}") from sweep_error
-        # Nothing failed and nothing measured: the autotuner returned without a
-        # result, the same case a launch parameter meets, so the untuned width
-        # answers it.
-        h_block_v = default_h_block_v(kernel.dim_v, kernel.chunk_size)
+                f"no recurrence V-tile width tuned for dim_v={kernel.dim_v}: "
+                + "; ".join(f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures)
+            ) from failures[-1][1]
+        # Some width compiled but none was measured. The untuned width answers,
+        # as it does for a launch parameter, but only if it was one of them.
+        preferred = default_h_block_v(kernel.dim_v, kernel.chunk_size)
+        h_block_v = preferred if preferred in compiled else compiled[0]
 
     o_config, _ = _tune_sub_kernel(
         kernel, "output_o", o_builder(*shape), OUTPUT_CONFIGS, warmup, rep
