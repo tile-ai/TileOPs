@@ -547,6 +547,26 @@ def _holds_op(value: object, depth: int = 0) -> bool:
     return False
 
 
+def _record_kernel_builds(op: Op) -> list:
+    """Replace each of *op*'s kernel slots with a recorder of its build call.
+
+    Returns the list the recorders append ``(slot, args, kwargs)`` to.
+    """
+    calls: list = []
+
+    def recorder(slot: str):
+
+        def build(*args: object, **kwargs: object) -> str:
+            calls.append((slot, args, kwargs))
+            return f"built:{slot}"
+
+        return build
+
+    for slot in op.kernel_map:
+        op.kernel_map[slot] = recorder(slot)
+    return calls
+
+
 def _op_valued_attrs(op: Op) -> list:
     """Names of *op*'s attributes that are an ``Op`` or reach one.
 
@@ -647,23 +667,8 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
         backend="dense",
     )
 
-    def record_builds(op: Op) -> list:
-        calls: list = []
-
-        def recorder(slot: str):
-
-            def build(*args: object, **kwargs: object) -> str:
-                calls.append((slot, args, kwargs))
-                return f"built:{slot}"
-
-            return build
-
-        for slot in op.kernel_map:
-            op.kernel_map[slot] = recorder(slot)
-        return calls
-
-    wrapper_calls = record_builds(wrapper)
-    packed_calls = record_builds(packed)
+    wrapper_calls = _record_kernel_builds(wrapper)
+    packed_calls = _record_kernel_builds(packed)
 
     wrapper._get_kernel(dtype)
     packed._get_dense_prefill_kernel()
@@ -680,6 +685,56 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
     assert kwargs == {"sm_scale": sm_scale, "softcap": softcap, "tune": False}
 
     assert wrapper_calls == packed_calls
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
+    """A non-square prefill passes its two sequence lengths in their own places.
+
+    The square wrapper has ``max_seqlen_q == max_seqlen_kv``, so the parity
+    test above cannot tell the two apart; only a geometry where they differ
+    can. Packed-only for that reason — the wrapper cannot express it.
+    """
+    batch, heads, heads_kv, dim = 1, 8, 2, 128
+    max_seqlen_q, max_seqlen_kv = 128, 256
+    packed = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_kv=max_seqlen_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        backend="dense",
+    )
+    calls = _record_kernel_builds(packed)
+
+    packed._get_dense_prefill_kernel()
+
+    assert calls == [("gqa_prefill_causal_fwd_kernel",
+                      (batch, heads, heads_kv, max_seqlen_q, max_seqlen_kv, dim, True,
+                       torch.float16), {
+                           "sm_scale": packed.sm_scale,
+                           "softcap": 0.0,
+                           "tune": False
+                       })]
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
+    """The wrapper validates at construction because nothing downstream does.
+
+    The deleted child op used to raise on these at first forward. The build
+    step that replaced it reaches ``heads % heads_kv`` instead, so a zero
+    ``heads_kv`` would surface as ``ZeroDivisionError``.
+    """
+    with pytest.raises(ValueError, match="heads_kv must be positive"):
+        GroupedQueryAttentionFwdOp(1, 8, 0, 64, 64, True)
+    with pytest.raises(ValueError, match="batch must be positive"):
+        GroupedQueryAttentionFwdOp(0, 8, 2, 64, 64, True)
+    with pytest.raises(ValueError, match="seq_len must be positive"):
+        GroupedQueryAttentionFwdOp(1, 8, 2, 0, 64, True)
 
 
 @pytest.mark.smoke
