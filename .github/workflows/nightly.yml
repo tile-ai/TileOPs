@@ -366,6 +366,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history so setuptools-scm derives a real version for the
+          # built wheel instead of the fallback.
+          fetch-depth: 0
 
       - name: Verify nightly runner environment
         run: scripts/ci/verify_nightly_runner.sh

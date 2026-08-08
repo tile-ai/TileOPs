@@ -52,6 +52,22 @@ repos:
             ^.*\brequirements\b.*\.txt$
           )
 
+  - repo: local
+    hooks:
+      - id: shipped-refs-lint
+        name: shipped-source reference lint
+        entry: python scripts/lint/shipped_refs_lint.py
+        language: python
+        files: ^(tileops|tests|benchmarks|scripts)/
+        exclude: ^tileops/manifest/
+        types: [text]
+      - id: staged-rollout-fixme-lint
+        name: staged-rollout FIXME block lint
+        entry: python scripts/lint/staged_rollout_fixme_lint.py
+        language: python
+        files: ^(tileops|tests|benchmarks|scripts)/
+        types: [text]
+
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:
