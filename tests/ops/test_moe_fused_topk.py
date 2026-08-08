@@ -178,8 +178,8 @@ def test_fused_topk_dynamic_shape_kernel_cache() -> None:
 
     op(gating1)
     assert op.dtype == torch.float16
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     op(gating1)
-    assert len(op._kernel_cache) == 1
+    assert len(list(op.iter_kernels())) == 1
     op(gating2)
-    assert len(op._kernel_cache) == 2
+    assert len(list(op.iter_kernels())) == 2

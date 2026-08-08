@@ -354,7 +354,6 @@ class _RopeOpBase(Op):
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
 
@@ -410,8 +409,10 @@ class _RopeOpBase(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map[self._op_name](
+        return self.get_or_build_kernel(
+            self._op_name,
+            key,
+            lambda: self.kernel_map[self._op_name](
                 seq_len=self.seq_len,
                 head_dim=self.head_dim,
                 dtype=self.dtype,
@@ -419,8 +420,8 @@ class _RopeOpBase(Op):
                 batch=self.batch,
                 num_heads=self.num_heads,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _validate_and_prepare(self, x: torch.Tensor) -> torch.Tensor:
         """Validate input shape/dtype/device and return a contiguous tensor.
@@ -539,7 +540,6 @@ class RopeNeoxPositionIdsOp(Op):
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
 
@@ -586,8 +586,10 @@ class RopeNeoxPositionIdsOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map[self._op_name](
+        return self.get_or_build_kernel(
+            self._op_name,
+            key,
+            lambda: self.kernel_map[self._op_name](
                 num_tokens=self.num_tokens,
                 num_heads=self.num_heads,
                 head_dim=self.head_dim,
@@ -595,8 +597,8 @@ class RopeNeoxPositionIdsOp(Op):
                 max_position=self.max_position,
                 dtype=self.dtype,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def _validate_and_prepare(
         self,

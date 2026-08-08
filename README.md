@@ -83,7 +83,7 @@ pip install -e . --no-deps
 python -m pytest tests/ -q
 ```
 
-The `-dev` tag tracks the TileLang commit CI validates (`<tilelang-sha>-torch2.10-dev`); pull the tag matching the Prerequisites line above.
+The `-dev` tag tracks the TileLang commit CI validates (`<tilelang-sha>-torch2.10-dev`); pull the tag matching the Prerequisites line above. Build recipe and tag scheme: [`.github/runner/README.md`](.github/runner/README.md).
 
 ## Quick Start
 

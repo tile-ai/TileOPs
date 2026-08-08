@@ -78,7 +78,6 @@ class GLAFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -110,8 +109,10 @@ class GLAFwdOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["GLAFwdKernel"](
+        return self.get_or_build_kernel(
+            "GLAFwdKernel",
+            key,
+            lambda: self.kernel_map["GLAFwdKernel"](
                 batch,
                 seq_len,
                 heads,
@@ -122,8 +123,8 @@ class GLAFwdOp(Op):
                 output_final_state=self.output_final_state,
                 dtype=dtype,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,
@@ -192,7 +193,6 @@ class GLABwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -223,8 +223,10 @@ class GLABwdOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["GLABwdKernel"](
+        return self.get_or_build_kernel(
+            "GLABwdKernel",
+            key,
+            lambda: self.kernel_map["GLABwdKernel"](
                 batch,
                 seq_len,
                 heads,
@@ -234,8 +236,8 @@ class GLABwdOp(Op):
                 scale=self.scale,
                 dtype=dtype,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,

@@ -48,15 +48,16 @@ class CBProducerOp(Op):
 
         # Use standard Op dispatch pattern
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["cb_producer"](
+        return self.get_or_build_kernel(
+            "cb_producer",
+            dtype,
+            lambda: self.kernel_map["cb_producer"](
                 self.batch, self.num_chunks, self.n_groups, self.chunk_len,
                 self.d_state, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

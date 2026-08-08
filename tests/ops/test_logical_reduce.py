@@ -651,7 +651,7 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
     )
     compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
     test.check(op, *test.gen_inputs(), compare=compare)
-    kernel = op._kernel_cache[(3, 33024, dtype)]
+    kernel = op.built_kernels(op._kernel_key)[(3, 33024, dtype)]
     assert kernel.config["block_m"] > test.shape[0]
     assert kernel.config["tile_n"] > 0
 
@@ -670,7 +670,7 @@ def test_logical_reduce_tiled_autotune() -> None:
     op = AnyFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
-    kernel = op._kernel_cache[(m, n, dtype)]
+    kernel = op.built_kernels(op._kernel_key)[(m, n, dtype)]
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 

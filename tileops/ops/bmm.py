@@ -43,7 +43,6 @@ class BmmFwdOp(Op):
         self._tune = tune
         self.dispatch_kernel(kernel_map)
         # (batch, m, n, k, dtype) -> Kernel instance; built lazily on first use.
-        self._kernel_cache: Dict[Hashable, Kernel] = {}
         # Fast path: skip re-inference when the input signature is unchanged.
         self._active_sig: Optional[tuple] = None
         self._active_kernel: Optional[Kernel] = None
@@ -106,13 +105,12 @@ class BmmFwdOp(Op):
         self, batch: int, m: int, n: int, k: int, dtype: torch.dtype,
     ) -> Kernel:
         """Return the cached BmmKernel for the given dims, building lazily."""
-        key = (batch, m, n, k, dtype)
-        kernel = self._kernel_cache.get(key)
-        if kernel is None:
-            kernel = self.kernel_map["bmm_kernel"](
-                batch, m, n, k, dtype, tune=self._tune)
-            self._kernel_cache[key] = kernel
-        return kernel
+        return self.get_or_build_kernel(
+            "bmm_kernel",
+            (batch, m, n, k, dtype),
+            lambda: self.kernel_map["bmm_kernel"](
+                batch, m, n, k, dtype, tune=self._tune),
+        )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Fast path: same input signature as the last call → reuse the already
@@ -133,16 +131,6 @@ class BmmFwdOp(Op):
             self._active_sig = sig
 
         return self._active_kernel(a, b)
-
-    def autotune(self) -> None:
-        """Autotune every kernel built so far.
-
-        ``BmmFwdOp`` caches kernels lazily in ``self._kernel_cache`` rather
-        than as direct attributes, so the base ``Op.autotune`` (which scans
-        ``dir(self)``) would miss them. Tune each cached kernel instead.
-        """
-        for kernel in self._kernel_cache.values():
-            kernel.autotune()
 
 
 class BmmFp8Op(Op):
@@ -181,7 +169,6 @@ class BmmFp8Op(Op):
         self._tune = tune
         self.b_layout = b_layout
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[Hashable, Kernel] = {}
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
         # Shape-signatures for which we've already emitted the "slow path"
@@ -291,14 +278,13 @@ class BmmFp8Op(Op):
         dtype: torch.dtype,
         device: torch.device,
     ) -> Kernel:
-        key = (batch, m, n, k, dtype, self.out_dtype, device)
-        kernel = self._kernel_cache.get(key)
-        if kernel is None:
-            kernel = self.kernel_map["bmm_fp8_kernel"](
+        return self.get_or_build_kernel(
+            "bmm_fp8_kernel",
+            (batch, m, n, k, dtype, self.out_dtype, device),
+            lambda: self.kernel_map["bmm_fp8_kernel"](
                 batch, m, n, k, dtype, self.out_dtype, device=device,
-                tune=self._tune)
-            self._kernel_cache[key] = kernel
-        return kernel
+                tune=self._tune),
+        )
 
     def forward(
         self,
@@ -355,7 +341,3 @@ class BmmFp8Op(Op):
         scale_a = scale_a.reshape(1)
         scale_b = scale_b.reshape(1)
         return self._active(a, b, scale_a, scale_b)
-
-    def autotune(self) -> None:
-        for kernel in self._kernel_cache.values():
-            kernel.autotune()

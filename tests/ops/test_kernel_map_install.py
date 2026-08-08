@@ -143,46 +143,20 @@ def test_install_kernel_map_is_private_helper_only() -> None:
     assert "install_kernel_map" not in public_names
 
 
-# ``Op.autotune`` walks whatever the op used as its kernel cache. The cache
-# value is a bare kernel for some families and a record for others, so a
-# traversal that only descends containers silently tunes nothing.
-
-
-@pytest.mark.smoke
-def test_autotune_reaches_kernels_held_in_a_record():
-    """A dataclass-valued cache must not hide its kernels from autotune."""
-    import dataclasses
-
-    from tileops.ops.op_base import _iter_kernels
-
-    class _FakeKernel(Kernel):
-        def __init__(self):
-            pass
-
-        def forward(self, *args, **kwargs):
-            raise AssertionError("never called")
-
-    @dataclasses.dataclass(frozen=True)
-    class _Entry:
-        kernel: object
-        compute_dtype: torch.dtype
-
-    k = _FakeKernel()
-    assert _iter_kernels({torch.float16: _Entry(k, torch.float16)}) == [k]
-    assert _iter_kernels(_Entry(None, torch.float16)) == []
+# A slot entry is a bare kernel for some families and a record for others, so
+# an enumeration that does not descend into the record silently tunes nothing.
 
 
 @pytest.mark.smoke
 def test_autotune_reaches_elementwise_entries():
-    """The elementwise cache is record-valued; every built kernel must be seen."""
+    """The elementwise slot is record-valued; every built kernel must be seen."""
     from tileops.ops.elementwise import AbsFwdOp
-    from tileops.ops.op_base import _iter_kernels
 
     op = AbsFwdOp(N_total=256)
     for dtype in (torch.float16, torch.float32):
         op(torch.randn(256, device="cuda", dtype=dtype))
 
-    found = _iter_kernels(op._entries)
+    found = list(op.iter_kernels())
     assert len(found) == 2, f"autotune would see {len(found)} of 2 built kernels"
 
 
@@ -212,7 +186,7 @@ def test_native_bool_backend_is_constructed_with_bool():
     x = torch.tensor([True, False] * 32, device="cuda")
 
     torch.testing.assert_close(op(x, ~x), x & ~x)
-    entry = op._entries[torch.bool]
+    entry = op.built_kernels(op._op_name)[torch.bool]
     assert isinstance(entry.kernel, NativeBoolAnd)
     assert entry.kernel.ctor_dtype == torch.bool, "the op imposed a storage dtype"
     assert sorted(op.kernel_map) == ["bitwise_and"], "a second slot survives"
@@ -250,7 +224,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     shipped = FloorFwdOp(N_total=64)
     torch.testing.assert_close(shipped(x), x)
-    assert shipped._entries[torch.int32].kernel is None, "float-only kernel was used"
+    assert shipped.built_kernels(shipped._op_name)[torch.int32].kernel is None, "float-only kernel was used"
 
     class NativeIntFloor(FloorFwdKernel):
         SUPPORTED_DTYPES = (torch.int32, torch.float32)
@@ -263,7 +237,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     op = FloorFwdOp(N_total=64, kernel_map={"floor": NativeIntFloor})
     torch.testing.assert_close(op(x), x)
-    entry = op._entries[torch.int32]
+    entry = op.built_kernels(op._op_name)[torch.int32]
     assert isinstance(entry.kernel, NativeIntFloor), "the override was bypassed"
     assert entry.kernel.dtype == torch.int32
 

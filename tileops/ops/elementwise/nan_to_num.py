@@ -60,7 +60,6 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
         self.input_shape = (N_total,)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         """Resolve the replacement values against *dtype*, then build.

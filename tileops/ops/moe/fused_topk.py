@@ -63,7 +63,6 @@ class FusedTopKOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.config = config
-        self._kernel_cache: Dict[tuple[int, int, int, int | None], Kernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -74,8 +73,10 @@ class FusedTopKOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (num_tokens, num_experts, top_k, device_index)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["fused_topk_kernel"](
+        return self.get_or_build_kernel(
+            "fused_topk_kernel",
+            key,
+            lambda: self.kernel_map["fused_topk_kernel"](
                 num_tokens=num_tokens,
                 num_experts=num_experts,
                 top_k=top_k,
@@ -83,8 +84,8 @@ class FusedTopKOp(Op):
                 renormalize=self.renormalize,
                 with_correction_bias=self.with_correction_bias,
                 config=self.config,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,

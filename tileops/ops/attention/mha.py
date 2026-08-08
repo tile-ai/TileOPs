@@ -70,14 +70,9 @@ class MultiHeadAttentionFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self._gqa_op._get_kernel(dtype)
 
-    @property
-    def _kernel_cache(self) -> Dict[torch.dtype, Kernel]:
-        """Read-only view of the delegate's cache, the lazy-op introspection shape."""
-        return self._gqa_op._kernel_cache
-
-    def autotune(self) -> None:
-        """Tune through the delegate: every kernel this op runs is built there."""
-        self._gqa_op.autotune()
+    def kernel_delegates(self) -> tuple[GroupedQueryAttentionFwdOp, ...]:
+        """Every kernel this op runs is built by the GQA prefill dispatcher."""
+        return (self._gqa_op,)
 
     def _infer_output_shapes(
         self,
@@ -146,6 +141,10 @@ class MultiHeadAttentionBwdOp(Op):
                 GQABwdWgmmaPipelinedKernel,
         }
 
+    def kernel_delegates(self) -> tuple[GroupedQueryAttentionBwdOp, ...]:
+        """Every kernel this op runs is built by GQA backward."""
+        return (self._gqa_op,)
+
     @staticmethod
     def _gqa_kernel_map(kernel_map: Optional[Dict[str, Kernel]]) -> Optional[Dict[str, Kernel]]:
         if kernel_map is None:
@@ -184,15 +183,16 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["mha_decode_kernel"](
+        return self.get_or_build_kernel(
+            "mha_decode_kernel",
+            dtype,
+            lambda: self.kernel_map["mha_decode_kernel"](
                 self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
                 self.dim, False, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -233,15 +233,16 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.is_causal = is_causal
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["mha_decode_paged_kernel"](
+        return self.get_or_build_kernel(
+            "mha_decode_paged_kernel",
+            dtype,
+            lambda: self.kernel_map["mha_decode_paged_kernel"](
                 self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
                 self.dim, self.page_size, self.is_causal, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

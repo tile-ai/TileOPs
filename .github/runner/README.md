@@ -37,6 +37,15 @@ DOCKER_BUILDKIT=1 docker build \
 Tag with the tilelang commit's **short SHA** (`:65dbc98`). If you rebuild the same commit,
 add a numeric suffix (`:65dbc98-2`).
 
+One package carries both images the project uses, told apart by tag:
+
+| Tag                            | `--target` | Who runs it                                             |
+| ------------------------------ | ---------- | ------------------------------------------------------- |
+| `<tilelang-sha>`               | `final`    | The self-hosted CI runners — includes the Actions agent |
+| `<tilelang-sha>-torch2.10-dev` | `tilelang` | Local development — same stack, no agent                |
+
+Both are built from the same tilelang commit, so the two stay in step.
+
 ## Roll out an updated runner image
 
 Changes to this Dockerfile are not picked up by CI automatically. After a Dockerfile change

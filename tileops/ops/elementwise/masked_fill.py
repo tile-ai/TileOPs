@@ -55,7 +55,6 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         """The kernel names the implementation and storage for this dtype."""
@@ -165,7 +164,6 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         """The fill value is baked in, so it is checked against each dtype."""

@@ -54,7 +54,6 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.dispatch_kernel(kernel_map)
-        self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         if dtype not in self._SUPPORTED_DTYPES:

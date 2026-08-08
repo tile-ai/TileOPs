@@ -53,7 +53,6 @@ class RMSNormFwdOp(Op):
         self.eps = _DEFAULT_EPS if eps is None else float(eps)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple[int, torch.dtype], Kernel] = {}
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
 
     @property
@@ -62,11 +61,13 @@ class RMSNormFwdOp(Op):
 
     def _get_kernel(self, m: int, dtype: torch.dtype) -> Kernel:
         key = (m, dtype)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["rms_norm"](
+        return self.get_or_build_kernel(
+            "rms_norm",
+            key,
+            lambda: self.kernel_map["rms_norm"](
                 m, self.N, self.eps, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def eval_roofline(self) -> Tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:

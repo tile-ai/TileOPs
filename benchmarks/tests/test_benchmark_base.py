@@ -14,6 +14,8 @@ from benchmarks.benchmark_base import (
     bench_kernel,
     workloads_to_params,
 )
+from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 
 # Duck-typed test workloads
 
@@ -182,11 +184,26 @@ def _reset_records():
         BenchmarkReport._records = saved
 
 
-class _FakeKernel:
-    """Stand-in for ``tileops.kernels.kernel_base.Kernel`` with just a config dict."""
+class _FakeKernel(Kernel):
+    """Stand-in for a real kernel with just a config dict."""
 
     def __init__(self, config: dict):
+        super().__init__()
         self.config = config
+
+    def forward(self):
+        return None
+
+
+class _FakeOp(Op):
+    """Minimal concrete ``Op`` so ``iter_kernels`` reaches what the test stores."""
+
+    @property
+    def default_kernel_map(self):
+        return {}
+
+    def forward(self, *args, **kwargs):
+        return None
 
 
 def _result() -> dict:
@@ -198,7 +215,7 @@ def _result() -> dict:
 def test_record_eager_init_op_keeps_kernel_config():
     """Pattern 1: ``op.kernel`` set in ``__init__`` (GemmOp-style)."""
 
-    class _EagerOp:
+    class _EagerOp(_FakeOp):
         def __init__(self):
             self.kernel = _FakeKernel({"block_m": 128, "block_n": 256})
 
@@ -210,12 +227,12 @@ def test_record_eager_init_op_keeps_kernel_config():
 @pytest.mark.full
 @pytest.mark.usefixtures('_reset_records')
 def test_record_lazy_with_dummy_kernel_keeps_kernel_config():
-    """Pattern 2: dummy ``op.kernel`` plus a populated ``_kernel_cache``."""
+    """Pattern 2: dummy ``op.kernel`` plus a populated slot."""
 
-    class _LazyDummyOp:
+    class _LazyDummyOp(_FakeOp):
         def __init__(self):
             self.kernel = _FakeKernel({"block_m": 8})
-            self._kernel_cache = {1: self.kernel}
+            self.get_or_build_kernel("fwd", 1, lambda: self.kernel)
 
     BenchmarkReport.record(_LazyDummyOp(), params={}, result=_result(), tag="t")
     records = BenchmarkReport._records["_LazyDummyOp"]
@@ -225,11 +242,12 @@ def test_record_lazy_with_dummy_kernel_keeps_kernel_config():
 @pytest.mark.full
 @pytest.mark.usefixtures('_reset_records')
 def test_record_pure_lazy_cache_op_keeps_kernel_config():
-    """Pattern 3: only ``_kernel_cache`` is populated."""
+    """Pattern 3: only a slot is populated; ``op.kernel`` is unset."""
 
-    class _PureLazyOp:
+    class _PureLazyOp(_FakeOp):
         def __init__(self):
-            self._kernel_cache = {(32, 256): _FakeKernel({"block_m": 4, "tile_n": 0})}
+            self.get_or_build_kernel(
+                "fwd", (32, 256), lambda: _FakeKernel({"block_m": 4, "tile_n": 0}))
 
     BenchmarkReport.record(_PureLazyOp(), params={}, result=_result(), tag="t")
     records = BenchmarkReport._records["_PureLazyOp"]
@@ -255,17 +273,17 @@ def test_record_op_with_explicit_config_takes_precedence():
 def test_record_composite_op_keeps_delegate_kernel_config():
     """A composite that owns no kernels still reports the delegate's config."""
 
-    class _DelegateOp:
+    class _DelegateOp(_FakeOp):
         def __init__(self):
-            self._kernel_cache = {torch.float16: _FakeKernel({"block_m": 8})}
+            self.get_or_build_kernel(
+                "fwd", torch.float16, lambda: _FakeKernel({"block_m": 8}))
 
-    class _CompositeOp:
+    class _CompositeOp(_FakeOp):
         def __init__(self):
             self._delegate = _DelegateOp()
 
-        @property
-        def _kernel_cache(self):
-            return self._delegate._kernel_cache
+        def kernel_delegates(self):
+            return (self._delegate,)
 
     BenchmarkReport.record(_CompositeOp(), params={}, result=_result(), tag="t")
     records = BenchmarkReport._records["_CompositeOp"]

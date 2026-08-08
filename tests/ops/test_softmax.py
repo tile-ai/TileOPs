@@ -491,7 +491,7 @@ def test_softmax_rejects_multidim_before_kernel() -> None:
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
     # Verify no kernel was built (cache must remain empty).
-    assert len(op._kernel_cache) == 0
+    assert len(list(op.iter_kernels())) == 0
 
 
 @pytest.mark.smoke
@@ -501,7 +501,7 @@ def test_log_softmax_rejects_multidim_before_kernel() -> None:
     op = LogSoftmaxFwdOp(dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
-    assert len(op._kernel_cache) == 0
+    assert len(list(op.iter_kernels())) == 0
 
 
 @pytest.mark.smoke

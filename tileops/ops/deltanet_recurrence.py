@@ -61,7 +61,6 @@ class DeltaNetDecodeOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self._active_sig: Optional[tuple] = None
         self.kernel = None
 
@@ -87,7 +86,8 @@ class DeltaNetDecodeOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
+
+        def build() -> Kernel:
             use_raw_cuda_decode = self._should_use_raw_cuda_decode(dim_k, dim_v, dtype)
             if dtype == torch.float32:
                 kernel_cls = self.kernel_map["DeltaNetDecodeFP32Kernel"]
@@ -95,7 +95,7 @@ class DeltaNetDecodeOp(Op):
                 kernel_cls = self.kernel_map["DeltaNetDecodeRawCudaFlaStyleKernel"]
             else:
                 kernel_cls = self.kernel_map["DeltaNetDecodeKernel"]
-            self._kernel_cache[key] = kernel_cls(
+            return kernel_cls(
                 batch,
                 heads,
                 dim_k,
@@ -103,7 +103,8 @@ class DeltaNetDecodeOp(Op):
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
             )
-        return self._kernel_cache[key]
+
+        return self.get_or_build_kernel("DeltaNetDecodeKernel", key, build)
 
     def _infer_output_shapes(
         self,

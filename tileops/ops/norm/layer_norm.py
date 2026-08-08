@@ -60,7 +60,6 @@ class LayerNormFwdOp(Op):
         self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple[int, torch.dtype], Kernel] = {}
         self._last_m: Optional[int] = None
 
     @property
@@ -138,11 +137,13 @@ class LayerNormFwdOp(Op):
         bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
         key = (m_actual, x.dtype)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["layer_norm"](
+        kernel = self.get_or_build_kernel(
+            "layer_norm",
+            key,
+            lambda: self.kernel_map["layer_norm"](
                 m_actual, self.N, self.eps, x.dtype, tune=self.tune,
-            )
-        kernel = self._kernel_cache[key]
+            ),
+        )
         self._last_m = m_actual
 
         y = kernel(x, weight, bias)

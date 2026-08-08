@@ -45,7 +45,6 @@ class SSDChunkStateFwdOp(Op):
         self.has_seq_idx = has_seq_idx
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -79,8 +78,10 @@ class SSDChunkStateFwdOp(Op):
             device_index,
             self.tune,
         )
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["ssd_chunk_state_fwd"](
+        return self.get_or_build_kernel(
+            "ssd_chunk_state_fwd",
+            key,
+            lambda: self.kernel_map["ssd_chunk_state_fwd"](
                 batch,
                 num_chunks,
                 chunk_len,
@@ -91,8 +92,8 @@ class SSDChunkStateFwdOp(Op):
                 dtype,
                 has_seq_idx=self.has_seq_idx,
                 tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,

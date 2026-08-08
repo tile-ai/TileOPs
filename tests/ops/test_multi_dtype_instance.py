@@ -2,7 +2,7 @@
 
 The rest of the suite parametrizes dtype but builds a fresh op per case, so it
 never drives a second dtype through an instance that already holds an entry.
-Each family caches by hand; this covers the invariant they all owe.
+This covers the invariant every family owes its L1 kernel slots.
 """
 
 import pytest
@@ -16,11 +16,10 @@ from tileops.ops.reduction.reduce import SumFwdOp
 _DTYPES = (torch.float16, torch.bfloat16)
 
 
-def _assert_two_entries(op, cache_name="_kernel_cache"):
-    cache = getattr(op, cache_name)
-    assert len(cache) == 2, f"expected one entry per dtype, got {list(cache)}"
-    kernels = list(cache.values())
-    assert kernels[0] is not kernels[1], "both dtypes reused one kernel"
+def _assert_two_entries(op):
+    """One kernel per dtype. ``iter_kernels`` dedups, so two means two."""
+    kernels = list(op.iter_kernels())
+    assert len(kernels) == 2, f"expected one kernel per dtype, got {len(kernels)}"
 
 
 @pytest.mark.smoke
@@ -56,7 +55,7 @@ def test_layer_norm_keys_on_both_shape_and_dtype():
         w = torch.randn(n, dtype=dtype, device="cuda")
         b = torch.randn(n, dtype=dtype, device="cuda")
         assert op(x, w, b).dtype == dtype
-    assert set(op._kernel_cache) == {(16, dt) for dt in _DTYPES}
+    assert set(op.built_kernels("layer_norm")) == {(16, dt) for dt in _DTYPES}
 
 
 @pytest.mark.smoke
@@ -127,10 +126,10 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
     _assert_two_entries(op._gqa_op)
 
-    # MHA owns no cache, so autotune has to reach the delegate's kernels — one
-    # per dtype — rather than relying on attribute traversal finding them here.
+    # MHA builds no kernel of its own, so autotune has to reach the delegate's
+    # kernels — one per dtype — through ``kernel_delegates``.
     tuned = []
-    for kernel in op._gqa_op._kernel_cache.values():
+    for kernel in list(op._gqa_op.iter_kernels()):
         kernel.autotune = lambda *_args, _k=kernel: tuned.append(id(_k))
     op.autotune()
     assert len(tuned) == len(_DTYPES)
@@ -194,7 +193,7 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
     torch.testing.assert_close(op(i, i + 1), i & (i + 1))
     torch.testing.assert_close(op(b, b), b & b)  # back to bool after the int kernel
 
-    assert set(op._entries) == {torch.bool, torch.int32}
+    assert set(op.built_kernels(op._op_name)) == {torch.bool, torch.int32}
 
 
 @pytest.mark.smoke
@@ -210,7 +209,7 @@ def test_logical_and_output_stays_bool_across_input_storage():
     torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
     torch.testing.assert_close(op(b, b), torch.logical_and(b, b))
 
-    assert set(op._entries) == {torch.bool, torch.float32}
+    assert set(op.built_kernels(op._op_name)) == {torch.bool, torch.float32}
 
 
 @pytest.mark.smoke
@@ -227,7 +226,7 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
     torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
 
-    assert set(op._entries) == {torch.bool, torch.float32}
+    assert set(op.built_kernels(op._op_name)) == {torch.bool, torch.float32}
 
 
 def _single_tensor_elementwise_ops():

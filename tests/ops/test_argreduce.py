@@ -639,7 +639,7 @@ def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
     x = torch.randn(*shape, device="cuda", dtype=torch.float16)
     op = ArgmaxFwdOp(dim=dim)
     torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
-    strategies = {k.strategy for k in op._kernel_cache.values()}
+    strategies = {k.strategy for k in op.iter_kernels()}
     assert ("output" in strategies) is expect_strided, strategies
 
 

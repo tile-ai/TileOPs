@@ -158,7 +158,7 @@ def test_fused_gated_serves_two_dtypes_from_one_instance() -> None:
     for dtype in (torch.float16, torch.float32):
         x = torch.randn(16, 16, device="cuda", dtype=dtype)
         assert op(x).dtype == dtype
-    assert len(op._entries) == 2
+    assert len(op.built_kernels(op._op_name)) == 2
 
 
 # Strategy selection tests

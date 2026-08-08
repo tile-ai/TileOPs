@@ -58,7 +58,6 @@ class AdaLayerNormZeroFwdOp(Op):
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple[int, int, torch.dtype, int | None], Kernel] = {}
         self._last_roofline_mn: Optional[tuple[int, int]] = None
 
     @property
@@ -79,11 +78,13 @@ class AdaLayerNormZeroFwdOp(Op):
         self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
     ) -> Kernel:
         key = (M, N, dtype, device_index)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["ada_layer_norm"](
+        return self.get_or_build_kernel(
+            "ada_layer_norm",
+            key,
+            lambda: self.kernel_map["ada_layer_norm"](
                 M, N, self.eps, dtype, has_gate=True, tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(
         self,

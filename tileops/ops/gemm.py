@@ -55,7 +55,6 @@ class GemmOp(Op):
         self._tune = tune
         self.dispatch_kernel(kernel_map)
         # (m, n, k, dtype) -> Kernel instance; built lazily on first use.
-        self._kernel_cache: Dict[Hashable, Kernel] = {}
         # Fast path: skip re-inference when the input signature is unchanged.
         # _active_sig = (a.shape, b.shape, dtype); _active = (mode, kernel, n, m).
         self._active_sig: Optional[tuple] = None
@@ -109,21 +108,21 @@ class GemmOp(Op):
         gemv_cls = self.kernel_map.get("gemv_kernel")
         if (gemv_lhs_row or gemv_rhs_col) and gemv_cls is not None:
             mode = "lhs_row" if gemv_lhs_row else "rhs_col"
-            key = (mode, m, n, k, dtype)
-            kernel = self._kernel_cache.get(key)
-            if kernel is None:
-                # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
-                kernel = gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self._tune)
-                self._kernel_cache[key] = kernel
+            # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
+            kernel = self.get_or_build_kernel(
+                "gemv_kernel",
+                (mode, m, n, k, dtype),
+                lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self._tune),
+            )
             return mode, kernel
 
-        key = ("gemm", m, n, k, dtype)
-        kernel = self._kernel_cache.get(key)
-        if kernel is None:
-            kernel = self.kernel_map["gemm_kernel"](
+        kernel = self.get_or_build_kernel(
+            "gemm_kernel",
+            (m, n, k, dtype),
+            lambda: self.kernel_map["gemm_kernel"](
                 m, n, k, dtype, tune=self._tune, trans_a=self.trans_a, trans_b=self.trans_b
-            )
-            self._kernel_cache[key] = kernel
+            ),
+        )
         return "gemm", kernel
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -153,16 +152,6 @@ class GemmOp(Op):
             return kernel(b.reshape(-1), a).reshape(m, 1)
         return kernel(a, b)
 
-    def autotune(self) -> None:
-        """Autotune every kernel built so far.
-
-        ``GemmOp`` caches kernels lazily in ``self._kernel_cache`` rather than as
-        direct attributes, so the base ``Op.autotune`` (which scans ``dir(self)``)
-        would miss them. Tune each cached kernel instead.
-        """
-        for kernel in self._kernel_cache.values():
-            kernel.autotune()
-
 
 class GemmFp8Op(Op):
     """Dense FP8 NT GEMM, input-inferred.
@@ -185,7 +174,6 @@ class GemmFp8Op(Op):
         self.out_dtype = out_dtype
         self._tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[Hashable, Kernel] = {}
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
         self.m: Optional[int] = None
@@ -299,12 +287,12 @@ class GemmFp8Op(Op):
         scale_a_shape: Tuple[int, ...],
         scale_b_shape: Tuple[int, ...],
     ) -> Kernel:
-        key = (kernel_name, m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype)
-        kernel = self._kernel_cache.get(key)
-        if kernel is None:
-            kernel = self.kernel_map[kernel_name](m, n, k, dtype, self.out_dtype, tune=self._tune)
-            self._kernel_cache[key] = kernel
-        return kernel
+        return self.get_or_build_kernel(
+            kernel_name,
+            (m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
+            lambda: self.kernel_map[kernel_name](
+                m, n, k, dtype, self.out_dtype, tune=self._tune),
+        )
 
     def forward(
         self,
@@ -344,10 +332,6 @@ class GemmFp8Op(Op):
 
         return self._active(a, b, scale_a, scale_b, bias)
 
-    def autotune(self) -> None:
-        for kernel in self._kernel_cache.values():
-            kernel.autotune()
-
 
 class GemmW4A16Op(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
@@ -372,7 +356,6 @@ class GemmW4A16Op(Op):
         self.group_size = group_size
         self._tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[Hashable, Kernel] = {}
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
         self.m: Optional[int] = None
@@ -465,14 +448,13 @@ class GemmW4A16Op(Op):
         k: int,
         dtype: torch.dtype,
     ) -> Kernel:
-        key = (m, n, k, dtype, self.group_size)
-        kernel = self._kernel_cache.get(key)
-        if kernel is None:
-            kernel = self.kernel_map["gemm_w4a16_kernel"](
+        return self.get_or_build_kernel(
+            "gemm_w4a16_kernel",
+            (m, n, k, dtype, self.group_size),
+            lambda: self.kernel_map["gemm_w4a16_kernel"](
                 m, n, k, dtype, tune=self._tune, group_size=self.group_size
-            )
-            self._kernel_cache[key] = kernel
-        return kernel
+            ),
+        )
 
     def forward(
         self,
@@ -506,7 +488,3 @@ class GemmW4A16Op(Op):
             self._active_sig = sig
 
         return self._active(activation, packed_weight, weight_scale, weight_zero)
-
-    def autotune(self) -> None:
-        for kernel in self._kernel_cache.values():
-            kernel.autotune()

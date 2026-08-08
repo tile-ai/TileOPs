@@ -136,18 +136,19 @@ class SharedFusedMoE(FusedMoe):
         self._shared_mlp_shard_ffn = (
             shared_ffn_size // tp_size if shared_ffn_size is not None else None
         )
-        self._shared_mlp_cache: Dict[torch.dtype, Kernel] = {}
 
     def _shared_mlp_kernel_for(self, dtype: torch.dtype) -> Kernel:
         """Return the shared-expert MLP kernel for *dtype*, building on first use."""
-        if dtype not in self._shared_mlp_cache:
-            self._shared_mlp_cache[dtype] = SharedExpertMLPKernel(
+        return self.get_or_build_kernel(
+            "shared_expert_mlp",
+            dtype,
+            lambda: SharedExpertMLPKernel(
                 num_tokens=self.num_tokens,
                 hidden_size=self.hidden_size,
                 ffn_size=self._shared_mlp_shard_ffn,
                 dtype=dtype,
-            )
-        return self._shared_mlp_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

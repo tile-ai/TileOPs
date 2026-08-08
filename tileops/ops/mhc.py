@@ -25,7 +25,6 @@ class MHCPreOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -50,11 +49,13 @@ class MHCPreOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, n_expand, c_x, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["mhc_pre_kernel"](
+        return self.get_or_build_kernel(
+            "mhc_pre_kernel",
+            key,
+            lambda: self.kernel_map["mhc_pre_kernel"](
                 batch, n_expand, c_x, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(self,
                 phi: torch.Tensor,
@@ -100,7 +101,6 @@ class MHCPostOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
     @property
@@ -116,11 +116,13 @@ class MHCPostOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, n_expand, c_x, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["mhc_post_kernel"](
+        return self.get_or_build_kernel(
+            "mhc_post_kernel",
+            key,
+            lambda: self.kernel_map["mhc_post_kernel"](
                 batch, n_expand, c_x, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     def forward(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
                 x_res: torch.Tensor) -> torch.Tensor:

@@ -107,7 +107,6 @@ class _ReduceOpBase(Op):
         self._tune = tune
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, object] = {}
         self._last_roofline_mn: tuple[int, int] | None = None
 
     # Dim validation (subclasses may override)
@@ -401,14 +400,14 @@ class _ReduceOpBase(Op):
         self, M: int, N: int, dtype: torch.dtype,
     ) -> object:
         """Return a cached kernel for (M, N, dtype), creating one if needed."""
-        key = (M, N, dtype)
-        if key not in self._kernel_cache:
-            kernel_cls = self.kernel_map[self._kernel_key]
-            self._kernel_cache[key] = kernel_cls(
+        return self.get_or_build_kernel(
+            self._kernel_key,
+            (M, N, dtype),
+            lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype,
                 tune=self._tune, **self._build_kernel_kwargs(),
-            )
-        return self._kernel_cache[key]
+            ),
+        )
 
     # Input preparation (validate → transpose → reshape → pad)
 

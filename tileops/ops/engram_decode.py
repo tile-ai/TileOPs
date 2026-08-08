@@ -50,16 +50,17 @@ class EngramDecodeOp(Op):
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["engram_decode"](
+        return self.get_or_build_kernel(
+            "engram_decode",
+            dtype,
+            lambda: self.kernel_map["engram_decode"](
                 self.batch, self.d_mem, self.d, self.max_conv_len,
                 self.conv_kernel_size, self.dilation, self.eps, dtype,
                 tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

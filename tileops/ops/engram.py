@@ -45,14 +45,15 @@ class EngramGateConvFwdOp(Op):
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["engram_gate_conv_fwd"](
+        return self.get_or_build_kernel(
+            "engram_gate_conv_fwd",
+            dtype,
+            lambda: self.kernel_map["engram_gate_conv_fwd"](
                 self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -138,14 +139,15 @@ class EngramGateConvBwdOp(Op):
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["engram_gate_conv_bwd"](
+        return self.get_or_build_kernel(
+            "engram_gate_conv_bwd",
+            dtype,
+            lambda: self.kernel_map["engram_gate_conv_bwd"](
                 self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
-            )
-        return self._kernel_cache[dtype]
+            ),
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

@@ -111,7 +111,6 @@ class BatchNormFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel: Optional[Kernel] = None
         self.train_kernel: Optional[BatchNormFwdTrainKernel] = None
         self.infer_kernel: Optional[BatchNormFwdInferKernel] = None
@@ -195,23 +194,27 @@ class BatchNormFwdOp(Op):
         dtype: torch.dtype,
         device_index: Optional[int],
     ) -> Kernel:
-        mode = "train" if self.training else "infer"
-        key = (mode, C, L, dtype, device_index, self.eps, self.momentum, self.tune)
-        if key not in self._kernel_cache:
-            if self.training:
-                self._kernel_cache[key] = self.kernel_map["fwd_train_kernel"](
-                    C, L, dtype, self.eps, self.momentum, tune=self.tune,
-                )
-            else:
-                self._kernel_cache[key] = self.kernel_map["fwd_infer_kernel"](
-                    C, L, dtype, self.eps, tune=self.tune,
-                )
-        kernel = self._kernel_cache[key]
-        self.kernel = kernel
+        # Train and infer are separate slots, so the mode is not part of the key.
+        key = (C, L, dtype, device_index, self.eps, self.momentum, self.tune)
         if self.training:
+            kernel = self.get_or_build_kernel(
+                "fwd_train_kernel",
+                key,
+                lambda: self.kernel_map["fwd_train_kernel"](
+                    C, L, dtype, self.eps, self.momentum, tune=self.tune,
+                ),
+            )
             self.train_kernel = kernel
         else:
+            kernel = self.get_or_build_kernel(
+                "fwd_infer_kernel",
+                key,
+                lambda: self.kernel_map["fwd_infer_kernel"](
+                    C, L, dtype, self.eps, tune=self.tune,
+                ),
+            )
             self.infer_kernel = kernel
+        self.kernel = kernel
         return kernel
 
     def _forward_impl(
@@ -305,7 +308,6 @@ class BatchNormBwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel: Optional[Kernel] = None
         self.bwd_kernel: Optional[BatchNormBwdKernel] = None
         self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
@@ -382,12 +384,13 @@ class BatchNormBwdOp(Op):
         dtype: torch.dtype,
         device_index: Optional[int],
     ) -> Kernel:
-        key = (C, L, dtype, device_index, self.tune)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["bwd_kernel"](
+        kernel = self.get_or_build_kernel(
+            "bwd_kernel",
+            (C, L, dtype, device_index, self.tune),
+            lambda: self.kernel_map["bwd_kernel"](
                 C, L, dtype, tune=self.tune,
-            )
-        kernel = self._kernel_cache[key]
+            ),
+        )
         self.kernel = kernel
         self.bwd_kernel = kernel
         return kernel
