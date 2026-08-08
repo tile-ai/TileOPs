@@ -1,4 +1,5 @@
 
+import dataclasses
 from typing import Optional
 
 import pytest
@@ -528,7 +529,8 @@ def _holds_op(value: object, depth: int = 0) -> bool:
 
     The shape to catch is a cache of child ops, not an op bound directly to an
     attribute, so testing the attribute value alone would pass on a dict of
-    them. Descends two levels like ``op_base._iter_kernels``.
+    them. Descends the same containers as ``op_base._iter_kernels``, records
+    included, to the same depth.
     """
     if isinstance(value, Op):
         return True
@@ -538,7 +540,22 @@ def _holds_op(value: object, depth: int = 0) -> bool:
         return any(_holds_op(item, depth + 1) for item in value.values())
     if isinstance(value, (tuple, list)):
         return any(_holds_op(item, depth + 1) for item in value)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return any(
+            _holds_op(getattr(value, field.name), depth + 1)
+            for field in dataclasses.fields(value))
     return False
+
+
+def _op_valued_attrs(op: Op) -> list:
+    """Names of *op*'s attributes that are an ``Op`` or reach one.
+
+    Scans ``dir`` rather than ``vars`` for the same reason ``Op.autotune``
+    does: an attribute reached through a property or bound on the class would
+    otherwise escape.
+    """
+    return sorted(name for name in dir(op)
+                  if not name.startswith("__") and _holds_op(getattr(op, name, None)))
 
 
 @pytest.mark.smoke
@@ -568,14 +585,16 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op(
 
     assert builds == 1
     assert list(op._kernel_cache) == [torch.float16]
-    assert not any(_holds_op(value) for value in vars(op).values())
+    assert _op_valued_attrs(op) == []
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, h200, expected_slot", [
     pytest.param(4, 512, 32, 8, 128, True, "gqa_prefill_square_fwd_kernel", id="square"),
-    pytest.param(4, 512, 32, 8, 128, False, "gqa_prefill_causal_fwd_kernel", id="dense-causal"),
-    pytest.param(1, 128, 8, 2, 64, False, "gqa_prefill_fwd_kernel", id="dense-dim64"),
+    pytest.param(4, 512, 32, 8, 128, False, "gqa_prefill_causal_fwd_kernel", id="declines-off-h200"),
+    pytest.param(1, 256, 8, 2, 128, True, "gqa_prefill_causal_fwd_kernel", id="declines-work-items"),
+    pytest.param(4, 384, 64, 16, 128, True, "gqa_prefill_causal_fwd_kernel", id="declines-m-blocks"),
+    pytest.param(4, 512, 32, 8, 64, True, "gqa_prefill_fwd_kernel", id="declines-dim"),
 ])
 def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
     monkeypatch: pytest.MonkeyPatch,
@@ -596,9 +615,15 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
     callers must record the same call, which guards each caller's own argument
     assembly.
 
-    ``is_h200`` is pinned so each branch is reached on every machine. Left to
-    the runner, the square case would fall through to a dense slot off H200 and
-    the square argument list would go unasserted there.
+    ``is_h200`` is pinned so each case is reached on every machine. Left to the
+    runner, the square argument list would go unasserted off H200. Each case
+    isolates one guard of the fast-path contract — accepted, then declined in
+    turn for the chip, for work items below the SM count, for an odd block
+    count, and for head dim. A geometry must reach the guard it names, or an
+    earlier guard masks it: pinning the chip ``False`` throughout short-circuits
+    the contract at its second guard, and a short sequence declines on block
+    parity before head dim is ever read. The first two cases share one
+    geometry, so the chip is demonstrably what drives the choice.
 
     One element type suffices: neither selector branches between ``float16``
     and ``bfloat16``, so a second would add nodes without a distinct path.
