@@ -562,8 +562,6 @@ class GatedDeltaNetOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.fwd_kernel = None
-        self.bwd_kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -579,7 +577,7 @@ class GatedDeltaNetOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-    ) -> None:
+    ) -> Tuple[Kernel, Kernel]:
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
             q, k, v, g, beta, self.chunk_size)
         self.batch = batch
@@ -599,19 +597,17 @@ class GatedDeltaNetOp(Op):
             q.device.index,
             self.tune,
         )
-        self.fwd_kernel = self.get_or_build_kernel(
+        return self.get_or_build_kernel(
             "GatedDeltaNetFwdKernel",
             key,
-            lambda: self.kernel_map["GatedDeltaNetFwdKernel"](
-                batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
-                dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
-        )
-        self.bwd_kernel = self.get_or_build_kernel(
-            "GatedDeltaNetBwdKernel",
-            key,
-            lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
-                batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
-                dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+            lambda: (
+                self.kernel_map["GatedDeltaNetFwdKernel"](
+                    batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
+                    dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+                self.kernel_map["GatedDeltaNetBwdKernel"](
+                    batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
+                    dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+            ),
         )
 
     def forward(
@@ -634,10 +630,8 @@ class GatedDeltaNetOp(Op):
         Returns:
             Output tensor o [B, H, S, DV] (supports .backward()).
         """
-        self._bind_from_inputs(q, k, v, g, beta)
-        return _GatedDeltaNetFunction.apply(
-            q, k, v, g, beta, self.fwd_kernel, self.bwd_kernel,
-        )
+        fwd_kernel, bwd_kernel = self._bind_from_inputs(q, k, v, g, beta)
+        return _GatedDeltaNetFunction.apply(q, k, v, g, beta, fwd_kernel, bwd_kernel)
 
 
 class GatedDeltaNetDecodeOp(Op):
