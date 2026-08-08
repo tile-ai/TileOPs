@@ -70,9 +70,8 @@ exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.setuptools.package-data]
 # Kernel headers and YAML data are opened at run time by path relative to
-# __file__, so all of them must ship. Stated by extension rather than by name
-# so a new resource is covered the day it lands, and so the set does not depend
-# on a file-finder plugin being active. Enforced by scripts/ci/check_dist_contents.py.
+# __file__, so all of them must ship. Stated by extension, not by name, so a new
+# resource is covered on arrival. Enforced by scripts/ci/check_dist_contents.py.
 tileops = ["**/*.h", "**/*.yaml"]
 
 [tool.codespell]
@@ -151,9 +150,8 @@ ignore = [
 known-first-party = ["tileops"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-# Deprecated TIR spellings. Ruff resolves these through the import graph, so an
-# alias other than the usual `T` is caught too — which is why this lives here
-# rather than in a pattern-matching script of our own.
+# Resolved through the import graph, so an alias other than the usual `T` is
+# caught too.
 "tilelang.language.Buffer".msg = "deprecated; use T.Tensor(shape, dtype)"
 
 [tool.ruff.lint.per-file-ignores]

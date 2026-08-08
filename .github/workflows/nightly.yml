@@ -55,20 +55,15 @@ jobs:
         run: bash scripts/ci/install_tileops.sh
         shell: bash
 
-      # Its own step, deliberately: the benchmark below runs with
-      # continue-on-error so a failing bench file does not fail the nightly,
-      # and a guard sharing that step would have its exit swallowed by the
-      # same setting. A runner that cannot produce trustworthy numbers must
-      # stop the job.
+      # Keep this out of the benchmark step below: that step sets
+      # continue-on-error, which would swallow a failure here.
       - name: Validate GPU exclusivity and clock
         run: |
           set -euo pipefail
 
-          # The runner is provisioned with exactly one card, and the timings
-          # below are only meaningful with exclusive access to it. A second
-          # visible GPU means the container is misprovisioned and whatever
-          # else lands on the other cards can perturb these numbers, so treat
-          # the count as part of the guard rather than assuming it.
+          # The benchmark needs exclusive access to one card. A second visible
+          # GPU means the container is misprovisioned, and work landing on it
+          # perturbs these timings.
           gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
           if [ "${gpu_count}" -ne 1 ]; then
             echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
@@ -388,8 +383,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Full history so setuptools-scm derives a real version for the
-          # built wheel instead of the fallback.
+          # setuptools-scm needs full history; a shallow clone yields the fallback.
           fetch-depth: 0
 
       - name: Verify nightly runner environment
@@ -405,11 +399,8 @@ jobs:
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
 
-          # The runner is provisioned with exactly one card, and the timings
-          # below are only meaningful with exclusive access to it. A second
-          # visible GPU means the container is misprovisioned and whatever
-          # else lands on the other cards can perturb these numbers, so treat
-          # the count as part of the guard rather than assuming it.
+          # This runner is provisioned with exactly one card; more than one
+          # means the container is misprovisioned.
           gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
           if [ "${gpu_count}" -ne 1 ]; then
             echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
@@ -417,7 +408,6 @@ jobs:
             exit 1
           fi
 
-          # Validate GPU frequency
           TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do

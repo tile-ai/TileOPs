@@ -304,9 +304,7 @@ jobs:
         run: python -m pytest -q tests/test_validate_manifest.py
 
   packaging-check:
-    # Build-and-inspect only: no torch/tilelang install, no GPU. Catches a
-    # PR that breaks package-data (e.g. a manifest YAML dropping out of the
-    # wheel) before it merges instead of at the next nightly.
+    # Build-and-inspect only: keep torch/tilelang and GPU needs out of here.
     needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
@@ -314,8 +312,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Full history so setuptools-scm derives a real version instead of
-          # the fallback.
+          # setuptools-scm needs full history; a shallow clone yields the fallback.
           fetch-depth: 0
 
       - name: Set up Python
