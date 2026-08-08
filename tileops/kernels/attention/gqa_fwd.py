@@ -16,6 +16,9 @@ from tileops.kernels.online_softmax import (
 )
 
 from ._config import tile_stage_thread_configs
+from .call_spec import dense_prefill_region, fp8_dtype
+from .packed_prefill import PackedPrefillKernel
+from .paged_prefill import PagedPrefillKernel
 
 __all__ = [
     'GQAFwdWgmmaPipelinedKernel',
@@ -449,44 +452,28 @@ def _(batch: int, heads: int,
     return fake_o, fake_lse
 
 
-class GQAPrefillFwdKernel(Kernel):
+class GQAPrefillFwdKernel(PackedPrefillKernel):
+    """General dense packed prefill: any head dim, causal or not, fp16/bf16.
+
+    Serves every uniform packed request the warp-specialized causal kernel does
+    not, so the two regions are disjoint and selection needs no ordering.
+    """
+
     supported_archs: list[int] = [80, 89, 90]
+    #: The implementation behind the specialised ones for this key.
+    general: bool = True
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 heads_kv: int,
-                 seq_len_q: int,
-                 seq_len_kv: int,
-                 dim: int,
-                 is_causal: bool,
-                 dtype: torch.dtype,
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
-        super().__init__()
-        self.batch = batch
-        self.heads = heads
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        if is_causal and seq_len_q > seq_len_kv:
-            raise ValueError("causal prefill requires seq_len_q <= seq_len_kv")
-        self.heads_kv = heads_kv
-        self.seq_len_q = seq_len_q
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
+    @classmethod
+    def applies(cls, call) -> bool:
+        # The general dense implementation: it serves the dense region except
+        # the sub-region the warp-specialized causal kernel owns.
+        return dense_prefill_region(call)
 
+    def _build_program(self) -> None:
         self.kernel = _gqa_prefill_fwd_kernel(self.batch, self.heads, self.heads_kv,
-                                              self.seq_len_q, self.seq_len_kv, self.dim,
+                                              self.max_seqlen_q, self.max_seqlen_kv, self.dim,
                                               self.is_causal, self.sm_scale, self.softcap,
                                               self.dtype_str)
-
-        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
@@ -501,12 +488,18 @@ class GQAPrefillFwdKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return tile_stage_thread_configs()
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor,
-                v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _gqa_prefill_fwd_wrapped_kernel(
-            self.batch, self.heads, self.heads_kv, self.seq_len_q, self.seq_len_kv, self.dim,
-            self.is_causal, self.sm_scale, self.softcap, self.dtype_str, self.config["block_m"],
-            self.config["block_n"], self.config["num_stages"], self.config["threads"], q, k, v)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                cu_seqlens_q: torch.Tensor, cu_seqlens_kv: torch.Tensor,
+                q_scale: Optional[torch.Tensor] = None,
+                k_scale: Optional[torch.Tensor] = None,
+                v_scale: Optional[torch.Tensor] = None) -> torch.Tensor:
+        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
+        output, _ = _gqa_prefill_fwd_wrapped_kernel(
+            self.batch, self.heads, self.heads_kv, self.max_seqlen_q, self.max_seqlen_kv,
+            self.dim, self.is_causal, self.sm_scale, self.softcap, self.dtype_str,
+            self.config["block_m"], self.config["block_n"], self.config["num_stages"],
+            self.config["threads"], q_bshd, k_bshd, v_bshd)
+        return output.reshape(q.shape)
 
 
 # GQA packed prefill with paged KV cache. Current chunk is packed THD and
@@ -804,37 +797,14 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
     return fake_o
 
 
-class GQAPrefillPagedWithKVCacheFwdKernel(Kernel):
+class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
+    """Paged prefill against a cache whose element type matches the attention type."""
+
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 heads_kv: int,
-                 max_pages_per_req: int,
-                 page_size: int,
-                 dim: int,
-                 is_causal: bool,
-                 dtype: torch.dtype,
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
-        super().__init__()
-        self.batch = batch
-        self.heads = heads
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        self.heads_kv = heads_kv
-        self.max_pages_per_req = max_pages_per_req
-        self.page_size = page_size
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
-
-        self.init_config(config, tune)
+    @classmethod
+    def applies(cls, call) -> bool:
+        return not call.fuse_rope and call.cache_dtype == call.dtype
 
     @property
     def default_config(self) -> dict:
@@ -850,9 +820,12 @@ class GQAPrefillPagedWithKVCacheFwdKernel(Kernel):
         return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
-                k_pages: torch.Tensor, v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor,
-                cache_seqlens: torch.Tensor, block_table: torch.Tensor,
-                max_seqlen_q: int) -> torch.Tensor:
+                k_pages: torch.Tensor, v_pages: torch.Tensor,
+                k_scale: Optional[torch.Tensor], v_scale: Optional[torch.Tensor],
+                cu_seqlens_q: torch.Tensor, cache_seqlens: torch.Tensor,
+                block_table: torch.Tensor, max_seqlen_q: int,
+                cos_table: Optional[torch.Tensor] = None,
+                sin_table: Optional[torch.Tensor] = None) -> torch.Tensor:
         return _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, q.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.is_causal, self.sm_scale,
@@ -1182,37 +1155,14 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
     return fake_o
 
 
-class GQAPrefillPagedWithFP8KVCacheFwdKernel(Kernel):
+class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
+    """Paged prefill against an FP8 cache, dequantized by the stored descales."""
+
     supported_archs: list[int] = [89, 90]
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 heads_kv: int,
-                 max_pages_per_req: int,
-                 page_size: int,
-                 dim: int,
-                 is_causal: bool,
-                 dtype: torch.dtype,
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
-        super().__init__()
-        self.batch = batch
-        self.heads = heads
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        self.heads_kv = heads_kv
-        self.max_pages_per_req = max_pages_per_req
-        self.page_size = page_size
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
-
-        self.init_config(config, tune)
+    @classmethod
+    def applies(cls, call) -> bool:
+        return not call.fuse_rope and call.cache_dtype == fp8_dtype()
 
     @property
     def default_config(self) -> dict:
@@ -1228,9 +1178,12 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(Kernel):
         return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
-                k_pages: torch.Tensor, v_pages: torch.Tensor, k_scale: torch.Tensor,
-                v_scale: torch.Tensor, cu_seqlens_q: torch.Tensor, cache_seqlens: torch.Tensor,
-                block_table: torch.Tensor, max_seqlen_q: int) -> torch.Tensor:
+                k_pages: torch.Tensor, v_pages: torch.Tensor,
+                k_scale: Optional[torch.Tensor], v_scale: Optional[torch.Tensor],
+                cu_seqlens_q: torch.Tensor, cache_seqlens: torch.Tensor,
+                block_table: torch.Tensor, max_seqlen_q: int,
+                cos_table: Optional[torch.Tensor] = None,
+                sin_table: Optional[torch.Tensor] = None) -> torch.Tensor:
         return _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, q.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.is_causal, self.sm_scale,
@@ -1693,43 +1646,43 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
     return fake_o
 
 
-class GQAPrefillPagedWithKVCacheRopeFwdKernel(Kernel):
+class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
+    """Paged prefill that rotates and appends the new keys before attending.
+
+    Appending and attending are two launches of one semantic operation, so this
+    implementation owns the append pass rather than leaving the op to sequence
+    a second kernel behind a feature flag.
+    """
+
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 heads_kv: int,
-                 max_pages_per_req: int,
-                 page_size: int,
-                 dim: int,
-                 max_position: int,
-                 rotary_dim: int,
-                 is_causal: bool,
-                 dtype: torch.dtype,
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
-        super().__init__()
-        self.batch = batch
-        self.heads = heads
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
-            raise ValueError("rotary_dim must be positive, even, and <= dim")
-        self.heads_kv = heads_kv
-        self.max_pages_per_req = max_pages_per_req
-        self.page_size = page_size
-        self.dim = dim
-        self.max_position = max_position
-        self.rotary_dim = rotary_dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
+    @classmethod
+    def applies(cls, call) -> bool:
+        return bool(call.fuse_rope) and call.cache_dtype == call.dtype
 
-        self.init_config(config, tune)
+    def _validate_spec(self) -> None:
+        if self.rotary_dim is None or self.max_position is None:
+            raise ValueError(
+                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires max_position and rotary_dim")
+        if self.rotary_dim <= 0 or self.rotary_dim % 2 != 0 or self.rotary_dim > self.dim:
+            raise ValueError("rotary_dim must be positive, even, and <= dim")
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        """Tune both launches: the append pass is part of this implementation."""
+        super().autotune(warmup=warmup, rep=rep)
+        self._append.autotune(warmup=warmup, rep=rep)
+
+    def _build_program(self) -> None:
+        self._append = GQAPrefillPagedWithKVCacheRopeAppendKernel(
+            batch=self.batch,
+            heads_kv=self.heads_kv,
+            max_pages_per_req=self.max_pages_per_req,
+            page_size=self.page_size,
+            dim=self.dim,
+            max_position=self.max_position,
+            rotary_dim=self.rotary_dim,
+            dtype=self.dtype,
+        )
 
     @property
     def default_config(self) -> dict:
@@ -1745,9 +1698,17 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(Kernel):
         return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
-                k_pages: torch.Tensor, v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor,
-                cache_seqlens: torch.Tensor, block_table: torch.Tensor, max_seqlen_q: int,
-                cos_table: torch.Tensor, sin_table: torch.Tensor) -> torch.Tensor:
+                k_pages: torch.Tensor, v_pages: torch.Tensor,
+                k_scale: Optional[torch.Tensor], v_scale: Optional[torch.Tensor],
+                cu_seqlens_q: torch.Tensor, cache_seqlens: torch.Tensor,
+                block_table: torch.Tensor, max_seqlen_q: int,
+                cos_table: Optional[torch.Tensor] = None,
+                sin_table: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if cos_table is None or sin_table is None:
+            raise ValueError(
+                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires the rotary tables")
+        self._append(k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
+                     block_table, max_seqlen_q, cos_table, sin_table)
         return _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, q.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.max_position,

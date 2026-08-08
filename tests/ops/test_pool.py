@@ -505,9 +505,9 @@ def test_avg_pool_rejects_wrong_rank_input(
     kernel_slot: str,
     bad_shape: tuple[int, ...],
     match: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
+    # Construction probes no device, so a kernel built for another architecture
+    # installs fine; the rank check runs before anything is built.
     op = _AVG_POOL_OPS[ndim](kernel_map={kernel_slot: _DummyKernel}, **ctor_kwargs)
     x = torch.randn(*bad_shape)
     with pytest.raises(ValueError, match=match):
@@ -1203,12 +1203,12 @@ def test_max_pool_rejects_invalid_input(
     expected_match: str,
     needs_dummy_kernel: bool,
     return_indices: bool,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     op_cls = _max_pool_op_cls(ndim, return_indices)
     kwargs = dict(ctor_kwargs)
     if needs_dummy_kernel:
-        monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
+        # Construction probes no device, so the stand-in kernel installs
+        # whatever architecture it declares.
         kwargs["kernel_map"] = {_MAX_POOL_KERNEL_SLOTS[op_cls]: _MAX_POOL_DUMMY_KERNELS[op_cls]}
     op = op_cls(**kwargs)
 

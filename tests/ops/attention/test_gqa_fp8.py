@@ -66,17 +66,27 @@ def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
 
     kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(
-        batch, heads, heads_kv, seq_len, dim, torch.float16
+        batch, heads, heads_kv, seq_len, seq_len, dim, False, torch.float16
     )
-    out, lse = kernel(q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale)
+    # The packed prefill slot: THD tensors and cu-seqlens in, semantic output
+    # out. A log-sum-exp the implementation computes stays inside it.
+    cu_seqlens = torch.arange(batch + 1, dtype=torch.int32, device=q.device) * seq_len
+    out = kernel(
+        q_fp8.view(-1, heads, dim),
+        k_fp8.view(-1, heads_kv, dim),
+        v_fp8.view(-1, heads_kv, dim),
+        cu_seqlens,
+        cu_seqlens,
+        q_descale,
+        k_descale,
+        v_descale,
+    )
 
     assert tuple(q_descale.shape) == (batch, heads_kv)
     assert tuple(k_descale.shape) == (batch, heads_kv)
     assert tuple(v_descale.shape) == (batch, heads_kv)
-    assert out.shape == (batch, seq_len, heads, dim)
-    assert lse.shape == (batch, heads, seq_len)
+    assert out.shape == (batch * seq_len, heads, dim)
     assert torch.isfinite(out.float()).all()
-    assert torch.isfinite(lse.float()).all()
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
@@ -167,8 +177,9 @@ def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
 @pytest.mark.parametrize("seq_len", [224, 672])
 @pytest.mark.smoke
 def test_gqa_prefill_fp8_tensor_core_rejects_unaligned_q_tiles(seq_len: int) -> None:
-    with pytest.raises(ValueError, match="seq_len % 128 == 0"):
-        GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(1, 8, 2, seq_len, 128, torch.float16)
+    with pytest.raises(ValueError, match="max_seqlen_q % 128 == 0"):
+        GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(
+            1, 8, 2, seq_len, seq_len, 128, False, torch.float16)
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")

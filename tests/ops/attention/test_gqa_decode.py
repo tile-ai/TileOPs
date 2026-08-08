@@ -120,7 +120,6 @@ def test_gqa_decode_rejects_non_positive_seqlen_kv() -> None:
 def test_gqa_decode_bs1_dispatch() -> None:
     """batch=1 fp16 dim-128 requests select the WS kernel; other dtypes/shapes fall back."""
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128)
-    assert op._uses_bs1_fast_path(torch.float16)
     kernel = op._get_kernel(torch.float16)
     assert kernel.__class__.__name__ == "GQADecodeBs1Kernel"
     assert kernel._select_tier(6000) == "ctx"
@@ -132,11 +131,9 @@ def test_gqa_decode_bs1_dispatch() -> None:
 
     # The same instance falls back for bfloat16 — the element type is an input
     # to the choice, so one op serves both paths.
-    assert not op._uses_bs1_fast_path(torch.bfloat16)
     assert op._get_kernel(torch.bfloat16).__class__.__name__ == "GQADecodeKernel"
 
     op_batched = GroupedQueryAttentionDecodeWithKVCacheFwdOp(4, 32, 4, 4096, 128)
-    assert not op_batched._uses_bs1_fast_path(torch.float16)
     assert op_batched._get_kernel(torch.float16).__class__.__name__ == "GQADecodeKernel"
 
 
@@ -161,7 +158,6 @@ def test_gqa_decode_bs1_runtime_context_switch() -> None:
 def test_gqa_decode_bs1_group4() -> None:
     """The WS kernel generalizes to a query-per-KV-head group other than 8 (here 4)."""
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 8, 4096, 128)
-    assert op._uses_bs1_fast_path(torch.float16)
     assert op._get_kernel(torch.float16).__class__.__name__ == "GQADecodeBs1Kernel"
     test = GroupedQueryAttentionDecodeTest(1, 32, 8, 4096, 128, torch.float16)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)

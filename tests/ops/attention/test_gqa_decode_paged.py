@@ -217,7 +217,6 @@ def test_gqa_decode_paged_bs1_dispatch() -> None:
     """Eligible Hopper requests select the paged TMA/WGMMA kernel."""
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         1, 32, 4, 8192, 128, 256)
-    assert op._uses_bs1_fast_path(torch.float16)
     kernel = op._get_kernel(torch.float16)
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
     assert kernel._select_tier(1024) == "ctx"
@@ -250,7 +249,6 @@ def test_gqa_decode_paged_bs1_dispatch_fallbacks(
     seqlen_kv = 8064 if page_size == 192 else 8192
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         batch, 32, 4, seqlen_kv, dim, page_size, softcap=softcap)
-    assert not op._uses_bs1_fast_path(dtype)
     assert op._get_kernel(dtype).__class__.__name__ == "GQADecodePagedKernel"
 
 if __name__ == "__main__":
