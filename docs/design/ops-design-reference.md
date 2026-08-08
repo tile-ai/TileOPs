@@ -1,6 +1,6 @@
 # Op Interface Design — Reference
 
-Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** (the fictional `ExampleCumsumFwdOp`, a cumulative-sum T2 op; nothing in it mirrors a shipped file), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
+Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** (the fictional `ExampleCumsumFwdOp`, a cumulative-sum T2 op; nothing in it mirrors a shipped file), and **Common mistakes**. Non-slot content lives in the appendices.
 
 ## Slot Rules
 
@@ -21,7 +21,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 | `_op_name`                | elementwise | `torch.library.custom_op` registration key                                                                       |
 | `kernel_cls`              | elementwise | Kernel class reference                                                                                           |
 
-**The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); filled in during family-specific refactoring (future skill). Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
+**The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
 ### `Op` base class attributes ([`tileops/ops/op_base.py`](../../tileops/ops/op_base.py))
 

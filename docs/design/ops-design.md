@@ -252,16 +252,15 @@ from .example_cumsum import ExampleCumsumFwdOp
 
 ### Slot coverage
 
-| Step | Slots produced                                                                                                       |
-| ---- | -------------------------------------------------------------------------------------------------------------------- |
-| 1    | S1, S2, S3, S4                                                                                                       |
-| 2    | S5, S6, S7                                                                                                           |
-| 3    | S21, S12, S13                                                                                                        |
-| 4    | S14, S15, S16                                                                                                        |
-| 5    | S17, S18                                                                                                             |
-| 6    | S19                                                                                                                  |
-| 7    | S20                                                                                                                  |
-| —    | S8-S11: reserved — intentionally skipped from slot iteration (T1 thin-wrapper slots, out of scope for this playbook) |
+| Step | Slots produced |
+| ---- | -------------- |
+| 1    | S1, S2, S3, S4 |
+| 2    | S5, S6, S7     |
+| 3    | S21, S12, S13  |
+| 4    | S14, S15, S16  |
+| 5    | S17, S18       |
+| 6    | S19            |
+| 7    | S20            |
 
 ## Out of Scope
 
