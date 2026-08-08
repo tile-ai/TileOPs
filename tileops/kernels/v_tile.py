@@ -7,7 +7,8 @@ resolved V-tile is a configuration error to reject eagerly, not to clamp.
 
 __all__ = ["GEMM_MIN_N", "resolve_block_v"]
 
-# Minimum T.gemm N extent (columns of the WGMMA B operand).
+# tilelang's WGMMA lowering rejects B operands narrower than 16 (verified at
+# afcebed1 and c7fabc4; TileOPs #1854). Re-check when bumping tilelang.
 GEMM_MIN_N = 16
 
 
