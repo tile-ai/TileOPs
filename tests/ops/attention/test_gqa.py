@@ -525,13 +525,8 @@ def test_gqa_prefill_fwd_auto_backend_requires_uniform_validation() -> None:
 
 
 def _holds_op(value: object, depth: int = 0) -> bool:
-    """Whether *value* is an ``Op`` or reaches one through its containers.
-
-    The shape to catch is a cache of child ops, not an op bound directly to an
-    attribute, so testing the attribute value alone would pass on a dict of
-    them. Descends the same containers as ``op_base._iter_kernels``, records
-    included, to the same depth.
-    """
+    """Whether *value* is or reaches an ``Op``, descending the same containers
+    and depth as ``op_base._iter_kernels``."""
     if isinstance(value, Op):
         return True
     if depth >= 2:
@@ -568,12 +563,8 @@ def _record_kernel_builds(op: Op) -> list:
 
 
 def _op_valued_attrs(op: Op) -> list:
-    """Names of *op*'s attributes that are an ``Op`` or reach one.
-
-    Scans ``dir`` rather than ``vars`` for the same reason ``Op.autotune``
-    does: an attribute reached through a property or bound on the class would
-    otherwise escape.
-    """
+    """Names of *op*'s attributes that are or reach an ``Op``; scans ``dir``
+    so properties and class-bound attributes are covered."""
     return sorted(name for name in dir(op)
                   if not name.startswith("__") and _holds_op(getattr(op, name, None)))
 
@@ -626,27 +617,11 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
     h200: bool,
     expected_slot: str,
 ) -> None:
-    """Both callers build the expected slot with the arguments that slot expects.
+    """Both callers record the identical build call for the expected slot.
 
-    Comparing the built classes alone would miss a mistyped ``max_seqlen_kv``,
-    ``sm_scale`` or ``softcap``. Two assertions are needed and neither implies
-    the other: the recorded call must match the slot's documented argument
-    list, which guards the shared build step both callers run; and the two
-    callers must record the same call, which guards each caller's own argument
-    assembly.
-
-    ``is_h200`` is pinned so each case is reached on every machine. Left to the
-    runner, the square argument list would go unasserted off H200. Each case
-    isolates one guard of the fast-path contract — accepted, then declined in
-    turn for the chip, for work items below the SM count, for an odd block
-    count, and for head dim. A geometry must reach the guard it names, or an
-    earlier guard masks it: pinning the chip ``False`` throughout short-circuits
-    the contract at its second guard, and a short sequence declines on block
-    parity before head dim is ever read. The first two cases share one
-    geometry, so the chip is demonstrably what drives the choice.
-
-    One element type suffices: neither selector branches between ``float16``
-    and ``bfloat16``, so a second would add nodes without a distinct path.
+    ``is_h200`` is pinned so every case runs on any machine. Each case's
+    geometry reaches the guard its id names — an earlier guard would mask
+    it otherwise.
     """
     dtype = torch.float16
     sm_scale, softcap = 0.125, 3.5
@@ -677,7 +652,6 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
     slot, args, kwargs = wrapper_calls[0]
     assert slot == expected_slot
     # The square slot takes one seq_len; the dense slots take q and kv both.
-    # Getting this wrong is the failure the test exists for.
     if expected_slot == "gqa_prefill_square_fwd_kernel":
         assert args == (batch, heads, heads_kv, seq_len, dim, True, dtype)
     else:
@@ -689,12 +663,8 @@ def test_gqa_fwd_bshd_wrapper_builds_kernel_exactly_as_packed_dense_prefill(
 
 @pytest.mark.smoke
 def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
-    """A non-square prefill passes its two sequence lengths in their own places.
-
-    The square wrapper has ``max_seqlen_q == max_seqlen_kv``, so the parity
-    test above cannot tell the two apart; only a geometry where they differ
-    can. Packed-only for that reason — the wrapper cannot express it.
-    """
+    """A non-square geometry passes q and kv lengths in their own places —
+    the square parity test above cannot tell them apart."""
     batch, heads, heads_kv, dim = 1, 8, 2, 128
     max_seqlen_q, max_seqlen_kv = 128, 256
     packed = GroupedQueryAttentionPrefillFwdOp(
@@ -723,12 +693,8 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
 
 @pytest.mark.smoke
 def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
-    """The wrapper validates at construction because nothing downstream does.
-
-    The deleted child op used to raise on these at first forward. The build
-    step that replaced it reaches ``heads % heads_kv`` instead, so a zero
-    ``heads_kv`` would surface as ``ZeroDivisionError``.
-    """
+    """Nothing downstream validates; a zero ``heads_kv`` would surface as
+    ``ZeroDivisionError`` at ``heads % heads_kv``."""
     with pytest.raises(ValueError, match="heads_kv must be positive"):
         GroupedQueryAttentionFwdOp(1, 8, 0, 64, 64, True)
     with pytest.raises(ValueError, match="batch must be positive"):
@@ -739,11 +705,8 @@ def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
 
 @pytest.mark.smoke
 def test_build_gqa_prefill_dense_kernel_rejects_unsupported_dtype() -> None:
-    """The build step refuses an element type neither selector supports.
-
-    Both selectors decline rather than raise, so without this guard an
-    unsupported element type would quietly build the generic dense slot.
-    """
+    """Both selectors decline rather than raise, so the build step must
+    refuse unsupported element types itself."""
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
         gqa_module._build_gqa_prefill_dense_kernel(
             {},

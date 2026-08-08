@@ -206,14 +206,9 @@ def _build_gqa_prefill_dense_kernel(
 ) -> Kernel:
     """Select and build the dense-prefill kernel for one geometry and element type.
 
-    The square fast path wins when its H200 contract holds; otherwise the
-    geometry and element type pick a dense slot key. Callers reach a
-    dense-prefill kernel through this step without constructing an ``Op``.
-
     Raises:
-        ValueError: if *dtype* is not a supported dense-prefill element type.
-            Both selectors below merely decline an unsupported element type,
-            so an unguarded call would silently land on the generic dense slot.
+        ValueError: if *dtype* is unsupported — both selectors below merely
+            decline, so an unguarded call would land on the generic dense slot.
     """
     _validate_attention_dtype(dtype)
     if _supports_gqa_prefill_square_dense(
@@ -311,12 +306,8 @@ def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dty
 
 
 def _validate_positive(**values: int) -> None:
-    """Raise for the first named value that is not positive.
-
-    Args:
-        **values: parameter name to value; the name reaches the message, so it
-            must read as the caller's own parameter.
-    """
+    """Raise for the first named value that is not positive; the name appears
+    in the message, so pass the caller's own parameter name."""
     for name, value in values.items():
         if value <= 0:
             raise ValueError(f"{name} must be positive")
