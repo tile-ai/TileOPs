@@ -62,15 +62,19 @@ def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dty
     return cache_dtype
 
 
+def _validate_positive(**values: int) -> None:
+    """Raise for the first named value that is not positive; the name appears
+    in the message, so pass the caller's own parameter name."""
+    for name, value in values.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+
+
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
-    if heads <= 0:
-        raise ValueError("heads must be positive")
-    if heads_kv <= 0:
-        raise ValueError("heads_kv must be positive")
+    _validate_positive(heads=heads, heads_kv=heads_kv)
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if dim <= 0:
-        raise ValueError("dim must be positive")
+    _validate_positive(dim=dim)
 
 
 def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
@@ -87,8 +91,7 @@ def _score_softcap(softcap: Optional[float]) -> float:
 
 def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     rotary_dim = dim if rotary_dim is None else rotary_dim
-    if rotary_dim <= 0:
-        raise ValueError("rotary_dim must be positive")
+    _validate_positive(rotary_dim=rotary_dim)
     if rotary_dim % 2 != 0:
         raise ValueError("rotary_dim must be even")
     if rotary_dim > dim:
@@ -141,10 +144,7 @@ class GroupedQueryAttentionFwdOp(Op):
         # Nothing downstream validates these: this op builds its kernel itself,
         # so a zero heads_kv would surface as ZeroDivisionError inside a region.
         _validate_gqa_dims(heads, heads_kv, dim)
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if seq_len <= 0:
-            raise ValueError("seq_len must be positive")
+        _validate_positive(batch=batch, seq_len=seq_len)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -279,12 +279,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         tune: bool = False,
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if max_seqlen_q <= 0:
-            raise ValueError("max_seqlen_q must be positive")
-        if max_seqlen_kv <= 0:
-            raise ValueError("max_seqlen_kv must be positive")
+        _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         if is_causal and max_seqlen_q > max_seqlen_kv:
             raise ValueError("causal prefill requires max_seqlen_q <= max_seqlen_kv")
         if window_size_left != -1 and window_size_left < 0:
@@ -562,12 +557,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         tune: bool = False,
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if max_seqlen_q <= 0:
-            raise ValueError("max_seqlen_q must be positive")
-        if max_seqlen_kv <= 0:
-            raise ValueError("max_seqlen_kv must be positive")
+        _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -689,6 +679,9 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             kv_len = cu_kv[idx + 1] - cu_kv[idx]
             q_lens.append(q_len)
             kv_lens.append(kv_len)
+            # Not _validate_positive: that names one scalar parameter after the
+            # caller's own kwarg, while these are per-request lengths derived
+            # from a tensor, reported for the set rather than for a parameter.
             if q_len <= 0:
                 raise ValueError("all q sequence lengths must be positive")
             if kv_len <= 0:
@@ -775,16 +768,11 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             rotary_dim = _rope_rotary_dim(dim, rotary_dim)
             if max_position is None:
                 raise ValueError("max_position is required when fuse_rope=True")
-            if max_position <= 0:
-                raise ValueError("max_position must be positive")
+            _validate_positive(max_position=max_position)
         elif rotary_dim is not None:
             raise ValueError("rotary_dim requires fuse_rope=True")
-        if batch <= 0:
-            raise ValueError("batch must be positive")
-        if max_pages_per_req <= 0:
-            raise ValueError("max_pages_per_req must be positive")
-        if page_size <= 0:
-            raise ValueError("page_size must be positive")
+        _validate_positive(
+            batch=batch, max_pages_per_req=max_pages_per_req, page_size=page_size)
         if page_size & (page_size - 1) != 0:
             raise ValueError("page_size must be a power of two")
         cache_dtype = _paged_cache_dtype(cache_dtype)
@@ -1246,8 +1234,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
-        if page_size <= 0:
-            raise ValueError("page_size must be positive")
+        _validate_positive(page_size=page_size)
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
 
