@@ -41,7 +41,7 @@ stateDiagram-v2
 
 ## Slot scope
 
-Emit exactly the 17 slots in [`ops-design-reference.md § Slot Rules`](slot-rules.md): S1–S7, S12–S21. S8–S11 are reserved for T1 thin-wrapper subclasses and skipped.
+Emit exactly the 17 slots in [`slot-rules.md`](slot-rules.md): S1–S7, S12–S21. S8–S11 are reserved for T1 thin-wrapper subclasses and skipped.
 
 Out of scope — leave empty:
 
