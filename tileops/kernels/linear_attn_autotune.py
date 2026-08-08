@@ -151,17 +151,28 @@ def _tune_sub_kernel(
     """
     print(f"Autotuning {label} ({len(configs)} configs)...")
     # supply_prog=None, not the kernel's: a whole-kernel supplier is written
-    # against the forward's inputs, which are not this sub-kernel's.
+    # against the forward's inputs, which are not this sub-kernel's. The
+    # candidates are copied because the module-level tuples are shared by every
+    # sweep in the process, and an autotuner that annotates one in place would
+    # otherwise corrupt them for good.
+    candidates = [dict(config) for config in configs]
     tuned = kernel.tune_jit_kernel(
         jit_kernel,
-        list(configs),
+        candidates,
         warmup=warmup,
         rep=rep,
-        seed_config=configs[0],
+        seed_config=candidates[0],
         supply_prog=None,
     )
     config = getattr(tuned, "config", None)
     latency = getattr(tuned, "latency", None)
+    if config is not None and latency is None:
+        # A tuned config with no latency is not the skip path; it means the
+        # attribute this comparison rests on has gone, and every width would
+        # silently tie.
+        warnings.warn(  # noqa: B028
+            f"{label} tuned to {config} but reported no latency; "
+            "the V-tile widths cannot be compared")
     print(f"  Best: {config}")
     return config, latency
 

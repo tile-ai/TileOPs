@@ -108,6 +108,28 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
     }
 
 
+def test_a_tuned_config_without_a_latency_is_not_silent() -> None:
+    """Widths are compared on latency; losing it would tie them invisibly."""
+    kernel = _StubKernel()
+    kernel.results = {("h", 0): ({"num_stages": 1, "threads": 128}, None)}
+
+    with pytest.warns(UserWarning, match="no latency"):
+        _run(kernel)
+
+
+def test_the_sweep_cannot_mutate_the_shared_candidate_tuples() -> None:
+    """The candidate tuples are module-level and shared by every sweep."""
+    kernel = _StubKernel()
+    before = [dict(config) for config in la.PIPELINE_CONFIGS]
+
+    _run(kernel)
+
+    for _, _, configs in kernel.sweeps:
+        for config in configs:
+            config["threads"] = -1
+    assert [dict(config) for config in la.PIPELINE_CONFIGS] == before
+
+
 def test_fastest_v_tile_width_wins() -> None:
     """Widths are compared on latency, not on candidate or default order."""
     kernel = _StubKernel()
