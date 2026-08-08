@@ -184,12 +184,12 @@ class _SlottedOp(Op):
     def forward(self, *a, **kw):
         return None
 
-    def build(self, slot: str, key, name: str):
+    def build(self, role: str, key, name: str):
         def factory():
-            self.builds.append((slot, key))
+            self.builds.append((role, key))
             return _RecordingKernel(name, self._tuned)
 
-        return self.get_or_build_kernel(slot, key, factory)
+        return self.get_or_build_kernel(role, key, factory)
 
 
 class TestGetOrBuildKernel:
@@ -209,8 +209,8 @@ class TestGetOrBuildKernel:
         assert fp16 is not bf16
         assert set(op.built_kernels("fwd")) == {torch.float16, torch.bfloat16}
 
-    def test_same_key_in_distinct_slots_does_not_collide(self):
-        """An auxiliary kernel keyed by the same dtype is a second slot."""
+    def test_same_key_in_distinct_roles_does_not_collide(self):
+        """An auxiliary kernel keyed by the same dtype is a second role."""
         op = _SlottedOp([])
         attention = op.build("attention", torch.float16, "attention")
         append = op.build("append", torch.float16, "append")
@@ -230,7 +230,7 @@ class TestGetOrBuildKernel:
 class TestIterKernels:
     """``Op.iter_kernels`` is the explicit enumeration ``autotune`` runs over."""
 
-    def test_yields_slot_entries_including_bundles(self):
+    def test_yields_role_entries_including_bundles(self):
         tuned: list[str] = []
 
         @dataclasses.dataclass(frozen=True)
@@ -301,7 +301,7 @@ class TestIterKernels:
 class TestAutotune:
     """``Op.autotune`` tunes exactly what ``iter_kernels`` yields."""
 
-    def test_autotune_tunes_the_bound_kernel_and_every_slot_entry(self):
+    def test_autotune_tunes_the_bound_kernel_and_every_role_entry(self):
         tuned: list[str] = []
         op = _SlottedOp(tuned)
         op.kernel = _RecordingKernel("bound", tuned)
