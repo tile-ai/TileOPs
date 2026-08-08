@@ -69,6 +69,22 @@ Verify:
 python -m pytest tests/ -q    # requires a CUDA GPU
 ```
 
+### Docker (dev image)
+
+A prebuilt development image ships the full CI stack — CUDA 12.9, PyTorch 2.10 (cu129), the exact TileLang commit CI validates, and the benchmark baselines (FlashAttention-2/3, vLLM, flash-linear-attention) — with a root user and a plain `bash` entrypoint (no CI runner inside):
+
+```bash
+docker run --rm -it --gpus all \
+  -v "$(pwd)":/workspace -w /workspace \
+  ghcr.io/tile-ai/tileops-runner:afcebed1-torch2.10-dev
+
+# inside the container
+pip install -e . --no-deps
+python -m pytest tests/ -q
+```
+
+The `-dev` tag tracks the TileLang commit CI validates (`<tilelang-sha>-torch2.10-dev`); pull the tag matching the Prerequisites line above.
+
 ## Quick Start
 
 ```python
