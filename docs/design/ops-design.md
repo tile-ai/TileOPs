@@ -67,7 +67,7 @@ from ..op_base import Op
 
 **Validation.** Every concrete-Kernel import matches one `source.kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
 
-**Reference.** [Slot S1](ops-design-reference.md#slot-s1), [S2](ops-design-reference.md#slot-s2), [S3](ops-design-reference.md#slot-s3), [S4](ops-design-reference.md#slot-s4).
+**Reference.** [Slot S1](../../.claude/skills/scaffold-op/slot-rules.md#slot-s1), [S2](../../.claude/skills/scaffold-op/slot-rules.md#slot-s2), [S3](../../.claude/skills/scaffold-op/slot-rules.md#slot-s3), [S4](../../.claude/skills/scaffold-op/slot-rules.md#slot-s4).
 
 ### Step 2: Class declaration + docstring + `__all__`
 
@@ -95,7 +95,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** Class name ≡ manifest entry key, byte-exact (`ExampleCumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
 
-**Reference.** [Slot S5](ops-design-reference.md#slot-s5), [S6](ops-design-reference.md#slot-s6), [S7](ops-design-reference.md#slot-s7).
+**Reference.** [Slot S5](../../.claude/skills/scaffold-op/slot-rules.md#slot-s5), [S6](../../.claude/skills/scaffold-op/slot-rules.md#slot-s6), [S7](../../.claude/skills/scaffold-op/slot-rules.md#slot-s7).
 
 ### Step 3: `_static_axes` + `__init__` signature and body
 
@@ -130,7 +130,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params`); no extras except `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
-**Reference.** [Slot S21](ops-design-reference.md#slot-s21), [S12](ops-design-reference.md#slot-s12), [S13](ops-design-reference.md#slot-s13).
+**Reference.** [Slot S21](../../.claude/skills/scaffold-op/slot-rules.md#slot-s21), [S12](../../.claude/skills/scaffold-op/slot-rules.md#slot-s12), [S13](../../.claude/skills/scaffold-op/slot-rules.md#slot-s13).
 
 ### Step 4: `default_kernel_map` + `forward`
 
@@ -179,7 +179,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built from `x.dtype`, and the cache key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
-**Reference.** [Slot S14](ops-design-reference.md#slot-s14), [S15](ops-design-reference.md#slot-s15), [S16](ops-design-reference.md#slot-s16).
+**Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
 
 ### Step 5: `_infer_output_shapes` + `_validate_dtypes`
 
@@ -201,7 +201,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** `python scripts/validate_manifest.py` exercises both methods at CI on every op with `status: implemented`; `spec-only` entries skip L2/L3. **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else. Parity disagreements route to `strict_errors`; advisory mode (default) reports them as warnings, `--strict` / `MANIFEST_STRICT_BLOCKING=1` makes them blocking.
 
-**Reference.** [Slot S17](ops-design-reference.md#slot-s17), [S18](ops-design-reference.md#slot-s18).
+**Reference.** [Slot S17](../../.claude/skills/scaffold-op/slot-rules.md#slot-s17), [S18](../../.claude/skills/scaffold-op/slot-rules.md#slot-s18).
 
 ### Step 6: `eval_roofline`
 
@@ -221,7 +221,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** The body is **plain Python** reading `self.*` attributes. Those attributes — `self.M` and `self.dtype` here — are bound by `forward()`, so `eval_roofline` is callable only after at least one forward; there is no ctor-time dtype to read. No class-level roofline expression strings, no `ast.parse`, no shared L1 evaluator — prohibited by [`roofline.md §4.4.6` Evaluator Surface Boundary](roofline.md#446-evaluator-surface-boundary). Return type is `tuple[int, int]`, not `float` or `numpy`. Expressions derive directly from `roofline.vars` bindings + `roofline.flops` + `roofline.bytes`; see [`roofline.md §4.4` Op Codegen](roofline.md#44-op-codegen).
 
-**Reference.** [Slot S19](ops-design-reference.md#slot-s19).
+**Reference.** [Slot S19](../../.claude/skills/scaffold-op/slot-rules.md#slot-s19).
 
 ### Step 7: Package registration
 
@@ -238,7 +238,7 @@ from .example_cumsum import ExampleCumsumFwdOp
 
 **Validation.** The import sits under its family's grouping comment block; a matching `__all__` entry is present (otherwise `from tileops.ops.reduction import *` silently drops the op).
 
-**Reference.** [Slot S20](ops-design-reference.md#slot-s20).
+**Reference.** [Slot S20](../../.claude/skills/scaffold-op/slot-rules.md#slot-s20).
 
 ### Slot coverage
 
@@ -316,7 +316,7 @@ The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sh
 
 ## Further Reference
 
-- [Slot Rules](ops-design-reference.md#slot-rules) — full Rule / Derivation / Example / Common mistakes per slot
+- [Slot Rules](../../.claude/skills/scaffold-op/slot-rules.md) — full Rule / Derivation / Example / Common mistakes per slot
 - [Codegen Details](ops-design-reference.md#codegen) — calling conventions, inheritance rules, consistency enforcement
 - [Base Class Protocol](ops-design-reference.md#base-class-protocol) — `Op` and `Kernel` base class attributes
 - [Naming Conventions](ops-design-reference.md#naming-conventions) — class / `kernel_map` / builder function rules

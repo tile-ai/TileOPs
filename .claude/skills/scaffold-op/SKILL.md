@@ -41,7 +41,7 @@ stateDiagram-v2
 
 ## Slot scope
 
-Emit exactly the 17 slots in [`ops-design-reference.md § Slot Rules`](../../../docs/design/ops-design-reference.md#slot-rules): S1–S7, S12–S21. S8–S11 are reserved for T1 thin-wrapper subclasses and skipped.
+Emit exactly the 17 slots in [`ops-design-reference.md § Slot Rules`](slot-rules.md): S1–S7, S12–S21. S8–S11 are reserved for T1 thin-wrapper subclasses and skipped.
 
 Out of scope — leave empty:
 
@@ -120,19 +120,19 @@ Skeleton:
 
 ### 4. EMIT
 
-Follow [`docs/design/ops-design.md` § Scaffolding an Op from a Manifest Entry](../../../docs/design/ops-design.md#scaffolding-an-op-from-a-manifest-entry) Steps 1-7 in order. For each scaffold slot, read the authoritative rule at `docs/design/ops-design-reference.md#slot-sN` before emitting.
+Follow [`docs/design/ops-design.md` § Scaffolding an Op from a Manifest Entry](../../../docs/design/ops-design.md#scaffolding-an-op-from-a-manifest-entry) Steps 1-7 in order. For each scaffold slot, read the authoritative rule at [`slot-rules.md#slot-sN`](slot-rules.md) before emitting.
 
 Key slot pointers (follow the reference, do not re-derive):
 
-| Playbook step | Slots          | Reference anchor                                                                                                                                                                         |
-| ------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Step 1        | S1, S2, S3, S4 | [S1](../../../docs/design/ops-design-reference.md#slot-s1)-[S4](../../../docs/design/ops-design-reference.md#slot-s4)                                                                    |
-| Step 2        | S5, S6, S7     | [S5](../../../docs/design/ops-design-reference.md#slot-s5)-[S7](../../../docs/design/ops-design-reference.md#slot-s7)                                                                    |
-| Step 3        | S21, S12, S13  | [S21](../../../docs/design/ops-design-reference.md#slot-s21), [S12](../../../docs/design/ops-design-reference.md#slot-s12), [S13](../../../docs/design/ops-design-reference.md#slot-s13) |
-| Step 4        | S14, S15, S16  | [S14](../../../docs/design/ops-design-reference.md#slot-s14)-[S16](../../../docs/design/ops-design-reference.md#slot-s16)                                                                |
-| Step 5        | S17, S18       | [S17](../../../docs/design/ops-design-reference.md#slot-s17), [S18](../../../docs/design/ops-design-reference.md#slot-s18)                                                               |
-| Step 6        | S19            | [S19](../../../docs/design/ops-design-reference.md#slot-s19)                                                                                                                             |
-| Step 7        | S20            | [S20](../../../docs/design/ops-design-reference.md#slot-s20)                                                                                                                             |
+| Playbook step | Slots          | Reference anchor                                                                            |
+| ------------- | -------------- | ------------------------------------------------------------------------------------------- |
+| Step 1        | S1, S2, S3, S4 | [S1](slot-rules.md#slot-s1)-[S4](slot-rules.md#slot-s4)                                     |
+| Step 2        | S5, S6, S7     | [S5](slot-rules.md#slot-s5)-[S7](slot-rules.md#slot-s7)                                     |
+| Step 3        | S21, S12, S13  | [S21](slot-rules.md#slot-s21), [S12](slot-rules.md#slot-s12), [S13](slot-rules.md#slot-s13) |
+| Step 4        | S14, S15, S16  | [S14](slot-rules.md#slot-s14)-[S16](slot-rules.md#slot-s16)                                 |
+| Step 5        | S17, S18       | [S17](slot-rules.md#slot-s17), [S18](slot-rules.md#slot-s18)                                |
+| Step 6        | S19            | [S19](slot-rules.md#slot-s19)                                                               |
+| Step 7        | S20            | [S20](slot-rules.md#slot-s20)                                                               |
 
 If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `kernel_map`, multiple independent dtype axes, fixed-rank vs arbitrary-rank branching), STOP and surface the ambiguity in the final report instead of guessing. Do not expand scope.
 
