@@ -113,6 +113,9 @@ select = [
     "RUF022",
     # pydoclint: a documented parameter the signature does not have
     "DOC102",
+    # flake8-tidy-imports: banned APIs only. Selected as the exact rule, not the
+    # whole TID family, because TID252 (relative imports) has standing violations.
+    "TID251",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]
@@ -146,6 +149,12 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["tileops"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Deprecated TIR spellings. Ruff resolves these through the import graph, so an
+# alias other than the usual `T` is caught too — which is why this lives here
+# rather than in a pattern-matching script of our own.
+"tilelang.language.Buffer".msg = "deprecated; use T.Tensor(shape, dtype)"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
