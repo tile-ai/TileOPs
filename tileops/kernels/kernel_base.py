@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 import torch
 from tilelang.autotuner import autotune
@@ -150,7 +150,7 @@ class Kernel(ABC):
         warmup: int = 25,
         rep: int = 50,
         seed_config: Optional[Dict[str, Any]] = None,
-        supply_prog: Optional[Callable] = _INHERIT_SUPPLY_PROG,
+        supply_prog: Union[Callable, None, object] = _INHERIT_SUPPLY_PROG,
     ) -> Any:
         """Benchmark *configs* against one JIT kernel and return the winner.
 

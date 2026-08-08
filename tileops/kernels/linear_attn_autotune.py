@@ -46,11 +46,15 @@ TILED_DEFAULT_MIN_CHUNK_SIZE: int = 64
 
 
 def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
-    """Return the recurrence V-tile widths buildable at this value dimension.
+    """Return the recurrence V-tile widths worth offering at this dimension.
 
-    Buildability is ``resolve_block_v``'s question, so ask it rather than
-    restate it. Widths resolving to the same tile are one candidate: at
-    ``dim_v == 32`` both 0 and 32 give a 32-column tile and the same kernel.
+    Admissibility is ``resolve_block_v``'s question — gemm N extent and
+    divisibility — so ask it rather than restate it. It is not the whole of
+    buildability: whether a width compiles also depends on the thread count and
+    the layout the recurrence lands on, known only once it is built, which is
+    why the sweep drops a width that fails rather than trusting this. Widths
+    resolving to the same tile are one candidate: at ``dim_v == 32`` both 0 and
+    32 give a 32-column tile and the same kernel.
 
     Args:
         dim_v: Value dimension.
@@ -70,11 +74,11 @@ def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
 
 
 def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
-    """Return the buildable widths, so both callers refuse the same shapes."""
+    """Return the admissible widths, so both callers refuse the same shapes."""
     candidates = h_block_v_candidates(dim_v)
     if not candidates:
         raise ValueError(
-            f"no buildable recurrence V-tile width for dim_v={dim_v}; "
+            f"no admissible recurrence V-tile width for dim_v={dim_v}; "
             f"widths are {H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v")
     return candidates
 
@@ -82,7 +86,7 @@ def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
 def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     """Return the V-tile width the recurrence runs with when it is not tuned.
 
-    The narrowest buildable tiled width, since tiling keeps the recurrence's
+    The narrowest admissible tiled width, since tiling keeps the recurrence's
     state in shared memory; short chunks take none. Drawn from the candidates
     so the untuned config stays inside the declared set.
 
@@ -91,7 +95,7 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
         chunk_size: Chunk length.
 
     Raises:
-        ValueError: if no V-tile width is buildable at *dim_v*.
+        ValueError: if no V-tile width is admissible at *dim_v*.
     """
     candidates = _require_h_block_v_candidates(dim_v)
     tiled = [block_v for block_v in candidates if block_v]
@@ -112,7 +116,7 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
         dim_v: Value dimension.
 
     Raises:
-        ValueError: if no V-tile width is buildable at *dim_v*. An empty set
+        ValueError: if no V-tile width is admissible at *dim_v*. An empty set
             would read as "tunable, with nothing to try".
     """
     return [
@@ -171,8 +175,8 @@ def _tune_sub_kernel(
         # attribute this comparison rests on has gone, and every width would
         # silently tie.
         warnings.warn(  # noqa: B028
-            f"{label} tuned to {config} but reported no latency; "
-            "the V-tile widths cannot be compared")
+            f"{label} tuned to {config} but reported no latency, "
+            "so this sweep's result cannot be compared against any other")
     print(f"  Best: {config}")
     return config, latency
 
@@ -233,7 +237,7 @@ def tune_delta_rule_fwd(
         ``delta_rule_fwd_autotune_configs(kernel.dim_v)``.
 
     Raises:
-        ValueError: if no V-tile width is buildable at this shape.
+        ValueError: if no V-tile width is admissible at this shape.
         RuntimeError: if no width compiled, listing every failure and chaining
             the last, since the sweep then has no width to name.
     """
@@ -292,7 +296,10 @@ def tune_delta_rule_fwd(
                 f"no recurrence V-tile width tuned for dim_v={kernel.dim_v}: "
                 + "; ".join(f"{label}: {_summarize(exc)}" for label, exc in failures)
             ) from failures[-1][1]
-        # Compiled but unmeasured: the untuned width answers if it is one.
+        # Compiled but unmeasured: the untuned width answers if it is one. Its
+        # launch parameters come from the default, a pair this sweep never built
+        # together — the width compiles, that combination is unverified, and
+        # nothing here can do better without a measurement.
         preferred = default_h_block_v(kernel.dim_v, kernel.chunk_size)
         h_block_v = preferred if preferred in compiled else compiled[0]
 

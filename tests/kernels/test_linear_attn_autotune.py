@@ -204,16 +204,16 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
     assert config in la.delta_rule_fwd_autotune_configs(48)
 
 
-def test_a_shape_with_no_buildable_width_is_refused_by_both_entry_points() -> None:
+def test_a_shape_with_no_admissible_width_is_refused_by_both_entry_points() -> None:
     """The default and the declared set must refuse the same shapes.
 
     An empty config list reads as "tunable, with nothing to try": ``[]`` is not
     ``None``, so ``init_config`` would skip its warning and walk into the sweep.
     """
     assert la.h_block_v_candidates(8) == ()  # below the minimum gemm N extent
-    with pytest.raises(ValueError, match="no buildable"):
+    with pytest.raises(ValueError, match="no admissible"):
         la.default_h_block_v(8, 64)
-    with pytest.raises(ValueError, match="no buildable"):
+    with pytest.raises(ValueError, match="no admissible"):
         la.delta_rule_fwd_autotune_configs(8)
 
 
