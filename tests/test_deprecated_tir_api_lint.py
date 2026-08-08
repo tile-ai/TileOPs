@@ -74,6 +74,24 @@ def test_prose_mentioning_a_deprecated_form_passes(tmp_path):
     assert result.returncode == 0, result.stdout
 
 
+def test_fstring_literal_text_passes(tmp_path):
+    """Python 3.12 tokenizes f-string text apart from ordinary strings."""
+    content = 'msg = f"never use T.Buffer here"\nalt = f"T.reinterpret(\'f16\', x) is gone {name}"\n'
+    result = run_lint(tmp_path, content)
+    assert result.returncode == 0, result.stdout
+
+
+def test_fstring_replacement_field_is_code(tmp_path):
+    """Text inside ``{}`` is evaluated, so a deprecated name there is usage."""
+    result = run_lint(tmp_path, 'label = f"{T.Buffer}"\n')
+    assert result.returncode == 1
+
+
+def test_dtype_first_reinterpret_with_string_prefix_fails(tmp_path):
+    result = run_lint(tmp_path, 'bits = T.reinterpret(f"{dt}", q)\n')
+    assert result.returncode == 1
+
+
 def test_untokenizable_file_still_scanned(tmp_path):
     """A syntax error must not let a violation through unchecked."""
     result = run_lint(tmp_path, 'def broken(:\n    x: T.Buffer((4,), "f32")\n')

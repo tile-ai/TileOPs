@@ -36,11 +36,16 @@ _PATTERNS = (
         "deprecated T.Buffer; use T.Tensor(shape, dtype)",
     ),
     (
-        # A quote as the first argument means the dtype was passed first.
-        re.compile(rf"\bT{_DOT}reinterpret\(\s*[\"']"),
+        # A string literal as the first argument means the dtype was passed
+        # first; the optional letters cover prefixes such as f, r and b.
+        re.compile(rf"\bT{_DOT}reinterpret\(\s*[A-Za-z]*[\"']"),
         "deprecated dtype-first T.reinterpret; use T.reinterpret(value, dtype)",
     ),
 )
+
+# Python 3.12 splits f-strings into start/middle/end tokens; the literal text
+# arrives as FSTRING_MIDDLE rather than STRING. Older versions emit one STRING.
+_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
 
 
 def _blank_comments_and_strings(text: str) -> dict[int, str] | None:
@@ -57,9 +62,14 @@ def _blank_comments_and_strings(text: str) -> dict[int, str] | None:
         tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, SyntaxError, IndentationError, ValueError):
         return None
+    blankable = {tokenize.COMMENT, tokenize.STRING}
+    if _FSTRING_MIDDLE is not None:
+        blankable.add(_FSTRING_MIDDLE)
     for token in tokens:
-        if token.type not in (tokenize.COMMENT, tokenize.STRING):
+        if token.type not in blankable:
             continue
+        # Only a whole STRING token carries its own quotes; f-string literal
+        # text does not, so blanking it wholesale is right.
         keep_quotes = token.type == tokenize.STRING
         (start_row, start_col), (end_row, end_col) = token.start, token.end
         for row in range(start_row, end_row + 1):
