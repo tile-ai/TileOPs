@@ -818,17 +818,6 @@ AllFwdOp:
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
 
-  slots:
-    all:
-      build:
-        M: {type: int, from: roofline.vars.M}
-        N: {type: int, from: roofline.vars.N}
-        dtype: {type: torch.dtype, from: x.dtype}
-      call:
-        inputs:
-          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
-        outputs:
-          output: {shape: '[M]', dtype: "bool"}
 AnyFwdOp:
   ref_api: "torch.any"
   family: reduction
@@ -876,17 +865,6 @@ AnyFwdOp:
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
 
-  slots:
-    any:
-      build:
-        M: {type: int, from: roofline.vars.M}
-        N: {type: int, from: roofline.vars.N}
-        dtype: {type: torch.dtype, from: x.dtype}
-      call:
-        inputs:
-          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
-        outputs:
-          output: {shape: '[M]', dtype: "bool"}
 CountNonzeroFwdOp:
   ref_api: "torch.count_nonzero"
   family: reduction
@@ -934,17 +912,6 @@ CountNonzeroFwdOp:
 # reduction -- vector norms (output dtype: same_as(x))
 # ---------------------------------------------------------------------------
 
-  slots:
-    count_nonzero:
-      build:
-        M: {type: int, from: roofline.vars.M}
-        N: {type: int, from: roofline.vars.N}
-        dtype: {type: torch.dtype, from: x.dtype}
-      call:
-        inputs:
-          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
-        outputs:
-          output: {shape: '[M]', dtype: "int64"}
 L1NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction

@@ -2903,6 +2903,25 @@ class TestSlots:
         errors = validator.check_l0("DemoFwdOp", entry)
         assert any("'N'" in e and "build does not declare" in e for e in errors)
 
+    def test_dropping_a_declared_output_fails(self, validator):
+        """A slot that under-declares returns promises the wrong arity."""
+        entry = _slot_entry()
+        entry["signature"]["outputs"]["z"] = {"dtype": "same_as(x)"}
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("wrong number of tensors" in e for e in errors)
+
+    def test_unresolvable_dtype_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["call"]["inputs"]["x"]["dtype"] = "not_a_dtype"
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("not_a_dtype" in e and "neither a build parameter" in e for e in errors)
+
+    def test_unknown_layout_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["call"]["inputs"]["x"]["layout"] = "strided_by_magic"
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("strided_by_magic" in e for e in errors)
+
     def test_unknown_slot_key_fails(self, validator):
         errors = validator.check_l0("DemoFwdOp", _slot_entry(revision=1))
         assert any("unknown keys" in e and "revision" in e for e in errors)

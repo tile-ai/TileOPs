@@ -581,6 +581,13 @@ def _l0_kernel_map(
 # container type, type-error phrase, section validator run on type match).
 # Genuinely custom rules (key format, scalar fields, kernel_map) stay as
 # dedicated small validators around the table loop in ``check_l0``.
+# Layouts a slot may promise its callable. Anything else names a memory format
+# no implementer can act on.
+_VALID_SLOT_LAYOUTS = frozenset({"contiguous"})
+
+_SAME_AS_RE = re.compile(r"same_as\(([A-Za-z_][A-Za-z_0-9]*)\)")
+
+
 def _l0_slots(op_name: str, entry: dict, slots: dict) -> list[str]:
     """Slot block: every ``from`` resolves, and shapes name declared params.
 
@@ -647,6 +654,10 @@ def _l0_slots(op_name: str, entry: dict, slots: dict) -> list[str]:
             if not isinstance(tensors, dict) or not tensors:
                 err(f"{where}.call.{side} must be a non-empty mapping")
                 continue
+            if side == "outputs" and set(tensors) != declared:
+                err(f"{where}.call.outputs declares {sorted(tensors)}, but the op returns "
+                    f"{sorted(declared)}; an implementer reading this would return the "
+                    f"wrong number of tensors")
             for tname, tspec in tensors.items():
                 if tname not in declared:
                     err(f"{where}.call.{side}.{tname} names no declared "
@@ -662,6 +673,22 @@ def _l0_slots(op_name: str, entry: dict, slots: dict) -> list[str]:
                     if name not in build:
                         err(f"{where}.call.{side}.{tname} shape uses {name!r}, which "
                             f"build does not declare; it has {sorted(build)}")
+
+                dtype = tspec.get("dtype")
+                if dtype is None:
+                    err(f"{where}.call.{side}.{tname} missing 'dtype'")
+                elif not (
+                    dtype in build
+                    or dtype in _TORCH_DTYPES
+                    or _SAME_AS_RE.fullmatch(str(dtype))
+                ):
+                    err(f"{where}.call.{side}.{tname} dtype {dtype!r} is neither a build "
+                        f"parameter, a dtype name, nor same_as(<input>)")
+
+                layout = tspec.get("layout")
+                if layout is not None and layout not in _VALID_SLOT_LAYOUTS:
+                    err(f"{where}.call.{side}.{tname} layout {layout!r} is not one of "
+                        f"{sorted(_VALID_SLOT_LAYOUTS)}")
     return errors
 
 
