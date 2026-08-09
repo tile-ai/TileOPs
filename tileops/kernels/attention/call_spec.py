@@ -11,6 +11,8 @@ from typing import Optional
 
 import torch
 
+from ..call_spec import CallSpec
+
 __all__ = [
     "ATTENTION_DTYPES",
     "WS_ARCH",
@@ -39,19 +41,15 @@ def fp8_dtype() -> Optional[torch.dtype]:
 
 
 @dataclasses.dataclass(frozen=True)
-class AttentionCall:
+class AttentionCall(CallSpec):
     """What one attention call is, as the op knows it.
 
     Assembled in ``forward`` from op state plus what only the call knows: the
     element type, whether the packed ranges are uniform, whether the inputs are
-    FP8. ``arch`` and ``h200`` describe the device the call will run on; they are
-    read when the call is made, never at construction, so an op constructs on a
-    machine that cannot run it and is refused when a kernel is selected.
+    FP8. The device fields come from ``CallSpec``.
     """
 
     dtype: Optional[torch.dtype] = None
-    arch: int = -1
-    h200: bool = False
     batch: int = 0
     heads: int = 0
     heads_kv: int = 0
@@ -75,26 +73,6 @@ class AttentionCall:
     rotary_dim: Optional[int] = None
     accum_dtype: torch.dtype = torch.float32
     tune: bool = False
-
-    def __str__(self) -> str:
-        """The facts of the call, without the fields nobody set.
-
-        A selection failure names the call, and a record of two dozen mostly
-        default fields buries the two that decided it.
-        """
-        default = AttentionCall(arch=self.arch, h200=self.h200)
-        stated = [
-            f"{f.name}={getattr(self, f.name)!r}"
-            for f in dataclasses.fields(self)
-            if getattr(self, f.name) != getattr(default, f.name)
-        ]
-        return ", ".join([f"arch={self.arch}", f"h200={self.h200}", *stated])
-
-    def __post_init__(self) -> None:
-        if self.arch < 0:
-            from tileops.utils import get_sm_version, is_h200
-            object.__setattr__(self, "arch", get_sm_version())
-            object.__setattr__(self, "h200", is_h200())
 
 
 def uses_sliding_window(call: AttentionCall) -> bool:
