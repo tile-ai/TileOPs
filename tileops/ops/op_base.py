@@ -35,7 +35,14 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
 
 
 def _why_not(kernel_cls: type, call: object) -> str:
-    """Say which check turned *kernel_cls* down, for a selection failure."""
+    """Say which check turned *kernel_cls* down, for a selection failure.
+
+    Reads ``supported_archs`` to phrase the message and for nothing else — the
+    decision was already made by ``Kernel.supports``, which is where the op layer
+    asks whether an architecture is served. A refusal that only said "does not
+    serve this call" would leave the caller unable to tell an unsupported device
+    from an unsupported shape.
+    """
     archs = kernel_cls.supported_archs
     arch = getattr(call, "arch", None)
     if archs is not None and arch not in archs:
