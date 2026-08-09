@@ -65,8 +65,11 @@ build-backend = "setuptools.build_meta"
 fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
-where = ["."]
-exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
+# src layout: only what lives under src/ is importable from an install, so a new
+# top-level directory cannot reach the wheel by being forgotten in an exclude
+# list. It also keeps the repo root off sys.path, so tests import the installed
+# package rather than the source tree.
+where = ["src"]
 
 [tool.setuptools.package-data]
 # Kernel headers and YAML data are opened at run time by path relative to
@@ -158,10 +161,10 @@ known-first-party = ["tileops"]
 "__init__.py" = ["F401"]
 "bench_*.py" = ["F401"]
 # __all__ intentionally grouped by category, not alphabetical
-"tileops/kernels/elementwise.py" = ["RUF022"]
-"tileops/ops/__init__.py" = ["RUF022"]
-"tileops/ops/elementwise.py" = ["RUF022"]
-"tileops/ops/reduction/__init__.py" = ["RUF022"]
+"src/tileops/kernels/elementwise.py" = ["RUF022"]
+"src/tileops/ops/__init__.py" = ["RUF022"]
+"src/tileops/ops/elementwise.py" = ["RUF022"]
+"src/tileops/ops/reduction/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "benchmarks/tests"]

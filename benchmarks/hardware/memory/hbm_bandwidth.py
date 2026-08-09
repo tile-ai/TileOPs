@@ -109,7 +109,7 @@ def main():
         print(f"Measured peak (triad vec4): {measured_peak:.2f} GB/s")
         print(f"Theoretical:               {theo_peak_gbs:.1f} GB/s")
         print(f"Calibration:               {calibration:.4f}")
-        print(f"\nUpdate tileops/perf/profiles/{args.profile}.yaml:")
+        print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
         print(f"{'='*60}")
 

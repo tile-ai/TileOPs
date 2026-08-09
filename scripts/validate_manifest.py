@@ -36,8 +36,6 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
@@ -47,7 +45,7 @@ from tileops.manifest.shape_rules import (  # noqa: E402
     reduced_axes,
 )
 
-MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
+MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
@@ -843,8 +841,8 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     Returns a _ResolveResult: ``cls`` set when found; ``import_error``
     True when the module could not be imported (missing dependencies).
     """
-    # "tileops/ops/norm/rms_norm.py" -> "tileops.ops.norm.rms_norm"
-    mod_path = op_file.replace("/", ".").replace(".py", "")
+    # "src/tileops/ops/norm/rms_norm.py" -> "tileops.ops.norm.rms_norm"
+    mod_path = op_file.removeprefix("src/").replace("/", ".").replace(".py", "")
     try:
         mod = importlib.import_module(mod_path)
     except (ImportError, ModuleNotFoundError):

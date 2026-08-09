@@ -14,8 +14,8 @@ those belong to the review process, not the artifact. Flags, per line:
 - ``Follow-up: #<n>`` markers.
 
 Usage: ``shipped_refs_lint.py [FILE ...]``. With no arguments, scans the
-default shipped-source trees (``tileops/``, ``tests/``, ``benchmarks/``,
-``scripts/``) excluding ``tileops/manifest/``. Exits 1 when any violation
+default shipped-source trees (``src/tileops/``, ``tests/``, ``benchmarks/``,
+``scripts/``) excluding ``src/tileops/manifest/``. Exits 1 when any violation
 is found.
 """
 
@@ -35,8 +35,8 @@ _PLAIN_PATTERNS = (
     ("follow-up marker", re.compile(r"[Ff]ollow-up:\s*#[0-9]+")),
 )
 
-DEFAULT_ROOTS = ("tileops", "tests", "benchmarks", "scripts")
-DEFAULT_EXCLUDE = "tileops/manifest"
+DEFAULT_ROOTS = ("src/tileops", "tests", "benchmarks", "scripts")
+DEFAULT_EXCLUDE = "src/tileops/manifest"
 
 
 def _hash_number_violations(line: str) -> list[str]:

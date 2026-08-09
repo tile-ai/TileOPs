@@ -45,10 +45,10 @@ RMSNormFwdOp:
     bytes: "(2 * M * N + N) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/rms_norm.py
+    kernel: src/tileops/kernels/norm/rms_norm.py
     kernel_map:
       rms_norm: RMSNormKernel
-    op: tileops/ops/norm/rms_norm.py
+    op: src/tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
     bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
@@ -96,10 +96,10 @@ LayerNormFwdOp:
     bytes: "(2 * M * N + 2 * N) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/layer_norm.py
+    kernel: src/tileops/kernels/norm/layer_norm.py
     kernel_map:
       layer_norm: LayerNormKernel
-    op: tileops/ops/norm/layer_norm.py
+    op: src/tileops/ops/norm/layer_norm.py
     test: tests/ops/test_layer_norm.py
     bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
@@ -140,10 +140,10 @@ AdaLayerNormFwdOp:
     bytes: "4 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/ada_layer_norm.py
+    kernel: src/tileops/kernels/norm/ada_layer_norm.py
     kernel_map:
       ada_layer_norm: AdaLayerNormKernel
-    op: tileops/ops/norm/ada_layer_norm.py
+    op: src/tileops/ops/norm/ada_layer_norm.py
     test: tests/ops/test_ada_layer_norm.py
     bench: benchmarks/ops/bench_ada_layer_norm.py
     bench_manifest_driven: true
@@ -186,10 +186,10 @@ AdaLayerNormZeroFwdOp:
     bytes: "5 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/ada_layer_norm.py
+    kernel: src/tileops/kernels/norm/ada_layer_norm.py
     kernel_map:
       ada_layer_norm: AdaLayerNormKernel
-    op: tileops/ops/norm/ada_layer_norm_zero.py
+    op: src/tileops/ops/norm/ada_layer_norm_zero.py
     test: tests/ops/test_ada_layer_norm_zero.py
     bench: benchmarks/ops/bench_ada_layer_norm.py
     bench_manifest_driven: true
@@ -235,10 +235,10 @@ FusedAddLayerNormFwdOp:
     bytes: "(4 * M * N + 2 * N) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/fused_add_norm.py
+    kernel: src/tileops/kernels/norm/fused_add_norm.py
     kernel_map:
       fused_add_layer_norm: FusedAddLayerNormKernel
-    op: tileops/ops/norm/fused_add_layer_norm.py
+    op: src/tileops/ops/norm/fused_add_layer_norm.py
     test: tests/ops/test_fused_add_layer_norm.py
     bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
@@ -285,10 +285,10 @@ FusedAddRMSNormFwdOp:
     bytes: "(4 * M * N + N) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/fused_add_norm.py
+    kernel: src/tileops/kernels/norm/fused_add_norm.py
     kernel_map:
       fused_add_rms_norm: FusedAddRMSNormKernel
-    op: tileops/ops/norm/fused_add_rms_norm.py
+    op: src/tileops/ops/norm/fused_add_rms_norm.py
     test: tests/ops/test_fused_add_rms_norm.py
     bench: benchmarks/ops/bench_norm.py
 
@@ -341,11 +341,11 @@ BatchNormFwdOp:
     bytes: "2 * C * L * elem_bytes + 4 * C * 4"
 
   source:
-    kernel: tileops/kernels/norm/batch_norm.py
+    kernel: src/tileops/kernels/norm/batch_norm.py
     kernel_map:
       fwd_train_kernel: BatchNormFwdTrainKernel
       fwd_infer_kernel: BatchNormFwdInferKernel
-    op: tileops/ops/norm/batch_norm.py
+    op: src/tileops/ops/norm/batch_norm.py
     test: tests/ops/test_batch_norm.py
     bench: benchmarks/ops/bench_batch_norm.py
     bench_manifest_driven: true
@@ -395,10 +395,10 @@ BatchNormBwdOp:
     bytes: "3 * C * L * elem_bytes + 3 * C * 4"
 
   source:
-    kernel: tileops/kernels/norm/batch_norm.py
+    kernel: src/tileops/kernels/norm/batch_norm.py
     kernel_map:
       bwd_kernel: BatchNormBwdKernel
-    op: tileops/ops/norm/batch_norm.py
+    op: src/tileops/ops/norm/batch_norm.py
     test: tests/ops/test_batch_norm.py
     bench: benchmarks/ops/bench_batch_norm.py
     bench_manifest_driven: true
@@ -441,10 +441,10 @@ GroupNormFwdOp:
     bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/group_norm.py
+    kernel: src/tileops/kernels/norm/group_norm.py
     kernel_map:
       group_norm: GroupNormKernel
-    op: tileops/ops/norm/group_norm.py
+    op: src/tileops/ops/norm/group_norm.py
     test: tests/ops/test_group_norm.py
     bench: benchmarks/ops/bench_group_norm.py
     bench_manifest_driven: true
@@ -491,10 +491,10 @@ GroupNormNoAffineFwdOp:
     bytes: "2 * N * C * spatial_size * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/group_norm.py
+    kernel: src/tileops/kernels/norm/group_norm.py
     kernel_map:
       group_norm_no_affine: GroupNormNoAffineKernel
-    op: tileops/ops/norm/group_norm.py
+    op: src/tileops/ops/norm/group_norm.py
     test: tests/ops/test_group_norm.py
     bench: benchmarks/ops/bench_group_norm.py
     bench_manifest_driven: true
@@ -537,10 +537,10 @@ InstanceNormFwdOp:
     bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/group_norm.py
+    kernel: src/tileops/kernels/norm/group_norm.py
     kernel_map:
       group_norm: GroupNormKernel
-    op: tileops/ops/norm/instance_norm.py
+    op: src/tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py
     bench: benchmarks/ops/bench_instance_norm.py
     bench_manifest_driven: true
@@ -590,10 +590,10 @@ InstanceNormNoAffineFwdOp:
     bytes: "2 * N * C * spatial_size * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/group_norm.py
+    kernel: src/tileops/kernels/norm/group_norm.py
     kernel_map:
       instance_norm_no_affine: InstanceNormNoAffineKernel
-    op: tileops/ops/norm/instance_norm.py
+    op: src/tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py
     bench: benchmarks/ops/bench_instance_norm.py
     bench_manifest_driven: true

@@ -96,17 +96,17 @@ jobs:
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              tileops/manifest/*.yaml|tileops/manifest/__init__.py|scripts/validate_manifest.py|"$WORKFLOW_PATH")
+              src/tileops/manifest/*.yaml|src/tileops/manifest/__init__.py|scripts/validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true
                 ;;
             esac
             # `benchmark-contract-tests` runs `pytest benchmarks/tests`, which
             # imports `workloads.workload_base`, `tileops.manifest`, and reads
-            # the per-family files under `tileops/manifest/*.yaml` via
+            # the per-family files under `src/tileops/manifest/*.yaml` via
             # `load_workloads()` / `workloads_to_params()`. Any of those layers
             # can break the contract tests, so include them all.
             case "$f" in
-              benchmarks/*|workloads/*|tileops/manifest/*.yaml|tileops/manifest/__init__.py|"$WORKFLOW_PATH")
+              benchmarks/*|workloads/*|src/tileops/manifest/*.yaml|src/tileops/manifest/__init__.py|"$WORKFLOW_PATH")
                 benchmark=true
                 ;;
             esac

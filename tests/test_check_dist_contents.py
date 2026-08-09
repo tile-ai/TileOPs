@@ -21,6 +21,8 @@ pytestmark = pytest.mark.smoke
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
+# Paths inside the package. The repo and the sdist carry them under `src/`;
+# the wheel is unpacked into site-packages, so there they have no prefix.
 MANIFEST_YAMLS = ["tileops/manifest/attention.yaml", "tileops/manifest/gemm.yaml"]
 NESTED_HEADER = "tileops/kernels/attention/_anchor_helper.h"
 MOE_HEADER = "tileops/kernels/moe/_atomic_helper.h"
@@ -30,14 +32,19 @@ PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
 RESOURCES = [*MANIFEST_YAMLS, NESTED_HEADER, MOE_HEADER, PERF_PROFILE]
 SOURCES = ["tileops/__init__.py", "tileops/perf/profile.py"]
 
+
+def _in_src(entries: list[str]) -> list[str]:
+    return [f"src/{entry}" for entry in entries]
+
+
 WHEEL_OK = [*RESOURCES, *SOURCES]
-SDIST_OK = [*RESOURCES, *SOURCES, "LICENSE", "README.md", "pyproject.toml"]
+SDIST_OK = [*_in_src(RESOURCES), *_in_src(SOURCES), "LICENSE", "README.md", "pyproject.toml"]
 
 
 def make_repo(tmp_path: Path) -> Path:
     """Write a source tree holding every fixture resource. Not a git repo."""
     repo = tmp_path / "repo"
-    for rel in RESOURCES + SOURCES:
+    for rel in _in_src(RESOURCES + SOURCES):
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("content\n")
@@ -123,9 +130,11 @@ def test_expected_set_comes_from_git_when_available(tmp_path):
     """With git present the expectation follows the index, not the working tree."""
     repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK)
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", *RESOURCES, *SOURCES], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "add", *_in_src(RESOURCES), *_in_src(SOURCES)], cwd=repo, check=True
+    )
     # Untracked, so it is not part of the shipped resource set.
-    scratch = repo / "tileops" / "perf" / "profiles" / "scratch.yaml"
+    scratch = repo / "src" / "tileops" / "perf" / "profiles" / "scratch.yaml"
     scratch.write_text("draft\n")
 
     result = run_check(repo, dist)
@@ -140,11 +149,24 @@ def test_sdist_missing_license_fails(tmp_path):
     assert "LICENSE" in result.stdout
 
 
-def test_sdist_with_pruned_directory_fails(tmp_path):
+def test_sdist_with_extra_top_level_dir_fails(tmp_path):
+    """A development tree reaching the sdist is named, not tolerated."""
     repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK + ["tests/test_leak.py"])
     result = run_check(repo, dist)
     assert result.returncode == 1
-    assert "tests/" in result.stdout
+    assert "unexpected top-level tests" in result.stdout
+
+
+def test_wheel_with_extra_top_level_fails(tmp_path):
+    """Only the package may install into site-packages.
+
+    Under the previous flat layout every top-level directory was a package
+    candidate, so tooling trees reached the wheel and became importable names.
+    """
+    repo, dist = build_dist(tmp_path, WHEEL_OK + ["scripts/leaked.py"], SDIST_OK)
+    result = run_check(repo, dist)
+    assert result.returncode == 1
+    assert "unexpected top-level scripts" in result.stdout
 
 
 def test_missing_archives_fail(tmp_path):

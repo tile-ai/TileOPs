@@ -8,3 +8,4 @@ prune workloads
 prune .github
 prune .claude
 prune .foundry
+prune scripts

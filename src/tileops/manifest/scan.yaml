@@ -36,10 +36,10 @@ CumsumFwdOp:
     bytes: "2 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/reduction/cumulative.py
+    kernel: src/tileops/kernels/reduction/cumulative.py
     kernel_map:
       cumulative_fwd: CumulativeKernel
-    op: tileops/ops/reduction/cumulative.py
+    op: src/tileops/ops/reduction/cumulative.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
     bench_manifest_driven: true
@@ -76,10 +76,10 @@ CumprodFwdOp:
     bytes: "2 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/reduction/cumulative.py
+    kernel: src/tileops/kernels/reduction/cumulative.py
     kernel_map:
       cumulative_fwd: CumulativeKernel
-    op: tileops/ops/reduction/cumulative.py
+    op: src/tileops/ops/reduction/cumulative.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
     bench_manifest_driven: true

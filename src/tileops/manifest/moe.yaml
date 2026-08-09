@@ -42,8 +42,8 @@ MoePermuteAlignFwdOp:
     bytes: "total_tokens * top_k * 4 + (total_tokens * top_k + (num_experts + 1) * (block_size - 1)) * 4 + ceil((total_tokens * top_k + (num_experts + 1) * (block_size - 1)) / block_size) * 4 + 4"
 
   source:
-    kernel: tileops/kernels/moe/permute_align.py
-    op: tileops/ops/moe/permute_align.py
+    kernel: src/tileops/kernels/moe/permute_align.py
+    op: src/tileops/ops/moe/permute_align.py
     test: tests/ops/test_moe_permute_align.py
     bench: benchmarks/ops/bench_moe_permute_align.py
     bench_manifest_driven: true
@@ -110,8 +110,8 @@ MoePermuteNopadFwdOp:
     bytes: "(T * H + T * K * H) * elem_bytes + (num_experts + 1) * 8 + 2 * T * K * 4 + num_experts * 8"
 
   source:
-    kernel: tileops/kernels/moe/permute_nopad.py
-    op: tileops/ops/moe/routed_expert/permute_nopad.py
+    kernel: src/tileops/kernels/moe/permute_nopad.py
+    op: src/tileops/ops/moe/routed_expert/permute_nopad.py
     test: tests/ops/test_moe_permute_nopad.py
     bench: benchmarks/ops/bench_moe_permute_nopad.py
     bench_manifest_driven: true
@@ -160,8 +160,8 @@ MoeUnpermuteFwdOp:
     bytes: "(total_tokens * top_k * hidden_size + total_tokens * hidden_size) * elem_bytes + total_tokens * top_k * 4 + total_tokens * top_k * 4"
 
   source:
-    kernel: tileops/kernels/moe/unpermute.py
-    op: tileops/ops/moe/routed_expert/unpermute.py
+    kernel: src/tileops/kernels/moe/unpermute.py
+    op: src/tileops/ops/moe/routed_expert/unpermute.py
     test: tests/ops/test_moe_unpermute.py
     bench: benchmarks/ops/bench_moe_unpermute.py
     bench_manifest_driven: true
@@ -202,8 +202,8 @@ MoeGroupedGemmNopadFwdOp:
     bytes: "(numel * k + num_experts * n * k + numel * n) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
-    op: tileops/ops/moe/routed_expert/moe_grouped_gemm_nopad.py
+    kernel: src/tileops/kernels/moe/moe_grouped_gemm_nopad.py
+    op: src/tileops/ops/moe/routed_expert/moe_grouped_gemm_nopad.py
     test: tests/ops/test_moe_grouped_gemm_nopad.py
     bench: benchmarks/ops/bench_moe_grouped_gemm_nopad.py
     bench_manifest_driven: true
@@ -271,8 +271,8 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
-    op: tileops/ops/moe/routed_expert/fused_routed_expert.py
+    kernel: src/tileops/kernels/moe/moe_grouped_gemm_nopad.py
+    op: src/tileops/ops/moe/routed_expert/fused_routed_expert.py
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: true
@@ -323,8 +323,8 @@ FusedMoeFwdOp:
     func: "tileops.perf.formulas.fused_moe_fwd_bytes"
 
   source:
-    kernel: tileops/ops/moe/fused_moe.py
-    op: tileops/ops/moe/fused_moe.py
+    kernel: src/tileops/ops/moe/fused_moe.py
+    op: src/tileops/ops/moe/fused_moe.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
     bench_manifest_driven: true
@@ -376,8 +376,8 @@ FusedMoeFwdCbFwdOp:
     func: "tileops.perf.formulas.fused_moe_fwd_bytes"
 
   source:
-    kernel: tileops/ops/moe/fused_moe.py
-    op: tileops/ops/moe/fused_moe.py
+    kernel: src/tileops/ops/moe/fused_moe.py
+    op: src/tileops/ops/moe/fused_moe.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
     bench_manifest_driven: true
