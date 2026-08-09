@@ -644,6 +644,25 @@ def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("op_cls_name", ["ArgmaxFwdOp", "ArgminFwdOp"])
+def test_strided_axis_forward_binds_roofline_state(op_cls_name: str) -> None:
+    """The strided-axis path owes ``eval_roofline()`` the same state as the base.
+
+    Reading a short non-last axis in place skips the transpose, and with it
+    the shared validation that binds ``dtype``.
+    """
+    import tileops.ops.reduction.argreduce as argreduce
+
+    op = getattr(argreduce, op_cls_name)(dim=0)
+    x = torch.randn(4, 128, 4096, device="cuda", dtype=torch.float16)
+    _call(op, x)
+
+    flops, mem_bytes = op.eval_roofline()
+    assert flops > 0 and mem_bytes > 0
+    assert op.dtype is torch.float16
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("m, n, inner_stride, strategy", [
     (4, 1024, 1, "warp"),
     (4, 8192, 1, "cta"),

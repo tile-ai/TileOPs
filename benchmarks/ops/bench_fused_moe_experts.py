@@ -102,7 +102,7 @@ def test_moe_experts_nopad_bench(
 
     kwargs = dict(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
-        hidden_size=hidden_size, ffn_size=ffn_size, dtype=dtype,
+        hidden_size=hidden_size, ffn_size=ffn_size,
     )
     output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
     ws1 = torch.empty(0, dtype=dtype, device="cuda")

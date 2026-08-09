@@ -119,6 +119,9 @@ jobs:
           # One pytest process per bench file: a native hang / segfault / OOM
           # kill costs only that file's results. py-spy captures the stack of
           # a hung child before the runner kills it.
+          # --stall-timeout bounds silence, not runtime. A file killed mid-run
+          # never writes its kernels to the persistent cache, so capping total
+          # runtime would keep the same files cold every night.
           set -o pipefail
           # Best-effort: on a network failure the run proceeds without stack
           # dumps (the runner records the absence) instead of dying here.
@@ -126,7 +129,7 @@ jobs:
             || echo "::warning::py-spy install failed; hang stack dumps disabled"
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
-            --timeout-per-file 900 \
+            --stall-timeout 900 \
             --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then

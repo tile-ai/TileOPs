@@ -191,7 +191,7 @@ def test_comparison_bench(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _CMP_OPS[op_name](a_shape=shape, b_shape=shape, dtype=dtype)
+    op = _CMP_OPS[op_name](a_shape=shape, b_shape=shape)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
