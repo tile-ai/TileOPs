@@ -6,11 +6,8 @@ for multi-dim reduction. Constructor ``dim`` defaults to ``None`` (full
 reduction) for the ten ops whose manifest declares ``default: null``;
 ``ProdFwdOp`` preserves ``dim=-1``.
 The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
-For simple, Welford, logical reduce, and vector norm ops, alignment padding is
-handled inside the kernel via masked loads with identity-element fills,
-eliminating host-side ``F.pad`` from the forward path. Other ops that inherit
-``_ReduceOpBase`` continue to use host-side padding until their kernels are
-converted.
+Alignment padding belongs to the kernel, which masks its loads and fills with
+the reduction's identity element; the Op layer never pads.
 Kernels are cached by ``(M, N)`` so that the same op instance can handle
 varying shapes.
 """
@@ -20,10 +17,8 @@ from math import prod
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.reduce import ReduceKernel
 
 from ..op_base import Op
@@ -60,7 +55,7 @@ class _ReduceOpBase(Op):
 
     Consolidates shared init params (dtype, dim, keepdim, tune), initializes
     and owns an internal kernel cache, and handles input preparation
-    (validate, transpose, reshape to 2D, pad) and output reshaping.
+    (validate, transpose, reshape to 2D) and output reshaping.
     Subclasses declare ``_op_kind``, ``_kernel_key``, ``_kernel_cls``, and
     override hooks as needed.  ``forward()`` is provided by this base class;
     only ops with non-standard returns (e.g. ``VarMeanFwdOp``) need to
@@ -71,7 +66,6 @@ class _ReduceOpBase(Op):
     - ``_kernel_key``: kernel map key (default ``"reduce"``).
     - ``_kernel_cls``: kernel class (default ``ReduceKernel``).
     - ``_validate_dim()``: validate ``dim`` at init (default: accept int/list/None).
-    - ``_pad_value()``: identity element for alignment padding (default ``0.0``).
     - ``_build_kernel_kwargs()``: extra kwargs for kernel constructor.
     - ``_pre_kernel(x)``: transform 2D input before kernel call (default identity).
       Returns ``(x, context)`` where *context* is passed to ``_post_kernel``.
@@ -81,7 +75,6 @@ class _ReduceOpBase(Op):
     _op_kind: str = ""  # overridden by subclasses
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
     _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
-    _kernel_handles_padding: bool = False  # True when kernel accepts (M, N) with masked loads
     _empty_dim_policy: EmptyDimPolicy = "reject"
 
     def __init__(
@@ -147,17 +140,6 @@ class _ReduceOpBase(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._kernel_key: self._kernel_cls}
-
-    # Pad value (subclasses may override; used only when
-    # _kernel_handles_padding is False)
-
-    def _pad_value(self) -> float:
-        """Return the identity element used when padding to alignment.
-
-        Only used when ``_kernel_handles_padding`` is ``False`` (i.e. the
-        kernel expects pre-padded input from the Op layer).
-        """
-        return 0.0
 
     # Extra kernel kwargs (subclasses may override)
 
@@ -409,21 +391,16 @@ class _ReduceOpBase(Op):
             ),
         )
 
-    # Input preparation (validate → transpose → reshape → pad)
+    # Input preparation (validate → transpose → reshape)
 
     def _prepare_input(
         self, x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Size, object, object]:
-        """Validate, derive M/N, transpose, reshape to 2D, optionally pad.
+        """Validate, derive M/N, transpose, and reshape to 2D.
 
         Returns ``(x_2d, orig_shape, dim_info, kernel)`` where
         *dim_info* is either an ``int`` (single-dim) or ``list[int]``
         (multi-dim).
-
-        When ``_kernel_handles_padding`` is ``True``, the raw ``(M, N)``
-        tensor is passed through -- the kernel handles alignment internally
-        via masked loads.  Otherwise, host-side ``F.pad`` is applied for
-        backward compatibility with kernels that expect ``(M, N_padded)``.
         """
         self._validate_input_tensor(x)
 
@@ -440,12 +417,6 @@ class _ReduceOpBase(Op):
             self._last_roofline_mn = (M, N)
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(M, N, x.dtype)
-            if not self._kernel_handles_padding:
-                N_padded = align_up(N, DEFAULT_ALIGNMENT)
-                if N_padded != N:
-                    pv = self._pad_value()
-                    pad = (0, N_padded - N)
-                    x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
             return x, orig_shape, dims, kernel
 
         # --- single-dim path ---
@@ -466,14 +437,6 @@ class _ReduceOpBase(Op):
         x = x.contiguous().reshape(M, N)
 
         kernel = self._get_or_create_kernel(M, N, x.dtype)
-
-        if not self._kernel_handles_padding:
-            N_padded = align_up(N, DEFAULT_ALIGNMENT)
-            if N_padded != N:
-                pv = self._pad_value()
-                pad = (0, N_padded - N)
-                x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
-
         return x, orig_shape, dim, kernel
 
     # Output reshape
@@ -506,9 +469,7 @@ class _SimpleReduceOp(_ReduceOpBase):
     """Base for single-output reduce ops (sum, mean, amin, amax, prod).
 
     M and N are derived from the input tensor at forward time, and kernels
-    are cached by ``(M, N)`` to avoid rebuilds. Alignment padding is handled
-    inside the kernel via masked loads with identity-element fills, so no
-    host-side ``F.pad`` is needed.
+    are cached by ``(M, N)`` to avoid rebuilds.
 
     The ``dim`` default follows each op's manifest entry: ``sum``, ``mean``,
     ``amin``, and ``amax`` default to ``None`` (full reduction); ``prod``
@@ -523,7 +484,6 @@ class _SimpleReduceOp(_ReduceOpBase):
         tune: Whether to autotune (default False).
     """
 
-    _kernel_handles_padding = True
 
 
 class SumFwdOp(_SimpleReduceOp):
@@ -604,9 +564,6 @@ class _WelfordReduceOp(_ReduceOpBase):
     M and N are derived from the input tensor at forward time, and kernels
     are cached by ``(M, N)`` to avoid rebuilds.
 
-    Alignment padding is handled inside the kernel via masked loads,
-    so no host-side ``F.pad`` is needed.
-
     Args:
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
@@ -617,7 +574,6 @@ class _WelfordReduceOp(_ReduceOpBase):
         tune: Whether to autotune (default False).
     """
 
-    _kernel_handles_padding = True
     _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(

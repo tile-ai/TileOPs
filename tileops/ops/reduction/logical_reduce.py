@@ -24,8 +24,6 @@ class AllFwdOp(_ReduceOpBase):
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
-    Padded positions use 1 (True), which is neutral for AND/all.
-
     Supports any numeric dtype including torch.bool, int32, int64, and complex
     types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
     complex64, complex128) are pre-converted to float32 in forward().
@@ -45,7 +43,6 @@ class AllFwdOp(_ReduceOpBase):
     _op_kind = "all"
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
-    _kernel_handles_padding = True
     _empty_dim_policy: EmptyDimPolicy = "noop"
 
     def __init__(
@@ -71,9 +68,6 @@ class AllFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
-    def _pad_value(self) -> float:
-        """Pad with 1 (True), neutral for AND/all."""
-        return 1.0
 
     def _noop_output_dtype(self) -> torch.dtype:
         """All returns bool per manifest contract."""
@@ -94,8 +88,6 @@ class AnyFwdOp(_ReduceOpBase):
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
-    Padded positions use 0 (False), which is neutral for OR/any.
-
     Supports any numeric dtype including torch.bool, int32, int64, and complex
     types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
     complex64, complex128) are pre-converted to float32 in forward().
@@ -115,7 +107,6 @@ class AnyFwdOp(_ReduceOpBase):
     _op_kind = "any"
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
-    _kernel_handles_padding = True
     _empty_dim_policy: EmptyDimPolicy = "noop"
 
     def __init__(
@@ -141,9 +132,6 @@ class AnyFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
-    def _pad_value(self) -> float:
-        """Pad with 0 (False), neutral for OR/any."""
-        return 0.0
 
     def _noop_output_dtype(self) -> torch.dtype:
         """Any returns bool per manifest contract."""
@@ -164,8 +152,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
-    Padded positions use 0, which is neutral for sum/count.
-
     Note: No ``keepdim`` parameter -- the reduction dimension is always
     removed, matching ``torch.count_nonzero`` semantics.
 
@@ -185,7 +171,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
     _empty_dim_policy: EmptyDimPolicy = "full"
-    _kernel_handles_padding = True
 
     def __init__(
         self,
@@ -200,9 +185,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
-    def _pad_value(self) -> float:
-        """Pad with 0, neutral for sum/count."""
-        return 0.0
 
     def _noop_output_dtype(self) -> torch.dtype:
         """count_nonzero returns int64 per manifest contract.
