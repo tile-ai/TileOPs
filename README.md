@@ -49,7 +49,7 @@ TileOPs is under active development and is installed from source; PyPI releases 
 - PyTorch >= 2.1, < 2.11 (CI validates 2.10)
 - CUDA Toolkit 12.x
 - NVIDIA GPU: **Hopper** (SM_90)
-- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11 at main snapshot `afcebed1`)
+- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11 at a pinned main snapshot — see [docs/development.md](docs/development.md#dev-docker-image))
 
 ### From source
 
@@ -70,19 +70,9 @@ Build issues, test tiers, benchmarks, and packaging checks: [docs/development.md
 
 ### Docker (dev image)
 
-A prebuilt image ships the full stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and all benchmark baselines preinstalled — and is the same environment CI runs in:
+A prebuilt image ships the full stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and the benchmark baselines — and is the same environment CI runs in, so a green run inside it is the run CI reports.
 
-```bash
-docker run --rm -it --gpus all \
-  -v "$(pwd)":/workspace -w /workspace \
-  ghcr.io/tile-ai/tileops-runner:afcebed1-torch2.10-dev
-
-# inside the container
-pip install -e . --no-deps
-python -m pytest -q tests -m smoke
-```
-
-Tag scheme and usage notes: [docs/development.md](docs/development.md#dev-docker-image). Build recipe: [`.github/runner/README.md`](.github/runner/README.md).
+Image tag, `docker run` line, and usage notes: [docs/development.md](docs/development.md#dev-docker-image). Build recipe: [`.github/runner/README.md`](.github/runner/README.md).
 
 ## Quick Start
 

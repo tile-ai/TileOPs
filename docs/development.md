@@ -25,7 +25,7 @@ PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -c constraints.txt
 
 ## Dev Docker image
 
-The prebuilt dev image ships the whole stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and every benchmark baseline — so nothing needs resolving locally:
+The prebuilt dev image ships the whole stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and the benchmark baselines — so nothing needs resolving locally:
 
 ```bash
 docker run --rm -it --gpus all \
@@ -75,17 +75,15 @@ pre-commit run --all-files
 
 ## Benchmarks
 
-Benchmarks compare against external baselines, so they need the `bench` extra plus one library that has no release on PyPI:
+Benchmarks compare against external baselines, which the `bench` extra pulls in:
 
 ```bash
-PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' \
-  'git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd' \
-  -c constraints.txt
+PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' -c constraints.txt
 ```
 
 `PIP_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
 
-The dev Docker image has all of this preinstalled — prefer it over resolving the baselines by hand.
+Prefer the dev Docker image, which carries FlashAttention-2/3, flash-linear-attention, vLLM and flashinfer prebuilt against its own CUDA and PyTorch — the FA3 build in particular takes a long time from source. It does not install `sgl-kernel`, so a benchmark that needs that baseline has to install it in the container.
 
 ```bash
 python -m pytest benchmarks/            # all benchmarks

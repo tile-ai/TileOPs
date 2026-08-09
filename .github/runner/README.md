@@ -158,6 +158,12 @@ under `/ci-cache`; the directories are pre-created so the container also works u
 
 ## Bumping the tilelang commit
 
+The image tag is echoed in exactly one place in the repo — the `docker run` line in
+[`docs/development.md`](../../docs/development.md#dev-docker-image). Update it with the new tag;
+nothing else in the docs restates the commit. The two mentions in `tileops/kernels/` record
+where vendored code and a verified behaviour came from and are deliberately frozen — do not
+advance them with a bump.
+
 A commit (or release) bump always rebuilds, but **never edits the Dockerfile**: rebuild with a
 new `--build-arg TILELANG_GIT_SHA=<commit>` (or `TILELANG_VERSION=<version>`) and a new
 `:<short-sha>` tag, push to `ghcr.io`, then point the runner at the new tag. Because tilelang
