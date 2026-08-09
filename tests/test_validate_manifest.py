@@ -550,8 +550,11 @@ class TestSourcePathExistence:
         assert not any("not a file" in e for e in errors), errors
 
     def test_existing_source_files_pass(self, validator, tmp_path):
-        for name in ("k.py", "o.py", "t.py", "b.py"):
-            (tmp_path / name).write_text("# placeholder\n")
+        # kernel/op are distribution-relative and resolve under src/; test/bench
+        # name trees that never ship and resolve against the repo root.
+        (tmp_path / "src").mkdir()
+        for rel in ("src/k.py", "src/o.py", "t.py", "b.py"):
+            (tmp_path / rel).write_text("# placeholder\n")
         manifest_file = _write_manifest(
             tmp_path, {"my_op": _make_entry(status="implemented", kernel_map={})},
         )
@@ -768,7 +771,7 @@ def _run_check_l1(validator, monkeypatch, cls, signature):
     )
     entry = {
         "signature": signature,
-        "source": {"op": "src/tileops/ops/synthetic.py"},
+        "source": {"op": "tileops/ops/synthetic.py"},
     }
     return validator.check_l1(cls.__name__, entry, warnings=[])
 
@@ -2312,7 +2315,7 @@ class TestResolveOpClass:
     def test_single_class_file_exact_match(self, validator):
         """Single-class files resolve only when manifest key matches class name."""
         result = validator._resolve_op_class(
-            "src/tileops/ops/reduction/softmax.py", "SoftmaxFwdOp",
+            "tileops/ops/reduction/softmax.py", "SoftmaxFwdOp",
         )
         assert result.cls is not None
         assert result.cls.__name__ == "SoftmaxFwdOp"
@@ -2320,7 +2323,7 @@ class TestResolveOpClass:
     def test_single_class_file_rejects_mismatched_name(self, validator):
         """Single-class files reject mismatched manifest keys — no bypass."""
         result = validator._resolve_op_class(
-            "src/tileops/ops/reduction/softmax.py", "SoftmaxBwdOp",
+            "tileops/ops/reduction/softmax.py", "SoftmaxBwdOp",
         )
         assert result.cls is None
         assert result.warning is not None
@@ -2328,14 +2331,14 @@ class TestResolveOpClass:
     def test_nonexistent_module_returns_import_error(self, validator):
         """Module that cannot be imported returns import_error=True."""
         result = validator._resolve_op_class(
-            "src/tileops/ops/nonexistent.py", "some_op",
+            "tileops/ops/nonexistent.py", "some_op",
         )
         assert result.import_error
 
     def test_module_with_no_op_classes_returns_none(self, validator):
         """Module with no forward()-bearing classes returns cls=None."""
         result = validator._resolve_op_class(
-            "src/tileops/__init__.py", "some_op",
+            "tileops/__init__.py", "some_op",
         )
         assert result.cls is None
 
@@ -2349,7 +2352,7 @@ class TestResolveOpClass:
             pytest.warns(UserWarning, match="No class named"),
         ):
             result = validator._resolve_op_class(
-                "src/tileops/ops/fake_ambiguous.py", "mystery_fwd",
+                "tileops/ops/fake_ambiguous.py", "mystery_fwd",
             )
         assert result.cls is None
         assert not result.import_error
@@ -2361,7 +2364,7 @@ class TestResolveOpClass:
             "tileops.ops.fake_ambiguous", ["AlphaKernel", "BetaKernel"],
         )
         entry = {
-            "source": {"op": "src/tileops/ops/fake_ambiguous.py"},
+            "source": {"op": "tileops/ops/fake_ambiguous.py"},
             "signature": {"inputs": {}, "params": {}},
         }
         warn_list: list[str] = []
@@ -2382,7 +2385,7 @@ class TestResolveOpClass:
         )
         with _patched_import(fake_mod):
             result = validator._resolve_op_class(
-                "src/tileops/ops/fake_priority.py", "SumFwdOp",
+                "tileops/ops/fake_priority.py", "SumFwdOp",
             )
         assert result.cls is fake_mod.SumFwdOp, result.cls
 
@@ -2769,7 +2772,7 @@ class TestStrictAdvisoryMode:
             "roofline": {"flops": "N", "bytes": "2 * N"},
             "source": {
                 "op": "tests/__strict_parity_stub__.py",
-                "kernel": "src/tileops/kernels/__strict_parity_stub__.py",
+                "kernel": "tileops/kernels/__strict_parity_stub__.py",
                 "bench": "benchmarks/ops/__strict_parity_stub__.py",
                 "test": "tests/__strict_parity_stub_test__.py",
                 "kernel_map": {"stub": "tileops.kernels.StubKernel"},

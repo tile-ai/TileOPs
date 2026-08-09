@@ -34,9 +34,13 @@ PACKAGE_DIR = "tileops"
 # Where that package lives in the repo and in the sdist.
 SOURCE_PACKAGE_DIR = f"src/{PACKAGE_DIR}"
 SDIST_EXTRA_REQUIRED = ("LICENSE", "README.md")
-# Top-level directories the sdist may contain. Root files are unconstrained:
-# they are individually tracked and adding one is not how a tree leaks.
+# What the sdist may carry at its top level. `PKG-INFO` and `setup.cfg` are
+# written by the build; the rest a build reads. Anything else is pruned in
+# MANIFEST.in, and listing them here is what keeps that pruning honest.
 SDIST_ALLOWED_DIRS = frozenset({"src"})
+SDIST_ALLOWED_FILES = frozenset({
+    "LICENSE", "README.md", "MANIFEST.in", "pyproject.toml", "PKG-INFO", "setup.cfg",
+})
 # Build residue that lives beside the sources but is not a shipped resource.
 _IGNORED_DIRS = frozenset({"__pycache__", ".egg-info"})
 
@@ -116,11 +120,13 @@ def check_sdist(sdist_path: Path, required: list[str]) -> list[str]:
         f"sdist {sdist_path.name}: missing {entry}" for entry in required if entry not in members
     ]
     dirs = {m.split("/", 1)[0] for m in members if "/" in m}
-    extra = sorted(dirs - SDIST_ALLOWED_DIRS)
+    # A directory is also a member in its own right; keep it out of the files.
+    files = {m for m in members if "/" not in m} - dirs
+    extra = sorted((dirs - SDIST_ALLOWED_DIRS) | (files - SDIST_ALLOWED_FILES))
     if extra:
         errors.append(
             f"sdist {sdist_path.name}: unexpected top-level {', '.join(extra)} "
-            f"(prune it in MANIFEST.in, or add it to SDIST_ALLOWED_DIRS)"
+            f"(prune it in MANIFEST.in, or add it to the sdist whitelist)"
         )
     return errors
 

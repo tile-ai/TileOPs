@@ -58,12 +58,12 @@ Conv1dFwdOp:
     bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution.py
     kernel_map:
       conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
       group_conv1d_kernel: GroupConv1dKernel
-    op: src/tileops/ops/convolution.py
+    op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
     bench_manifest_driven: true
@@ -111,12 +111,12 @@ Conv1dBiasFwdOp:
     bytes: "(N * C_in * L_in + C_out * C_in_g * kW + C_out + N * C_out * L_out) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution.py
     kernel_map:
       conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
       group_conv1d_kernel: GroupConv1dKernel
-    op: src/tileops/ops/convolution.py
+    op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
     bench_manifest_driven: true
@@ -202,12 +202,12 @@ Conv2dFwdOp:
     bytes: "(N * C_in * H * W + C_out * C_in_g * kH * kW + N * C_out * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution.py
     kernel_map:
       conv2d_kernel: Conv2dKernel
       conv2d_1x1_kernel: Conv2d1x1Kernel
       group_conv2d_kernel: GroupConv2dKernel
-    op: src/tileops/ops/convolution.py
+    op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
     bench_manifest_driven: true
@@ -269,12 +269,12 @@ Conv2dBiasFwdOp:
     bytes: "(N * C_in * H * W + C_out * C_in_g * kH * kW + C_out + N * C_out * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution.py
     kernel_map:
       conv2d_kernel: Conv2dKernel
       conv2d_1x1_kernel: Conv2d1x1Kernel
       group_conv2d_kernel: GroupConv2dKernel
-    op: src/tileops/ops/convolution.py
+    op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
     bench_manifest_driven: true
@@ -349,11 +349,11 @@ Conv3dFwdOp:
     bytes: "(N * C_in * D * H * W + C_out * C_in_g * kD * kH * kW + N * C_out * out_D * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution.py
     kernel_map:
       conv3d_kernel: Conv3dKernel
       group_conv3d_kernel: GroupConv3dKernel
-    op: src/tileops/ops/convolution.py
+    op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
     bench_manifest_driven: true
@@ -411,11 +411,11 @@ Conv3dBiasFwdOp:
     bytes: "(N * C_in * D * H * W + C_out * C_in_g * kD * kH * kW + C_out + N * C_out * out_D * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution.py
     kernel_map:
       conv3d_kernel: Conv3dKernel
       group_conv3d_kernel: GroupConv3dKernel
-    op: src/tileops/ops/convolution.py
+    op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
     bench_manifest_driven: true

@@ -29,10 +29,10 @@ DropoutOp:
     func: "tileops.perf.formulas.dropout_roofline"
 
   source:
-    kernel: src/tileops/kernels/dropout.py
+    kernel: tileops/kernels/dropout.py
     kernel_map:
       dropout: DropoutKernel
-    op: src/tileops/ops/dropout.py
+    op: tileops/ops/dropout.py
     test: tests/ops/test_dropout.py
     bench: benchmarks/ops/bench_dropout.py
     bench_manifest_driven: true

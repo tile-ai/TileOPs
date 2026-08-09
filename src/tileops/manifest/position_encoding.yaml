@@ -1,6 +1,6 @@
 # Position-encoding operators.
 #
-# These ops already exist in src/tileops/ops/rope.py. The manifest keeps the
+# These ops already exist in tileops/ops/rope.py. The manifest keeps the
 # current runtime surface as source of truth: construction binds RoPE variant
 # config, while forward infers tensor dimensions from input metadata.
 
@@ -31,10 +31,10 @@ RopeNeoxOp:
     func: "tileops.perf.formulas.rope_roofline"
 
   source:
-    kernel: src/tileops/kernels/rope.py
+    kernel: tileops/kernels/rope.py
     kernel_map:
       rope_neox: RopeNeoxKernel
-    op: src/tileops/ops/rope.py
+    op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
@@ -66,10 +66,10 @@ RopeNonNeoxOp:
     func: "tileops.perf.formulas.rope_roofline"
 
   source:
-    kernel: src/tileops/kernels/rope.py
+    kernel: tileops/kernels/rope.py
     kernel_map:
       rope_non_neox: RopeNonNeoxKernel
-    op: src/tileops/ops/rope.py
+    op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
@@ -105,10 +105,10 @@ RopeLlama31Op:
     func: "tileops.perf.formulas.rope_roofline"
 
   source:
-    kernel: src/tileops/kernels/rope.py
+    kernel: tileops/kernels/rope.py
     kernel_map:
       rope_llama31: RopeLlama31Kernel
-    op: src/tileops/ops/rope.py
+    op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
@@ -145,10 +145,10 @@ RopeYarnOp:
     func: "tileops.perf.formulas.rope_roofline"
 
   source:
-    kernel: src/tileops/kernels/rope.py
+    kernel: tileops/kernels/rope.py
     kernel_map:
       rope_yarn: RopeYarnKernel
-    op: src/tileops/ops/rope.py
+    op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
@@ -183,10 +183,10 @@ RopeLongRopeOp:
     func: "tileops.perf.formulas.rope_roofline"
 
   source:
-    kernel: src/tileops/kernels/rope.py
+    kernel: tileops/kernels/rope.py
     kernel_map:
       rope_longrope: RopeLongRopeKernel
-    op: src/tileops/ops/rope.py
+    op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
@@ -220,10 +220,10 @@ RopeNeoxPositionIdsOp:
     func: "tileops.perf.formulas.rope_position_ids_roofline"
 
   source:
-    kernel: src/tileops/kernels/rope.py
+    kernel: tileops/kernels/rope.py
     kernel_map:
       rope_neox_position_ids: RopeNeoxPositionIdsKernel
-    op: src/tileops/ops/rope.py
+    op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true

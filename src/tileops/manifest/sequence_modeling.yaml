@@ -44,10 +44,10 @@ EngramGateConvFwdOp:
     func: "tileops.perf.formulas.engram_gate_conv_fwd_roofline"
 
   source:
-    kernel: src/tileops/kernels/engram/engram_fwd.py
+    kernel: tileops/kernels/engram/engram_fwd.py
     kernel_map:
       engram_gate_conv_fwd: EngramGateConvFwdKernel
-    op: src/tileops/ops/engram.py
+    op: tileops/ops/engram.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
@@ -104,10 +104,10 @@ EngramGateConvBwdOp:
     func: "tileops.perf.formulas.engram_gate_conv_bwd_roofline"
 
   source:
-    kernel: src/tileops/kernels/engram/engram_bwd.py
+    kernel: tileops/kernels/engram/engram_bwd.py
     kernel_map:
       engram_gate_conv_bwd: EngramGateConvBwdKernel
-    op: src/tileops/ops/engram.py
+    op: tileops/ops/engram.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
@@ -156,10 +156,10 @@ EngramDecodeOp:
     func: "tileops.perf.formulas.engram_decode_roofline"
 
   source:
-    kernel: src/tileops/kernels/engram/engram_decode.py
+    kernel: tileops/kernels/engram/engram_decode.py
     kernel_map:
       engram_decode: EngramDecodeKernel
-    op: src/tileops/ops/engram_decode.py
+    op: tileops/ops/engram_decode.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
@@ -187,10 +187,10 @@ FFTC2COp:
     func: "tileops.perf.formulas.fft_c2c_roofline"
 
   source:
-    kernel: src/tileops/kernels/fft.py
+    kernel: tileops/kernels/fft.py
     kernel_map:
       fft_c2c_kernel: FFTC2CKernel
-    op: src/tileops/ops/fft.py
+    op: tileops/ops/fft.py
     test: tests/ops/test_fft.py
     bench: benchmarks/ops/bench_fft.py
     bench_manifest_driven: true
@@ -230,10 +230,10 @@ MHCPreOp:
     func: "tileops.perf.formulas.mhc_pre_roofline"
 
   source:
-    kernel: src/tileops/kernels/mhc/mhc_pre.py
+    kernel: tileops/kernels/mhc/mhc_pre.py
     kernel_map:
       mhc_pre_kernel: MHCPreKernel
-    op: src/tileops/ops/mhc.py
+    op: tileops/ops/mhc.py
     test: tests/ops/test_mhc.py
     bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: true
@@ -265,10 +265,10 @@ MHCPostOp:
     func: "tileops.perf.formulas.mhc_post_roofline"
 
   source:
-    kernel: src/tileops/kernels/mhc/mhc_post.py
+    kernel: tileops/kernels/mhc/mhc_post.py
     kernel_map:
       mhc_post_kernel: MHCPostKernel
-    op: src/tileops/ops/mhc.py
+    op: tileops/ops/mhc.py
     test: tests/ops/test_mhc.py
     bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: true

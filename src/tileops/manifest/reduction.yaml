@@ -44,10 +44,10 @@ SoftmaxFwdOp:
     bytes: "2 * M * N * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/softmax.py
+    kernel: tileops/kernels/reduction/softmax.py
     kernel_map:
       softmax_fwd: SoftmaxKernel
-    op: src/tileops/ops/reduction/softmax.py
+    op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
@@ -96,10 +96,10 @@ LogSoftmaxFwdOp:
     bytes: "2 * M * N * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/softmax.py
+    kernel: tileops/kernels/reduction/softmax.py
     kernel_map:
       softmax_fwd: SoftmaxKernel
-    op: src/tileops/ops/reduction/softmax.py
+    op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
@@ -145,10 +145,10 @@ LogSumExpFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/logsumexp.py
+    kernel: tileops/kernels/reduction/logsumexp.py
     kernel_map:
       logsumexp_fwd: LogSumExpKernel
-    op: src/tileops/ops/reduction/softmax.py
+    op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
@@ -202,10 +202,10 @@ SumFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -251,10 +251,10 @@ MeanFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -296,10 +296,10 @@ AmaxFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -341,10 +341,10 @@ AminFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -394,10 +394,10 @@ ProdFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -444,10 +444,10 @@ VarFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -490,10 +490,10 @@ StdFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -539,10 +539,10 @@ VarMeanFwdOp:
     bytes: "(M * N + 2 * M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/reduce.py
+    kernel: tileops/kernels/reduction/reduce.py
     kernel_map:
       reduce: ReduceKernel
-    op: src/tileops/ops/reduction/reduce.py
+    op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
@@ -590,10 +590,10 @@ ArgmaxFwdOp:
     bytes: "M * N * elem_bytes + M * 8"
 
   source:
-    kernel: src/tileops/kernels/reduction/argreduce.py
+    kernel: tileops/kernels/reduction/argreduce.py
     kernel_map:
       argreduce: ArgreduceKernel
-    op: src/tileops/ops/reduction/argreduce.py
+    op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
     bench_manifest_driven: true
@@ -634,10 +634,10 @@ ArgminFwdOp:
     bytes: "M * N * elem_bytes + M * 8"
 
   source:
-    kernel: src/tileops/kernels/reduction/argreduce.py
+    kernel: tileops/kernels/reduction/argreduce.py
     kernel_map:
       argreduce: ArgreduceKernel
-    op: src/tileops/ops/reduction/argreduce.py
+    op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
     bench_manifest_driven: true
@@ -685,10 +685,10 @@ AllFwdOp:
     bytes: "M * N * elem_bytes + M"
 
   source:
-    kernel: src/tileops/kernels/reduction/logical_reduce.py
+    kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
       logical_reduce: LogicalReduceKernel
-    op: src/tileops/ops/reduction/logical_reduce.py
+    op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
@@ -732,10 +732,10 @@ AnyFwdOp:
     bytes: "M * N * elem_bytes + M"
 
   source:
-    kernel: src/tileops/kernels/reduction/logical_reduce.py
+    kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
       logical_reduce: LogicalReduceKernel
-    op: src/tileops/ops/reduction/logical_reduce.py
+    op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
@@ -775,10 +775,10 @@ CountNonzeroFwdOp:
     bytes: "M * N * elem_bytes + M * 8"
 
   source:
-    kernel: src/tileops/kernels/reduction/logical_reduce.py
+    kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
       logical_reduce: LogicalReduceKernel
-    op: src/tileops/ops/reduction/logical_reduce.py
+    op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
@@ -830,10 +830,10 @@ L1NormFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/vector_norm.py
+    kernel: tileops/kernels/reduction/vector_norm.py
     kernel_map:
       vector_norm: VectorNormKernel
-    op: src/tileops/ops/reduction/vector_norm.py
+    op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
     bench_manifest_driven: true
@@ -881,10 +881,10 @@ L2NormFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/vector_norm.py
+    kernel: tileops/kernels/reduction/vector_norm.py
     kernel_map:
       vector_norm: VectorNormKernel
-    op: src/tileops/ops/reduction/vector_norm.py
+    op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
     bench_manifest_driven: true
@@ -932,10 +932,10 @@ InfNormFwdOp:
     bytes: "(M * N + M) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/reduction/vector_norm.py
+    kernel: tileops/kernels/reduction/vector_norm.py
     kernel_map:
       vector_norm: VectorNormKernel
-    op: src/tileops/ops/reduction/vector_norm.py
+    op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
     bench_manifest_driven: true

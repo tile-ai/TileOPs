@@ -13,10 +13,11 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 - **Input**: `op_name` must be present in [`src/tileops/manifest/`](../../../src/tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
 - **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `PRE_CHECK` when the manifest entry is first loaded, then passed into every sub-skill invocation):
-  - `<source_op>` — manifest `source.op` path (e.g., `src/tileops/ops/reduction/cumulative.py`).
+- **Path convention**: `source.op` and `source.kernel` are distribution-relative (`tileops/ops/...`). The file on disk is that value with `src/` prepended (`src/tileops/ops/...`). Every path below is an on-disk path.
+  - `<source_op>` — `src/` + manifest `source.op` (e.g., `src/tileops/ops/reduction/cumulative.py`).
   - `<source_test>` — manifest `source.test` path (e.g., `tests/ops/test_cumulative.py`).
   - `<source_bench>` — manifest `source.bench` path.
-  - `<source_kernel>` — manifest `source.kernel` path (the primary kernel implementation file).
+  - `<source_kernel>` — `src/` + manifest `source.kernel` (the primary kernel implementation file).
   - `<manifest_signature>` — the `signature` sub-tree from the op's manifest entry, passed verbatim to test-op / implement-op.
   - `<pytorch_equivalent>` — manifest `ref_api` value (e.g., `"torch.cumsum"`) or `null` if the op has no PyTorch reference. Required by test-op.
 - **Output** (SUCCESS path): op file at `source.op` aligned with the manifest; test file `source.test` aligned; `__init__.py` registrations consistent; `status` flipped `spec-only → implemented` (single commit). Side-artefacts in `.foundry/plan/<op_name>/`: `mode.json` (classification), `plan.json` (scaffold-op's §1/§2/§3 when that skill ran), `kernel-check.json` (redesign case only), `pre-rewrite/source.py` (redesign case, removed at CLEANUP on SUCCESS).

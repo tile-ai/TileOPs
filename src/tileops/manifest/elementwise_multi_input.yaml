@@ -35,10 +35,10 @@ WhereFwdOp:
     func: "tileops.perf.formulas.where_fwd_roofline"
 
   source:
-    kernel: src/tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise.py
     kernel_map:
       where: WhereFwdKernel
-    op: src/tileops/ops/elementwise/where.py
+    op: tileops/ops/elementwise/where.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
     bench_manifest_driven: true
@@ -73,10 +73,10 @@ LerpTensorFwdOp:
     func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
 
   source:
-    kernel: src/tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise.py
     kernel_map:
       lerp_tensor: LerpTensorFwdKernel
-    op: src/tileops/ops/elementwise/arithmetic.py
+    op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
     bench_manifest_driven: true

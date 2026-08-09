@@ -68,10 +68,10 @@ GatedDeltaNetPrefillFwdOp:
     func: "tileops.perf.formulas.gated_deltanet_prefill_fwd_roofline"
 
   source:
-    kernel: src/tileops/kernels/gated_deltanet/gated_deltanet_prefill.py
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_prefill.py
     kernel_map:
       GatedDeltaNetPrefillFwdKernel: GatedDeltaNetPrefillFwdKernel
-    op: src/tileops/ops/gated_deltanet.py
+    op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_prefill.py
     bench: benchmarks/ops/bench_gated_deltanet_prefill.py
     bench_manifest_driven: true
@@ -121,12 +121,12 @@ GatedDeltaNetDecodeOp:
     func: "tileops.perf.formulas.gated_deltanet_decode_roofline"
 
   source:
-    kernel: src/tileops/kernels/gated_deltanet_recurrence.py
+    kernel: tileops/kernels/gated_deltanet_recurrence.py
     kernel_map:
       GatedDeltaNetDecodeKernel: GatedDeltaNetDecodeKernel
       GatedDeltaNetDecodeFP32Kernel: GatedDeltaNetDecodeFP32Kernel
       GatedDeltaNetDecodeRawCudaFlaStyleKernel: GatedDeltaNetDecodeRawCudaFlaStyleKernel
-    op: src/tileops/ops/gated_deltanet.py
+    op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_recurrence.py
     bench: benchmarks/ops/bench_gated_deltanet_recurrence.py
     bench_manifest_driven: true
@@ -172,12 +172,12 @@ DeltaNetDecodeOp:
     func: "tileops.perf.formulas.deltanet_decode_roofline"
 
   source:
-    kernel: src/tileops/kernels/deltanet_recurrence.py
+    kernel: tileops/kernels/deltanet_recurrence.py
     kernel_map:
       DeltaNetDecodeKernel: DeltaNetDecodeKernel
       DeltaNetDecodeFP32Kernel: DeltaNetDecodeFP32Kernel
       DeltaNetDecodeRawCudaFlaStyleKernel: DeltaNetDecodeRawCudaFlaStyleKernel
-    op: src/tileops/ops/deltanet_recurrence.py
+    op: tileops/ops/deltanet_recurrence.py
     test: tests/ops/test_deltanet_recurrence.py
     bench: benchmarks/ops/bench_deltanet_recurrence.py
     bench_manifest_driven: true
@@ -224,11 +224,11 @@ GLADecodeOp:
     func: "tileops.perf.formulas.gla_decode_roofline"
 
   source:
-    kernel: src/tileops/kernels/gla_recurrence.py
+    kernel: tileops/kernels/gla_recurrence.py
     kernel_map:
       GLADecodeKernel: GLADecodeKernel
       GLADecodeFP32Kernel: GLADecodeFP32Kernel
-    op: src/tileops/ops/gated_linear_attn.py
+    op: tileops/ops/gated_linear_attn.py
     test: tests/ops/test_gla_recurrence.py
     bench: benchmarks/ops/bench_gla_recurrence.py
     bench_manifest_driven: true
@@ -262,8 +262,8 @@ GatedDeltaNetFwdOp:
   workloads: []
   roofline: {flops: "0", bytes: "0"}
   source:
-    kernel: src/tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
-    op: src/tileops/ops/gated_deltanet.py
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
+    op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_fwd.py
     bench: benchmarks/ops/bench_gated_deltanet.py
     bench_manifest_driven: false
@@ -295,8 +295,8 @@ GatedDeltaNetBwdOp:
   workloads: []
   roofline: {flops: "0", bytes: "0"}
   source:
-    kernel: src/tileops/kernels/gated_deltanet/gated_deltanet_bwd.py
-    op: src/tileops/ops/gated_deltanet.py
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_bwd.py
+    op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_chunkwise_bwd.py
     bench: benchmarks/ops/bench_gated_deltanet.py
     bench_manifest_driven: false
@@ -326,8 +326,8 @@ DeltaNetFwdOp:
   workloads: []
   roofline: {flops: "0", bytes: "0"}
   source:
-    kernel: src/tileops/kernels/deltanet/deltanet_fwd.py
-    op: src/tileops/ops/deltanet.py
+    kernel: tileops/kernels/deltanet/deltanet_fwd.py
+    op: tileops/ops/deltanet.py
     test: tests/ops/test_deltanet_fwd.py
     bench: benchmarks/ops/bench_deltanet.py
     bench_manifest_driven: false
@@ -361,8 +361,8 @@ DeltaNetBwdOp:
   workloads: []
   roofline: {flops: "0", bytes: "0"}
   source:
-    kernel: src/tileops/kernels/deltanet/deltanet_bwd.py
-    op: src/tileops/ops/deltanet.py
+    kernel: tileops/kernels/deltanet/deltanet_bwd.py
+    op: tileops/ops/deltanet.py
     test: tests/ops/test_deltanet_chunkwise_bwd.py
     bench: benchmarks/ops/bench_deltanet.py
     bench_manifest_driven: false
@@ -389,8 +389,8 @@ GLAFwdOp:
   workloads: []
   roofline: {flops: "0", bytes: "0"}
   source:
-    kernel: src/tileops/kernels/gla/gla_fwd.py
-    op: src/tileops/ops/gla.py
+    kernel: tileops/kernels/gla/gla_fwd.py
+    op: tileops/ops/gla.py
     test: tests/ops/test_gla_chunkwise_fwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
     bench_manifest_driven: false
@@ -423,8 +423,8 @@ GLABwdOp:
   workloads: []
   roofline: {flops: "0", bytes: "0"}
   source:
-    kernel: src/tileops/kernels/gla/gla_bwd.py
-    op: src/tileops/ops/gla.py
+    kernel: tileops/kernels/gla/gla_bwd.py
+    op: tileops/ops/gla.py
     test: tests/ops/test_gla_chunkwise_bwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
     bench_manifest_driven: false

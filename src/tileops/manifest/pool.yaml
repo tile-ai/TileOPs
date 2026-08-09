@@ -46,11 +46,11 @@ AvgPool1dFwdOp:
     bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/avg_pool1d.py
+    kernel: tileops/kernels/pool/avg_pool1d.py
     kernel_map:
       avg_pool1d_kernel: AvgPool1dKernel
       avg_pool1d_spatial_kernel: AvgPool1dSpatialKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -110,10 +110,10 @@ AvgPool2dFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/avg_pool2d.py
+    kernel: tileops/kernels/pool/avg_pool2d.py
     kernel_map:
       avg_pool2d_kernel: AvgPool2dKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -180,11 +180,11 @@ AvgPool3dFwdOp:
     bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/avg_pool3d.py
+    kernel: tileops/kernels/pool/avg_pool3d.py
     kernel_map:
       avg_pool3d_kernel: AvgPool3dKernel
       avg_pool3d_spatial_kernel: AvgPool3dSpatialKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -240,10 +240,10 @@ MaxPool1dFwdOp:
     bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/max_pool1d.py
+    kernel: tileops/kernels/pool/max_pool1d.py
     kernel_map:
       max_pool1d_kernel: MaxPool1dKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -299,10 +299,10 @@ MaxPool1dIndicesFwdOp:
     bytes: "(N * C * L_in + N * C * out_W) * elem_bytes + N * C * out_W * 8"
 
   source:
-    kernel: src/tileops/kernels/pool/max_pool1d.py
+    kernel: tileops/kernels/pool/max_pool1d.py
     kernel_map:
       max_pool1d_with_indices_kernel: MaxPool1dWithIndicesKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -369,10 +369,10 @@ MaxPool2dFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/max_pool2d.py
+    kernel: tileops/kernels/pool/max_pool2d.py
     kernel_map:
       max_pool2d_kernel: MaxPool2dKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -440,10 +440,10 @@ MaxPool2dIndicesFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
 
   source:
-    kernel: src/tileops/kernels/pool/max_pool2d.py
+    kernel: tileops/kernels/pool/max_pool2d.py
     kernel_map:
       max_pool2d_with_indices_kernel: MaxPool2dWithIndicesKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -522,10 +522,10 @@ MaxPool3dFwdOp:
     bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/max_pool3d.py
+    kernel: tileops/kernels/pool/max_pool3d.py
     kernel_map:
       max_pool3d_kernel: MaxPool3dKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -605,10 +605,10 @@ MaxPool3dIndicesFwdOp:
     bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes + N * C * out_D * out_H * out_W * 8"
 
   source:
-    kernel: src/tileops/kernels/pool/max_pool3d.py
+    kernel: tileops/kernels/pool/max_pool3d.py
     kernel_map:
       max_pool3d_with_indices_kernel: MaxPool3dWithIndicesKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -663,10 +663,10 @@ AdaptiveAvgPool2dFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/adaptive_avg_pool2d.py
+    kernel: tileops/kernels/pool/adaptive_avg_pool2d.py
     kernel_map:
       adaptive_avg_pool2d_kernel: AdaptiveAvgPool2dKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -720,10 +720,10 @@ AdaptiveMaxPool2dFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
-    kernel: src/tileops/kernels/pool/adaptive_max_pool2d.py
+    kernel: tileops/kernels/pool/adaptive_max_pool2d.py
     kernel_map:
       adaptive_max_pool2d_kernel: AdaptiveMaxPool2dKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
@@ -779,10 +779,10 @@ AdaptiveMaxPool2dIndicesFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
 
   source:
-    kernel: src/tileops/kernels/pool/adaptive_max_pool2d.py
+    kernel: tileops/kernels/pool/adaptive_max_pool2d.py
     kernel_map:
       adaptive_max_pool2d_with_indices_kernel: AdaptiveMaxPool2dWithIndicesKernel
-    op: src/tileops/ops/pool.py
+    op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
