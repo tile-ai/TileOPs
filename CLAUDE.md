@@ -8,7 +8,7 @@ This project follows **design-first, spec-driven** development: design docs and 
 
 ## Development Environment
 
-Activate a virtual environment, then `make install` (deps + pre-commit hooks).
+Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt && pre-commit install`. See [docs/development.md](docs/development.md).
 
 ## Key References
 

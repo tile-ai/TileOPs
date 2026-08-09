@@ -2,6 +2,10 @@
 
 Design-first, spec-driven documentation for TileOPs. [`tileops/manifest/`](../tileops/manifest/) and the documents below are the authoritative spec; code conforms to the spec, not the other way around.
 
+## Getting started
+
+- [development.md](development.md) — install from source, the dev Docker image, test tiers, lint, benchmarks, packaging checks.
+
 ## Design
 
 | Document                                                  | Scope                                                                                                                                       |
