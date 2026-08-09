@@ -43,7 +43,8 @@ class GroupNormFwdOp(Op):
     Note:
         Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+).
         Handles non-contiguous inputs via explicit ``contiguous()`` call.
-        Hidden dimension is padded to 256-element alignment internally.
+        The per-channel affine is applied inside the kernel, so the op does
+        no post-kernel arithmetic.
 
     Args:
         num_groups: Number of groups (manifest ``params.num_groups``).
@@ -138,15 +139,16 @@ class GroupNormFwdOp(Op):
         self,
         M: int,
         D: int,
+        cpg: int,
         dtype: torch.dtype,
         device_index: Optional[int],
     ) -> Kernel:
-        key = (M, D, dtype, device_index, self.eps, self.tune)
+        key = (M, D, cpg, dtype, device_index, self.eps, self.tune)
         kernel = self.get_or_build_kernel(
             "group_norm",
             key,
             lambda: self.kernel_map["group_norm"](
-                M, D, self.eps, dtype, tune=self.tune,
+                M, D, self.eps, dtype, self.num_groups, cpg, tune=self.tune,
             ),
         )
         self.kernel = kernel
@@ -224,25 +226,15 @@ class GroupNormFwdOp(Op):
             )
 
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype)
-        kernel = self._get_kernel(M, D, dtype, x.device.index)
+        kernel = self._get_kernel(M, D, cpg, dtype, x.device.index)
         orig_shape = x.shape
-        x = x.contiguous()
-        x_reshaped = x.reshape(
-            N, self.num_groups, cpg, *spatial,
-        )
-        x_2d = x_reshaped.reshape(M, D)
+        x_2d = x.contiguous().reshape(M, D)
 
-        # The kernel broadcasts its affine row-wise; GroupNorm's per-channel
-        # affine doesn't fit that layout, so normalize without an affine and
-        # apply the per-channel scale/shift after.
-        y_2d = kernel(x_2d)
+        # The kernel derives each element's channel from its position in the
+        # row, so the per-channel affine is applied inside the kernel.
+        y_2d = kernel(x_2d, weight, bias)
 
-        y = y_2d.reshape(N, self.num_groups, cpg, *spatial)
-        y = y.reshape(orig_shape)
-
-        affine_shape = (1, C) + (1,) * len(spatial)
-        y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
-        return y
+        return y_2d.reshape(orig_shape)
 
 
 class GroupNormNoAffineFwdOp(Op):

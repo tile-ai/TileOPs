@@ -267,15 +267,14 @@ def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("n, c, spatial, g", [
-    # M = N * num_groups not divisible by max block_m (16): triggers tail
-    # program reading/writing rows >= M before the M-padding fix.
+    # Very few rows, so the grid is one or two blocks wide.
     (1, 24, (4, 4), 3),   # M = 3
     (3, 30, (2, 2), 5),   # M = 15
     (1, 16, (8, 8), 1),   # M = 1
 ])
 def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
                                          g: int) -> None:
-    """No-affine GroupNorm handles M not divisible by the kernel's block_m."""
+    """No-affine GroupNorm handles a row count smaller than one grid block."""
     dtype = torch.float16
     op = GroupNormNoAffineFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
