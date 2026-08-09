@@ -210,6 +210,17 @@ SumFwdOp:
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
 
+  slots:
+    sum:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 MeanFwdOp:
   ref_api: "torch.mean"
   family: reduction
@@ -259,6 +270,17 @@ MeanFwdOp:
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
 
+  slots:
+    mean:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 AmaxFwdOp:
   ref_api: "torch.amax"
   family: reduction
@@ -304,6 +326,17 @@ AmaxFwdOp:
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
 
+  slots:
+    amax:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 AminFwdOp:
   ref_api: "torch.amin"
   family: reduction
@@ -349,6 +382,17 @@ AminFwdOp:
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
 
+  slots:
+    amin:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 ProdFwdOp:
   ref_api: "torch.prod"
   family: reduction
@@ -406,6 +450,17 @@ ProdFwdOp:
 # reduction -- Welford reductions (correction + dim + keepdim)
 # ---------------------------------------------------------------------------
 
+  slots:
+    prod:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 VarFwdOp:
   ref_api: "torch.var"
   family: reduction
@@ -452,6 +507,18 @@ VarFwdOp:
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
 
+  slots:
+    var:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+        correction: {type: int, from: signature.params.correction}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 StdFwdOp:
   ref_api: "torch.std"
   family: reduction
@@ -498,6 +565,18 @@ StdFwdOp:
     bench: benchmarks/ops/bench_reduce.py
     bench_manifest_driven: true
 
+  slots:
+    std:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+        correction: {type: int, from: signature.params.correction}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: same_as(x)}
 VarMeanFwdOp:
   ref_api: "torch.var_mean"
   family: reduction
@@ -551,6 +630,19 @@ VarMeanFwdOp:
 # reduction -- argmax/argmin (output dtype: int64)
 # ---------------------------------------------------------------------------
 
+  slots:
+    var_mean:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+        correction: {type: int, from: signature.params.correction}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          var: {shape: '[M]', dtype: same_as(x)}
+          mean: {shape: '[M]', dtype: same_as(x)}
 ArgmaxFwdOp:
   ref_api: "torch.argmax"
   family: reduction
