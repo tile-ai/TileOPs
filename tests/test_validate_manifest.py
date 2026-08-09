@@ -550,8 +550,7 @@ class TestSourcePathExistence:
         assert not any("not a file" in e for e in errors), errors
 
     def test_existing_source_files_pass(self, validator, tmp_path):
-        # kernel/op are distribution-relative and resolve under src/; test/bench
-        # name trees that never ship and resolve against the repo root.
+        # kernel/op resolve under src/; test/bench against the repo root.
         (tmp_path / "src").mkdir()
         for rel in ("src/k.py", "src/o.py", "t.py", "b.py"):
             (tmp_path / rel).write_text("# placeholder\n")

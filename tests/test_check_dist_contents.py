@@ -21,8 +21,7 @@ pytestmark = pytest.mark.smoke
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
-# Paths inside the package. The repo and the sdist carry them under `src/`;
-# the wheel is unpacked into site-packages, so there they have no prefix.
+# As they appear in the wheel; `_in_src` gives the repo and sdist form.
 MANIFEST_YAMLS = ["tileops/manifest/attention.yaml", "tileops/manifest/gemm.yaml"]
 NESTED_HEADER = "tileops/kernels/attention/_anchor_helper.h"
 MOE_HEADER = "tileops/kernels/moe/_atomic_helper.h"
@@ -149,40 +148,34 @@ def test_sdist_missing_license_fails(tmp_path):
     assert "LICENSE" in result.stdout
 
 
-def test_sdist_with_extra_top_level_dir_fails(tmp_path):
-    """A development tree reaching the sdist is named, not tolerated."""
-    repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK + ["tests/test_leak.py"])
+@pytest.mark.parametrize(
+    "leaked, named",
+    [("tests/test_leak.py", "tests"), ("constraints.txt", "constraints.txt")],
+    ids=["tree", "root-file"],
+)
+def test_sdist_with_extra_top_level_fails(tmp_path, leaked, named):
+    """Anything the sdist does not need is named, not tolerated."""
+    repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK + [leaked])
     result = run_check(repo, dist)
     assert result.returncode == 1
-    assert "unexpected top-level tests" in result.stdout
+    assert f"unexpected top-level {named}" in result.stdout
 
 
-def test_sdist_with_extra_root_file_fails(tmp_path):
-    """Root files a build does not read are pruned, and the guard says so."""
-    repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK + ["constraints.txt"])
-    result = run_check(repo, dist)
-    assert result.returncode == 1
-    assert "unexpected top-level constraints.txt" in result.stdout
-
-
-def test_wheel_with_foreign_dist_info_fails(tmp_path):
-    """Only this distribution's metadata may ride along."""
-    repo, dist = build_dist(tmp_path, WHEEL_OK + ["other-1.0.dist-info/METADATA"], SDIST_OK)
-    result = run_check(repo, dist)
-    assert result.returncode == 1
-    assert "unexpected top-level other-1.0.dist-info" in result.stdout
-
-
-def test_wheel_with_extra_top_level_fails(tmp_path):
-    """Only the package may install into site-packages.
+@pytest.mark.parametrize(
+    "leaked, named",
+    [("scripts/leaked.py", "scripts"), ("other-1.0.dist-info/METADATA", "other-1.0.dist-info")],
+    ids=["tooling-tree", "foreign-dist-info"],
+)
+def test_wheel_with_extra_top_level_fails(tmp_path, leaked, named):
+    """Only the package and its own metadata may install into site-packages.
 
     Under the previous flat layout every top-level directory was a package
     candidate, so tooling trees reached the wheel and became importable names.
     """
-    repo, dist = build_dist(tmp_path, WHEEL_OK + ["scripts/leaked.py"], SDIST_OK)
+    repo, dist = build_dist(tmp_path, WHEEL_OK + [leaked], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1
-    assert "unexpected top-level scripts" in result.stdout
+    assert f"unexpected top-level {named}" in result.stdout
 
 
 def test_missing_archives_fail(tmp_path):

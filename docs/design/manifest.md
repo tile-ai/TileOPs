@@ -237,16 +237,16 @@ Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resol
 
 ## Entry Structure
 
-| Field                     | Required | Description                                                                                                                   |
-| ------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `family`                  | yes      | Op family. See [below](#family).                                                                                              |
-| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart.                                                                 |
-| `status`                  | yes      | `spec-only` or `implemented`.                                                                                                 |
-| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).                                                                   |
-| `signature`               | yes      | Op interface. See [Signature](#signature).                                                                                    |
-| `workloads`               | yes      | Benchmark shapes/dtypes.                                                                                                      |
-| `roofline`                | yes      | Performance model.                                                                                                            |
-| `source`                  | yes      | Implementation paths. `kernel` / `op` are distribution-relative (prepend `src/` on disk); `test` / `bench` are repo-relative. |
+| Field                     | Required | Description                                                   |
+| ------------------------- | -------- | ------------------------------------------------------------- |
+| `family`                  | yes      | Op family. See [below](#family).                              |
+| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart. |
+| `status`                  | yes      | `spec-only` or `implemented`.                                 |
+| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).   |
+| `signature`               | yes      | Op interface. See [Signature](#signature).                    |
+| `workloads`               | yes      | Benchmark shapes/dtypes.                                      |
+| `roofline`                | yes      | Performance model.                                            |
+| `source`                  | yes      | Implementation paths.                                         |
 
 ### `family`
 

@@ -10,8 +10,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `src/tileops/ma
 ## Contract
 
 - **Input**: `op_name` must be present in [`src/tileops/manifest/`](../../../src/tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions), so a spec-only entry needs it added before the scaffold can run.
-- **Path convention**: `source.op` and `source.kernel` are distribution-relative (`tileops/ops/...`). The file on disk is that value with `src/` prepended (`src/tileops/ops/...`). Every path below is an on-disk path.
-- **Output**: new file at `src/` + manifest `source.op` (e.g., `src/tileops/ops/reduction/cumulative.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `src/tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `src/tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
+- **Output**: new file at `src/` + manifest `source.op` (e.g., `src/tileops/ops/reduction/cumulative.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that file's parent directory (e.g., `src/tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: that parent directory is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `src/tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
 - **Constraints**:
@@ -77,7 +76,7 @@ PY
 
 Extract: `family`, `status`, `signature.inputs`, `signature.outputs`, `signature.params`, `signature.static_dims`, `signature.shape_rules`, `source.kernel_map`, `source.op`, `source.kernel`, `roofline.vars`, `roofline.flops`, `roofline.bytes`.
 
-Derive the target file path by prepending `src/` to `source.op` (e.g. `src/tileops/ops/reduction/cumulative.py`). The **filesystem package directory** is `source.op`'s parent (e.g. `src/tileops/ops/reduction/`). Do not use the manifest `family` field to compute paths — it is a semantic label, and some ops have `family` distinct from their filesystem parent (e.g., `CumsumFwdOp` has `family: scan` but lives under `reduction/`). Module filename is `source.op`'s basename without `.py`.
+Derive the target file path by prepending `src/` to `source.op` (e.g. `src/tileops/ops/reduction/cumulative.py`). The **filesystem package directory** is that file's parent (e.g. `src/tileops/ops/reduction/`). Do not use the manifest `family` field to compute paths — it is a semantic label, and some ops have `family` distinct from their filesystem parent (e.g., `CumsumFwdOp` has `family: scan` but lives under `reduction/`). Module filename is `source.op`'s basename without `.py`.
 
 ### 2. PRE_CHECK
 

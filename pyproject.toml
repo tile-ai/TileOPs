@@ -65,10 +65,9 @@ build-backend = "setuptools.build_meta"
 fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
-# src layout: only what lives under src/ is importable from an install, so a new
-# top-level directory cannot reach the wheel by being forgotten in an exclude
-# list. It also keeps the repo root off sys.path, so tests import the installed
-# package rather than the source tree.
+# src layout: a new top-level directory cannot reach the wheel by being forgotten
+# in an exclude list, and the repo root stays off sys.path, so tests import the
+# installed package rather than the source tree.
 where = ["src"]
 
 [tool.setuptools.package-data]

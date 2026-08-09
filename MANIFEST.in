@@ -10,9 +10,7 @@ prune .claude
 prune .foundry
 prune scripts
 
-# Root files a build does not read. setuptools-scm would otherwise ship every
-# tracked one; the sdist whitelist in scripts/ci/check_dist_contents.py holds
-# this line to its word.
+# Same rule, for root files rather than trees.
 exclude .gitignore
 exclude .pre-commit-config.yaml
 exclude CLAUDE.md

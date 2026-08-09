@@ -50,8 +50,6 @@ from tileops.manifest.shape_rules import (  # noqa: E402
     reduced_axes,
 )
 
-# The directory the distribution unpacks to. `source.kernel` / `source.op`
-# are written relative to it, so they stay valid inside the installed wheel.
 PACKAGE_ROOT = "src"
 DISTRIBUTION_RELATIVE_KEYS = frozenset({"kernel", "op"})
 

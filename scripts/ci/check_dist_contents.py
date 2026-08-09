@@ -13,9 +13,8 @@ resource added later is covered the day it lands.
 Nothing extra. The top level of each artifact is checked against a whitelist:
 the wheel may contain only the package and its ``.dist-info``; the sdist may
 contain only the ``src/`` tree plus root files. A whitelist is what makes a
-newly added top-level directory an error — a blacklist only catches the trees
-someone remembered to name, which is how ``scripts/`` and ``workloads/`` came
-to ship in the wheel under the previous flat layout.
+newly added top-level directory an error; a blacklist only catches the trees
+someone remembered to name.
 
 Stdlib only (``zipfile``/``tarfile``), so it runs identically in CI and on a
 developer machine: ``python scripts/ci/check_dist_contents.py`` after
@@ -31,13 +30,10 @@ from pathlib import Path
 
 # Import name, and the wheel's only permitted top-level entry.
 PACKAGE_DIR = "tileops"
-# Where that package lives in the repo and in the sdist.
 SOURCE_PACKAGE_DIR = f"src/{PACKAGE_DIR}"
 SDIST_EXTRA_REQUIRED = ("LICENSE", "README.md")
-# What the sdist may carry at its top level. `PKG-INFO` and `setup.cfg` are
-# written by the build; the rest a build reads. Anything else is pruned in
-# MANIFEST.in, and listing them here is what keeps that pruning honest.
 SDIST_ALLOWED_DIRS = frozenset({"src"})
+# `PKG-INFO` and `setup.cfg` are written by the build; the rest a build reads.
 SDIST_ALLOWED_FILES = frozenset({
     "LICENSE", "README.md", "MANIFEST.in", "pyproject.toml", "PKG-INFO", "setup.cfg",
 })
@@ -95,8 +91,7 @@ def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
         if wheel_entry not in names
     ]
     tops = {name.split("/", 1)[0] for name in names if name}
-    # `<name>-<version>.dist-info`, not any `.dist-info`: a second one would be
-    # another distribution's metadata riding along.
+    # Not any `.dist-info`: a second one is another distribution's metadata.
     own_dist_info = f"{PACKAGE_DIR}-"
     extra = sorted(
         t

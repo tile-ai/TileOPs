@@ -70,9 +70,9 @@ Look up `op_name` in `src/tileops/manifest/`.
 
 Lookup is **class-based**, not filename-based — many TileOPs ops share a file (e.g., `SumFwdOp` and `MeanFwdOp` both in `src/tileops/ops/reduction/reduce.py`).
 
-1. **`source.op`**: scan `src/tileops/ops/**/*.py` for `class <op_name>(...)` (AST or `grep -rlE "^class <op_name>\(" src/tileops/ops/`).
-   - Exactly one match → that file path.
-   - Zero matches → true greenfield. Default to `src/tileops/ops/<snake_name>.py` (use a family subdirectory if a sibling-family entry suggests one). `<snake_name>` = `op_name` minus trailing `FwdOp` / `BwdOp`, snake_cased (`RMSNormFwdOp` → `rms_norm`). File may not exist yet; caller scaffolds afterward.
+1. **`source.op`**: scan `src/tileops/ops/**/*.py` for `class <op_name>(...)` (AST or `grep -rlE "^class <op_name>\(" src/tileops/ops/`). The value written to the manifest is the match with the leading `src/` removed — `source.op` and `source.kernel` are distribution-relative.
+   - Exactly one match → that file path, minus `src/`.
+   - Zero matches → true greenfield. Default to `tileops/ops/<snake_name>.py` (use a family subdirectory if a sibling-family entry suggests one). `<snake_name>` = `op_name` minus trailing `FwdOp` / `BwdOp`, snake_cased (`RMSNormFwdOp` → `rms_norm`). File may not exist yet; caller scaffolds afterward.
    - Multiple → BLOCKED disambiguation.
 1. **`source.kernel`** (required by L0; `fix-manifest` cannot fill it later):
    - If `source.op` was found by class lookup: read its imports for a `Kernel` subclass; apply class-lookup under `src/tileops/kernels/**/*.py`. One match → that file. Multiple → BLOCKED disambiguation.
