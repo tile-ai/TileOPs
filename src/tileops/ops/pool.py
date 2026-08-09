@@ -1175,7 +1175,7 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
         return _adaptive_pool2d_roofline(self, indices=True)
 
 
-# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
+# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
 
 
 @torch.library.custom_op("top::pool_fwd", mutates_args=())

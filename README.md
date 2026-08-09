@@ -7,10 +7,10 @@
 
 <p>
     <a href="https://github.com/tile-ai/tilelang"><img src="https://img.shields.io/badge/built%20on-TileLang-1E90FF" alt="Built on TileLang"></a>
-    <a href="https://github.com/tile-ai/TileOPs/tree/main/tileops/manifest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
+    <a href="https://github.com/tile-ai/TileOPs/tree/main/src/tileops/manifest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
     <a href="https://github.com/tile-ai/TileOPs/tree/main/benchmarks"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
-    <!-- <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version"></a> -->
+    <!-- <a href="https://pypi.org/project/src/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version"></a> -->
   </p>
 
 <p>
@@ -56,7 +56,7 @@ implementation. The project is organised around the spec rather than around the 
 
 ## How it works
 
-Each operator is declared in [`tileops/manifest/`](tileops/manifest/) before it is implemented.
+Each operator is declared in [`src/tileops/manifest/`](src/tileops/manifest/) before it is implemented.
 The entry drives code generation, testing, and benchmarking:
 
 ```yaml

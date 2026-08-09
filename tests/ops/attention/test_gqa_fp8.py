@@ -3,7 +3,7 @@ import torch
 
 from tileops.kernels.attention import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
 from tileops.ops import GroupedQueryAttentionPrefillFwdOp
-from tileops.testing.gqa_fp8_utils import (
+from workloads.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )

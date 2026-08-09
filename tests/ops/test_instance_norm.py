@@ -337,7 +337,7 @@ def test_instance_norm_init_signature_covers_manifest_params(
 
     manifest_file = (
         Path(__file__).resolve().parents[2]
-        / "tileops" / "manifest" / "normalization.yaml"
+        / "src" / "tileops" / "manifest" / "normalization.yaml"
     )
     with open(manifest_file) as fp:
         manifest = yaml.safe_load(fp) or {}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarize the ops manifest: status, coverage, workloads, roofline.
 
-The manifest at ``tileops/manifest/`` is the project's source of truth.
+The manifest at ``src/tileops/manifest/`` is the project's source of truth.
 This script aggregates it into a single snapshot intended for CI status
 reporting and project dashboards.
 

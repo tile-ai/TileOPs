@@ -14,7 +14,7 @@ from tileops.manifest import load_manifest, load_workloads, manifest_files
 pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
+MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest"
 
 
 class TestManifestStructure:

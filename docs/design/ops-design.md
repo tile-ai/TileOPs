@@ -249,7 +249,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Input.** The class name (Step 2) and the op's source filename.
 
-**Output (append to `tileops/ops/reduction/__init__.py`):**
+**Output (append to `src/tileops/ops/reduction/__init__.py`):**
 
 ```python
 # --- ExampleCumsumKernel ops ---
@@ -301,7 +301,7 @@ enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
 warm-up before `torch.compile` only hides the miss path and does not
 satisfy the cold-call contract.
 
-**Mechanism** (`tileops/ops/compile_boundary.py`; reference adopters:
+**Mechanism** (`src/tileops/ops/compile_boundary.py`; reference adopters:
 `pool.py`, `norm/batch_norm.py`):
 
 1. `Op.dispatch_kernel` registers every op in a weak instance registry at

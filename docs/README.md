@@ -1,6 +1,6 @@
 # TileOPs Documentation
 
-Design-first, spec-driven documentation for TileOPs. [`tileops/manifest/`](../tileops/manifest/) and the documents below are the authoritative spec; code conforms to the spec, not the other way around.
+Design-first, spec-driven documentation for TileOPs. [`src/tileops/manifest/`](../src/tileops/manifest/) and the documents below are the authoritative spec; code conforms to the spec, not the other way around.
 
 ## Getting started
 
@@ -8,13 +8,13 @@ Design-first, spec-driven documentation for TileOPs. [`tileops/manifest/`](../ti
 
 ## Design
 
-| Document                                                  | Scope                                                                                                                                       |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| [architecture.md](design/architecture.md)                 | System modules (M1–M8), data flow, agent production loop, directory structure.                                                              |
-| [manifest.md](design/manifest.md)                         | `tileops/manifest/` spec: signature, workloads, roofline fields, source.                                                                    |
-| [ops-design.md](design/ops-design.md)                     | Op interface execution guide — how to add a new op.                                                                                         |
-| [ops-design-reference.md](design/ops-design-reference.md) | Op interface detail reference: interface tables, codegen, naming, protocol.                                                                 |
-| [roofline.md](design/roofline.md)                         | `tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator, benchmark, M5, op codegen). |
+| Document                                                  | Scope                                                                                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| [architecture.md](design/architecture.md)                 | System modules (M1–M8), data flow, agent production loop, directory structure.                                                                  |
+| [manifest.md](design/manifest.md)                         | `src/tileops/manifest/` spec: signature, workloads, roofline fields, source.                                                                    |
+| [ops-design.md](design/ops-design.md)                     | Op interface execution guide — how to add a new op.                                                                                             |
+| [ops-design-reference.md](design/ops-design-reference.md) | Op interface detail reference: interface tables, codegen, naming, protocol.                                                                     |
+| [roofline.md](design/roofline.md)                         | `src/tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator, benchmark, M5, op codegen). |
 
 ## Process
 

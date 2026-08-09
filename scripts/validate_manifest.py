@@ -36,8 +36,11 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# Documented and skill-driven callers run this script directly, without
+# installing the package, so the source tree has to be reachable.
+_SRC = str(REPO_ROOT / "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
@@ -47,7 +50,10 @@ from tileops.manifest.shape_rules import (  # noqa: E402
     reduced_axes,
 )
 
-MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
+PACKAGE_ROOT = "src"
+DISTRIBUTION_RELATIVE_KEYS = frozenset({"kernel", "op"})
+
+MANIFEST_DIR = REPO_ROOT / PACKAGE_ROOT / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
@@ -669,6 +675,11 @@ def check_l0(
 def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
     """Check that string ``source`` values of non-spec-only ops are real files.
 
+    ``kernel`` and ``op`` are written as they appear inside the distribution,
+    because the manifest ships in the wheel and a path it names must exist
+    there; on disk they resolve under ``src/``. ``test`` and ``bench`` name
+    trees that never ship, so they are repo-relative and resolve as written.
+
     Spec-only entries are skipped — their source paths are placeholders
     until implementation. Non-string values (e.g. ``kernel_map`` mappings,
     ``source.kernel`` lists, nulls) are out of scope here; their structure
@@ -683,7 +694,8 @@ def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
     for key, rel_path in source.items():
         if not isinstance(rel_path, str):
             continue
-        if not (repo_root / rel_path).is_file():
+        base = repo_root / PACKAGE_ROOT if key in DISTRIBUTION_RELATIVE_KEYS else repo_root
+        if not (base / rel_path).is_file():
             errors.append(
                 f"[schema] {op_name}: source.{key} is not a file: {rel_path}"
             )

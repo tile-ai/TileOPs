@@ -58,8 +58,8 @@ repos:
         name: shipped-source reference lint
         entry: python scripts/lint/shipped_refs_lint.py
         language: python
-        files: ^(tileops|tests|benchmarks|scripts)/
-        exclude: ^tileops/manifest/
+        files: ^(src/tileops|tests|benchmarks|scripts|workloads)/
+        exclude: ^src/tileops/manifest/
         types: [text]
 
   - repo: https://github.com/executablebooks/mdformat

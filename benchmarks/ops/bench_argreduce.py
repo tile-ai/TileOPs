@@ -2,7 +2,7 @@
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes, dtypes, and op-call parameters (e.g. ``dim``) are loaded
-from the ops manifest (``tileops/manifest/``) — the benchmark must not
+from the ops manifest (``src/tileops/manifest/``) — the benchmark must not
 hard-code op parameters that are declared on manifest workload entries.
 """
 

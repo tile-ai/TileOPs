@@ -1,4 +1,4 @@
-- Every `tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
+- Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
 - Intra-package imports: relative (`from .op import Op`). Cross-package: absolute (`tileops.foo.bar`).
 
@@ -36,4 +36,4 @@
 
 - Shipped source (code, docstrings, manifest YAML) must not reference issue/PR numbers, AC labels, round numbers, reviewer names, or `Follow-up: #N`. See [domain-rules/manifest-spec.md](../domain-rules/manifest-spec.md).
 
-  Discovery scan: `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' --exclude-dir=manifest tileops/ tests/ benchmarks/ scripts/`
+  Discovery scan: `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' --exclude-dir=manifest src/tileops/ tests/ benchmarks/ scripts/`

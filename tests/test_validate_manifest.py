@@ -2,7 +2,7 @@
 
 Verifies that the manifest validator correctly implements schema/signature/shape/dtype/bench checks.
 Uses synthetic manifest data to test individual check functions,
-plus an integration test against the real ops manifest (tileops/manifest/).
+plus an integration test against the real ops manifest (src/tileops/manifest/).
 """
 
 import contextlib
@@ -550,8 +550,10 @@ class TestSourcePathExistence:
         assert not any("not a file" in e for e in errors), errors
 
     def test_existing_source_files_pass(self, validator, tmp_path):
-        for name in ("k.py", "o.py", "t.py", "b.py"):
-            (tmp_path / name).write_text("# placeholder\n")
+        # kernel/op resolve under src/; test/bench against the repo root.
+        (tmp_path / "src").mkdir()
+        for rel in ("src/k.py", "src/o.py", "t.py", "b.py"):
+            (tmp_path / rel).write_text("# placeholder\n")
         manifest_file = _write_manifest(
             tmp_path, {"my_op": _make_entry(status="implemented", kernel_map={})},
         )

@@ -72,7 +72,7 @@ between a release and a main commit changes nothing but the build-arg and the ta
 
 Then update the tag in the `docker run` line of
 [`docs/development.md`](../../docs/development.md#dev-docker-image) — the one place in the repo
-that echoes it. The two mentions in `tileops/kernels/` record where vendored code and a
+that echoes it. The two mentions in `src/tileops/kernels/` record where vendored code and a
 verified behaviour came from; they are frozen, so leave them alone.
 
 ## Register a self-hosted runner

@@ -2,7 +2,7 @@ For `[Feat]` and `[Enhancement]`. For op/kernel PRs the structural axis is gover
 
 #### Checklist
 
-- [ ] Op/kernel public interface matches its `tileops/manifest/` entry
+- [ ] Op/kernel public interface matches its `src/tileops/manifest/` entry
 - [ ] Manifest edits, if any, touch `status` or the `source.*` discoverability pointers — a contractual field changed to match the code inverts the spec relationship (`.claude/domain-rules/manifest-spec.md`)
 - [ ] If feature is an op, spot-check the diff against at least one of the structural checks below; flag any divergence (full rules in `docs/design/ops-design-reference.md`):
   - Class name ≡ manifest entry key

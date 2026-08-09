@@ -1,4 +1,4 @@
-"""Tests for tileops/kernels/reduction/_primitives.py.
+"""Tests for src/tileops/kernels/reduction/_primitives.py.
 
 Validates the shared reduction primitives: utility functions, constants,
 and T.macro factory functions.  Tests verify both API contracts (callability,

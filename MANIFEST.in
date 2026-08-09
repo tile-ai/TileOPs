@@ -8,3 +8,10 @@ prune workloads
 prune .github
 prune .claude
 prune .foundry
+prune scripts
+
+# Same rule, for root files rather than trees.
+exclude .gitignore
+exclude .pre-commit-config.yaml
+exclude CLAUDE.md
+exclude constraints.txt

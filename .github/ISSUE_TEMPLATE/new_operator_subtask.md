@@ -35,7 +35,7 @@ Refer to:
 - docs/design/roofline.md for roofline authoring and benchmark consumers
 -->
 
-- [ ] Public Op has a `tileops/manifest/` entry (or updates an existing entry).
+- [ ] Public Op has a `src/tileops/manifest/` entry (or updates an existing entry).
 - [ ] Manifest `signature` declares inputs, outputs, params, shape rules, and dtype coverage.
 - [ ] Manifest `workloads` declare benchmark shapes/dtypes; unit-test edge cases are not generated from manifest workloads.
 - [ ] Manifest `roofline` is present and consumable by `op.eval_roofline()`.
