@@ -414,3 +414,21 @@ class TestTunedMode:
         op.autotune()
         op.make_delegate().build(torch.float16)
         assert tuned == ["torch.float16"]
+
+
+class TestInstanceKeys:
+    def test_a_collected_instances_key_is_never_handed_out_again(self):
+        """An op reaching a used key inherits that op's compiled shapes."""
+        import gc
+
+        class _Dummy:
+            pass
+
+        keys = set()
+        for _ in range(50):
+            op = _Dummy()
+            keys.add(op_base.register_instance(op))
+            del op
+            gc.collect()
+
+        assert len(keys) == 50
