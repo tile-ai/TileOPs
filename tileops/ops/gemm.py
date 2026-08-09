@@ -8,9 +8,9 @@ from tileops.kernels.gemm import (
     GemmKernel,
     GemvKernel,
 )
+from tileops.kernels.gemm_call import GemmCall
 from tileops.kernels.gemm_w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
 
 from .op_base import Op
 
@@ -67,11 +67,7 @@ class GemmOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernels: Dict[str, Kernel] = {"gemm_kernel": GemmKernel}
-        # GemvKernel is SM90-only; only advertise it where it can install.
-        if get_sm_version() in (GemvKernel.supported_archs or []):
-            kernels["gemv_kernel"] = GemvKernel
-        return kernels
+        return {"gemm_kernel": GemmKernel, "gemv_kernel": GemvKernel}
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
         """Derive logical ``(m, n, k)`` from input shapes per the trans flags."""
@@ -103,12 +99,12 @@ class GemmOp(Op):
         ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
         covering all four ``(trans_a, trans_b)`` layouts.
         """
-        gemv_lhs_row = m == 1 and not self.trans_a and self.trans_b
-        gemv_rhs_col = n == 1 and not self.trans_a and not self.trans_b
-        gemv_cls = self.kernel_map.get("gemv_kernel")
-        if (gemv_lhs_row or gemv_rhs_col) and gemv_cls is not None:
-            mode = "lhs_row" if gemv_lhs_row else "rhs_col"
+        call = GemmCall(m=m, n=n, k=k, dtype=dtype,
+                        trans_a=self.trans_a, trans_b=self.trans_b)
+        if self.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == "gemv_kernel":
             # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
+            mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
+            gemv_cls = self.kernel_map["gemv_kernel"]
             kernel = self.get_or_build_kernel(
                 "gemv_kernel",
                 (mode, m, n, k, dtype),

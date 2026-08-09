@@ -9,6 +9,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.trace import trace
 from tileops.utils import get_sm_version, str2dtype
 
+from .gemm_call import gemv_region
+
 __all__ = [
     'GemmFp8BlockScaledKernel',
     'GemmFp8EpilogueKernel',
@@ -535,6 +537,7 @@ class GemmKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+    general = True
 
     def __init__(self,
                  m: int,
@@ -678,7 +681,13 @@ def _(n: int, k: int,
 
 
 class GemvKernel(Kernel):
+    """Matrix-vector product; serves the layouts a vector operand can take."""
+
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return gemv_region(call)
 
     def __init__(self,
                  n: int,
