@@ -35,15 +35,15 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 ### Kernel selection
 
-**Construction reads no device property.**
+**Construction reads no device property.** An op constructs where it is imported. The tensors arrive later, perhaps on a device the process has not touched, perhaps on hardware where the probe does not exist at all. Installing the kernel map resolves classes and nothing more; a target that cannot run the op is refused when a kernel is first selected, built or called — by the implementation, which owns the architectures it was written for.
 
-An op that probes the device in `__init__` states, in code, that it knows where it will run. Most ops do not: the tensors arrive later, they may be on a device the process has not touched yet, and on hardware other than the one being probed the probe is not merely wrong but unavailable. So installing the kernel map resolves classes only, and a target that cannot run the op is refused when a kernel is first selected, built or called — by the implementation, which owns the architectures it was written for.
+**Choosing a slot is the op's; choosing among a slot's implementations is not.** Which slot serves a call follows from the call's user-visible semantics. Which implementation of that slot runs belongs with the implementations.
 
-**Choosing a slot is the op's; choosing among a slot's implementations is not.** Which slot serves a call follows from the call's user-visible semantics, and that is the op's own contract. Which implementation of that slot runs belongs with the implementations being considered.
+**An implementation states the region it serves, positively.** Never by excluding a sibling, never by architecture — its declared support already answers that.
 
-**An implementation answers for itself.** It states positively the region it serves — never by excluding a sibling, and never by architecture, which its declared support already answers. Selection takes the one that applies; the implementation declared as the general one runs where no specialised one does. Order decides nothing: nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies is asked the same question as the class it replaces, so a specialisation can be swapped without the general implementation naming it.
+**Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
 
-That rule is implementation choice within one slot and nothing else. Choosing the slot sits above it; dtype specialization sits beside it. Neither is expressed through it. See [S13](ops-design-reference.md#slot-s13) for the surface that carries this.
+The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](ops-design-reference.md#slot-s13).
 
 `self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
 
