@@ -54,11 +54,6 @@ class Kernel(ABC):
         return True
 
     @classmethod
-    def supports(cls, call: Any) -> bool:
-        """Whether this class can serve *call* on the device the call names."""
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: Any) -> Optional[str]:
         """Why this class cannot serve *call*, or ``None`` when it can.
 

@@ -2,8 +2,8 @@
 
 The tables here are the record that moving the choice out of per-op predicates
 changed no dispatch on SM90: one row per capability region the attention ops
-used to encode by hand. Selection is asserted through ``select_key``,
-which resolves the key without compiling it — the tables would otherwise cost
+used to encode by hand. Selection is asserted through
+``select_kernel_key``, which resolves the key without compiling it — the tables would otherwise cost
 one kernel compile per row.
 """
 
@@ -260,10 +260,9 @@ class _NeverApplies(Kernel):
 
 
 # Two real dispatch keys of the packed-prefill slot: _SPECIAL stands for a
-# specialised slot, _GENERAL for the one behind it. Which installation path a
-# test uses is part of what it says — an op declaring its own implementations
-# subclasses ``default_kernel_map``; a caller replacing one passes
-# ``kernel_map=``, which is what makes it an override.
+# specialised slot, _GENERAL for the one behind it. An implementation supplied
+# through ``kernel_map=`` counts as a replacement the caller owns; one an op
+# declares itself does not.
 _SPECIAL = "gqa_prefill_causal_fwd_kernel"
 _GENERAL = "gqa_prefill_fwd_kernel"
 _RULE_KEYS = (_GENERAL, _SPECIAL)

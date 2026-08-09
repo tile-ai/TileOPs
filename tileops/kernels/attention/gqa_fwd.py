@@ -455,8 +455,8 @@ def _(batch: int, heads: int,
 class GQAPrefillFwdKernel(PackedPrefillKernel):
     """General dense packed prefill: any head dim, causal or not, fp16/bf16.
 
-    Serves every uniform packed request the warp-specialized causal kernel does
-    not, so the two regions are disjoint and selection needs no ordering.
+    Serves the whole dense region, and is marked ``general`` so that where a
+    specialised implementation of this key also applies, that one runs instead.
     """
 
     supported_archs: list[int] = [80, 89, 90]
@@ -465,8 +465,6 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        # The general dense implementation: it serves the dense region except
-        # the sub-region the warp-specialized causal kernel owns.
         return dense_prefill_region(call)
 
     def _build_program(self) -> None:

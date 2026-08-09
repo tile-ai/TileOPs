@@ -125,13 +125,9 @@ def square_ws_prefill_region(call: AttentionCall) -> bool:
 def causal_ws_prefill_region(call: AttentionCall) -> bool:
     """The warp-specialized causal packed-prefill region: head dim 128, 16-bit.
 
-    Owned by ``GQAPrefillFwdWsPersistentCausalKernel``; the general dense kernel
-    behind it excludes exactly this region.
-
-    The architecture is part of the region, not only of the owning class's
-    ``supported_archs``: the general kernel steps aside for this region, so on a
-    device where the warp-specialized kernel cannot run the region must be empty
-    rather than unserved.
+    Owned by ``GQAPrefillFwdWsPersistentCausalKernel``. Architecture is not part
+    of it: ``Kernel.refusal`` settles ``supported_archs`` before it asks
+    ``applies``, so a region never repeats what the class already declares.
     """
     return (
         dense_prefill_region(call)

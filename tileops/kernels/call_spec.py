@@ -1,10 +1,4 @@
-"""The base every family's call record shares.
-
-``Op.select_kernel_key`` asks each implementation ``supports(call)``, and
-``Kernel.supports`` reads one field: ``arch``. Resolving it belongs here rather
-than in each family, so a family's record carries only its own semantic fields.
-See docs/design/ops-design.md § Kernel selection.
-"""
+"""Shared device facts for call records."""
 
 import dataclasses
 
@@ -13,13 +7,12 @@ __all__ = ["CallSpec"]
 
 @dataclasses.dataclass(frozen=True)
 class CallSpec:
-    """What a call runs on, as the facts selection filters against.
+    """What a call runs on: the device facts every family's record carries.
 
-    ``arch`` and ``h200`` describe the device the call will run on, read when the
-    call is made rather than when the op is constructed: an op constructs on a
-    machine that cannot run it and is refused when a kernel is selected. A caller
-    that states ``arch`` gets what it stated, which is how a test drives another
-    architecture without a device.
+    ``Op.select_kernel_key`` asks each implementation for its ``refusal(call)``,
+    and a refusal reads ``arch``. A caller that states ``arch`` and ``h200`` gets
+    what it stated; a record that states neither reads them when it is built,
+    which is when the call is made rather than when the op is constructed.
 
     A family subclasses this and adds its own semantic fields.
     """
