@@ -1,8 +1,11 @@
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.norm import GroupNormKernel
 from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormNoAffineFwdOp
 from workloads.normalization import GroupNormWorkload
 
@@ -208,6 +211,41 @@ def test_group_norm_rejects_affine_device_mismatch() -> None:
         op(x, weight_other, bias_same)
     with pytest.raises(ValueError, match="bias on"):
         op(x, weight_same, bias_other)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("n, c, spatial, g, block_m", [
+    # M = 9 rows, D = 256: the tail row block runs past M with aligned columns.
+    (3, 24, (4, 8), 3, 4),
+    # M = 9 rows, D = 200: the tail row block and the column padding together.
+    (3, 24, (5, 5), 3, 4),
+])
+def test_group_norm_affine_multi_row_block(n: int, c: int, spatial: tuple,
+                                           g: int, block_m: int) -> None:
+    """Per-channel affine stays correct when a row block runs past M.
+
+    ``block_m > 1`` is an autotune candidate and M = N*G need not be a
+    multiple of it, so the last block covers rows that do not exist.
+    """
+    dtype = torch.float16
+    cpg = c // g
+    m, d = n * g, cpg * math.prod(spatial)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    weight = torch.randn(c, dtype=dtype, device="cuda")
+    bias = torch.randn(c, dtype=dtype, device="cuda")
+
+    kernel = GroupNormKernel(
+        m, d, 1e-5, dtype, g, cpg,
+        config={"block_m": block_m, "threads": 128},
+    )
+    y = kernel(x.reshape(m, d), weight, bias).reshape(x.shape)
+
+    y_ref = F.group_norm(
+        x.float(), g, weight=weight.float(), bias=bias.float(), eps=1e-5,
+    ).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
 
 
 class GroupNormNoAffineFixture(FixtureBase):

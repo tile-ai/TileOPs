@@ -48,10 +48,9 @@ class InstanceNormFwdOp(Op):
 
     Note:
         Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+). Delegates
-        to :class:`GroupNormKernel` with one group per channel. Hidden
-        dimension is padded to 256-element alignment internally. The
-        running-stats variant (``use_input_stats=False``) is out of scope
-        for this op.
+        to :class:`GroupNormKernel` with one group per channel, which
+        applies the per-channel affine itself. The running-stats variant
+        (``use_input_stats=False``) is out of scope for this op.
 
     Args:
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
@@ -176,15 +175,18 @@ class InstanceNormFwdOp(Op):
         self,
         M: int,
         D: int,
+        C: int,
         dtype: torch.dtype,
         device_index: Optional[int],
     ) -> Kernel:
-        key = (M, D, dtype, device_index, self.eps, self.tune)
+        # One group per channel, so a row's every element belongs to the same
+        # channel: num_groups=C with channels_per_group=1.
+        key = (M, D, C, dtype, device_index, self.eps, self.tune)
         kernel = self.get_or_build_kernel(
             "group_norm",
             key,
             lambda: self.kernel_map["group_norm"](
-                M, D, self.eps, dtype, tune=self.tune,
+                M, D, self.eps, dtype, C, 1, tune=self.tune,
             ),
         )
         self.kernel = kernel
@@ -246,21 +248,16 @@ class InstanceNormFwdOp(Op):
             )
 
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype)
-        kernel = self._get_kernel(M, D, dtype, x.device.index)
+        kernel = self._get_kernel(M, D, C, dtype, x.device.index)
         orig_shape = x.shape
-        x = x.contiguous()
-        x_2d = x.reshape(M, D)
+        x_2d = x.contiguous().reshape(M, D)
 
-        # The kernel broadcasts its affine row-wise; the per-channel affine
-        # is applied after, so normalize without an affine here.
-        y_2d = kernel(x_2d)
+        # Row m of the (N*C, spatial_size) view is channel m % C throughout,
+        # so the kernel applies the per-channel affine itself.
+        y_2d = kernel(x_2d, weight, bias)
 
         # Reshape back: (N*C, spatial_size) -> (N, C, *spatial)
-        y = y_2d.reshape(orig_shape)
-
-        affine_shape = (1, C) + (1,) * len(spatial)
-        y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
-        return y
+        return y_2d.reshape(orig_shape)
 
 
 class InstanceNormNoAffineFwdOp(Op):

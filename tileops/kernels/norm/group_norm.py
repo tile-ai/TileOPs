@@ -1,19 +1,27 @@
 """GroupNorm forward kernel using TileLang.
 
-y = (x - mean) / sqrt(var + eps) * weight + bias
+y = (x - mean) / sqrt(var + eps) * weight[c] + bias[c]
 
 where mean and var are computed over (C/G, *spatial) dimensions for each of
 the G groups independently. The input (N, C, *spatial) is reshaped to
 (N*G, D) where D = (C/G) * spatial_size, enabling row-wise normalization
 identical to LayerNorm.
 
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions. Padding zeros contribute 0 to sum; the centered two-pass
-variance computation subtracts the exact padding bias.
+The affine is per-channel (C elements) while the normalization is per-row, so
+the kernel derives the channel from the position inside the row: row m covers
+group ``g = m % G`` and column d covers the group-local channel
+``d // spatial_size``, hence ``c = g * (C/G) + d // spatial_size``. Applying
+the affine here rather than after the kernel saves a full read+write of the
+output tensor.
 
-Weight and bias are per-channel (C elements). After reshaping, each row of
-length D = (C/G) * spatial_size has its own weight/bias slice of length D,
-which is tiled from the weight/bias vectors accordingly.
+InstanceNorm is the G = C case: channels_per_group is 1, spatial_size is the
+whole row, and the derivation collapses to ``c = m % C``.
+
+256-element alignment (512 bytes for fp16/bf16) is required by T.copy() shared
+memory instructions. Boundary handling for a non-aligned D and for a tail row
+block is performed inside the kernel, so no host-side padding copy is needed.
+Padding zeros contribute 0 to the mean; the centered two-pass variance
+computation subtracts their exact contribution.
 """
 
 import functools
@@ -42,31 +50,61 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-@functools.lru_cache(maxsize=32)
-def _group_norm_kernel(M, D, eps, dtype):
-    """Build a row-wise normalization kernel for shape (M, D_padded).
+def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
+    """Return the channel owning element ``(row, col)`` of the (M, D) reshape.
 
-    This is the core computation shared by GroupNorm and InstanceNorm.
-    The caller is responsible for reshaping input/weight/bias into (M, D_padded).
+    Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
+    ``m % G``, and column ``d`` holds that group's local channel
+    ``d // spatial_size``.
+
+    Args:
+        row: Row index into the (M, D) view.
+        col: Column index into the (M, D) view.
+        num_groups: Number of groups G.
+        channels_per_group: C / G.
+        spatial_size: Number of spatial elements per channel.
+
+    Returns:
+        Index into the length-C weight / bias vectors.
+    """
+    return (row % num_groups) * channels_per_group + col // spatial_size
+
+
+@functools.lru_cache(maxsize=32)
+def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
+    """Build a row-wise normalization kernel with a per-channel affine.
+
+    This is the core computation shared by GroupNorm and InstanceNorm. The
+    caller is responsible for reshaping the input into (M, D); weight and
+    bias stay in their natural per-channel (C,) layout and are gathered by
+    the channel each element belongs to.
 
     Args:
         M: Number of rows = N * G.
-        D: Row length = (C / G) * spatial_size (before padding).
+        D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
+        num_groups: Number of groups G.
+        channels_per_group: C / G. Row ``m`` covers channels
+            ``(m % G) * channels_per_group`` onwards.
     """
     D_padded = _align_up(D, ALIGNMENT)
     pad_count = D_padded - D
+    spatial_size = D // channels_per_group
+    C = num_groups * channels_per_group
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
+        # A tail row block would read and write rows >= M, and a non-aligned D
+        # would read and write columns >= D, unless both are masked off.
+        masked = D_padded != D or M % block_m != 0
 
         @T.prim_func
         def main(
-            x: T.Tensor[(M, D_padded), dtype],
-            weight: T.Tensor[(D_padded,), dtype],
-            bias: T.Tensor[(D_padded,), dtype],
-            y: T.Tensor[(M, D_padded), dtype],
+            x: T.Tensor[(M, D), dtype],
+            weight: T.Tensor[(C,), dtype],
+            bias: T.Tensor[(C,), dtype],
+            y: T.Tensor[(M, D), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, D_padded), dtype)
@@ -76,13 +114,22 @@ def _group_norm_kernel(M, D, eps, dtype):
                 mean_val = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
 
-                # Load input row block via shared memory
-                T.copy(x[pid_m * block_m, 0], shared_buf)
-                T.copy(shared_buf, x_local)
-
-                # Cast to fp32 once -- reused across all passes
-                for i, j in T.Parallel(block_m, D_padded):
-                    x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                if masked:
+                    # Retain the original values in shared memory for the
+                    # output pass while the fp32 fragment is reduced below.
+                    for i, j in T.Parallel(block_m, D_padded):
+                        shared_buf[i, j] = T.if_then_else(
+                            T.And(pid_m * block_m + i < M, j < D),
+                            x[pid_m * block_m + i, j],
+                            T.cast(0.0, dtype),
+                        )
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                else:
+                    # Preserve the vectorized copy fast path.
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    T.copy(shared_buf, x_local)
+                    for i, j in T.Parallel(block_m, D_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                 # --- Mean reduction ---
                 T.reduce_sum(x_f32, acc, dim=1)
@@ -103,18 +150,36 @@ def _group_norm_kernel(M, D, eps, dtype):
                         + eps
                     )
 
-                # --- Output: y = (x - mean) * rstd * weight + bias ---
-                for i, j in T.Parallel(block_m, D_padded):
-                    x_local[i, j] = (
-                        (T.cast(x_local[i, j], "float32") - mean_val[i])
-                        * rstd[i]
-                        * T.cast(weight[j], "float32")
-                        + T.cast(bias[j], "float32")
-                    )
-
-                # Write output via shared memory
-                T.copy(x_local, shared_buf)
-                T.copy(shared_buf, y[pid_m * block_m, 0])
+                # --- Output: y = (x - mean) * rstd * weight[c] + bias[c] ---
+                if masked:
+                    for i, j in T.Parallel(block_m, D_padded):
+                        if T.And(pid_m * block_m + i < M, j < D):
+                            c = _channel_of(
+                                pid_m * block_m + i, j,
+                                num_groups, channels_per_group, spatial_size,
+                            )
+                            y[pid_m * block_m + i, j] = (
+                                (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                * rstd[i]
+                                * T.cast(weight[c], "float32")
+                                + T.cast(bias[c], "float32")
+                            )
+                else:
+                    # Re-cast from x_local (original dtype) to avoid a second
+                    # fp32 buffer, then retain the vectorized copy fast path.
+                    for i, j in T.Parallel(block_m, D_padded):
+                        c = _channel_of(
+                            pid_m * block_m + i, j,
+                            num_groups, channels_per_group, spatial_size,
+                        )
+                        x_local[i, j] = (
+                            (T.cast(x_local[i, j], "float32") - mean_val[i])
+                            * rstd[i]
+                            * T.cast(weight[c], "float32")
+                            + T.cast(bias[c], "float32")
+                        )
+                    T.copy(x_local, shared_buf)
+                    T.copy(shared_buf, y[pid_m * block_m, 0])
 
         return main
 
@@ -127,26 +192,34 @@ def _group_norm_wrapped(
     D: int,
     eps: float,
     dtype_str: str,
+    num_groups: int,
+    channels_per_group: int,
     block_m: int,
     threads: int,
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor:
-    return _group_norm_kernel(M, D, eps, dtype_str)(block_m, threads)(x, weight, bias)
+    return _group_norm_kernel(
+        M, D, eps, dtype_str, num_groups, channels_per_group,
+    )(block_m, threads)(x, weight, bias)
 
 
 @_group_norm_wrapped.register_fake
-def _(M, D, eps, dtype_str, block_m, threads, x, weight, bias):
-    D_padded = _align_up(D, ALIGNMENT)
-    return torch.empty((M, D_padded), dtype=x.dtype, device=x.device)
+def _(M, D, eps, dtype_str, num_groups, channels_per_group, block_m, threads, x, weight, bias):
+    return torch.empty((M, D), dtype=x.dtype, device=x.device)
 
 
 class GroupNormKernel(Kernel):
-    """GroupNorm forward kernel.
+    """GroupNorm forward kernel with a per-channel affine.
 
-    Normalizes each group's (C/G, *spatial) slice independently.
-    Input is pre-reshaped to (M, D) where M = N*G, D = (C/G)*spatial_size.
+    Normalizes each group's (C/G, *spatial) slice independently and applies
+    ``weight[c]`` / ``bias[c]`` to every element, with *c* derived from the
+    element's position in the row. Input is pre-reshaped to (M, D) where
+    M = N*G, D = (C/G)*spatial_size; weight and bias keep their (C,) layout.
+
+    InstanceNorm uses this kernel with ``num_groups=C`` and
+    ``channels_per_group=1``.
 
     Supports SM80+ architectures. Uses 256-element alignment for shared
     memory copies. Single shared buffer reused for input load and output store.
@@ -156,6 +229,8 @@ class GroupNormKernel(Kernel):
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
+        num_groups: Number of groups G.
+        channels_per_group: C / G.
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
@@ -168,6 +243,8 @@ class GroupNormKernel(Kernel):
         D: int,
         eps: float,
         dtype: torch.dtype,
+        num_groups: int,
+        channels_per_group: int,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
@@ -176,9 +253,13 @@ class GroupNormKernel(Kernel):
         self.D = D
         self.eps = eps
         self.dtype = dtype
+        self.num_groups = num_groups
+        self.channels_per_group = channels_per_group
         self.D_padded = _align_up(D, ALIGNMENT)
-        self.kernel = _group_norm_kernel(self.M, self.D, self.eps, self.dtype_str)
-        self._identity_affine: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
+        self.kernel = _group_norm_kernel(
+            self.M, self.D, self.eps, self.dtype_str,
+            self.num_groups, self.channels_per_group,
+        )
         self.init_config(config, tune)
 
     @property
@@ -189,63 +270,35 @@ class GroupNormKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return select_row_configs(self.D_padded, self.dtype)
 
-    def _identity_affine_for(
-        self, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return cached unit-scale / zero-shift buffers of the launch width."""
-        buffers = self._identity_affine.get(device)
-        if buffers is None:
-            buffers = (
-                torch.ones(self.D_padded, dtype=self.dtype, device=device),
-                torch.zeros(self.D_padded, dtype=self.dtype, device=device),
-            )
-            self._identity_affine[device] = buffers
-        return buffers
-
     def forward(
         self,
         x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
     ) -> torch.Tensor:
-        """Normalize ``(M, D)`` rows with a row-broadcast affine.
+        """Normalize ``(M, D)`` rows and apply the per-channel affine.
 
         Args:
             x: Input of shape ``(M, D)``.
-            weight: Affine scale of shape ``(D,)``. Omit together with *bias*
-                to normalize without an affine.
-            bias: Affine shift of shape ``(D,)``. Omit together with *weight*
-                to normalize without an affine.
+            weight: Affine scale of shape ``(C,)``.
+            bias: Affine shift of shape ``(C,)``.
 
         Returns:
-            Tensor of shape ``(M, D)``. The alignment padding the prim_func
-            requires is applied and trimmed here.
-
-        Raises:
-            ValueError: If exactly one of *weight* / *bias* is omitted.
+            Tensor of shape ``(M, D)``.
         """
-        if (weight is None) != (bias is None):
-            raise ValueError("weight and bias must be supplied together")
-        pad = self.D_padded - self.D
-        if pad:
-            x = F.pad(x, (0, pad))
-        if weight is None:
-            weight, bias = self._identity_affine_for(x.device)
-        elif pad:
-            weight = F.pad(weight, (0, pad))
-            bias = F.pad(bias, (0, pad))
-        y = _group_norm_wrapped(
+        return _group_norm_wrapped(
             self.M,
             self.D,
             self.eps,
             self.dtype_str,
+            self.num_groups,
+            self.channels_per_group,
             self.config["block_m"],
             self.config["threads"],
             x,
             weight,
             bias,
         )
-        return y[:, : self.D] if pad else y
 
 
 @functools.lru_cache(maxsize=32)
