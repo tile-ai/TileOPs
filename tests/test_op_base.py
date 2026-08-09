@@ -338,3 +338,79 @@ class TestAutotune:
 
         CompositeOp(tuned).autotune()
         assert tuned == ["delegate"]
+
+
+class _TunableOp(Op):
+    """Op whose factory honours ``self.tune``, the way a shipped op's does.
+
+    Mirrors the call sites: the flag is read when the factory runs and handed
+    to the kernel, which tunes itself at construction.
+    """
+
+    def __init__(self, tuned: list, *, tune: bool = False):
+        self._tuned = tuned
+        self.tune = tune
+
+    @property
+    def default_kernel_map(self):
+        return {}
+
+    def forward(self, *a, **kw):
+        return None
+
+    def build(self, dtype):
+        def factory():
+            kernel = _RecordingKernel(str(dtype), self._tuned)
+            if self.tune:
+                kernel.autotune()
+            return kernel
+
+        return self.get_or_build_kernel("fwd", dtype, factory)
+
+
+class TestTunedMode:
+    """``autotune()`` is a lifecycle decision, so it governs later builds too."""
+
+    def test_a_kernel_built_after_autotune_is_tuned(self):
+        tuned: list[str] = []
+        op = _TunableOp(tuned)
+        op.autotune()          # nothing built yet
+        assert tuned == []
+        op.build(torch.float16)
+        assert tuned == ["torch.float16"]
+
+    def test_every_later_specialization_is_tuned_not_just_the_next(self):
+        """The decision persists: a second dtype arriving later is tuned too."""
+        tuned: list[str] = []
+        op = _TunableOp(tuned)
+        op.autotune()
+        op.build(torch.float16)
+        op.build(torch.bfloat16)
+        assert sorted(tuned) == ["torch.bfloat16", "torch.float16"]
+
+    def test_an_untuned_op_leaves_later_builds_alone(self):
+        tuned: list[str] = []
+        op = _TunableOp(tuned)
+        op.build(torch.float16)
+        assert tuned == []
+
+    def test_a_delegate_built_after_autotune_inherits_tuned_mode(self):
+        """The composite passes its own flag on, so the decision carries."""
+        tuned: list[str] = []
+
+        class CompositeOp(_TunableOp):
+            def __init__(self, rec):
+                super().__init__(rec)
+                self.delegate = None
+
+            def kernel_delegates(self):
+                return (self.delegate,) if self.delegate else ()
+
+            def make_delegate(self):
+                self.delegate = _TunableOp(self._tuned, tune=self.tune)
+                return self.delegate
+
+        op = CompositeOp(tuned)
+        op.autotune()
+        op.make_delegate().build(torch.float16)
+        assert tuned == ["torch.float16"]

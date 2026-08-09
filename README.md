@@ -41,19 +41,18 @@ Operators are auto-tuned on first use, CUDA-Graph compatible, and declare their
 
 ## Built for agents
 
-A kernel library is usually a collection of implementations. Here the collection is derived:
-the asset is the specification, since an implementation can be regenerated from its spec and a
-spec cannot be recovered from an implementation. That inverts what the project has to
-guarantee:
+An implementation can be regenerated from its spec; a spec cannot be recovered from an
+implementation. The project is organised around the spec rather than around the kernels:
 
-- **The manifest entry is self-contained.** Generation reads it and nothing else, so every
-  constraint the implementation must satisfy is declared rather than assumed.
-- **Both gates are decidable.** Correctness resolves against a declared reference,
-  performance against a modelled bound. Neither requires a judgement call.
-- **The layer boundary is checked, not agreed.** An unenforced convention does not survive
-  automated edits.
-- **Conformance is verified in CI.** Review throughput does not scale with the rate at which
-  operators are added.
+- **The spec is self-contained.** Generation reads it and nothing else, so every constraint on
+  the implementation is declared rather than assumed.
+- **Acceptance is decidable.** Correctness settles against a declared reference, performance
+  against a modelled bound — neither is a judgement call.
+- **The operator/kernel split is enforced.** The boundary is checked rather than agreed, because
+  an unenforced convention does not survive automated edits.
+- **Conformance is validated at every stage.** Spec, generated code, tests and benchmarks each
+  answer to a validator, so an operator is certified as it is produced rather than reviewed once
+  at the end.
 
 ## How it works
 

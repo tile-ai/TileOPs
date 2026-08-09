@@ -40,7 +40,7 @@ class BmmFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self._tune = tune
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
         # (batch, m, n, k, dtype) -> Kernel instance; built lazily on first use.
         # Fast path: skip re-inference when the input signature is unchanged.
@@ -109,7 +109,7 @@ class BmmFwdOp(Op):
             "bmm_kernel",
             (batch, m, n, k, dtype),
             lambda: self.kernel_map["bmm_kernel"](
-                batch, m, n, k, dtype, tune=self._tune),
+                batch, m, n, k, dtype, tune=self.tune),
         )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -166,7 +166,7 @@ class BmmFp8Op(Op):
             raise ValueError(
                 f"BmmFp8Op b_layout must be 'kn' or 'nk', got {b_layout!r}")
         self.out_dtype = out_dtype
-        self._tune = tune
+        self.tune = tune
         self.b_layout = b_layout
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
@@ -283,7 +283,7 @@ class BmmFp8Op(Op):
             (batch, m, n, k, dtype, self.out_dtype, device),
             lambda: self.kernel_map["bmm_fp8_kernel"](
                 batch, m, n, k, dtype, self.out_dtype, device=device,
-                tune=self._tune),
+                tune=self.tune),
         )
 
     def forward(
