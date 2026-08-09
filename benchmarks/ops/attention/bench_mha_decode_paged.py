@@ -1,8 +1,5 @@
-import math
-
 import pytest
 import torch
-import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_paged_args
@@ -11,41 +8,6 @@ from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MhaDecodePagedWorkload
 
 _OP_NAME = "MultiHeadAttentionDecodePagedWithKVCacheFwdOp"
-
-
-class MhaDecodePagedTestBaseline(MhaDecodePagedWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                    real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
-        """Reassemble paged K/V to logical layout per batch, then SDPA."""
-        batch, seqlen_q, heads, dim = q.shape
-        seqlen_kv = k.shape[0]
-        out_list = []
-        for i_b in range(batch):
-            q_b = q[i_b:i_b + 1, :, :, :]
-            k_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
-            v_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
-            num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
-            for i_paged in range(num_pages):
-                start_pos = block_table[i_b, i_paged].item() * self.page_size
-                end_pos = min(start_pos + self.page_size, seqlen_kv)
-                page_len = end_pos - start_pos
-                k_logical[i_paged * self.page_size:i_paged * self.page_size +
-                          page_len, :, :] = k[start_pos:end_pos, :, :]
-                v_logical[i_paged * self.page_size:i_paged * self.page_size +
-                          page_len, :, :] = v[start_pos:end_pos, :, :]
-            k_logical = k_logical[:real_seqlen_kv[i_b].item(), :, :]
-            v_logical = v_logical[:real_seqlen_kv[i_b].item(), :, :]
-            k_b = k_logical.unsqueeze(0)
-            v_b = v_logical.unsqueeze(0)
-            q_bhsd = q_b.transpose(1, 2)
-            k_bhsd = k_b.transpose(1, 2)
-            v_bhsd = v_b.transpose(1, 2)
-            out_b = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
-            out_b = out_b.transpose(1, 2).contiguous()
-            out_list.append(out_b)
-        return torch.cat(out_list, dim=0)
 
 
 def _fa3_mha_decode_paged(test, k, v):
@@ -128,7 +90,7 @@ _MHA_DECODE_PAGED_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_d
 def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
                                 page_size: int, is_causal: bool, dtype: torch.dtype,
                                 tune: bool) -> None:
-    test = MhaDecodePagedTestBaseline(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
+    test = MhaDecodePagedWorkload(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 

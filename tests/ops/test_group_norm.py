@@ -8,15 +8,7 @@ from workloads.normalization import GroupNormWorkload
 
 
 class GroupNormTest(GroupNormWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
-                    bias: torch.Tensor) -> torch.Tensor:
-        return F.group_norm(
-            x.float(),
-            self.g,
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
+    pass
 
 
 class GroupNormFixture(FixtureBase):

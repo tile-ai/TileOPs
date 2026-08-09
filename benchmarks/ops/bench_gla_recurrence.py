@@ -44,20 +44,6 @@ def gla_decode_torch(
     return o, new_state
 
 
-class GLADecodeTestBaseline(GLADecodeWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        gk: torch.Tensor,
-        state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
-        return o.to(self.dtype), new_state.to(self.dtype)
-
 try:
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
@@ -112,7 +98,7 @@ def test_gla_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GLADecodeTestBaseline(batch, heads, dim_k, dim_v, dtype, scale=scale)
+    test = GLADecodeWorkload(batch, heads, dim_k, dim_v, dtype, scale=scale)
     inputs = test.gen_inputs()
 
     # --- TileOPs ---

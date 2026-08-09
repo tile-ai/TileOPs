@@ -1,3 +1,4 @@
+import math
 from typing import Any
 
 import torch
@@ -39,6 +40,9 @@ class MoePermuteWorkload(WorkloadBase):
         )
         return hidden_states, topk_ids
 
+    def ref_program(self, hidden_states, topk_ids):
+        return ref_moe_permute_nopad(hidden_states, topk_ids, self.num_experts)
+
 
 class MoePermuteAlignWorkload(WorkloadBase):
 
@@ -55,6 +59,11 @@ class MoePermuteAlignWorkload(WorkloadBase):
             dtype=torch.int32, device="cuda",
         )
         return (topk_ids,)
+
+    def ref_program(
+        self, topk_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return ref_permute_align(topk_ids, self.block_size, self.num_experts)
 
 
 class MoeUnpermuteWorkload(WorkloadBase):
@@ -74,6 +83,9 @@ class MoeUnpermuteWorkload(WorkloadBase):
             self.total_tokens, self.top_k, dtype=torch.float32, device="cuda"
         )
         return mm2_pad, fwd_idx, topk_weights
+
+    def ref_program(self, mm2_pad, fwd_idx, topk_weights):
+        return ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
 
 
 def make_expert_sizes_offsets(
@@ -335,3 +347,115 @@ class MoeSharedExpertMlpWorkload(WorkloadBase):
         w_gate_up = torch.randn(self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=device)
         w_down = torch.randn(self.hidden_size, self.ffn_size, dtype=self.dtype, device=device)
         return hidden, w_gate_up, w_down
+
+
+def ref_permute_align(
+    topk_ids: torch.Tensor, block_size: int, num_experts: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pure-Python reference for permute_align."""
+    numel = topk_ids.numel()
+    flat = topk_ids.flatten().tolist()
+
+    counts = [0] * num_experts
+    for eid in flat:
+        counts[eid] += 1
+
+    cumsum = [0] * (num_experts + 1)
+    for i in range(num_experts):
+        padded = math.ceil(counts[i] / block_size) * block_size
+        cumsum[i + 1] = cumsum[i] + padded
+
+    total_padded = cumsum[num_experts]
+    sorted_token_ids = [numel] * total_padded
+
+    slot = list(cumsum[:-1])
+    for flat_idx, eid in enumerate(flat):
+        sorted_token_ids[slot[eid]] = flat_idx
+        slot[eid] += 1
+
+    num_blocks = total_padded // block_size
+    expert_ids_list = []
+    for b in range(num_blocks):
+        block_start = b * block_size
+        lo, hi = 0, num_experts - 1
+        eid = num_experts - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if cumsum[mid] <= block_start < cumsum[mid + 1]:
+                eid = mid
+                break
+            elif block_start < cumsum[mid]:
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        expert_ids_list.append(eid)
+
+    device = topk_ids.device
+    return (
+        torch.tensor(sorted_token_ids, dtype=torch.int32, device=device),
+        torch.tensor(expert_ids_list, dtype=torch.int32, device=device),
+        torch.tensor([total_padded], dtype=torch.int32, device=device),
+    )
+
+
+def ref_moe_permute_nopad(
+    hidden_states: torch.Tensor,
+    topk_ids: torch.Tensor,
+    num_experts: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pure-PyTorch reference for moe_permute (tight, no padding)."""
+    T, H = hidden_states.shape
+    K = topk_ids.shape[1]
+    numel = T * K
+    flat_ids = topk_ids.flatten().cpu().tolist()
+    dev = hidden_states.device
+
+    counts = [0] * num_experts
+    for eid in flat_ids:
+        counts[eid] += 1
+
+    offsets = [0] * (num_experts + 1)
+    for e in range(num_experts):
+        offsets[e + 1] = offsets[e] + counts[e]
+
+    write_ptr = list(offsets[:-1])
+    slot_to_row = [0] * numel
+    fwd_idx_list = [0] * numel
+
+    for flat_idx, eid in enumerate(flat_ids):
+        slot = write_ptr[eid]
+        slot_to_row[slot] = flat_idx // K
+        fwd_idx_list[flat_idx] = slot
+        write_ptr[eid] += 1
+
+    perm_h = torch.empty(numel, H, dtype=hidden_states.dtype, device=dev)
+    for slot in range(numel):
+        perm_h[slot] = hidden_states[slot_to_row[slot]]
+
+    true_offsets_t = torch.tensor(offsets[:-1], dtype=torch.int32, device=dev)
+    true_sizes_t = torch.tensor(counts, dtype=torch.int32, device=dev)
+    expert_first_token_offset = torch.tensor(offsets, dtype=torch.int64, device=dev)
+    fwd_idx_t = torch.tensor(fwd_idx_list, dtype=torch.int32, device=dev)
+
+    return perm_h, true_offsets_t, true_sizes_t, expert_first_token_offset, fwd_idx_t
+
+
+def ref_moe_unpermute(
+    mm2_pad: torch.Tensor,
+    fwd_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Pure-PyTorch reference for moe_unpermute."""
+    _, H = mm2_pad.shape
+    T, K = topk_weights.shape
+    dtype = mm2_pad.dtype
+
+    output = torch.zeros(T, H, dtype=torch.float32, device=mm2_pad.device)
+    for i in range(T):
+        for k in range(K):
+            flat_idx = i * K + k
+            padded_slot = fwd_idx[flat_idx].item()
+            w = topk_weights[i, k].item()
+            output[i] += mm2_pad[padded_slot].float() * w
+
+    return output.to(dtype)

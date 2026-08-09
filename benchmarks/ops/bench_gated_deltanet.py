@@ -144,7 +144,12 @@ def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
 
 
 class GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Times the batched WY-representation idiom, not the workload reference.
+
+    ``prepare_wy_repr_gated_torch`` in this module inverts every chunk in one
+    batched call; the workload reference loops over (batch, head, chunk) so the
+    test can read it. Same math, different cost.
+    """
 
     def ref_program(
         self,

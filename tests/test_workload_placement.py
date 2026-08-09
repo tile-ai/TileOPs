@@ -1,8 +1,9 @@
 """Structural gates for the workloads layer.
 
-Input construction lives in ``workloads/<family>.py`` so both the test stage and
-the benchmark stage can import it, and that layer carries inputs only — an
-oracle or a baseline placed there becomes a surface both stages share.
+Input construction and the op's reference computation live in
+``workloads/<family>.py`` so both the test stage and the benchmark stage read one
+definition. Tolerances, checks and roofline numbers do not: those are decisions,
+and a decision placed there reaches the other stage.
 
 See docs/design/trust-model.md §Test and §Workloads Layer.
 """
@@ -15,8 +16,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
 
-# Oracle, tolerance and roofline names — none of them belong to this layer.
-NOT_IN_WORKLOADS = ("ref_program", "check", "calculate_flops", "calculate_memory")
+# Tolerance and roofline names — decisions, not definitions.
+NOT_IN_WORKLOADS = ("check", "calculate_flops", "calculate_memory")
 
 
 def _methods_named(root: Path, wanted) -> dict[str, list[str]]:
@@ -43,5 +44,5 @@ def test_tests_do_not_author_gen_inputs() -> None:
 
 
 @pytest.mark.smoke
-def test_workloads_carry_inputs_only() -> None:
+def test_workloads_carry_no_decisions() -> None:
     assert _methods_named(REPO_ROOT / "workloads", NOT_IN_WORKLOADS.__contains__) == {}

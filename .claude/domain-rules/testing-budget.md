@@ -1,4 +1,4 @@
-- Input construction goes in `workloads/<family>.py`; compose it (`class FooTest(FooWorkload, TestBase)`) instead of defining `gen_inputs` inline. Oracle callables stay on the test class. Enforced by `tests/test_workload_placement.py`.
+- Input construction and the op's reference computation go in `workloads/<family>.py`; compose them (`class FooTest(FooWorkload, TestBase)`) instead of defining `gen_inputs` or `ref_program` inline. A workload describing only an input shape leaves `ref_program` to the test. Tolerances stay on the test class. `tests/test_workload_placement.py` catches a tolerance in a workload, not a reference left on a test.
 
 → [trust-model.md §Test](../../docs/design/trust-model.md#test) | [testing.md §Tests](../../docs/design/testing.md#tests)
 

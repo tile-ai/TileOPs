@@ -35,6 +35,9 @@ class ProdWorkload(WorkloadBase):
         x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
         return (x,)
 
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return x.float().prod(dim=-1).to(x.dtype)
+
 
 class StdWorkload(RandnWorkload):
     """Workload definition for StdFwdOp."""

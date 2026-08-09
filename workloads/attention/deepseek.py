@@ -1,9 +1,9 @@
 """Workload definitions for the DeepSeek attention ops."""
 
-from typing import Optional, Union
 
 import torch
-from einops import rearrange, repeat
+import torch.nn.functional as F
+from einops import einsum, rearrange, repeat
 
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import WorkloadBase
@@ -106,22 +106,22 @@ class NsaFwdWorkload(WorkloadBase):
             token_indices.to(torch.int32),
         )
 
-    def naive_nsa(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g_slc: torch.Tensor,
-        g_swa: torch.Tensor,
-        block_indices: torch.LongTensor,
-        block_counts: Optional[Union[torch.LongTensor, int]] = None,
-        block_size: int = 64,
-        window_size: int = 0,
-        scale: Optional[float] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        head_first: bool = False,
-    ) -> torch.Tensor:
-
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                    block_indices: torch.Tensor, block_counts: torch.Tensor,
+                    offsets: torch.Tensor, token_indices: torch.Tensor) -> torch.Tensor:
+        _ = token_indices
+        q = q.unsqueeze(0)
+        k = k.unsqueeze(0)
+        v = v.unsqueeze(0)
+        block_indices = block_indices.unsqueeze(0)
+        block_counts = block_counts.unsqueeze(0)
+        g_slc = self.g_slc
+        g_swa = self.g_swa
+        block_size = self.block_size
+        window_size = 0
+        scale = self.scale
+        cu_seqlens = offsets
+        head_first = False
         if scale is None:
             scale = k.shape[-1]**-0.5
         if cu_seqlens is not None:
@@ -266,6 +266,19 @@ class NsaCmpFwdWorkload(WorkloadBase):
             token_indices.to(torch.int32),
         )
 
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        _ = chunk_offsets, token_indices
+        return _parallel_nsa_compression_fwd_pytorch(self, q, k_cmp, v_cmp, self.bs, self.scale,
+                                                      offsets)
+
 
 class NsaTopkWorkload(WorkloadBase):
 
@@ -325,6 +338,18 @@ class NsaTopkWorkload(WorkloadBase):
             token_indices.to(torch.int32),
         )
 
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        lse: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> torch.Tensor:
+        return _nsa_topk_torch(self, q, k_cmp, lse, self.selected_block_num, self.bs, self.scale,
+                                offsets, token_indices, chunk_offsets)
+
 
 class MlaDecodeWorkload(WorkloadBase):
 
@@ -356,6 +381,49 @@ class MlaDecodeWorkload(WorkloadBase):
             device='cuda',
             dtype=self.dtype)
         return Q, Q_pe, K, K_pe
+
+    def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
+                    k_pe: torch.Tensor) -> torch.Tensor:
+        """
+        Inputs:
+        - q (Tensor): [batch, heads, dim]
+        - q_pe (Tensor): [batch, heads, dim_pe]
+        - kv (Tensor): [batch, seqlen_kv, heads_kv, dim]
+        - k_pe (Tensor): [batch, seqlen_kv, heads_kv, dim_pe]
+        Outputs:
+        - output (Tensor): [batch, heads, dim]
+        """
+        dim = q.shape[-1]
+        dim_pe = q_pe.shape[-1]
+        num_head_groups = q.shape[1] // kv.shape[2]
+        scale = (dim + dim_pe)**0.5
+        Q = rearrange(
+            q, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+
+        Q_pe = rearrange(
+            q_pe, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim_pe]
+
+        KV = rearrange(kv, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
+
+        K_pe = rearrange(k_pe,
+                         'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, dim_pe]
+
+        query = torch.concat([Q, Q_pe], dim=-1)
+        key = torch.concat([KV, K_pe], dim=-1)
+
+        scores = einsum(
+            query, key,
+            'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, groups, seqlen_kv]
+
+        attention = F.softmax(
+            scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
+
+        out = einsum(attention, KV,
+                     'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
+        out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+        return out
 
 
 class DsaDecodeWorkload(WorkloadBase):
@@ -406,3 +474,215 @@ class DsaDecodeWorkload(WorkloadBase):
                             self.seq_len_kv))[:self.topk]
                     indices[b, t, h, :len(i_i)] = i_i
         return q, kv, indices
+
+    def ref_program(self, q: torch.Tensor, kv: torch.Tensor,
+                    indices: torch.Tensor) -> torch.Tensor:
+        q = q.float()
+        kv = kv.float()
+        indices = indices.transpose(1, 2)
+        b, sq, h, dim_q = q.shape
+        b, sk, g, _ = kv.shape
+        q_start_index_s = self.q_start_index_s
+        if self.q_start_index_s is None:
+            q_start_index_s = sk * self.stride_kv - sq
+
+        assert kv.shape[-1] == self.dim + self.dim_tail, 'you should assign dim otherwise'
+        dim = self.dim
+        k = kv
+        v = kv[..., :dim]
+
+        b, _, _, dim_v = v.shape
+        g_index = g
+        h_index = h // g
+        compressed_causal_mask = torch.arange(
+            q_start_index_s, sq + q_start_index_s, dtype=torch.int32,
+            device="cuda").view(-1, 1) >= torch.arange(
+                self.stride_kv - 1,
+                sk * self.stride_kv,
+                self.stride_kv,
+                dtype=torch.int32,
+                device="cuda").view(1, -1)
+
+        mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
+        mask = mask[..., :-1]
+        mask = mask & compressed_causal_mask.view(1, 1, sq, sk)
+        mask[:, :, :self.stride_kv - 1, 0] = True
+        mask = mask.view(b, g_index, 1, sq, sk)
+
+        q = q.view(b, sq, g, -1, dim_q)
+        score = torch.einsum("bmghd,bngd->bghmn", q, k)
+        sm_scale = dim_q**-0.5 if self.sm_scale is None else self.sm_scale
+        score = score.masked_fill(~mask, float("-inf")).mul(sm_scale)
+        p = score.softmax(dim=-1)
+        p = p.view(b, g_index, h_index, -1, sq, sk)
+        p = p.view(b, g, -1, sq, sk)
+        o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
+        o = o.reshape(b, sq, h, dim_v)
+        return o.to(torch.float16)
+
+
+def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, offsets):
+    """PyTorch reference implementation on GPU."""
+    seq_len, heads, dim_k = q.shape
+    _, head_kv, _ = k_cmp.shape
+    dim_v = v_cmp.shape[-1]
+    group = heads // head_kv
+    device = q.device
+    num_seq = len(offsets) - 1
+
+    o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
+    lse = torch.full((seq_len, heads), float('-inf'), dtype=torch.float32, device=device)
+
+    chunk_offsets_local = prepare_chunk_offsets(offsets, block_size)
+
+    for i_n in range(num_seq):
+        bos, eos = offsets[i_n].item(), offsets[i_n + 1].item()
+        boc = chunk_offsets_local[i_n].item()
+
+        for i_t in range(eos - bos):
+            nc = (i_t + 1) // block_size
+            if nc == 0:
+                lse[bos + i_t] = 0.0
+                continue
+
+            q_curr = q[bos + i_t].float()
+            k_curr = k_cmp[boc:boc + nc].transpose(0, 1).float()
+            v_curr = v_cmp[boc:boc + nc].transpose(0, 1).float()
+
+            k_curr = k_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_k)
+            v_curr = v_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_v)
+
+            scores = torch.matmul(q_curr.unsqueeze(1), k_curr.transpose(-1, -2)).squeeze(1) * scale
+
+            m = torch.max(scores, dim=-1, keepdim=True)[0]
+            exp_scores = torch.exp(scores - m)
+            sum_exp = torch.sum(exp_scores, dim=-1, keepdim=True)
+
+            probs = exp_scores / sum_exp
+            out = torch.matmul(probs.unsqueeze(1), v_curr).squeeze(1)
+
+            o[bos + i_t] = out
+            lse[bos + i_t] = (m + torch.log(sum_exp)).squeeze(-1)
+
+    return o.to(test.dtype), lse.to(test.dtype)
+
+
+def _nsa_topk_torch(test, q, k_cmp, lse, block_counts, block_size, scale,
+                     offsets, token_indices, chunk_offsets):
+    """PyTorch reference for NSA top-k block selection."""
+    _ = lse
+    q = q.squeeze(0) if q.dim() == 4 else q
+    k_cmp = k_cmp.squeeze(0) if k_cmp.dim() == 4 else k_cmp
+    c_seq_len, heads, dim = q.shape
+    head_kv = k_cmp.shape[1]
+    group = heads // head_kv
+    selected_block_num = block_counts if isinstance(block_counts, int) else block_counts.max().item()
+    bs = block_size
+    LOG2_E = 1.44269504
+    scale_log2 = scale * LOG2_E
+
+    device = q.device
+    accum_dtype = torch.float32
+
+    lse_out = torch.zeros((c_seq_len, heads), dtype=accum_dtype, device=device)
+    block_indices = torch.zeros((c_seq_len, head_kv, selected_block_num),
+                                dtype=torch.int32, device=device)
+
+    for i_c in range(c_seq_len):
+        i_n, i_t = token_indices[i_c, 0].item(), token_indices[i_c, 1].item()
+        bos = offsets[i_n].item()
+        boc = chunk_offsets[i_n].item()
+        nc = (i_t + 1) // bs
+        q_curr = q[bos + i_t]
+
+        for i_h in range(head_kv):
+            q_h = q_curr[i_h * group:(i_h + 1) * group]
+            scores_max = torch.full((group,), float('-inf'), dtype=accum_dtype, device=device)
+            logsum = torch.zeros((group,), dtype=accum_dtype, device=device)
+
+            for i_loop in range(0, nc, bs):
+                start_idx = i_loop
+                end_idx = min(start_idx + bs, nc)
+                curr_bc = end_idx - start_idx
+                k_blocks = k_cmp[boc + start_idx:boc + end_idx, i_h]
+                acc_s = torch.matmul(q_h, k_blocks.t()).to(accum_dtype)
+                if curr_bc < bs:
+                    padding = torch.full((group, bs - curr_bc), float('-inf'),
+                                         dtype=accum_dtype, device=device)
+                    acc_s = torch.cat([acc_s, padding], dim=1)
+                o_c = torch.arange(start_idx, start_idx + bs, dtype=torch.int32, device=device)
+                valid_mask = o_c < nc
+                acc_s = torch.where(valid_mask.unsqueeze(0), acc_s,
+                                    torch.full_like(acc_s, float('-inf')))
+                scores_max_prev = scores_max.clone()
+                scores_max_curr = acc_s.max(dim=1)[0]
+                scores_max = torch.maximum(scores_max, scores_max_curr)
+                scores_scale = torch.exp2((scores_max_prev - scores_max) * scale_log2)
+                acc_s_exp = torch.exp2((acc_s - scores_max.unsqueeze(1)) * scale_log2)
+                acc_s_exp = torch.where(acc_s > float('-inf'), acc_s_exp,
+                                        torch.zeros_like(acc_s_exp))
+                logsum = logsum * scores_scale + acc_s_exp.sum(dim=1)
+
+            if nc == 0:
+                b_lse = torch.zeros((group,), dtype=accum_dtype, device=device)
+            else:
+                logsum_log2 = torch.where(
+                    logsum > 0, torch.log2(logsum),
+                    torch.full((group,), float('-inf'), dtype=accum_dtype, device=device))
+                b_lse = (scores_max * scale_log2 + logsum_log2) / LOG2_E
+                b_lse = torch.where(logsum <= 0, torch.zeros_like(b_lse), b_lse)
+            lse_out[bos + i_t, i_h * group:(i_h + 1) * group] = b_lse
+
+            nc_topk = i_t // bs + 1
+            pool_scores = torch.full((bs * 2,), float('-inf'), dtype=accum_dtype, device=device)
+            pool_indices = torch.zeros((bs * 2,), dtype=torch.int32, device=device)
+
+            for i_tk in range(0, nc_topk, bs):
+                start_idx = i_tk
+                end_idx = min(start_idx + bs, nc_topk)
+                curr_bc_tk = end_idx - start_idx
+                k_blocks = k_cmp[boc + start_idx:boc + end_idx, i_h]
+                acc_s = torch.matmul(q_h, k_blocks.t()).to(accum_dtype)
+                if curr_bc_tk < bs:
+                    padding = torch.full((group, bs - curr_bc_tk), float('-inf'),
+                                         dtype=accum_dtype, device=device)
+                    acc_s = torch.cat([acc_s, padding], dim=1)
+                o_c = torch.arange(start_idx, start_idx + bs, dtype=torch.int32, device=device)
+                is_curr = (o_c == i_t // bs)
+                is_hist = (o_c < i_t // bs)
+                importance = torch.where(
+                    is_curr.unsqueeze(0),
+                    torch.ones((group, bs), dtype=accum_dtype, device=device),
+                    torch.where(
+                        is_hist.unsqueeze(0),
+                        torch.exp2((acc_s * scale - b_lse.unsqueeze(1)) * LOG2_E),
+                        torch.zeros((group, bs), dtype=accum_dtype, device=device)))
+                b_i_current = importance.sum(dim=0)
+                pool_scores[bs:bs + bs] = b_i_current
+                pool_indices[bs:bs + bs] = torch.arange(
+                    start_idx, start_idx + bs, dtype=torch.int32, device=device) + 1
+                o_c_valid = torch.arange(
+                    start_idx, start_idx + bs, dtype=torch.int32, device=device) < nc_topk
+                pool_scores[bs:bs + bs] = torch.where(
+                    o_c_valid, pool_scores[bs:bs + bs],
+                    torch.full_like(pool_scores[bs:bs + bs], float('-inf')))
+                pool_indices[bs:bs + bs] = torch.where(
+                    o_c_valid, pool_indices[bs:bs + bs],
+                    torch.zeros_like(pool_indices[bs:bs + bs]))
+                eps_val, score_scale = 1e-5, 1e12
+                scores_quantized = (pool_scores / eps_val).round() * eps_val
+                sort_key = scores_quantized.to(torch.float64) * score_scale + pool_indices.to(
+                    torch.float64)
+                sort_key = torch.where(
+                    pool_indices > 0, sort_key,
+                    torch.full_like(sort_key, float('-inf'), dtype=torch.float64))
+                sorted_indices = torch.argsort(sort_key, descending=True)
+                pool_scores = pool_scores[sorted_indices]
+                pool_indices = pool_indices[sorted_indices]
+
+            final_indices = pool_indices[:selected_block_num] - 1
+            final_indices = torch.where(final_indices >= 0, final_indices,
+                                        torch.tensor(-1, dtype=torch.int32, device=device))
+            block_indices[i_c, i_h, :selected_block_num] = final_indices.to(torch.int32)
+
+    return block_indices

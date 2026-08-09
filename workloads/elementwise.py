@@ -17,6 +17,11 @@ class ReluWorkload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
         return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x.float()).to(x.dtype)
+
+
 class BinaryManifestWorkload:
     def __init__(
         self,
@@ -302,6 +307,11 @@ class AddBroadcastWorkload(WorkloadBase):
         a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
         b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
         return a, b
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return (a.float() + b.float()).to(a.dtype)
+
+
 class PowPositiveWorkload(WorkloadBase):
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -311,6 +321,11 @@ class PowPositiveWorkload(WorkloadBase):
         a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.5
         b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") * 2.0
         return a, b
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return torch.pow(a.float(), b.float()).to(a.dtype)
+
+
 class BitwiseNotWorkload(WorkloadBase):
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -324,6 +339,11 @@ class BitwiseNotWorkload(WorkloadBase):
         else:
             x = torch.randint(-128, 128, (self.n_total,), device="cuda", dtype=self.dtype)
         return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_not(x)
+
+
 class AddCompileWorkload(WorkloadBase):
     def __init__(self, a_shape, b_shape, dtype):
         self.a_shape = a_shape
@@ -334,6 +354,9 @@ class AddCompileWorkload(WorkloadBase):
         a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
         b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
         return a, b
+
+    def ref_program(self, a, b):
+        return (a.float() + b.float()).to(a.dtype)
 
 
 class EqCompileWorkload(WorkloadBase):
@@ -349,6 +372,9 @@ class EqCompileWorkload(WorkloadBase):
         b[mask] = torch.randn_like(b[mask])
         return a, b
 
+    def ref_program(self, a, b):
+        return a == b
+
 
 class SiluAndMulCompileWorkload(WorkloadBase):
     def __init__(self, M, N, dtype):
@@ -359,6 +385,13 @@ class SiluAndMulCompileWorkload(WorkloadBase):
     def gen_inputs(self):
         x = torch.randn(self.M, 2 * self.N, dtype=self.dtype, device="cuda")
         return (x,)
+
+    def ref_program(self, x):
+        gate = x[:, :self.N].float()
+        value = x[:, self.N:].float()
+        return (torch.nn.functional.silu(gate) * value).to(x.dtype)
+
+
 class LogicalNotWorkload(WorkloadBase):
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -379,6 +412,11 @@ class LogicalNotWorkload(WorkloadBase):
         mask = torch.rand(self.n_total, device="cuda") > 0.5
         x[mask] = 0
         return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.logical_not(x)
+
+
 class BitwiseWorkload(WorkloadBase):
     def __init__(self, n_total: int):
         self.n_total = n_total

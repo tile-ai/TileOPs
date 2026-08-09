@@ -52,11 +52,6 @@ def torch_grouped_gemm(A, B, sizes, offsets):
 
 
 @pytest.mark.smoke
-def test_import():
-    assert GroupedGemmPersistent3WGKernel is not None
-
-
-@pytest.mark.smoke
 def test_output_shape():
     T, E, top_k, N, K = 32, 4, 2, 256, 64
     numel = T * top_k

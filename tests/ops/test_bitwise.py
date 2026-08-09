@@ -189,9 +189,6 @@ class BitwiseFixture(FixtureBase):
 class BitwiseNotTest(BitwiseNotWorkload, TestBase):
     """Test fixture for bitwise_not."""
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.bitwise_not(x)
-
 
 @BitwiseFixture
 def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:

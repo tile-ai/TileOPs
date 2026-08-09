@@ -38,7 +38,12 @@ from tileops.ops import (
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
 )
-from workloads.pool import AdaptivePool2dWorkload, AvgPoolWorkload, MaxPoolWorkload
+from workloads.pool import (
+    AdaptivePool2dWorkload,
+    AvgPoolWorkload,
+    MaxPoolWorkload,
+    max_pool_ref,
+)
 
 
 class _DummyKernel(Kernel):
@@ -169,18 +174,6 @@ class AvgPool3dFixture(FixtureBase):
 
 class AvgPoolTest(AvgPoolWorkload, TestBase):
     """Dim-generic avg-pool reference harness (divisor_override is 2d/3d-only)."""
-
-    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
-        kwargs: dict[str, object] = {
-            "kernel_size": self.kernel_size,
-            "stride": self.stride,
-            "padding": self.padding,
-            "ceil_mode": self.ceil_mode,
-            "count_include_pad": self.count_include_pad,
-        }
-        if self.ndim > 1:
-            kwargs["divisor_override"] = self.divisor_override
-        return getattr(F, f"avg_pool{self.ndim}d")(input, **kwargs)
 
 
 def _avg_pool_expected_kernel(
@@ -582,10 +575,6 @@ _MAX_POOL_DUMMY_KERNELS: dict[type, type[Kernel]] = {
 }
 
 
-def _max_pool_ref(ndim: int) -> Callable:
-    return getattr(F, f"max_pool{ndim}d")
-
-
 def _max_pool_op_cls(ndim: int, return_indices: bool) -> type:
     return _MAX_POOL_INDICES_OPS[ndim] if return_indices else _MAX_POOL_OPS[ndim]
 
@@ -717,17 +706,6 @@ class MaxPool3dFixture(FixtureBase):
 
 class MaxPoolTest(MaxPoolWorkload, TestBase):
     """Dim-generic max-pool reference harness."""
-
-    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        return _max_pool_ref(self.ndim)(
-            input,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            ceil_mode=self.ceil_mode,
-            return_indices=self.return_indices,
-        )
 
 
 def _run_max_pool_case(
@@ -1032,7 +1010,7 @@ def test_max_pool_special_values(
     _ = case_name
     x = input_builder()
     pool_kwargs = _MAX_POOL_SPECIAL_KWARGS[ndim]
-    ref = _max_pool_ref(ndim)(x, **pool_kwargs, return_indices=return_indices)
+    ref = max_pool_ref(ndim)(x, **pool_kwargs, return_indices=return_indices)
     op = _max_pool_op_cls(ndim, return_indices)(**pool_kwargs)
     if return_indices:
         out, idx = op(x)
@@ -1291,7 +1269,7 @@ def test_max_pool_compile_fullgraph(
     x = torch.randn(*x_shape, device="cuda", dtype=torch.float16)
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
-    ref = _max_pool_ref(ndim)(
+    ref = max_pool_ref(ndim)(
         x,
         **_MAX_POOL_CTOR_KWARGS[ndim],
         return_indices=return_indices,

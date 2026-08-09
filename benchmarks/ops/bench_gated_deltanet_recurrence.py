@@ -43,21 +43,6 @@ def gated_deltanet_decode_torch(
     return o, new_state
 
 
-class GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = gated_deltanet_decode_torch(q, k, v, g, beta, state)
-        return o.to(self.dtype), new_state.to(self.dtype)
-
 try:
     from fla.ops.gated_delta_rule import fused_recurrent_gated_delta_rule
 except ImportError:
@@ -105,7 +90,7 @@ def test_gated_deltanet_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GatedDeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
+    test = GatedDeltaNetDecodeWorkload(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
     op = GatedDeltaNetDecodeOp(tune=tune)

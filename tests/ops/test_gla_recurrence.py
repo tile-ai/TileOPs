@@ -5,53 +5,17 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLADecodeOp
-from workloads.linear_attention import GLADecodeWorkload
-
-
-def gla_decode_torch(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gk: torch.Tensor,
-    state: torch.Tensor,
-    scale: float = -1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch reference for single-step GLA recurrence."""
-    DK = q.shape[-1]
-    if scale <= 0:
-        scale = DK ** -0.5
-
-    q, k, v = q.float(), k.float(), v.float()
-    gk = gk.float()
-    state = state.float()
-
-    alpha = torch.exp(gk)
-    new_state = alpha.unsqueeze(-1) * state + k.unsqueeze(-1) * v.unsqueeze(-2)
-    o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
-
-    return o, new_state
+from workloads.linear_attention import GLADecodeWorkload, gla_decode_torch
 
 
 class GLADecodeTest(GLADecodeWorkload, TestBase):
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        gk: torch.Tensor,
-        state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
-        return o.to(self.dtype), new_state.to(self.dtype)
+    pass
 
 
 try:
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
     fused_recurrent_gla = None
-
-# Torch reference implementation (test-only)
-
 
 # Correctness tests
 

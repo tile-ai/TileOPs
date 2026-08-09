@@ -12,19 +12,7 @@ from workloads.normalization import AdaLayerNormWorkload
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
-    def ref_program(
-        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor
-    ) -> torch.Tensor:
-        # AdaLN: y = scale * LayerNorm(x) + shift
-        normed = F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=None,
-            bias=None,
-            eps=self.eps,
-        )
-        y = scale.float() * normed + shift.float()
-        return y.to(x.dtype)
+    pass
 
 
 class AdaLayerNormFixture(FixtureBase):

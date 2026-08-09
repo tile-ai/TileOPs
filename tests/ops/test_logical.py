@@ -154,9 +154,6 @@ class LogicalFixture(FixtureBase):
 class LogicalNotTest(LogicalNotWorkload, TestBase):
     """Test fixture for logical_not."""
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.logical_not(x)
-
 
 @LogicalFixture
 def test_logical_not(n_total: int, dtype: torch.dtype) -> None:

@@ -15,7 +15,11 @@ _OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
 
 
 class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Times SDPA on the reassembled pages, not an explicit softmax.
+
+    ``sdpa_kernel(MATH)`` replaces the test reference's explicit
+    matmul/softcap/softmax chain, so the ratio is against torch's own attention.
+    """
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                     real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

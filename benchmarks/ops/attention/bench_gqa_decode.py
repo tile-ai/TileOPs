@@ -11,22 +11,6 @@ from workloads.attention.gqa import GroupedQueryAttentionDecodeWorkload
 _OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
 
-class GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
-        groups = self.heads // self.heads_kv
-        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        scores = torch.matmul(q_bhsd.float(), k_bhsd.transpose(-2, -1)) * self.sm_scale
-        if self.softcap > 0:
-            scores = self.softcap * torch.tanh(scores / self.softcap)
-        probs = torch.softmax(scores, dim=-1)
-        output_bhsd = torch.matmul(probs, v_bhsd)
-        return output_bhsd.transpose(1, 2).squeeze(1).to(q.dtype).contiguous()
-
-
 def _fa3_gqa_decode_fwd(test):
     """Return FA3 KV-cache decode baseline callable, or None if not installed."""
     if test.sm_scale != test.dim**-0.5 or test.softcap != 0.0:
@@ -135,7 +119,7 @@ _GQA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), gqa_decode_
 def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                           sm_scale: float | None, softcap: float | None, dtype: torch.dtype,
                           tune: bool) -> None:
-    test = GroupedQueryAttentionDecodeTestBaseline(
+    test = GroupedQueryAttentionDecodeWorkload(
         batch, heads, heads_kv, seq_len_kv, dim, dtype, sm_scale=sm_scale, softcap=softcap)
     inputs = test.gen_inputs()
 
