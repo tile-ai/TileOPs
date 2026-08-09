@@ -90,10 +90,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
-        # A tail row block is the weaker condition: TileLang already predicates
-        # the bulk T.copy against the row extent, so the mask states the bound
-        # in the kernel rather than leaving it to the copy lowering.
-        masked = D_padded != D or M % block_m != 0
+        masked = D_padded != D
 
         @T.prim_func
         def main(
@@ -318,10 +315,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
-        # A tail row block is the weaker condition: TileLang already predicates
-        # the bulk T.copy against the row extent, so the mask states the bound
-        # in the kernel rather than leaving it to the copy lowering.
-        masked = D_padded != D or M % block_m != 0
+        masked = D_padded != D
 
         @T.prim_func
         def main(
