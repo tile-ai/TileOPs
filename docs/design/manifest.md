@@ -415,6 +415,9 @@ slots:
 - `from` **references** a value the entry already declares — a `roofline.vars` name, an input's
   dtype, a `signature.params` key. It never restates the derivation: a second copy of an
   expression is a second thing to keep in step.
+- `from` names where a value originates; `type` says what arrives. A param declared
+  `float | None` with a null default reaches the factory as the float the op resolved it to, so
+  the slot writes `type: float`.
 - `call` shapes are written in the build parameters' terms, because the callable sees the
   problem after the op has normalized it, not the caller's tensor.
 - Build parameters carry what changes the result. What only changes how it is produced —
