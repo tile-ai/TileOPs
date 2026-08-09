@@ -56,22 +56,21 @@ TileOPs is under active development and is installed from source; PyPI releases 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-make install    # dev dependencies + pre-commit hooks
+pip install -e '.[dev]' -c constraints.txt
+pre-commit install
 ```
 
-> [!NOTE]
-> If CUDA and TileLang are already installed system-wide and you encounter build issues:
-> `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v && pre-commit install`
-
-Verify:
+`constraints.txt` pins the versions CI validates. Verify the install:
 
 ```bash
-python -m pytest tests/ -q    # requires a CUDA GPU
+python -m pytest -q tests -m smoke    # requires a CUDA GPU
 ```
+
+Build issues, test tiers, benchmarks, and packaging checks: [docs/development.md](docs/development.md).
 
 ### Docker (dev image)
 
-A prebuilt development image ships the full stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and all benchmark baselines (FlashAttention-2/3, vLLM, flash-linear-attention) preinstalled:
+A prebuilt image ships the full stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and all benchmark baselines preinstalled — and is the same environment CI runs in:
 
 ```bash
 docker run --rm -it --gpus all \
@@ -80,10 +79,10 @@ docker run --rm -it --gpus all \
 
 # inside the container
 pip install -e . --no-deps
-python -m pytest tests/ -q
+python -m pytest -q tests -m smoke
 ```
 
-The `-dev` tag tracks the TileLang commit CI validates (`<tilelang-sha>-torch2.10-dev`); pull the tag matching the Prerequisites line above. Build recipe and tag scheme: [`.github/runner/README.md`](.github/runner/README.md).
+Tag scheme and usage notes: [docs/development.md](docs/development.md#dev-docker-image). Build recipe: [`.github/runner/README.md`](.github/runner/README.md).
 
 ## Quick Start
 
