@@ -44,7 +44,7 @@ jobs:
 
       - name: Generate current stats
         env:
-          PYTHONPATH: ${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}/src
         run: |
           set -euo pipefail
           mkdir -p _stats
@@ -64,11 +64,12 @@ jobs:
           # Use the PR-branch script (it may not exist on base) but load
           # tileops.manifest from the base worktree so the snapshot reflects
           # the base ref's manifest contents.
-          PYTHONPATH=/tmp/base python scripts/manifest_stats.py \
+          # Both layouts: the base ref may predate the move under src/.
+          PYTHONPATH=/tmp/base/src:/tmp/base python scripts/manifest_stats.py \
             --format json --output /tmp/base-stats.json
           git worktree remove --force /tmp/base
 
-          PYTHONPATH=${{ github.workspace }} python scripts/manifest_stats.py \
+          PYTHONPATH=${{ github.workspace }}/src python scripts/manifest_stats.py \
             --format md --diff /tmp/base-stats.json --output _stats/comment.md
 
       - name: Write Job Summary
@@ -107,7 +108,7 @@ jobs:
 
       - name: Generate publish payload
         env:
-          PYTHONPATH: ${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}/src
         run: |
           set -euo pipefail
           mkdir -p _publish
