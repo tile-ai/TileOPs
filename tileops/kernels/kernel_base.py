@@ -56,10 +56,23 @@ class Kernel(ABC):
     @classmethod
     def supports(cls, call: Any) -> bool:
         """Whether this class can serve *call* on the device the call names."""
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: Any) -> Optional[str]:
+        """Why this class cannot serve *call*, or ``None`` when it can.
+
+        The class that declines says why. A caller told only that nothing served
+        the call cannot tell an architecture it does not have from a shape the
+        implementation was never written for, and whoever is selecting has no
+        way to find out without reading the class it just rejected.
+        """
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
-            return False
-        return cls.applies(call)
+            return f"built for architectures {sorted(archs)}, device reports {call.arch}"
+        if not cls.applies(call):
+            return "does not serve this call"
+        return None
 
     @classmethod
     def _check_arch(cls) -> None:

@@ -32,24 +32,6 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
                 for k in _entry_kernels(getattr(entry, f.name))]
     return []
 
-
-
-def _why_not(kernel_cls: type, call: object) -> str:
-    """Say which check turned *kernel_cls* down, for a selection failure.
-
-    Reads ``supported_archs`` to phrase the message and for nothing else — the
-    decision was already made by ``Kernel.supports``, which is where the op layer
-    asks whether an architecture is served. A refusal that only said "does not
-    serve this call" would leave the caller unable to tell an unsupported device
-    from an unsupported shape.
-    """
-    archs = kernel_cls.supported_archs
-    arch = getattr(call, "arch", None)
-    if archs is not None and arch not in archs:
-        return f"built for architectures {sorted(archs)}, device reports {arch}"
-    return "does not serve this call"
-
-
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -246,10 +228,10 @@ class Op(ABC):
             kernel_cls = (self.kernel_map or {}).get(key)
             if kernel_cls is None:
                 continue
-            if kernel_cls.supports(call):
+            reason = kernel_cls.refusal(call)
+            if reason is None:
                 applicable.append(key)
                 continue
-            reason = _why_not(kernel_cls, call)
             rejected.append(f"{key} ({kernel_cls.__name__}: {reason})")
             if key in self._overridden_keys:
                 refused_overrides.append(f"{key} ({kernel_cls.__name__}: {reason})")
