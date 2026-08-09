@@ -37,7 +37,7 @@ design, calling conventions — live in
 ### Slot S4: <a id="slot-s4"></a> Import — `Op` base class
 
 - **Rule.** `from ..op_base import Op`, or `from .op_base import Op` for ops directly under
-  `tileops/ops/`. Absolute `tileops.ops.op_base` violates the relative-import rule in
+  `src/tileops/ops/`. Absolute `tileops.ops.op_base` violates the relative-import rule in
   [`code-style.md`](../../rules/code-style.md).
 
 ### Slot S5: <a id="slot-s5"></a> `__all__`
@@ -257,7 +257,7 @@ design, calling conventions — live in
 
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
-- **Rule.** Add one `from .<module> import <ClassName>` to `tileops/ops/{family}/__init__.py`,
+- **Rule.** Add one `from .<module> import <ClassName>` to `src/tileops/ops/{family}/__init__.py`,
   under the family's grouping comment, plus a matching `__all__` entry.
 - **Example.**
   ```python

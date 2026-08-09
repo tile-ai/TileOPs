@@ -1,6 +1,6 @@
 # Op Manifest Specification
 
-The [`tileops/manifest/`](../../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
 
 ## Layout
 
@@ -14,7 +14,7 @@ One or more YAML files per family (single file by default; large families may sh
 
 ```mermaid
 flowchart LR
-    R["Authoritative reference"] -->|specified from| M["tileops/manifest/"]
+    R["Authoritative reference"] -->|specified from| M["src/tileops/manifest/"]
     M -->|reads spec from| A["Agent (codegen)"]
     A -->|produces| C["Op code, tests, benchmarks"]
     M -->|validates against| V["Validator (CI)"]
@@ -362,18 +362,18 @@ Op→Kernel dispatch registration table. Declares which Kernels an Op uses so ag
 ```yaml
 # Single-kernel op
 source:
-  kernel: tileops/kernels/norm/rms_norm.py
+  kernel: src/tileops/kernels/norm/rms_norm.py
   kernel_map:
     rms_norm: RMSNormKernel
-  op: tileops/ops/norm/rms_norm.py
+  op: src/tileops/ops/norm/rms_norm.py
 
 # Multi-kernel op
 source:
-  kernel: tileops/kernels/attention/gqa_bwd.py
+  kernel: src/tileops/kernels/attention/gqa_bwd.py
   kernel_map:
     gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
     gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
-  op: tileops/ops/attention/gqa.py
+  op: src/tileops/ops/attention/gqa.py
 ```
 
 - Optional when `status: spec-only`. Required when `status: implemented`.
@@ -471,10 +471,10 @@ RMSNormFwdOp:
     bytes: "(2 * M * N + N) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/rms_norm.py
+    kernel: src/tileops/kernels/norm/rms_norm.py
     kernel_map:
       rms_norm: RMSNormKernel
-    op: tileops/ops/norm/rms_norm.py
+    op: src/tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
     bench: benchmarks/ops/bench_norm.py
 ```

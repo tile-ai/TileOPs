@@ -23,7 +23,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 **The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
-### `Op` base class attributes ([`tileops/ops/op_base.py`](../../tileops/ops/op_base.py))
+### `Op` base class attributes ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
 
 | Attribute      | Type                                 | Purpose                                                                                      |
 | -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
@@ -49,7 +49,7 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 | `iter_kernels()`                          | Every `Kernel` the op holds, deduplicated: entries and delegates                                      |
 | `autotune()`                              | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later builds tune too              |
 
-### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
+### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 
 Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles a dtype-specialized program, so `dtype` is a ctor argument here. The op supplies it from the tensors at `forward()`.
 
@@ -97,7 +97,7 @@ class RMSNormFwdOp(Op):
 
 ## Codegen Details (Appendix) <a id="codegen"></a>
 
-The manifest ([`tileops/manifest/`](../../tileops/manifest/)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
+The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
 
 ### Parameter design <a id="parameter-design"></a>
 

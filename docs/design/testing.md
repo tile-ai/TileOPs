@@ -73,7 +73,7 @@ No performance exploration, autotune sweeps, or duplicate code-path coverage.
 - **Degenerate dimension** — size=1 (broadcast, squeeze paths)
 - **Dispatch branch** — different shape ranges triggering different kernel variants
 
-The implementer selects the smallest shape that triggers each branch. Do not generate test fixtures from [`tileops/manifest/`](../../tileops/manifest/) workloads.
+The implementer selects the smallest shape that triggers each branch. Do not generate test fixtures from [`src/tileops/manifest/`](../../src/tileops/manifest/) workloads.
 
 **Growth rules:**
 
@@ -97,11 +97,11 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ### Testing layers
 
-| Layer             | Responsibility                                      | Shape source                                             |
-| ----------------- | --------------------------------------------------- | -------------------------------------------------------- |
-| UT smoke/full     | Guard PR correctness                                | Implementer selects based on kernel code paths           |
-| Nightly benchmark | Performance regression + typical/stress correctness | [`tileops/manifest/`](../../tileops/manifest/) workloads |
-| Local dev         | Performance tuning verification                     | Developer decides ad-hoc                                 |
+| Layer             | Responsibility                                      | Shape source                                                     |
+| ----------------- | --------------------------------------------------- | ---------------------------------------------------------------- |
+| UT smoke/full     | Guard PR correctness                                | Implementer selects based on kernel code paths                   |
+| Nightly benchmark | Performance regression + typical/stress correctness | [`src/tileops/manifest/`](../../src/tileops/manifest/) workloads |
+| Local dev         | Performance tuning verification                     | Developer decides ad-hoc                                         |
 
 ### Infrastructure rules
 

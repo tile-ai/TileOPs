@@ -4,7 +4,7 @@
 
 TileOPs is a high-performance LLM operator library built on TileLang. The goal is to provide efficient, modular, and maintainable AI workload implementations.
 
-This project follows **design-first, spec-driven** development: design docs and `tileops/manifest/` are the authoritative spec; code conforms to the spec, not the other way around.
+This project follows **design-first, spec-driven** development: design docs and `src/tileops/manifest/` are the authoritative spec; code conforms to the spec, not the other way around.
 
 ## Development Environment
 
@@ -17,8 +17,8 @@ Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt
 - [architecture.md](docs/design/architecture.md) — system modules (M1-M8), data flow, agent production loop, directory structure
 - [ops-design.md](docs/design/ops-design.md) — Op interface execution guide (how to add a new op)
 - [ops-design-reference.md](docs/design/ops-design-reference.md) — Op interface detail reference (interface tables, codegen, naming, protocol)
-- [manifest.md](docs/design/manifest.md) — `tileops/manifest/` spec format (signature, workloads, roofline, source)
-- [roofline.md](docs/design/roofline.md) — `tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator / benchmark / M5 / codegen)
+- [manifest.md](docs/design/manifest.md) — `src/tileops/manifest/` spec format (signature, workloads, roofline, source)
+- [roofline.md](docs/design/roofline.md) — `src/tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator / benchmark / M5 / codegen)
 
 ### Process
 
@@ -28,7 +28,7 @@ Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt
 
 ## Reading the ops manifest
 
-The manifest lives at `tileops/manifest/`, one or more YAML files per op family — most families use a single file; large families may be sharded across multiple files. The `tileops.manifest` package merges them into a single `ops` dict at runtime.
+The manifest lives at `src/tileops/manifest/`, one or more YAML files per op family — most families use a single file; large families may be sharded across multiple files. The `tileops.manifest` package merges them into a single `ops` dict at runtime.
 
 - **Programmatic reads**: prefer `from tileops.manifest import load_manifest, load_workloads`. Never re-implement the merge.
 - **Structural inspection**: parse the relevant family file with `yaml.safe_load` and index `ops` by op name. Pick the file from the op's family field rather than scanning all of them.
@@ -42,9 +42,9 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | When you modify                                                   | Read first                                                                               |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `tests/`                                                          | [.claude/domain-rules/testing-budget.md](.claude/domain-rules/testing-budget.md)         |
-| `tileops/manifest/`                                               | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
+| `src/tileops/manifest/`                                           | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
 | `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
-| `tileops/ops/`, `tileops/kernels/`                                | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
+| `src/tileops/ops/`, `src/tileops/kernels/`                        | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
 | `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
 | `workloads/`                                                      | [docs/design/trust-model.md](docs/design/trust-model.md)                                 |
 | `docs/design/`                                                    | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |

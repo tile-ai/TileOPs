@@ -1,6 +1,6 @@
 # Roofline
 
-This document describes the `roofline` field in `tileops/manifest/`: what it is, how to author one, and who consumes it.
+This document describes the `roofline` field in `src/tileops/manifest/`: what it is, how to author one, and who consumes it.
 
 ## 1. Performance Model
 
@@ -76,7 +76,7 @@ roofline:
 
 ## 3. Consumers
 
-`tileops/manifest/` is the source of truth for the `roofline` field. Four modules read it:
+`src/tileops/manifest/` is the source of truth for the `roofline` field. Four modules read it:
 
 - **Schema validator / CI** — structural checks only (schema, mode exclusivity, `func` importability). Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
@@ -89,7 +89,7 @@ Tests and workloads are not consumers: they may supply shapes and dtypes but mus
 
 ### 4.1 Schema Validator / CI
 
-Runs on every PR touching `tileops/manifest/`. Scope is structural.
+Runs on every PR touching `src/tileops/manifest/`. Scope is structural.
 
 Every roofline entry MUST satisfy:
 
@@ -255,7 +255,7 @@ Rules:
 Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. YAML files store only `theoretical` and `calibration`; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
-# tileops/perf/profiles/<gpu>.yaml
+# src/tileops/perf/profiles/<gpu>.yaml
 hbm:
   theoretical: 4800e9       # bytes/s, from spec sheet
   calibration: 0.848        # from microbench (STREAM Triad)
@@ -265,7 +265,7 @@ tensor_core:
     calibration: 0.75       # from microbench (cuBLAS peak)
 ```
 
-Profiles are stored in `tileops/perf/profiles/`. Microbenchmarks for calibration live in `benchmarks/hardware/`.
+Profiles are stored in `src/tileops/perf/profiles/`. Microbenchmarks for calibration live in `benchmarks/hardware/`.
 
 ### 5.2 Benchmark–Roofline Decoupling
 

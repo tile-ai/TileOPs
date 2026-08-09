@@ -5,7 +5,7 @@ description: Compare each op's code signature against its manifest spec, classif
 
 ## Arguments
 
-Family name from `tileops/manifest/` (e.g., `reduction`, `norm`, `attention`).
+Family name from `src/tileops/manifest/` (e.g., `reduction`, `norm`, `attention`).
 
 ## Contract
 
@@ -66,7 +66,7 @@ Per-op entry. **Example — field set is not exhaustive. Add fields that aid the
 ```json
 {
   "status": "spec-only",
-  "source_op": "tileops/ops/reduction/softmax.py",
+  "source_op": "src/tileops/ops/reduction/softmax.py",
   "base_class": "_SoftmaxBaseOp",
   "classification": "semantic_gap",
   "missing_params": ["dim"],
@@ -88,7 +88,7 @@ Required fields: `classification`, `source_op`, `base_class`, `manifest_signatur
 
 ## Steps
 
-1. Load the merged manifest via `from tileops.manifest import load_manifest`, or read `tileops/manifest/<family>.yaml` directly when scoping to one family.
+1. Load the merged manifest via `from tileops.manifest import load_manifest`, or read `src/tileops/manifest/<family>.yaml` directly when scoping to one family.
 1. Filter ops where `family == <arg>` and `status == spec-only`
 1. For each op:
    a. Read source file (`source_op`), find Op class, extract `__init__` and `forward` explicit named params
