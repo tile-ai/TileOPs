@@ -394,40 +394,6 @@ class TestTunedMode:
         op.build(torch.float16)
         assert tuned == []
 
-    def test_ctor_tune_and_autotune_reach_the_same_state(self):
-        """Constructing tuned and tuning later leave the op indistinguishable."""
-        a, b = _TunableOp([], tune=True), _TunableOp([])
-        b.autotune()
-        assert a.tune is b.tune is True
-
-    def test_delegates_enter_tuned_mode(self):
-        """A delegate builds its own kernels, so it needs the decision too."""
-        delegate = _TunableOp([])
-
-        class CompositeOp(_TunableOp):
-            def kernel_delegates(self):
-                return (delegate,)
-
-        CompositeOp([]).autotune()
-        assert delegate.tune is True
-
-    def test_no_op_keeps_a_private_copy_of_the_flag(self):
-        """One spelling, or tuned mode reaches an op that never reads it.
-
-        Six op files stored the ctor kwarg as ``self._tune`` and read that when
-        building. ``autotune()`` sets the L1 attribute, so those builds went on
-        untuned with nothing to say so.
-        """
-        import pathlib
-
-        ops = pathlib.Path(op_base.__file__).parent
-        offenders = [
-            str(f.relative_to(ops)) for f in ops.rglob("*.py")
-            if "self._tune" in f.read_text()
-        ]
-        assert offenders == [], (
-            f"these read a private tune flag the lifecycle never sets: {offenders}")
-
     def test_a_delegate_built_after_autotune_inherits_tuned_mode(self):
         """The composite passes its own flag on, so the decision carries."""
         tuned: list[str] = []

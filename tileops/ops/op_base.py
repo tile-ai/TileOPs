@@ -273,14 +273,25 @@ class Op(ABC):
                 seen.add(id(kernel))
                 yield kernel
 
+    def _walk_ops(self) -> Iterator["Op"]:
+        """Yield this op and the ops it runs kernels through, each one once."""
+        seen: set[int] = set()
+        stack: list["Op"] = [self]
+        while stack:
+            op = stack.pop()
+            if id(op) in seen:
+                continue
+            seen.add(id(op))
+            yield op
+            stack.extend(op.kernel_delegates())
+
     def _walk_kernels(self) -> Iterator[Kernel]:
         """Yield the kernels this op and its delegates hold, duplicates included."""
-        for entries in (getattr(self, "_kernel_roles", None) or {}).values():
-            for entry in entries.values():
-                yield from _entry_kernels(entry)
-        yield from _entry_kernels(getattr(self, "kernel", None))
-        for delegate in self.kernel_delegates():
-            yield from delegate._walk_kernels()
+        for op in self._walk_ops():
+            for entries in (getattr(op, "_kernel_roles", None) or {}).values():
+                for entry in entries.values():
+                    yield from _entry_kernels(entry)
+            yield from _entry_kernels(getattr(op, "kernel", None))
 
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
@@ -292,15 +303,10 @@ class Op(ABC):
         kernel it builds tunes itself, the same way ``tune=True`` at
         construction does.
         """
-        self._enter_tuned_mode()
+        for op in self._walk_ops():
+            op.tune = True
         for kernel in self.iter_kernels():
             kernel.autotune()
-
-    def _enter_tuned_mode(self) -> None:
-        """Set ``tune`` on this op and on the ops it runs kernels through."""
-        self.tune = True
-        for delegate in self.kernel_delegates():
-            delegate._enter_tuned_mode()
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
