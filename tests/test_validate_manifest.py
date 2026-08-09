@@ -2845,3 +2845,64 @@ class TestCompileContractRegistry:
             f"evidence without declaration: {sorted(registered - declared)}; "
             f"declaration without evidence: {sorted(declared - registered)}"
         )
+
+
+def _slot_entry(**slot_overrides):
+    """Entry carrying one well-formed slot, for mutation by the cases below."""
+    slot = {
+        "build": {
+            "M": {"type": "int", "from": "roofline.vars.M"},
+            "dtype": {"type": "torch.dtype", "from": "x.dtype"},
+        },
+        "call": {
+            "inputs": {"x": {"shape": "[M]", "dtype": "dtype"}},
+            "outputs": {"y": {"shape": "[M]", "dtype": "same_as(x)"}},
+        },
+    }
+    slot.update(slot_overrides)
+    entry = _make_entry(slots={"demo": slot})
+    entry["roofline"] = {"vars": {"M": "x.shape[0]"}, "flops": "M", "bytes": "M"}
+    return entry
+
+
+class TestSlots:
+    """A slot sends an outside implementer somewhere; the checks are that it exists."""
+
+    def test_well_formed_slot_passes(self, validator):
+        assert validator.check_l0("DemoFwdOp", _slot_entry()) == []
+
+    def test_from_naming_an_undeclared_roofline_var_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["build"]["M"]["from"] = "roofline.vars.Nope"
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("roofline.vars.Nope" in e and "does not declare" in e for e in errors)
+
+    def test_from_naming_an_undeclared_input_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["build"]["dtype"]["from"] = "weight.dtype"
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("weight.dtype" in e and "no declared input" in e for e in errors)
+
+    def test_from_naming_an_undeclared_param_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["build"]["c"] = {
+            "type": "int", "from": "signature.params.correction",
+        }
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("signature.params.correction" in e for e in errors)
+
+    def test_call_tensor_outside_the_signature_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["call"]["inputs"]["ghost"] = {"shape": "[M]"}
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("ghost" in e and "no declared" in e for e in errors)
+
+    def test_shape_naming_an_undeclared_build_param_fails(self, validator):
+        entry = _slot_entry()
+        entry["slots"]["demo"]["call"]["outputs"]["y"]["shape"] = "[M, N]"
+        errors = validator.check_l0("DemoFwdOp", entry)
+        assert any("'N'" in e and "build does not declare" in e for e in errors)
+
+    def test_unknown_slot_key_fails(self, validator):
+        errors = validator.check_l0("DemoFwdOp", _slot_entry(revision=1))
+        assert any("unknown keys" in e and "revision" in e for e in errors)

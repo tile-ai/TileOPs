@@ -77,7 +77,9 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
-_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "variant_of", "torch_compile_fullgraph"}
+_VALID_TOP_KEYS = _REQUIRED_TOP | {
+    "ref_api", "variant_of", "torch_compile_fullgraph", "slots",
+}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _VALID_SIGNATURE_KEYS = {
     "inputs", "outputs", "params", "shape_rules", "dtype_combos",
@@ -579,11 +581,96 @@ def _l0_kernel_map(
 # container type, type-error phrase, section validator run on type match).
 # Genuinely custom rules (key format, scalar fields, kernel_map) stay as
 # dedicated small validators around the table loop in ``check_l0``.
+def _l0_slots(op_name: str, entry: dict, slots: dict) -> list[str]:
+    """Slot block: every ``from`` resolves, and shapes name declared params.
+
+    A slot is read by an implementer who cannot see this repository, so the
+    only claims worth checking are the ones that would send them somewhere
+    that does not exist.
+    """
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    roofline_vars = set((entry.get("roofline") or {}).get("vars") or {})
+    signature = entry.get("signature") or {}
+    inputs = set(signature.get("inputs") or {})
+    outputs = set(signature.get("outputs") or {})
+    params = set(signature.get("params") or {})
+
+    for slot_name, slot in slots.items():
+        where = f"slots.{slot_name}"
+        if not isinstance(slot, dict):
+            err(f"{where} must be a mapping")
+            continue
+        unknown = sorted(set(slot) - {"build", "call"})
+        if unknown:
+            err(f"{where} has unknown keys {unknown}; valid keys are ['build', 'call']")
+        build = slot.get("build")
+        if not isinstance(build, dict) or not build:
+            err(f"{where}.build must be a non-empty mapping")
+            build = {}
+        for pname, pspec in build.items():
+            if not isinstance(pspec, dict):
+                err(f"{where}.build.{pname} must be a mapping")
+                continue
+            if "type" not in pspec:
+                err(f"{where}.build.{pname} missing 'type'")
+            src = pspec.get("from")
+            if src is None:
+                continue
+            if src.startswith("roofline.vars."):
+                if src.split(".", 2)[2] not in roofline_vars:
+                    err(f"{where}.build.{pname} reads {src!r}, which roofline.vars "
+                        f"does not declare; it has {sorted(roofline_vars)}")
+            elif src.startswith("signature.params."):
+                if src.split(".", 2)[2] not in params:
+                    err(f"{where}.build.{pname} reads {src!r}, which signature.params "
+                        f"does not declare; it has {sorted(params)}")
+            elif src.endswith(".dtype"):
+                if src.split(".", 1)[0] not in inputs:
+                    err(f"{where}.build.{pname} reads {src!r}, which names no declared "
+                        f"input; inputs are {sorted(inputs)}")
+            else:
+                err(f"{where}.build.{pname} has unrecognised from {src!r}; expected "
+                    f"roofline.vars.*, signature.params.*, or <input>.dtype")
+
+        call = slot.get("call")
+        if not isinstance(call, dict):
+            err(f"{where}.call must be a mapping")
+            continue
+        unknown_call = sorted(set(call) - {"inputs", "outputs"})
+        if unknown_call:
+            err(f"{where}.call has unknown keys {unknown_call}; "
+                f"valid keys are ['inputs', 'outputs']")
+        for side, declared in (("inputs", inputs), ("outputs", outputs)):
+            tensors = call.get(side)
+            if not isinstance(tensors, dict) or not tensors:
+                err(f"{where}.call.{side} must be a non-empty mapping")
+                continue
+            for tname, tspec in tensors.items():
+                if tname not in declared:
+                    err(f"{where}.call.{side}.{tname} names no declared "
+                        f"signature.{side}; they are {sorted(declared)}")
+                if not isinstance(tspec, dict):
+                    err(f"{where}.call.{side}.{tname} must be a mapping")
+                    continue
+                shape = tspec.get("shape")
+                if shape is None:
+                    err(f"{where}.call.{side}.{tname} missing 'shape'")
+                    continue
+                for name in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", str(shape)):
+                    if name not in build:
+                        err(f"{where}.call.{side}.{tname} shape uses {name!r}, which "
+                            f"build does not declare; it has {sorted(build)}")
+    return errors
+
+
 _L0_SECTIONS = (
     ("signature", dict, "a mapping", _l0_signature),
     ("workloads", list, "a list", _l0_workloads),
     ("roofline", dict, "a mapping", _l0_roofline),
     ("source", dict, "a mapping", _l0_source),
+    ("slots", dict, "a mapping", _l0_slots),
 )
 
 
