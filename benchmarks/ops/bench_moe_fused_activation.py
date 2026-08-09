@@ -145,7 +145,7 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
 
     kwargs = dict(
         num_tokens=num_tokens, num_experts=NUM_EXPERTS, top_k=TOP_K,
-        hidden_size=HIDDEN_SIZE, ffn_size=FFN_SIZE, dtype=DTYPE,
+        hidden_size=HIDDEN_SIZE, ffn_size=FFN_SIZE,
         activation=ACTIVATION,
     )
 

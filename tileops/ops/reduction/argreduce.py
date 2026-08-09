@@ -36,6 +36,8 @@ class _ArgreduceOpBase(_ReduceOpBase):
     def _prepare_input(
         self, x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Size, Union[int, list], object]:
+        # Binds self.dtype, which the strided path below never reaches.
+        self._validate_input_tensor(x)
         if self.dim is None or not x.is_contiguous():
             return super()._prepare_input(x)
         if self.dim < -x.ndim or self.dim >= x.ndim:

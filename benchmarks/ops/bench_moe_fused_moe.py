@@ -119,7 +119,7 @@ def _run_bench(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
         hidden_size=hidden_size, ffn_size=ffn_size,
         scoring_func=scoring_func, renormalize=renormalize,
-        routed_scaling_factor=routed_scaling_factor, dtype=dtype,
+        routed_scaling_factor=routed_scaling_factor,
     )
 
     if with_correction_bias:
