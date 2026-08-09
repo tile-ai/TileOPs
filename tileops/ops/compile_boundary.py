@@ -10,16 +10,22 @@ time; weak references keep the registry from extending lifetimes. Keys
 are strings because dynamo treats string custom-op arguments as static
 constants — an ``int`` key is generalized to an unhashable ``SymInt``
 once a second instance compiles through the same frame.
+
+Being a constant is also why keys must never repeat: inductor bakes the
+fake's output shape into the artifact, so an op reaching a used key
+inherits the first one's shapes. ``id()`` is an address and gets reissued.
 """
 
+import itertools
 import weakref
 
 _OP_REGISTRY: "weakref.WeakValueDictionary[str, object]" = weakref.WeakValueDictionary()
+_KEY_COUNTER = itertools.count()
 
 
 def register_instance(op: object) -> str:
     """Register ``op`` and return the key its dispatch custom op passes back."""
-    key = str(id(op))
+    key = f"op{next(_KEY_COUNTER)}"
     _OP_REGISTRY[key] = op
     return key
 
