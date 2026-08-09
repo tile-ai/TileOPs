@@ -2,7 +2,7 @@
 
 Measures latency, FLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes, dtypes, and roofline formulas are loaded from the ops
-manifest (``tileops/manifest/elementwise_unary_math.yaml``).
+manifest (``src/tileops/manifest/elementwise_unary_math.yaml``).
 
 One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
 ``load_workloads("<OpName>")`` call to its manifest entry. A shared

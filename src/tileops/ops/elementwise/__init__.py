@@ -1,7 +1,7 @@
 """Elementwise op package.
 
 Re-exports every public symbol previously provided by the monolithic
-``tileops/ops/elementwise.py`` module so that
+``src/tileops/ops/elementwise.py`` module so that
 ``from tileops.ops.elementwise import <Symbol>`` continues to work.
 
 Concrete ops are organised one cluster per leaf module

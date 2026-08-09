@@ -1,7 +1,7 @@
 """HBM Bandwidth Benchmark — Python wrapper for hbm_saturation.cu.
 
 Compiles and runs the CUDA microbenchmark, parses output, and prints
-the calibration factor for tileops/perf/profiles/.
+the calibration factor for src/tileops/perf/profiles/.
 
 Calibration is derived from the STREAM Triad kernel (a = b + s*c, 2 reads +
 1 write).  Triad is the industry standard for roofline bandwidth calibration:

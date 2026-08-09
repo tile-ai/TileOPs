@@ -107,11 +107,11 @@ class Op(ABC):
     # being @abstractmethod.
     #
     # Broken invariant: L1 does not enforce that every concrete Op implements them.
-    # Why: marking them abstract today breaks every op under tileops/ops/ that has
+    # Why: marking them abstract today breaks every op under src/tileops/ops/ that has
     #     not been migrated to docs/design/ops-design.md, and eval_roofline bodies
     #     are emitted by scaffold-op codegen that has not run for most ops yet. The
     #     trust model requires one migration PR per op.
-    # Cleanup: when all three are implemented across tileops/ops/, make all three
+    # Cleanup: when all three are implemented across src/tileops/ops/, make all three
     #     @abstractmethod and delete this marker.
 
     @property

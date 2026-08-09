@@ -91,7 +91,14 @@ def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
         if wheel_entry not in names
     ]
     tops = {name.split("/", 1)[0] for name in names if name}
-    extra = sorted(t for t in tops if t != PACKAGE_DIR and not t.endswith(".dist-info"))
+    # `<name>-<version>.dist-info`, not any `.dist-info`: a second one would be
+    # another distribution's metadata riding along.
+    own_dist_info = f"{PACKAGE_DIR}-"
+    extra = sorted(
+        t
+        for t in tops
+        if t != PACKAGE_DIR and not (t.startswith(own_dist_info) and t.endswith(".dist-info"))
+    )
     if extra:
         errors.append(
             f"wheel {wheel_path.name}: unexpected top-level {', '.join(extra)} "

@@ -24,7 +24,7 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
     Conforms to ``torch.clamp(input, min, max)`` where ``min`` and ``max``
     are each either a Tensor or ``None``. At least one of the two bounds
     must be a Tensor. All Tensor operands broadcast together. The
-    primary spec entry in ``tileops/manifest/`` covers the both-Tensor
+    primary spec entry in ``src/tileops/manifest/`` covers the both-Tensor
     form; the mixed Tensor/``None`` cases are runtime-equivalent to
     ``ClampMinFwdOp`` / ``ClampMaxFwdOp`` and are accepted here so callers
     can mirror PyTorch's ``torch.clamp`` API directly.

@@ -36,6 +36,11 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Documented and skill-driven callers run this script directly, without
+# installing the package, so the source tree has to be reachable.
+_SRC = str(REPO_ROOT / "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402

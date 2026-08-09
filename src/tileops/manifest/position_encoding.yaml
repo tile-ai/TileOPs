@@ -1,6 +1,6 @@
 # Position-encoding operators.
 #
-# These ops already exist in tileops/ops/rope.py. The manifest keeps the
+# These ops already exist in src/tileops/ops/rope.py. The manifest keeps the
 # current runtime surface as source of truth: construction binds RoPE variant
 # config, while forward infers tensor dimensions from input metadata.
 

@@ -1,6 +1,6 @@
 # Hardware Microbenchmarks
 
-GPU hardware characterization benchmarks that produce calibration factors for `tileops/perf/profiles/`.
+GPU hardware characterization benchmarks that produce calibration factors for `src/tileops/perf/profiles/`.
 
 ## Prerequisites
 
@@ -41,11 +41,11 @@ python benchmarks/hardware/memory/hbm_bandwidth.py --profile h200 --arch sm_90
 
 Options:
 
-| Flag        | Default | Description                                                             |
-| ----------- | ------- | ----------------------------------------------------------------------- |
-| `--profile` | `h200`  | GPU profile name (reads theoretical peak from `tileops/perf/profiles/`) |
-| `--arch`    | `sm_90` | CUDA compute capability for nvcc                                        |
-| `--size-mb` | `2048`  | Working set size in MB                                                  |
+| Flag        | Default | Description                                                                 |
+| ----------- | ------- | --------------------------------------------------------------------------- |
+| `--profile` | `h200`  | GPU profile name (reads theoretical peak from `src/tileops/perf/profiles/`) |
+| `--arch`    | `sm_90` | CUDA compute capability for nvcc                                            |
+| `--size-mb` | `2048`  | Working set size in MB                                                      |
 
 ### Output
 
@@ -54,7 +54,7 @@ Measured peak (triad vec4): 4070.44 GB/s
 Theoretical:               4800.0 GB/s
 Calibration:               0.8480
 
-Update tileops/perf/profiles/h200.yaml:
+Update src/tileops/perf/profiles/h200.yaml:
   hbm.calibration: 0.8480
 ```
 
@@ -70,7 +70,7 @@ Update tileops/perf/profiles/h200.yaml:
 
 ## Adding a new GPU profile
 
-1. Create `tileops/perf/profiles/<gpu>.yaml` with theoretical specs from the datasheet
+1. Create `src/tileops/perf/profiles/<gpu>.yaml` with theoretical specs from the datasheet
 1. Lock GPU clocks (see above)
 1. Run `python benchmarks/hardware/memory/hbm_bandwidth.py --profile <gpu> --arch <sm_XX>`
 1. Update `<gpu>.yaml` with the measured calibration factor

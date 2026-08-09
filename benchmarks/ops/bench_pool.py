@@ -1,6 +1,6 @@
 """Pooling benchmarks.
 
-Workloads are loaded from ``tileops/manifest/pool.yaml``. The 2D cases model
+Workloads are loaded from ``src/tileops/manifest/pool.yaml``. The 2D cases model
 vision-backbone downsampling patterns such as ResNet/ConvNeXt feature stages.
 The 3D cases model video CNN spatiotemporal pooling patterns such as
 I3D/SlowFast-style feature stages.

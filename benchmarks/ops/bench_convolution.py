@@ -1,7 +1,7 @@
 """Benchmarks for the convolution op family (1d/2d/3d, with and without bias).
 
 Workload shapes, channel counts, kernel sizes, strides, paddings, and dtypes
-are loaded from the ops manifest (``tileops/manifest/convolution.yaml``);
+are loaded from the ops manifest (``src/tileops/manifest/convolution.yaml``);
 FLOP/byte counts come from each op's ``eval_roofline()`` via
 :class:`ManifestBenchmark`.
 

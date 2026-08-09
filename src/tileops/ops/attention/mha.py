@@ -254,7 +254,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv, block_table)
 
 
-# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
+# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
 
 
 @torch.library.custom_op("top::mha_fwd", mutates_args=())

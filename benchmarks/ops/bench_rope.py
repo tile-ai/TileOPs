@@ -1,7 +1,7 @@
 """Benchmarks for the RoPE op family.
 
 Workload shapes, dtypes, layouts, and roofline formulas are loaded from the
-ops manifest (``tileops/manifest/position_encoding.yaml``); nothing about a
+ops manifest (``src/tileops/manifest/position_encoding.yaml``); nothing about a
 workload is hard-coded here.
 
 One ``test_*_bench`` per op, so the validator's L4 AST check can tie each

@@ -2,7 +2,7 @@
 
 Verifies that the manifest validator correctly implements schema/signature/shape/dtype/bench checks.
 Uses synthetic manifest data to test individual check functions,
-plus an integration test against the real ops manifest (tileops/manifest/).
+plus an integration test against the real ops manifest (src/tileops/manifest/).
 """
 
 import contextlib

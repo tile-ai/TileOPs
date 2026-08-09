@@ -157,6 +157,14 @@ def test_sdist_with_extra_top_level_dir_fails(tmp_path):
     assert "unexpected top-level tests" in result.stdout
 
 
+def test_wheel_with_foreign_dist_info_fails(tmp_path):
+    """Only this distribution's metadata may ride along."""
+    repo, dist = build_dist(tmp_path, WHEEL_OK + ["other-1.0.dist-info/METADATA"], SDIST_OK)
+    result = run_check(repo, dist)
+    assert result.returncode == 1
+    assert "unexpected top-level other-1.0.dist-info" in result.stdout
+
+
 def test_wheel_with_extra_top_level_fails(tmp_path):
     """Only the package may install into site-packages.
 
