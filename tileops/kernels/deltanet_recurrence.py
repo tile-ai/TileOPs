@@ -291,6 +291,7 @@ class DeltaNetDecodeKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    general = True
 
     def __init__(
         self,
@@ -386,6 +387,14 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return (
+            call.dtype in (torch.float16, torch.bfloat16)
+            and call.dim_k == 128
+            and call.dim_v == 128
+        )
 
     def __init__(
         self,
@@ -615,6 +624,10 @@ class DeltaNetDecodeFP32Kernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return call.dtype == torch.float32
 
     def __init__(
         self,

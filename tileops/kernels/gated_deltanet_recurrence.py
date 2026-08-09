@@ -302,6 +302,7 @@ class GatedDeltaNetDecodeKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    general = True
 
     def __init__(
         self,
@@ -410,6 +411,17 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        # No tunable knobs: a caller asking for autotuning is asking for the
+        # implementation that has some.
+        return (
+            not call.tune
+            and call.dtype == torch.bfloat16
+            and call.dim_k == 128
+            and call.dim_v == 128
+        )
 
     def __init__(
         self,
@@ -587,6 +599,10 @@ class GatedDeltaNetDecodeFP32Kernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return call.dtype == torch.float32
 
     def __init__(
         self,

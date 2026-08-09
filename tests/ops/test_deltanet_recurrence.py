@@ -5,8 +5,11 @@ import torch
 
 import tileops.ops.deltanet_recurrence as deltanet_ops
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.deltanet_recurrence import DeltaNetDecodeRawCudaFlaStyleKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.deltanet_recurrence import (
+    DeltaNetDecodeFP32Kernel,
+    DeltaNetDecodeKernel,
+    DeltaNetDecodeRawCudaFlaStyleKernel,
+)
 from tileops.ops import DeltaNetDecodeOp
 from workloads.linear_attention import DeltaNetDecodeWorkload
 
@@ -217,10 +220,16 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
         torch.testing.assert_close(state_op, state_ref, **tols)
 
 
-class _DispatchMarkerKernel(Kernel):
+class _DispatchMarker:
+    """Records its construction instead of compiling anything.
+
+    Mixed in ahead of the class each marker stands in for, so the region that
+    class states — and the architecture it declares — still decide selection.
+    Overriding only construction is the point: a marker that answered
+    ``applies`` differently would be testing itself.
+    """
 
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__()
         self.args = args
         self.kwargs = kwargs
 
@@ -228,15 +237,15 @@ class _DispatchMarkerKernel(Kernel):
         raise NotImplementedError
 
 
-class _DefaultDispatchKernel(_DispatchMarkerKernel):
+class _DefaultDispatchKernel(_DispatchMarker, DeltaNetDecodeKernel):
     pass
 
 
-class _FP32DispatchKernel(_DispatchMarkerKernel):
+class _FP32DispatchKernel(_DispatchMarker, DeltaNetDecodeFP32Kernel):
     pass
 
 
-class _RawDispatchKernel(_DispatchMarkerKernel):
+class _RawDispatchKernel(_DispatchMarker, DeltaNetDecodeRawCudaFlaStyleKernel):
     pass
 
 
@@ -249,7 +258,12 @@ def _dispatch_kernel_map() -> dict:
 
 
 def _mock_dispatch_arch(monkeypatch, sm_version: int) -> None:
-    monkeypatch.setattr(deltanet_ops, "get_sm_version", lambda: sm_version)
+    """Drive selection as if the device were *sm_version*.
+
+    The call record reads the architecture through ``tileops.utils``, so that is
+    where an architecture other than this machine's is supplied.
+    """
+    monkeypatch.setattr("tileops.utils.get_sm_version", lambda *a, **kw: sm_version)
 
 
 @pytest.mark.parametrize(("dtype", "tune"), [
