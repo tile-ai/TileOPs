@@ -77,7 +77,6 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
     _op_kind = "argmax"
     _kernel_key = "argreduce"
     _kernel_cls = ArgreduceKernel
-    _kernel_handles_padding = True
 
     def __init__(
         self,
@@ -106,9 +105,6 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
             f"got {type(self.dim).__name__}: {self.dim!r}"
         )
 
-    def _pad_value(self) -> float:
-        """Pad with -inf so padded positions never win argmax."""
-        return float("-inf")
 
 
 
@@ -132,7 +128,6 @@ class ArgminFwdOp(_ArgreduceOpBase):
     _op_kind = "argmin"
     _kernel_key = "argreduce"
     _kernel_cls = ArgreduceKernel
-    _kernel_handles_padding = True
 
     def __init__(
         self,
@@ -160,7 +155,3 @@ class ArgminFwdOp(_ArgreduceOpBase):
             f"ArgminFwdOp only supports scalar dim (int) or None, "
             f"got {type(self.dim).__name__}: {self.dim!r}"
         )
-
-    def _pad_value(self) -> float:
-        """Pad with +inf so padded positions never win argmin."""
-        return float("inf")

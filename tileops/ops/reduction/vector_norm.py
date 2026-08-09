@@ -36,7 +36,6 @@ class L1NormFwdOp(_ReduceOpBase):
     _op_kind = "l1"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
-    _kernel_handles_padding = True
     _required_ord: Union[int, float] = 1
     _empty_dim_policy: EmptyDimPolicy = "full"
 
@@ -84,7 +83,6 @@ class L2NormFwdOp(_ReduceOpBase):
     _op_kind = "l2"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
-    _kernel_handles_padding = True
     _required_ord: Union[int, float] = 2
     _empty_dim_policy: EmptyDimPolicy = "full"
 
@@ -135,7 +133,6 @@ class InfNormFwdOp(_ReduceOpBase):
     _op_kind = "inf"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
-    _kernel_handles_padding = True
     _required_ord: Union[int, float] = inf
     _empty_dim_policy: EmptyDimPolicy = "full"
 
