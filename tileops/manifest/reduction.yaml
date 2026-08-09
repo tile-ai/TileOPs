@@ -52,6 +52,17 @@ SoftmaxFwdOp:
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
 
+  slots:
+    softmax:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M, N]', dtype: "same_as(x)"}
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
@@ -104,6 +115,17 @@ LogSoftmaxFwdOp:
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
 
+  slots:
+    log_softmax:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M, N]', dtype: "same_as(x)"}
 LogSumExpFwdOp:
   ref_api: "torch.logsumexp"
   family: reduction
@@ -157,6 +179,17 @@ LogSumExpFwdOp:
 # reduction -- simple reductions (dim + keepdim)
 # ---------------------------------------------------------------------------
 
+  slots:
+    logsumexp:
+      build:
+        M: {type: int, from: roofline.vars.M}
+        N: {type: int, from: roofline.vars.N}
+        dtype: {type: torch.dtype, from: x.dtype}
+      call:
+        inputs:
+          x: {shape: '[M, N]', dtype: dtype, layout: contiguous}
+        outputs:
+          output: {shape: '[M]', dtype: "same_as(x)"}
 SumFwdOp:
   ref_api: "torch.sum"
   family: reduction
