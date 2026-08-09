@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.norm import GroupNormKernel
+from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormNoAffineFwdOp
 from workloads.normalization import GroupNormWorkload
 
@@ -305,15 +305,14 @@ def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("n, c, spatial, g", [
-    # M = N * num_groups not divisible by max block_m (16): triggers tail
-    # program reading/writing rows >= M before the M-padding fix.
+    # Very few rows, so the grid is one or two blocks wide.
     (1, 24, (4, 4), 3),   # M = 3
     (3, 30, (2, 2), 5),   # M = 15
     (1, 16, (8, 8), 1),   # M = 1
 ])
 def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
                                          g: int) -> None:
-    """No-affine GroupNorm handles M not divisible by the kernel's block_m."""
+    """No-affine GroupNorm handles a row count smaller than one grid block."""
     dtype = torch.float16
     op = GroupNormNoAffineFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
@@ -321,6 +320,36 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None,
                         eps=1e-5).to(dtype)
     atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, d, block_m", [
+    (9, 256, 4),   # tail block, aligned columns
+    (9, 200, 4),   # tail block and column padding together
+    (3, 256, 4),   # M < block_m: the only block is a partial one
+])
+def test_group_norm_no_affine_multi_row_block(m: int, d: int,
+                                              block_m: int) -> None:
+    """No-affine rows stay correct when a row block runs past M.
+
+    ``block_m > 1`` is an autotune candidate and M need not be a multiple of
+    it, so the last block covers rows that do not exist.
+    """
+    dtype = torch.float16
+    x = torch.randn((m, d), dtype=dtype, device="cuda")
+
+    kernel = GroupNormNoAffineKernel(
+        m, d, 1e-5, dtype, config={"block_m": block_m, "threads": 128},
+    )
+    y = kernel(x)
+
+    y_ref = F.group_norm(
+        x.float().reshape(m, 1, d), 1, weight=None, bias=None, eps=1e-5,
+    ).reshape(m, d).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert y.shape == x.shape, f"expected {tuple(x.shape)}, got {tuple(y.shape)}"
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
         f"max err: {(y - y_ref).abs().max()}"
 

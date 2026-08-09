@@ -18,10 +18,10 @@ InstanceNorm is the G = C case: channels_per_group is 1, spatial_size is the
 whole row, and the derivation collapses to ``c = m % C``.
 
 256-element alignment (512 bytes for fp16/bf16) is required by T.copy() shared
-memory instructions. Boundary handling for a non-aligned D and for a tail row
-block is performed inside the kernel, so no host-side padding copy is needed.
-Padding zeros contribute 0 to the mean; the centered two-pass variance
-computation subtracts their exact contribution.
+memory instructions. Both kernels here handle a non-aligned D and a tail row
+block inside the prim_func, so neither needs a host-side padding copy. Padding
+zeros contribute 0 to the mean; the centered two-pass variance computation
+subtracts their exact contribution.
 """
 
 import functools
@@ -30,7 +30,6 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -39,11 +38,6 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 ALIGNMENT = 256
-
-# A multiple of every candidate block_m (_config._CANDIDATE_BLOCK_M tops out
-# at 8). The row count is padded to this value so the full-tile T.copy never
-# crosses the M boundary regardless of the selected block_m.
-_M_BLOCK_ALIGN = 16
 
 
 def _align_up(n: int, alignment: int) -> int:
@@ -95,8 +89,10 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
-        # A tail row block would read and write rows >= M, and a non-aligned D
-        # would read and write columns >= D, unless both are masked off.
+        # A non-aligned D would read and write columns >= D unless masked.
+        # A tail row block is the weaker condition: TileLang already predicates
+        # the bulk T.copy against the row extent, so the mask states the bound
+        # in the kernel rather than leaving it to the copy lowering.
         masked = D_padded != D or M % block_m != 0
 
         @T.prim_func
@@ -303,15 +299,16 @@ class GroupNormKernel(Kernel):
 
 @functools.lru_cache(maxsize=32)
 def _group_norm_no_affine_kernel(M, D, eps, dtype):
-    """Build a row-wise normalization kernel for shape (M, D_padded) without affine.
+    """Build a row-wise normalization kernel for shape (M, D) without affine.
 
-    Same numerics as :func:`_group_norm_kernel` but omits the trailing
-    weight/bias multiply/add — output is ``(x - mean) * rstd``. Used for the
-    no-affine variants of GroupNorm and InstanceNorm.
+    Same numerics and same boundary handling as :func:`_group_norm_kernel`,
+    but omits the trailing weight/bias multiply-add — output is
+    ``(x - mean) * rstd``. Used for the no-affine variants of GroupNorm and
+    InstanceNorm.
 
     Args:
         M: Number of rows = N * G.
-        D: Row length = (C / G) * spatial_size (before padding).
+        D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
     """
@@ -320,11 +317,16 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
+        # A non-aligned D would read and write columns >= D unless masked.
+        # A tail row block is the weaker condition: TileLang already predicates
+        # the bulk T.copy against the row extent, so the mask states the bound
+        # in the kernel rather than leaving it to the copy lowering.
+        masked = D_padded != D or M % block_m != 0
 
         @T.prim_func
         def main(
-            x: T.Tensor[(M, D_padded), dtype],
-            y: T.Tensor[(M, D_padded), dtype],
+            x: T.Tensor[(M, D), dtype],
+            y: T.Tensor[(M, D), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, D_padded), dtype)
@@ -334,11 +336,22 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
                 mean_val = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
 
-                T.copy(x[pid_m * block_m, 0], shared_buf)
-                T.copy(shared_buf, x_local)
-
-                for i, j in T.Parallel(block_m, D_padded):
-                    x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                if masked:
+                    # Retain the original values in shared memory for the
+                    # output pass while the fp32 fragment is reduced below.
+                    for i, j in T.Parallel(block_m, D_padded):
+                        shared_buf[i, j] = T.if_then_else(
+                            T.And(pid_m * block_m + i < M, j < D),
+                            x[pid_m * block_m + i, j],
+                            T.cast(0.0, dtype),
+                        )
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                else:
+                    # Preserve the vectorized copy fast path.
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    T.copy(shared_buf, x_local)
+                    for i, j in T.Parallel(block_m, D_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                 T.reduce_sum(x_f32, acc, dim=1)
                 for i in T.Parallel(block_m):
@@ -356,14 +369,22 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
                     )
 
                 # No-affine output: y = (x - mean) * rstd
-                for i, j in T.Parallel(block_m, D_padded):
-                    x_local[i, j] = T.cast(
-                        (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[i],
-                        dtype,
-                    )
-
-                T.copy(x_local, shared_buf)
-                T.copy(shared_buf, y[pid_m * block_m, 0])
+                if masked:
+                    for i, j in T.Parallel(block_m, D_padded):
+                        if T.And(pid_m * block_m + i < M, j < D):
+                            y[pid_m * block_m + i, j] = T.cast(
+                                (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                * rstd[i],
+                                dtype,
+                            )
+                else:
+                    for i, j in T.Parallel(block_m, D_padded):
+                        x_local[i, j] = T.cast(
+                            (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[i],
+                            dtype,
+                        )
+                    T.copy(x_local, shared_buf)
+                    T.copy(shared_buf, y[pid_m * block_m, 0])
 
         return main
 
@@ -385,8 +406,7 @@ def _group_norm_no_affine_wrapped(
 
 @_group_norm_no_affine_wrapped.register_fake
 def _(M, D, eps, dtype_str, block_m, threads, x):
-    D_padded = _align_up(D, ALIGNMENT)
-    return torch.empty((M, D_padded), dtype=x.dtype, device=x.device)
+    return torch.empty((M, D), dtype=x.dtype, device=x.device)
 
 
 class GroupNormNoAffineKernel(Kernel):
@@ -399,8 +419,7 @@ class GroupNormNoAffineKernel(Kernel):
     InstanceNorm.
 
     Args:
-        M: Number of rows = N * G. Rounded up internally to a whole number
-            of ``block_m`` tiles.
+        M: Number of rows = N * G.
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
@@ -425,9 +444,8 @@ class GroupNormNoAffineKernel(Kernel):
         self.eps = eps
         self.dtype = dtype
         self.D_padded = _align_up(D, ALIGNMENT)
-        self.M_padded = _align_up(M, _M_BLOCK_ALIGN)
         self.kernel = _group_norm_no_affine_kernel(
-            self.M_padded, self.D, self.eps, self.dtype_str,
+            self.M, self.D, self.eps, self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -446,17 +464,10 @@ class GroupNormNoAffineKernel(Kernel):
             x: Input of shape ``(M, D)``.
 
         Returns:
-            Tensor of shape ``(M, D)``. Both the row-count and row-length
-            padding the prim_func requires are applied and trimmed here.
+            Tensor of shape ``(M, D)``.
         """
-        d_pad = self.D_padded - self.D
-        m_pad = self.M_padded - self.M
-        if d_pad:
-            x = F.pad(x, (0, d_pad))
-        if m_pad:
-            x = F.pad(x, (0, 0, 0, m_pad))
-        y = _group_norm_no_affine_wrapped(
-            self.M_padded,
+        return _group_norm_no_affine_wrapped(
+            self.M,
             self.D,
             self.eps,
             self.dtype_str,
@@ -464,8 +475,3 @@ class GroupNormNoAffineKernel(Kernel):
             self.config["threads"],
             x,
         )
-        if m_pad:
-            y = y[: self.M, :]
-        if d_pad:
-            y = y[:, : self.D]
-        return y
