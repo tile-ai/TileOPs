@@ -247,6 +247,7 @@ Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resol
 | `workloads`               | yes      | Benchmark shapes/dtypes.                                      |
 | `roofline`                | yes      | Performance model.                                            |
 | `source`                  | yes      | Implementation paths.                                         |
+| `slots`                   | no       | Backend-neutral factory contract. See [Slots](#slots).        |
 
 ### `family`
 
@@ -377,6 +378,47 @@ source:
 ```
 
 - Optional when `status: spec-only`. Required when `status: implemented`.
+
+## Slots
+
+A slot is the contract an implementation of this op answers to: what a factory is handed, and
+what the callable it returns receives and produces. It is written for an author outside this
+repository, so it names semantics and never a class, a file, or a dispatch key.
+
+```yaml
+slots:
+  var:
+    build:
+      M:          {type: int, from: "roofline.vars.M"}
+      N:          {type: int, from: "roofline.vars.N"}
+      dtype:      {type: torch.dtype, from: "x.dtype"}
+      correction: {type: int, from: "signature.params.correction"}
+    call:
+      inputs:
+        x:      {shape: "[M, N]", dtype: "dtype", layout: contiguous}
+      outputs:
+        output: {shape: "[M]", dtype: "same_as(x)"}
+```
+
+| Field   | Required | Description                                                                   |
+| ------- | -------- | ----------------------------------------------------------------------------- |
+| `build` | yes      | Parameters the factory is specialized on. `from` names where each comes from. |
+| `call`  | yes      | Tensors the returned callable receives and returns, in slot terms.            |
+
+- **The slot name is the semantic**, not the in-tree dispatch key. `SumFwdOp` declares `sum`;
+  that its implementation happens to share a class with `mean` and `var`, selected by an
+  `op_kind` argument, is a fact about one provider and stays out of the contract. A slot whose
+  parameter changes the return arity is a multiplexer, not a specialization.
+- `source.kernel_map` keys are in-tree dispatch roles and need not match slot names. The two
+  answer different questions: which class this repository instantiates, versus what any
+  implementation must satisfy.
+- `from` **references** a value the entry already declares — a `roofline.vars` name, an input's
+  dtype, a `signature.params` key. It never restates the derivation: a second copy of an
+  expression is a second thing to keep in step.
+- `call` shapes are written in the build parameters' terms, because the callable sees the
+  problem after the op has normalized it, not the caller's tensor.
+- Build parameters carry what changes the result. What only changes how it is produced —
+  tuning, tile sizes, compilation knobs — belongs to the implementation.
 
 ## Entry Examples
 
