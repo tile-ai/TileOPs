@@ -35,7 +35,10 @@ jobs:
   # =========================================================================
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 150
+    # Sized for a cold cache: a measured 59-file sweep on an idle H200 takes
+    # 5h07m with nothing cached, and minutes once it is. Must exceed
+    # --total-budget below so the runner, not GitHub, ends the sweep.
+    timeout-minutes: 380
     runs-on: [self-hosted, tile-ops, nightly]
     env:
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
@@ -130,6 +133,7 @@ jobs:
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
             --stall-timeout 900 \
+            --total-budget 21600 \
             --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then
