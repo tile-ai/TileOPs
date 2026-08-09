@@ -1,22 +1,40 @@
 
+import dataclasses
+
 import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-import tileops.ops.attention.gqa as gqa_module
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention.call_spec import square_ws_prefill_region
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+from tileops.ops.attention.selection import DENSE_PREFILL_KEYS
 from workloads.attention.mha import MhaBwdWorkload, MhaFwdWorkload
 
 
 class _FakeDenseKernel(Kernel):
+    """Stands in for the general dense implementation.
+
+    A replacement declares its role the same way a shipped implementation does.
+    This one is the implementation behind the specialised ones, so it says so
+    rather than naming the fast path it yields to.
+    """
+
+    general = True
+
     def forward(self, *args: object, **kwargs: object) -> object:
         return None
 
 
 class _FakeSquareDenseKernel(Kernel):
+    """Stands in for the H200 square causal fast path."""
+
+    @classmethod
+    def applies(cls, call: object) -> bool:
+        return square_ws_prefill_region(call)
+
     def forward(self, *args: object, **kwargs: object) -> object:
         return None
 
@@ -128,10 +146,12 @@ def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
 
 
 @pytest.mark.smoke
-def test_mha_fwd_preserves_gqa_square_dense_fast_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(gqa_module, "is_h200", lambda: True)
+def test_mha_fwd_preserves_gqa_square_dense_fast_path() -> None:
+    """MHA delegates to GQA, so the square fast path is still reached through it.
+
+    The device is stated on the record rather than probed, so the case holds on
+    any machine.
+    """
     op = MultiHeadAttentionFwdOp(
         batch=4,
         heads=64,
@@ -143,8 +163,14 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path(
             "gqa_prefill_square_fwd_kernel": _FakeSquareDenseKernel,
         },
     )
+    delegate, = op.kernel_delegates()
+    stated = dataclasses.replace(
+        delegate.attention_call(torch.float16), arch=90, h200=True)
 
-    assert isinstance(op._get_kernel(torch.float16), _FakeSquareDenseKernel)
+    key = delegate.select_kernel_key(DENSE_PREFILL_KEYS, stated)
+
+    assert key == "gqa_prefill_square_fwd_kernel"
+    assert delegate.kernel_map[key] is _FakeSquareDenseKernel
 
 
 @pytest.mark.smoke

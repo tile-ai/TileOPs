@@ -55,7 +55,7 @@ class MultiHeadAttentionFwdOp(Op):
             seq_len=seq_len,
             dim=dim,
             is_causal=is_causal,
-            kernel_map=self.kernel_map,
+            kernel_map=self.forwarded_overrides(),
             tune=tune,
         )
 
@@ -127,7 +127,7 @@ class MultiHeadAttentionBwdOp(Op):
             seq_len=seq_len,
             dim=dim,
             is_causal=is_causal,
-            kernel_map=self.kernel_map,
+            kernel_map=self.forwarded_overrides(),
             tune=tune,
         )
         self.kernel_map = self._gqa_op.kernel_map

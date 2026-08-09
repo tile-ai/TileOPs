@@ -22,7 +22,79 @@ class Kernel(ABC):
     }
 
     def __init__(self, *args, **kwargs) -> None:
+        self._check_arch()
         self.config = {}
+
+    #: Whether this implementation is the one behind the specialised ones.
+    #: A dispatch key may have at most one general implementation applying to a
+    #: call; it runs when no specialised implementation of that key serves it.
+    #: Stating it here rather than as an exclusion in every specialised sibling
+    #: is what lets a specialisation appear, or be replaced, without the general
+    #: implementation naming it.
+    general: bool = False
+
+    @classmethod
+    def applies(cls, call: Any) -> bool:
+        """Whether this implementation serves the call *call* describes.
+
+        States a region positively — what this class serves, never what a
+        sibling serves. Architecture is not part of it: ``supported_archs``
+        already answers that, and a specialised implementation the device
+        cannot run simply does not apply, leaving the call to the general one.
+
+        Answered by the class that would run, so a ``kernel_map`` override is
+        asked about its own region rather than the region of the class it
+        replaced.
+
+        The default serves anything the architecture allows. A specialised
+        implementation that leaves it unset therefore claims every call, which
+        collides with its siblings and is reported rather than silently
+        preferred.
+        """
+        return True
+
+    @classmethod
+    def refusal(cls, call: Any) -> Optional[str]:
+        """Why this class cannot serve *call*, or ``None`` when it can.
+
+        The class that declines says why. A caller told only that nothing served
+        the call cannot tell an architecture it does not have from a shape the
+        implementation was never written for, and whoever is selecting has no
+        way to find out without reading the class it just rejected.
+        """
+        archs = cls.supported_archs
+        if archs is not None and call.arch not in archs:
+            return f"built for architectures {sorted(archs)}, device reports {call.arch}"
+        if not cls.applies(call):
+            return "does not serve this call"
+        return None
+
+    @classmethod
+    def _check_arch(cls) -> None:
+        """Reject construction on a device this kernel is not built for.
+
+        The device is probed only by a class that constrains the architecture,
+        and only here — kernel construction is deferred to the first forward,
+        so a device is present by the time this runs. The op layer performs no
+        architecture check of its own; a role served by several kernels filters
+        candidates during selection instead.
+
+        Raises:
+            ValueError: When the current device architecture is not among
+                ``supported_archs``. Selection raises the same class when no
+                candidate for a dispatch key can serve a call, so a caller
+                catches one exception type whether the key has one
+                implementation or several.
+        """
+        if cls.supported_archs is None:
+            return
+        from tileops.utils import get_sm_version
+        arch = get_sm_version()
+        if arch not in cls.supported_archs:
+            raise ValueError(
+                f"{cls.__name__} is built for architectures "
+                f"{sorted(cls.supported_archs)}, but the current device reports "
+                f"{arch}")
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
         if tune and self.autotune_configs is None:

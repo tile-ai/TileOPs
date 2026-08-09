@@ -13,14 +13,20 @@
   - delayed PV + wait_wgmma(1): softmax(k) overlaps in-flight PV(k-1).
 """
 import functools
-from typing import Optional, Tuple
+from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
-from tileops.kernels.kernel_base import Kernel
+from .call_spec import (
+    ATTENTION_DTYPES,
+    WS_ARCH,
+    causal_ws_prefill_region,
+    square_ws_prefill_region,
+)
+from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAPrefillFwdWsPersistentCausalKernel"]
 
@@ -349,7 +355,7 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
     return main
 
 
-class GQAPrefillFwdWsPersistentCausalKernel(Kernel):
+class GQAPrefillFwdWsPersistentCausalKernel(PackedPrefillKernel):
     """Faithful FlashInfer FA3 GQA-prefill kernel (causal, dim==128, sm90).
 
     Warp-specialized 2-warpgroup ping-pong port matching FlashInfer's
@@ -361,52 +367,40 @@ class GQAPrefillFwdWsPersistentCausalKernel(Kernel):
     backward pass that needs log-sum-exp must compute it separately.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [WS_ARCH]
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 heads_kv: int,
-                 seq_len_q: int,
-                 seq_len_kv: int,
-                 dim: int,
-                 is_causal: bool,
-                 dtype: torch.dtype,
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
-        super().__init__()
-        if not is_causal:
+    @classmethod
+    def applies(cls, call) -> bool:
+        # The H200 square causal kernel owns its sub-region; excluding it here
+        # keeps the two disjoint, so selection never breaks a tie by ordering.
+        return (
+            causal_ws_prefill_region(call)
+            and not square_ws_prefill_region(call)
+        )
+
+    def _validate_spec(self) -> None:
+        if not self.is_causal:
             raise ValueError("GQAPrefillFwdWsPersistentCausalKernel only supports causal prefill.")
-        if dim != 128:
+        if self.dim != 128:
             raise ValueError("GQAPrefillFwdWsPersistentCausalKernel currently requires dim == 128.")
-        if dtype not in (torch.float16, torch.bfloat16):
+        if self.dtype not in ATTENTION_DTYPES:
             raise ValueError(
                 "GQAPrefillFwdWsPersistentCausalKernel currently supports float16 and bfloat16 only."
             )
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len_q = seq_len_q
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
-        self.kernel = _gqa_prefill_fwd_fa3_kernel(batch, heads, heads_kv, seq_len_q,
-                                                  seq_len_kv, dim, self.sm_scale, self.softcap,
-                                                  self.dtype_str)
-        self.init_config(config, tune)
+
+    def _build_program(self) -> None:
+        self.kernel = _gqa_prefill_fwd_fa3_kernel(
+            self.batch, self.heads, self.heads_kv, self.max_seqlen_q, self.max_seqlen_kv,
+            self.dim, self.sm_scale, self.softcap, self.dtype_str)
 
     @property
     def default_config(self) -> dict:
         return {}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor,
-                v: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        # No lse output (matches FlashInfer's forward); op discards the 2nd slot.
-        return self.kernel(q, k, v), None
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                cu_seqlens_q: torch.Tensor, cu_seqlens_kv: torch.Tensor,
+                q_scale: Optional[torch.Tensor] = None,
+                k_scale: Optional[torch.Tensor] = None,
+                v_scale: Optional[torch.Tensor] = None) -> torch.Tensor:
+        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
+        return self.kernel(q_bshd, k_bshd, v_bshd).reshape(q.shape)

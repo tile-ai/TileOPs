@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-import torch
 from torch import Tensor
 
 from tileops.kernels.grouped_gemm import (
@@ -24,7 +23,6 @@ from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
     _DEFAULT_CONFIG as _FUSED_ACT_DEFAULT_CONFIG,
 )
 from tileops.ops.moe._activation import build_activation_op
-from tileops.utils import get_sm_version
 
 from .abc import (
     FusedMoEExpertsModular,
@@ -79,11 +77,13 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             'gelu_and_mul'.
         use_fused_activation: If True, fuse the activation into the gate_up
             GEMM epilogue via MoeGroupedGemmPersistent3WGFusedActKernel (avoids
-            materializing the [numel, 2*ffn] gate_up in global memory). Falls
-            back to the separate activation op (with a logged warning) unless:
-            CUDA is available, the device is SM90+, the 3WG kernel is selected,
-            activation is silu_and_mul or gelu_and_mul, and ffn_size is a
-            multiple of the fused kernel's block_n (128). Default False
+            materializing the [numel, 2*ffn] gate_up in global memory). Raises
+            when this op cannot honour it: the 3WG kernel must be the gate_up
+            GEMM with no conflicting moe_grouped_gemm_kernel override,
+            activation must be silu_and_mul or gelu_and_mul, and ffn_size must
+            be a multiple of the fused kernel's block_n (128). Whether the
+            device can run the fused kernel is answered when that kernel is
+            built, not here. Default False
             reproduces the unfused pipeline exactly. Performance: at production
             FFN sizes (H200, bf16) this is a small win in both regimes —
             roughly 1.02-1.05x for compute-bound prefill and ~1.05x for
@@ -152,32 +152,41 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         # (merged into the unfused gate_up / down ops below). The fused gate_up
         # wrapper keys off "moe_grouped_gemm_fused_act_kernel" and cannot honor a
         # "moe_grouped_gemm_kernel" override, so enabling fusion alongside a
-        # non-3WG override would silently produce a fused 3WG gate_up next to an
-        # overridden down GEMM. Disable fusion in that case so the override
-        # applies uniformly through the unfused path.
+        # non-3WG override would produce a fused 3WG gate_up next to an
+        # overridden down GEMM. That combination is refused below.
         gemm_override = (kernel_map or {}).get("moe_grouped_gemm_kernel")
         self.use_fused_activation = use_fused_activation
         if use_fused_activation:
+            # Fusion is what the caller asked for, so a request this op cannot
+            # honour is refused rather than quietly downgraded: a caller who
+            # wanted the fused epilogue and silently got the separate one reads
+            # the unfused result as the fused one. Each condition is reported on
+            # its own, because "not eligible" over six conjuncts says nothing
+            # about which one to fix.
+            #
+            # Whether the device can run the fused kernel is not asked here.
+            # MoeGroupedGemmPersistent3WGFusedActKernel states the architectures
+            # it is built for, and refuses when it is built — construction reads
+            # no device property.
             fused_block_n = _FUSED_ACT_DEFAULT_CONFIG["block_n"]
-            ok = (
-                torch.cuda.is_available()
-                and get_sm_version() >= 90
-                and kernel_cls is GroupedGemmPersistent3WGKernel
-                and (gemm_override is None
-                     or gemm_override is GroupedGemmPersistent3WGKernel)
-                and activation in ("silu_and_mul", "gelu_and_mul")
-                and (ffn_size % fused_block_n == 0)
-            )
-            if not ok:
-                _logger.warning(
-                    "use_fused_activation=True not eligible (requires CUDA + SM90 + "
-                    "GroupedGemmPersistent3WGKernel gate_up GEMM with no conflicting "
-                    "moe_grouped_gemm_kernel override + activation in {silu_and_mul, "
-                    "gelu_and_mul} + ffn_size %% %d == 0); falling back to unfused "
-                    "activation. ffn_size=%d, activation=%s.",
-                    fused_block_n, ffn_size, activation,
-                )
-                self.use_fused_activation = False
+            if kernel_cls is not GroupedGemmPersistent3WGKernel:
+                raise ValueError(
+                    "use_fused_activation=True requires the 3WG persistent gate_up GEMM, "
+                    f"got {kernel_cls.__name__}")
+            if gemm_override is not None and gemm_override is not GroupedGemmPersistent3WGKernel:
+                raise ValueError(
+                    "use_fused_activation=True cannot honour a moe_grouped_gemm_kernel "
+                    f"override ({gemm_override.__name__}): the fused gate_up wrapper keys off "
+                    "moe_grouped_gemm_fused_act_kernel, so the override would reach the down "
+                    "GEMM alone and leave the pipeline inconsistent")
+            if activation not in ("silu_and_mul", "gelu_and_mul"):
+                raise ValueError(
+                    "use_fused_activation=True supports activation in "
+                    f"{{silu_and_mul, gelu_and_mul}}, got {activation!r}")
+            if ffn_size % fused_block_n != 0:
+                raise ValueError(
+                    f"use_fused_activation=True requires ffn_size % {fused_block_n} == 0, "
+                    f"got ffn_size={ffn_size}")
 
         self._permute = MoePermuteNopadFwdOp(
             num_experts=num_experts, expert_map=expert_map,

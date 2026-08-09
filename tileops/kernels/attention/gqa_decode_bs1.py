@@ -17,6 +17,7 @@ from tileops.kernels.attention.gqa_decode import _gqa_decode_no_split_op
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
+from .call_spec import decode_bs1_region
 from .gqa_decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
@@ -130,6 +131,10 @@ class GQADecodeBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return decode_bs1_region(call)
 
     def __init__(self,
                  batch,

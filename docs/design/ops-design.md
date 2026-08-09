@@ -31,7 +31,19 @@ Op                          ← L1: thin base, shared by all ops
 
 An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
 
-The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
+The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
+
+### Kernel selection
+
+**Construction reads no device property.** An op constructs where it is imported. The tensors arrive later, perhaps on a device the process has not touched, perhaps on hardware where the probe does not exist at all. Installing the kernel map resolves classes and nothing more; a target that cannot run the op is refused when a kernel is first selected, built or called — by the implementation, which owns the architectures it was written for.
+
+**Choosing a slot is the op's; choosing among a slot's implementations is not.** Which slot serves a call follows from the call's user-visible semantics. Which implementation of that slot runs belongs with the implementations.
+
+**An implementation states the region it serves, positively.** Never by excluding a sibling, never by architecture — its declared support already answers that.
+
+**Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
+
+The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](ops-design-reference.md#slot-s13).
 
 `self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
 

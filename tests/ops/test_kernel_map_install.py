@@ -1,8 +1,9 @@
-"""Tests for the shared ``_install_kernel_map`` validation path.
+"""Tests for the shared ``_install_kernel_map`` path.
 
-A user-supplied ``kernel_map`` and the auto-discovered ``default_kernel_map``
-must traverse the same validate-and-install path in the Op base, so that
-architecture-compatibility checks fire identically regardless of provenance.
+Installing the kernel map resolves classes only. It does not probe the device,
+so an op constructs wherever it is imported and a target that cannot run it is
+refused when a kernel is first selected — not at construction, where most ops
+do not yet know which device they will run on.
 """
 
 
@@ -10,11 +11,11 @@ import pytest
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import forget_device_properties, get_sm_version
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
-    reason="install_kernel_map tests query CUDA arch via get_sm_version()",
+    reason="kernel-map install tests build kernels on the current device",
 )
 
 
@@ -27,48 +28,117 @@ def _make_incompatible_arch_list() -> list[int]:
     return incompatible
 
 
-@pytest.mark.smoke
-def test_install_kernel_map_user_supplied_incompatible_raises_valueerror() -> None:
-    """User-supplied incompatible kernel raises ``ValueError`` (auto-discovery class)."""
-    import tileops.ops.elementwise as mod
+def _decode_op(**kwargs: object):
+    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 
-    cls = mod.ReluFwdOp
-    inst = cls(N_total=8)
-    (key, default_kernel_cls), = inst.default_kernel_map.items()
-    incompatible_archs = _make_incompatible_arch_list()
-
-    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
-        supported_archs = incompatible_archs
-
-    with pytest.raises(ValueError, match="not supported on architecture"):
-        cls(N_total=8, kernel_map={key: IncompatibleKernel})
+    defaults = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
+    defaults.update(kwargs)
+    return GroupedQueryAttentionDecodeWithKVCacheFwdOp(**defaults)
 
 
 @pytest.mark.smoke
-def test_install_kernel_map_auto_discovery_incompatible_raises_same_class() -> None:
-    """Auto-discovery path raises the same ``ValueError`` on identical input.
+def test_construction_succeeds_where_the_device_cannot_be_queried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An op constructs on a machine that cannot answer what the device is.
 
-    Build an Op subclass whose ``default_kernel_map`` already points at an
-    arch-incompatible kernel; constructing it must raise the same class
-    that the user-supplied path produces.
+    Most ops do not yet know where they will run, and on hardware other than the
+    one being asked about the query is not merely wrong but unavailable. Driven
+    by making the probe raise rather than by naming who may call it, so importing
+    it under another name or probing from elsewhere fails this too.
     """
     import tileops.ops.elementwise as mod
 
-    base_cls = mod.ReluFwdOp
-    base_inst = base_cls(N_total=8)
-    (key, default_kernel_cls), = base_inst.default_kernel_map.items()
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("no device to query")
+
+    # The properties are cached per device, so a probe that already succeeded
+    # would never reach the failing one.
+    forget_device_properties()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", unavailable)
+    monkeypatch.setattr(torch.cuda, "get_device_name", unavailable)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    try:
+        mod.ReluFwdOp(N_total=8)
+        _decode_op()
+    finally:
+        forget_device_properties()
+
+
+@pytest.mark.smoke
+def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
+    """An override that cannot run here is named, not silently passed over.
+
+    The override is the reason the call was made; falling back to the stock
+    kernel would report a result the caller believes came from theirs.
+    """
+    from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
+
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
+    class IncompatibleBs1(GQADecodeBs1Kernel):
         supported_archs = incompatible_archs
 
-    class AutoDiscoveredIncompatibleOp(base_cls):  # type: ignore[misc, valid-type]
+    class IncompatibleGeneral(GQADecodeKernel):
+        supported_archs = incompatible_archs
+
+    op = _decode_op(kernel_map={
+        "gqa_decode_bs1_kernel": IncompatibleBs1,
+        "gqa_decode_kernel": IncompatibleGeneral,
+    })
+
+    with pytest.raises(ValueError, match="the kernel supplied for"):
+        op._get_kernel(torch.float16)
+
+
+@pytest.mark.smoke
+def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
+    """The auto-discovery path is refused at the same point, the same way."""
+    from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
+    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+
+    incompatible_archs = _make_incompatible_arch_list()
+
+    class IncompatibleBs1(GQADecodeBs1Kernel):
+        supported_archs = incompatible_archs
+
+    class IncompatibleGeneral(GQADecodeKernel):
+        supported_archs = incompatible_archs
+
+    class AutoDiscoveredIncompatibleOp(GroupedQueryAttentionDecodeWithKVCacheFwdOp):
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
-            return {key: IncompatibleKernel}
+            return {
+                "gqa_decode_bs1_kernel": IncompatibleBs1,
+                "gqa_decode_kernel": IncompatibleGeneral,
+            }
 
-    with pytest.raises(ValueError, match="not supported on architecture"):
-        AutoDiscoveredIncompatibleOp(N_total=8)
+    op = AutoDiscoveredIncompatibleOp(
+        batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
+
+    with pytest.raises(ValueError, match="no implementation serves this call"):
+        op._get_kernel(torch.float16)
+
+
+@pytest.mark.smoke
+def test_single_implementation_slot_is_refused_at_first_build() -> None:
+    """A slot with one implementation reports the same class as a slot with several.
+
+    Nothing selects here — there is no second candidate to pass over — so the
+    refusal comes from the kernel as it is built. It must still be a
+    ``ValueError``, or a caller would need two excepts for one condition.
+    """
+    import tileops.ops.elementwise as mod
+
+    (key, default_kernel_cls), = mod.ReluFwdOp(N_total=8).default_kernel_map.items()
+
+    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
+        supported_archs = _make_incompatible_arch_list()
+
+    op = mod.ReluFwdOp(N_total=8, kernel_map={key: IncompatibleKernel})
+
+    with pytest.raises(ValueError, match="is built for architectures"):
+        op(torch.randn(8, device="cuda", dtype=torch.float16))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -106,41 +176,28 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
-def test_install_kernel_map_supported_archs_none() -> None:
-    """A kernel with ``supported_archs=None`` installs without raising.
+def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
+    """``supported_archs=None`` means no restriction, and the op runs.
 
-    The base ``Kernel`` class declares ``supported_archs: Optional[list[int]]``
-    defaulting to ``None``. The validate-and-install path must treat ``None``
-    as "no arch restriction" rather than attempting ``in None``, which would
-    raise ``TypeError``.
+    The base ``Kernel`` declares it ``Optional[list[int]]`` defaulting to
+    ``None``. Anything testing membership against it would raise ``TypeError``
+    instead of admitting the call, so this drives a forward through such a
+    kernel rather than inspecting where it was installed.
     """
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    inst = cls(N_total=8)
-    (key, default_kernel_cls), = inst.default_kernel_map.items()
+    (key, default_kernel_cls), = cls(N_total=8).default_kernel_map.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
 
-    overridden = cls(N_total=8, kernel_map={key: UnrestrictedKernel})
-    assert overridden.kernel_map[key] is UnrestrictedKernel
+    op = cls(N_total=8, kernel_map={key: UnrestrictedKernel})
+    x = torch.randn(8, device="cuda", dtype=torch.float16)
 
-
-@pytest.mark.smoke
-def test_install_kernel_map_is_private_helper_only() -> None:
-    """Refactor exposes ``_install_kernel_map`` only — no new public API.
-
-    Guards AC: the shared path is private (leading underscore); the public
-    surface is unchanged (``dispatch_kernel``, ``kernel_map``, ``tune``).
-    """
-    from tileops.ops.op_base import Op
-
-    assert hasattr(Op, "_install_kernel_map")
-    assert hasattr(Op, "dispatch_kernel")
-    public_names = [n for n in vars(Op) if not n.startswith("_")]
-    assert "install_kernel_map" not in public_names
+    torch.testing.assert_close(op(x), torch.relu(x))
 
 
 # A slot entry is a bare kernel for some families and a record for others, so

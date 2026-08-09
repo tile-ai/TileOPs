@@ -152,11 +152,6 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
     op_unfused = FusedMoEExpertsNopadPersistent3WGFwdOp(**kwargs, use_fused_activation=False)
     op_fused   = FusedMoEExpertsNopadPersistent3WGFwdOp(**kwargs, use_fused_activation=True)
 
-    if not op_fused.use_fused_activation:
-        pytest.skip(
-            "use_fused_activation=True was downgraded (eligibility check failed); "
-            "cannot compare fused vs unfused meaningfully."
-        )
 
     bm = MoEFusedActBenchmark(workload)
     out_unfused = torch.empty(num_tokens, HIDDEN_SIZE, dtype=DTYPE, device="cuda")

@@ -100,9 +100,10 @@ design, calling conventions — live in
 
 - **Rule.** Sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`.
   **Construct no kernel here**, whatever the op shape: the kernel is dtype-specialized and no dtype
-  exists until `forward()` receives a tensor. `dispatch_kernel` resolves the kernel *class* and
-  checks the architecture, neither of which needs a tensor. **Declare no kernel cache here
-  either** — L1 owns get-or-build and creates the role's entry table on first use, per
+  exists until `forward()` receives a tensor. `dispatch_kernel` resolves the kernel *class*, which
+  needs no tensor and reads no device property; an architecture that cannot run the op is refused
+  when a kernel is first selected or built. **Declare no kernel cache here either** — L1 owns
+  get-or-build and creates the role's entry table on first use, per
   [Kernel caching and enumeration](../../../docs/design/ops-design.md#kernel-caching-and-enumeration).
   - **Fully-static op** (every non-static axis committed at ctor): may precompute
     `self._infer_output_shapes(<input>_shape=(...))` when a caller needs output shapes before

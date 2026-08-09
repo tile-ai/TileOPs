@@ -3,10 +3,11 @@
 import pytest
 import torch
 
-import tileops.ops.gated_deltanet as gated_deltanet_ops
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.gated_deltanet_recurrence import GatedDeltaNetDecodeRawCudaFlaStyleKernel
 from tileops.ops import GatedDeltaNetDecodeOp
+from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS
 from workloads.linear_attention import (
     GatedDeltaNetDecodeWorkload,
 )
@@ -179,52 +180,21 @@ def test_gated_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None
 
 
 @pytest.mark.smoke
-def test_gated_deltanet_decode_raw_cuda_dispatch_handles_capability_errors(monkeypatch) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+def test_gated_deltanet_decode_raw_cuda_dispatch_rejects_unsupported_sm100() -> None:
+    """An architecture past the one it was written for is not assumed compatible.
 
-    def _raise_capability_error():
-        raise RuntimeError("mock capability failure")
+    No implementation of this slot claims SM100, so the call is refused rather
+    than run on any of them — and the refusal names the raw kernel as one that
+    declined for its architecture, which is what this pins.
+    """
+    op = GatedDeltaNetDecodeOp()
+    call = DeltaNetDecodeCall(arch=100, batch=1, heads=4, dim_k=128, dim_v=128,
+                              dtype=torch.bfloat16)
 
-    monkeypatch.setattr(torch.cuda, "get_device_capability", _raise_capability_error)
-
-    assert not GatedDeltaNetDecodeOp._should_use_raw_cuda_decode(
-        128,
-        128,
-        torch.bfloat16,
-        tune=False,
-    )
-
-
-@pytest.mark.smoke
-def test_gated_deltanet_decode_raw_cuda_map_only_registers_on_supported_arch(
-    monkeypatch,
-) -> None:
-    op = object.__new__(GatedDeltaNetDecodeOp)
-
-    monkeypatch.setattr(gated_deltanet_ops, "get_sm_version", lambda: 80)
-    sm80_map = GatedDeltaNetDecodeOp.default_kernel_map.fget(op)
-    assert "GatedDeltaNetDecodeRawCudaFlaStyleKernel" not in sm80_map
-
-    monkeypatch.setattr(gated_deltanet_ops, "get_sm_version", lambda: 90)
-    sm90_map = GatedDeltaNetDecodeOp.default_kernel_map.fget(op)
-    assert (
-        sm90_map["GatedDeltaNetDecodeRawCudaFlaStyleKernel"]
-        is GatedDeltaNetDecodeRawCudaFlaStyleKernel
-    )
-
-
-@pytest.mark.smoke
-def test_gated_deltanet_decode_raw_cuda_dispatch_rejects_unsupported_sm100(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(gated_deltanet_ops, "get_sm_version", lambda: 100)
-
-    assert not GatedDeltaNetDecodeOp._should_use_raw_cuda_decode(
-        128,
-        128,
-        torch.bfloat16,
-        tune=False,
-    )
+    with pytest.raises(ValueError, match="no implementation serves this call") as excinfo:
+        op.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call)
+    assert "GatedDeltaNetDecodeRawCudaFlaStyleKernel: built for architectures [90]" in (
+        str(excinfo.value))
 
 
 @pytest.mark.smoke

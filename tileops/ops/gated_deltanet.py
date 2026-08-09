@@ -2,6 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.kernels.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.gated_deltanet import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
@@ -13,7 +14,6 @@ from tileops.kernels.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
 
 from .op_base import Op
 
@@ -24,6 +24,13 @@ __all__ = [
     "GatedDeltaNetOp",
     "GatedDeltaNetPrefillFwdOp",
 ]
+
+#: Implementations of the gated DeltaNet decode slot.
+GATED_DELTANET_DECODE_KEYS = (
+    "GatedDeltaNetDecodeFP32Kernel",
+    "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
+    "GatedDeltaNetDecodeKernel",
+)
 
 
 def _resolve_gated_bhsd(
@@ -648,25 +655,6 @@ class GatedDeltaNetDecodeOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
-    @staticmethod
-    def _raw_cuda_decode_arch_supported() -> bool:
-        try:
-            sm_version = get_sm_version()
-        except Exception:
-            return False
-        return sm_version in GatedDeltaNetDecodeRawCudaFlaStyleKernel.supported_archs
-
-    @staticmethod
-    def _should_use_raw_cuda_decode(
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        tune: bool,
-    ) -> bool:
-        if tune or dtype != torch.bfloat16 or dim_k != 128 or dim_v != 128:
-            return False
-        return GatedDeltaNetDecodeOp._raw_cuda_decode_arch_supported()
-
     def __init__(
         self,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -685,15 +673,12 @@ class GatedDeltaNetDecodeOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernels = {
+        return {
             "GatedDeltaNetDecodeKernel": GatedDeltaNetDecodeKernel,
             "GatedDeltaNetDecodeFP32Kernel": GatedDeltaNetDecodeFP32Kernel,
+            "GatedDeltaNetDecodeRawCudaFlaStyleKernel":
+                GatedDeltaNetDecodeRawCudaFlaStyleKernel,
         }
-        if self._raw_cuda_decode_arch_supported():
-            kernels["GatedDeltaNetDecodeRawCudaFlaStyleKernel"] = (
-                GatedDeltaNetDecodeRawCudaFlaStyleKernel
-            )
-        return kernels
 
     def _get_kernel(
         self,
@@ -705,15 +690,12 @@ class GatedDeltaNetDecodeOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
+        call = DeltaNetDecodeCall(batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v,
+                                  dtype=dtype, tune=self.tune)
+        chosen = self.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call)
 
         def build() -> Kernel:
-            if dtype == torch.float32:
-                kernel_cls = self.kernel_map["GatedDeltaNetDecodeFP32Kernel"]
-            elif self._should_use_raw_cuda_decode(dim_k, dim_v, dtype, self.tune):
-                kernel_cls = self.kernel_map["GatedDeltaNetDecodeRawCudaFlaStyleKernel"]
-            else:
-                kernel_cls = self.kernel_map["GatedDeltaNetDecodeKernel"]
-            return kernel_cls(
+            return self.kernel_map[chosen](
                 batch,
                 heads,
                 dim_k,
@@ -722,7 +704,7 @@ class GatedDeltaNetDecodeOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel("GatedDeltaNetDecodeKernel", key, build)
+        return self.get_or_build_kernel(chosen, key, build)
 
     def _infer_output_shapes(
         self,

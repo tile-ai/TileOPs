@@ -6,11 +6,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_score_scale,
 )
+
+from .call_spec import ATTENTION_DTYPES, uses_sliding_window
+from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel"]
 NUM_SMS = int(os.environ.get("V2P_NUM_SMS", "132"))
@@ -696,7 +698,7 @@ def _expand_fa3_gqa_descales(
     )
 
 
-class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
+class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
     """BN224 WS FP8 GQA kernel with FA3-compatible 2D descales and TMA-V layout.
 
     Query, key and value are always ``torch.float8_e4m3fn``; the only free dtype
@@ -707,12 +709,17 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
     ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
     config with a warning from ``Kernel.init_config``.
 
+    It serves square non-causal packed prefill only, and says so in ``applies``
+    rather than leaving the op to know it.
+
     Args:
         batch: Batch size.
         heads: Number of query heads.
         heads_kv: Number of key/value heads.
-        seq_len: Sequence length, a multiple of both 224 and 128.
+        max_seqlen_q: Sequence length, a multiple of both 224 and 128.
+        max_seqlen_kv: Must equal ``max_seqlen_q``.
         dim: Head dimension, which must be 128.
+        is_causal: Must be ``False``.
         dtype: Output dtype, ``torch.float16`` or ``torch.bfloat16``.
         config: Optional config dict. This kernel exposes no tunable knobs.
         tune: Whether to autotune. No-op for this kernel; see above.
@@ -720,74 +727,88 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len: int,
-        dim: int,
-        dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        if dim != 128:
+    @classmethod
+    def applies(cls, call) -> bool:
+        return (
+            call.is_fp8
+            and call.backend in ("auto", "fp8")
+            and not call.is_causal
+            and not uses_sliding_window(call)
+            and call.is_uniform
+            and call.max_seqlen_q == call.max_seqlen_kv
+        )
+
+    def _validate_spec(self) -> None:
+        if self.dim != 128:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires dim == 128."
             )
-        if seq_len % 224 != 0:
+        if self.is_causal:
             raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires seq_len % 224 == 0."
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel supports non-causal prefill only."
             )
-        if seq_len % 128 != 0:
+        if self.max_seqlen_q != self.max_seqlen_kv:
             raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires seq_len % 128 == 0."
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires "
+                "max_seqlen_q == max_seqlen_kv."
             )
-        if dtype not in (torch.float16, torch.bfloat16):
+        if self.max_seqlen_q % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires "
+                "max_seqlen_q % 224 == 0."
+            )
+        if self.max_seqlen_q % 128 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires "
+                "max_seqlen_q % 128 == 0."
+            )
+        if self.dtype not in ATTENTION_DTYPES:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel outputs float16 or bfloat16."
             )
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len = seq_len
-        self.dim = dim
-        self.dtype = dtype
-        self.init_config(config, tune)
+
+    def _build_program(self) -> None:
+        # Built inside the wrapped custom op; the schedule is fixed by contract.
+        self.kernel = None
 
     def forward(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_descale: torch.Tensor,
-        k_descale: torch.Tensor,
-        v_descale: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
-        if fp8_dtype is None:
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        fp8 = getattr(torch, "float8_e4m3fn", None)
+        if fp8 is None:
             raise ValueError("torch.float8_e4m3fn is required for this kernel.")
-        if q.dtype != fp8_dtype or k.dtype != fp8_dtype or v.dtype != fp8_dtype:
+        if q.dtype != fp8 or k.dtype != fp8 or v.dtype != fp8:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel expects q/k/v to be torch.float8_e4m3fn."
             )
-        q_scale, k_scale, v_scale = _expand_fa3_gqa_descales(
-            q_descale, k_descale, v_descale, self.batch, self.heads, self.heads_kv, self.seq_len
-        )
-        return _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
+        if q_scale is None or k_scale is None or v_scale is None:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires q/k/v descales."
+            )
+        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
+        q_expanded, k_expanded, v_expanded = _expand_fa3_gqa_descales(
+            q_scale, k_scale, v_scale, self.batch, self.heads, self.heads_kv,
+            self.max_seqlen_q)
+        output, _ = _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
-            self.seq_len,
+            self.max_seqlen_q,
             self.dim,
             self.dtype_str,
-            q,
-            k,
-            v,
-            q_scale,
-            k_scale,
-            v_scale,
+            q_bshd,
+            k_bshd,
+            v_bshd,
+            q_expanded,
+            k_expanded,
+            v_expanded,
         )
+        return output.reshape(q.shape)

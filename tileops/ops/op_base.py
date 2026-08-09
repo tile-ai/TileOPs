@@ -7,7 +7,6 @@ from typing import Callable, Hashable, Iterator, Mapping, Optional, Sequence, Ty
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
 
 from .compile_boundary import register_instance
 
@@ -32,7 +31,6 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
         return [k for f in dataclasses.fields(entry)
                 for k in _entry_kernels(getattr(entry, f.name))]
     return []
-
 
 class Op(ABC):
     """Base class for TileOPs operations.
@@ -71,6 +69,8 @@ class Op(ABC):
     # attribute appears on the first ``get_or_build_kernel`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
     _kernel_roles: dict[str, dict[Hashable, object]]
+    # Dispatch keys the caller replaced through ``kernel_map=``.
+    _overridden_keys: frozenset = frozenset()
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
@@ -159,39 +159,104 @@ class Op(ABC):
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)")
 
     def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
-        """Validate and install the resolved kernel map onto ``self.kernel_map``.
+        """Install the resolved kernel map onto ``self.kernel_map``.
 
         Iterates ``self.default_kernel_map`` and, for each entry, picks the
         override from ``candidate_map`` when present, falling back to the
-        default. Each resolved kernel is then validated against the current
-        device architecture: if the kernel declares ``supported_archs`` and the
-        current ``sm`` version is not in that list, a ``ValueError`` is raised
-        — the same exception class produced by the auto-discovery path on the
-        same input. Both auto-discovered and user-supplied maps share this
-        single validate-and-install path, so arch-compat checks fire
-        identically regardless of provenance.
+        default. Resolving a kernel *class* needs no device, so construction
+        does not probe one: an op constructs wherever it is imported, and a
+        target that cannot run the op surfaces when a kernel is first selected,
+        built or called. Both auto-discovered and user-supplied maps share this
+        single install path.
         """
         default_map = self.default_kernel_map
+        override = dict(candidate_map) if candidate_map else {}
         if default_map is None or len(default_map) == 0:
-            # Composite op: store override verbatim; sub-ops enforce arch-compat themselves.
-            self.kernel_map = dict(candidate_map) if candidate_map else {}
+            # Composite op: store override verbatim.
+            self.kernel_map = override
+            self._overridden_keys = frozenset(override)
             return
         resolved: dict[str, Kernel] = {}
-        current_arch = get_sm_version()
         for name, default_kernel in default_map.items():
-            if candidate_map is not None and name in candidate_map:
-                kernel_type = candidate_map[name]
-            else:
-                kernel_type = default_kernel
-            if (
-                kernel_type is not None
-                and kernel_type.supported_archs is not None
-                and current_arch not in kernel_type.supported_archs
-            ):
-                raise ValueError(
-                    f'{kernel_type.__name__} is not supported on architecture {current_arch}')
-            resolved[name] = kernel_type
+            resolved[name] = override.get(name, default_kernel)
         self.kernel_map = resolved
+        # Which keys the caller replaced. A dispatch key served by several
+        # implementations skips a default that cannot serve a call, but a
+        # replacement the caller supplied is never skipped silently: the whole
+        # point of the override is to run that implementation.
+        self._overridden_keys = frozenset(override) & frozenset(resolved)
+
+    def forwarded_overrides(self) -> Optional[dict[str, Kernel]]:
+        """The caller's replacements, to hand to a sub-op this op builds.
+
+        A composite op must not pass its own resolved ``kernel_map`` down: every
+        key would arrive at the sub-op looking replaced, and a replacement that
+        cannot serve a call is refused rather than passed over — so a default
+        the sub-op would have selected around becomes an error. Only what the
+        caller actually supplied is an override.
+        """
+        if not self._overridden_keys or not self.kernel_map:
+            return None
+        return {
+            key: cls for key, cls in self.kernel_map.items() if key in self._overridden_keys
+        } or None
+
+    def select_kernel_key(self, keys: "tuple[str, ...]", call: object) -> str:
+        """Return the one key among *keys* whose implementation serves *call*.
+
+        The rule every family dispatches by. Each candidate answers for itself:
+        a specialised implementation states the region it serves, and the one
+        marked ``general`` runs where none of them does. Nothing is decided by
+        the order the keys are written in, and no implementation names another.
+
+        A replacement installed through ``kernel_map=`` is asked the same
+        question as the class it replaced, so a specialisation can be swapped
+        without the general implementation knowing. When a replacement cannot
+        serve the call and a shipped implementation would take its place, that
+        is an error: the caller supplied it so that it would run, and a result
+        from the shipped kernel would be read as theirs.
+
+        Raises:
+            ValueError: When no implementation serves the call, when a
+                replacement cannot and a shipped one would stand in for it, or
+                when two implementations both claim it.
+        """
+        applicable: list[str] = []
+        rejected: list[str] = []
+        refused_overrides: list[str] = []
+        for key in keys:
+            kernel_cls = (self.kernel_map or {}).get(key)
+            if kernel_cls is None:
+                continue
+            reason = kernel_cls.refusal(call)
+            if reason is None:
+                applicable.append(key)
+                continue
+            rejected.append(f"{key} ({kernel_cls.__name__}: {reason})")
+            if key in self._overridden_keys:
+                refused_overrides.append(f"{key} ({kernel_cls.__name__}: {reason})")
+
+        specialised = [k for k in applicable if not self.kernel_map[k].general]
+        chosen = specialised or applicable
+
+        if len(chosen) == 1:
+            if refused_overrides and chosen[0] not in self._overridden_keys:
+                raise ValueError(
+                    "the kernel supplied for " + "; ".join(refused_overrides)
+                    + f" — selection does not fall back to the shipped '{chosen[0]}' "
+                    f"when a replacement is in force. Call: {call}")
+            return chosen[0]
+        if not chosen:
+            lead = ("the kernel supplied for " + "; ".join(refused_overrides) + ", and "
+                    if refused_overrides else "")
+            raise ValueError(
+                lead + "no implementation serves this call: "
+                + "; ".join(rejected or ["no implementation is installed"])
+                + f". Call: {call}")
+        raise ValueError(
+            f"dispatch is ambiguous: {', '.join(chosen)} all serve this call, so none "
+            f"is the answer. Implementations of one key must serve disjoint regions, "
+            f"and at most one of them may be general. Call: {call}")
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
