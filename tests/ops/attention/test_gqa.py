@@ -902,8 +902,8 @@ def _record_kernel_builds(op: Op) -> list:
             general = real.general
 
             @classmethod
-            def supports(cls, call: object) -> bool:
-                return real.supports(call)
+            def refusal(cls, call: object) -> "str | None":
+                return real.refusal(call)
 
             def __new__(cls, *args: object, **kwargs: object) -> str:
                 calls.append((slot, args, kwargs))
