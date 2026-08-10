@@ -236,3 +236,42 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     torch.testing.assert_close(
         out.reshape(batch, seq_len, heads, dim).float(), ref, atol=5e-2, rtol=5e-2
     )
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
+@pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
+@pytest.mark.parametrize("seq_len", [6272, 7168, 8064])
+@pytest.mark.smoke
+def test_gqa_prefill_fp8_row_reduction_boundary_is_live_and_repeatable(seq_len: int) -> None:
+    """Exercise 28/32/36 BN224 tiles across the deferred-reduction boundary."""
+    batch, heads, heads_kv, dim = 1, 64, 8, 128
+    fp8 = torch.float8_e4m3fn
+    q_fp8 = torch.zeros((batch, seq_len, heads, dim), device="cuda", dtype=fp8)
+    k_fp8 = torch.zeros((batch, seq_len, heads_kv, dim), device="cuda", dtype=fp8)
+    v_fp8 = torch.full((batch, seq_len, heads_kv, dim), 0.5, device="cuda", dtype=fp8)
+    q_scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    k_scale = torch.ones_like(q_scale)
+    v_scale = torch.full_like(q_scale, 0.25)
+
+    outputs = [
+        _run_canonical_fp8_prefill(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            heads_kv=heads_kv,
+            dim=dim,
+            out_dtype=torch.float16,
+            q_fp8=q_fp8,
+            k_fp8=k_fp8,
+            v_fp8=v_fp8,
+            q_scale=q_scale,
+            k_scale=k_scale,
+            v_scale=v_scale,
+        )
+        for _ in range(2)
+    ]
+
+    expected = torch.full_like(outputs[0], 0.125)
+    for output in outputs:
+        torch.testing.assert_close(output, expected, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(outputs[0], outputs[1], atol=0, rtol=0)
