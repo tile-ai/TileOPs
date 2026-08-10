@@ -14,11 +14,8 @@ from tileops.backend import InputSpec, Kernel
 
 from ._load import kernel_class
 
-#: The default this backend applies when the op's ``eps`` param is None.
-_DEFAULT_EPS = 1e-6
 
-
-def rms_norm(x: InputSpec, weight: InputSpec, *, normalized_shape, eps=None) -> Kernel:
+def rms_norm(x: InputSpec, weight: InputSpec, *, normalized_shape, eps) -> Kernel:
     """Build the RMS norm kernel for a call shaped like *x* and *weight*.
 
     The kernel works on a 2-D ``(M, N)`` view, which is what the op hands it, so *x* here
@@ -26,9 +23,7 @@ def rms_norm(x: InputSpec, weight: InputSpec, *, normalized_shape, eps=None) -> 
     """
     m = x.shape[0]
     n = math.prod(normalized_shape)
-    return kernel_class("RMSNormFwdOp", "rms_norm")(
-        m, n, _DEFAULT_EPS if eps is None else float(eps), x.dtype
-    )
+    return kernel_class("RMSNormFwdOp", "rms_norm")(m, n, eps, x.dtype)
 
 
 def fused_add_rms_norm(x: InputSpec, residual: InputSpec, weight: InputSpec, *, eps) -> Kernel:

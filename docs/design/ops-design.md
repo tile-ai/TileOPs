@@ -65,7 +65,7 @@ The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step h
 
 ### Step 1: File header + imports
 
-**Input.** `source.kernel_map` values (Kernel classes to import).
+**Input.** the Kernel classes the nv backend's `BINDINGS` (`src/tileops/backends/nv/_bindings.py`) binds to this op.
 
 **Output.**
 
@@ -87,7 +87,7 @@ from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
 from ..op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `source.kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
+**Validation.** Every concrete-Kernel import matches one of that op's nv bindings verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
 
 **Reference.** [Slot S1](../../.claude/skills/scaffold-op/slot-rules.md#slot-s1), [S2](../../.claude/skills/scaffold-op/slot-rules.md#slot-s2), [S3](../../.claude/skills/scaffold-op/slot-rules.md#slot-s3), [S4](../../.claude/skills/scaffold-op/slot-rules.md#slot-s4).
 
@@ -155,7 +155,7 @@ class ExampleCumsumFwdOp(Op):
 
 ### Step 4: `default_kernel_map` + `forward`
 
-**Input.** Manifest `source.kernel_map`; `signature.inputs`; `static_dims` (for the forward-time commitment check); `shape_rules` (for `dim` range validation).
+**Input.** the op's nv bindings; `signature.inputs`; `static_dims` (for the forward-time commitment check); `shape_rules` (for `dim` range validation).
 
 **Output.**
 
@@ -199,7 +199,7 @@ class ExampleCumsumFwdOp(Op):
         return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built through `self.get_or_build_kernel`, never through a cache dict the op owns. The kernel is built from `x.dtype`, and the key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the get-or-build call. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
+**Validation.** `default_kernel_map` keys / values match the op's nv bindings verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built through `self.get_or_build_kernel`, never through a cache dict the op owns. The kernel is built from `x.dtype`, and the key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the get-or-build call. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
 **Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
 

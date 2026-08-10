@@ -1,6 +1,6 @@
 ---
 name: fix-manifest
-description: Patch one missing structural field (kernel_map, static_dims) on an existing src/tileops/manifest/ entry. Auto-detects the field via the validator or takes `--field=<name>`. Reference-derivable fields (signature.*, shape_rules, dtype_combos, roofline) belong to add-manifest, not here.
+description: Patch one missing structural field (static_dims) on an existing src/tileops/manifest/ entry. Auto-detects the field via the validator or takes `--field=<name>`. Reference-derivable fields (signature.*, shape_rules, dtype_combos, roofline) belong to add-manifest, not here.
 ---
 
 ## Arguments
@@ -8,14 +8,14 @@ description: Patch one missing structural field (kernel_map, static_dims) on an 
 | Argument         | Required | Description                                                                                        |
 | ---------------- | -------- | -------------------------------------------------------------------------------------------------- |
 | `op_name`        | Yes      | One manifest key, or comma-separated list (e.g., `RMSNormFwdOp` or `SumFwdOp,MeanFwdOp,VarFwdOp`). |
-| `--field=<name>` | No       | One of `kernel_map`, `static_dims`. Omit to auto-detect.                                           |
+| `--field=<name>` | No       | `static_dims`. Omit to auto-detect.                                                                |
 | `--dry-run`      | No       | Print diff and exit; no write, no PR.                                                              |
 
 Multi-op: same `--field` applied to every op in the list. Multi-field is not supported — run again.
 
 ## Contract
 
-- **MAY write** in `src/tileops/manifest/<family>.yaml` (the family file owning the entry): `source.kernel_map`, `signature.static_dims`. These two fields are derived from on-disk op / kernel evidence, not from the reference API. Use `ruamel.yaml` for round-trip preservation.
+- **MAY write** in `src/tileops/manifest/<family>.yaml` (the family file owning the entry): `signature.static_dims`. This field is derived from on-disk op evidence, not from the reference API. `source.kernel_map` is NOT a manifest field — op→kernel bindings are a backend's own data, and the validator rejects one here. Use `ruamel.yaml` for round-trip preservation.
 - **MUST NOT write** anything else. Reference-derivable fields (`signature.{inputs,outputs,params,shape_rules,dtype_combos}`, `roofline.*`) belong to `add-manifest` — re-aligning those fields requires re-fetching the reference URL, which is `add-manifest`'s job. Other fields (`status`, `family`, `ref_api`, `workloads`, `source.{kernel,op,test,bench,bench_manifest_driven}`) are human-curated and not touched by either skill.
 - **MUST NOT** create new entries — use `add-manifest`.
 - **MUST NOT** flip `status` (that is `align-op@FLIP_STATUS`).
@@ -49,13 +49,9 @@ Resolve `op_name` in `src/tileops/manifest/`. Missing → BLOCKED: `op not in ma
 
 ### 2. DIAGNOSE
 
-When `--field=` is provided: must be `kernel_map` or `static_dims`; else BLOCKED. Skip both checks below.
+When `--field=` is provided: must be `static_dims`; else BLOCKED. Skip the check below.
 
 When `--field=` is omitted, run two checks in strict order:
-
-**Check A — `kernel_map` presence.** If `source.kernel_map` is missing or empty → target = `kernel_map`, jump to INFER.
-
-The validator only warns on missing `kernel_map` when `status == implemented`, so spec-only entries need this explicit check. Do NOT extend it to `static_dims` — `docs/design/manifest.md` (R7, R20) explicitly allows `static_dims` to be absent on fixed-rank ops; absence-only patching would manufacture changes for valid entries.
 
 **Check B — validator output.** Run `python scripts/validate_manifest.py --check-op <op_name>`. Parse the first error:
 
@@ -92,7 +88,6 @@ Then insert each new key as a **sibling** of existing keys in its parent block, 
 
 | Field         | YAML path               | Position                                                                                              |
 | ------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
-| `kernel_map`  | `source.kernel_map`     | between `source.kernel` and `source.op`                                                               |
 | `static_dims` | `signature.static_dims` | between `signature.params` and `signature.shape_rules`; if `params` absent, after `signature.outputs` |
 
 Preserve adjacent comments. Do not reorder unrelated keys. If the existing entry deviates from the canonical layout, fall back to the order in `docs/design/manifest.md`.

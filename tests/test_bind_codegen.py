@@ -53,11 +53,20 @@ def test_a_call_that_does_not_match_the_manifest_says_so(args, kwargs, message):
         _Bound()._bind_call(*args, **kwargs)
 
 
+def test_a_param_kept_privately_still_binds():
+    """Several ops store a param as ``_name``; both spellings are one declaration."""
+    op = _Bound()
+    del op.eps
+    op._eps = 1e-5
+    _, params = op._bind_call(torch.zeros(2, 4), torch.ones(4))
+    assert params["eps"] == 1e-5
+
+
 def test_a_param_the_instance_does_not_hold_is_named():
     """The manifest param name is the attribute name; a mismatch is a bug worth pointing at."""
     op = _Bound()
     del op.eps
-    with pytest.raises(AttributeError, match="manifest param 'eps'"):
+    with pytest.raises(AttributeError, match=r"manifest param 'eps'.*'_eps'"):
         op._bind_call(torch.zeros(2, 4), torch.ones(4))
 
 
@@ -115,6 +124,19 @@ def test_a_repeat_call_on_the_same_shapes_does_not_ask_again(registered):
     assert len(registered) == 1
 
     op(torch.zeros(3, 4), torch.ones(4))  # a shape it has not built for
+    assert len(registered) == 2
+
+
+def test_the_target_is_settled_on_first_dispatch(registered):
+    """Kernels already built belong to a target, so a later default must not re-aim them."""
+    from tileops.backend import set_default_target
+
+    op = _Routed()
+    op(torch.zeros(2, 4), torch.ones(4))
+
+    registry.register(op="FakeRoutedOp", target="other", get_kernel=lambda *a, **k: None)
+    set_default_target("other")
+    op(torch.zeros(3, 4), torch.ones(4))  # a fresh shape: builds again, same target
     assert len(registered) == 2
 
 

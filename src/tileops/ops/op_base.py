@@ -33,8 +33,13 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
     An entry is a kernel, a sequence of kernels built together, or a dataclass
     carrying them alongside what else the specialization implies. An entry that
     hides its kernels from this walk is invisible to ``autotune``.
+
+    Recognized structurally as well as by type: what a backend returns only has to be
+    callable, and one that also offers ``autotune`` is tunable. Demanding the in-tree base
+    class here would leave the built-in backend the only tunable one.
     """
-    if isinstance(entry, Kernel):
+    if isinstance(entry, Kernel) or (
+            callable(entry) and callable(getattr(entry, "autotune", None))):
         return [entry]
     if isinstance(entry, (tuple, list)):
         return [k for item in entry for k in _entry_kernels(item)]
@@ -81,6 +86,8 @@ class Op(ABC):
     # device decide. Constructor-only: it settles kernel identity, so it must not vary
     # per call.
     target: Optional[str] = None
+    # Which target the kernels this op holds were built for; filled on first dispatch.
+    _settled_target: Optional[str] = None
 
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
@@ -352,17 +359,28 @@ class Op(ABC):
         :meth:`get_or_build_kernel`, so a repeat call on the same shapes and dtypes costs
         one dict lookup and nothing else.
 
+        The target is settled on first dispatch and kept: it is what the kernels this op
+        holds were built for, so a later ``set_default_target`` does not re-aim an op that
+        has already built some. ``target=`` on the constructor is how a caller chooses.
+
         Args:
             tensors: The op's tensor inputs, in manifest ``signature.inputs`` order.
             params: The op's manifest ``signature.params``.
         """
         specs = tuple(InputSpec.of(t) for t in tensors)
+        target = self._settled_target
+        if target is None:
+            target = self._settled_target = select_target(
+                self.target, specs[0].device if specs else None)
 
         def build() -> Kernel:
-            target = select_target(self.target, specs[0].device if specs else None)
             kernel = resolve_get_kernel(self.OP_NAME, target)(*specs, **params)
             if self.tune:
-                kernel.autotune()
+                # Optional by contract: a backend that does not tune says so by not
+                # offering the method, and asking is then a no-op.
+                tune = getattr(kernel, "autotune", None)
+                if tune is not None:
+                    tune()
             return kernel
 
         return self.get_or_build_kernel(self.OP_NAME, specs, build)

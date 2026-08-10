@@ -9,7 +9,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `src/tileops/ma
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`src/tileops/manifest/`](../../../src/tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions), so a spec-only entry needs it added before the scaffold can run.
+- **Input**: `op_name` must be present in [`src/tileops/manifest/`](../../../src/tileops/manifest/) with `status: spec-only`, and the nv backend must bind a kernel to it in `src/tileops/backends/nv/_bindings.py`. That binding is a backend's own data and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions), so it has to be added before the scaffold can run.
 - **Output**: new file at `src/` + manifest `source.op` (e.g., `src/tileops/ops/reduction/cumulative.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that file's parent directory (e.g., `src/tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: that parent directory is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `src/tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
@@ -74,7 +74,7 @@ print(entry)
 PY
 ```
 
-Extract: `family`, `status`, `signature.inputs`, `signature.outputs`, `signature.params`, `signature.static_dims`, `signature.shape_rules`, `source.kernel_map`, `source.op`, `source.kernel`, `roofline.vars`, `roofline.flops`, `roofline.bytes`.
+Extract: `family`, `status`, `signature.inputs`, `signature.outputs`, `signature.params`, `signature.static_dims`, `signature.shape_rules`, `source.op`, `source.kernel`, `roofline.vars`, `roofline.flops`, `roofline.bytes`; and this op's entry in the nv backend's `BINDINGS` (`src/tileops/backends/nv/_bindings.py`).
 
 Derive the target file path by prepending `src/` to `source.op` (e.g. `src/tileops/ops/reduction/cumulative.py`). The **filesystem package directory** is that file's parent (e.g. `src/tileops/ops/reduction/`). Do not use the manifest `family` field to compute paths — it is a semantic label, and some ops have `family` distinct from their filesystem parent (e.g., `CumsumFwdOp` has `family: scan` but lives under `reduction/`). Module filename is `source.op`'s basename without `.py`.
 
@@ -82,8 +82,8 @@ Derive the target file path by prepending `src/` to `source.op` (e.g. `src/tileo
 
 - `op_name` present in `src/tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use implement-op to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
-- `source.kernel_map` declared and non-empty → proceed; missing or empty → BLOCKED ("manifest entry needs `source.kernel_map` before scaffolding — add the dispatch map to the manifest first; the scaffold cannot invent dispatch keys because they are kernel-internal conventions"). Note: per `docs/design/manifest.md`, `source.kernel_map` is only required when `status: implemented`, so many existing `spec-only` entries lack it — these are the cases that need the map added before scaffolding can run.
-- Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
+- the op has an entry in the nv backend's `BINDINGS` (`src/tileops/backends/nv/_bindings.py`) → proceed; missing → BLOCKED ("the nv backend needs a binding for this op before scaffolding — the scaffold cannot invent dispatch keys because they are kernel-internal conventions").
+- Every bound class resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
 - Target file `source.op` does NOT exist → proceed; exists → BLOCKED ("target file already present; scaffold would overwrite").
 
 BLOCKED terminations return without writing any file.
@@ -107,7 +107,7 @@ Skeleton:
   "locked_facts": {
     "op_name": "CumsumFwdOp",
     "module_path": "src/tileops/ops/reduction/cumulative.py",
-    "kernel_map": {"cumulative_fwd": "CumulativeKernel"},
+    "bindings": {"cumulative_fwd": "CumulativeKernel"},
     "init_kwargs": [{"name": "dim", "source": "signature.params.dim", "type": "int", "default": -1}],
     "forward_inputs": ["x"],
     "static_dims": {"N": "x.shape[dim]"},
@@ -134,7 +134,7 @@ Key slot pointers (follow the reference, do not re-derive):
 | Step 6        | S19            | [S19](slot-rules.md#slot-s19)                                                               |
 | Step 7        | S20            | [S20](slot-rules.md#slot-s20)                                                               |
 
-If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `kernel_map`, multiple independent dtype axes, fixed-rank vs arbitrary-rank branching), STOP and surface the ambiguity in the final report instead of guessing. Do not expand scope.
+If a slot's rule is ambiguous for the given manifest entry (e.g. an op bound to several kernels, multiple independent dtype axes, fixed-rank
 
 ### 5. REGISTER
 

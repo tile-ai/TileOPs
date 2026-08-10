@@ -7,7 +7,7 @@ a false guarantee.
 ## Manifest
 
 Source of truth for op interfaces: signatures, dtypes, workload shapes,
-roofline formulas, status, the `kernel_map` dispatch registration table, and
+roofline formulas, status, and
 user-visible capability declarations (`torch_compile_fullgraph`).
 
 It carries no kernel internals, dispatch strategy, or test logic. Those are

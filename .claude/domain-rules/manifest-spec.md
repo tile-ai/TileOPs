@@ -37,9 +37,9 @@
 
 - Tensor layout defaults to contiguous row-major. Non-default needs an explicit `layout` field; `shape` dim names reflect memory order.
 
-- `source.kernel_map`, `source.test` and `source.bench` are discoverability pointers: they name where the current implementation, test and benchmark live, and are retargeted whenever those move. `source.kernel` and `source.op` are contract — they say where the op is *defined*, written as the path inside the distribution because the manifest ships in the wheel and must not name a path absent there; on disk they resolve under `src/`.
+- `source.test` and `source.bench` are discoverability pointers: they name where the current implementation, test and benchmark live, and are retargeted whenever those move. `source.kernel` and `source.op` are contract — they say where the op is *defined*, written as the path inside the distribution because the manifest ships in the wheel and must not name a path absent there; on disk they resolve under `src/`.
 
-- `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares what an Op uses, not how dispatch picks.
+- There is no `source.kernel_map`. Which kernel serves an op is one backend's answer, so it lives in that backend's own data; the validator rejects the field here.
 
 - Never modify manifest to match non-conforming code. Code drift → `status: spec-only` and fix code in a follow-up PR. Never remove `params`, roofline `vars`, or `shape_rules` to silence validator errors.
 

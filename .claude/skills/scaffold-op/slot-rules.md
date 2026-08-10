@@ -29,8 +29,8 @@ design, calling conventions — live in
 
 ### Slot S3: <a id="slot-s3"></a> Import — concrete `Kernel` class
 
-- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per manifest `kernel_map`
-  value. Import nothing that `kernel_map` does not list.
+- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per nv binding for this op,
+  value. Import nothing the bindings do not list.
 - **Example.** `from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel`
 - **Common mistakes.** Relative cross-package import.
 
@@ -128,7 +128,7 @@ design, calling conventions — live in
 
 ### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
 
-- **Rule.** A `@property` returning the manifest `kernel_map` verbatim: `snake_case` dispatch keys,
+- **Rule.** A `@property` returning this op's nv bindings verbatim: `snake_case` dispatch keys,
   Kernel-class values.
 - **Example.**
   ```python
@@ -158,7 +158,7 @@ design, calling conventions — live in
   original shape.
 - **Derivation.** Validation expressions come from each `static_dims` entry's
   `<tensor>.shape[<axis>]` RHS. Axis normalisation mirrors the param evaluation in `static_dims` +
-  `shape_rules`. The role is the `kernel_map` dispatch key whose kernel the factory builds; the key
+  `shape_rules`. The role is the dispatch key whose kernel the factory builds; the key
   names every input the factory closes over. A kernel that pads
   internally returns the semantic shape, so the op does not trim.
 - **Example (arbitrary-rank).**

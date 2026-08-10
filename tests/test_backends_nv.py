@@ -6,16 +6,24 @@ import sys
 import pytest
 import torch
 
-from tileops import backend
 from tileops.backends import nv
 from tileops.backends.nv._bindings import BINDINGS
 
 
 @pytest.mark.smoke
 def test_installing_this_distribution_is_enough_to_find_nv():
-    """Discovery goes through the entry point group, the same one a third party declares."""
-    assert nv.TARGET in backend.registered_targets()
-    assert ("RMSNormFwdOp", nv.TARGET) in backend.registrations()
+    """Found by enumerating the entry point group, without anyone importing nv.
+
+    Checked in a fresh interpreter: importing ``tileops.backends.nv`` here first would prove
+    only that the module registers when imported, which is not what installing a backend has
+    to do.
+    """
+    probe = "import tileops.backend as b; print(sorted(b.registrations()))"
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert "('RMSNormFwdOp', 'nv')" in result.stdout
 
 
 @pytest.mark.smoke

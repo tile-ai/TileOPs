@@ -7,6 +7,8 @@ from ..op_base import Op
 
 __all__ = ["RMSNormFwdOp"]
 
+_DEFAULT_EPS = 1e-6
+
 
 class RMSNormFwdOp(Op):
     """Standalone Root Mean Square (RMS) Norm operator.
@@ -25,7 +27,8 @@ class RMSNormFwdOp(Op):
         normalized_shape: Trailing-axis shape tuple over which the
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
-            ``None`` leaves the choice to the target.
+            ``None`` selects the documented default ``1e-6``. Canonicalized here, so
+            the same call means the same thing on every target.
         target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: Whether kernels this op builds tune themselves (default ``False``).
 
@@ -50,7 +53,7 @@ class RMSNormFwdOp(Op):
         if len(self.normalized_shape) == 0:
             raise ValueError("normalized_shape must be non-empty")
         self.N = math.prod(self.normalized_shape)
-        self.eps = eps
+        self.eps = _DEFAULT_EPS if eps is None else float(eps)
         self.target = target
         self.tune = tune
         self.dispatch_kernel()

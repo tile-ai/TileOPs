@@ -17,9 +17,9 @@ from typing import Any, Callable
 
 from tileops.manifest import try_load_entry
 
-#: Params whose value the op holds under the manifest's own name. A manifest param is a
-#: construction-time decision — ``normalized_shape``, ``eps`` — so the instance is where it
-#: lives by the time forward runs.
+#: A manifest param is a construction-time decision — ``normalized_shape``, ``eps`` — so by
+#: the time forward runs it lives on the instance, under the manifest's name or that name
+#: with a leading underscore.
 _MISSING = object()
 
 
@@ -69,9 +69,12 @@ def synthesize_bind_call(op_name: str, sig: dict[str, Any]) -> Callable[..., tup
         for name in param_names:
             value = getattr(self, name, _MISSING)
             if value is _MISSING:
+                # Several ops keep a param privately; both spellings are one declaration.
+                value = getattr(self, f"_{name}", _MISSING)
+            if value is _MISSING:
                 raise AttributeError(
-                    f"{op_name} declares manifest param {name!r} but the instance has no "
-                    f"attribute of that name to bind it from"
+                    f"{op_name} declares manifest param {name!r} but the instance holds "
+                    f"neither {name!r} nor '_{name}' to bind it from"
                 )
             values[name] = value
         return tuple(bound[name] for name in names), values

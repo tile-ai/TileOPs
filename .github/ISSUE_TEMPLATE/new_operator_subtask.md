@@ -39,7 +39,7 @@ Refer to:
 - [ ] Manifest `signature` declares inputs, outputs, params, shape rules, and dtype coverage.
 - [ ] Manifest `workloads` declare benchmark shapes/dtypes; unit-test edge cases are not generated from manifest workloads.
 - [ ] Manifest `roofline` is present and consumable by `op.eval_roofline()`.
-- [ ] Manifest `source` declares kernel, op, test, bench, and `source.kernel_map` when dispatching kernels.
+- [ ] Manifest `source` declares kernel, op, test and bench. Op→kernel bindings are not manifest fields; a backend registers its own.
 - [ ] Op constructor, `forward()`, and `default_kernel_map` match the manifest entry.
 - [ ] Tests use an independent reference implementation and cover relevant FP16/BF16 and edge cases.
 - [ ] Benchmarks consume manifest workloads and record at least one non-`tileops` baseline unless explicitly justified.

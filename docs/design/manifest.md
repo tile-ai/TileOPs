@@ -346,37 +346,24 @@ are defined in [roofline.md](roofline.md).
 
 ### Source
 
-| Field                   | Required | Description                                                            |
-| ----------------------- | -------- | ---------------------------------------------------------------------- |
-| `kernel`                | yes      | Kernel file path(s).                                                   |
-| `kernel_map`            | \*       | Dispatch key → Kernel class name. Required when `status: implemented`. |
-| `op`                    | yes      | Op class file path.                                                    |
-| `test`                  | yes      | Test file path.                                                        |
-| `bench`                 | yes      | Benchmark file path.                                                   |
-| `bench_manifest_driven` | \*       | Required `true` when `status: implemented`; makes L4 a hard CI error.  |
+| Field                   | Required | Description                                                           |
+| ----------------------- | -------- | --------------------------------------------------------------------- |
+| `kernel`                | yes      | Kernel file path(s).                                                  |
+| `op`                    | yes      | Op class file path.                                                   |
+| `test`                  | yes      | Test file path.                                                       |
+| `bench`                 | yes      | Benchmark file path.                                                  |
+| `bench_manifest_driven` | \*       | Required `true` when `status: implemented`; makes L4 a hard CI error. |
 
-#### kernel_map
+#### No kernel_map
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § S14 `default_kernel_map`](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14).
+There is no such field, and the validator rejects one. Which kernel serves an op is a single
+backend's answer, and this manifest is neutral across all of them: a third-party backend has
+no field here to write, so keeping the built-in backend's table would have made it a privilege
+rather than a spec. Those bindings live in that backend's own data —
+`src/tileops/backends/nv/_bindings.py` for the nv backend — and a backend registers them itself.
 
-```yaml
-# Single-kernel op
-source:
-  kernel: src/tileops/kernels/norm/rms_norm.py
-  kernel_map:
-    rms_norm: RMSNormKernel
-  op: src/tileops/ops/norm/rms_norm.py
-
-# Multi-kernel op
-source:
-  kernel: src/tileops/kernels/attention/gqa_bwd.py
-  kernel_map:
-    gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-    gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
-  op: src/tileops/ops/attention/gqa.py
-```
-
-- Optional when `status: spec-only`. Required when `status: implemented`.
+"Is this op implemented" has no single answer either, once several targets exist. It is
+answered per target, at run time, by `tileops.backend.registrations()`.
 
 ## Entry Examples
 
@@ -472,8 +459,6 @@ RMSNormFwdOp:
 
   source:
     kernel: src/tileops/kernels/norm/rms_norm.py
-    kernel_map:
-      rms_norm: RMSNormKernel
     op: src/tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
     bench: benchmarks/ops/bench_norm.py

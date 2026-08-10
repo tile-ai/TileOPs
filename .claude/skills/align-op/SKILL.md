@@ -11,7 +11,7 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`src/tileops/manifest/`](../../../src/tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
+- **Input**: `op_name` must be present in [`src/tileops/manifest/`](../../../src/tileops/manifest/) with `status: spec-only`, and the nv backend must bind a kernel to it in `src/tileops/backends/nv/_bindings.py`.
 - **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `PRE_CHECK` when the manifest entry is first loaded, then passed into every sub-skill invocation):
   - `<source_op>` — `src/` + manifest `source.op` (e.g., `src/tileops/ops/reduction/cumulative.py`).
   - `<source_test>` — manifest `source.test` path (e.g., `tests/ops/test_cumulative.py`).
@@ -85,8 +85,8 @@ Preconditions identical to `scaffold-op`'s — orchestrator enforces them up fro
 
 - `op_name` in `src/tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status back to spec-only first if you intend to re-align"); missing/other → BLOCKED.
-- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add the dispatch map first).
-- Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path" — kernel must exist for op layer to align, regardless of case).
+- the op has an entry in the nv backend's `BINDINGS` (`src/tileops/backends/nv/_bindings.py`) → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add the binding first).
+- Every bound class resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
 
 ### 2. CLASSIFY
 
@@ -168,7 +168,7 @@ Sub-skill does ANALYZE → DIAGNOSE → IMPLEMENT → VALIDATE → MARK_DONE →
 
 Determine whether the kernel layer also needs work. align-op does **not** modify kernel code; it surfaces the question.
 
-For each Kernel class referenced in `source.kernel_map`:
+For each Kernel class the nv backend binds to this op:
 
 1. Inspect the kernel's `__init__` / `forward` / `_build_program` signatures (wherever applicable) in its source file.
 1. Compare against the new op's kernel-build call emitted by scaffold-op (`self.kernel_map[<key>](<args>)`). Specifically check:
@@ -266,7 +266,7 @@ Orchestrator (not a sub-skill) edits the manifest:
 - `ops.<op_name>.status: spec-only` → `status: implemented`
 - Commit as `[Refactor][Manifest] promote <op_name> to implemented`.
 
-This is the only manifest write in the entire workflow: flip `status`, and retarget `source.kernel_map` / `source.test` / `source.bench` at what this run produced. A contractual field — `signature`, `shape_rules`, `roofline`, `params` — is spec, and changing it to match the code inverts the spec relationship ([manifest-spec.md](../../domain-rules/manifest-spec.md)).
+This is the only manifest write in the entire workflow: flip `status`, and retarget `source.test` / `source.bench` at the files this run produced.
 
 ### 11. CLEANUP
 
