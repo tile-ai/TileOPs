@@ -1,8 +1,7 @@
 """The backend protocol: everything a backend distribution needs, and nothing else.
 
-A backend is a separate distribution shipping TileLang kernels for one *target* — the
-family of devices those kernels run on. It joins TileOPs by implementing two callbacks and
-registering them from its module top level::
+A backend ships TileLang kernels for one *target* — the family of devices those kernels run
+on. It joins TileOPs by implementing two callbacks at its module top level::
 
     from tileops.backend import register, register_detector
     from .kernels import RMSNormKernel
@@ -17,14 +16,14 @@ and declaring the entry point that imports that module::
     acme = "tileops_acme"
 
 Choosing among implementations, constructing, caching and compiling all happen inside
-``get_kernel``; TileOPs takes the result. So nothing here names a kernel class, a dispatch
-key, a priority or a fallback: dispatch answers *who* does it, never *how*.
+``get_kernel``. So nothing here names a kernel class, a dispatch key, a priority or a
+fallback: dispatch answers *who* does it, never *how*.
 
 Depends on torch only — importing this does not import tilelang.
 
-Where things live: :mod:`~tileops.backend.protocol` is what crosses the boundary,
-:mod:`~tileops.backend.errors` is what goes wrong, :mod:`~tileops.backend.registry` holds
-the tables and fills them, :mod:`~tileops.backend.dispatch` reads them.
+:mod:`~tileops.backend.protocol` is what crosses the boundary,
+:mod:`~tileops.backend.errors` what goes wrong, :mod:`~tileops.backend.registry` the tables,
+:mod:`~tileops.backend.dispatch` how they are read.
 """
 
 from .dispatch import (

@@ -1,10 +1,8 @@
 """What a backend distribution can rely on. No GPU, no tilelang.
 
-Scoped to behaviour a backend author or caller can observe: what registration accepts and
-refuses, which target serves a call, what the errors say, and what a broken or half-broken
-distribution does to the rest. Internal mechanism — the lock, the loading flag, the memo
-dicts — is exercised through that behaviour rather than asserted directly, so it stays free
-to change.
+Scoped to what a backend author or caller can observe. Internal mechanism — the lock, the
+loading flag, the memo dicts — is exercised through that behaviour rather than asserted, so
+it stays free to change.
 """
 
 import subprocess
@@ -78,7 +76,7 @@ def _raise(exc):
 
 
 def test_input_spec_describes_a_tensor_and_compares_by_its_properties():
-    """It is handed to get_kernel and used as the op layer's memo key, so both matter."""
+    """Handed to get_kernel, and used as the op layer's memo key."""
     spec = InputSpec.of(torch.zeros(4, 8, dtype=torch.bfloat16))
 
     assert spec == (torch.device("cpu"), torch.bfloat16, (4, 8))
@@ -133,7 +131,7 @@ def test_the_sole_claimant_wins_and_is_asked_once_per_device():
 
 
 def test_a_backend_installed_later_can_change_the_answer():
-    """A memo must not outlive the table it was computed from."""
+    """A memo must not outlive the table it came from."""
     backend.register_detector("first", lambda device: True)
     assert backend.resolve_target(torch.device("cpu")) == "first"
 
@@ -232,7 +230,7 @@ def test_a_missing_op_never_falls_back_and_says_who_does_have_it():
 
 
 def test_installing_a_backend_is_enough_to_be_dispatched_to(installed):
-    """The entry point names a module; importing it registers. No protocol object."""
+    """The entry point names a module; importing it registers."""
 
     def acme():
         backend.register_detector("acme", lambda device: device.type == "cpu")
@@ -304,8 +302,7 @@ def test_an_interrupt_reaches_the_caller_and_leaves_discovery_retryable(installe
 
     def rude():
         attempts.append(1)
-        # The same cell both times: only a real rollback lets the retry claim it, since a
-        # taken cell is refused unconditionally.
+        # The same cell twice: only a real rollback lets the retry claim it.
         backend.register("Op", "rude", fake_get_kernel)
         if len(attempts) == 1:
             raise interrupt

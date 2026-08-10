@@ -1,9 +1,7 @@
-"""The two tables, who writes them, and how they get filled.
+"""The two tables, and how they get filled.
 
-Module-level private state, because registration happens as mutually unaware
-distributions get imported: one process-wide place is the only place they can meet — the
-shape torch.library's operator table already has. Lookup is on the call path, so a plain
-dict is the floor.
+Module-level state, because registration happens as mutually unaware distributions get
+imported: one process-wide place is the only place they can meet.
 """
 
 from __future__ import annotations
@@ -19,8 +17,7 @@ import torch
 from .errors import BackendError, BackendLoadFailure
 from .protocol import DetectFn, GetKernelFn
 
-#: Entry point group a backend declares. The value names a *module*; importing it must
-#: perform the registration.
+#: The value names a *module*; importing it must perform the registration.
 ENTRY_POINT_GROUP = "tileops.backends"
 
 DETECTORS: dict[str, DetectFn] = {}
@@ -28,15 +25,13 @@ KERNELS: dict[tuple[str, str], GetKernelFn] = {}
 RESOLVED: dict[torch.device, str] = {}
 LOAD_ERRORS: list[BackendLoadFailure] = []
 
-#: Which target ops use when they name none. Stored here rather than beside the
-#: precedence rule that reads it, so the load transaction and test isolation cover it.
-#: There is no default-target constant: a hardcoded ``"nv"`` would make detection
-#: unreachable and name one backend inside a neutral layer. ``nv`` wins by claiming cuda
-#: devices instead.
+#: Which target ops use when they name none. There is deliberately no constant here: a
+#: hardcoded ``"nv"`` would make detection unreachable and name one backend inside a
+#: neutral layer. Kept beside the tables so the load transaction and test isolation cover
+#: it.
 default_target: str | None = None
 
-#: Set only once every entry point has been tried, so no thread can observe a half-built
-#: registry.
+#: Set only once every entry point has been tried, so no thread sees a half-built registry.
 _loaded = False
 
 #: Reentrant: discovery holds it while importing backend modules, whose top level calls
@@ -58,9 +53,7 @@ def register(op: str, target: str, get_kernel: GetKernelFn) -> None:
             compile anything.
 
     Raises:
-        BackendError: ``(op, target)`` is taken. Always — a cell is claimed once. Two
-            entry points naming one module do not trip this, since the second load gets
-            the cached module and its top level does not run again.
+        BackendError: ``(op, target)`` is already claimed.
     """
     with LOCK:
         existing = KERNELS.get((op, target))
@@ -98,8 +91,8 @@ def describe(fn: Callable) -> str:
 def known_targets() -> set[str]:
     """Every target that registered anything.
 
-    Kernels without a detector are legitimate: such a target is reachable by explicit
-    ``target=`` and simply never wins by detection.
+    Kernels without a detector are legitimate: such a target never wins by detection but
+    stays reachable by explicit ``target=``.
     """
     return set(DETECTORS) | {target for _, target in KERNELS}
 
@@ -108,7 +101,7 @@ def ensure_loaded() -> None:
     """Import every declared backend module, once.
 
     Lazy by necessity: enumerating at ``import tileops`` would pull in every installed
-    backend, and tilelang with them, defeating the packaging boundary.
+    backend, and tilelang with them.
     """
     global _loaded
     if _loaded:  # fast path: one bool read, no lock
@@ -124,9 +117,8 @@ def ensure_loaded() -> None:
             _loaded = True
         finally:
             _LOADING.active = False
-    # Warned after discovery is published: under ``-W error`` a warning raises, and doing
-    # it any earlier left discovery unfinished, so the next call redid it and
-    # double-recorded every failure.
+    # Warned only now: under ``-W error`` a warning raises, and warning before discovery is
+    # published means the next call redoes it and double-records every failure.
     for failure in failed:
         warnings.warn(
             f"TileOPs backend {failure.name!r} ({failure.entry_point}) failed to load and "
@@ -140,9 +132,8 @@ def _load_all() -> list[BackendLoadFailure]:
     """Load every entry point, returning those that failed. Caller holds the lock."""
     failed = []
     for ep in entry_points(group=ENTRY_POINT_GROUP):
-        # All-or-nothing per entry point: a backend registering eighty ops and then
-        # raising would leave the registry advertising ops whose distribution never
-        # finished initializing.
+        # All-or-nothing per entry point: a backend registering eighty ops and then raising
+        # would leave the registry advertising ops it never finished initializing.
         checkpoint = snapshot()
         try:
             ep.load()
@@ -156,9 +147,7 @@ def _load_all() -> list[BackendLoadFailure]:
             LOAD_ERRORS.append(failure)
             failed.append(failure)
         except BaseException:
-            # Interrupts and cancellation are not a backend being broken: roll back so
-            # nothing half-registered survives, then let the process unwind.
-            restore(checkpoint)
+            restore(checkpoint)  # an interrupt is not a backend being broken
             raise
     return failed
 
@@ -171,7 +160,7 @@ def load_error_suffix() -> str:
 
 
 class RegistryState(NamedTuple):
-    """Everything :func:`snapshot` captures, named so :func:`restore` cannot mis-order it."""
+    """What :func:`snapshot` captures, named so :func:`restore` cannot mis-order it."""
 
     detectors: dict[str, DetectFn]
     kernels: dict[tuple[str, str], GetKernelFn]
@@ -184,9 +173,8 @@ class RegistryState(NamedTuple):
 def snapshot() -> RegistryState:
     """Capture the registry. Backs both the load transaction and test isolation.
 
-    Not exported: a public save/restore would invite production code to swap registries
-    at runtime. Tests need it because one test registering a fake target would otherwise
-    change how every later test behaves.
+    Not exported: a public save/restore would invite production code to swap registries at
+    runtime.
     """
     with LOCK:
         return RegistryState(

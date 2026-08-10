@@ -23,10 +23,9 @@ class OpNotAvailableError(BackendError):
 
 @dataclass(frozen=True)
 class BackendLoadFailure:
-    """A backend that failed to import.
+    """A backend that failed to import — a record, not a raisable.
 
-    A record rather than a raisable: one broken distribution must not stop the others
-    from loading, so the failure is collected and reported afterwards.
+    One broken distribution must not stop the others loading, so it is collected instead.
     """
 
     name: str

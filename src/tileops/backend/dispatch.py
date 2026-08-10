@@ -1,8 +1,4 @@
-"""Reading the tables: which target serves a call, and which callback to hand it to.
-
-Everything here is what the op layer calls. Nothing here decides *how* a backend picks a
-kernel — that happens inside the callback this returns.
-"""
+"""Reading the tables: which target serves a call, and which callback to hand it to."""
 
 from __future__ import annotations
 
@@ -16,21 +12,17 @@ from .errors import (
     OpNotAvailableError,
     UnknownTargetError,
 )
-from .protocol import GetKernelFn
+from .protocol import DetectFn, GetKernelFn
 
 
 def resolve_target(device: torch.device) -> str:
     """Return the target serving *device*.
 
-    TileOPs does not interpret *device*: it neither reads ``.type`` nor maps it to
-    hardware, since that knowledge is exactly what is being delegated. The device is a
-    query condition passed through untouched — the cache key and the callback's argument.
-    A backend needing more (a vendor probe, an environment variable) takes it inside its
-    own callback.
-
-    ``cuda`` and ``cuda:0`` are separate cache entries; normalizing them would mean
-    materializing the device to learn its index, which is interpretation. Memoizing an
-    unindexed device is sound because a target claims a device *type*, not an index.
+    *device* is passed through untouched — neither ``.type`` read nor mapped to hardware,
+    since that knowledge is exactly what is being delegated. ``cuda`` and ``cuda:0`` are
+    therefore separate memo entries; normalizing them would mean materializing the device
+    to learn its index. Memoizing an unindexed device is sound because a target claims a
+    device *type*, not an index.
 
     Raises:
         UnknownTargetError: Nothing claimed *device*.
@@ -39,12 +31,12 @@ def resolve_target(device: torch.device) -> str:
     """
     registry.ensure_loaded()
     with registry.LOCK:
-        # Read the memo under the lock too: a backend installed concurrently clears it,
-        # and this path is cold -- the op layer memoizes the kernel, not the target.
+        # Under the lock, memo included: a backend arriving concurrently clears it. Cold
+        # path -- the op layer memoizes the kernel, so this is not per call.
         cached = registry.RESOLVED.get(device)
         if cached is not None:
             return cached
-        claimed = [t for t, detect in registry.DETECTORS.items() if _claims(t, detect, device)]
+        claimed = [t for t, d in registry.DETECTORS.items() if _claims(t, d, device)]
         if not claimed:
             raise UnknownTargetError(
                 f"no registered target claims device {device}; registered targets: "
@@ -55,39 +47,37 @@ def resolve_target(device: torch.device) -> str:
                 f"device {device} is claimed by {sorted(claimed)}; pass target= to "
                 f"choose{registry.load_error_suffix()}"
             )
-        # Neither failure above is cached: a later registration can change both.
+        # Neither failure above is memoized: a later registration can change both.
         registry.RESOLVED[device] = claimed[0]
         return claimed[0]
 
 
-def _claims(target: str, detect, device: torch.device) -> bool:
-    """Ask one detector, blaming the right backend when it misbehaves.
+def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
+    """Ask one detector, blaming the right distribution when it misbehaves.
 
-    A detector that raises is a bug in its own distribution. Letting the exception
-    through unlabelled would point the user at TileOPs, and stepping over it would
-    silently hand the device to somebody else.
+    Letting the exception through unlabelled would point the user at TileOPs; stepping over
+    it would silently hand the device to somebody else.
     """
     try:
         return detect(device)
     except Exception as exc:
         raise BackendError(
             f"detector for target {target!r} ({registry.describe(detect)}) raised on "
-            f"device {device}: {exc!r}. A detector must return False for devices it "
-            f"does not serve."
+            f"device {device}: {exc!r}. A detector must return False for devices it does "
+            f"not serve."
         ) from exc
 
 
 def select_target(explicit: str | None, device: torch.device | None) -> str:
     """Decide which target serves this call, in the one place that decides it.
 
-    *explicit* wins, then the process default, then detection from *device*. Every op
-    comes through here; a copy of this order per op class is how the three drift apart.
+    *explicit* wins, then the process default, then detection. Every op comes through here;
+    a copy of this order per op class is how the three drift apart.
 
     Args:
-        explicit: The op's ``target=``, honoured as named and not checked against
-            *device* — naming a target is how a caller overrides detection.
-        device: Where to detect from. None when the call has no tensor input, which leaves
-            nothing to detect and makes ``target=`` the only answer.
+        explicit: The op's ``target=``, honoured as named and not checked against *device*
+            — naming a target is how a caller overrides detection.
+        device: Where to detect from, or None when the call has no tensor input.
     """
     registry.ensure_loaded()  # even the no-device error must be able to blame a bad wheel
     if explicit is not None:
@@ -120,10 +110,10 @@ def get_kernel_for(op: str, target: str) -> GetKernelFn:
 
 
 def registered() -> frozenset[tuple[str, str]]:
-    """Every registered ``(op, target)``, for introspection and error messages.
+    """Every registered ``(op, target)``.
 
-    Keys only: handing out the callbacks would open a second way to reach a
-    ``get_kernel`` beside :func:`get_kernel_for`.
+    Keys only: handing out the callbacks would open a second way to reach a ``get_kernel``
+    beside :func:`get_kernel_for`.
     """
     registry.ensure_loaded()
     return frozenset(registry.KERNELS)
@@ -140,9 +130,8 @@ def registered_targets(op: str | None = None) -> list[str]:
 def set_default_target(target: str | None) -> None:
     """Route ops with no explicit ``target=`` to *target*; None restores detection.
 
-    One process-wide setting: it decides which kernels get built, and threading it through
-    call sites would put it on the hot path. No environment variable — configuration that
-    changes which kernel runs should be visible in the program.
+    One process-wide setting, and no environment variable: configuration that changes which
+    kernel runs should be visible in the program.
     """
     registry.ensure_loaded()
     if target is not None and target not in registry.known_targets():
