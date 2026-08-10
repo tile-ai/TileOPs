@@ -5,7 +5,11 @@ from typing import Optional
 
 import torch
 
+
 from ..call_spec import CallSpec
+from .call_spec import CallSpec
+from .heuristics import TINY_M_BLOCK_N
+from tileops.utils import get_sm_count
 
 __all__ = ["GemmCall", "gemv_region", "small_batch_region"]
 
@@ -40,7 +44,7 @@ def small_batch_region(call: GemmCall) -> bool:
     Its CUDA-core inner loop pays ``m`` FMAs and ``m`` converts per weight
     element, so its lead over the tensor-core kernel shrinks as ``m`` grows.
     Once the analytic small-``m`` configs (split-K / simple, see
-    ``gemm_heuristics._tiny_m_config``) lifted the general kernel to cuBLAS
+    ``heuristics._tiny_m_config``) lifted the general kernel to cuBLAS
     parity the crossover moved down to ``m == 2`` — measured on H200 (per-rep
     interleaved, full config-grid sweep on the decode shapes): this kernel
     beats the best general config at ``m = 2`` on all three families and loses
@@ -55,6 +59,4 @@ def small_batch_region(call: GemmCall) -> bool:
     """
     if call.trans_a or not call.trans_b or call.m != 2:
         return False
-    from tileops.utils import get_sm_count
-    from .gemm_heuristics import TINY_M_BLOCK_N
     return -(-call.n // TINY_M_BLOCK_N) < get_sm_count()

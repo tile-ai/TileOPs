@@ -49,9 +49,9 @@ _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
 _DEFAULT_SM_COUNT = 132  # H100/H200 SXM fallback when no device is bound
 
-# n-tile width of the tiny-m generic configs. ``select_kernel``'s underfill
-# gate prices the competing generic grid with the same width — retune them
-# together.
+# n-tile width of the tiny-m generic configs. ``gemm_call.small_batch_region``
+# prices its underfill gate on the competing generic grid with the same width
+# — retune them together.
 TINY_M_BLOCK_N = 128
 
 # Validated num_stages ranges per structure in the shipped kernels.
