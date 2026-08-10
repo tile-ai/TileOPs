@@ -11,17 +11,7 @@ from workloads.attention.gqa import (
 
 
 class GroupedQueryAttentionDecodeTest(GroupedQueryAttentionDecodeWorkload, TestBase):
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
-        groups = self.heads // self.heads_kv
-        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        scores = torch.matmul(q_bhsd.float(), k_bhsd.transpose(-2, -1)) * self.sm_scale
-        if self.softcap > 0:
-            scores = self.softcap * torch.tanh(scores / self.softcap)
-        probs = torch.softmax(scores, dim=-1)
-        output_bhsd = torch.matmul(probs, v_bhsd)
-        return output_bhsd.transpose(1, 2).squeeze(1).to(q.dtype).contiguous()
+    pass
 
 
 class GroupedQueryAttentionDecodeFixture(FixtureBase):

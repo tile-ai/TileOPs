@@ -9,23 +9,7 @@ from workloads.normalization import AdaLayerNormZeroWorkload
 
 
 class AdaLayerNormZeroTest(AdaLayerNormZeroWorkload, TestBase):
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        scale: torch.Tensor,
-        shift: torch.Tensor,
-        gate: torch.Tensor,
-    ) -> torch.Tensor:
-        # AdaLN-Zero: y = gate * (scale * LayerNorm(x) + shift)
-        normed = F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=None,
-            bias=None,
-            eps=self.eps,
-        )
-        y = gate.float() * (scale.float() * normed + shift.float())
-        return y.to(x.dtype)
+    pass
 
 
 class AdaLayerNormZeroFixture(FixtureBase):

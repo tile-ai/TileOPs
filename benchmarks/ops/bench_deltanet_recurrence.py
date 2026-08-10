@@ -39,21 +39,6 @@ def deltanet_decode_torch(
     return o, new_state
 
 
-class DeltaNetDecodeTestBaseline(DeltaNetDecodeWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = deltanet_decode_torch(q, k, v, beta, state)
-        return o.to(self.dtype), new_state.to(self.dtype)
-
-
 class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
@@ -95,7 +80,7 @@ def test_deltanet_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
+    test = DeltaNetDecodeWorkload(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
     op = DeltaNetDecodeOp(tune=tune)

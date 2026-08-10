@@ -37,7 +37,12 @@ except ImportError:
 
 
 class GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdWorkload):
-    """Adds a pure-torch fallback baseline for benchmark profiling."""
+    """Times the batched WY inversion rather than the reference's loop.
+
+    ``prepare_wy_repr_gated_torch`` here resolves to this package's batched
+    helper, not the per-chunk loop the workload reference calls. Same result,
+    different cost, so timing it answers a different question.
+    """
 
     def ref_program(
         self,

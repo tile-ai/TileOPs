@@ -51,11 +51,6 @@ def _ref_fused_act(A, B, sizes, offsets, ffn, activation):
 
 
 @pytest.mark.smoke
-def test_import():
-    assert MoeGroupedGemmPersistent3WGFusedActKernel is not None
-
-
-@pytest.mark.smoke
 def test_output_shape():
     T, E, top_k, ffn, K = 32, 4, 2, 256, 64
     A, B, sizes, offsets, numel = make_inputs(T, E, top_k, ffn, K, torch.bfloat16)

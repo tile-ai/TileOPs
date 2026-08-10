@@ -29,6 +29,13 @@ class GemmWorkload(WorkloadBase):
         b = torch.randn(*shape_b, device="cuda", dtype=self.dtype)
         return a, b
 
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if self.trans_a:
+            a = a.T
+        if self.trans_b:
+            b = b.T
+        return torch.matmul(a, b)
+
 
 class GemmFp8Workload(WorkloadBase):
     def __init__(
@@ -72,6 +79,25 @@ class GemmFp8Workload(WorkloadBase):
             bias = torch.randn(self.n, device="cuda", dtype=self.out_dtype)
             return a, b, scale_a, scale_b, bias
         return a, b, scale_a, scale_b
+
+    def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+        if tuple(scale.shape) == (1, 1):
+            return scale.expand(rows, cols)
+        scale_cols = (cols + 127) // 128
+        if tuple(scale.shape) != (rows, scale_cols):
+            raise ValueError(
+                f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
+        return scale.repeat_interleave(128, dim=1)[:, :cols]
+
+    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+        a, b, scale_a, scale_b = inputs[:4]
+        bias = inputs[4] if len(inputs) == 5 else None
+        a_f = a.float() * self._expand_scale(scale_a, self.m, self.k)
+        b_f = b.float() * self._expand_scale(scale_b, self.n, self.k)
+        out = torch.matmul(a_f, b_f.T)
+        if bias is not None:
+            out = out + bias.float()
+        return out.to(self.out_dtype)
 
 
 def quantize_weight_int4(
@@ -136,3 +162,13 @@ class GemmW4A16Workload(WorkloadBase):
         if self._dequantized_weight is None:
             raise RuntimeError("dequantized_weight is available after gen_inputs()")
         return self._dequantized_weight
+
+    def ref_program(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> torch.Tensor:
+        del packed_weight, weight_scale, weight_zero
+        return torch.matmul(activation, self.dequantized_weight.T)

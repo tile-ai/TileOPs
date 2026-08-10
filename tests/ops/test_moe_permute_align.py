@@ -7,73 +7,16 @@ Reference: SGLang moe_align_block_size
   python/sglang/srt/layers/moe/fused_moe_triton/moe_align_block_size.py
 """
 
-import math
-
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermuteAlignFwdOp
-from workloads.moe import MoePermuteAlignWorkload
-
-
-def _ref_permute_align(
-    topk_ids: torch.Tensor, block_size: int, num_experts: int
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Pure-Python reference for permute_align."""
-    numel = topk_ids.numel()
-    flat = topk_ids.flatten().tolist()
-
-    counts = [0] * num_experts
-    for eid in flat:
-        counts[eid] += 1
-
-    cumsum = [0] * (num_experts + 1)
-    for i in range(num_experts):
-        padded = math.ceil(counts[i] / block_size) * block_size
-        cumsum[i + 1] = cumsum[i] + padded
-
-    total_padded = cumsum[num_experts]
-    sorted_token_ids = [numel] * total_padded
-
-    slot = list(cumsum[:-1])
-    for flat_idx, eid in enumerate(flat):
-        sorted_token_ids[slot[eid]] = flat_idx
-        slot[eid] += 1
-
-    num_blocks = total_padded // block_size
-    expert_ids_list = []
-    for b in range(num_blocks):
-        block_start = b * block_size
-        lo, hi = 0, num_experts - 1
-        eid = num_experts - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if cumsum[mid] <= block_start < cumsum[mid + 1]:
-                eid = mid
-                break
-            elif block_start < cumsum[mid]:
-                hi = mid - 1
-            else:
-                lo = mid + 1
-        expert_ids_list.append(eid)
-
-    device = topk_ids.device
-    return (
-        torch.tensor(sorted_token_ids, dtype=torch.int32, device=device),
-        torch.tensor(expert_ids_list, dtype=torch.int32, device=device),
-        torch.tensor([total_padded], dtype=torch.int32, device=device),
-    )
+from workloads.moe import MoePermuteAlignWorkload, ref_permute_align
 
 
 class MoePermuteAlignTest(MoePermuteAlignWorkload, TestBase):
-    def ref_program(
-        self, topk_ids: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _ref_permute_align(topk_ids, self.block_size, self.num_experts)
-
-
-# Reference implementation (pure Python / PyTorch)
+    pass
 
 
 # Fixture
@@ -243,7 +186,7 @@ def test_permute_align_skewed_distribution() -> None:
 
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     outputs = tuple(op(topk_ids))
-    outputs_ref = tuple(_ref_permute_align(topk_ids, block_size, num_experts))
+    outputs_ref = tuple(ref_permute_align(topk_ids, block_size, num_experts))
 
     _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
 

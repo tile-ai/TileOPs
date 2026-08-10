@@ -146,8 +146,7 @@ class AddCompileFixture(FixtureBase):
 
 
 class AddCompileTest(AddCompileWorkload, TestBase):
-    def ref_program(self, a, b):
-        return (a.float() + b.float()).to(a.dtype)
+    pass
 
 
 register_compile_contract(AddFwdOp)
@@ -174,8 +173,7 @@ class EqCompileFixture(FixtureBase):
 
 
 class EqCompileTest(EqCompileWorkload, TestBase):
-    def ref_program(self, a, b):
-        return a == b
+    pass
 
 
 register_compile_contract(EqFwdOp)
@@ -202,10 +200,7 @@ class SiluAndMulCompileFixture(FixtureBase):
 
 
 class SiluAndMulCompileTest(SiluAndMulCompileWorkload, TestBase):
-    def ref_program(self, x):
-        gate = x[:, :self.N].float()
-        value = x[:, self.N:].float()
-        return (torch.nn.functional.silu(gate) * value).to(x.dtype)
+    pass
 
 
 register_compile_contract(SiluAndMulFwdOp)

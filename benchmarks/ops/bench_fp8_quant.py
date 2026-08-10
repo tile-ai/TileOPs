@@ -22,18 +22,6 @@ from workloads.fp8_quant import FP8QuantWorkload
 _TUNE = True
 
 
-class FP8QuantTestBaseline(FP8QuantWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
-        amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
-        scale_tensor = amax_value / 448.0
-        output_tensor = torch.clamp(input_tensor / scale_tensor, min=-448.0, max=448.0)
-        output_tensor = output_tensor.to(torch.float8_e4m3fn)
-        return scale_tensor.squeeze(dim=-1), output_tensor
-
-
 _FP8_QUANT_OP = "FP8QuantOp"
 _FP8_QUANT_PARAMS = workload_field_params(
     load_workloads(_FP8_QUANT_OP),
@@ -44,7 +32,7 @@ _FP8_QUANT_PARAMS = workload_field_params(
 @pytest.mark.parametrize("batch, seq_len_kv, kv_group, index_dim, in_dtype", _FP8_QUANT_PARAMS)
 def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                          in_dtype: torch.dtype) -> None:
-    test = FP8QuantTestBaseline(batch, seq_len_kv, kv_group, index_dim, in_dtype)
+    test = FP8QuantWorkload(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     inputs = test.gen_inputs()
 
     op = FP8QuantOp(tune=_TUNE)

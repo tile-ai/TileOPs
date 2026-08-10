@@ -145,9 +145,7 @@ class AddBroadcastFixture(FixtureBase):
 
 
 class AddBroadcastTest(AddBroadcastWorkload, TestBase):
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return (a.float() + b.float()).to(a.dtype)
+    pass
 
 
 @AddBroadcastFixture
@@ -294,9 +292,6 @@ class RemainderTest(PositivePairWorkload, TestBase):
 
 class PowPositiveTest(PowPositiveWorkload, TestBase):
     """Pow needs positive base and small exponent to avoid overflow in fp16."""
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.pow(a.float(), b.float()).to(a.dtype)
 
 
 class BinaryArithOpFixture(FixtureBase):

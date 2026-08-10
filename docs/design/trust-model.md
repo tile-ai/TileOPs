@@ -18,12 +18,14 @@ implementation conform to an accident.
 
 ## Test
 
-`ref_program`, tolerances and assertions live with the test, which does not
-import from [`benchmarks/`](../../benchmarks/).
+Tolerances and assertions live with the test, which does not import from
+[`benchmarks/`](../../benchmarks/).
 
-Input construction does not: it belongs in [`workloads/`](../../workloads/). A
-workload left inside `tests/` is unreachable from a benchmark — see
-[§Benchmark](#benchmark) — so it gets copied, and the two copies drift.
+Input construction does not, and neither does the reference computation of an
+op that has a workload named for it: both belong in
+[`workloads/`](../../workloads/). Anything left inside `tests/` is unreachable
+from a benchmark — see [§Benchmark](#benchmark) — so it gets copied, and the
+two copies drift.
 
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
@@ -39,48 +41,66 @@ are listed in [ops-design.md](../../.claude/domain-rules/ops-design.md).
 
 ## Benchmark
 
-A benchmark does not import from [`tests/`](../../tests/), and does not import
-ref or oracle functions from [`workloads/`](../../workloads/).
+A benchmark does not import from [`tests/`](../../tests/). It reads the
+op's reference from [`workloads/`](../../workloads/) — the same definition the
+test checks against — and times it as the torch baseline.
 
-This buys decoupling, not cross-validation — no baseline output is compared
-against the test oracle. It keeps nightly benchmarks running across test-side
-refactors, and keeps baseline timings stable when an oracle is edited.
+The `tests/` boundary buys decoupling: nightly benchmarks keep running across
+test-side refactors, and a tolerance or comparator change cannot move a
+baseline number. Sharing the reference costs none of that, and removes the
+second copy that used to drift.
+
+A baseline that is deliberately not the reference — a different layout, a
+faster idiom, an external library — overrides `ref_program` in the benchmark
+and says why.
 
 [`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
 checks the `tests/` import and a locally defined `gen_inputs`, both by literal
-name. The oracle-import half is unchecked.
+name.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
 ## Workloads layer
 
-The shared input-definition layer, and the only one both tests and benchmarks
-import.
+The shared layer, and the only one both tests and benchmarks import.
 
 **Provides**: `WorkloadBase` (`gen_inputs`), `FixtureMeta` / `FixtureBase`
 (parametrize), and one workload class per op — or one parameterized class a
 family shares.
 
-**Must contain**: input construction for every op.
+**Must contain**: input construction for every op, and — where the class is
+named for an op — that op's reference computation.
 
-**Must not contain**: `ref_program`, check or tolerance logic,
-`calculate_flops` / `calculate_memory`, benchmark baselines. Anything placed
-here couples the two sides that import it: correctness logic belongs with the
-test, timing baselines with the benchmark.
+**Must not contain**: tolerances, `check`, `calculate_flops` /
+`calculate_memory`, or the choice of what to time against. Those are decisions,
+the first three the test's and the last the benchmark's, and a decision placed
+here reaches the other consumer.
+
+The reference computation is not a decision. It is the executable form of the
+manifest's `ref_api`: what the operator means, the same for whoever asks.
+Assigning it to one consumer obliges the other to keep a second copy, and two
+copies of the same math drift apart in silence — the benchmark then reports a
+ratio against a computation no test validated.
+
+It belongs to the narrowest shared class that names one operator. That is
+normally the workload; a workload describing only an input shape — one random
+tensor, a matching pair — is reused across ops, names none of them, and so its
+consumers carry the reference instead. `TestBase` already declares
+`ref_program` abstract, so whichever class supplies it, a test without one
+cannot be instantiated.
+
+A benchmark whose baseline is deliberately not the reference — a different
+layout, a faster idiom, an external library — overrides `ref_program`. That is
+a benchmark decision and belongs in the benchmark.
 
 ```
-WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — abstract contract
-  ├── TestBase (tests/test_base.py)        # adds ref_program(), check()
+WorkloadBase (workloads/workload_base.py)  # gen_inputs(), and ref_program()
+  |                                        # on the classes named for an op
+  ├── TestBase (tests/test_base.py)        # adds check() and tolerances
   └── concrete subclasses per op
 
 BenchmarkBase[W] (benchmarks/)             # generic over workload type; reads
                                            # roofline off the op, not the workload
 ```
-
-[`tests/test_workload_placement.py`](../../tests/test_workload_placement.py) scans
-for methods named `ref_program`, `check`, `calculate_flops` or
-`calculate_memory`. A module-level function, a tolerance attribute, or a
-baseline under another name passes it, and nothing checks that every op has a
-workload.
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

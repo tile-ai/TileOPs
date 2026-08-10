@@ -435,10 +435,7 @@ jobs:
           echo "=== Install built wheel ==="
           python3 -m pip install dist/*.whl
 
-          # The smoke test runs outside the checkout so `tileops` resolves to the
-          # installed wheel. Every repo-root tree the suite imports must therefore
-          # be copied in: `tests` and the `workloads` reference implementations it
-          # builds fixtures from. Neither ships in the wheel, by design.
+          # Run outside the checkout so `tileops` resolves to the wheel, not src/.
           TMP_TEST_DIR="$(mktemp -d "${RUNNER_TEMP}/packaging-test.XXXXXX")"
           cp -r tests "${TMP_TEST_DIR}/tests"
           cp -r workloads "${TMP_TEST_DIR}/workloads"

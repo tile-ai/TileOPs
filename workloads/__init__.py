@@ -2,12 +2,13 @@
 
 This package provides WorkloadBase (input generation + workload parameters)
 and FixtureBase (reusable pytest parametrize decorators).  Benchmarks and
-tests both import from here.
+tests both import from here.  A workload class named for one op also owns
+that op's ref_program.
 
 workloads/ must not own:
-- ref_program() or other reference implementations
 - check() or assertion/tolerance logic
-- any correctness-only semantics
+- calculate_flops() / calculate_memory()
+- the choice of what a benchmark times against
 
-Those belong in tests/.
+Those are decisions and belong to the consumer that makes them.
 """

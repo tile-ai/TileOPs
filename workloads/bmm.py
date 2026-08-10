@@ -18,6 +18,10 @@ class BmmWorkload(WorkloadBase):
         b = torch.randn(self.batch, self.k, self.n, device="cuda", dtype=self.dtype)
         return a, b
 
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return torch.bmm(a, b)
+
+
 _FP8_INIT_SCALE: float = 0.25
 
 
@@ -69,3 +73,16 @@ class BmmFp8Workload(WorkloadBase):
             0.5 + torch.rand((), device="cuda", dtype=torch.float32)
         ).contiguous()
         return a, b, scale_a, scale_b
+
+    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+        a, b, scale_a, scale_b = inputs
+        # per_tensor: 0-D fp32 scalars (matching flashinfer.bmm_fp8).
+        assert scale_a.dim() == 0 and scale_b.dim() == 0, (
+            f"BmmFp8Workload only supports per-tensor scales, got "
+            f"{tuple(scale_a.shape)} / {tuple(scale_b.shape)}"
+        )
+        # b is [B, K, N] (torch.bmm layout, matching BmmFp8Op).
+        a_f = a.float() * scale_a
+        b_f = b.float() * scale_b
+        out = torch.bmm(a_f, b_f)
+        return out.to(self.out_dtype)

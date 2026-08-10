@@ -1,4 +1,3 @@
-from typing import Optional
 
 import pytest
 import torch
@@ -99,23 +98,7 @@ class Conv1dFixture(FixtureBase):
 
 
 class Conv1dTest(Conv1dWorkload, TestBase):
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        out = F.conv1d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-        return out.contiguous()
+    pass
 
 
 @Conv1dFixture
@@ -338,23 +321,7 @@ class Conv2dFixture(FixtureBase):
 
 
 class Conv2dTest(Conv2dWorkload, TestBase):
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        out = F.conv2d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-        return out.contiguous()
+    pass
 
 
 @Conv2dFixture
@@ -514,23 +481,7 @@ class Conv3dFixture(FixtureBase):
 
 
 class Conv3dTest(Conv3dWorkload, TestBase):
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        out = F.conv3d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-        return out.contiguous()
+    pass
 
 
 @Conv3dFixture

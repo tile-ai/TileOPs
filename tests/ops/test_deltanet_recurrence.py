@@ -13,49 +13,11 @@ from tileops.kernels.deltanet_recurrence import (
 )
 from tileops.ops import DeltaNetDecodeOp
 from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS
-from workloads.linear_attention import DeltaNetDecodeWorkload
-
-
-def deltanet_decode_torch(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-    state: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch reference for single-step delta rule (ungated)."""
-    q, k, v = q.float(), k.float(), v.float()
-    beta = beta.float()
-    state = state.float()
-
-    old_val = torch.einsum("bhkv,bhk->bhv", state, k)
-    beta_unsq = beta.unsqueeze(-1)
-    v_new = beta_unsq * (v - old_val)
-
-    o_inter = torch.einsum("bhkv,bhk->bhv", state, q)
-    qk_dot = torch.einsum("bhk,bhk->bh", q, k).unsqueeze(-1)
-    o_intra = qk_dot * v_new
-    o = o_inter + o_intra
-
-    new_state = state + k.unsqueeze(-1) * v_new.unsqueeze(-2)
-
-    return o, new_state
+from workloads.linear_attention import DeltaNetDecodeWorkload, deltanet_decode_torch
 
 
 class DeltaNetDecodeTest(DeltaNetDecodeWorkload, TestBase):
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = deltanet_decode_torch(q, k, v, beta, state)
-        return o.to(self.dtype), new_state.to(self.dtype)
-
-
-# Torch reference implementation (test-only)
+    pass
 
 
 # Correctness tests

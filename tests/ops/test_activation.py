@@ -14,8 +14,7 @@ from workloads.elementwise import RandnFlatWorkload, ReluWorkload
 
 
 class ReluTest(ReluWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.relu(x.float()).to(x.dtype)
+    pass
 
 
 class ReluFixture(FixtureBase):

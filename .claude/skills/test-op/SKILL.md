@@ -57,6 +57,7 @@ torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
 ```
 
 - Use `TestBase` pattern (`gen_inputs()` + `ref_program()` + `check()`). Follow `docs/design/testing.md`.
+- Put `ref_program` on the op's workload class in `workloads/`. Define it on the test class only when the workload describes an input shape rather than an op.
 - Write tests in `source_test` file. No new files.
 - For integer outputs (manifest `outputs.*.dtype` is int type), use `torch.equal` for exact comparison.
 - Parameterize: supported dtypes (FP16, BF16), representative dim values, keepdim True/False where applicable.

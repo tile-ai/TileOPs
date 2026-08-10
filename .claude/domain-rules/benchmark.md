@@ -1,8 +1,9 @@
-- **MUST NOT**: import from `tests/`, or import ref/oracle functions from `workloads/`. Reads of any other file are unrestricted.
-- **MUST NOT**: author `gen_inputs`. Import the op's workload from `workloads/`; if it has none, add it there instead of copying locally. Subclassing an imported workload to attach a baseline is fine.
+- **MUST NOT**: import from `tests/`. Reads of any other file are unrestricted.
+- **MUST NOT**: author `gen_inputs`. Import the op's workload from `workloads/`; if it has none, add it there instead of copying locally.
+- Time the workload's `ref_program` for the torch baseline. Override it in a subclass only when the baseline is deliberately not the reference, and say so in the subclass docstring.
 
-Both checked by `benchmarks/tests/test_benchmark_boundaries.py`, which matches names
-literally — it will not catch a draw helper under another name.
+The two **MUST NOT**s are checked by `benchmarks/tests/test_benchmark_boundaries.py`,
+which matches names literally — it will not catch a draw helper under another name.
 
 → [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
 

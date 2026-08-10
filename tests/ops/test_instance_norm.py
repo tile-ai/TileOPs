@@ -14,14 +14,7 @@ from workloads.normalization import InstanceNormWorkload
 
 
 class InstanceNormTest(InstanceNormWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
-                    bias: torch.Tensor) -> torch.Tensor:
-        return F.instance_norm(
-            x.float(),
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
+    pass
 
 
 class InstanceNormFixture(FixtureBase):

@@ -1,9 +1,10 @@
 """Base classes for workload definitions shared between tests and benchmarks.
 
 WorkloadBase defines the contract: gen_inputs() for input generation.
+A class named for one op also carries that op's ref_program.
 FixtureMeta / FixtureBase provide reusable pytest parametrize decorators.
 
-Correctness-only logic (ref_program, check, tolerances) stays in tests/.
+Tolerances, check() and roofline numbers stay in tests/ and benchmarks/.
 """
 
 from __future__ import annotations
@@ -19,11 +20,13 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 class WorkloadBase(ABC):
     """Abstract base for workload definitions (input generation + parameters).
 
-    Subclass must implement gen_inputs().
+    Subclass must implement gen_inputs(). A subclass named for one op also
+    defines that op's ref_program; a subclass describing only an input shape
+    leaves ref_program to its consumers.
     Used by both tests (via TestBase) and benchmarks (via BenchmarkBase).
 
-    Correctness-only methods (ref_program, check, tolerances) belong in
-    tests/ — not here.
+    Tolerances, check() and roofline methods are decisions and belong to the
+    consumer — not here.
     """
 
     @abstractmethod

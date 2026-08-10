@@ -1,7 +1,5 @@
 import pytest
 import torch
-import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_args
@@ -10,19 +8,6 @@ from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.mha import MhaDecodeWorkload
 
 _OP_NAME = "MultiHeadAttentionDecodeWithKVCacheFwdOp"
-
-
-class MhaDecodeTestBaseline(MhaDecodeWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        q_bhsd = q.transpose(1, 2)  # [B, H, S_q, D]
-        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
-        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
-        output = output_bhsd.transpose(1, 2).contiguous()
-        return output
 
 
 def _fa3_mha_decode_fwd(test):
@@ -73,7 +58,7 @@ _MHA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_decode_
 @pytest.mark.parametrize("b, h, s_q, s_kv, d, dtype, tune", _MHA_DECODE_BENCH_PARAMS)
 def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                           tune: bool) -> None:
-    test = MhaDecodeTestBaseline(b, h, s_q, s_kv, d, dtype)
+    test = MhaDecodeWorkload(b, h, s_q, s_kv, d, dtype)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, tune=tune)

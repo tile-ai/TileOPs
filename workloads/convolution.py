@@ -3,6 +3,7 @@
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 
 from workloads.workload_base import WorkloadBase  # noqa: F401
 
@@ -41,6 +42,23 @@ class Conv1dWorkload(WorkloadBase):
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
 
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        out = F.conv1d(
+            x,
+            weight,
+            bias=bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+        return out.contiguous()
+
 
 class Conv2dWorkload(WorkloadBase):
     def __init__(
@@ -77,6 +95,23 @@ class Conv2dWorkload(WorkloadBase):
         ).contiguous()
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
+
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        out = F.conv2d(
+            x,
+            weight,
+            bias=bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+        return out.contiguous()
 
 
 class Conv3dWorkload(WorkloadBase):
@@ -123,3 +158,20 @@ class Conv3dWorkload(WorkloadBase):
         ).contiguous()
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
+
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        out = F.conv3d(
+            x,
+            weight,
+            bias=bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+        return out.contiguous()

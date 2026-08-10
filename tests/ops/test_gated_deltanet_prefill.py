@@ -1,15 +1,13 @@
 import pytest
 import torch
 
-from tests.ops.test_gated_deltanet_fwd import (
-    compute_w_u_torch,
-    kernel2_gated_deltanet_torch,
-    prepare_wy_repr_gated_torch,
-)
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetPrefillFwdOp
 from workloads.linear_attention import (
     GatedDeltaNetPrefillFwdWorkload,
+    compute_w_u_torch,
+    kernel2_gated_deltanet_torch,
+    prepare_wy_repr_gated_torch,
 )
 
 
@@ -215,23 +213,7 @@ def butterfly_prefix_structured_transitions_torch(
 
 
 class GatedDeltaNetPrefillFwdTest(GatedDeltaNetPrefillFwdWorkload, TestBase):
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        B, H, S, DK = k.shape
-        _, _, _, DV = v.shape
-        BC = self.chunk_size
-        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
-        Aw, Au = prepare_wy_repr_gated_torch(k, g_cum, beta, BC)
-        w, u = compute_w_u_torch(Aw, Au, k, v, beta, BC)
-        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        final_state, o = kernel2_gated_deltanet_torch(q, k, g_cum, w, u, S_0, BC)
-        return o.to(self.dtype), final_state.to(self.dtype)
+    pass
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:

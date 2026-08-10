@@ -148,9 +148,6 @@ class ProdTest(ProdWorkload, TestBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype):
         super().__init__((m, n), dtype)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return x.float().prod(dim=-1).to(x.dtype)
-
 
 class WelfordTest(StdWorkload, TestBase):
     """Test helper for Welford-based ops (std, var, var_mean)."""
