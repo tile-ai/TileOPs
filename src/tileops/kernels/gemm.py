@@ -1442,12 +1442,14 @@ def _(
 
 
 class GemmKernel(Kernel):
-    """Dense GEMM kernel: a hand-written warp-specialized implementation (SM90).
+    """Dense GEMM kernel family: hand-written Hopper (SM90) implementations.
 
-    Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. One
-    producer warpgroup issues TMA loads into a double-buffered SMEM ring; one
-    consumer warpgroup runs the WGMMA over K. fp16 / bf16 inputs, fp32
-    accumulation. Hopper-only — TMA + WGMMA require SM90.
+    Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
+    default structure is warp-specialized: one producer warpgroup issues TMA
+    loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
+    over K. Structure flags in ``config`` select the coop2 / coop2_splitk /
+    simple / split-K variants instead (see ``forward``). fp16 / bf16 inputs,
+    fp32 accumulation. Hopper-only — TMA + WGMMA require SM90.
     """
 
     supported_archs: list[int] = [90]
@@ -1480,35 +1482,26 @@ class GemmKernel(Kernel):
         self.init_config(config, tune)
 
     # Per-shape tuned overrides (H200), keyed by
-    # ``(m, n, k, trans_a, trans_b, dtype_str)``. Merged over the modal
-    # default; unlisted shapes get the modal default unchanged. This is a
-    # tuned cache for known manifest shapes, not a general heuristic — a shape
-    # not listed here simply runs the modal config. Entries are locked in only
-    # when a per-shape config beats the modal default reproducibly (small-M
-    # kernels are event-timing-noisy; a marginal win that flips sign across
-    # runs is left on the modal default rather than shipped).
+    # ``(m, n, k, trans_a, trans_b, dtype_str)``. Exact hits are authoritative;
+    # every other shape falls to the analytic selector (see ``default_config``).
+    # Entries without a structure flag merge over the modal base config.
+    # Entries are locked in only when a per-shape config beats the selector's
+    # pick reproducibly (small-M kernels are event-timing-noisy; a marginal
+    # win that flips sign across runs is left unpinned).
     #
     # Gains below are CUPTI kernel-only + L2-flush (the acceptance protocol);
-    # small-M weight matrices fit in L2, so event timing without a flush
-    # over-reports them badly (measure with dh/bench_cupti_ab.py, not a bare
-    # event loop). The modal 128x128 tile starves these shapes of CTAs; the
-    # 64-row tile roughly doubles the grid.
-    #   decode-gate-up (M=128): modal grid = ceil(2112/128) x 1 = 17 CTAs.
-    #     128x64 with split_k=4 fills the full 132-SM wave (33 n-tiles x 4
-    #     K-slices) and the larger 128x64 tile is more WGMMA-efficient than
-    #     64x64 (cuBLAS itself split-Ks this shape). 0.36x -> 0.94x cuBLAS.
-    #   square-1k / decode-down: 64x128x128 doubles the M-tile count and
-    #     deepens block_k reuse. 0.61x -> ~0.86x cuBLAS.
+    # small-M weight matrices fit in L2, so an unflushed event loop
+    # over-reports them badly.
+    #   square-1k: 64x128x128 doubles the M-tile count over the modal 128-row
+    #     tile and deepens block_k reuse.
     #
     # Large-M NT prefill shapes route to the 2-consumer persistent kernel
     # (``coop2``: 1 producer + 2 math warpgroups, split-A / shared-B, static-wave
-    # persistent loop + grouped tile swizzle). It matches cuBLAS's Hopper
-    # cooperative layout and lifts these compute-bound shapes from the single-
-    # consumer kernel's 0.84-0.90x to 0.98-1.00x cuBLAS (prefill-attn beats).
-    # Fields: block_n, block_k, num_stages, group_size_m, stage_n (epilogue
-    # SMEM chunk width; 0 = full block_n). block_m is fixed at 128 (two 64-row
-    # consumers). Any unlisted large-M NT shape gets the coop2 default (see
-    # ``default_config``); the entries below only pin per-shape tuning:
+    # persistent loop + grouped tile swizzle), matching cuBLAS's Hopper
+    # cooperative layout (see ``_gemm_coop2_kernel``). Fields: block_n, block_k,
+    # num_stages, group_size_m, stage_n (epilogue SMEM chunk width; 0 = full
+    # block_n). block_m is fixed at 128 (two 64-row consumers). The entries
+    # below only pin per-shape tuning:
     #   prefill-attn / k-dominant / wide-n: ns=3 g=16 (deepest full-epilogue
     #     ring bn=256/bk=64 allows in 227 KB SMEM).
     #   prefill-down (shallow K=2048): block_k=32 lets the A/B ring go ns=6 with
@@ -1652,14 +1645,15 @@ class GemmKernel(Kernel):
         )
 
     # No ``autotune_configs``: the in-tree tuner wraps only ``self.kernel``
-    # (the basic mainloop builder) and times it event-only without an L2
-    # flush, so it can neither reach the structure-flagged paths (coop2 /
-    # coop2_splitk / simple / split-K run through other builders plus a
-    # reduce pass) nor time the small-M band honestly — a basic-grid sweep
-    # would silently lose to ``default_config`` on those shapes. ``tune=True``
+    # (the basic mainloop builder), so a sweep cannot reach the
+    # structure-flagged paths (coop2 / coop2_splitk / simple / split-K run
+    # through other builders plus a reduce pass) and would silently lose to
+    # ``default_config`` on the shapes those paths win. ``tune=True``
     # therefore falls back to ``default_config``; per-shape tuning runs the
     # CUPTI kernel-only protocol offline and pins winners in
-    # ``_TUNED_CONFIGS`` (measurement note there).
+    # ``_TUNED_CONFIGS`` (measurement note there). TileLang's event backend
+    # does flush L2 before each timed rep; the residual event-vs-CUPTI delta
+    # is launch-gap wall time and mean aggregation (µs-scale).
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Simple (non-warp-specialized) pipelined path for short-mainloop
@@ -1983,7 +1977,7 @@ class GemvKernel(Kernel):
         if sm_version in {90}:
             # Measured SM90 band rules live with the rest of the family's
             # shape policy in ``gemm_heuristics.gemv_config``; ``tune=True``
-            # refines further from ``autotune_configs``.
+            # replaces them with the ``autotune_configs`` sweep winner.
             return gemv_config(self.k)
 
         return {
@@ -2066,8 +2060,8 @@ class SmallBatchGemmKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # Measured band rule lives with the rest of the family's shape policy
-        # in ``gemm_heuristics.small_batch_config``; ``tune=True`` refines
-        # per shape over ``autotune_configs``.
+        # in ``gemm_heuristics.small_batch_config``; ``tune=True`` replaces it
+        # with the ``autotune_configs`` sweep winner.
         return small_batch_config(self.n, self.k, get_sm_count())
 
     @property
