@@ -24,8 +24,11 @@ The constants below are *effective ranking constants*, not physical rates:
 they were calibrated on H200 (132 SM) against a per-rep interleaved CUPTI
 kernel-only sweep of 16 shapes x ~7 configs spanning all four structures
 (geometric-mean regret 1.001, model top1 inside measured top2 on 15/16
-shapes; every shape pinned in ``GemmKernel._TUNED_CONFIGS`` scored >= 99%
-of its table entry). Re-calibrate when kernel structures change materially.
+shapes). Within these four structures, pinned shapes measure within ~2% of
+their ``GemmKernel._TUNED_CONFIGS`` entry; the ``simple``-structure pins
+(short-mainloop decode-down family) sit outside the candidate space and
+hold a 3-7% edge the selector cannot reproduce. Re-calibrate when kernel
+structures change materially.
 
 Resource model mirrors ``tileops/kernels/gemm.py``:
 
@@ -221,7 +224,7 @@ def _tiny_m_config(k: int) -> dict:
 
     Measured rule (H200 per-rep interleaved sweep, {2112x7168, 7168x2048,
     4096x7168} x m{2,4,8} x {full sb grid, split-K/simple/basic variants},
-    winner reproduced in every cell; dh/wi1_small_batch/tinym_fit.py):
+    winner reproduced in every cell):
 
     - long K: grid-z split-K on the 64-row tile — split_k=4 when the K-tile
       count allows >= 12 iterations per slice (shorter slices pay the WS
