@@ -1286,6 +1286,43 @@ def _gemm_coop2_splitk_kernel(
 
 
 @functools.lru_cache(maxsize=32)
+def _splitk_pair(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str,
+    coop2: bool,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    panel_size: int,
+    split_k: int,
+) -> tuple[Callable, Callable]:
+    """Resolve the (mainloop, reduce) compiled pair for a split-K config.
+
+    Both split-K paths run two kernels back to back, so every microsecond the
+    host spends between the two launches is GPU idle the span metric charges
+    to us: on the short-mainloop shapes the mainloop drains before the reduce
+    is even enqueued. Folding the builder lookup and the ``@tilelang.jit``
+    factory call of *both* kernels into one cached resolution keeps that
+    window to the two launches themselves (measured: inter-kernel gap
+    4.6-5.7 us -> 1.7-2.6 us on the m<=128 x 2112 x 7168 family).
+    """
+    if coop2:
+        mainloop = _gemm_coop2_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
+            block_n, block_k, num_stages, split_k
+        )
+    else:
+        mainloop = _gemm_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
+            block_m, block_n, block_k, num_stages, panel_size, split_k
+        )
+    return mainloop, _splitk_reduce_kernel(split_k, m, n, dtype)()
+
+
+@functools.lru_cache(maxsize=32)
 def _gemm_simple_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
@@ -1695,11 +1732,22 @@ class GemmKernel(Kernel):
         # (M, N) grid (see ``_gemm_coop2_splitk_kernel``).
         if self.config.get("coop2_splitk"):
             cfg = self.config
-            sk = cfg["split_k"]
-            w = _gemm_coop2_splitk_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
-            )(cfg["block_n"], cfg["block_k"], cfg["num_stages"], sk)(a, b)
-            return _splitk_reduce_kernel(sk, self.m, self.n, self.dtype_str)()(w)
+            mainloop, reduce_ = _splitk_pair(
+                self.m,
+                self.n,
+                self.k,
+                self.trans_a,
+                self.trans_b,
+                self.dtype_str,
+                True,
+                0,
+                cfg["block_n"],
+                cfg["block_k"],
+                cfg["num_stages"],
+                0,
+                cfg["split_k"],
+            )
+            return reduce_(mainloop(a, b))
 
         # Split-K path: slice K across grid-z CTAs into an fp32 workspace,
         # then reduce. Selected via config only (``split_k > 1``); the in-tree
@@ -1709,17 +1757,22 @@ class GemmKernel(Kernel):
         split_k = self.config.get("split_k", 1)
         if split_k > 1:
             cfg = self.config
-            w = _gemm_splitk_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
-            )(
+            mainloop, reduce_ = _splitk_pair(
+                self.m,
+                self.n,
+                self.k,
+                self.trans_a,
+                self.trans_b,
+                self.dtype_str,
+                False,
                 cfg["block_m"],
                 cfg["block_n"],
                 cfg["block_k"],
                 cfg["num_stages"],
                 cfg["panel_size"],
                 split_k,
-            )(a, b)
-            return _splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str)()(w)
+            )
+            return reduce_(mainloop(a, b))
 
         # Call the compiled JIT directly (cf. GemvKernel); _gemm_wrapped_kernel is
         # kept only for torch.compile compatibility. trace.run dumps the timeline
