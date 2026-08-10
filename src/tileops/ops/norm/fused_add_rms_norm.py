@@ -1,9 +1,6 @@
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import FusedAddRMSNormKernel
 
 from ..op_base import Op
 
@@ -34,22 +31,28 @@ class FusedAddRMSNormFwdOp(Op):
         Handles non-contiguous inputs and non-power-of-two hidden dims
         by padding to 256-element alignment.
 
+    Dispatches through the backend registry: the target's ``get_kernel`` decides which
+    kernel runs, so this class names none.
+
     Args:
         M: Optional committed row count for strict compatibility. Preferred
             API infers it from ``x.shape[:-1]``.
         N: Optional committed hidden dimension. Preferred API infers it from
             ``x.shape[-1]``.
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "FusedAddRMSNormFwdOp"
 
     def __init__(
         self,
         M: Optional[int] = None,
         N: Optional[int] = None,
         eps: float = 1e-6,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.M = M
@@ -57,13 +60,10 @@ class FusedAddRMSNormFwdOp(Op):
         self._committed_M = M
         self._committed_N = N
         self.eps = eps
+        self.target = target
         self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self.dispatch_kernel()
         self._last_roofline_mn: Optional[tuple[int, int]] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fused_add_rms_norm": FusedAddRMSNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
@@ -76,18 +76,6 @@ class FusedAddRMSNormFwdOp(Op):
         return (
             5 * M * N,
             (4 * M * N + N) * elem_bytes,
-        )
-
-    def _get_kernel(
-        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
-    ) -> Kernel:
-        key = (M, N, dtype, device_index)
-        return self.get_or_build_kernel(
-            "fused_add_rms_norm",
-            key,
-            lambda: self.kernel_map["fused_add_rms_norm"](
-                M, N, self.eps, dtype, tune=self.tune,
-            ),
         )
 
     def forward(
@@ -112,31 +100,22 @@ class FusedAddRMSNormFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch,
                 or shapes are incompatible with the configured dimensions.
         """
+        (x, residual, weight), params = self._bind_call(x, residual, weight)
         expected_dtype = x.dtype
         for name, tensor in [("x", x), ("residual", residual), ("weight", weight)]:
-            if not tensor.is_cuda:
-                raise ValueError(f"{name} must be a CUDA tensor")
+            if tensor.device != x.device:
+                raise ValueError(f"{name} must be on {x.device}, got {tensor.device}")
             if tensor.dtype != expected_dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype {expected_dtype}, got {tensor.dtype}"
-                )
+                raise ValueError(f"Expected {name}.dtype {expected_dtype}, got {tensor.dtype}")
         if weight.ndim != 1:
-            raise ValueError(
-                f"Expected weight to be 1D, got {weight.ndim}D"
-            )
+            raise ValueError(f"Expected weight to be 1D, got {weight.ndim}D")
         N = x.shape[-1]
         if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(
-                f"Expected hidden dim {self._committed_N}, got {N}"
-            )
+            raise ValueError(f"Expected hidden dim {self._committed_N}, got {N}")
         if residual.shape != x.shape:
-            raise ValueError(
-                f"Expected residual shape {x.shape}, got {residual.shape}"
-            )
+            raise ValueError(f"Expected residual shape {x.shape}, got {residual.shape}")
         if weight.shape[0] != N:
-            raise ValueError(
-                f"Expected weight dim {N}, got {weight.shape[0]}"
-            )
+            raise ValueError(f"Expected weight dim {N}, got {weight.shape[0]}")
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, N)
@@ -151,7 +130,7 @@ class FusedAddRMSNormFwdOp(Op):
         dtype = expected_dtype
         assert dtype is not None
 
-        kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
+        kernel = self.backend_kernel(x, residual, weight, **params)
         y, residual_out = kernel(x, residual, weight)
         self._last_roofline_mn = (M_actual, N)
         self.dtype = expected_dtype
