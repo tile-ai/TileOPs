@@ -45,8 +45,6 @@ SoftmaxFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/softmax.py
-    kernel_map:
-      softmax_fwd: SoftmaxKernel
     op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
@@ -97,8 +95,6 @@ LogSoftmaxFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/softmax.py
-    kernel_map:
-      softmax_fwd: SoftmaxKernel
     op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
@@ -146,8 +142,6 @@ LogSumExpFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/logsumexp.py
-    kernel_map:
-      logsumexp_fwd: LogSumExpKernel
     op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
@@ -203,8 +197,6 @@ SumFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -252,8 +244,6 @@ MeanFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -297,8 +287,6 @@ AmaxFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -342,8 +330,6 @@ AminFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -395,8 +381,6 @@ ProdFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -445,8 +429,6 @@ VarFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -491,8 +473,6 @@ StdFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -540,8 +520,6 @@ VarMeanFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
     op: tileops/ops/reduction/reduce.py
     test: tests/ops/test_reduce.py
     bench: benchmarks/ops/bench_reduce.py
@@ -591,8 +569,6 @@ ArgmaxFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/argreduce.py
-    kernel_map:
-      argreduce: ArgreduceKernel
     op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
@@ -635,8 +611,6 @@ ArgminFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/argreduce.py
-    kernel_map:
-      argreduce: ArgreduceKernel
     op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
@@ -686,8 +660,6 @@ AllFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/logical_reduce.py
-    kernel_map:
-      logical_reduce: LogicalReduceKernel
     op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
@@ -733,8 +705,6 @@ AnyFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/logical_reduce.py
-    kernel_map:
-      logical_reduce: LogicalReduceKernel
     op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
@@ -776,8 +746,6 @@ CountNonzeroFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/logical_reduce.py
-    kernel_map:
-      logical_reduce: LogicalReduceKernel
     op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
@@ -831,8 +799,6 @@ L1NormFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/vector_norm.py
-    kernel_map:
-      vector_norm: VectorNormKernel
     op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
@@ -882,8 +848,6 @@ L2NormFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/vector_norm.py
-    kernel_map:
-      vector_norm: VectorNormKernel
     op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
@@ -933,8 +897,6 @@ InfNormFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/vector_norm.py
-    kernel_map:
-      vector_norm: VectorNormKernel
     op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py

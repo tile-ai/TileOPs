@@ -37,8 +37,6 @@ CumsumFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/cumulative.py
-    kernel_map:
-      cumulative_fwd: CumulativeKernel
     op: tileops/ops/reduction/cumulative.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
@@ -77,8 +75,6 @@ CumprodFwdOp:
 
   source:
     kernel: tileops/kernels/reduction/cumulative.py
-    kernel_map:
-      cumulative_fwd: CumulativeKernel
     op: tileops/ops/reduction/cumulative.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py

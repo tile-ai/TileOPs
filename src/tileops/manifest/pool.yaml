@@ -47,9 +47,6 @@ AvgPool1dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/avg_pool1d.py
-    kernel_map:
-      avg_pool1d_kernel: AvgPool1dKernel
-      avg_pool1d_spatial_kernel: AvgPool1dSpatialKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -111,8 +108,6 @@ AvgPool2dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/avg_pool2d.py
-    kernel_map:
-      avg_pool2d_kernel: AvgPool2dKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -181,9 +176,6 @@ AvgPool3dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/avg_pool3d.py
-    kernel_map:
-      avg_pool3d_kernel: AvgPool3dKernel
-      avg_pool3d_spatial_kernel: AvgPool3dSpatialKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -241,8 +233,6 @@ MaxPool1dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/max_pool1d.py
-    kernel_map:
-      max_pool1d_kernel: MaxPool1dKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -300,8 +290,6 @@ MaxPool1dIndicesFwdOp:
 
   source:
     kernel: tileops/kernels/pool/max_pool1d.py
-    kernel_map:
-      max_pool1d_with_indices_kernel: MaxPool1dWithIndicesKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -370,8 +358,6 @@ MaxPool2dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/max_pool2d.py
-    kernel_map:
-      max_pool2d_kernel: MaxPool2dKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -441,8 +427,6 @@ MaxPool2dIndicesFwdOp:
 
   source:
     kernel: tileops/kernels/pool/max_pool2d.py
-    kernel_map:
-      max_pool2d_with_indices_kernel: MaxPool2dWithIndicesKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -523,8 +507,6 @@ MaxPool3dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/max_pool3d.py
-    kernel_map:
-      max_pool3d_kernel: MaxPool3dKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -606,8 +588,6 @@ MaxPool3dIndicesFwdOp:
 
   source:
     kernel: tileops/kernels/pool/max_pool3d.py
-    kernel_map:
-      max_pool3d_with_indices_kernel: MaxPool3dWithIndicesKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -664,8 +644,6 @@ AdaptiveAvgPool2dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/adaptive_avg_pool2d.py
-    kernel_map:
-      adaptive_avg_pool2d_kernel: AdaptiveAvgPool2dKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -721,8 +699,6 @@ AdaptiveMaxPool2dFwdOp:
 
   source:
     kernel: tileops/kernels/pool/adaptive_max_pool2d.py
-    kernel_map:
-      adaptive_max_pool2d_kernel: AdaptiveMaxPool2dKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -780,8 +756,6 @@ AdaptiveMaxPool2dIndicesFwdOp:
 
   source:
     kernel: tileops/kernels/pool/adaptive_max_pool2d.py
-    kernel_map:
-      adaptive_max_pool2d_with_indices_kernel: AdaptiveMaxPool2dWithIndicesKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py

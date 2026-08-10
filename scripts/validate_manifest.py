@@ -551,32 +551,20 @@ def _l0_source(op_name: str, entry: dict, source: dict) -> list[str]:
 def _l0_kernel_map(
     op_name: str, entry: dict, warnings: list[str] | None,
 ) -> list[str]:
-    """kernel_map (under source): mapping of str -> str, required when implemented.
+    """kernel_map (under source): must not be here.
 
-    An implemented op dispatches through ``default_kernel_map``; omitting the
-    declaration hides that dispatch table from the spec.
+    Which kernel serves an op is one backend's answer, and the manifest is neutral across
+    all of them: a third-party backend has no field here to write, so keeping the built-in
+    one's bindings would be a privilege rather than a spec. They live in that backend's own
+    data now. "Is this op implemented" likewise has no single answer once several targets
+    exist — it is answered per target, at run time, by ``tileops.backend.registrations()``.
     """
     errors: list[str] = []
-    err = _emit_to(errors, "schema", op_name)
     source = entry.get("source", {})
-    kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
-    if kernel_map is not None:
-        if not isinstance(kernel_map, dict):
-            err(
-                f"kernel_map must be a mapping, "
-                f"got {type(kernel_map).__name__}"
-            )
-        else:
-            for k, v in kernel_map.items():
-                if not isinstance(k, str) or not isinstance(v, str):
-                    err(
-                        f"kernel_map entries must be str -> str, "
-                        f"got {k!r}: {v!r}"
-                    )
-    elif entry.get("status") == "implemented":
-        err(
-            "status is 'implemented' but kernel_map is missing "
-            "(must be a mapping of str -> str)"
+    if isinstance(source, dict) and "kernel_map" in source:
+        _emit_to(errors, "schema", op_name)(
+            "source.kernel_map does not belong in the manifest: op-to-kernel bindings are a "
+            "backend's own data. Move it to that backend and drop the field."
         )
     return errors
 
@@ -3303,7 +3291,9 @@ def check_c5_dispatch_kernel_invariant(
     Two static checks per ``docs/design/ops-design-reference.md``:
 
     - **S12** — ``__init__`` accepts a ``kernel_map`` keyword (or
-      ``**kwargs`` that absorbs it).
+      ``**kwargs`` that absorbs it). Skipped for an op that sets ``OP_NAME``:
+      it dispatches through the backend registry, where there is no role table
+      to override and ``target=`` is how a caller chooses.
     - **S13** — ``__init__`` body contains a call ``self.dispatch_kernel(...)``.
 
     Pure inspection: ``inspect.signature`` for S12, AST walk for S13.
@@ -3319,6 +3309,7 @@ def check_c5_dispatch_kernel_invariant(
         return errors
 
     # S12: signature carries kernel_map (or **kwargs).
+    routed_through_backend = getattr(cls, "OP_NAME", None) is not None
     try:
         sig = inspect.signature(cls.__init__)
     except (ValueError, TypeError) as exc:
@@ -3332,13 +3323,18 @@ def check_c5_dispatch_kernel_invariant(
         p.kind is inspect.Parameter.VAR_KEYWORD
         for p in sig.parameters.values()
     )
-    if not has_kernel_map_kw:
+    if not has_kernel_map_kw and not routed_through_backend:
         errors.append(
             f"[dispatch] {op_name}: __init__ does not accept a "
             f"'kernel_map' parameter (Slot S12) — kernel-map override is "
             f"unreachable"
         )
         return errors
+    if routed_through_backend and has_kernel_map_kw:
+        errors.append(
+            f"[dispatch] {op_name}: __init__ still accepts 'kernel_map' but the op sets "
+            f"OP_NAME — a backend-routed op has no role table to override"
+        )
 
     # S13: body calls self.dispatch_kernel(...).
     body_calls = _init_calls_dispatch_kernel(cls)

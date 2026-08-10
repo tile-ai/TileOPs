@@ -2,10 +2,21 @@ import dataclasses
 import warnings
 from abc import ABC, abstractmethod
 from types import MappingProxyType
-from typing import Callable, Hashable, Iterator, Mapping, Optional, Sequence, TypeVar, Union
+from typing import (
+    Callable,
+    ClassVar,
+    Hashable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+)
 
 import torch
 
+from tileops.backend import InputSpec, resolve_get_kernel, select_target
 from tileops.kernels.kernel_base import Kernel
 
 from .compile_boundary import register_instance
@@ -63,6 +74,14 @@ class Op(ABC):
             If specified, will be used to calculate Bandwidth in profile().
     """
 
+    # The op's manifest key. Set on a subclass to route its kernels through the backend
+    # registry instead of ``kernel_map``; unset means the op still resolves its own.
+    OP_NAME: ClassVar[Optional[str]] = None
+    # Which target serves this instance, or None to let the process default or the input
+    # device decide. Constructor-only: it settles kernel identity, so it must not vary
+    # per call.
+    target: Optional[str] = None
+
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
     # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
@@ -89,18 +108,20 @@ class Op(ABC):
         """Auto-install manifest-derived methods on concrete subclasses.
 
         Synthesizes ``_validate_dtypes`` (per docs/design/ops-design.md
-        §Step 5) and ``eval_roofline`` (per docs/design/roofline.md §4.4)
-        from the subclass's manifest entry. Each codegen pass is a no-op
+        §Step 5), ``eval_roofline`` (per docs/design/roofline.md §4.4) and
+        ``_bind_call`` from the subclass's manifest entry. Each codegen pass is a no-op
         when the subclass does not advertise manifest metadata, supplies
         its own override, or is marked ``status: spec-only``. Codegen
         modules are lazy-imported to avoid a circular import at ``Op``
         definition time.
         """
         super().__init_subclass__(**kwargs)
+        from tileops.ops._bind_codegen import maybe_install_bind_call
         from tileops.ops._dtype_codegen import maybe_install_validator
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
         maybe_install_validator(cls)
         maybe_install_eval_roofline(cls)
+        maybe_install_bind_call(cls)
 
     # FIXME(staged-rollout): the three contract stubs below — _infer_output_shapes,
     # _validate_dtypes and eval_roofline — raise NotImplementedError instead of
@@ -115,9 +136,14 @@ class Op(ABC):
     #     @abstractmethod and delete this marker.
 
     @property
-    @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
-        raise NotImplementedError("Op must implement default_kernel_map")
+        """Which kernel class serves each of this op's roles.
+
+        Empty for an op that sets ``OP_NAME``: its kernels come from the target's
+        ``get_kernel``, so it names none and has no role table to override. Every op not yet
+        routed that way overrides this.
+        """
+        return {}
 
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
@@ -259,7 +285,16 @@ class Op(ABC):
             f"and at most one of them may be general. Call: {call}")
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
-        """Resolve and install the kernel map (auto-discovery entry point)."""
+        """Resolve and install the kernel map (auto-discovery entry point).
+
+        An op that sets ``OP_NAME`` calls this with nothing: it has no kernel map, and comes
+        through only to register at the compile dispatch boundary.
+        """
+        if self.OP_NAME is not None and kernel_map:
+            raise TypeError(
+                f"{type(self).__name__} dispatches through the backend registry, so there "
+                f"is no kernel map to override; pass target= to choose a backend"
+            )
         self._install_kernel_map(kernel_map)
         # Conforming __init__s all pass through here — the zero-boilerplate
         # registration point for the compile dispatch boundary.
@@ -304,6 +339,33 @@ class Op(ABC):
         if key not in entries:
             entries[key] = factory()
         return entries[key]
+
+    def backend_kernel(self, *tensors: torch.Tensor, **params: object) -> Kernel:
+        """Return the kernel this op's target builds for a call on *tensors*.
+
+        The chain in one place: pick a target, look up that target's ``get_kernel``, call it.
+        The op layer does not choose among implementations — that happens inside the
+        callback — and it never learns what a kernel class is.
+
+        *tensors* must be what the kernel will actually be handed, after any lowering this
+        op does, because their descriptions are the memo key. Memoized through
+        :meth:`get_or_build_kernel`, so a repeat call on the same shapes and dtypes costs
+        one dict lookup and nothing else.
+
+        Args:
+            tensors: The op's tensor inputs, in manifest ``signature.inputs`` order.
+            params: The op's manifest ``signature.params``.
+        """
+        specs = tuple(InputSpec.of(t) for t in tensors)
+
+        def build() -> Kernel:
+            target = select_target(self.target, specs[0].device if specs else None)
+            kernel = resolve_get_kernel(self.OP_NAME, target)(*specs, **params)
+            if self.tune:
+                kernel.autotune()
+            return kernel
+
+        return self.get_or_build_kernel(self.OP_NAME, specs, build)
 
     def built_kernels(self, role: str) -> Mapping[Hashable, object]:
         """Return a read-only view of the entries built for *role* so far.

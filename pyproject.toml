@@ -58,6 +58,12 @@ bench = [
 requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project.entry-points."tileops.backends"]
+# The built-in backend is discovered exactly as a third-party one is: the core enumerates
+# this group and imports whatever it names. Drop this line and nv stops being found, which
+# is the same thing that happens when a third-party wheel is uninstalled.
+nv = "tileops.backends.nv"
+
 [tool.setuptools_scm]
 # Used when there is no git metadata (sdist tarballs, vendored copies). It must
 # not carry a `.devN` suffix: setuptools-scm derives the dev distance from the

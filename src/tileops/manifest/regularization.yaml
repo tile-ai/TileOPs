@@ -30,8 +30,6 @@ DropoutOp:
 
   source:
     kernel: tileops/kernels/dropout.py
-    kernel_map:
-      dropout: DropoutKernel
     op: tileops/ops/dropout.py
     test: tests/ops/test_dropout.py
     bench: benchmarks/ops/bench_dropout.py

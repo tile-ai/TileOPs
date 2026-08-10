@@ -32,8 +32,6 @@ RopeNeoxOp:
 
   source:
     kernel: tileops/kernels/rope.py
-    kernel_map:
-      rope_neox: RopeNeoxKernel
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
@@ -67,8 +65,6 @@ RopeNonNeoxOp:
 
   source:
     kernel: tileops/kernels/rope.py
-    kernel_map:
-      rope_non_neox: RopeNonNeoxKernel
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
@@ -106,8 +102,6 @@ RopeLlama31Op:
 
   source:
     kernel: tileops/kernels/rope.py
-    kernel_map:
-      rope_llama31: RopeLlama31Kernel
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
@@ -146,8 +140,6 @@ RopeYarnOp:
 
   source:
     kernel: tileops/kernels/rope.py
-    kernel_map:
-      rope_yarn: RopeYarnKernel
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
@@ -184,8 +176,6 @@ RopeLongRopeOp:
 
   source:
     kernel: tileops/kernels/rope.py
-    kernel_map:
-      rope_longrope: RopeLongRopeKernel
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
@@ -221,8 +211,6 @@ RopeNeoxPositionIdsOp:
 
   source:
     kernel: tileops/kernels/rope.py
-    kernel_map:
-      rope_neox_position_ids: RopeNeoxPositionIdsKernel
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py

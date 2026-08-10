@@ -38,10 +38,6 @@ MultiHeadAttentionFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
-      gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
-      gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py
@@ -90,9 +86,6 @@ MultiHeadAttentionBwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_bwd.py
-    kernel_map:
-      gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-      gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py
@@ -132,10 +125,6 @@ GroupedQueryAttentionFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
-      gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
-      gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -208,13 +197,6 @@ GroupedQueryAttentionPrefillFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
-      gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
-      gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
-      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
-      gqa_sliding_window_varlen_fwd_kernel: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-      gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -293,11 +275,6 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_paged_with_kv_cache_fwd_kernel: GQAPrefillPagedWithKVCacheFwdKernel
-      gqa_prefill_paged_with_kv_cache_rope_append_kernel: GQAPrefillPagedWithKVCacheRopeAppendKernel
-      gqa_prefill_paged_with_kv_cache_rope_fwd_kernel: GQAPrefillPagedWithKVCacheRopeFwdKernel
-      gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel: GQAPrefillPagedWithFP8KVCacheFwdKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_prefill_paged.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -347,9 +324,6 @@ GroupedQueryAttentionBwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_bwd.py
-    kernel_map:
-      gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-      gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -392,8 +366,6 @@ MultiHeadAttentionDecodeWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/mha_decode.py
-    kernel_map:
-      mha_decode_kernel: MHADecodeKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha_decode.py
     bench: benchmarks/ops/attention/bench_mha_decode.py
@@ -435,8 +407,6 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/mha_decode_paged.py
-    kernel_map:
-      mha_decode_paged_kernel: MHADecodePagedKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha_decode_paged.py
     bench: benchmarks/ops/attention/bench_mha_decode_paged.py
@@ -487,9 +457,6 @@ GroupedQueryAttentionDecodeWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_decode.py
-    kernel_map:
-      gqa_decode_kernel: GQADecodeKernel
-      gqa_decode_bs1_kernel: GQADecodeBs1Kernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode.py
     bench: benchmarks/ops/attention/bench_gqa_decode.py
@@ -540,9 +507,6 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_decode_paged.py
-    kernel_map:
-      gqa_decode_paged_kernel: GQADecodePagedKernel
-      gqa_decode_paged_bs1_kernel: GQADecodePagedBs1Kernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode_paged.py
     bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
@@ -588,8 +552,6 @@ GroupedQueryAttentionSlidingWindowFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
-    kernel_map:
-      gqa_sliding_window_fwd_kernel: GQASlidingWindowFwdWgmmaPipelinedKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_sliding_window.py
     bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
@@ -636,8 +598,6 @@ GroupedQueryAttentionSlidingWindowVarlenFwdOp:
 
   source:
     kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
-    kernel_map:
-      gqa_sliding_window_varlen_fwd_kernel: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_sliding_window_varlen.py
     bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
@@ -684,8 +644,6 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/deepseek_mla_decode.py
-    kernel_map:
-      mla_decode_kernel: MLADecodeWsKernel
     op: tileops/ops/attention/deepseek_mla.py
     test: tests/ops/attention/test_deepseek_mla_decode.py
     bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
@@ -725,8 +683,6 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
 
   source:
     kernel: tileops/kernels/attention/deepseek_dsa_decode.py
-    kernel_map:
-      sparse_mla_kernel: SparseMlaKernel
     op: tileops/ops/attention/deepseek_dsa.py
     test: tests/ops/attention/test_deepseek_dsa_decode.py
     bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py

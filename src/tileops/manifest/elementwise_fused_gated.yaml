@@ -44,8 +44,6 @@ SiluAndMulFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      silu_and_mul: SiluAndMulFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_fused_gated.py
     bench: benchmarks/ops/bench_binary_elementwise.py
@@ -85,8 +83,6 @@ GeluAndMulFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      gelu_and_mul: GeluAndMulFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_fused_gated.py
     bench: benchmarks/ops/bench_binary_elementwise.py
@@ -127,8 +123,6 @@ GeluTanhAndMulFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      gelu_tanh_and_mul: GeluTanhAndMulFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_fused_gated.py
     bench: benchmarks/ops/bench_binary_elementwise.py

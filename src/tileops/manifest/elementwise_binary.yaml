@@ -39,8 +39,6 @@ PreluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      prelu: PreluFwdKernel
     op: tileops/ops/elementwise/prelu.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -83,8 +81,6 @@ MaskedFillFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      masked_fill_tensor_value: MaskedFillTensorValueFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
     test: tests/ops/test_special_elementwise_conformance.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -126,8 +122,6 @@ MaskedFillScalarFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      masked_fill: MaskedFillFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -159,8 +153,6 @@ AddFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      add: AddFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -190,8 +182,6 @@ SubFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      sub: SubFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -219,8 +209,6 @@ MulFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      mul: MulFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -251,8 +239,6 @@ DivFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      div: DivFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -280,8 +266,6 @@ RemainderFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      remainder: RemainderFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -309,8 +293,6 @@ PowFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      pow: PowFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -338,8 +320,6 @@ FloorDivideFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      floor_divide: FloorDivideFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -372,8 +352,6 @@ LerpFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      lerp: LerpFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -401,8 +379,6 @@ MaximumFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      maximum: MaximumFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -430,8 +406,6 @@ MinimumFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      minimum: MinimumFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -459,8 +433,6 @@ EqFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      eq: EqFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -488,8 +460,6 @@ NeFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      ne: NeFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -517,8 +487,6 @@ GtFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      gt: GtFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -546,8 +514,6 @@ LtFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      lt: LtFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -575,8 +541,6 @@ GeFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      ge: GeFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -604,8 +568,6 @@ LeFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      le: LeFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -633,8 +595,6 @@ LogicalAndFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      logical_and: LogicalAndFwdKernel
     op: tileops/ops/elementwise/logical.py
     test: tests/ops/test_logical.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -662,8 +622,6 @@ LogicalOrFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      logical_or: LogicalOrFwdKernel
     op: tileops/ops/elementwise/logical.py
     test: tests/ops/test_logical.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -691,8 +649,6 @@ BitwiseAndFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      bitwise_and: BitwiseAndFwdKernel
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -720,8 +676,6 @@ BitwiseOrFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      bitwise_or: BitwiseOrFwdKernel
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -749,8 +703,6 @@ BitwiseXorFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      bitwise_xor: BitwiseXorFwdKernel
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py

@@ -59,10 +59,6 @@ Conv1dFwdOp:
 
   source:
     kernel: tileops/kernels/convolution.py
-    kernel_map:
-      conv1d_pointwise_kernel: Conv1dPointwiseKernel
-      conv1d_kernel: Conv1dKernel
-      group_conv1d_kernel: GroupConv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -112,10 +108,6 @@ Conv1dBiasFwdOp:
 
   source:
     kernel: tileops/kernels/convolution.py
-    kernel_map:
-      conv1d_pointwise_kernel: Conv1dPointwiseKernel
-      conv1d_kernel: Conv1dKernel
-      group_conv1d_kernel: GroupConv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -203,10 +195,6 @@ Conv2dFwdOp:
 
   source:
     kernel: tileops/kernels/convolution.py
-    kernel_map:
-      conv2d_kernel: Conv2dKernel
-      conv2d_1x1_kernel: Conv2d1x1Kernel
-      group_conv2d_kernel: GroupConv2dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -270,10 +258,6 @@ Conv2dBiasFwdOp:
 
   source:
     kernel: tileops/kernels/convolution.py
-    kernel_map:
-      conv2d_kernel: Conv2dKernel
-      conv2d_1x1_kernel: Conv2d1x1Kernel
-      group_conv2d_kernel: GroupConv2dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -350,9 +334,6 @@ Conv3dFwdOp:
 
   source:
     kernel: tileops/kernels/convolution.py
-    kernel_map:
-      conv3d_kernel: Conv3dKernel
-      group_conv3d_kernel: GroupConv3dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -412,9 +393,6 @@ Conv3dBiasFwdOp:
 
   source:
     kernel: tileops/kernels/convolution.py
-    kernel_map:
-      conv3d_kernel: Conv3dKernel
-      group_conv3d_kernel: GroupConv3dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py

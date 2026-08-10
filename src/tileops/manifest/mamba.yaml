@@ -56,8 +56,6 @@ DaCumsumFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/da_cumsum.py
-    kernel_map:
-      da_cumsum_fwd: DaCumsumFwdKernel
     op: tileops/ops/da_cumsum.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -99,8 +97,6 @@ DaCumsumBiasFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/da_cumsum.py
-    kernel_map:
-      da_cumsum_fwd: DaCumsumFwdKernel
     op: tileops/ops/da_cumsum.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -142,8 +138,6 @@ CBProducerOp:
 
   source:
     kernel: tileops/kernels/mamba/cb_producer.py
-    kernel_map:
-      cb_producer: CBProducerKernel
     op: tileops/ops/cb_producer.py
     test: tests/ops/test_mamba.py
     # Exercised through the Mamba-2 end-to-end benchmark (CB stage of
@@ -181,8 +175,6 @@ SSDChunkStateFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/ssd_chunk_state.py
-    kernel_map:
-      ssd_chunk_state_fwd: SSDChunkStateFwdKernel
     op: tileops/ops/ssd_chunk_state.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -219,8 +211,6 @@ SSDChunkStateSeqIdxFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/ssd_chunk_state.py
-    kernel_map:
-      ssd_chunk_state_fwd: SSDChunkStateFwdKernel
     op: tileops/ops/ssd_chunk_state.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -254,8 +244,6 @@ SSDStatePassingFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/ssd_state_passing.py
-    kernel_map:
-      ssd_state_passing_fwd: SSDStatePassingFwdKernel
     op: tileops/ops/ssd_state_passing.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -289,8 +277,6 @@ SSDStatePassingInitStatesFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/ssd_state_passing.py
-    kernel_map:
-      ssd_state_passing_fwd: SSDStatePassingFwdKernel
     op: tileops/ops/ssd_state_passing.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -328,8 +314,6 @@ SSDChunkScanFwdOp:
 
   source:
     kernel: tileops/kernels/mamba/ssd_chunk_scan.py
-    kernel_map:
-      ssd_chunk_scan_fwd: SSDChunkScanFwdKernel
     op: tileops/ops/ssd_chunk_scan.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
@@ -367,8 +351,6 @@ SSDDecodeOp:
 
   source:
     kernel: tileops/kernels/mamba/ssd_decode.py
-    kernel_map:
-      ssd_decode: SSDDecodeKernel
     op: tileops/ops/ssd_decode.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py

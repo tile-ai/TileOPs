@@ -35,8 +35,6 @@ ExpFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      exp: ExpFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -68,8 +66,6 @@ LogFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      log: LogFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -101,8 +97,6 @@ SqrtFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      sqrt: SqrtFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -134,8 +128,6 @@ RsqrtFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      rsqrt: RsqrtFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -167,8 +159,6 @@ AbsFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      abs: AbsFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -200,8 +190,6 @@ NegFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      neg: NegFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -235,8 +223,6 @@ ReciprocalFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      reciprocal: ReciprocalFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -269,8 +255,6 @@ SignFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      sign: SignFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -302,8 +286,6 @@ SinFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      sin: SinFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -335,8 +317,6 @@ CosFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      cos: CosFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -368,8 +348,6 @@ FloorFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      floor: FloorFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -401,8 +379,6 @@ CeilFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      ceil: CeilFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -436,8 +412,6 @@ RoundFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      round: RoundFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -469,8 +443,6 @@ TruncFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      trunc: TruncFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -502,8 +474,6 @@ ErfFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      erf: ErfFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -536,8 +506,6 @@ Log1pFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      log1p: Log1pFwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -570,8 +538,6 @@ Expm1FwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      expm1: Expm1FwdKernel
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -605,8 +571,6 @@ SigmoidFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      sigmoid: SigmoidFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -640,8 +604,6 @@ TanhFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      tanh: TanhFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -674,8 +636,6 @@ LogicalNotFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      logical_not: LogicalNotFwdKernel
     op: tileops/ops/elementwise/logical.py
     test: tests/ops/test_logical.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -707,8 +667,6 @@ BitwiseNotFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      bitwise_not: BitwiseNotFwdKernel
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -741,8 +699,6 @@ IsnanFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      isnan: IsnanFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -775,8 +731,6 @@ IsinfFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      isinf: IsinfFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -809,8 +763,6 @@ IsfiniteFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      isfinite: IsfiniteFwdKernel
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py

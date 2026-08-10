@@ -47,8 +47,6 @@ MoePermuteAlignFwdOp:
     test: tests/ops/test_moe_permute_align.py
     bench: benchmarks/ops/bench_moe_permute_align.py
     bench_manifest_driven: true
-    kernel_map:
-      permute_align_kernel: MoePermuteAlignKernel
 
 MoePermuteNopadFwdOp:
   ref_api: "none"
@@ -115,8 +113,6 @@ MoePermuteNopadFwdOp:
     test: tests/ops/test_moe_permute_nopad.py
     bench: benchmarks/ops/bench_moe_permute_nopad.py
     bench_manifest_driven: true
-    kernel_map:
-      permute_nopad_kernel: MoePermuteNopadKernel
 
 MoeUnpermuteFwdOp:
   ref_api: "none"
@@ -165,8 +161,6 @@ MoeUnpermuteFwdOp:
     test: tests/ops/test_moe_unpermute.py
     bench: benchmarks/ops/bench_moe_unpermute.py
     bench_manifest_driven: true
-    kernel_map:
-      unpermute_kernel: MoeUnpermuteKernel
 
 MoeGroupedGemmNopadFwdOp:
   ref_api: "none"
@@ -207,8 +201,6 @@ MoeGroupedGemmNopadFwdOp:
     test: tests/ops/test_moe_grouped_gemm_nopad.py
     bench: benchmarks/ops/bench_moe_grouped_gemm_nopad.py
     bench_manifest_driven: true
-    kernel_map:
-      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
 
 FusedMoEExpertsNopadPersistent3WGFwdOp:
   ref_api: "none"
@@ -276,12 +268,6 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: true
-    kernel_map:
-      permute_nopad_kernel: MoePermuteNopadKernel
-      moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
-      silu_and_mul: SiluAndMulFwdKernel
-      gelu_and_mul: GeluAndMulFwdKernel
-      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdOp:
   ref_api: "none"
@@ -328,13 +314,6 @@ FusedMoeFwdOp:
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
     bench_manifest_driven: true
-    kernel_map:
-      fused_topk_kernel: FusedTopKKernel
-      permute_nopad_kernel: MoePermuteNopadKernel
-      moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
-      silu_and_mul: SiluAndMulFwdKernel
-      gelu_and_mul: GeluAndMulFwdKernel
-      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdCbFwdOp:
   ref_api: "none"
@@ -381,10 +360,3 @@ FusedMoeFwdCbFwdOp:
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
     bench_manifest_driven: true
-    kernel_map:
-      fused_topk_kernel: FusedTopKKernel
-      permute_nopad_kernel: MoePermuteNopadKernel
-      moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
-      silu_and_mul: SiluAndMulFwdKernel
-      gelu_and_mul: GeluAndMulFwdKernel
-      unpermute_kernel: MoeUnpermuteKernel

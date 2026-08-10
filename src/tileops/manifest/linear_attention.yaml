@@ -69,8 +69,6 @@ GatedDeltaNetPrefillFwdOp:
 
   source:
     kernel: tileops/kernels/gated_deltanet/gated_deltanet_prefill.py
-    kernel_map:
-      GatedDeltaNetPrefillFwdKernel: GatedDeltaNetPrefillFwdKernel
     op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_prefill.py
     bench: benchmarks/ops/bench_gated_deltanet_prefill.py
@@ -122,10 +120,6 @@ GatedDeltaNetDecodeOp:
 
   source:
     kernel: tileops/kernels/gated_deltanet_recurrence.py
-    kernel_map:
-      GatedDeltaNetDecodeKernel: GatedDeltaNetDecodeKernel
-      GatedDeltaNetDecodeFP32Kernel: GatedDeltaNetDecodeFP32Kernel
-      GatedDeltaNetDecodeRawCudaFlaStyleKernel: GatedDeltaNetDecodeRawCudaFlaStyleKernel
     op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_recurrence.py
     bench: benchmarks/ops/bench_gated_deltanet_recurrence.py
@@ -173,10 +167,6 @@ DeltaNetDecodeOp:
 
   source:
     kernel: tileops/kernels/deltanet_recurrence.py
-    kernel_map:
-      DeltaNetDecodeKernel: DeltaNetDecodeKernel
-      DeltaNetDecodeFP32Kernel: DeltaNetDecodeFP32Kernel
-      DeltaNetDecodeRawCudaFlaStyleKernel: DeltaNetDecodeRawCudaFlaStyleKernel
     op: tileops/ops/deltanet_recurrence.py
     test: tests/ops/test_deltanet_recurrence.py
     bench: benchmarks/ops/bench_deltanet_recurrence.py
@@ -225,9 +215,6 @@ GLADecodeOp:
 
   source:
     kernel: tileops/kernels/gla_recurrence.py
-    kernel_map:
-      GLADecodeKernel: GLADecodeKernel
-      GLADecodeFP32Kernel: GLADecodeFP32Kernel
     op: tileops/ops/gated_linear_attn.py
     test: tests/ops/test_gla_recurrence.py
     bench: benchmarks/ops/bench_gla_recurrence.py

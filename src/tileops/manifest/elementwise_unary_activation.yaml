@@ -40,8 +40,6 @@ ReluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      relu: ReluFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -78,8 +76,6 @@ GeluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      gelu: GeluFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -115,8 +111,6 @@ SiluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      silu: SiluFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -152,8 +146,6 @@ HardswishFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      hardswish: HardswishFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -189,8 +181,6 @@ HardsigmoidFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      hardsigmoid: HardsigmoidFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -226,8 +216,6 @@ MishFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      mish: MishFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -263,8 +251,6 @@ SeluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      selu: SeluFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -300,8 +286,6 @@ LeakyReluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      leaky_relu: LeakyReluFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -337,8 +321,6 @@ EluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      elu: EluFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -377,8 +359,6 @@ HardtanhFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      hardtanh: HardtanhFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -414,8 +394,6 @@ SoftplusFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      softplus: SoftplusFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -456,8 +434,6 @@ ClampFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -499,8 +475,6 @@ ClampScalarFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      clamp: ClampFwdKernel
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
@@ -535,8 +509,6 @@ ClampMinFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -571,8 +543,6 @@ ClampMaxFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise_conformance.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -608,8 +578,6 @@ NanToNumFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      nan_to_num: NanToNumFwdKernel
     op: tileops/ops/elementwise/nan_to_num.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py

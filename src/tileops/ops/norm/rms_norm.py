@@ -1,16 +1,11 @@
 import math
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import RMSNormKernel
 
 from ..op_base import Op
 
 __all__ = ["RMSNormFwdOp"]
-
-_DEFAULT_EPS = 1e-6
 
 
 class RMSNormFwdOp(Op):
@@ -23,13 +18,16 @@ class RMSNormFwdOp(Op):
     where the reduction runs over the trailing ``len(normalized_shape)``
     axes; ``normalized_shape`` is the only entry point (the manifest spec).
 
+    Dispatches through the backend registry: the target's ``get_kernel`` decides which
+    kernel runs, so this class names none.
+
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
-            ``None`` selects the implementation default ``1e-6``.
-        kernel_map: Optional kernel override dictionary.
-        tune: Whether to autotune (default ``False``).
+            ``None`` leaves the choice to the target.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
+        tune: Whether kernels this op builds tune themselves (default ``False``).
 
     Example:
         >>> op = RMSNormFwdOp(normalized_shape=(4096,))
@@ -38,36 +36,25 @@ class RMSNormFwdOp(Op):
         >>> y = op(x, w)  # shape: (1024, 4096)
     """
 
+    OP_NAME = "RMSNormFwdOp"
+
     def __init__(
         self,
         normalized_shape: Sequence[int],
         eps: Optional[float] = None,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ) -> None:
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
         if len(self.normalized_shape) == 0:
             raise ValueError("normalized_shape must be non-empty")
         self.N = math.prod(self.normalized_shape)
-        self.eps = _DEFAULT_EPS if eps is None else float(eps)
+        self.eps = eps
+        self.target = target
         self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self.dispatch_kernel()
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"rms_norm": RMSNormKernel}
-
-    def _get_kernel(self, m: int, dtype: torch.dtype) -> Kernel:
-        key = (m, dtype)
-        return self.get_or_build_kernel(
-            "rms_norm",
-            key,
-            lambda: self.kernel_map["rms_norm"](
-                m, self.N, self.eps, dtype, tune=self.tune,
-            ),
-        )
 
     def eval_roofline(self) -> Tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
@@ -83,27 +70,26 @@ class RMSNormFwdOp(Op):
         """Apply RMS normalization over the trailing ``normalized_shape``.
 
         Args:
-            x: Input tensor with trailing shape equal to
-                ``normalized_shape`` on CUDA.
-            weight: Affine scale of shape ``normalized_shape`` on CUDA.
+            x: Input tensor whose trailing shape equals ``normalized_shape``.
+            weight: Affine scale of shape ``normalized_shape``.
 
         Returns:
             Normalized tensor of the same shape as *x*.
 
         Raises:
-            ValueError: If tensors are not on CUDA, dtypes mismatch, or
-                shapes are incompatible with the configured
+            ValueError: Dtypes mismatch, or shapes are incompatible with the configured
                 ``normalized_shape``.
         """
+        tensors, params = self._bind_call(x, weight)
+        x, weight = tensors
         ns = self.normalized_shape
         k = len(ns)
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
         self._validate_dtypes(x, weight)
         self.dtype = x.dtype
-        if not weight.is_cuda or weight.dtype != x.dtype:
+        if weight.device != x.device or weight.dtype != x.dtype:
             raise ValueError(
-                f"weight must be a CUDA tensor of dtype {x.dtype}"
+                f"weight must be on {x.device} with dtype {x.dtype}, "
+                f"got {weight.device} and {weight.dtype}"
             )
         if x.ndim < k or tuple(x.shape[-k:]) != ns:
             raise ValueError(
@@ -115,10 +101,12 @@ class RMSNormFwdOp(Op):
                 f"Expected weight shape {ns}, got {tuple(weight.shape)}"
             )
 
+        # Lower the public call to what a kernel is handed: 2-D, contiguous. The kernel is
+        # asked for after this, so the descriptions it is chosen by are the real ones.
         orig_shape = tuple(x.shape)
         x_flat = x.contiguous().reshape(-1, self.N)
         w_flat = weight.contiguous().reshape(self.N)
-        m = x_flat.shape[0]
-        y = self._get_kernel(m, x.dtype)(x_flat, w_flat)
-        self._last_roofline_mn = (m, self.N)
+
+        y = self.backend_kernel(x_flat, w_flat, **params)(x_flat, w_flat)
+        self._last_roofline_mn = (x_flat.shape[0], self.N)
         return y.reshape(orig_shape)

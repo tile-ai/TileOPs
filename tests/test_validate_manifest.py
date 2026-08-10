@@ -42,7 +42,7 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
 
     Use ``status=None`` to explicitly omit the status field (for testing
     that the validator rejects entries without status).
-    ``kernel_map`` is placed under ``source`` per the manifest spec.
+``kernel_map`` is placed under ``source``, for the tests that assert it is rejected there.
     """
     sig = {
         "inputs": inputs if inputs is not None else {"x": {"dtype": "float16"}},
@@ -372,33 +372,30 @@ class TestSchema:
             errors = validator.check_l0("BadOp", entry)
             assert isinstance(errors, list)
 
-    def test_kernel_map_status_gating(self, validator):
-        """kernel_map is required on implemented, optional on spec-only,
-        and an empty mapping is valid."""
-        # status: implemented without kernel_map -> hard error.
+    def test_kernel_map_is_rejected_wherever_it_appears(self, validator):
+        """Which kernel serves an op is a backend's own data, not a manifest field.
+
+        The manifest is neutral across backends: a third-party one has no field here to
+        write, so keeping the built-in one's bindings would be a privilege, not a spec.
+        """
+        for status in ("implemented", "spec-only"):
+            entry = _make_entry(status=status, kernel_map={"fwd": "FwdKernel"})
+            errors = validator.check_l0("test_op", entry)
+            assert any("kernel_map does not belong" in e for e in errors), errors
+
+        # Even empty: presence is the error, contents are not inspected.
         entry = _make_entry(status="implemented")
-        entry["source"].pop("kernel_map", None)
-        errors = validator.check_l0("test_op", entry)
-        assert any("kernel_map is missing" in e for e in errors), errors
+        entry["source"]["kernel_map"] = {}
+        assert any(
+            "kernel_map does not belong" in e
+            for e in validator.check_l0("test_op", entry)
+        )
 
-        # status: spec-only without kernel_map -> no kernel_map diagnostics.
-        entry = _make_entry(status="spec-only")
-        errors = validator.check_l0("test_op", entry)
-        assert [e for e in errors if "kernel_map" in e] == []
-
-        # Empty dict is a valid mapping of str -> str.
-        entry = _make_entry(status="implemented", kernel_map={})
-        assert validator.check_l0("test_op", entry) == []
-
-    def test_kernel_map_malformed_rejected(self, validator):
-        """Non-mapping kernel_map and non-str entries produce schema errors."""
-        entry = _make_entry(status="implemented", kernel_map="not_a_dict")
-        errors = validator.check_l0("test_op", entry)
-        assert any("kernel_map" in e and "mapping" in e for e in errors)
-
-        entry = _make_entry(status="implemented", kernel_map={"fwd": 123})
-        errors = validator.check_l0("test_op", entry)
-        assert any("kernel_map" in e for e in errors)
+    def test_no_kernel_map_is_the_normal_case(self, validator):
+        """Its absence draws no diagnostic, at any status."""
+        for status in ("implemented", "spec-only"):
+            errors = validator.check_l0("test_op", _make_entry(status=status))
+            assert [e for e in errors if "kernel_map" in e] == [], errors
 
     def test_shape_rule_expressions_pass_l0(self, validator):
         """Registered builtins and attribute calls pass the L0 callable gate."""
@@ -446,7 +443,7 @@ class TestWorkloadPolicy:
 
     def test_implemented_needs_two_workloads(self, validator):
         """Implemented ops need >= 2 workloads; spec-only ops are exempt."""
-        entry = _make_entry(status="implemented", kernel_map={})
+        entry = _make_entry(status="implemented")
         entry["workloads"] = entry["workloads"][:1]
         errors = validator.check_l0("test_op", entry)
         assert any("at least 2 workloads" in e for e in errors), errors
@@ -527,7 +524,7 @@ class TestSourcePathExistence:
 
     def test_missing_source_file_fails_for_implemented(self, validator, tmp_path):
         manifest_file = _write_manifest(
-            tmp_path, {"my_op": _make_entry(status="implemented", kernel_map={})},
+            tmp_path, {"my_op": _make_entry(status="implemented")},
         )
         errors, _ = validator.validate_manifest(
             manifest_path=manifest_file,
@@ -555,7 +552,7 @@ class TestSourcePathExistence:
         for rel in ("src/k.py", "src/o.py", "t.py", "b.py"):
             (tmp_path / rel).write_text("# placeholder\n")
         manifest_file = _write_manifest(
-            tmp_path, {"my_op": _make_entry(status="implemented", kernel_map={})},
+            tmp_path, {"my_op": _make_entry(status="implemented")},
         )
         errors, _ = validator.validate_manifest(
             manifest_path=manifest_file,
@@ -677,7 +674,7 @@ class TestTorchCompileFullgraph:
         """Absence (the only 'no promise' spelling) and literal true on an
         implemented op both pass the schema check."""
         for extra in ({}, {"torch_compile_fullgraph": True}):
-            entry = _make_entry(status="implemented", kernel_map={}, **extra)
+            entry = _make_entry(status="implemented", **extra)
             errors = validator.check_l0("test_op", entry)
             assert not any("torch_compile_fullgraph" in e for e in errors), (
                 f"Unexpected torch_compile_fullgraph errors for {extra}: {errors}"
@@ -687,7 +684,7 @@ class TestTorchCompileFullgraph:
         """false, non-bool values, and spec-only placement are all rejected."""
         for value in (False, "true", 1, None):
             entry = _make_entry(
-                status="implemented", kernel_map={},
+                status="implemented",
                 torch_compile_fullgraph=value,
             )
             errors = validator.check_l0("test_op", entry)

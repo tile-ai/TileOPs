@@ -36,9 +36,16 @@ def _has_roofline(op: dict[str, Any]) -> bool:
     return bool(rf.get("func")) or ("flops" in rf and "bytes" in rf)
 
 
-def _has_kernel_map(op: dict[str, Any]) -> bool:
-    km = (op.get("source") or {}).get("kernel_map")
-    return isinstance(km, dict) and len(km) > 0
+def _has_op_source(op: dict[str, Any]) -> bool:
+    """Does the entry say where its op class lives?
+
+    This replaced counting ``source.kernel_map``, which stopped being a manifest field: an
+    op-to-kernel binding is one backend's answer, so it moved into that backend. It was never
+    really measuring what it claimed either — "is this op implemented" has no single answer
+    once several targets exist, and the field's true meaning was "the built-in backend
+    implements it".
+    """
+    return bool((op.get("source") or {}).get("op"))
 
 
 def _has_bench_manifest_driven(op: dict[str, Any]) -> bool:
@@ -54,13 +61,13 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
     workloads_impl_total = 0
 
     roofline_ok = 0
-    kernel_map_ok = 0
+    op_source_ok = 0
     bench_manifest_ok = 0
     ref_api_ok = 0
     variant_count = 0
 
     # Conformance flags: things expected for implemented ops but missing.
-    missing_kernel_map: list[str] = []
+    missing_op_source: list[str] = []
     missing_roofline: list[str] = []
     missing_bench: list[str] = []
     workloads_below_two: list[str] = []
@@ -80,8 +87,8 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
 
         if _has_roofline(op):
             roofline_ok += 1
-        if _has_kernel_map(op):
-            kernel_map_ok += 1
+        if _has_op_source(op):
+            op_source_ok += 1
         if _has_bench_manifest_driven(op):
             bench_manifest_ok += 1
         if op.get("ref_api"):
@@ -90,8 +97,8 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
             variant_count += 1
 
         if status == "implemented":
-            if not _has_kernel_map(op):
-                missing_kernel_map.append(name)
+            if not _has_op_source(op):
+                missing_op_source.append(name)
             if not _has_roofline(op):
                 missing_roofline.append(name)
             if not _has_bench_manifest_driven(op):
@@ -135,12 +142,12 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
         "coverage": {
             "ref_api": ref_api_ok,
             "roofline": roofline_ok,
-            "kernel_map": kernel_map_ok,
+            "op_source": op_source_ok,
             "bench_manifest_driven": bench_manifest_ok,
             "variant_of": variant_count,
         },
         "conformance_gaps": {
-            "implemented_without_kernel_map": sorted(missing_kernel_map),
+            "implemented_without_op_source": sorted(missing_op_source),
             "implemented_without_roofline": sorted(missing_roofline),
             "implemented_without_bench_manifest_driven": sorted(missing_bench),
             "implemented_with_fewer_than_two_workloads": sorted(workloads_below_two),
@@ -191,7 +198,7 @@ def render_text(stats: dict[str, Any]) -> str:
     for label, key in [
         ("ref_api declared", "ref_api"),
         ("roofline (func or flops+bytes)", "roofline"),
-        ("source.kernel_map", "kernel_map"),
+        ("source.op", "op_source"),
         ("bench_manifest_driven", "bench_manifest_driven"),
     ]:
         n = cov[key]
@@ -205,8 +212,8 @@ def render_text(stats: dict[str, Any]) -> str:
     lines.append("Conformance gaps")
     lines.append("-" * 60)
     lines.append(
-        f"  implemented without kernel_map: "
-        f"{len(gaps['implemented_without_kernel_map'])}"
+        f"  implemented without op source: "
+        f"{len(gaps['implemented_without_op_source'])}"
     )
     lines.append(
         f"  implemented without roofline:   "
@@ -261,7 +268,7 @@ def render_markdown(stats: dict[str, Any]) -> str:
     for label, key in [
         ("`ref_api`", "ref_api"),
         ("`roofline` (func or flops+bytes)", "roofline"),
-        ("`source.kernel_map`", "kernel_map"),
+        ("`source.op`", "op_source"),
         ("`source.bench_manifest_driven`", "bench_manifest_driven"),
     ]:
         n = cov[key]
@@ -276,8 +283,8 @@ def render_markdown(stats: dict[str, Any]) -> str:
     lines.append("### Conformance gaps")
     lines.append("")
     lines.append(
-        f"- Implemented ops without `kernel_map`: "
-        f"**{len(gaps['implemented_without_kernel_map'])}**"
+        f"- Implemented ops without `source.op`: "
+        f"**{len(gaps['implemented_without_op_source'])}**"
     )
     lines.append(
         f"- Implemented ops without `roofline`: "
