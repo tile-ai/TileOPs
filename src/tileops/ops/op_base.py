@@ -146,11 +146,11 @@ class Op(ABC):
     def default_kernel_map(self) -> dict[str, Kernel]:
         """Which kernel class serves each of this op's roles.
 
-        Empty for an op that sets ``OP_NAME``: its kernels come from the target's
-        ``get_kernel``, so it names none and has no role table to override. Every op not yet
-        routed that way overrides this.
+        Every op that resolves its own kernels overrides this. An op that sets ``OP_NAME``
+        does not: its kernels come from the target's ``get_kernel``, so it has no role table,
+        and nothing asks it for one.
         """
-        return {}
+        raise NotImplementedError("Op must implement default_kernel_map")
 
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
@@ -202,6 +202,12 @@ class Op(ABC):
         built or called. Both auto-discovered and user-supplied maps share this
         single install path.
         """
+        if self.OP_NAME is not None:
+            # A backend-routed op has no role table, so there is nothing to install and
+            # nothing to override.
+            self.kernel_map = {}
+            self._overridden_keys = frozenset()
+            return
         default_map = self.default_kernel_map
         override = dict(candidate_map) if candidate_map else {}
         if default_map is None or len(default_map) == 0:
@@ -359,19 +365,18 @@ class Op(ABC):
         :meth:`get_or_build_kernel`, so a repeat call on the same shapes and dtypes costs
         one dict lookup and nothing else.
 
-        The target is settled on first dispatch and kept: it is what the kernels this op
-        holds were built for, so a later ``set_default_target`` does not re-aim an op that
-        has already built some. ``target=`` on the constructor is how a caller chooses.
+        The target is settled by the first *successful* build and kept: it is what the
+        kernels this op holds were built for, so a later ``set_default_target`` does not
+        re-aim an op that has already built some. A call that failed pins nothing.
+        ``target=`` on the constructor is how a caller chooses.
 
         Args:
             tensors: The op's tensor inputs, in manifest ``signature.inputs`` order.
             params: The op's manifest ``signature.params``.
         """
         specs = tuple(InputSpec.of(t) for t in tensors)
-        target = self._settled_target
-        if target is None:
-            target = self._settled_target = select_target(
-                self.target, specs[0].device if specs else None)
+        target = self._settled_target or select_target(
+            self.target, specs[0].device if specs else None)
 
         def build() -> Kernel:
             kernel = resolve_get_kernel(self.OP_NAME, target)(*specs, **params)
@@ -381,6 +386,9 @@ class Op(ABC):
                 tune = getattr(kernel, "autotune", None)
                 if tune is not None:
                     tune()
+            # Settled only now: until a build succeeds the op holds no target's work, so a
+            # first call that failed must not pin the target it failed on.
+            self._settled_target = target
             return kernel
 
         return self.get_or_build_kernel(self.OP_NAME, specs, build)

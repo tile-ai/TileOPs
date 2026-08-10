@@ -92,11 +92,11 @@ BLOCKED terminations return without writing any file.
 
 Write `.foundry/plan/<op_name>/plan.json` with three sections:
 
-| Section               | Diffed at VALIDATE?       | Content                                                                                                                                                                                                  |
-| --------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `locked_facts` (§1)   | yes (hard error on drift) | Verbatim manifest extraction (op_name, class_name, family, module_path, kernel_imports, kernel_map, init_kwargs, forward_inputs/outputs, dtype_unions, dtype_combos, shape_rules, static_dims, roofline) |
-| `agent_notes` (§2)    | no                        | Judgement calls (docstring, kernel ctor signature observed, helper state, forward reshape strategy, codebase refs consulted)                                                                             |
-| `open_questions` (§3) | no                        | Ambiguities tagged `needs_doc_fix` / `needs_manifest_fix` / `needs_human_decision`; surfaced in REPORT, never block                                                                                      |
+| Section               | Diffed at VALIDATE?       | Content                                                                                                                                                                                          |
+| --------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `locked_facts` (§1)   | yes (hard error on drift) | Verbatim extraction (op_name, class_name, family, module_path, kernel_imports, nv_bindings, init_kwargs, forward_inputs/outputs, dtype_unions, dtype_combos, shape_rules, static_dims, roofline) |
+| `agent_notes` (§2)    | no                        | Judgement calls (docstring, kernel ctor signature observed, helper state, forward reshape strategy, codebase refs consulted)                                                                     |
+| `open_questions` (§3) | no                        | Ambiguities tagged `needs_doc_fix` / `needs_manifest_fix` / `needs_human_decision`; surfaced in REPORT, never block                                                                              |
 
 Always proceed to EMIT. Empty `open_questions` is fine.
 

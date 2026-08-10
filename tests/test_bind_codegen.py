@@ -127,6 +127,21 @@ def test_a_repeat_call_on_the_same_shapes_does_not_ask_again(registered):
     assert len(registered) == 2
 
 
+def test_a_failed_first_call_pins_nothing(registered):
+    """Until a build succeeds the op holds no target's work, so nothing is settled yet."""
+    from tileops.backend import set_default_target
+
+    registry.register_detector(target="broken", detect=lambda device: False)
+    set_default_target("broken")
+    op = _Routed()
+    with pytest.raises(OpNotAvailableError):
+        op(torch.zeros(2, 4), torch.ones(4))
+
+    set_default_target("fake")
+    op(torch.zeros(2, 4), torch.ones(4))
+    assert len(registered) == 1
+
+
 def test_the_target_is_settled_on_first_dispatch(registered):
     """Kernels already built belong to a target, so a later default must not re-aim them."""
     from tileops.backend import set_default_target

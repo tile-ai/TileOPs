@@ -65,7 +65,7 @@ GemmOp:
   signature: {inputs: {a: {dtype: "float16 | bfloat16"}, b: {dtype: "same_as(a)"}}, ...}
   workloads: [{m: 1024, n: 1024, k: 1024, dtypes: [float16, bfloat16]}]
   roofline: {func: tileops.perf.formulas.gemm_fwd_roofline}
-  source: {kernel: ..., op: ..., test: ..., bench: ..., kernel_map: ...}
+  source: {kernel: ..., op: ..., test: ..., bench: ...}
 ```
 
 | Field       | Role                                                                            |
@@ -74,7 +74,7 @@ GemmOp:
 | `signature` | Tensor contract, shape rules, and dtype combinations; enforced at the op layer. |
 | `workloads` | Shapes and dtypes the tests and benchmarks cover.                               |
 | `roofline`  | Performance model. Efficiency is achieved throughput over the modelled bound.   |
-| `source`    | Paths to the kernel, op, test, and benchmark, and the slot-to-kernel map.       |
+| `source`    | Paths to the kernel, op, test, and benchmark.                                   |
 
 A validator checks every entry against its implementation in CI, so the declaration and the
 code stay in step.

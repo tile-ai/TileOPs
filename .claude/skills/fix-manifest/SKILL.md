@@ -66,12 +66,6 @@ Write `.foundry/plan/<op_name>/fix-diagnosis.json`: `{op_name, target_field, val
 
 Build the patch payload from on-disk evidence. **Never guess** — if inference is impossible, BLOCKED with `evidence_needed: <what>`.
 
-**`kernel_map`** — read the op file:
-
-- T2 (L1-direct): copy `default_kernel_map()`'s return dict verbatim.
-- T1 (thin wrapper, see `docs/design/ops-design.md` § "Family-specific protocol variables"): family bases expose `default_kernel_map()` returning `{self._kernel_key: self._kernel_cls}`. Read it; substitute the subclass's `_kernel_key` / `_kernel_cls`.
-- Output format per `docs/design/manifest.md` § kernel_map: `{<dispatch_key>: <BareKernelClassName>}` — bare class name, NOT fully-qualified.
-
 **`static_dims`** — `signature.inputs` shape names that the op binds at construction time (each entry in the op's `__init__` kwarg block, excluding `dtype` / `kernel_map` / `tune` / `signature.params` entries — see `docs/design/ops-design.md` § "Step 3"). Cross-check with `roofline.vars` if present.
 
 ### 4. PATCH

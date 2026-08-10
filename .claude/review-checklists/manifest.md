@@ -13,13 +13,13 @@ PRs from the `add-manifest` skill, or any PR that adds a previously-absent op en
 
 - [ ] **Reference cited and authoritative.** Entry's `source` field points to PyTorch / paper / vendor docs. Reviewer can derive shape and dtype rules from that link alone.
 - [ ] **Signature matches reference exactly.** For `torch.nn.*` / `torch.nn.functional.*` names: parameter names, order, and defaults all match PyTorch's public API. No invented parameters.
-- [ ] **Required fields present.** `signature`, `shape_rules`, `dtype_combos`, `roofline`; `kernel_map` and `static_dims` where the family requires them.
+- [ ] **Required fields present.** `signature`, `shape_rules`, `dtype_combos`, `roofline`; `static_dims` where the family needs it.
 - [ ] **Lands as `spec-only`.** New entries never land as `implemented`, regardless of any existing code claiming to be ready.
 - [ ] **Validator green.** `scripts/validate_manifest.py` passes with no checks disabled.
 
 #### Fix-manifest (patch existing entry)
 
-PRs from the `fix-manifest` skill — patches one missing structural field (`kernel_map`, `static_dims`) on an existing entry.
+PRs from the `fix-manifest` skill — patches one missing structural field (`static_dims`) on an existing entry.
 
 - [ ] **Scope is one structural field.** Diff modifies exactly one missing field. Edits to `signature`, `shape_rules`, `dtype_combos`, or `roofline` belong to `add-manifest`, not `fix-manifest` — reject and split.
 - [ ] **Reference still aligns.** Other reference-derivable fields (`signature`, `shape_rules`, `dtype_combos`) on the same entry have not silently drifted from the source URL. Spot-check at least one.

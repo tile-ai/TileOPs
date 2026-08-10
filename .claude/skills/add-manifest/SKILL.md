@@ -16,14 +16,14 @@ description: Generate or re-align one `src/tileops/manifest/` entry from a refer
 
 **Idempotent.** Auto-derivable fields are rewritten from the reference; human-curated fields are preserved if the entry exists, defaulted otherwise.
 
-| Auto-derivable (always rewritten from reference) | Human-curated (preserved if entry exists, else default)                                                                           |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `signature.{inputs,outputs,params}`              | `family` (default: from sibling-entry copy or BLOCKED)                                                                            |
-| `signature.shape_rules`                          | `ref_api` (default: derived from `ref_url`'s last path segment)                                                                   |
-| `signature.dtype_combos`                         | `workloads` (default: `[]`)                                                                                                       |
-| `roofline.{flops,bytes,vars}` (well-known op)    | `source.{kernel,op,test,bench,kernel_map,bench_manifest_driven}` (default: from RESOLVE_SOURCES + `bench_manifest_driven: false`) |
-|                                                  | `status` (default: `spec-only`)                                                                                                   |
-|                                                  | Adjacent comments (best-effort)                                                                                                   |
+| Auto-derivable (always rewritten from reference) | Human-curated (preserved if entry exists, else default)                         |
+| ------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `signature.{inputs,outputs,params}`              | `family` (default: from sibling-entry copy or BLOCKED)                          |
+| `signature.shape_rules`                          | `ref_api` (default: derived from `ref_url`'s last path segment)                 |
+| `signature.dtype_combos`                         | `workloads` (default: `[]`)                                                     |
+| `roofline.{flops,bytes,vars}` (well-known op)    | `source.{kernel,op,test,bench,bench_manifest_driven}` (default: from REFERENCE) |
+|                                                  | `status` (default: `spec-only`)                                                 |
+|                                                  | Adjacent comments (best-effort)                                                 |
 
 **Termination**: draft PR created → success. Invalid URL / un-derivable roofline / source-path or family resolution failure → BLOCKED.
 
