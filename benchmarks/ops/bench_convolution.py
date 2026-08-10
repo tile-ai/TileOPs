@@ -151,6 +151,7 @@ def _run_conv(
     case: ConvCase,
     *,
     with_bias: bool,
+    static_weight: bool = False,
 ) -> None:
     """Profile op and its torch baseline on the same inputs, recording both.
 
@@ -165,7 +166,14 @@ def _run_conv(
     baseline = _torch_conv_baseline(
         torch_fn, case.stride, case.padding, case.dilation, case.groups,
     )
-    _profile_conv(op, bm, inputs, baseline, case.as_record())
+    _profile_conv(
+        op,
+        bm,
+        inputs,
+        baseline,
+        case.as_record(),
+        static_weight=static_weight,
+    )
 
 
 def _profile_conv(
@@ -174,8 +182,29 @@ def _profile_conv(
     inputs: tuple[torch.Tensor, ...],
     baseline_fn: Callable,
     params: dict,
+    *,
+    static_weight: bool = False,
 ) -> None:
     """Profile op and the torch baseline on the same inputs and record both."""
+    if static_weight:
+        x, weight, *maybe_bias = inputs
+        bias = maybe_bias[0] if maybe_bias else None
+
+        def op_with_static_weight(x_i):
+            if bias is None:
+                return op(x_i, weight)
+            return op(x_i, weight, bias)
+
+        def baseline_with_static_weight(x_i):
+            return baseline_fn(x_i, weight, bias)
+
+        result = bm.profile(op_with_static_weight, x)
+        BenchmarkReport.record(op, params, result, tag="tileops")
+
+        result_bl = bm.profile(baseline_with_static_weight, x)
+        BenchmarkReport.record(op, params, result_bl, tag="torch")
+        return
+
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, params, result, tag="tileops")
 
@@ -199,7 +228,7 @@ def test_conv1d_bench(case: ConvCase) -> None:
         dilation=case.dilation, groups=case.groups, tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV1D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv1d, case, with_bias=False)
+    _run_conv(op, bm, F.conv1d, case, with_bias=False, static_weight=True)
 
 
 _CONV1D_BIAS_OP = "Conv1dBiasFwdOp"
@@ -215,7 +244,7 @@ def test_conv1d_bias_bench(case: ConvCase) -> None:
         dilation=case.dilation, groups=case.groups, tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV1D_BIAS_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv1d, case, with_bias=True)
+    _run_conv(op, bm, F.conv1d, case, with_bias=True, static_weight=True)
 
 
 # Conv2d

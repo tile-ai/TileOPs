@@ -10,7 +10,13 @@ import torch
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
+    _activity_identity,
+    _attributed_latency_samples_ms,
     _bench_meta,
+    _kernel_span_us,
+    _NativeCUPTIAttributionError,
+    _select_expected_sequence,
+    _ShiftingTensorPool,
     bench_kernel,
     workloads_to_params,
 )
@@ -152,11 +158,193 @@ def test_multi_input_op_raises_keyerror():
         workloads_to_params("GroupedQueryAttentionFwdOp")
 
 
+def test_kernel_span_uses_activity_envelope():
+    kernels = [
+        {"name": "first", "start_ns": 1000, "end_ns": 9000},
+        {"name": "second", "start_ns": 5000, "end_ns": 7000},
+    ]
+    assert _kernel_span_us(kernels) == 8.0
+
+
+def _kernel(name: str, start_ns: int, end_ns: int) -> dict:
+    return {"name": name, "start_ns": start_ns, "end_ns": end_ns}
+
+
+def test_activity_identity_distinguishes_copy_and_set_parameters():
+    memcpy = {"kind": "memcpy", "name": "MEMCPY", "copy_kind": 8, "bytes": 4096}
+    memset = {"kind": "memset", "name": "MEMSET", "bytes": 4096, "value": 0}
+
+    assert _activity_identity(memcpy) == "memcpy:8:4096"
+    assert _activity_identity(memset) == "memset:4096:0"
+    assert _activity_identity({"kind": "kernel", "name": "op"}) == "kernel:op"
+
+
+def test_select_expected_sequence_accepts_exact_and_concurrent_reorder():
+    exact = [_kernel("a", 1_000, 2_000), _kernel("b", 2_000, 3_000)]
+    reordered = [_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)]
+
+    assert _select_expected_sequence(exact, ("a", "b")) == exact
+    assert _select_expected_sequence(reordered, ("a", "b")) == reordered
+
+
+def test_select_expected_sequence_rejects_serial_reorder():
+    reordered = [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)]
+
+    assert _select_expected_sequence(reordered, ("a", "b")) is None
+
+
+def test_select_expected_sequence_handles_duplicate_kernel_names():
+    kernels = [
+        _kernel("a", 1_000, 2_000),
+        _kernel("b", 1_500, 3_000),
+        _kernel("a", 2_000, 2_500),
+    ]
+
+    assert _select_expected_sequence(kernels, ("a", "a", "b")) == kernels
+    assert _select_expected_sequence(kernels, ("a", "b", "b")) is None
+
+
+@pytest.mark.parametrize(
+    "actual",
+    [
+        [_kernel("a", 1_000, 2_000)],
+        [
+            _kernel("a", 1_000, 2_000),
+            _kernel("b", 2_000, 3_000),
+            _kernel("unexpected", 3_000, 4_000),
+        ],
+        [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
+    ],
+)
+def test_select_expected_sequence_rejects_incomplete_or_changed_call(actual):
+    assert _select_expected_sequence(actual, ("a", "b")) is None
+
+
+def test_attributed_latency_requires_every_repeat():
+    trace = {
+        "dropped": 0,
+        "kernels": [
+            _kernel("a", 2_000, 4_000),
+            _kernel("b", 3_000, 8_000),
+            _kernel("a", 21_000, 22_000),
+            _kernel("b", 23_000, 29_000),
+        ],
+    }
+
+    samples = _attributed_latency_samples_ms(trace, ("a", "b"), n_repeat=2)
+    assert samples == pytest.approx([0.006, 0.008])
+    assert _bench_meta.cupti_sampled_calls == 2
+    assert _bench_meta.cupti_expected_activity_count == 2
+
+    trace["kernels"].append(_kernel("unexpected", 29_000, 29_500))
+    with pytest.raises(
+        _NativeCUPTIAttributionError,
+        match="activity count does not match",
+    ):
+        _attributed_latency_samples_ms(trace, ("a", "b"), n_repeat=2)
+
+
+def test_case_sequence_attribution_excludes_prepare_and_preserves_operator_gap():
+    trace = {
+        "dropped": 0,
+        "kernels": [
+            _kernel("copy", 1_000, 2_000),
+            _kernel("fill", 2_100, 3_000),
+            _kernel("op-a", 4_000, 6_000),
+            _kernel("op-b", 9_000, 10_000),
+            _kernel("copy", 20_000, 21_000),
+            _kernel("fill", 21_100, 22_000),
+            _kernel("op-a", 23_000, 24_000),
+            _kernel("op-b", 29_000, 31_000),
+        ],
+    }
+
+    samples_ms = _attributed_latency_samples_ms(
+        trace,
+        ("op-a", "op-b"),
+        n_repeat=2,
+        expected_prepare_sequence=("copy", "fill"),
+    )
+
+    # Operator envelopes are 6 us and 8 us. Prepare kernels are validated but
+    # excluded, while the 3/5 us inter-kernel gaps remain part of op latency.
+    assert samples_ms == pytest.approx([0.006, 0.008])
+
+
+@pytest.mark.parametrize(
+    "kernels",
+    [
+        [
+            _kernel("fill", 1_000, 2_000),
+            _kernel("op", 3_000, 4_000),
+            _kernel("fill", 5_000, 6_000),
+        ],
+        [
+            _kernel("fill", 1_000, 2_000),
+            _kernel("op", 3_000, 4_000),
+            _kernel("extra", 4_100, 4_200),
+            _kernel("fill", 5_000, 6_000),
+            _kernel("op", 7_000, 8_000),
+        ],
+    ],
+)
+def test_case_sequence_attribution_fails_closed_on_missing_or_extra_activity(kernels):
+    with pytest.raises(_NativeCUPTIAttributionError, match="activity count does not match"):
+        _attributed_latency_samples_ms(
+            {"dropped": 0, "kernels": kernels},
+            ("op",),
+            n_repeat=2,
+            expected_prepare_sequence=("fill",),
+        )
+
+
+def test_attributed_latency_rejects_dropped_records():
+    with pytest.raises(_NativeCUPTIAttributionError, match="dropped 1 records"):
+        _attributed_latency_samples_ms(
+            {"dropped": 1, "kernels": []},
+            ("a",),
+            n_repeat=1,
+        )
+
+
+def test_shifting_tensor_pool_preserves_layout_values_and_alignment():
+    source = torch.arange(24, dtype=torch.float32).reshape(4, 6).T
+    pool = _ShiftingTensorPool((source, 7), total_iterations=3, seed=123)
+    pointers = []
+
+    for _ in range(3):
+        shifted, scalar = pool.next_args()
+        assert scalar == 7
+        assert shifted.stride() == source.stride()
+        torch.testing.assert_close(shifted, source)
+        pointers.append(shifted.data_ptr())
+        shifted.zero_()
+
+    assert len(set(pointers)) == 3
+    assert all(
+        (pointer - pointers[0]) % _ShiftingTensorPool._POOL_ALIGNMENT == 0
+        for pointer in pointers[1:]
+    )
+    expected = torch.arange(24, dtype=torch.float32).reshape(4, 6).T
+    torch.testing.assert_close(source, expected)
+    with pytest.raises(RuntimeError, match="ShiftingTensorPool exhausted"):
+        pool.next_args()
+
+
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_projection_failure_falls_back_to_cuda_events():
-    """A callable launching no CUDA kernel projects no annotation windows;
-    bench_kernel must fall back and mark the deviating timing method."""
+def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
+    """A callable launching no CUDA kernel cannot be attributed by CUPTI."""
+    monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
+    with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
+        bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_native_cupti_failure_falls_back_when_enabled(monkeypatch):
+    """CUDA-event fallback remains available for local diagnosis."""
+    monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1")
     latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
     assert latency >= 0.0
     assert _bench_meta.timing == "cuda-events"

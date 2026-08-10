@@ -143,6 +143,65 @@ def test_fragments_and_profile_logs_merge(tmp_path):
     assert "BETA-REPORT" in profile_log
 
 
+def test_child_receives_case_trace_provenance(tmp_path):
+    bench_dir = _write_bench_dir(
+        tmp_path,
+        {
+            "bench_env.py": (
+                "import os\n"
+                "from pathlib import Path\n"
+                "def test_env():\n"
+                "    Path('trace_env.txt').write_text(\n"
+                "        os.environ['TILEOPS_CUPTI_BENCH_FILE'] + '\\n' +\n"
+                "        os.environ['TILEOPS_CUPTI_CASE_TRACE_DIR']\n"
+                "    )\n"
+            ),
+        },
+    )
+
+    proc, _, dump_dir = _run_runner(tmp_path, bench_dir, stall_timeout="120")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    bench_file, trace_dir = (tmp_path / "trace_env.txt").read_text().splitlines()
+    assert Path(bench_file) == bench_dir / "bench_env.py"
+    assert Path(trace_dir) == dump_dir.resolve() / "cupti_traces" / "000_bench_env"
+
+
+def test_strict_serial_waits_for_teardown_before_importing_next_file(tmp_path):
+    marker = tmp_path / "first_teardown_complete"
+    bench_dir = _write_bench_dir(
+        tmp_path,
+        {
+            "bench_a_first.py": (
+                "import atexit\n"
+                "from pathlib import Path\n"
+                f"atexit.register(Path({str(marker)!r}).write_text, 'done')\n"
+                "def test_first():\n"
+                "    pass\n"
+            ),
+            "bench_b_second.py": (
+                "from pathlib import Path\n"
+                f"assert Path({str(marker)!r}).read_text() == 'done'\n"
+                "def test_second():\n"
+                "    pass\n"
+            ),
+        },
+    )
+
+    proc, out_xml, _ = _run_runner(
+        tmp_path,
+        bench_dir,
+        stall_timeout="120",
+        extra=["--strict-serial"],
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert set(_cases(out_xml)) == {
+        "ops.bench_a_first::test_first",
+        "ops.bench_b_second::test_second",
+    }
+
+
 def _error_node_count(out_xml, needle: str) -> int:
     """Count raw <error> nodes attributed to files matching needle."""
     import xml.etree.ElementTree as ET
