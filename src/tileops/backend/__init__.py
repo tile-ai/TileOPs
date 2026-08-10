@@ -28,11 +28,11 @@ Depends on torch only — importing this does not import tilelang.
 
 from .dispatch import (
     default_target,
-    get_kernel_for,
-    load_errors,
-    registered,
+    detect_target,
+    load_failures,
     registered_targets,
-    resolve_target,
+    registrations,
+    resolve_get_kernel,
     select_target,
     set_default_target,
 )
@@ -59,13 +59,13 @@ __all__ = [
     "OpNotAvailableError",
     "UnknownTargetError",
     "default_target",
-    "get_kernel_for",
-    "load_errors",
+    "detect_target",
+    "load_failures",
     "register",
     "register_detector",
-    "registered",
     "registered_targets",
-    "resolve_target",
+    "registrations",
+    "resolve_get_kernel",
     "select_target",
     "set_default_target",
 ]

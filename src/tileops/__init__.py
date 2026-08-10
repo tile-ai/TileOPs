@@ -14,7 +14,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         OpNotAvailableError,
         UnknownTargetError,
         default_target,
-        load_errors,
+        load_failures,
         registered_targets,
         set_default_target,
     )
@@ -26,7 +26,7 @@ _LAZY = dict.fromkeys(
         "OpNotAvailableError",
         "UnknownTargetError",
         "default_target",
-        "load_errors",
+        "load_failures",
         "registered_targets",
         "set_default_target",
     ),

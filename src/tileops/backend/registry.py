@@ -23,7 +23,7 @@ ENTRY_POINT_GROUP = "tileops.backends"
 DETECTORS: dict[str, DetectFn] = {}
 KERNELS: dict[tuple[str, str], GetKernelFn] = {}
 RESOLVED: dict[torch.device, str] = {}
-LOAD_ERRORS: list[BackendLoadFailure] = []
+LOAD_FAILURES: list[BackendLoadFailure] = []
 
 #: Which target ops use when they name none. There is deliberately no constant here: a
 #: hardcoded ``"nv"`` would make detection unreachable and name one backend inside a
@@ -122,7 +122,7 @@ def ensure_loaded() -> None:
     for failure in failed:
         warnings.warn(
             f"TileOPs backend {failure.name!r} ({failure.entry_point}) failed to load and "
-            f"was skipped: {failure.error} See tileops.backend.load_errors().",
+            f"was skipped: {failure.error} See tileops.backend.load_failures().",
             RuntimeWarning,
             stacklevel=3,
         )
@@ -144,7 +144,7 @@ def _load_all() -> list[BackendLoadFailure]:
                 entry_point=ep.value,
                 error="".join(traceback.format_exception_only(type(exc), exc)).strip(),
             )
-            LOAD_ERRORS.append(failure)
+            LOAD_FAILURES.append(failure)
             failed.append(failure)
         except BaseException:
             restore(checkpoint)  # an interrupt is not a backend being broken
@@ -152,11 +152,11 @@ def _load_all() -> list[BackendLoadFailure]:
     return failed
 
 
-def load_error_suffix() -> str:
+def load_failure_suffix() -> str:
     """Append to any error, so a broken wheel is never invisible."""
-    if not LOAD_ERRORS:
+    if not LOAD_FAILURES:
         return ""
-    return f" ({len(LOAD_ERRORS)} backend(s) failed to load; see tileops.backend.load_errors())"
+    return f" ({len(LOAD_FAILURES)} backend(s) failed to load; see tileops.backend.load_failures())"
 
 
 class RegistryState(NamedTuple):
@@ -165,7 +165,7 @@ class RegistryState(NamedTuple):
     detectors: dict[str, DetectFn]
     kernels: dict[tuple[str, str], GetKernelFn]
     resolved: dict[torch.device, str]
-    load_errors: list[BackendLoadFailure]
+    load_failures: list[BackendLoadFailure]
     default_target: str | None
     loaded: bool
 
@@ -181,7 +181,7 @@ def snapshot() -> RegistryState:
             detectors=dict(DETECTORS),
             kernels=dict(KERNELS),
             resolved=dict(RESOLVED),
-            load_errors=list(LOAD_ERRORS),
+            load_failures=list(LOAD_FAILURES),
             default_target=default_target,
             loaded=_loaded,
         )
@@ -197,6 +197,6 @@ def restore(state: RegistryState) -> None:
         KERNELS.update(state.kernels)
         RESOLVED.clear()
         RESOLVED.update(state.resolved)
-        LOAD_ERRORS[:] = state.load_errors
+        LOAD_FAILURES[:] = state.load_failures
         default_target = state.default_target
         _loaded = state.loaded

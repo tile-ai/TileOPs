@@ -32,7 +32,7 @@ def isolated_registry():
     registry.DETECTORS.clear()
     registry.KERNELS.clear()
     registry.RESOLVED.clear()
-    registry.LOAD_ERRORS.clear()
+    registry.LOAD_FAILURES.clear()
     registry.default_target = None
     registry._loaded = True  # no test may import the backends actually installed
     yield
@@ -94,8 +94,8 @@ def test_input_spec_describes_a_tensor_and_compares_by_its_properties():
 def test_register_then_look_up():
     backend.register("RMSNormFwdOp", "fake", fake_get_kernel)
 
-    assert backend.get_kernel_for("RMSNormFwdOp", "fake") is fake_get_kernel
-    assert backend.registered() == frozenset({("RMSNormFwdOp", "fake")})
+    assert backend.resolve_get_kernel("RMSNormFwdOp", "fake") is fake_get_kernel
+    assert backend.registrations() == frozenset({("RMSNormFwdOp", "fake")})
     assert backend.registered_targets("RMSNormFwdOp") == ["fake"]
 
 
@@ -125,26 +125,26 @@ def test_the_sole_claimant_wins_and_is_asked_once_per_device():
     asked = []
     backend.register_detector("fake", lambda device: asked.append(device) or True)
 
-    assert backend.resolve_target(torch.device("cpu")) == "fake"
-    assert backend.resolve_target(torch.device("cpu")) == "fake"
+    assert backend.detect_target(torch.device("cpu")) == "fake"
+    assert backend.detect_target(torch.device("cpu")) == "fake"
     assert asked == [torch.device("cpu")], "detection is memoized"
 
 
 def test_a_backend_installed_later_can_change_the_answer():
     """A memo must not outlive the table it came from."""
     backend.register_detector("first", lambda device: True)
-    assert backend.resolve_target(torch.device("cpu")) == "first"
+    assert backend.detect_target(torch.device("cpu")) == "first"
 
     backend.register_detector("second", lambda device: True)
     with pytest.raises(AmbiguousTargetError, match="pass target="):
-        backend.resolve_target(torch.device("cpu"))
+        backend.detect_target(torch.device("cpu"))
 
 
 def test_no_claimant_names_the_targets_that_do_exist():
     backend.register_detector("fake", lambda device: device.type == "xpu")
 
     with pytest.raises(UnknownTargetError, match=r"no registered target claims.*'fake'"):
-        backend.resolve_target(torch.device("cpu"))
+        backend.detect_target(torch.device("cpu"))
 
 
 def test_the_device_reaches_the_detector_untouched():
@@ -152,8 +152,8 @@ def test_the_device_reaches_the_detector_untouched():
     seen = []
     backend.register_detector("fake", lambda device: seen.append(device) or True)
 
-    backend.resolve_target(torch.device("cpu"))
-    backend.resolve_target(torch.device("cpu", 0))
+    backend.detect_target(torch.device("cpu"))
+    backend.detect_target(torch.device("cpu", 0))
     assert seen == [torch.device("cpu"), torch.device("cpu", 0)]
 
 
@@ -214,14 +214,14 @@ def test_a_target_with_kernels_but_no_detector_is_still_reachable():
     backend.register("Op", "explicit_only", fake_get_kernel)
 
     backend.set_default_target("explicit_only")
-    assert backend.get_kernel_for("Op", "explicit_only") is fake_get_kernel
+    assert backend.resolve_get_kernel("Op", "explicit_only") is fake_get_kernel
 
 
 def test_a_missing_op_never_falls_back_and_says_who_does_have_it():
     backend.register("GQAPrefillFwdOp", "nv", fake_get_kernel)
 
     with pytest.raises(OpNotAvailableError, match=r"'other'.*this op: \['nv'\]"):
-        backend.get_kernel_for("GQAPrefillFwdOp", "other")
+        backend.resolve_get_kernel("GQAPrefillFwdOp", "other")
 
 
 # --------------------------------------------------------------------------------------
@@ -239,18 +239,18 @@ def test_installing_a_backend_is_enough_to_be_dispatched_to(installed):
     installed(acme=acme)
 
     assert backend.select_target(None, torch.device("cpu")) == "acme"
-    assert backend.get_kernel_for("RMSNormFwdOp", "acme") is fake_get_kernel
+    assert backend.resolve_get_kernel("RMSNormFwdOp", "acme") is fake_get_kernel
 
 
 def test_a_backend_is_imported_once_however_dispatch_is_entered(installed):
     loads = []
     installed(once=lambda: loads.append(1))
 
-    backend.registered()
+    backend.registrations()
     backend.registered_targets()
-    backend.load_errors()
+    backend.load_failures()
     with pytest.raises(UnknownTargetError):
-        backend.resolve_target(torch.device("cpu"))
+        backend.detect_target(torch.device("cpu"))
 
     assert loads == [1]
 
@@ -263,7 +263,7 @@ def test_a_broken_backend_is_skipped_and_stays_visible(installed):
 
     with pytest.warns(RuntimeWarning, match="failed to load"):
         assert backend.registered_targets("Op") == ["working"]
-    assert [str(e) for e in backend.load_errors()] == [
+    assert [str(e) for e in backend.load_failures()] == [
         "broken (tileops_broken): ImportError: libacme.so not found"
     ]
 
@@ -273,7 +273,7 @@ def test_errors_point_at_a_broken_backend_rather_than_blame_the_device(installed
     installed(broken=lambda: _raise(OSError("boom")))
 
     with pytest.warns(RuntimeWarning), pytest.raises(UnknownTargetError, match="failed"):
-        backend.resolve_target(torch.device("cpu"))
+        backend.detect_target(torch.device("cpu"))
 
 
 def test_a_backend_that_fails_midway_registers_nothing(installed):
@@ -310,7 +310,7 @@ def test_an_interrupt_reaches_the_caller_and_leaves_discovery_retryable(installe
     installed(rude=rude)
 
     with pytest.raises(interrupt):
-        backend.registered()
+        backend.registrations()
     assert backend.registered_targets("Op") == ["rude"], "asking again tries again"
     assert attempts == [1, 1]
 
@@ -325,10 +325,10 @@ def test_warnings_as_errors_cannot_truncate_discovery(installed):
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
         with pytest.raises(RuntimeWarning):
-            backend.registered()
+            backend.registrations()
 
     assert backend.registered_targets("Op") == ["working"]
-    assert [e.name for e in backend.load_errors()] == ["broken"]
+    assert [e.name for e in backend.load_failures()] == ["broken"]
 
 
 def test_a_backend_may_read_the_registry_while_it_is_registering(installed):
@@ -352,7 +352,7 @@ def test_a_detector_that_raises_names_the_target_that_owns_it(installed):
     )
 
     with pytest.raises(BackendError, match="detector for target 'broken'") as excinfo:
-        backend.resolve_target(torch.device("cpu"))
+        backend.detect_target(torch.device("cpu"))
     assert "vendor runtime missing" in str(excinfo.value)
 
 

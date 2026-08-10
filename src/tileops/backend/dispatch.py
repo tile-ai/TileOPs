@@ -15,7 +15,7 @@ from .errors import (
 from .protocol import DetectFn, GetKernelFn
 
 
-def resolve_target(device: torch.device) -> str:
+def detect_target(device: torch.device) -> str:
     """Return the target serving *device*.
 
     *device* is passed through untouched — neither ``.type`` read nor mapped to hardware,
@@ -40,12 +40,12 @@ def resolve_target(device: torch.device) -> str:
         if not claimed:
             raise UnknownTargetError(
                 f"no registered target claims device {device}; registered targets: "
-                f"{sorted(registry.DETECTORS)}{registry.load_error_suffix()}"
+                f"{sorted(registry.DETECTORS)}{registry.load_failure_suffix()}"
             )
         if len(claimed) > 1:
             raise AmbiguousTargetError(
                 f"device {device} is claimed by {sorted(claimed)}; pass target= to "
-                f"choose{registry.load_error_suffix()}"
+                f"choose{registry.load_failure_suffix()}"
             )
         # Neither failure above is memoized: a later registration can change both.
         registry.RESOLVED[device] = claimed[0]
@@ -87,12 +87,12 @@ def select_target(explicit: str | None, device: torch.device | None) -> str:
     if device is None:
         raise UnknownTargetError(
             "this call has no tensor input, so there is no device to detect from; pass "
-            f"target= or set tileops.set_default_target(){registry.load_error_suffix()}"
+            f"target= or set tileops.set_default_target(){registry.load_failure_suffix()}"
         )
-    return resolve_target(device)
+    return detect_target(device)
 
 
-def get_kernel_for(op: str, target: str) -> GetKernelFn:
+def resolve_get_kernel(op: str, target: str) -> GetKernelFn:
     """Return *target*'s ``get_kernel`` for *op*.
 
     Raises:
@@ -105,15 +105,15 @@ def get_kernel_for(op: str, target: str) -> GetKernelFn:
     except KeyError:
         raise OpNotAvailableError(
             f"no get_kernel registered for {(op, target)}; registered targets for this "
-            f"op: {registered_targets(op)}{registry.load_error_suffix()}"
+            f"op: {registered_targets(op)}{registry.load_failure_suffix()}"
         ) from None
 
 
-def registered() -> frozenset[tuple[str, str]]:
+def registrations() -> frozenset[tuple[str, str]]:
     """Every registered ``(op, target)``.
 
     Keys only: handing out the callbacks would open a second way to reach a ``get_kernel``
-    beside :func:`get_kernel_for`.
+    beside :func:`resolve_get_kernel`.
     """
     registry.ensure_loaded()
     return frozenset(registry.KERNELS)
@@ -137,7 +137,7 @@ def set_default_target(target: str | None) -> None:
     if target is not None and target not in registry.known_targets():
         raise UnknownTargetError(
             f"no backend registered target {target!r}; known targets: "
-            f"{sorted(registry.known_targets())}{registry.load_error_suffix()}"
+            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
         )
     registry.default_target = target
 
@@ -147,11 +147,11 @@ def default_target() -> str | None:
     return registry.default_target
 
 
-def load_errors() -> tuple[BackendLoadFailure, ...]:
+def load_failures() -> tuple[BackendLoadFailure, ...]:
     """Backends that failed to import and were skipped.
 
     Every error above points here, so a broken wheel cannot present itself as "no target
     claimed this device".
     """
     registry.ensure_loaded()
-    return tuple(registry.LOAD_ERRORS)
+    return tuple(registry.LOAD_FAILURES)
