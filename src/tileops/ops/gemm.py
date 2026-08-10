@@ -100,10 +100,16 @@ class GemmFwdOp(Op):
     def _get_kernel(self, m: int, n: int, k: int, dtype: torch.dtype) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
 
-        Each candidate states the region it serves (``gemm_call.gemv_region``
-        / ``small_batch_region``, read through ``Kernel.applies``); this
-        method owns only mechanism: mapping the selected key to a kernel
-        instance and caching it.
+        ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path (the two
+        differ in which operand is the vector, so ``forward`` reshapes
+        accordingly), ``"small_batch"`` for the low-``m`` NT bandwidth kernel,
+        else ``"gemm"`` — ``GemmKernel`` (SM90), covering all four
+        ``(trans_a, trans_b)`` layouts.
+
+        Which one serves the call is stated by the candidates themselves
+        (``gemm_call.gemv_region`` / ``small_batch_region``, read through
+        ``Kernel.applies``); this method owns only mechanism: mapping the
+        selected key to a kernel instance and caching it.
         """
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
         key = self.select_kernel_key(("gemv_kernel", "small_batch_kernel", "gemm_kernel"), call)

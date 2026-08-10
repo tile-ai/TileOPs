@@ -5,7 +5,10 @@ from typing import Optional
 
 import torch
 
+from tileops.utils import get_sm_count
+
 from .call_spec import CallSpec
+from .gemm_heuristics import TINY_M_BLOCK_N
 
 __all__ = ["GemmCall", "gemv_region", "small_batch_region"]
 
@@ -55,6 +58,4 @@ def small_batch_region(call: GemmCall) -> bool:
     """
     if call.trans_a or not call.trans_b or call.m != 2:
         return False
-    from tileops.utils import get_sm_count
-    from .gemm_heuristics import TINY_M_BLOCK_N
     return -(-call.n // TINY_M_BLOCK_N) < get_sm_count()
