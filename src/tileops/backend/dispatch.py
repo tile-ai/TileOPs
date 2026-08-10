@@ -12,6 +12,7 @@ from . import registry
 from .errors import (
     AmbiguousTargetError,
     BackendError,
+    BackendLoadFailure,
     OpNotAvailableError,
     UnknownTargetError,
 )
@@ -37,10 +38,12 @@ def resolve_target(device: torch.device) -> str:
         BackendError: A detector raised instead of answering.
     """
     registry.ensure_loaded()
-    cached = registry.RESOLVED.get(device)
-    if cached is not None:
-        return cached
     with registry.LOCK:
+        # Read the memo under the lock too: a backend installed concurrently clears it,
+        # and this path is cold -- the op layer memoizes the kernel, not the target.
+        cached = registry.RESOLVED.get(device)
+        if cached is not None:
+            return cached
         claimed = [t for t, detect in registry.DETECTORS.items() if _claims(t, detect, device)]
         if not claimed:
             raise UnknownTargetError(
@@ -86,6 +89,7 @@ def select_target(explicit: str | None, device: torch.device | None) -> str:
         device: Where to detect from. None when the call has no tensor input, which leaves
             nothing to detect and makes ``target=`` the only answer.
     """
+    registry.ensure_loaded()  # even the no-device error must be able to blame a bad wheel
     if explicit is not None:
         return explicit
     if registry.default_target is not None:
@@ -93,7 +97,7 @@ def select_target(explicit: str | None, device: torch.device | None) -> str:
     if device is None:
         raise UnknownTargetError(
             "this call has no tensor input, so there is no device to detect from; pass "
-            "target= or set tileops.set_default_target()"
+            f"target= or set tileops.set_default_target(){registry.load_error_suffix()}"
         )
     return resolve_target(device)
 
@@ -154,7 +158,7 @@ def default_target() -> str | None:
     return registry.default_target
 
 
-def load_errors() -> tuple:
+def load_errors() -> tuple[BackendLoadFailure, ...]:
     """Backends that failed to import and were skipped.
 
     Every error above points here, so a broken wheel cannot present itself as "no target

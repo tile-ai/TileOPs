@@ -101,21 +101,18 @@ def test_register_then_look_up():
     assert backend.registered_targets("RMSNormFwdOp") == ["fake"]
 
 
-def test_the_same_callable_may_register_twice_but_a_rival_may_not():
-    """Two distributions claiming one cell is a conflict; one module seen twice is not."""
-    backend.register("Op", "fake", fake_get_kernel)
+def test_a_cell_is_claimed_once():
+    """Overwriting silently would make "which one ran" unanswerable."""
     backend.register("Op", "fake", fake_get_kernel)
 
     with pytest.raises(BackendError, match="already registered"):
         backend.register("Op", "fake", lambda *a, **k: None)
+    with pytest.raises(BackendError, match="already registered"):
+        backend.register("Op", "fake", fake_get_kernel)
 
 
-def test_a_target_may_not_have_two_detectors():
-    def detect(device):
-        return device.type == "cpu"
-
-    backend.register_detector("fake", detect)
-    backend.register_detector("fake", detect)
+def test_a_target_has_one_detector():
+    backend.register_detector("fake", lambda device: device.type == "cpu")
 
     with pytest.raises(BackendError, match="already has detector"):
         backend.register_detector("fake", lambda device: True)
@@ -193,6 +190,14 @@ def test_a_call_with_no_tensor_input_must_name_its_target():
     backend.register_detector("detected", lambda device: True)
 
     with pytest.raises(UnknownTargetError, match="no tensor input"):
+        backend.select_target(None, None)
+
+
+def test_even_the_no_device_error_can_blame_a_broken_backend(installed):
+    """Selecting a target is a first touch too, so it must discover before it complains."""
+    installed(broken=lambda: _raise(ImportError("libacme.so not found")))
+
+    with pytest.warns(RuntimeWarning), pytest.raises(UnknownTargetError, match="failed"):
         backend.select_target(None, None)
 
 
@@ -299,7 +304,9 @@ def test_an_interrupt_reaches_the_caller_and_leaves_discovery_retryable(installe
 
     def rude():
         attempts.append(1)
-        backend.register("Op", f"attempt{len(attempts)}", fake_get_kernel)
+        # The same cell both times: only a real rollback lets the retry claim it, since a
+        # taken cell is refused unconditionally.
+        backend.register("Op", "rude", fake_get_kernel)
         if len(attempts) == 1:
             raise interrupt
 
@@ -307,7 +314,8 @@ def test_an_interrupt_reaches_the_caller_and_leaves_discovery_retryable(installe
 
     with pytest.raises(interrupt):
         backend.registered()
-    assert backend.registered_targets("Op") == ["attempt2"], "asking again tries again"
+    assert backend.registered_targets("Op") == ["rude"], "asking again tries again"
+    assert attempts == [1, 1]
 
 
 def test_warnings_as_errors_cannot_truncate_discovery(installed):

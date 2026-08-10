@@ -12,7 +12,7 @@ import threading
 import traceback
 import warnings
 from importlib.metadata import entry_points
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import torch
 
@@ -58,13 +58,13 @@ def register(op: str, target: str, get_kernel: GetKernelFn) -> None:
             compile anything.
 
     Raises:
-        BackendError: ``(op, target)`` is taken. Re-registering the identical callable is
-            a no-op; anything else is a conflict, ``importlib.reload`` included, since
-            reload builds new function objects.
+        BackendError: ``(op, target)`` is taken. Always — a cell is claimed once. Two
+            entry points naming one module do not trip this, since the second load gets
+            the cached module and its top level does not run again.
     """
     with LOCK:
         existing = KERNELS.get((op, target))
-        if existing is not None and existing is not get_kernel:
+        if existing is not None:
             raise BackendError(
                 f"{(op, target)} is already registered to {describe(existing)}; "
                 f"{describe(get_kernel)} cannot take it. Overwriting silently would make "
@@ -77,11 +77,11 @@ def register_detector(target: str, detect: DetectFn) -> None:
     """Record *detect* as how to recognize a device belonging to *target*.
 
     Raises:
-        BackendError: *target* already has a different detector.
+        BackendError: *target* already has a detector.
     """
     with LOCK:
         existing = DETECTORS.get(target)
-        if existing is not None and existing is not detect:
+        if existing is not None:
             raise BackendError(
                 f"target {target!r} already has detector {describe(existing)}; "
                 f"{describe(detect)} cannot replace it."
@@ -146,10 +146,8 @@ def _load_all() -> list[BackendLoadFailure]:
         checkpoint = snapshot()
         try:
             ep.load()
-        except BaseException as exc:  # noqa: BLE001 - one bad plugin must not win
+        except Exception as exc:  # noqa: BLE001 - one bad plugin must not win
             restore(checkpoint)
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
             failure = BackendLoadFailure(
                 name=ep.name,
                 entry_point=ep.value,
@@ -157,6 +155,11 @@ def _load_all() -> list[BackendLoadFailure]:
             )
             LOAD_ERRORS.append(failure)
             failed.append(failure)
+        except BaseException:
+            # Interrupts and cancellation are not a backend being broken: roll back so
+            # nothing half-registered survives, then let the process unwind.
+            restore(checkpoint)
+            raise
     return failed
 
 
@@ -167,7 +170,18 @@ def load_error_suffix() -> str:
     return f" ({len(LOAD_ERRORS)} backend(s) failed to load; see tileops.backend.load_errors())"
 
 
-def snapshot() -> tuple:
+class RegistryState(NamedTuple):
+    """Everything :func:`snapshot` captures, named so :func:`restore` cannot mis-order it."""
+
+    detectors: dict[str, DetectFn]
+    kernels: dict[tuple[str, str], GetKernelFn]
+    resolved: dict[torch.device, str]
+    load_errors: list[BackendLoadFailure]
+    default_target: str | None
+    loaded: bool
+
+
+def snapshot() -> RegistryState:
     """Capture the registry. Backs both the load transaction and test isolation.
 
     Not exported: a public save/restore would invite production code to swap registries
@@ -175,27 +189,26 @@ def snapshot() -> tuple:
     change how every later test behaves.
     """
     with LOCK:
-        return (
-            dict(DETECTORS),
-            dict(KERNELS),
-            dict(RESOLVED),
-            list(LOAD_ERRORS),
-            default_target,
-            _loaded,
+        return RegistryState(
+            detectors=dict(DETECTORS),
+            kernels=dict(KERNELS),
+            resolved=dict(RESOLVED),
+            load_errors=list(LOAD_ERRORS),
+            default_target=default_target,
+            loaded=_loaded,
         )
 
 
-def restore(state: tuple) -> None:
+def restore(state: RegistryState) -> None:
     """Undo everything since the matching :func:`snapshot`."""
     global default_target, _loaded
-    detectors, kernels, resolved, errors, default, loaded = state
     with LOCK:
         DETECTORS.clear()
-        DETECTORS.update(detectors)
+        DETECTORS.update(state.detectors)
         KERNELS.clear()
-        KERNELS.update(kernels)
+        KERNELS.update(state.kernels)
         RESOLVED.clear()
-        RESOLVED.update(resolved)
-        LOAD_ERRORS[:] = errors
-        default_target = default
-        _loaded = loaded
+        RESOLVED.update(state.resolved)
+        LOAD_ERRORS[:] = state.load_errors
+        default_target = state.default_target
+        _loaded = state.loaded
