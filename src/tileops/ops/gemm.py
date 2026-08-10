@@ -9,8 +9,11 @@ from tileops.kernels.gemm import (
     GemvKernel,
 )
 from tileops.kernels.gemm_call import GemmCall
-from tileops.kernels.gemm_w4a16 import GROUP_SIZE, GemmW4A16Kernel
-from tileops.kernels.gemm_w4a16_decode import GemmW4A16DecodeKernel
+from tileops.kernels.gemm_w4a16 import (
+    GROUP_SIZE,
+    GemmW4A16DecodeKernel,
+    GemmW4A16Kernel,
+)
 from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
@@ -365,8 +368,8 @@ class GemmW4A16FwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gemm_w4a16_kernel": GemmW4A16Kernel,
             "gemm_w4a16_decode_kernel": GemmW4A16DecodeKernel,
+            "gemm_w4a16_kernel": GemmW4A16Kernel,
         }
 
     def _validate_dtypes(
@@ -454,12 +457,14 @@ class GemmW4A16FwdOp(Op):
         k: int,
         dtype: torch.dtype,
     ) -> Kernel:
-        call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_b=True)
-        key_name = self.select_kernel_key(("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call)
+        call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=False, trans_b=True)
+        kernel_name = self.select_kernel_key(
+            ("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call
+        )
         return self.get_or_build_kernel(
-            key_name,
+            kernel_name,
             key=(m, n, k, dtype, self.group_size),
-            build=lambda: self.kernel_map[key_name](
+            build=lambda: self.kernel_map[kernel_name](
                 m, n, k, dtype, tune=self.tune, group_size=self.group_size
             ),
         )

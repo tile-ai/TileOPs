@@ -314,8 +314,16 @@ class GemmW4A16Fixture(FixtureBase):
                     512,
                     512,
                     torch.float16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-w4a16-m1",
+                    marks=pytest.mark.full,
+                    id="full-w4a16-m1-direct",
+                ),
+                pytest.param(
+                    1,
+                    64,
+                    1024,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-m1-tma",
                 ),
                 pytest.param(
                     16,
@@ -372,8 +380,10 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16FwdOp()
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
-    expected = "GemmW4A16DecodeKernel" if m == 1 else "GemmW4A16Kernel"
-    assert op.kernel.__class__.__name__ == expected
+    expected_kernel = "GemmW4A16DecodeKernel" if m == 1 else "GemmW4A16Kernel"
+    assert op.kernel.__class__.__name__ == expected_kernel
+    if m == 1:
+        assert op.kernel.use_tma == (n % 64 == 0 and k % 1024 == 0)
 
 
 @pytest.mark.smoke
