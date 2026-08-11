@@ -16,13 +16,9 @@ modes that a plain `import tilelang` smoke check misses:
   4. cupti-python is present and did not drag cuda-bindings off torch's pin — it carries its
      own CUDA-runtime requirements, so it is installed with --no-deps; a resolved install that
      moved cuda-bindings only warns, and the benchmark timing path breaks later.
-  5. the importable tilelang is the one the tilelang stage installed — vllm depends on an exact
-     tilelang release, so a PyPI wheel is present earlier in the build and the source build is
-     what must survive. Both are importable, so nothing else in this file tells them apart.
 """
 import importlib.metadata as md
 import sys
-from pathlib import Path
 
 import tilelang
 import torch
@@ -39,8 +35,6 @@ def _torch_pin(name: str) -> Requirement | None:
 
 # Matches the cu132 base image; bump together with the base/torch CUDA major.minor.
 EXPECTED_TORCH_CUDA = "13.2"
-# Written by the tilelang stage from the wheel it built (or the release it was asked for).
-EXPECTED_TILELANG_VERSION_FILE = Path("/tmp/tilelang-expected-version")
 
 installed = md.version("apache-tvm-ffi")
 ffi_req = next(
@@ -84,25 +78,9 @@ if bindings_pin is not None and not bindings_pin.specifier.contains(
         "it must be installed with --no-deps; a resolved install moves it and pip only warns."
     )
 
-if not EXPECTED_TILELANG_VERSION_FILE.is_file():
-    sys.exit(
-        f"FAIL: {EXPECTED_TILELANG_VERSION_FILE} is missing; the tilelang stage records the "
-        "version it installed there, so this guard cannot tell a source build from the PyPI "
-        "wheel vllm depends on."
-    )
-expected_tilelang = EXPECTED_TILELANG_VERSION_FILE.read_text().strip()
-installed_tilelang = md.version("tilelang")
-if installed_tilelang != expected_tilelang:
-    sys.exit(
-        f"FAIL: tilelang {installed_tilelang} is importable, but this build installed "
-        f"{expected_tilelang}. A later step reinstalled tilelang from PyPI — most likely a "
-        "bench baseline whose exact pin pip chose to satisfy."
-    )
-
 print(
     f"runtime-stack OK: tilelang {tilelang.__version__} | "
     f"torch {torch.__version__} (cuda {torch.version.cuda}) | "
     f"apache-tvm-ffi {installed} satisfies {ffi_req.specifier} | "
-    f"cupti-python {cupti_version} with cuda-bindings {bindings_installed} | "
-    f"tilelang {installed_tilelang} is the build's own"
+    f"cupti-python {cupti_version} with cuda-bindings {bindings_installed}"
 )

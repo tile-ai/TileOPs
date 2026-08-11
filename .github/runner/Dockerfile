@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage CI runner image for the self-hosted GPU runner.
-# 13.2.1, not a later 13.x: cu132 is the newest CUDA variant the PyTorch index publishes, and
-# matching the base image to the torch wheels keeps one CUDA minor across nvcc, the runtime
-# libraries torch bundles, and every source-built extension.
+# 13.2.1, not a later 13.x: cu132 is the newest CUDA variant the PyTorch index publishes, and the
+# base image must match the torch wheels so nvcc and torch's bundled runtime share one CUDA minor.
 ARG BASE_IMAGE=nvidia/cuda:13.2.1-devel-ubuntu22.04
 
 # ── runtime ──
@@ -27,17 +26,14 @@ RUN apt-get update \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && python -m pip install --upgrade pip
 COPY constraints.txt constraints-runner-lock.txt /tmp/
-# PIP_CONSTRAINT rather than a -c flag per install: it reaches every pip in the build, including
-# the ones a build backend spawns under --no-build-isolation, and a step added later cannot
-# forget it. The lock is the resolved closure of the whole image, so any install that would move
-# a version another step settled on fails here instead of quietly winning.
+# PIP_CONSTRAINT rather than a -c flag per install: it also reaches the pips a build backend
+# spawns under --no-build-isolation, and a step added later cannot forget it. Any install that
+# would move a version an earlier step settled on fails instead of quietly winning.
 ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
-# torch / torchvision: cu132 wheels from the pytorch index (the PyPI default is a different
-# CUDA variant, so pin +cu132). Installing torchvision as cu132 here means vllm later finds its
-# exact-pinned version already satisfied and never swaps it off cu132. torchaudio is absent on
-# purpose: the cu132 index carries no build of it, and TileOPs imports nothing from it. vllm
-# pins torchaudio==2.11.0, whose wheel declares no dependencies, so pip picks that up from PyPI
-# later without touching torch.
+# torch / torchvision: cu132 wheels from the pytorch index (the PyPI default is a different CUDA
+# variant, so pin +cu132), so vllm later finds its exact pins satisfied and never swaps them off
+# cu132. No torchaudio: the cu132 index has no build of it and TileOPs imports nothing from it;
+# vllm's pin is met later by the PyPI wheel, which declares no dependencies.
 RUN python -m pip install \
         --index-url https://download.pytorch.org/whl/cu132 \
         --extra-index-url https://pypi.org/simple \
@@ -53,9 +49,9 @@ ARG MAX_JOBS=64
 ARG NVCC_THREADS=4
 # TORCH_CUDA_ARCH_LIST=9.0: the runner pool is Hopper (H200) only. Drives the FA3 and tilelang
 # source builds in later stages, and runtime tilelang JIT.
-# CUDA_HOME / PATH are pinned to the base image's toolkit on purpose: bench baselines pull
-# `nvidia-cuda-nvcc` wheels of a LATER CUDA minor into site-packages, and a source build or a
-# JIT that picked those up would emit code the image's own runtime libraries do not match.
+# CUDA_HOME / PATH pin the base image's toolkit: bench baselines pull `nvidia-cuda-nvcc` wheels
+# of a later CUDA minor into site-packages, and a build or JIT that picked those up would emit
+# code the image's own runtime libraries do not match.
 ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0 \
     CUDA_HOME=/usr/local/cuda PATH=/usr/local/cuda/bin:${PATH}
 
@@ -92,10 +88,9 @@ RUN python -m pip install --no-cache-dir --no-build-isolation \
     || echo "WARNING: flash-attn (FA2) install failed (non-fatal)"
 
 # ── fullstack ──
-# Remaining bench baselines (comparison targets). Best-effort. Their versions, and the versions
-# of everything they pull in, are settled by the lock — vllm alone brings in most of the image's
-# package count, so this is where an unpinned stack would drift. vllm's apache-tvm-ffi pin
-# (0.1.11) is the one the tilelang commit needs, which is why this vllm and no other.
+# Remaining bench baselines (comparison targets). Best-effort. vllm brings in most of the image's
+# package count, so this is where an unpinned stack would drift — the lock settles it. This vllm
+# and no other: its apache-tvm-ffi pin (0.1.11) is the one the tilelang commit needs.
 # sgl-kernel is not installed.
 FROM fa2 AS fullstack
 RUN for pkg in \
@@ -114,7 +109,6 @@ RUN for pkg in \
 # benchmark uses the Triton modules.
 RUN MAMBA_FORCE_BUILD=TRUE \
     python -m pip install --no-cache-dir --no-build-isolation --no-deps \
-        \
         "mamba-ssm==2.3.2.post1" \
     || echo "WARNING: mamba-ssm 2.3.2.post1 install failed (non-fatal)"
 # The grouped-GEMM benchmark can compare against DeepGEMM. Install from the official tag
@@ -150,19 +144,16 @@ RUN { mkdir -p /tmp/DeepGEMM \
 # Built LAST (after all bench): a TILELANG_GIT_SHA bump then rebuilds only this layer (bench
 # stays cached), and tilelang compiles/links against the exact final stack so its ABI always
 # matches what ships. ARG is declared here — not earlier — so changing it never invalidates
-# the bench layers above. Building last also settles the one conflict vllm introduces: vllm
-# depends on an exact tilelang release, so `fullstack` leaves a PyPI tilelang installed, and
-# the wheel built here replaces it. Leaving vllm's pin unsatisfied is the intended outcome —
-# the image exists to test the tilelang commit under evaluation, not vllm's.
+# the bench layers above. vllm depends on an exact tilelang release, so `fullstack` leaves a PyPI
+# tilelang installed; --force-reinstall below replaces it. Leaving vllm's pin unsatisfied is
+# intended — the image exists to test the tilelang commit under evaluation, not vllm's.
 FROM fullstack AS tilelang
 ARG TILELANG_GIT_SHA
 ARG TILELANG_VERSION
 # main mode:    --build-arg TILELANG_GIT_SHA=<commit>  → clone + compile that commit
 # release mode: --build-arg TILELANG_VERSION=<version> → pip install the PyPI release
-# Either way --no-deps, so pip never re-resolves the cu132 stack.
-# Each mode records the version it meant to install in /tmp/tilelang-expected-version. The guard
-# below compares that against what is actually importable, so the PyPI tilelang vllm pulled in
-# cannot survive here — silently, this stage would look like it had succeeded.
+# Either way --no-deps, so pip never re-resolves the cu132 stack; --force-reinstall so a PyPI
+# tilelang of the same version cannot read as already satisfied and survive.
 RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         mkdir -p /tmp/tilelang && cd /tmp/tilelang \
         && git init -q \
@@ -174,26 +165,22 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
             python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
-        && wheel="$(ls /opt/tilelang-wheels/tilelang-*.whl)" \
-        && python -m pip install --no-deps "${wheel}" \
-        && basename "${wheel}" | cut -d- -f2 > /tmp/tilelang-expected-version \
+        && python -m pip install --no-deps --force-reinstall \
+            /opt/tilelang-wheels/tilelang-*.whl \
         && rm -rf /tmp/tilelang; \
     elif [ -n "${TILELANG_VERSION}" ]; then \
-        python -m pip install --no-deps "tilelang==${TILELANG_VERSION}" \
-        && echo "${TILELANG_VERSION}" > /tmp/tilelang-expected-version; \
+        python -m pip install --no-deps --force-reinstall "tilelang==${TILELANG_VERSION}"; \
     else \
         echo "ERROR: set --build-arg TILELANG_GIT_SHA=<commit> (main) or TILELANG_VERSION=<ver> (release)"; \
         exit 1; \
     fi
-# CUPTI binding for benchmark timing, matched to the base image's CUDA minor — it requires
-# nvidia-cuda-cupti~=13.2, which is what torch installs here. --no-deps regardless, so it can
-# never re-resolve a CUDA runtime wheel out from under torch; a resolved install that moved
-# cuda-bindings off torch's pin would only warn, and the guard below is what catches it.
+# CUPTI binding for benchmark timing, matched to the base image's CUDA minor. --no-deps so it can
+# never re-resolve a CUDA runtime wheel out from under torch; pip would only warn, and the guard
+# below is what catches it.
 RUN python -m pip install --no-cache-dir --no-deps "cupti-python==13.2.0"
 # Guard the final stack (GPU-free, runs at build): tilelang must import, the installed
-# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, the importable tilelang
-# must be the one this stage installed, torch must still be the cu132 build, and cupti-python
-# must not have dragged cuda-bindings off torch's pin.
+# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, torch must still be the
+# cu132 build, and cupti-python must not have dragged cuda-bindings off torch's pin.
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 

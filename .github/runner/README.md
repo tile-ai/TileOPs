@@ -86,13 +86,11 @@ Two files, both reaching every `pip install` in the build through `PIP_CONSTRAIN
 
 The lock is what makes a version stick: an install step that would move a version an earlier
 step settled on fails the build instead of winning silently. Regenerate it with
-`scripts/ci/lock_runner_stack.sh` after changing a version or an install list, and read the
-diff — a one-line bump that moves fifty transitive pins is what the file exists to show.
+`scripts/ci/lock_runner_stack.sh` after changing a version or an install list, and read the diff.
 
-tilelang is absent from the lock by design. It is compiled from source in its own stage, and a
+tilelang is absent from the lock by design: it is compiled from source in its own stage, and a
 pin would reject that wheel. vLLM depends on an exact tilelang release, so a PyPI tilelang is
-present earlier in the build; the source build replaces it, and the build-time guard fails if
-anything puts the release back.
+present earlier in the build; the source build replaces it with `--force-reinstall`.
 
 ## Register a self-hosted runner
 
@@ -133,16 +131,15 @@ Cache env vars (`TILELANG_CACHE_DIR`, `TRITON_CACHE_DIR`, `PIP_CACHE_DIR`, …) 
 
 Build an earlier stage to debug with `--target runtime` (etc.).
 
-| Stage       | Contents                                                                                                                                                                                                                                                                 |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `runtime`   | Python 3.12 + torch / torchvision `2.13.0 / 0.28.0 +cu132` + triton `3.7.1` + tilelang build/runtime deps (incl. `apache-tvm-ffi 0.1.11`). No torchaudio — the cu132 index has none, and vllm's zero-dependency PyPI wheel covers its pin later. **No tilelang itself.** |
-| `post-fa3`  | `runtime` + pytest / pytest-xdist / ruff / pytest-timeout / py-spy + FlashAttention-3 (built from the `hopper/` source).                                                                                                                                                 |
-| `fa2`       | `post-fa3` + FlashAttention-2 (`flash-attn 2.8.3.post1`, source-built in its own layer so changes to the bench loop never recompile it).                                                                                                                                 |
-| `fullstack` | `fa2` + flash-linear-attention `0.5.2` + vLLM `0.27.1` + mamba-ssm `2.3.2.post1` + DeepGEMM `2.1.1.post3`. flashinfer comes in at vLLM's pin (`0.6.16.post3`) — no separate upgrade. sgl-kernel is not installed.                                                        |
-| `tilelang`  | `fullstack` + the tilelang wheel (`--no-deps`), then the build-time guard. Built **last** so a SHA bump rebuilds only this layer.                                                                                                                                        |
-| `final`     | `tilelang` + the GitHub Actions runner (no TileOPs source baked).                                                                                                                                                                                                        |
+| Stage       | Contents                                                                                                                                                                                                          |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime`   | Python 3.12 + torch / torchvision `2.13.0 / 0.28.0 +cu132` + triton `3.7.1` + tilelang build/runtime deps (incl. `apache-tvm-ffi 0.1.11`). No torchaudio: no cu132 build exists. **No tilelang itself.**          |
+| `post-fa3`  | `runtime` + pytest / pytest-xdist / ruff / pytest-timeout / py-spy + FlashAttention-3 (built from the `hopper/` source).                                                                                          |
+| `fa2`       | `post-fa3` + FlashAttention-2 (`flash-attn 2.8.3.post1`, source-built in its own layer so changes to the bench loop never recompile it).                                                                          |
+| `fullstack` | `fa2` + flash-linear-attention `0.5.2` + vLLM `0.27.1` + mamba-ssm `2.3.2.post1` + DeepGEMM `2.1.1.post3`. flashinfer comes in at vLLM's pin (`0.6.16.post3`) — no separate upgrade. sgl-kernel is not installed. |
+| `tilelang`  | `fullstack` + the tilelang wheel (`--no-deps`), then the build-time guard. Built **last** so a SHA bump rebuilds only this layer.                                                                                 |
+| `final`     | `tilelang` + the GitHub Actions runner (no TileOPs source baked).                                                                                                                                                 |
 
 The `tilelang` stage ends by running `scripts/ci/verify_runtime_stack.py` (GPU-free): the build
 fails unless tilelang imports, the installed `apache-tvm-ffi` sits inside the tilelang wheel's
-declared range, the importable tilelang is the one that stage installed, and torch is still
-the cu132 build.
+declared range, and torch is still the cu132 build.

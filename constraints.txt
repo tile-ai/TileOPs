@@ -2,10 +2,9 @@
 # (project dependencies) or the runner Dockerfile install lists (CI-only tooling).
 # torch/torchvision/torchaudio bare (no `+cu132`): the CUDA variant comes from the install
 # index, not this pin, so the same lock also fits the CPU preflight. Do not add `+cu132`.
-# torch/torchvision are pinned to vllm 0.27.1's exact requirements, and are the newest pair
-# the cu132 index publishes. torchaudio has no cu132 build at any version — it is pinned here
-# only because vllm requires it; its wheel declares no dependencies, so pip takes it from
-# PyPI without disturbing the cu132 torch. Nothing in TileOPs imports it.
+# torch/torchvision are pinned to vllm 0.27.1's exact requirements. torchaudio has no cu132 build
+# at any version and TileOPs imports nothing from it; it is here only because vllm requires it,
+# and its dependency-free PyPI wheel satisfies that without disturbing the cu132 torch.
 torch==2.13.0
 torchvision==0.28.0
 torchaudio==2.11.0
