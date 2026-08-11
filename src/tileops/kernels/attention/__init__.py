@@ -18,6 +18,9 @@ from .gqa_fwd import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeAppendKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
+    GQAPrefillWithKVCacheFwdKernel,
+    GQAPrefillWithKVCacheRopeAppendKernel,
+    GQAPrefillWithKVCacheRopeFwdKernel,
 )
 from .gqa_fwd_fp8 import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
 from .gqa_fwd_ws import GQAFwdWsPersistentCausalKernel, GQAFwdWsPersistentKernel
@@ -50,6 +53,9 @@ __all__ = [
     "GQAPrefillPagedWithKVCacheRopeAppendKernel",
     "GQAPrefillPagedWithKVCacheRopeFwdKernel",
     "GQAPrefillVarlenFwdKernel",
+    "GQAPrefillWithKVCacheFwdKernel",
+    "GQAPrefillWithKVCacheRopeAppendKernel",
+    "GQAPrefillWithKVCacheRopeFwdKernel",
     "GQASlidingWindowFwdWgmmaPipelinedKernel",
     "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
     "MHADecodeKernel",

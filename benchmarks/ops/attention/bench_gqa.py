@@ -13,6 +13,7 @@ from benchmarks.benchmark_base import (
 from benchmarks.ops.attention.manifest_params import (
     gqa_prefill_args,
     gqa_prefill_paged_args,
+    gqa_prefill_with_kv_cache_args,
     gqa_qkv_args,
     manifest_params,
 )
@@ -30,11 +31,13 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
+    GroupedQueryAttentionPrefillWithKVCacheFwdOp,
 )
 from workloads.attention.gqa import (
     GQAPrefillFwdWorkload,
     GQAPrefillPagedWithKVCacheFwdWorkload,
     GQAPrefillVarlenFwdWorkload,
+    GQAPrefillWithKVCacheFwdWorkload,
     GroupedQueryAttentionBwdWorkload,
     GroupedQueryAttentionFwdWorkload,
     uniform_packed_prefill_inputs,
@@ -43,6 +46,7 @@ from workloads.attention.gqa import (
 _GQA_FWD_OP = "GroupedQueryAttentionFwdOp"
 _GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
 _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
+_GQA_PREFILL_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillWithKVCacheFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
 
 
@@ -486,6 +490,67 @@ def _fp8_paged_cache_inputs(
         block_table,
         max_seqlen_q,
     )
+
+
+_GQA_PREFILL_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
+    load_workloads(_GQA_PREFILL_WITH_KV_CACHE_FWD_OP),
+    gqa_prefill_with_kv_cache_args,
+    tune=False,
+)
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len_new, cache_lens, seqlen_kv, heads, heads_kv, dim, causal, "
+    "fuse_rope, rotary_dim, softcap, dtype, tune",
+    _GQA_PREFILL_WITH_KV_CACHE_FWD_BENCH_PARAMS,
+)
+def test_gqa_prefill_with_kv_cache_fwd_bench(
+    batch: int,
+    seq_len_new: int,
+    cache_lens: list[int],
+    seqlen_kv: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    causal: bool,
+    fuse_rope: bool,
+    rotary_dim: Optional[int],
+    softcap: Optional[float],
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = GQAPrefillWithKVCacheFwdWorkload(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_new,
+        seqlen_kv,
+        cache_lens,
+        dim,
+        causal,
+        dtype,
+        fuse_rope=fuse_rope,
+        rotary_dim=rotary_dim,
+        softcap=softcap,
+    )
+    inputs = test.gen_inputs()
+    op = GroupedQueryAttentionPrefillWithKVCacheFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        seq_len_new=seq_len_new,
+        seqlen_kv=seqlen_kv,
+        dim=dim,
+        is_causal=causal,
+        softcap=softcap,
+        tune=tune,
+        fuse_rope=fuse_rope,
+        max_position=max(cache_lens) + seq_len_new if fuse_rope else None,
+        rotary_dim=rotary_dim,
+    )
+    bm = ManifestBenchmark(_GQA_PREFILL_WITH_KV_CACHE_FWD_OP, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
 
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(

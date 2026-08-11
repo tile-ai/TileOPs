@@ -278,6 +278,49 @@ class GQAPrefillVarlenFwdWorkload(WorkloadBase):
 
 
 
+class GQAPrefillWithKVCacheFwdWorkload(WorkloadBase):
+
+    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_new: int,
+                 seqlen_kv: int, cache_lens: list[int], dim: int, is_causal: bool,
+                 dtype: torch.dtype, fuse_rope: bool = False,
+                 rotary_dim: int | None = None, softcap: float | None = None) -> None:
+        if len(cache_lens) != batch:
+            raise ValueError("cache_lens length must equal batch")
+        if any(old_len < 0 or old_len + seq_len_new > seqlen_kv for old_len in cache_lens):
+            raise ValueError("cache_lens + seq_len_new must fit within seqlen_kv")
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len_new = seq_len_new
+        self.seqlen_kv = seqlen_kv
+        self.cache_lens = cache_lens
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.fuse_rope = fuse_rope
+        self.rotary_dim = rotary_dim
+        self.softcap = softcap
+
+    def gen_inputs(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+               torch.Tensor]:
+        q = torch.randn(
+            self.batch, self.seq_len_new, self.heads, self.dim,
+            device="cuda", dtype=self.dtype).contiguous()
+        k_new = torch.randn(
+            self.batch, self.seq_len_new, self.heads_kv, self.dim,
+            device="cuda", dtype=self.dtype).contiguous()
+        v_new = torch.randn_like(k_new)
+        k_cache = torch.randn(
+            self.batch, self.seqlen_kv, self.heads_kv, self.dim,
+            device="cuda", dtype=self.dtype).contiguous()
+        v_cache = torch.randn_like(k_cache)
+        cache_seqlens = torch.tensor(
+            self.cache_lens, dtype=torch.int32, device="cuda")
+        return q, k_new, v_new, k_cache, v_cache, cache_seqlens
+
+
 class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, q_lens: list[int],

@@ -131,6 +131,24 @@ def gqa_prefill_paged_args(
     )
 
 
+def gqa_prefill_with_kv_cache_args(
+    workload: dict[str, Any],
+) -> tuple[int, int, list[int], int, int, int, int, bool, bool, int | None, float | None]:
+    return (
+        workload["batch"],
+        workload["seq_len_new"],
+        list(workload["cache_lens"]),
+        workload["seqlen_kv"],
+        workload["heads"],
+        workload["heads_kv"],
+        workload["dim"],
+        workload.get("is_causal", True),
+        workload.get("fuse_rope", False),
+        workload.get("rotary_dim"),
+        workload.get("softcap"),
+    )
+
+
 def mha_decode_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int]:
     batch, seq_len_q, heads, dim = workload["q_shape"]
     _, seq_len_kv, _, _ = workload["kv_shape"]

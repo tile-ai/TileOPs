@@ -18,6 +18,8 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
+    GQAPrefillWithKVCacheFwdKernel,
+    GQAPrefillWithKVCacheRopeFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
@@ -26,6 +28,7 @@ from tileops.kernels.kernel_base import Kernel
 from ..op_base import Op
 from ..rope import _base_freqs
 from .selection import (
+    CONTIGUOUS_PREFILL_KEYS,
     DECODE_KEYS,
     DENSE_PREFILL_KEYS,
     PACKED_PREFILL_KEYS,
@@ -44,6 +47,7 @@ __all__ = [
     "GroupedQueryAttentionPrefillFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
+    "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]
@@ -734,6 +738,219 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
         return gqa_prefill_varlen_fwd_roofline(**kwargs)
 
+
+
+class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
+    """Fixed-shape GQA prefill with contiguous KV-cache append. Layout: BSHD.
+
+    ``cache_seqlens`` stores each request's logical cache length before the
+    uniform current chunk is appended.  Existing keys occupy the prefix of
+    ``k_cache`` / ``v_cache`` and the append is performed in place.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len_new: int,
+        seqlen_kv: int,
+        dim: int,
+        is_causal: bool = True,
+        sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        fuse_rope: bool = False,
+        rope_base: float = 10000.0,
+        max_position: Optional[int] = None,
+        rotary_dim: Optional[int] = None,
+    ) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        _validate_positive(batch=batch, seq_len_new=seq_len_new, seqlen_kv=seqlen_kv)
+        if seq_len_new > seqlen_kv:
+            raise ValueError("seq_len_new must not exceed contiguous KV-cache capacity")
+        if fuse_rope:
+            rotary_dim = _rope_rotary_dim(dim, rotary_dim)
+            if max_position is None:
+                raise ValueError("max_position is required when fuse_rope=True")
+            _validate_positive(max_position=max_position)
+        elif rotary_dim is not None:
+            raise ValueError("rotary_dim requires fuse_rope=True")
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.groups = heads // heads_kv
+        self.seq_len_new = seq_len_new
+        self.seqlen_kv = seqlen_kv
+        self.dim = dim
+        self.is_causal = is_causal
+        self.sm_scale = _attention_scale(dim, sm_scale)
+        self.softcap = _score_softcap(softcap)
+        self.fuse_rope = fuse_rope
+        self.rope_base = rope_base
+        self.max_position = max_position
+        self.rotary_dim = rotary_dim
+        self._rope_cos_cache: Dict[tuple[torch.device, torch.dtype],
+                                   tuple[torch.Tensor, torch.Tensor]] = {}
+        self.tune = tune
+        self.dispatch_kernel(kernel_map)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "gqa_prefill_with_kv_cache_fwd_kernel": GQAPrefillWithKVCacheFwdKernel,
+            "gqa_prefill_with_kv_cache_rope_fwd_kernel": GQAPrefillWithKVCacheRopeFwdKernel,
+        }
+
+    def attention_call(self, dtype: torch.dtype) -> AttentionCall:
+        return AttentionCall(
+            dtype=dtype,
+            batch=self.batch,
+            heads=self.heads,
+            heads_kv=self.heads_kv,
+            dim=self.dim,
+            max_seqlen_q=self.seq_len_new,
+            max_seqlen_kv=self.seqlen_kv,
+            seqlen_kv=self.seqlen_kv,
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+            cache_dtype=dtype,
+            fuse_rope=self.fuse_rope,
+            max_position=self.max_position,
+            rotary_dim=self.rotary_dim,
+            tune=self.tune,
+        )
+
+    def _get_kernel(self, key: str, call: AttentionCall) -> Kernel:
+        def build() -> Kernel:
+            return self.kernel_map[key](
+                batch=call.batch,
+                heads=call.heads,
+                heads_kv=call.heads_kv,
+                seq_len_new=call.max_seqlen_q,
+                seqlen_kv=call.seqlen_kv,
+                dim=call.dim,
+                is_causal=call.is_causal,
+                dtype=call.dtype,
+                sm_scale=call.sm_scale,
+                softcap=call.softcap,
+                max_position=call.max_position,
+                rotary_dim=call.rotary_dim,
+                tune=call.tune,
+            )
+
+        return self.get_or_build_kernel(key, call.dtype, build)
+
+    def _get_rope_cos_sin(
+        self,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.max_position is None:
+            raise ValueError("max_position is required when fuse_rope=True")
+        cached = self._rope_cos_cache.get((device, dtype))
+        if cached is None:
+            cached = _base_freqs(
+                self.rotary_dim,
+                self.max_position,
+                base=self.rope_base,
+                dtype=dtype,
+                device=device,
+            )
+            self._rope_cos_cache[(device, dtype)] = cached
+        return cached
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+    ) -> None:
+        tensors = {
+            "q": q,
+            "k_new": k_new,
+            "v_new": v_new,
+            "k_cache": k_cache,
+            "v_cache": v_cache,
+            "cache_seqlens": cache_seqlens,
+        }
+        for name, tensor in tensors.items():
+            if tensor.device.type != "cuda":
+                raise ValueError(f"{name} must be on a cuda device, got {tensor.device}")
+            if not tensor.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
+
+        q_shape = (self.batch, self.seq_len_new, self.heads, self.dim)
+        kv_new_shape = (self.batch, self.seq_len_new, self.heads_kv, self.dim)
+        cache_shape = (self.batch, self.seqlen_kv, self.heads_kv, self.dim)
+        expected_shapes = {
+            "q": q_shape,
+            "k_new": kv_new_shape,
+            "v_new": kv_new_shape,
+            "k_cache": cache_shape,
+            "v_cache": cache_shape,
+            "cache_seqlens": (self.batch,),
+        }
+        for name, shape in expected_shapes.items():
+            actual = tuple(tensors[name].shape)
+            if actual != shape:
+                raise ValueError(f"{name} must have shape {shape}, got {actual}")
+
+        _validate_attention_dtype(q.dtype)
+        for name in ("k_new", "v_new", "k_cache", "v_cache"):
+            if tensors[name].dtype != q.dtype:
+                raise ValueError(f"Expected {name}.dtype {q.dtype}, got {tensors[name].dtype}")
+        if cache_seqlens.dtype != torch.int32:
+            raise ValueError(
+                f"cache_seqlens must have dtype torch.int32, got {cache_seqlens.dtype}")
+
+        min_cache_len = int(cache_seqlens.min().item())
+        max_total_len = int(cache_seqlens.max().item()) + self.seq_len_new
+        if min_cache_len < 0:
+            raise ValueError("cache_seqlens must be non-negative")
+        if max_total_len > self.seqlen_kv:
+            raise ValueError(
+                "cache_seqlens + seq_len_new exceeds contiguous KV capacity: "
+                f"max total length {max_total_len}, capacity {self.seqlen_kv}")
+        if self.fuse_rope and max_total_len > self.max_position:
+            raise ValueError(
+                "cache_seqlens + seq_len_new exceeds RoPE max_position: "
+                f"max total length {max_total_len}, max_position {self.max_position}")
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+    ) -> torch.Tensor:
+        self._validate_forward_inputs(q, k_new, v_new, k_cache, v_cache, cache_seqlens)
+        self.dtype = q.dtype
+        call = self.attention_call(q.dtype)
+        key = self.select_kernel_key(CONTIGUOUS_PREFILL_KEYS, call)
+        cos_table = sin_table = None
+        if self.fuse_rope:
+            cos_table, sin_table = self._get_rope_cos_sin(q.device, q.dtype)
+        return self._get_kernel(key, call)(
+            q, k_new, v_new, k_cache, v_cache, cache_seqlens, cos_table, sin_table)
+
+    @property
+    def total_flops(self) -> int:
+        raise NotImplementedError(
+            "total_flops depends on cache_seqlens; compute it per call or workload")
+
+    @property
+    def total_memory(self) -> int:
+        raise NotImplementedError(
+            "total_memory depends on cache_seqlens; compute it per call or workload")
 
 
 class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):

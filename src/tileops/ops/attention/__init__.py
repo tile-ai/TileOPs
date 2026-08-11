@@ -13,6 +13,7 @@ from .gqa import (
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
+    GroupedQueryAttentionPrefillWithKVCacheFwdOp,
     GroupedQueryAttentionSlidingWindowFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "GroupedQueryAttentionPrefillFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
+    "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "MultiHeadAttentionBwdOp",

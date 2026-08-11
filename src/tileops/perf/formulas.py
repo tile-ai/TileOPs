@@ -55,6 +55,7 @@ __all__ = [
     "gqa_fwd_roofline",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
+    "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "grouped_gemm_roofline",
@@ -413,6 +414,51 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(
     append_kv_elems = new_kv_elems
     o_elems = q_elems
     metadata_bytes = (batch + 1) * 4 + batch * 4 + batch * max_pages_per_req * 4
+    nbytes = (
+        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
+    ) * elem_bytes + metadata_bytes
+    return int(flops), int(nbytes)
+
+
+def gqa_prefill_with_kv_cache_fwd_roofline(
+    op: Any | None = None,
+    **kwargs: Any,
+) -> tuple[int, int]:
+    """Roofline for fixed-shape prefill against a contiguous KV cache."""
+    data = _shape_or_attrs(op, kwargs)
+    batch = int(data["batch"])
+    seq_len_new = int(data["seq_len_new"])
+    seqlen_kv = int(data["seqlen_kv"])
+    heads = int(data["heads"])
+    heads_kv = int(data["heads_kv"])
+    dim = int(data["dim"])
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    cache_lens = data.get("cache_lens")
+    if cache_lens is None:
+        cache_lens = [seqlen_kv - seq_len_new] * batch
+    if len(cache_lens) != batch:
+        raise ValueError("cache_lens length must equal batch")
+
+    visible = 0
+    old_kv_tokens = 0
+    for old_len in cache_lens:
+        old_len = int(old_len)
+        old_kv_tokens += old_len
+        visible += (
+            seq_len_new * old_len + seq_len_new * (seq_len_new + 1) // 2
+            if is_causal
+            else seq_len_new * (old_len + seq_len_new)
+        )
+    flops = 4 * heads * visible * dim
+
+    total_q = batch * seq_len_new
+    q_elems = total_q * heads * dim
+    old_kv_elems = 2 * old_kv_tokens * heads_kv * dim
+    new_kv_elems = 2 * total_q * heads_kv * dim
+    append_kv_elems = new_kv_elems
+    o_elems = q_elems
+    metadata_bytes = batch * 4
     nbytes = (
         q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
     ) * elem_bytes + metadata_bytes

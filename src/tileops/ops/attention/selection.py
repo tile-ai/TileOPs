@@ -9,6 +9,7 @@ contradict the user-visible ``backend`` parameter. Choosing among the keys is
 from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype, uses_sliding_window
 
 __all__ = [
+    "CONTIGUOUS_PREFILL_KEYS",
     "DECODE_KEYS",
     "PACKED_PREFILL_KEYS",
     "PAGED_DECODE_KEYS",
@@ -17,6 +18,12 @@ __all__ = [
     "check_packed_prefill_request",
     "fp8_dtype",
 ]
+
+#: Implementations of fixed-shape GQA prefill against a contiguous KV cache.
+CONTIGUOUS_PREFILL_KEYS = (
+    "gqa_prefill_with_kv_cache_rope_fwd_kernel",
+    "gqa_prefill_with_kv_cache_fwd_kernel",
+)
 
 #: Implementations of packed GQA prefill, as ``kernel_map`` keys.
 PACKED_PREFILL_KEYS = (

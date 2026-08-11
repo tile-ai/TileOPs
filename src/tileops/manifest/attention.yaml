@@ -220,6 +220,67 @@ GroupedQueryAttentionPrefillFwdOp:
     bench: benchmarks/ops/attention/bench_gqa.py
     bench_manifest_driven: true
 
+GroupedQueryAttentionPrefillWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k_new: {dtype: "same_as(q)"}
+      v_new: {dtype: "same_as(q)"}
+      k_cache: {dtype: "same_as(q)"}
+      v_cache: {dtype: "same_as(q)"}
+      cache_seqlens: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    dtype_combos:
+      - {q: float16, k_new: float16, v_new: float16, k_cache: float16, v_cache: float16, cache_seqlens: int32}
+      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_cache: bfloat16, v_cache: bfloat16, cache_seqlens: int32}
+    params:
+      seq_len_new: {type: int}
+      seqlen_kv: {type: int}
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: float, default: null}
+      softcap: {type: float, default: null}
+      fuse_rope: {type: bool, default: false}
+      rope_base: {type: float, default: 10000.0}
+      max_position: {type: "int | None", default: null}
+      rotary_dim: {type: "int | None", default: null}
+    shape_rules:
+      - "q.shape == (B, S_new, H, D)"
+      - "k_new.shape == (B, S_new, H_kv, D)"
+      - "v_new.shape == (B, S_new, H_kv, D)"
+      - "k_cache.shape == (B, S_kv, H_kv, D)"
+      - "v_cache.shape == (B, S_kv, H_kv, D)"
+      - "cache_seqlens.shape == (B,)"
+      - "o.shape == (B, S_new, H, D)"
+      - "H % H_kv == 0"
+      - "S_new > 0"
+      - "S_kv >= S_new"
+      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
+      - "max_position is None or max_position > 0"
+
+  workloads:
+    - {batch: 8, seq_len_new: 1024, seqlen_kv: 33792, cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-contiguous-b8-prefix32k-chunk1k-partial-rope64-fp16"}
+    - {batch: 8, seq_len_new: 512, seqlen_kv: 4608, cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], heads: 32, heads_kv: 8, dim: 128, is_causal: true, fuse_rope: true, max_position: 4608, rotary_dim: null, dtypes: [float16], label: "llama31-8b-prefill-contiguous-b8-prefix4k-chunk512-full-rope-fp16"}
+    - {batch: 4, seq_len_new: 512, seqlen_kv: 4608, cache_lens: [4096, 4096, 4096, 4096], heads: 8, heads_kv: 2, dim: 64, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-contiguous-softcap50-b4-prefix4k-chunk512-fp16"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel_map:
+      gqa_prefill_with_kv_cache_fwd_kernel: GQAPrefillWithKVCacheFwdKernel
+      gqa_prefill_with_kv_cache_rope_append_kernel: GQAPrefillWithKVCacheRopeAppendKernel
+      gqa_prefill_with_kv_cache_rope_fwd_kernel: GQAPrefillWithKVCacheRopeFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_prefill_contiguous.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
+
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
