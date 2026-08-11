@@ -131,11 +131,8 @@ class FFTC2COp(Op):
         self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
         kernel = self._get_kernel(n, batch_size, x.dtype, x.device.index)
         self.kernel = kernel
-        y_real, y_imag = kernel(x_real, x_imag,
-                                self.twiddle_real, self.twiddle_imag)
+        y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
 
-        # Reshape back to original shape
-        y_real = y_real.reshape(original_shape)
-        y_imag = y_imag.reshape(original_shape)
-
-        return torch.complex(y_real, y_imag)
+        # The kernel writes the final butterfly directly in interleaved layout;
+        # view_as_complex is metadata-only and launches no packing kernel.
+        return torch.view_as_complex(y_pair.reshape(*original_shape, 2))

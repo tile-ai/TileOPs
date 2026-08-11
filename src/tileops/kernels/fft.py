@@ -47,8 +47,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
     Returns:
         A JIT-decorated function _fft_lut_func(block_size, threads) that
         itself returns a compiled prim_func taking
-        (x_real, x_imag, lut_real, lut_imag) and producing (y_real, y_imag).
-        Input/output tensors have shape (batch_size, n).
+        (x_real, x_imag, lut_real, lut_imag), split scratch outputs, and an
+        interleaved real/imaginary output with shape (batch_size, n, 2).
     """
     if dtype == 'complex64':
         real_dtype = 'float32'
@@ -66,7 +66,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
     B = batch_size  # shorter alias for tensor shapes
 
     @tilelang.jit(
-        out_idx=[4, 5],
+        out_idx=[4, 5, 6],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -88,11 +88,36 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         accum_dtype = real_dtype
 
         @T.macro
+        def store_complex(
+            y_real: T.Tensor((B, n), real_dtype),
+            y_imag: T.Tensor((B, n), real_dtype),
+            y_pair: T.Tensor((B, n, 2), real_dtype),
+            batch,
+            index,
+            value_real,
+            value_imag,
+            write_pair,
+        ):
+            """Write split intermediates or the final interleaved result."""
+            if write_pair:
+                # Vectorized pair store: generates STG.E.64 (c64) / STG.E.128 (c128)
+                # Stage into local buffer first, then vectorized copy
+                pair = T.alloc_local((2,), real_dtype)
+                pair[0] = T.cast(value_real, real_dtype)
+                pair[1] = T.cast(value_imag, real_dtype)
+                for v in T.vectorized(2):
+                    y_pair[batch, index, v] = pair[v]
+            else:
+                y_real[batch, index] = T.cast(value_real, real_dtype)
+                y_imag[batch, index] = T.cast(value_imag, real_dtype)
+
+        @T.macro
         def fused_bitrev_smem_stages(
             x_real: T.Tensor((B, n), real_dtype),
             x_imag: T.Tensor((B, n), real_dtype),
             y_real: T.Tensor((B, n), real_dtype),
             y_imag: T.Tensor((B, n), real_dtype),
+            y_pair: T.Tensor((B, n, 2), real_dtype),
         ):
             """
             Fused bit-reversal load + SMEM butterfly stages in a single kernel.
@@ -173,22 +198,40 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                 # ---- store ----
                 for i in T.Parallel(threads):
                     if i < smem_per_block:
-                        y_real[bb, bx * smem_per_block + i] = smem_r[i]
-                        y_imag[bb, bx * smem_per_block + i] = smem_i[i]
+                        store_complex(
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            bx * smem_per_block + i,
+                            smem_r[i],
+                            smem_i[i],
+                            lut_stage_count == 0,
+                        )
 
                 for i in T.Parallel(threads):
                     j = i + threads
                     if j < smem_per_block:
-                        y_real[bb, bx * smem_per_block + j] = smem_r[j]
-                        y_imag[bb, bx * smem_per_block + j] = smem_i[j]
+                        store_complex(
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            bx * smem_per_block + j,
+                            smem_r[j],
+                            smem_i[j],
+                            lut_stage_count == 0,
+                        )
 
         @T.macro
         def lut_butterfly_stage(
             y_real: T.Tensor((B, n), real_dtype),
             y_imag: T.Tensor((B, n), real_dtype),
+            y_pair: T.Tensor((B, n, 2), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage,
+            write_pair,
         ):
             """
             One butterfly stage using pre-computed LUT twiddle factors.
@@ -225,10 +268,14 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         t_r = v_r * tw_r - v_i * tw_i
                         t_i = v_r * tw_i + v_i * tw_r
 
-                        y_real[bb, j_idx] = T.cast(u_r + t_r, real_dtype)
-                        y_imag[bb, j_idx] = T.cast(u_i + t_i, real_dtype)
-                        y_real[bb, l_idx] = T.cast(u_r - t_r, real_dtype)
-                        y_imag[bb, l_idx] = T.cast(u_i - t_i, real_dtype)
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, j_idx,
+                            u_r + t_r, u_i + t_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, l_idx,
+                            u_r - t_r, u_i - t_i, write_pair,
+                        )
 
         def _butterfly(u_r, u_i, v_r, v_i, tw_r, tw_i):
             """Radix-2 butterfly: returns (u+t, u-t) where t = v * tw."""
@@ -240,9 +287,11 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         def lut_butterfly_radix4(
             y_real: T.Tensor((B, n), real_dtype),
             y_imag: T.Tensor((B, n), real_dtype),
+            y_pair: T.Tensor((B, n, 2), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage_lo,
+            write_pair,
         ):
             """
             Fused radix-4 butterfly combining two consecutive LUT stages
@@ -291,22 +340,32 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         td2_r = dp_r * w2_i - dp_i * (-w2_r)
                         td2_i = dp_r * (-w2_r) + dp_i * w2_i
 
-                        y_real[bb, base] = T.cast(ap_r + tc_r, real_dtype)
-                        y_imag[bb, base] = T.cast(ap_i + tc_i, real_dtype)
-                        y_real[bb, base + 2 * q] = T.cast(ap_r - tc_r, real_dtype)
-                        y_imag[bb, base + 2 * q] = T.cast(ap_i - tc_i, real_dtype)
-                        y_real[bb, base + q] = T.cast(bp_r + td2_r, real_dtype)
-                        y_imag[bb, base + q] = T.cast(bp_i + td2_i, real_dtype)
-                        y_real[bb, base + 3 * q] = T.cast(bp_r - td2_r, real_dtype)
-                        y_imag[bb, base + 3 * q] = T.cast(bp_i - td2_i, real_dtype)
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base,
+                            ap_r + tc_r, ap_i + tc_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 2 * q,
+                            ap_r - tc_r, ap_i - tc_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + q,
+                            bp_r + td2_r, bp_i + td2_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 3 * q,
+                            bp_r - td2_r, bp_i - td2_i, write_pair,
+                        )
 
         @T.macro
         def lut_butterfly_radix8(
             y_real: T.Tensor((B, n), real_dtype),
             y_imag: T.Tensor((B, n), real_dtype),
+            y_pair: T.Tensor((B, n, 2), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage_lo,
+            write_pair,
         ):
             """
             Fused radix-8 butterfly combining three consecutive LUT stages
@@ -384,22 +443,28 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         c2_r, c2_i, c6_r, c6_i = _butterfly(b2_r, b2_i, b6_r, b6_i, w3c_r, w3c_i)
                         c3_r, c3_i, c7_r, c7_i = _butterfly(b3_r, b3_i, b7_r, b7_i, w3d_r, w3d_i)
 
-                        y_real[bb, base] = T.cast(c0_r, real_dtype)
-                        y_imag[bb, base] = T.cast(c0_i, real_dtype)
-                        y_real[bb, base + q] = T.cast(c1_r, real_dtype)
-                        y_imag[bb, base + q] = T.cast(c1_i, real_dtype)
-                        y_real[bb, base + 2 * q] = T.cast(c2_r, real_dtype)
-                        y_imag[bb, base + 2 * q] = T.cast(c2_i, real_dtype)
-                        y_real[bb, base + 3 * q] = T.cast(c3_r, real_dtype)
-                        y_imag[bb, base + 3 * q] = T.cast(c3_i, real_dtype)
-                        y_real[bb, base + 4 * q] = T.cast(c4_r, real_dtype)
-                        y_imag[bb, base + 4 * q] = T.cast(c4_i, real_dtype)
-                        y_real[bb, base + 5 * q] = T.cast(c5_r, real_dtype)
-                        y_imag[bb, base + 5 * q] = T.cast(c5_i, real_dtype)
-                        y_real[bb, base + 6 * q] = T.cast(c6_r, real_dtype)
-                        y_imag[bb, base + 6 * q] = T.cast(c6_i, real_dtype)
-                        y_real[bb, base + 7 * q] = T.cast(c7_r, real_dtype)
-                        y_imag[bb, base + 7 * q] = T.cast(c7_i, real_dtype)
+                        store_complex(y_real, y_imag, y_pair, bb, base, c0_r, c0_i, write_pair)
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + q, c1_r, c1_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 2 * q, c2_r, c2_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 3 * q, c3_r, c3_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 4 * q, c4_r, c4_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 5 * q, c5_r, c5_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 6 * q, c6_r, c6_i, write_pair,
+                        )
+                        store_complex(
+                            y_real, y_imag, y_pair, bb, base + 7 * q, c7_r, c7_i, write_pair,
+                        )
 
         @T.prim_func
         def _fft_lut_main(
@@ -407,31 +472,37 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
             x_imag: T.Tensor((B, n), real_dtype),         # type: ignore
             lut_real: T.Tensor((lut_size,), real_dtype),  # type: ignore
             lut_imag: T.Tensor((lut_size,), real_dtype),  # type: ignore
+            # Split outputs are global scratch for non-final LUT stages. The
+            # wrapper exposes only y_pair, written by the final stage.
             y_real: T.Tensor((B, n), real_dtype),         # type: ignore
             y_imag: T.Tensor((B, n), real_dtype),         # type: ignore
+            y_pair: T.Tensor((B, n, 2), real_dtype),      # type: ignore
         ) -> None:
             # Fused bit-reversal + SMEM butterfly stages: single kernel launch,
             # one global-memory read of x, one write of y for all SMEM stages.
-            fused_bitrev_smem_stages(x_real, x_imag, y_real, y_imag)
+            fused_bitrev_smem_stages(x_real, x_imag, y_real, y_imag, y_pair)
 
             # LUT stages: use radix-8 (fused triples) where possible,
             # then radix-4 or radix-2 for the remainder.
             r8_count = (lut_stage_count // 3) * 3
+            remainder = lut_stage_count - r8_count
             for s in range(0, r8_count, 3):
                 lut_butterfly_radix8(
-                    y_real, y_imag, lut_real, lut_imag,
+                    y_real, y_imag, y_pair, lut_real, lut_imag,
                     s + lut_stage_start,
+                    remainder == 0 and s + 3 == r8_count,
                 )
-            remainder = lut_stage_count - r8_count
             if remainder == 2:
                 lut_butterfly_radix4(
-                    y_real, y_imag, lut_real, lut_imag,
+                    y_real, y_imag, y_pair, lut_real, lut_imag,
                     r8_count + lut_stage_start,
+                    True,
                 )
             elif remainder == 1:
                 lut_butterfly_stage(
-                    y_real, y_imag, lut_real, lut_imag,
+                    y_real, y_imag, y_pair, lut_real, lut_imag,
                     r8_count + lut_stage_start,
+                    True,
                 )
 
         return _fft_lut_main
@@ -450,10 +521,11 @@ def _fft_c2c_wrapped_kernel(
     x_imag: torch.Tensor,
     lut_real: torch.Tensor,
     lut_imag: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return _fft_c2c_kernel(n, batch_size, dtype)(block_size, threads)(
+) -> torch.Tensor:
+    _, _, y_pair = _fft_c2c_kernel(n, batch_size, dtype)(block_size, threads)(
         x_real, x_imag, lut_real, lut_imag
     )
+    return y_pair
 
 
 @_fft_c2c_wrapped_kernel.register_fake
@@ -464,13 +536,10 @@ def _(
     block_size: int,
     threads: int,
     *inputs: tuple[torch.Tensor, ...]
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     real_dtype = inputs[0].dtype
     device = inputs[0].device
-    return (
-        torch.empty((batch_size, n), dtype=real_dtype, device=device),
-        torch.empty((batch_size, n), dtype=real_dtype, device=device),
-    )
+    return torch.empty((batch_size, n, 2), dtype=real_dtype, device=device)
 
 
 class FFTC2CKernel(Kernel):
@@ -550,7 +619,7 @@ class FFTC2CKernel(Kernel):
         x_imag: torch.Tensor,
         lut_real: torch.Tensor,
         lut_imag: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
         Compute 1D DFT on pre-split real/imaginary parts using a pre-built LUT.
 
@@ -561,7 +630,7 @@ class FFTC2CKernel(Kernel):
             lut_imag: Twiddle imaginary parts, shape (n-1,).
 
         Returns:
-            (y_real, y_imag): FFT output real and imaginary parts, shape (n,).
+            Interleaved FFT output with shape (batch_size, n, 2).
         """
         return _fft_c2c_wrapped_kernel(
             self.n,
