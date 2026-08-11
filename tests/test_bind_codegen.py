@@ -186,12 +186,18 @@ def test_a_builder_accepts_its_op_s_manifest_inputs_by_name(op_name):
     error at review time and here.
     """
     entry = load_manifest()[op_name]
-    expected = tuple(entry["signature"]["inputs"])
-    params = list(inspect.signature(BUILDERS[op_name]).parameters)
-    positional = tuple(params[: len(expected)])
+    inputs = tuple(entry["signature"]["inputs"])
+    declared_params = set(entry["signature"].get("params") or {})
+    parameters = list(inspect.signature(BUILDERS[op_name]).parameters.values())
 
-    assert positional == expected, (
-        f"{op_name}'s builder takes {positional}, manifest declares {expected}"
+    tensors = [p for p in parameters if p.kind is p.POSITIONAL_OR_KEYWORD]
+    keywords = [p for p in parameters if p.kind is p.KEYWORD_ONLY]
+
+    assert tuple(p.name for p in tensors) == inputs, (
+        f"{op_name}'s builder takes {[p.name for p in tensors]} positionally, "
+        f"manifest declares {inputs}"
     )
-    keyword = set(params[len(expected) :])
-    assert keyword == set(entry["signature"].get("params") or {})
+    assert {p.name for p in keywords} == declared_params, (
+        f"{op_name}'s builder takes {sorted(p.name for p in keywords)} by keyword, "
+        f"manifest declares {sorted(declared_params)}"
+    )
