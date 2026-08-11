@@ -846,10 +846,16 @@ def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") 
     Sums ``w[split_k, m, n]`` over the slice axis in fp32 and casts to the
     storage dtype at the boundary. Bandwidth-trivial elementwise kernel; the
     workspace of the shapes worth splitting fits in L2.
+
+    ``C`` is an explicit parameter rather than a JIT-allocated output
+    (``out_idx``): the caller allocates it *before* launching the mainloop, so
+    the allocation no longer sits between the two launches. On short-mainloop
+    shapes the mainloop drains in ~14 us while the host is still allocating,
+    and the span metric charges that idle to us (see ``_splitk_pair``).
     """
     accum_dtype = "float"
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
     def _reduce_func(elems_per_cta: int = 1024) -> Callable:
         def _slice_sum(w, gi, gj):
             # Plain-Python expression builder: runs natively at trace time
@@ -1344,6 +1350,11 @@ def _splitk_pair(
     factory call of *both* kernels into one cached resolution keeps that
     window to the two launches themselves (measured: inter-kernel gap
     4.6-5.7 us -> 1.7-2.6 us on the m<=128 x 2112 x 7168 family).
+
+    The other host step that used to land in that window is allocating ``C``.
+    ``_splitk_reduce_kernel`` therefore takes it as an explicit parameter, and
+    both callers allocate it *before* launching the mainloop, which closes the
+    remaining gap to the 1.1 us floor torch measures on the same rows.
     """
     if coop2:
         mainloop = _gemm_coop2_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
@@ -1688,10 +1699,12 @@ def _gemm_wrapped_kernel(
     so this wrapper is not on the eager forward path.
     """
     if split_k > 1:
+        c = torch.empty((m, n), dtype=a.dtype, device=a.device)
         w = _gemm_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
             block_m, block_n, block_k, num_stages, panel_size, split_k
         )(a, b)
-        return _splitk_reduce_kernel(split_k, m, n, dtype)()(w)
+        _splitk_reduce_kernel(split_k, m, n, dtype)()(w, c)
+        return c
     return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(
         block_m, block_n, block_k, num_stages, panel_size
     )(a, b)
@@ -2001,7 +2014,10 @@ class GemmKernel(Kernel):
                 0,
                 cfg["split_k"],
             )
-            return reduce_(mainloop(a, b))
+            # Allocate C before the first launch: see ``_splitk_pair``.
+            c = torch.empty((self.m, self.n), dtype=a.dtype, device=a.device)
+            reduce_(mainloop(a, b), c)
+            return c
 
         # Split-K path: slice K across grid-z CTAs into an fp32 workspace,
         # then reduce. Selected via config only (``split_k > 1``); the in-tree
@@ -2026,7 +2042,10 @@ class GemmKernel(Kernel):
                 cfg["panel_size"],
                 split_k,
             )
-            return reduce_(mainloop(a, b))
+            # Allocate C before the first launch: see ``_splitk_pair``.
+            c = torch.empty((self.m, self.n), dtype=a.dtype, device=a.device)
+            reduce_(mainloop(a, b), c)
+            return c
 
         # Call the compiled JIT directly (cf. GemvKernel); _gemm_wrapped_kernel is
         # kept only for torch.compile compatibility. trace.run dumps the timeline
