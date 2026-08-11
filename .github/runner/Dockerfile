@@ -189,7 +189,7 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TRITON_CACHE_DIR=/ci-cache/triton \
     PIP_CACHE_DIR=/ci-cache/pip \
     PIP_NO_CACHE_DIR=0
-ARG RUNNER_VERSION=2.334.0
+ARG RUNNER_VERSION=2.336.0
 # The /ci-cache chown below serves only the unmounted image-verification path
 # (`docker run <image> python ...`, see README): ci-runner writes the root-created cache dirs
 # directly. In the mounted CI path the host bind-mount shadows these dirs, so the chown is a
