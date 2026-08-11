@@ -367,7 +367,7 @@ class Op(ABC):
             return entries[key]
 
         # External: this layer cannot know what the target's kernel specializes on, so it
-        # keys on every cheap fact it has — the input signature (§A.4 of the RFC).
+        # keys on every cheap fact it has: the dtype and shape of each input.
         if not inputs:
             raise OpNotAvailableError(
                 f"target {self._settled_target!r} serves {type(self).__name__}, but its "
