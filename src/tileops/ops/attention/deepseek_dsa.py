@@ -82,8 +82,8 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "sparse_mla_kernel",
-            dtype,
-            lambda: self.kernel_map["sparse_mla_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["sparse_mla_kernel"](
                 self.batch,
                 self.seq_len,
                 self.seq_len_kv,

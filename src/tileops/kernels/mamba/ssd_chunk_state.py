@@ -137,9 +137,8 @@ def _ssd_chunk_state_fwd_kernel(
                 # group map to the same bg and therefore load identical b_tile
                 # data.  Those loads are served from L2 after the first CTA
                 # warms the cache, reducing effective Bmat bandwidth by up to
-                # HEADS_PER_GROUP×.  The alternative b,h,c order (c fastest)
-                # shifts chunk_start on every CTA step so no Bmat rows are
-                # reused between consecutive CTAs.
+                # HEADS_PER_GROUP×.  Ordering c fastest instead breaks that
+                # reuse: chunk_start then shifts on every CTA step.
                 bz = bhc // (C * H)
                 bc = (bhc % (C * H)) // H
                 bh = bhc % H

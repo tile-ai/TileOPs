@@ -96,8 +96,8 @@ class MoePermuteNopadFwdOp(Op):
         key = (total_tokens, top_k, num_experts, hidden_size, dtype, device_index)
         return self.get_or_build_kernel(
             "permute_nopad_kernel",
-            key,
-            lambda: self.kernel_map["permute_nopad_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["permute_nopad_kernel"](
                 total_tokens, top_k, num_experts, hidden_size, dtype, self.expert_map
             ),
         )

@@ -73,8 +73,8 @@ class MeanPoolingForwardOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mean_pooling_fwd_kernel",
-            dtype,
-            lambda: self.kernel_map["mean_pooling_fwd_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
                 **self._kernel_params, dtype=dtype,
             ),
         )
@@ -101,7 +101,7 @@ def _device_index(tensor: torch.Tensor) -> int | None:
 _POOL_LAYOUTS: Dict[int, str] = {1: "NCL", 2: "NCHW", 3: "NCDHW"}
 _POOL_DIM_NAMES: Dict[int, Tuple[str, ...]] = {1: ("l",), 2: ("h", "w"), 3: ("d", "h", "w")}
 # Kernel-kwarg suffixes for kernel_size/stride/padding(/dilation).
-# Why: the 1d max-pool kernels historically name their pooling axis `w`.
+# Why: the 1d max-pool kernels name their pooling axis `w`, not `l`.
 _AVG_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = _POOL_DIM_NAMES
 _MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
     1: ("w",),
@@ -268,7 +268,7 @@ class _AvgPoolFwdOpBase(Op):
                     kernel_kwargs["divisor_override"] = self.divisor_override
             return self.kernel_map[kernel_name](**kernel_kwargs)
 
-        return self.get_or_build_kernel(kernel_name, key, build)
+        return self.get_or_build_kernel(kernel_name, key=key, build=build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -573,7 +573,7 @@ class _MaxPoolFwdOpBase(Op):
                 kernel_kwargs[f"dilation_{name}"] = self.dilation[k]
             return self.kernel_map[self._kernel_slot](**kernel_kwargs)
 
-        return self.get_or_build_kernel(self._kernel_slot, key, build)
+        return self.get_or_build_kernel(self._kernel_slot, key=key, build=build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -1067,8 +1067,8 @@ class _AdaptivePool2dFwdOpBase(Op):
         key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x), self.tune)
         kernel = self.get_or_build_kernel(
             self._kernel_slot,
-            key,
-            lambda: self.kernel_map[self._kernel_slot](
+            key=key,
+            build=lambda: self.kernel_map[self._kernel_slot](
                 n=n,
                 c_in=c_in,
                 h_in=h_in,

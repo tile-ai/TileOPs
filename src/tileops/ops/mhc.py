@@ -51,8 +51,8 @@ class MHCPreOp(Op):
         key = (batch, n_expand, c_x, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "mhc_pre_kernel",
-            key,
-            lambda: self.kernel_map["mhc_pre_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["mhc_pre_kernel"](
                 batch, n_expand, c_x, dtype, tune=self.tune,
             ),
         )
@@ -118,8 +118,8 @@ class MHCPostOp(Op):
         key = (batch, n_expand, c_x, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "mhc_post_kernel",
-            key,
-            lambda: self.kernel_map["mhc_post_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["mhc_post_kernel"](
                 batch, n_expand, c_x, dtype, tune=self.tune,
             ),
         )

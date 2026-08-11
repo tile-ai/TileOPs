@@ -111,8 +111,8 @@ class GroupedGemmOp(Op):
         )
         return self.get_or_build_kernel(
             "grouped_gemm_kernel",
-            key,
-            lambda: self.kernel_map["grouped_gemm_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["grouped_gemm_kernel"](
                 batch_sum,
                 batch_count,
                 n,

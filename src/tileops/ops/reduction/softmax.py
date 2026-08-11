@@ -203,8 +203,8 @@ class _SoftmaxBaseOp(Op):
         """Return a cached kernel for (M, N, dtype, device), creating one if needed."""
         return self.get_or_build_kernel(
             self._kernel_key,
-            (M, N, dtype, device_index),
-            lambda: self.kernel_map[self._kernel_key](
+            key=(M, N, dtype, device_index),
+            build=lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype, tune=self.tune,
                 device_index=device_index,
             ),

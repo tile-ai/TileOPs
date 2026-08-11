@@ -64,8 +64,8 @@ class FP8LightningIndexerOp(Op):
         )
         return self.get_or_build_kernel(
             "fp8_lightning_indexer_kernel",
-            key,
-            lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
                 batch,
                 seq_len,
                 heads,

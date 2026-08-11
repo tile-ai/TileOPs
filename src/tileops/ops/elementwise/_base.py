@@ -640,8 +640,8 @@ class _PerDtypeKernels:
         """
         entry = self.get_or_build_kernel(
             self._op_name,
-            (dtype, *shape) if shape else dtype,
-            lambda: self._build_entry(dtype, *shape),
+            key=(dtype, *shape) if shape else dtype,
+            build=lambda: self._build_entry(dtype, *shape),
         )
         self._note_call(dtype)
         return entry
@@ -1076,7 +1076,7 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
     parameters (LeakyReLU, ELU, Hardtanh, Softplus). Leaves own their
     ``__init__`` because scalar names and defaults vary per leaf: each records
     its scalars on ``self``, calls ``dispatch_kernel``, then ``_finalize_init``
-    for the shared state ``UnaryOp.__init__`` would otherwise set.
+    for the state shared with ``UnaryOp.__init__``.
 
     Leaves that declare ``inplace`` in the manifest signature accept it
     in ``__init__`` and pass it to ``_finalize_init``. ``forward`` and
@@ -1229,9 +1229,9 @@ class _IntIdentityUnaryOp(UnaryOp):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         if self._entry(input.dtype).kernel is None:
-            # The kernel path returns contiguous storage; a handler that
-            # inherits the input's strides would make the op's layout depend on
-            # which dtype it was handed, and disagree with the registered fake.
+            # The kernel path returns contiguous storage, so this one does too:
+            # the op's layout must not depend on which dtype it was handed, and
+            # must agree with the registered fake.
             return type(self)._int_handler(input).contiguous()
         return super()._eager_forward(input)
 

@@ -153,7 +153,7 @@ design, calling conventions — live in
   parameter-dependent axes via modulo (`dim = self.dim % x.ndim`); (c) validate each `static_dims`
   commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops bind
   `self._static_axes`, then — whatever the op shape — call
-  `self.get_or_build_kernel(<role>, <key>, <factory>)`; (e)
+  `self.get_or_build_kernel(<name>, <inputs>, key=<key>, build=<factory>)`; (e)
   `.contiguous()` then reshape to the kernel's 2D layout; (f) call the kernel; (g) restore the
   original shape.
 - **Derivation.** Validation expressions come from each `static_dims` entry's
@@ -182,8 +182,9 @@ design, calling conventions — live in
   self.dtype = x.dtype
   kernel = self.get_or_build_kernel(
       "example_cumsum_fwd",
-      (self._cache_key(x.shape), x.dtype),
-      lambda: self.kernel_map["example_cumsum_fwd"](
+      (x,),
+      key=(self._cache_key(x.shape), x.dtype),
+      build=lambda: self.kernel_map["example_cumsum_fwd"](
           M, self.N, "sum", x.dtype, tune=self.tune
       ),
   )

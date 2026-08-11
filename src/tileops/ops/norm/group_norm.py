@@ -146,8 +146,8 @@ class GroupNormFwdOp(Op):
         key = (M, D, cpg, dtype, device_index, self.eps, self.tune)
         kernel = self.get_or_build_kernel(
             "group_norm",
-            key,
-            lambda: self.kernel_map["group_norm"](
+            key=key,
+            build=lambda: self.kernel_map["group_norm"](
                 M, D, self.eps, dtype, self.num_groups, cpg, tune=self.tune,
             ),
         )
@@ -353,8 +353,8 @@ class GroupNormNoAffineFwdOp(Op):
         key = (M, D, dtype, device_index, self.eps, self.tune)
         kernel = self.get_or_build_kernel(
             "group_norm_no_affine",
-            key,
-            lambda: self.kernel_map["group_norm_no_affine"](
+            key=key,
+            build=lambda: self.kernel_map["group_norm_no_affine"](
                 M, D, self.eps, dtype, tune=self.tune,
             ),
         )

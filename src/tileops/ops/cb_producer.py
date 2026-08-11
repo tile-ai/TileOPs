@@ -52,8 +52,8 @@ class CBProducerOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "cb_producer",
-            dtype,
-            lambda: self.kernel_map["cb_producer"](
+            key=dtype,
+            build=lambda: self.kernel_map["cb_producer"](
                 self.batch, self.num_chunks, self.n_groups, self.chunk_len,
                 self.d_state, dtype, tune=self.tune,
             ),

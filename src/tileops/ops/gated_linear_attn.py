@@ -74,7 +74,7 @@ class GLADecodeOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel("GLADecodeKernel", key, build)
+        return self.get_or_build_kernel("GLADecodeKernel", key=key, build=build)
 
     def _infer_output_shapes(
         self,

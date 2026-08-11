@@ -75,8 +75,8 @@ class FusedTopKOp(Op):
         key = (num_tokens, num_experts, top_k, device_index)
         return self.get_or_build_kernel(
             "fused_topk_kernel",
-            key,
-            lambda: self.kernel_map["fused_topk_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["fused_topk_kernel"](
                 num_tokens=num_tokens,
                 num_experts=num_experts,
                 top_k=top_k,

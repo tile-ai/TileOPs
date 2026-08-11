@@ -187,8 +187,8 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mha_decode_kernel",
-            dtype,
-            lambda: self.kernel_map["mha_decode_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["mha_decode_kernel"](
                 self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
                 self.dim, False, dtype, tune=self.tune,
             ),
@@ -237,8 +237,8 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mha_decode_paged_kernel",
-            dtype,
-            lambda: self.kernel_map["mha_decode_paged_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["mha_decode_paged_kernel"](
                 self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
                 self.dim, self.page_size, self.is_causal, dtype, tune=self.tune,
             ),

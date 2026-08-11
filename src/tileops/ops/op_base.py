@@ -6,6 +6,16 @@ from typing import Callable, Hashable, Iterator, Mapping, Optional, Sequence, Ty
 
 import torch
 
+from tileops.backend import (
+    BUILTIN,
+    BuildKernel,
+    OpNotAvailableError,
+    Target,
+    TensorSpec,
+    registered_targets,
+)
+from tileops.backend.dispatch import registered_kernel_builder, select_target
+from tileops.backend.registry import ensure_loaded
 from tileops.kernels.kernel_base import Kernel
 
 from .compile_boundary import register_instance
@@ -14,6 +24,32 @@ from .compile_boundary import register_instance
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
 _Entry = TypeVar("_Entry")
+
+
+class _Unresolved:
+    """The type of :data:`_UNRESOLVED`, so a traceback says what it is."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<not resolved yet>"
+
+
+#: ``Op._builder`` before the first call. Distinct from ``None``, the decided answer
+#: "run the in-tree implementation".
+_UNRESOLVED = _Unresolved()
+
+
+def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
+    """The device of the first tensor a call carries, one level into sequences."""
+    for value in (*args, *kwargs.values()):
+        if isinstance(value, torch.Tensor):
+            return value.device
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                if isinstance(item, torch.Tensor):
+                    return item.device
+    return None
 
 
 def _entry_kernels(entry: object) -> "list[Kernel]":
@@ -63,6 +99,15 @@ class Op(ABC):
             If specified, will be used to calculate Bandwidth in profile().
     """
 
+    # Which set of kernels serves this instance: a target name, ``BUILTIN`` for the in-tree
+    # implementation, or None to decide from the input device. Constructor-only: it settles
+    # kernel identity, so it must not vary per call.
+    target: Target = None
+    # The resolved answer: ``_UNRESOLVED``, ``None`` (in-tree), or a target's build_kernel.
+    _builder: object = _UNRESOLVED
+    # Which target that was, for introspection and error messages.
+    _settled_target: Target = None
+
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
     # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
@@ -90,7 +135,8 @@ class Op(ABC):
 
         Synthesizes ``_validate_dtypes`` (per docs/design/ops-design.md
         §Step 5) and ``eval_roofline`` (per docs/design/roofline.md §4.4)
-        from the subclass's manifest entry. Each codegen pass is a no-op
+        from the subclass's manifest entry, and attaches the manifest param
+        names a backend's ``build_kernel`` is called with. Each codegen pass is a no-op
         when the subclass does not advertise manifest metadata, supplies
         its own override, or is marked ``status: spec-only``. Codegen
         modules are lazy-imported to avoid a circular import at ``Op``
@@ -98,9 +144,11 @@ class Op(ABC):
         """
         super().__init_subclass__(**kwargs)
         from tileops.ops._dtype_codegen import maybe_install_validator
+        from tileops.ops._params_codegen import maybe_install_param_names
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
         maybe_install_validator(cls)
         maybe_install_eval_roofline(cls)
+        maybe_install_param_names(cls)
 
     # FIXME(staged-rollout): the three contract stubs below — _infer_output_shapes,
     # _validate_dtypes and eval_roofline — raise NotImplementedError instead of
@@ -189,11 +237,10 @@ class Op(ABC):
     def forwarded_overrides(self) -> Optional[dict[str, Kernel]]:
         """The caller's replacements, to hand to a sub-op this op builds.
 
-        A composite op must not pass its own resolved ``kernel_map`` down: every
-        key would arrive at the sub-op looking replaced, and a replacement that
-        cannot serve a call is refused rather than passed over — so a default
-        the sub-op would have selected around becomes an error. Only what the
-        caller actually supplied is an override.
+        Only what the caller supplied. A composite op that passed its whole
+        resolved ``kernel_map`` down would mark every key as replaced, and a
+        replacement that cannot serve a call is an error rather than something to
+        select around.
         """
         if not self._overridden_keys or not self.kernel_map:
             return None
@@ -260,6 +307,7 @@ class Op(ABC):
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
+        ensure_loaded()  # before any traced region, which the first call may be inside
         self._install_kernel_map(kernel_map)
         # Conforming __init__s all pass through here — the zero-boilerplate
         # registration point for the compile dispatch boundary.
@@ -267,28 +315,32 @@ class Op(ABC):
 
     def get_or_build_kernel(
         self,
-        role: str,
-        key: Hashable,
-        factory: Callable[[], _Entry],
+        name: str,
+        inputs: Sequence[torch.Tensor] = (),
+        *,
+        key: Hashable = None,
+        build: Optional[Callable[[], _Entry]] = None,
     ) -> _Entry:
-        """Return the entry at ``(role, key)``, calling *factory* once on a miss.
+        """Return the kernel for this call, building it once on a miss.
 
-        This is the Op layer's only get-or-build: an op names the role it is
-        asking about and the specialization it wants, and supplies the one thing
-        that is its own — how the kernel is constructed. Slots are created on
-        first use, so no constructor declares one.
+        The Op layer's only get-or-build, and the one place the two implementations fork.
 
         Args:
-            role: The kernel role this entry plays. Conventionally
-                the ``kernel_map`` dispatch key whose kernel *factory* builds.
-            key: What the entry is specialized for, typically
-                ``(self._cache_key(*input_shapes), dtype)`` or just the dtype.
-            factory: Zero-argument callable building the entry, called only on
-                a miss. See ``_entry_kernels`` for what an entry may hold.
+            name: Which of this op's kernels is being asked for.
+            inputs: The tensors this kernel will be handed, in ``signature.inputs`` order.
+                An external target needs them; omitting them leaves this op in-tree only.
+            key: What the *in-tree* kernel specializes on, typically
+                ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
+                path keys on the input signature instead.
+            build: How the *in-tree* kernel is constructed, called once per key. See
+                ``_entry_kernels`` for what it may return.
 
         Returns:
-            The stored entry, identical across calls with the same
-            ``(role, key)``.
+            The stored entry, identical across calls describing the same specialization.
+
+        Raises:
+            OpNotAvailableError: A target serves this op but the call site handed over no
+                *inputs*; or there is no in-tree implementation and no target.
         """
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo
@@ -297,13 +349,72 @@ class Op(ABC):
         if roles is None:
             roles = {}
             self._kernel_roles = roles
-        entries = roles.get(role)
+        entries = roles.get(name)
         if entries is None:
             entries = {}
-            roles[role] = entries
-        if key not in entries:
-            entries[key] = factory()
-        return entries[key]
+            roles[name] = entries
+
+        builder = self._builder
+        if builder is None or builder is _UNRESOLVED:
+            # In-tree: the op knows what its own kernel specializes on, so it says.
+            if build is None:
+                raise OpNotAvailableError(
+                    f"{type(self).__name__} has no in-tree implementation for {name!r}, so "
+                    f"it needs a target that registers one; known targets for this op: "
+                    f"{registered_targets(type(self).__name__)}")
+            if key not in entries:
+                entries[key] = build()
+            return entries[key]
+
+        # External: this layer cannot know what the target's kernel specializes on, so it
+        # keys on every cheap fact it has: the dtype and shape of each input.
+        if not inputs:
+            raise OpNotAvailableError(
+                f"target {self._settled_target!r} serves {type(self).__name__}, but its "
+                f"{name!r} call site does not hand over the tensors a builder is described "
+                f"with; that op is not wired to external targets yet")
+        specs = tuple(TensorSpec.of(t) for t in inputs)
+        signature = tuple((spec.dtype, spec.shape) for spec in specs)
+        if signature not in entries:
+            entries[signature] = self._build_external(builder, name, specs)
+        return entries[signature]
+
+    def _build_external(
+        self, builder: BuildKernel, name: str, specs: tuple[TensorSpec, ...],
+    ) -> object:
+        """Ask the target for a kernel and hold it to the one rule this boundary has."""
+        kernel = builder(*specs, **self._manifest_params())
+        if not callable(kernel):
+            raise OpNotAvailableError(
+                f"target {self._settled_target!r} built {kernel!r} for "
+                f"{type(self).__name__}.{name}, which is not callable; a builder returns "
+                f"something the op can call with the tensors it was described")
+        return kernel
+
+    def _manifest_params(self) -> dict[str, object]:
+        """The op's manifest params, by name, with the values this instance settled on.
+
+        ``build_kernel`` is called with these by keyword. Names come from the manifest
+        (``_params_codegen``), values off the instance, so a param the manifest defaults to
+        null arrives as the number the op chose.
+
+        Raises:
+            AttributeError: The op declares a manifest param it keeps under another name.
+                The manifest is the contract, so the op is what changes.
+        """
+        names = getattr(self, "__manifest_param_names__", None)
+        if names is None:
+            return {}
+        values = {}
+        for param in names:
+            try:
+                values[param] = getattr(self, param)
+            except AttributeError:
+                raise AttributeError(
+                    f"{type(self).__name__} declares manifest param {param!r} but keeps no "
+                    f"attribute of that name; a backend is called with the manifest's "
+                    f"names, so this op has to store it under one") from None
+        return values
 
     def built_kernels(self, role: str) -> Mapping[Hashable, object]:
         """Return a read-only view of the entries built for *role* so far.
@@ -378,8 +489,62 @@ class Op(ABC):
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
-        """Make the op callable - delegates to forward()"""
-        return self.forward(*args, **kwargs)
+        """Make the op callable.
+
+        Settles which set of kernels serves this instance, once, then delegates to
+        ``forward`` — which is the same for every target. The only fork is inside
+        :meth:`get_or_build_kernel`.
+
+        A call that fails settles nothing. Otherwise one invalid call would aim the instance
+        for good: ``op(x_cpu, weight_cuda)`` picks a target from the first tensor, then
+        ``forward`` rejects the mismatch, and every later call would go where that one
+        pointed.
+        """
+        if self._builder is not _UNRESOLVED:
+            return self.forward(*args, **kwargs)
+
+        self._resolve_builder(args, kwargs)
+        try:
+            return self.forward(*args, **kwargs)
+        except Exception:
+            # Also drop what was built: those kernels belong to the target just unpinned.
+            self._builder = _UNRESOLVED
+            self._settled_target = None
+            self._kernel_roles = {}
+            raise
+
+    def _resolve_builder(self, args: tuple, kwargs: dict) -> None:
+        """Decide which target serves this instance and remember its builder.
+
+        Once decided it does not change: the kernels this instance has built belong to that
+        target. An instance is therefore bound to that target's devices — handing it tensors
+        from elsewhere is a caller error, and the kernel is what reports it. A call carrying
+        no tensor probes no device and decides nothing.
+
+        Raises:
+            OpNotAvailableError: The selected target registers no builder for this op.
+        """
+        device = _first_tensor_device(args, kwargs)
+        target = select_target(self.target, device)
+        if target is None:
+            self._settled_target = None
+            if device is not None:
+                self._builder = None  # a device was probed, so the answer is decided
+            return
+        if target is BUILTIN:
+            self._settled_target = BUILTIN
+            self._builder = None
+            return
+        builder = registered_kernel_builder(type(self).__name__, target)
+        if builder is None:
+            raise OpNotAvailableError(
+                f"target {target!r} registers no kernel builder for "
+                f"{type(self).__name__}; targets that do: "
+                f"{registered_targets(type(self).__name__)}. There is no fall back to the "
+                f"in-tree implementation: those kernels do not run on this target's "
+                f"devices.")
+        self._settled_target = target
+        self._builder = builder
 
     def _cache_key(self, *input_shapes: tuple[int, ...]) -> Hashable:
         """Return a cache key for kernel dispatch given forward-time input shapes.

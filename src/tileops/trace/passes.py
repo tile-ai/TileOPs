@@ -128,7 +128,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
 
     # Flatten the full grid: read each present blockIdx axis's var + extent and
     # build cta_flat = bx + by*gx + bz*gx*gy (only the axes that exist), with
-    # num_cta = gx * gy * gz. A multi-dim grid (gy/gz > 1) would otherwise collide
+    # num_cta = gx * gy * gz, so a multi-dim grid (gy/gz > 1) stays distinct
     # every block sharing a (bx) row on the same slot.
     gx = gy = gz = 1
     cta_flat = tx.IntImm("int32", 0)

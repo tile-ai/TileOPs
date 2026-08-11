@@ -139,8 +139,8 @@ class LayerNormFwdOp(Op):
         key = (m_actual, x.dtype)
         kernel = self.get_or_build_kernel(
             "layer_norm",
-            key,
-            lambda: self.kernel_map["layer_norm"](
+            key=key,
+            build=lambda: self.kernel_map["layer_norm"](
                 m_actual, self.N, self.eps, x.dtype, tune=self.tune,
             ),
         )

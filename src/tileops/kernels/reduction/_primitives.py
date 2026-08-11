@@ -180,16 +180,16 @@ class BlockConfigPlanner:
     def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
         """Whether a ``(block_m, cols)`` fragment is known to be reducible.
 
-        A conservative envelope, not the exact rule.  It was the exact rule
-        while the kernels wrote these fragments from a two-dimensional
-        ``T.Parallel(block_m, cols)``: TileLang flattens that loop, the thread
-        owning column *j* of row *i* is ``(i * cols + j) / vec % threads``, and
-        the map repeats from row to row only when ``cols`` is a whole number of
-        passes or divides one evenly.  Measured 44 of 44 over fp16/fp32 x
-        {128, 256} threads x cols in [256, 4096].
+        A conservative envelope, not the exact rule.  It is exact for a fragment
+        written from a two-dimensional ``T.Parallel(block_m, cols)``: TileLang
+        flattens that loop, the thread owning column *j* of row *i* is
+        ``(i * cols + j) / vec % threads``, and the map repeats from row to row
+        only when ``cols`` is a whole number of passes or divides one evenly.
+        Measured 44 of 44 over fp16/fp32 x {128, 256} threads x cols in
+        [256, 4096].
 
-        The kernels now serialise the row loop, so the map no longer depends on
-        the row and nearly every width builds.  One narrow residue survives --
+        The kernels serialise the row loop, so the map does not depend on the row
+        and nearly every width builds.  One narrow residue survives --
         softmax, log_softmax and logsumexp fail layout inference at
         ``block_m=4, cols=768`` -- and this envelope still excludes it, so it
         stays as the guard.  Everything it admits builds; some of what it

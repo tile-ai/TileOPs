@@ -46,8 +46,8 @@ class NSATopkVarlenOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "nsa_topk_varlen_kernel",
-            dtype,
-            lambda: self.kernel_map["nsa_topk_varlen_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["nsa_topk_varlen_kernel"](
                 **self._kernel_params, dtype=dtype,
             ),
         )
@@ -90,8 +90,8 @@ class NSAFwdVarlenOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "nsa_fwd_varlen_kernel",
-            dtype,
-            lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
                 **self._kernel_params, dtype=dtype,
             ),
         )
@@ -148,8 +148,8 @@ class NSACmpFwdVarlenOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "nsa_cmp_fwd_varlen_kernel",
-            dtype,
-            lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
                 **self._kernel_params, dtype=dtype,
             ),
         )

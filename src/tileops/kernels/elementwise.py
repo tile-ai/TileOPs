@@ -648,9 +648,8 @@ def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread
     """FusedGated explicit_parallel: N elements per thread.
 
     ``op_func(gate, value)`` is the compound operation (see
-    ``_make_fused_gated_direct``).  fp8 accumulation is handled by the
-    caller wrapping ``op_func`` via ``_wrap_fp8_accumulation``, so this
-    factory no longer needs an ``fp8_accum`` parameter.
+    ``_make_fused_gated_direct``).  fp8 accumulation belongs to the caller, which
+    wraps ``op_func`` via ``_wrap_fp8_accumulation``.
 
     Args:
         output_dtype: TileLang dtype string for the output tensor. Defaults to dtype.
@@ -868,9 +867,8 @@ class UnaryKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
-        # Record the resolved strategy so ``self.config`` is the single
-        # source of truth (a coerced/downgraded request or an autotune
-        # result would otherwise leave the key stale or missing).
+        # Record the resolved strategy so ``self.config`` is the single source of
+        # truth for it, whether the request was coerced, downgraded or autotuned.
         self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.

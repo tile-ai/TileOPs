@@ -65,8 +65,8 @@ class SSDStatePassingFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "ssd_state_passing_fwd",
-            key,
-            lambda: self.kernel_map["ssd_state_passing_fwd"](
+            key=key,
+            build=lambda: self.kernel_map["ssd_state_passing_fwd"](
                 batch,
                 num_chunks,
                 n_heads,

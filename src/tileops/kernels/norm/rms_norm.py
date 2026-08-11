@@ -112,21 +112,24 @@ class RMSNormKernel(Kernel):
 
     def __init__(
         self,
-        M: int,
         N: int,
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
+        """Build for a hidden size and dtype.
+
+        The program for a given row count is resolved in ``forward``, memoized by
+        ``_rms_norm_kernel``.
+        """
         super().__init__()
-        self.M = M
         self.N = N
         self.eps = eps
         self.dtype = dtype
         self.N_padded = _align_up(N, ALIGNMENT)
-        self.kernel = _rms_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
-        self.init_config(config, tune)
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
+        self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
@@ -137,29 +140,51 @@ class RMSNormKernel(Kernel):
         return select_row_configs(self.N_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Normalize ``x`` row-wise.
+        """Normalize ``x`` over its trailing ``N`` elements.
 
         Args:
-            x: Input of shape ``(M, N)``.
-            weight: Affine scale of shape ``(N,)``.
+            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device.
 
         Returns:
-            Tensor of shape ``(M, N)``. The alignment padding the prim_func
-            requires is applied and trimmed here, so callers only ever see
-            the semantic ``N``-wide result.
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: Either input is not on a CUDA device.
+
+        Flattening to 2-D rows and a flat weight happens here, as does the alignment padding
+        the prim_func requires.
         """
+        if not (x.is_cuda and weight.is_cuda):
+            raise ValueError(
+                f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
+                f"{weight.device}. Another target's backend serves other devices.")
+
+        original_shape = x.shape
+        rows = x.reshape(-1, self.N)
+        weight = weight.reshape(self.N)
+        m = rows.shape[0]
+
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = _rms_norm_kernel(m, self.N, self.eps, self.dtype_str)
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
         pad = self.N_padded - self.N
         if pad:
-            x = F.pad(x, (0, pad))
+            rows = F.pad(rows, (0, pad))
             weight = F.pad(weight, (0, pad))
         y = _rms_norm_wrapped(
-            self.M,
+            m,
             self.N,
             self.eps,
             self.dtype_str,
             self.config["block_m"],
             self.config["threads"],
-            x,
+            rows,
             weight,
         )
-        return y[:, : self.N] if pad else y
+        if pad:
+            y = y[:, : self.N]
+        return y.reshape(original_shape)

@@ -384,8 +384,8 @@ class _ReduceOpBase(Op):
         """Return a cached kernel for (M, N, dtype), creating one if needed."""
         return self.get_or_build_kernel(
             self._kernel_key,
-            (M, N, dtype),
-            lambda: self.kernel_map[self._kernel_key](
+            key=(M, N, dtype),
+            build=lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype,
                 tune=self.tune, **self._build_kernel_kwargs(),
             ),

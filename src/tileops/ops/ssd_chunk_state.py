@@ -80,8 +80,8 @@ class SSDChunkStateFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "ssd_chunk_state_fwd",
-            key,
-            lambda: self.kernel_map["ssd_chunk_state_fwd"](
+            key=key,
+            build=lambda: self.kernel_map["ssd_chunk_state_fwd"](
                 batch,
                 num_chunks,
                 chunk_len,

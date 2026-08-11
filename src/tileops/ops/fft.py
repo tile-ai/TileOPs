@@ -50,8 +50,8 @@ class FFTC2COp(Op):
         key = (n, batch_size, dtype, device_index)
         return self.get_or_build_kernel(
             "fft_c2c_kernel",
-            key,
-            lambda: self.kernel_map["fft_c2c_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["fft_c2c_kernel"](
                 n, batch_size, dtype, tune=self.tune,
             ),
         )

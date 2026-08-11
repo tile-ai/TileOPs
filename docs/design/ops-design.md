@@ -187,8 +187,9 @@ class ExampleCumsumFwdOp(Op):
         self.dtype = x.dtype  # ditto; the op commits to no dtype before this
         kernel = self.get_or_build_kernel(
             "example_cumsum_fwd",
-            ((M,), x.dtype),
-            lambda: self.kernel_map["example_cumsum_fwd"](
+            (x,),                        # the tensors the kernel will be handed
+            key=((M,), x.dtype),         # what the in-tree kernel specializes on
+            build=lambda: self.kernel_map["example_cumsum_fwd"](
                 M, self.N, "sum", x.dtype, tune=self.tune),
         )
         # Move reduction axis to last, reshape to (M, N), compute, restore.
@@ -199,7 +200,15 @@ class ExampleCumsumFwdOp(Op):
         return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built through `self.get_or_build_kernel`, never through a cache dict the op owns. The kernel is built from `x.dtype`, and the key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the get-or-build call. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
+**Validation.**
+
+- `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim.
+- `forward` calls `self._validate_dtypes(...)` first — not inline dtype comparisons, which are Step 5's job.
+- Every `static_dims` commitment is checked against the tensor shape at the normalized axis, and `_static_axes` is bound from that (non-negative) axis. Both before the get-or-build call.
+- The kernel comes from `self.get_or_build_kernel`, never a cache dict the op owns:
+  - `key=` and `build=` are the in-tree recipe. The kernel is built from `x.dtype` and the key carries it, so a call with another dtype builds a second kernel rather than reusing the first.
+  - `inputs=` is the tensors the kernel is handed, which is what an external target's builder is described with. A new op passes it; an op not yet migrated omits it and stays in-tree only.
+- The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
 **Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
 

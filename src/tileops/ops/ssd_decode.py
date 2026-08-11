@@ -61,8 +61,8 @@ class SSDDecodeOp(Op):
         key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "ssd_decode",
-            key,
-            lambda: self.kernel_map["ssd_decode"](
+            key=key,
+            build=lambda: self.kernel_map["ssd_decode"](
                 batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune),
         )
 

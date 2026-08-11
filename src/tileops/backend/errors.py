@@ -1,8 +1,6 @@
-"""What this layer raises, and the one thing it records instead of raising."""
+"""What this layer raises."""
 
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 
 class BackendError(Exception):
@@ -10,7 +8,7 @@ class BackendError(Exception):
 
 
 class UnknownTargetError(BackendError):
-    """No target claimed this device, or a named target registered nothing."""
+    """A named target is not registered."""
 
 
 class AmbiguousTargetError(BackendError):
@@ -18,19 +16,8 @@ class AmbiguousTargetError(BackendError):
 
 
 class OpNotAvailableError(BackendError):
-    """The target registered no ``get_kernel`` for this op."""
+    """The selected target cannot serve this op, and there is no falling back.
 
-
-@dataclass(frozen=True)
-class BackendLoadFailure:
-    """A backend that failed to import — a record, not a raisable.
-
-    One broken distribution must not stop the others loading, so it is collected instead.
+    A target is selected because the device belongs to other hardware, where in-tree kernels
+    cannot launch at all.
     """
-
-    name: str
-    entry_point: str
-    error: str
-
-    def __str__(self) -> str:
-        return f"{self.name} ({self.entry_point}): {self.error}"

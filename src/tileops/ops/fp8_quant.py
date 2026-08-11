@@ -40,8 +40,8 @@ class FP8QuantOp(Op):
         key = (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "fp8_quant_kernel",
-            key,
-            lambda: self.kernel_map["fp8_quant_kernel"](
+            key=key,
+            build=lambda: self.kernel_map["fp8_quant_kernel"](
                 batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune),
         )
 

@@ -141,8 +141,8 @@ class SharedFusedMoE(FusedMoe):
         """Return the shared-expert MLP kernel for *dtype*, building on first use."""
         return self.get_or_build_kernel(
             "shared_expert_mlp",
-            dtype,
-            lambda: SharedExpertMLPKernel(
+            key=dtype,
+            build=lambda: SharedExpertMLPKernel(
                 num_tokens=self.num_tokens,
                 hidden_size=self.hidden_size,
                 ffn_size=self._shared_mlp_shard_ffn,

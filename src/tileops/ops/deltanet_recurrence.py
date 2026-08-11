@@ -85,7 +85,7 @@ class DeltaNetDecodeOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel(chosen, key, build)
+        return self.get_or_build_kernel(chosen, key=key, build=build)
 
     def _infer_output_shapes(
         self,

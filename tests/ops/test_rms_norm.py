@@ -103,5 +103,63 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
 
 
+# --------------------------------------------------------------------------------------
+# What the seam must not cost: one memo entry per dtype, and a capturable replay
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
+    """The op keys on dtype: the row count reaches the kernel as an argument.
+
+    The TileLang program is still specialized per row count inside
+    ``_rms_norm_kernel``; moving that into the kernel's own cache is kernel-side work.
+    """
+    from tileops.kernels.norm.rms_norm import _rms_norm_kernel
+
+    op = RMSNormFwdOp(normalized_shape=(4096,))
+    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+    programs_before = _rms_norm_kernel.cache_info().currsize
+
+    for rows in (128, 129, 1024):
+        op(torch.randn(rows, 4096, dtype=torch.float16, device="cuda"), weight)
+    op(torch.randn(2, 8, 4096, dtype=torch.float16, device="cuda"), weight)
+
+    assert list(op.built_kernels("rms_norm")) == [torch.float16], "one kernel object"
+    grew = _rms_norm_kernel.cache_info().currsize - programs_before
+    assert grew == 3, "one program per distinct row count, held by the kernel not the op"
+
+
+@pytest.mark.smoke
+def test_the_in_tree_kernel_says_it_is_a_cuda_kernel() -> None:
+    """The op layer is device-agnostic; the requirement belongs to these kernels."""
+    op = RMSNormFwdOp(normalized_shape=(256,))
+
+    with pytest.raises(ValueError, match="is a CUDA kernel"):
+        op(torch.randn(4, 256, dtype=torch.float16), torch.randn(256, dtype=torch.float16))
+
+
+@pytest.mark.smoke
+def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
+    """Building a kernel may compile, so capture only ever sees a memo hit and a launch."""
+    op = RMSNormFwdOp(normalized_shape=(4096,))
+    x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+
+    expected = op(x, weight)  # warm-up, outside the capture
+    torch.cuda.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    static_x = x.clone()
+    with torch.cuda.graph(graph):
+        static_out = op(static_x, weight)
+
+    static_x.copy_(x)
+    graph.replay()
+    torch.cuda.synchronize()
+
+    assert torch.allclose(static_out, expected, atol=1e-3, rtol=1e-3)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
