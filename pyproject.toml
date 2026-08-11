@@ -5,7 +5,7 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0,<2.11.0",
+    "torch>=2.1.0,<2.14.0",
     # tilelang as a compatibility range, not a source or exact pin. CI does not resolve tilelang
     # from this range: the runner image bakes a specific tilelang build and CI installs tileops
     # with --no-deps against it. constraints.txt pins tilelang's runtime deps (torch, triton,

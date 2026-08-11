@@ -10,12 +10,12 @@ modes that a plain `import tilelang` smoke check misses:
      the case that imports lazily here but crashes the first time a kernel compiles under
      GPU (apache-tvm-ffi too old: `undefined symbol: tvm::ffi::ReprPrint`). A no-GPU import
      does not load the compiler library, so only the version range exposes this at build.
-  3. torch is still the cu129 build — a bench baseline that pulls torch from PyPI silently
+  3. torch is still the cu132 build — a bench baseline that pulls torch from PyPI silently
      swaps it to cu128, which breaks prebuilt c10-ABI extensions (e.g. vllm's `_C`:
      `undefined symbol: c10::cuda::c10_cuda_check_implementation`).
-  4. cupti-python is present and did not drag cuda-bindings off torch's pin — it must be
-     installed with --no-deps, because its own pin is one minor behind torch's and a
-     resolved install downgrades cuda-bindings while pip only warns.
+  4. cupti-python is present and did not drag cuda-bindings off torch's pin — it carries its
+     own CUDA-runtime requirements, so it is installed with --no-deps; a resolved install that
+     moved cuda-bindings only warns, and the benchmark timing path breaks later.
 """
 import importlib.metadata as md
 import sys
@@ -33,8 +33,8 @@ def _torch_pin(name: str) -> Requirement | None:
             return req
     return None
 
-# Matches the cu129 base image; bump together with the base/torch CUDA major.minor.
-EXPECTED_TORCH_CUDA = "12.9"
+# Matches the cu132 base image; bump together with the base/torch CUDA major.minor.
+EXPECTED_TORCH_CUDA = "13.2"
 
 installed = md.version("apache-tvm-ffi")
 ffi_req = next(
@@ -52,8 +52,8 @@ if not ffi_req.specifier.contains(installed, prereleases=True):
 
 if torch.version.cuda != EXPECTED_TORCH_CUDA:
     sys.exit(
-        f"FAIL: torch CUDA is {torch.version.cuda}, expected {EXPECTED_TORCH_CUDA} (cu129). "
-        "A bench baseline pulled torch from PyPI; reinstall torch from the cu129 index in "
+        f"FAIL: torch CUDA is {torch.version.cuda}, expected {EXPECTED_TORCH_CUDA} (cu132). "
+        "A bench baseline pulled torch from PyPI; reinstall torch from the cu132 index in "
         "that layer so the c10 ABI stays consistent."
     )
 
@@ -74,8 +74,8 @@ if bindings_pin is not None and not bindings_pin.specifier.contains(
 ):
     sys.exit(
         f"FAIL: cuda-bindings {bindings_installed} violates torch's requirement "
-        f"{bindings_pin.specifier}. cupti-python pins an older cuda-bindings, so it must be "
-        "installed with --no-deps; a resolved install downgrades it and pip only warns."
+        f"{bindings_pin.specifier}. cupti-python carries its own cuda-bindings requirement, so "
+        "it must be installed with --no-deps; a resolved install moves it and pip only warns."
     )
 
 print(

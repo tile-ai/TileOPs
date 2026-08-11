@@ -25,7 +25,7 @@ PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -c constraints.txt
 
 ## Dev Docker image
 
-The prebuilt dev image ships the whole stack — CUDA 12.9, PyTorch 2.10 (cu129), the TileLang commit CI validates, and the benchmark baselines — so nothing needs resolving locally:
+The prebuilt dev image ships the whole stack — CUDA 13.2, PyTorch 2.13 (cu132), the TileLang commit CI validates, and the benchmark baselines — so nothing needs resolving locally:
 
 ```bash
 docker run --rm -it --gpus all \

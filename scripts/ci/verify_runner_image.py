@@ -16,8 +16,8 @@ import torch
 
 def main() -> int:
     print(f"torch {torch.__version__} cuda {torch.version.cuda}")
-    if not torch.__version__.endswith("+cu129"):
-        print(f"FAIL: expected a +cu129 torch build, got {torch.__version__}")
+    if not torch.__version__.endswith("+cu132"):
+        print(f"FAIL: expected a +cu132 torch build, got {torch.__version__}")
         return 1
 
     import tilelang
