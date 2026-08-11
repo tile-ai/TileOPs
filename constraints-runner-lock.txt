@@ -192,7 +192,7 @@ tokenspeed-mla==0.1.8
 tokenspeed-triton==3.8.10.post20260721
 torch==2.13.0+cu132
 torch-c-dlpack-ext==0.1.5
-torchaudio==2.11.0
+torchaudio==2.11.0+cpu
 torchcodec==0.15.0+cu132
 torchvision==0.28.0+cu132
 tqdm==4.67.3
