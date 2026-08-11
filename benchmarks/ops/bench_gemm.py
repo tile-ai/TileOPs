@@ -3,7 +3,7 @@ from typing import Any, Callable, Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
@@ -126,34 +126,61 @@ def _prepare_marlin_w4a16_baseline(
     n: int,
     k: int,
     use_fp32_reduce: bool,
+    activation: torch.Tensor,
+    packed_weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_zero: torch.Tensor,
 ) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
     from vllm import _custom_ops as ops
     from vllm.model_executor.layers.quantization.utils.marlin_utils import (
         marlin_make_workspace_new,
+        marlin_permute_scales,
+        marlin_zero_points,
+    )
+    from vllm.model_executor.layers.quantization.utils.marlin_utils_test import (
+        get_weight_perm,
+        marlin_weights,
     )
     from vllm.scalar_type import scalar_types
 
     if k % 16 or k % _W4A16_GROUP_SIZE or n % 64:
         raise ValueError("Marlin W4A16 benchmark requires K % 128 == 0 and N % 64 == 0")
 
-    device = torch.device("cuda")
-    activation = torch.randn((m, k), dtype=torch.float16, device=device)
-    qweight = torch.randint(
-        -(2**31),
-        2**31 - 1,
-        (k // 16, n * 2),
-        dtype=torch.int32,
-        device=device,
+    if tuple(activation.shape) != (m, k):
+        raise ValueError(f"activation must have shape {(m, k)}, got {tuple(activation.shape)}")
+    if tuple(packed_weight.shape) != (n, k // 2):
+        raise ValueError(
+            f"packed_weight must have shape {(n, k // 2)}, got {tuple(packed_weight.shape)}"
+        )
+
+    # TileOPs packs the two adjacent K values into each byte. Reconstruct the
+    # exact logical q[N,K], transpose to Marlin's K-major convention, then use
+    # vLLM's official Marlin test-layout and metadata permutation helpers.
+    packed_i32 = packed_weight.to(torch.int32)
+    logical_q = torch.stack(
+        (packed_i32 & 0xF, packed_i32 >> 4),
+        dim=-1,
+    ).reshape(n, k)
+    qweight = marlin_weights(
+        logical_q.T.contiguous(),
+        k,
+        n,
+        4,
+        get_weight_perm(4),
     )
-    scales = torch.rand((k // _W4A16_GROUP_SIZE, n), dtype=torch.float16, device=device)
-    zeros = torch.randint(
-        -(2**31),
-        2**31 - 1,
-        (k // _W4A16_GROUP_SIZE, n // 8),
-        dtype=torch.int32,
-        device=device,
+    scales = marlin_permute_scales(
+        weight_scale.T.to(torch.float16).contiguous(),
+        k,
+        n,
+        _W4A16_GROUP_SIZE,
     )
-    workspace = marlin_make_workspace_new(device)
+    zeros = marlin_zero_points(
+        weight_zero.T.to(torch.int32).contiguous(),
+        k // _W4A16_GROUP_SIZE,
+        n,
+        4,
+    )
+    workspace = marlin_make_workspace_new(activation.device)
 
     def _run_marlin(
         a: torch.Tensor,
@@ -337,6 +364,16 @@ def test_gemm_w4a16_bench(
     op = GemmW4A16Op(group_size=group_size)
     bm = ManifestBenchmark(_W4A16_OP_NAME, op, workload)
 
+    expected = workload.ref_program(*inputs)
+    actual_tileops = op(*inputs)
+    torch.testing.assert_close(actual_tileops, expected, atol=7e-2, rtol=5e-2)
+    tileops_abs = (actual_tileops.float() - expected.float()).abs()
+    tileops_rel = tileops_abs / expected.float().abs().clamp_min(1e-12)
+    print(
+        f"  [correctness] tileops max_abs={tileops_abs.max().item():.9g} "
+        f"max_rel={tileops_rel.max().item():.9g}"
+    )
+
     functors = {
         "tileops": op,
         "torch-dequantized-matmul": workload.torch_dequantized_matmul,
@@ -346,7 +383,11 @@ def test_gemm_w4a16_bench(
         for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
             try:
                 marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
-                    m, n, k, use_fp32_reduce=use_fp32_reduce
+                    m,
+                    n,
+                    k,
+                    use_fp32_reduce,
+                    *inputs,
                 )
             except (ImportError, ModuleNotFoundError) as exc:
                 print(f"  [skip] marlin-{reduce_mode}: {exc}")
@@ -354,6 +395,22 @@ def test_gemm_w4a16_bench(
             actual = marlin(*marlin_inputs)
             if actual.shape != (m, n) or not torch.isfinite(actual).all():
                 raise RuntimeError("Marlin W4A16 baseline smoke check failed")
+            marlin_abs = (actual.float() - expected.float()).abs()
+            marlin_rel = marlin_abs / expected.float().abs().clamp_min(1e-12)
+            try:
+                torch.testing.assert_close(actual, expected, atol=7e-2, rtol=5e-2)
+            except AssertionError as exc:
+                print(
+                    f"  [skip] marlin-{reduce_mode} equivalence failed: "
+                    f"max_abs={marlin_abs.max().item():.9g} "
+                    f"max_rel={marlin_rel.max().item():.9g}: {exc}"
+                )
+                continue
+            print(
+                f"  [correctness] marlin-{reduce_mode} "
+                f"max_abs={marlin_abs.max().item():.9g} "
+                f"max_rel={marlin_rel.max().item():.9g}"
+            )
             torch.cuda.synchronize()
             functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
 

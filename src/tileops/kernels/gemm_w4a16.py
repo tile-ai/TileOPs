@@ -5,6 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.gemm_w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantize_utils import _tir_packed_to_unsigned_convert
 
@@ -186,6 +187,20 @@ class GemmW4A16Kernel(Kernel):
         self.k = k
         self.dtype = dtype
         self.group_size = group_size
+        self.decode_kernel: Optional[GemmW4A16DecodeKernel] = None
+        if m == 1:
+            self.decode_kernel = GemmW4A16DecodeKernel(
+                m,
+                n,
+                k,
+                dtype,
+                config=config,
+                tune=tune,
+                group_size=group_size,
+            )
+            self.kernel = self.decode_kernel.kernel
+            self.config = self.decode_kernel.config
+            return
         self.kernel = _gemm_w4a16_kernel(m, n, k, self.dtype_str, group_size)
         self.init_config(config, tune)
 
@@ -206,6 +221,8 @@ class GemmW4A16Kernel(Kernel):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
+        if self.decode_kernel is not None:
+            return self.decode_kernel(activation, packed_weight, weight_scale, weight_zero)
         compiled = _gemm_w4a16_kernel(self.m, self.n, self.k, self.dtype_str, self.group_size)(
             **self.config
         )
