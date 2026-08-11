@@ -274,3 +274,14 @@ def test_a_call_that_fails_validation_pins_nothing():
     op(*_inputs())
     assert op._settled_target == "cpu_target", "the first call that worked decides"
     assert len(recorder.calls) == 1
+
+
+def test_a_settled_instance_is_bound_to_that_target_s_devices():
+    """One instance, one target. A kernel handed a foreign tensor is what says so."""
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
+    x = torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE, device="cuda")
+    weight = torch.randn(*NORMALIZED_SHAPE, dtype=DTYPE, device="cuda")
+    op(x, weight)
+
+    with pytest.raises(ValueError, match="is a CUDA kernel"):
+        op(*_inputs())  # same signature, CPU tensors

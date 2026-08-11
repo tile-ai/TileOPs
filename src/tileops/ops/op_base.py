@@ -517,7 +517,9 @@ class Op(ABC):
         """Decide which target serves this instance and remember its builder.
 
         Once decided it does not change: the kernels this instance has built belong to that
-        target. A call carrying no tensor probes no device and decides nothing.
+        target. An instance is therefore bound to that target's devices — handing it tensors
+        from elsewhere is a caller error, and the kernel is what reports it. A call carrying
+        no tensor probes no device and decides nothing.
 
         Raises:
             OpNotAvailableError: The selected target registers no builder for this op.
