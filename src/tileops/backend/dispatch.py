@@ -12,19 +12,13 @@ from .protocol import BUILTIN, BuildKernel, DetectFn, Target
 def detect_target(device: torch.device) -> str | None:
     """Return the target whose kernels are written for *device*, or None if there is none.
 
-    Nothing claiming *device* is the normal case — it means no third-party backend is
-    installed for this hardware, so the in-tree implementation runs. Only a genuine
-    conflict raises.
+    None is the normal case: no backend is installed for this hardware, so the in-tree
+    implementation runs. *device* is passed through untouched — reading ``.type`` is the
+    vendor knowledge being delegated.
 
-    *device* is passed through untouched — neither ``.type`` read nor mapped to hardware,
-    since that knowledge is exactly what is being delegated.
-
-    Not memoized, and not locked. An op settles which target serves it once per instance, so
-    each detector is asked once per op rather than once per call; a table to remember that
-    would cost a lock, an invalidation rule, and a staleness question, to save a handful of
-    one-line predicates. Staying lock-free also matters because this runs inside a
-    dynamo-traced ``forward`` the first time an op is called, and dynamo cannot trace
-    entering a lock.
+    Neither memoized nor locked: a target is settled once per op instance, so each detector
+    is asked once per op. A table would cost a lock, an invalidation rule and a staleness
+    question — and the lock cannot be traced by dynamo, which sees an op's first call.
 
     Raises:
         AmbiguousTargetError: More than one target claimed it. Pass ``target=`` to choose.
@@ -61,19 +55,18 @@ def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
 def select_target(requested: Target, device: torch.device | None) -> Target:
     """Decide which target serves this call, in the one place that decides it.
 
-    *requested* wins, then the process default, then detection. Every op comes through
-    here; a copy of this order per op class is how the three drift apart.
+    *requested* wins, then the process default, then detection. A copy of this order per op
+    class is how the three drift apart.
 
     Args:
-        requested: The op's ``target=``. A name is honoured as given and not checked
-            against *device* — naming a target is how a caller overrides detection.
+        requested: The op's ``target=``, honoured as named and not checked against *device*.
             :data:`~.protocol.BUILTIN` forces the in-tree implementation.
         device: Where to detect from, or None when the call has no tensor input.
 
     Returns:
-        A target name, :data:`~.protocol.BUILTIN`, or ``None``. The last two both mean
-        "run the in-tree implementation"; they differ only in how that was decided, which
-        the op layer needs in order to know whether to remember the answer.
+        A target name, :data:`~.protocol.BUILTIN`, or ``None``. The last two both run the
+        in-tree implementation and differ only in how that was decided, which is what tells
+        the op layer whether to remember the answer.
 
     Raises:
         UnknownTargetError: A named target registered nothing.
@@ -93,11 +86,7 @@ def select_target(requested: Target, device: torch.device | None) -> Target:
 
 
 def registered_kernel_builder(op: str, target: str) -> BuildKernel | None:
-    """Return *target*'s ``build_kernel`` for *op*, or None when it registered none.
-
-    The caller decides what a missing one means; see :class:`~.errors.OpNotAvailableError`
-    for why it is never a fallback to the in-tree implementation.
-    """
+    """Return *target*'s ``build_kernel`` for *op*, or None when it registered none."""
     registry.ensure_loaded()
     return registry.BUILDERS.get((op, target))
 
@@ -113,9 +102,8 @@ def registered_targets(op: str | None = None) -> list[str]:
 def set_default_target(target: Target) -> None:
     """Route ops with no explicit ``target=`` to *target*.
 
-    ``None`` restores detection; :data:`~.protocol.BUILTIN` turns replacement off
-    process-wide. One setting, and no environment variable: configuration that changes
-    which kernel runs should be visible in the program.
+    ``None`` restores detection; :data:`~.protocol.BUILTIN` turns replacement off. No
+    environment variable: what decides which kernel runs should be visible in the program.
 
     Raises:
         UnknownTargetError: *target* is a name no backend registered.
@@ -137,8 +125,7 @@ def default_target() -> Target:
 def load_failures() -> tuple[str, ...]:
     """Backends that failed to import and were skipped, one line each.
 
-    Every error above points here, so a broken wheel cannot present itself as "no target
-    serves this device".
+    Every error above points here, so a broken wheel cannot present itself as something else.
     """
     registry.ensure_loaded()
     return tuple(registry.LOAD_FAILURES)

@@ -1,13 +1,9 @@
 """Which params an op hands a backend, taken from its manifest entry.
 
-A backend's ``build_kernel`` is called with the op's ``signature.params`` by keyword
-(docs/design/manifest.md), so the op layer has to know those names. They come from the
-manifest rather than from a hand-written list per op: the manifest is the contract, and a
-second copy would drift from it.
-
-Only the names are generated. Reading them off the instance is one loop in
-``Op._manifest_params``, so there is no function body to synthesize — unlike
-``_dtype_codegen``, whose rules per input need one.
+``build_kernel`` is called with the op's ``signature.params`` by keyword, so the op layer
+needs those names. They come from the manifest rather than a per-op list, which would drift.
+Only the names are generated: reading them off the instance is one loop in
+``Op._manifest_params``, so there is no body to synthesize.
 """
 
 from __future__ import annotations
@@ -24,11 +20,10 @@ def maybe_install_param_names(cls: type) -> None:
 
     Resolution mirrors :func:`tileops.ops._dtype_codegen.maybe_install_validator`: a
     class-attached ``__manifest_signature__`` first, then the manifest entry keyed by class
-    name. A name attached in the class body wins.
+    name. A name in the class body wins.
 
-    Every class gets its own answer, never an inherited one. Params are exactly this op's
-    ``signature.params``, so a class whose entry declares none — or has no entry at all —
-    must hand a backend nothing rather than whatever its base declared.
+    Every class gets its own answer, never an inherited one: params are exactly this op's
+    ``signature.params``, so a class with no entry hands a backend nothing.
     """
     if ATTRIBUTE in cls.__dict__:
         return

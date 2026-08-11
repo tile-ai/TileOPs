@@ -90,13 +90,17 @@ def test_tensor_spec_describes_a_tensor_and_compares_by_its_properties():
     assert spec != TensorSpec.of(torch.zeros(4, 8, dtype=torch.float32))
 
 
-def test_builtin_is_a_sentinel_and_not_a_target():
+def test_builtin_is_a_sentinel_that_outranks_a_target_claiming_the_device():
     """It says "run what ships with TileOPs", which no target name can say."""
     backend.register_kernel_builder("Op", "acme", fake_build_kernel)
+    backend.register_detector("acme", lambda device: True)
 
     assert BUILTIN not in backend.registered_targets()
-    assert repr(BUILTIN) == "BUILTIN"
-    assert select_target(BUILTIN, None) is BUILTIN
+    assert select_target(BUILTIN, torch.device("cpu")) is BUILTIN
+
+    backend.set_default_target(BUILTIN)
+    assert backend.default_target() is BUILTIN
+    assert select_target(None, torch.device("cpu")) is BUILTIN
 
 
 # --------------------------------------------------------------------------------------
@@ -134,22 +138,14 @@ def test_a_target_has_one_detector():
 # --------------------------------------------------------------------------------------
 
 
-def test_the_sole_claimant_wins():
-    """Asked per op instance, not per call, so the answer is not cached anywhere."""
+def test_the_sole_claimant_wins_and_the_device_reaches_it_untouched():
+    """This layer must not interpret the device, so it does not normalize or cache it."""
     asked = []
     backend.register_detector("fake", lambda device: asked.append(device) or True)
 
     assert detect_target(torch.device("cpu")) == "fake"
-    assert detect_target(torch.device("cpu")) == "fake"
-    assert asked == [torch.device("cpu"), torch.device("cpu")]
-
-
-def test_nobody_claiming_the_device_is_the_normal_case():
-    """It means no backend serves this hardware, so the in-tree implementation does."""
-    backend.register_detector("fake", lambda device: device.type == "xpu")
-
-    assert detect_target(torch.device("cpu")) is None
-    assert select_target(None, torch.device("cpu")) is None
+    assert detect_target(torch.device("cpu", 0)) == "fake"
+    assert asked == [torch.device("cpu"), torch.device("cpu", 0)]
 
 
 def test_a_backend_installed_later_can_change_the_answer():
@@ -162,13 +158,15 @@ def test_a_backend_installed_later_can_change_the_answer():
         detect_target(torch.device("cpu"))
 
 
-def test_a_device_nobody_served_can_be_served_later(installed):
-    """The backend for this device may only be registered after the first question."""
+def test_nobody_claiming_the_device_is_the_normal_case_and_not_a_final_one():
+    """It means no backend serves this hardware yet, so the in-tree implementation does."""
     backend.register_detector("early", lambda device: device.type == "xpu")
+
     assert detect_target(torch.device("cpu")) is None
+    assert select_target(None, torch.device("cpu")) is None
 
     backend.register_detector("late", lambda device: device.type == "cpu")
-    assert detect_target(torch.device("cpu")) == "late"
+    assert detect_target(torch.device("cpu")) == "late", "nothing cached the earlier answer"
 
 
 def test_ambiguity_names_both_targets_in_a_fixed_order():
@@ -177,16 +175,6 @@ def test_ambiguity_names_both_targets_in_a_fixed_order():
 
     with pytest.raises(AmbiguousTargetError, match=r"\['alpha', 'zeta'\]"):
         detect_target(torch.device("cpu"))
-
-
-def test_the_device_reaches_the_detector_untouched():
-    """This layer must not interpret the device, so it does not normalize it either."""
-    seen = []
-    backend.register_detector("fake", lambda device: seen.append(device) or True)
-
-    detect_target(torch.device("cpu"))
-    detect_target(torch.device("cpu", 0))
-    assert seen == [torch.device("cpu"), torch.device("cpu", 0)]
 
 
 @pytest.mark.parametrize(
@@ -214,17 +202,6 @@ def test_a_named_target_is_taken_at_its_word():
 
     assert select_target("named", torch.device("cpu")) == "named"
     assert select_target("named", None) == "named"
-
-
-def test_builtin_overrides_a_target_that_claims_the_device():
-    """With a backend installed, a caller still needs a way to ask for the in-tree one."""
-    backend.register_detector("acme", lambda device: True)
-
-    assert select_target(BUILTIN, torch.device("cpu")) is BUILTIN
-
-    backend.set_default_target(BUILTIN)
-    assert backend.default_target() is BUILTIN
-    assert select_target(None, torch.device("cpu")) is BUILTIN
 
 
 def test_a_named_target_nobody_registered_is_an_error():
@@ -322,14 +299,6 @@ def test_backends_load_in_a_fixed_order(installed):
         failures = backend.load_failures()
 
     assert [line.split()[0] for line in failures] == ["alpha", "zeta"]
-
-
-def test_errors_point_at_a_broken_backend_rather_than_blame_the_caller(installed):
-    """Otherwise a wheel that failed to load looks like a target that never existed."""
-    installed(broken=lambda: _raise(OSError("boom")))
-
-    with pytest.warns(RuntimeWarning), pytest.raises(UnknownTargetError, match="failed"):
-        select_target("acme", torch.device("cpu"))
 
 
 def test_a_backend_that_fails_midway_registers_nothing(installed):

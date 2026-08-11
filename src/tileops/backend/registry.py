@@ -21,14 +21,13 @@ ENTRY_POINT_GROUP = "tileops.backends"
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
 
-#: One line per backend that failed to import. Strings rather than records: they are read
-#: to be printed, and a type crossing the boundary should earn its place.
+#: One line per backend that failed to import. Strings, not records: they are read to be
+#: printed.
 LOAD_FAILURES: list[str] = []
 
-#: Which target ops use when they name none. There is deliberately no constant here: the
-#: in-tree implementation is not a target (see the RFC's §3.4), so "no default" means "do
-#: not replace anything". Kept beside the tables so the load transaction and test isolation
-#: cover it.
+#: Which target ops use when they name none. No constant here: the in-tree implementation is
+#: not a target, so "no default" means "replace nothing". Beside the tables so the load
+#: transaction and test isolation cover it.
 default_target: Target = None
 
 #: Set only once every entry point has been tried, so no thread sees a half-built registry.
@@ -48,9 +47,8 @@ def register_detector(target: str, detect: DetectFn) -> None:
 
     Args:
         target: The name this backend gives its set of kernels.
-        detect: Answers "is this the kind of device my kernels are written for". Return
-            ``False`` for devices it does not serve rather than raising. Whether a
-            particular call is supported belongs in ``build_kernel``, not here.
+        detect: Answers "is this the kind of device my kernels are written for", ``False``
+            rather than raising. Per-call support belongs in ``build_kernel``.
 
     Raises:
         BackendError: *target* already has a detector.
@@ -72,13 +70,11 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
         op: The op's manifest key, e.g. ``"RMSNormFwdOp"``.
         target: The name this backend gives its set of kernels.
         build_kernel: Called with a :class:`~.protocol.TensorSpec` per input and the op's
-            params by keyword. Must be lazy: importing the calling module must not compile
-            anything.
+            params by keyword. Must be lazy: importing this module must not compile anything.
 
     Raises:
-        BackendError: ``(op, target)`` is already claimed. A target belongs to one
-            distribution, so a second claim means two installed packages both say they are
-            it — a misinstall, not a race to arbitrate.
+        BackendError: ``(op, target)`` is already claimed — two installed packages both say
+            they are this target, which is a misinstall, not a race to arbitrate.
     """
     with LOCK:
         existing = BUILDERS.get((op, target))
@@ -99,8 +95,7 @@ def describe(fn: Callable) -> str:
 def known_targets() -> set[str]:
     """Every target that registered anything.
 
-    Builders without a detector are legitimate: such a target never wins by detection but
-    stays reachable by an explicit ``target=``.
+    A target with no detector never wins by detection but stays reachable by ``target=``.
     """
     return set(DETECTORS) | {target for _, target in BUILDERS}
 
@@ -108,8 +103,9 @@ def known_targets() -> set[str]:
 def ensure_loaded() -> None:
     """Import every declared backend module, once.
 
-    Lazy by necessity: enumerating at ``import tileops`` would pull in every installed
-    backend, and tilelang with them.
+    Called when the first op is constructed: at ``import tileops`` this would pull in every
+    installed backend and tilelang with them; on the first call it would land inside a
+    ``torch.compile`` region, which cannot trace the lock below.
     """
     global _loaded
     if _loaded:  # fast path: one bool read, no lock
@@ -139,8 +135,7 @@ def ensure_loaded() -> None:
 def _load_all() -> list[str]:
     """Load every entry point, returning the failures. Caller holds the lock.
 
-    Enumerated in a fixed order so that the failure records and their warnings come out the
-    same way every run.
+    Fixed order, so the failure records and warnings come out the same way every run.
     """
     failed = []
     for ep in sorted(entry_points(group=ENTRY_POINT_GROUP), key=lambda e: (e.name, e.value)):
@@ -182,8 +177,7 @@ class RegistryState(NamedTuple):
 def snapshot() -> RegistryState:
     """Capture the registry. Backs both the load transaction and test isolation.
 
-    Not exported: a public save/restore would invite production code to swap registries at
-    runtime.
+    Not exported: a public save/restore invites swapping registries at runtime.
     """
     with LOCK:
         return RegistryState(

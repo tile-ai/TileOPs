@@ -74,19 +74,12 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
 
     (inputs, params), = recorder.calls
     assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
+    # eps defaults to null in the manifest; the op settles it, so a backend gets a number.
     assert params == {"normalized_shape": NORMALIZED_SHAPE, "eps": 1e-6}
     assert torch.equal(out, torch.full_like(x, 7)), "the target's kernel produced the result"
 
-
-def test_an_optional_param_arrives_normalized_not_as_none():
-    """The manifest defaults eps to null; the op settles it, so a backend gets a number."""
-    recorder = _Recorder()
-    _register(recorder)
-
-    RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
-    RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, eps=1e-5)(*_inputs())
-
-    assert [params["eps"] for _, params in recorder.calls] == [1e-6, 1e-5]
+    RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, eps=1e-5)(x, weight)
+    assert recorder.calls[1][1]["eps"] == 1e-5
 
 
 def test_the_op_layer_still_does_its_half():

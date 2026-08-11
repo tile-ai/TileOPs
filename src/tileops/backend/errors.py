@@ -16,10 +16,8 @@ class AmbiguousTargetError(BackendError):
 
 
 class OpNotAvailableError(BackendError):
-    """The selected target cannot serve this op.
+    """The selected target cannot serve this op, and there is no falling back.
 
-    Either it registered no ``build_kernel`` for it, or the op has not been given the
-    tensors to describe yet. Neither falls back to the in-tree implementation: a target is
-    selected because the device belongs to other hardware, where in-tree kernels cannot
-    launch at all.
+    A target is selected because the device belongs to other hardware, where in-tree kernels
+    cannot launch at all.
     """

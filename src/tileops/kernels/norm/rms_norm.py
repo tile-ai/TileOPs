@@ -118,20 +118,19 @@ class RMSNormKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
     ):
-        """Build for a hidden size and dtype. The row count is a launch-time fact.
+        """Build for a hidden size and dtype.
 
         ``M`` is not a construction argument: it changes every step of decode, so taking it
-        here would mean one kernel per row count. The program specialized for a given ``M``
-        is resolved in ``forward`` and memoized by ``_rms_norm_kernel``.
+        here would mean one kernel per row count. The program for a given ``M`` is resolved
+        in ``forward`` and memoized by ``_rms_norm_kernel``.
         """
         super().__init__()
         self.N = N
         self.eps = eps
         self.dtype = dtype
         self.N_padded = _align_up(N, ALIGNMENT)
-        # Tuning needs a compiled program, and a program needs M. Deferred to the first
-        # call, which is also where it belongs: tuning must not happen inside a captured
-        # graph, and a captured graph is preceded by a warm-up call.
+        # Tuning needs a compiled program, and a program needs M — so it waits for the
+        # first call, which is also outside any captured graph.
         self._tune_pending = tune
         self.init_config(config, tune=False)
 
@@ -153,17 +152,15 @@ class RMSNormKernel(Kernel):
         Returns:
             Tensor shaped like *x*.
 
-        The two shapes this kernel wants — a 2-D row block and a flat weight — are its own
-        business, so the flattening happens here rather than in the op. So does the
-        alignment padding the prim_func requires: callers only ever see the semantic result.
+        The 2-D rows and flat weight this kernel wants are its own business, so flattening
+        happens here rather than in the op — as does the padding the prim_func requires.
         """
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
         weight = weight.reshape(self.N)
         m = rows.shape[0]
 
-        # The program for this row count. Exposed as ``self.kernel`` because that is what
-        # autotune and profiling read.
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = _rms_norm_kernel(m, self.N, self.eps, self.dtype_str)
         if self._tune_pending:
             self._tune_pending = False
