@@ -117,21 +117,37 @@ class FFTC2COp(Op):
         if n <= 0 or n & (n - 1) != 0:
             raise ValueError(f"FFT size must be a positive power of 2, got {n}")
 
-        x_real = x.real.contiguous()
-        x_imag = x.imag.contiguous()
         original_shape = x.shape
 
         # Flatten all batch dimensions into a single batch dimension
-        batch_size = x_real[..., 0].numel() if x.ndim > 1 else 1
-        x_real = x_real.reshape(batch_size, n)
-        x_imag = x_imag.reshape(batch_size, n)
+        batch_size = x.numel() // n
 
         self.n = n
         self.dtype = x.dtype
         self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
         kernel = self._get_kernel(n, batch_size, x.dtype, x.device.index)
         self.kernel = kernel
-        y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
+        use_interleaved_input = (
+            "fft_c2c_kernel" not in self._overridden_keys
+            and type(kernel) is FFTC2CKernel
+            and not x.is_conj()
+        )
+        if use_interleaved_input:
+            x_pair = torch.view_as_real(x).reshape(batch_size, n, 2)
+            if not x_pair.is_contiguous():
+                x_pair = x_pair.contiguous()
+            y_pair = kernel.forward_interleaved(
+                x_pair,
+                self.twiddle_real,
+                self.twiddle_imag,
+            )
+        else:
+            # Custom kernel-map overrides retain the established split-input
+            # contract; conjugate views also use this path because
+            # view_as_real requires the conjugate bit to be resolved first.
+            x_real = x.real.contiguous().reshape(batch_size, n)
+            x_imag = x.imag.contiguous().reshape(batch_size, n)
+            y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
 
         # The kernel writes the final butterfly directly in interleaved layout;
         # view_as_complex is metadata-only and launches no packing kernel.

@@ -8,9 +8,6 @@ import torch
 
 from .kernel_base import Kernel
 
-# Sufficient precision for twiddle angles
-_PI = 3.14159265358979323846
-
 
 @functools.lru_cache(maxsize=32)
 def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Callable:
@@ -27,8 +24,9 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
       Each block reads input elements at their bit-reversed positions directly
       into shared memory, eliminating the separate bit-reversal kernel.  It
       then performs all log2(min(n, 2*threads)) butterfly stages entirely in
-      SMEM using on-the-fly trig.  Result: one global-memory read + one write
-      for the entire SMEM phase, regardless of how many stages it covers.
+      SMEM using the pre-computed twiddle LUT. Result: one global-memory read
+      + one write for the entire SMEM phase, regardless of how many stages it
+      covers.
 
     Phase 2 — LUT stages (remaining stages, one kernel each):
       For stages where butterfly strides exceed the SMEM chunk size, each
@@ -47,7 +45,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
     Returns:
         A JIT-decorated function _fft_lut_func(block_size, threads) that
         itself returns a compiled prim_func taking
-        (x_real, x_imag, lut_real, lut_imag), split scratch outputs, and an
+        (x_pair, lut_real, lut_imag), split scratch outputs, and an
         interleaved real/imaginary output with shape (batch_size, n, 2).
     """
     if dtype == 'complex64':
@@ -66,7 +64,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
     B = batch_size  # shorter alias for tensor shapes
 
     @tilelang.jit(
-        out_idx=[4, 5, 6],
+        out_idx=[3, 4, 5],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -113,8 +111,9 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
 
         @T.macro
         def fused_bitrev_smem_stages(
-            x_real: T.Tensor((B, n), real_dtype),
-            x_imag: T.Tensor((B, n), real_dtype),
+            x_pair: T.Tensor((B, n, 2), real_dtype),
+            lut_real: T.Tensor((lut_size,), real_dtype),
+            lut_imag: T.Tensor((lut_size,), real_dtype),
             y_real: T.Tensor((B, n), real_dtype),
             y_imag: T.Tensor((B, n), real_dtype),
             y_pair: T.Tensor((B, n, 2), real_dtype),
@@ -140,8 +139,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         for _bit in T.serial(log2n):
                             rev_idx = (rev_idx << 1) | (temp & 1)
                             temp = temp >> 1
-                        smem_r[i] = x_real[bb, rev_idx]
-                        smem_i[i] = x_imag[bb, rev_idx]
+                        smem_r[i] = x_pair[bb, rev_idx, 0]
+                        smem_i[i] = x_pair[bb, rev_idx, 1]
 
                 # ---- load second half: smem[threads..smem_per_block-1] ----
                 for i in T.Parallel(threads):
@@ -155,8 +154,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         for _bit in T.serial(log2n):
                             rev_idx = (rev_idx << 1) | (temp & 1)
                             temp = temp >> 1
-                        smem_r[j] = x_real[bb, rev_idx]
-                        smem_i[j] = x_imag[bb, rev_idx]
+                        smem_r[j] = x_pair[bb, rev_idx, 0]
+                        smem_i[j] = x_pair[bb, rev_idx, 1]
 
                 T.sync_threads()
 
@@ -164,6 +163,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                 for s in range(smem_stages):
                     m_s = 1 << (s + 1)    # compile-time constant
                     half_m_s = 1 << s     # compile-time constant
+                    lut_base_s = half_m_s - 1
 
                     for i in T.Parallel(threads):
                         if i < smem_per_block // 2:
@@ -172,13 +172,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                             j_idx = group * m_s + k
                             l_idx = j_idx + half_m_s
 
-                            angle = (
-                                -2.0 * _PI
-                                * T.cast(k, "float64")
-                                / T.cast(m_s, "float64")
-                            )
-                            tw_r = T.cos(T.cast(angle, accum_dtype))
-                            tw_i = T.sin(T.cast(angle, accum_dtype))
+                            tw_r = T.cast(lut_real[lut_base_s + k], accum_dtype)
+                            tw_i = T.cast(lut_imag[lut_base_s + k], accum_dtype)
 
                             u_r = T.cast(smem_r[j_idx], accum_dtype)
                             u_i = T.cast(smem_i[j_idx], accum_dtype)
@@ -468,8 +463,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
 
         @T.prim_func
         def _fft_lut_main(
-            x_real: T.Tensor((B, n), real_dtype),         # type: ignore
-            x_imag: T.Tensor((B, n), real_dtype),         # type: ignore
+            x_pair: T.Tensor((B, n, 2), real_dtype),      # type: ignore
             lut_real: T.Tensor((lut_size,), real_dtype),  # type: ignore
             lut_imag: T.Tensor((lut_size,), real_dtype),  # type: ignore
             # Split outputs are global scratch for non-final LUT stages. The
@@ -480,7 +474,9 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         ) -> None:
             # Fused bit-reversal + SMEM butterfly stages: single kernel launch,
             # one global-memory read of x, one write of y for all SMEM stages.
-            fused_bitrev_smem_stages(x_real, x_imag, y_real, y_imag, y_pair)
+            fused_bitrev_smem_stages(
+                x_pair, lut_real, lut_imag, y_real, y_imag, y_pair
+            )
 
             # LUT stages: use radix-8 (fused triples) where possible,
             # then radix-4 or radix-2 for the remainder.
@@ -517,13 +513,12 @@ def _fft_c2c_wrapped_kernel(
     dtype: str,
     block_size: int,
     threads: int,
-    x_real: torch.Tensor,
-    x_imag: torch.Tensor,
+    x_pair: torch.Tensor,
     lut_real: torch.Tensor,
     lut_imag: torch.Tensor,
 ) -> torch.Tensor:
     _, _, y_pair = _fft_c2c_kernel(n, batch_size, dtype)(block_size, threads)(
-        x_real, x_imag, lut_real, lut_imag
+        x_pair, lut_real, lut_imag
     )
     return y_pair
 
@@ -549,7 +544,7 @@ class FFTC2CKernel(Kernel):
 
     Combines two complementary optimizations over the baseline FFTC2CKernel:
 
-    1. SMEM stage fusion: the first log2(min(n, 2*threads))+1 butterfly stages
+    1. SMEM stage fusion: the first log2(min(n, 2*threads)) butterfly stages
        are processed entirely in shared memory within a single kernel launch,
        reducing global memory traffic from O(log N) to O(1) for small-stride
        stages.
@@ -558,7 +553,7 @@ class FFTC2CKernel(Kernel):
        twiddle factors from a GPU-resident LUT (built by FFTC2COp at
        construction time), eliminating repeated sin/cos evaluation.
 
-    Together these match cuFFT-level performance on modern NVIDIA GPUs.
+    Together these reduce global traffic and runtime trigonometric work.
 
     Args:
         x_real:    Real part of input, shape (n,), float32 or float64.
@@ -591,6 +586,11 @@ class FFTC2CKernel(Kernel):
 
     @property
     def default_config(self) -> Dict[str, Any]:
+        if self.n == 4096:
+            return {
+                "block_size": 256,
+                "threads": 256,
+            }
         return {
             "block_size": 1024,
             "threads": 512,
@@ -632,14 +632,23 @@ class FFTC2CKernel(Kernel):
         Returns:
             Interleaved FFT output with shape (batch_size, n, 2).
         """
+        x_pair = torch.stack((x_real, x_imag), dim=-1)
+        return self.forward_interleaved(x_pair, lut_real, lut_imag)
+
+    def forward_interleaved(
+        self,
+        x_pair: torch.Tensor,
+        lut_real: torch.Tensor,
+        lut_imag: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute the FFT from an interleaved real view without input copies."""
         return _fft_c2c_wrapped_kernel(
             self.n,
             self.batch_size,
             self.dtype_str,
             self.config["block_size"],
             self.config["threads"],
-            x_real,
-            x_imag,
+            x_pair,
             lut_real,
             lut_imag,
         )
