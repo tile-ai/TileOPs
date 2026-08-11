@@ -1,46 +1,9 @@
 import gc
-import os
 
 import pytest
 import torch
 
-from benchmarks import native_cupti
 from benchmarks.benchmark_base import BenchmarkReport, _bench_results
-
-_BENCH_PROVENANCE_KEYS = (
-    "timing",
-    "benchmark_protocol",
-    "cupti_sampled_calls",
-    "cupti_expected_activity_count",
-    "cupti_expected_prepare_activity_count",
-    "activity_kinds",
-    "summary_statistic",
-    "n_warmup",
-    "n_discovery",
-    "n_repeat",
-    "n_trials",
-    "cupti_session_scope",
-    "cupti_dropped_records",
-    "cache_policy",
-    "fallback_enabled",
-    "input_policy",
-    "input_policy_seed",
-    "fallback_reason",
-)
-
-
-def _format_property_value(value) -> str:
-    if isinstance(value, float):
-        return f"{value:.4f}"
-    return str(value)
-
-
-def _append_bench_provenance(item, prefix: str, entry: dict) -> None:
-    for key in _BENCH_PROVENANCE_KEYS:
-        if key in entry:
-            item.user_properties.append(
-                (f"{prefix}_{key}", _format_property_value(entry[key]))
-            )
 
 
 def _release_cuda_cache_after_case() -> None:
@@ -69,16 +32,7 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_runtest_call(item):
     """After bench test execution, attach perf data to the item as properties."""
     _bench_results.entries = []
-    case_session_started = False
     try:
-        if item.path.name.startswith("bench_"):
-            try:
-                native_cupti.start_case_session(item.nodeid)
-                case_session_started = True
-            except native_cupti.NativeCUPTIError:
-                allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
-                if not allow_fallback:
-                    raise
         yield
         entries = getattr(_bench_results, "entries", [])
         if not entries:
@@ -109,7 +63,15 @@ def pytest_runtest_call(item):
             bw = tileops_entry.get("bandwidth_tbs")
             if bw is not None:
                 item.user_properties.append(("tileops_bandwidth_tbs", f"{bw:.2f}"))
-            _append_bench_provenance(item, "tileops", tileops_entry)
+            # Trust metadata for the reported median: which timer produced it,
+            # and how wide the samples it summarizes were.
+            for key in ("latency_p10_ms", "latency_p90_ms"):
+                value = tileops_entry.get(key)
+                if value is not None:
+                    item.user_properties.append((f"tileops_{key}", f"{value:.4f}"))
+            timing = tileops_entry.get("timing")
+            if timing is not None:
+                item.user_properties.append(("tileops_timing", str(timing)))
 
         # Write all baselines into JUnit XML properties.
         # The first baseline uses the legacy unprefixed names (baseline_tag, etc.)
@@ -126,7 +88,6 @@ def pytest_runtest_call(item):
                 item.user_properties.append(("baseline_latency_ms", f"{bl_latency:.4f}"))
                 if bl_tflops is not None:
                     item.user_properties.append(("baseline_tflops", f"{bl_tflops:.2f}"))
-                _append_bench_provenance(item, "baseline", be)
                 if tileops_entry:
                     tl = tileops_entry.get("latency_ms", 0)
                     if tl > 0 and bl_latency > 0:
@@ -137,15 +98,10 @@ def pytest_runtest_call(item):
             item.user_properties.append((f"{tag}_latency_ms", f"{bl_latency:.4f}"))
             if bl_tflops is not None:
                 item.user_properties.append((f"{tag}_tflops", f"{bl_tflops:.2f}"))
-            _append_bench_provenance(item, tag, be)
             if tileops_entry:
                 tl = tileops_entry.get("latency_ms", 0)
                 if tl > 0 and bl_latency > 0:
                     item.user_properties.append((f"{tag}_ratio", f"{bl_latency / tl:.4f}"))
     finally:
-        try:
-            if case_session_started:
-                native_cupti.stop_case_session()
-        finally:
-            _bench_results.entries = []
-            _release_cuda_cache_after_case()
+        _bench_results.entries = []
+        _release_cuda_cache_after_case()

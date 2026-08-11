@@ -15,15 +15,14 @@ namespace py = pybind11;
 
 namespace {
 
+// Only the fields the Python attribution layer reads: the activity identity
+// (kind plus the parameters that distinguish two copies or fills) and the
+// device timestamps that form a call's envelope.
 struct ActivityRecord {
   std::string kind;
   std::string name;
   uint64_t start;
   uint64_t end;
-  uint32_t correlation;
-  uint32_t device;
-  uint32_t context;
-  uint32_t stream;
   uint32_t copy_kind;
   uint64_t bytes;
   uint32_t value;
@@ -67,47 +66,20 @@ void handle_record(CUpti_Activity* record) {
       record->kind == CUPTI_ACTIVITY_KIND_KERNEL) {
     auto* kernel = reinterpret_cast<CUpti_ActivityKernel9*>(record);
     activity = {
-        "kernel",
-        kernel->name ? kernel->name : "",
-        kernel->start,
-        kernel->end,
-        kernel->correlationId,
-        kernel->deviceId,
-        kernel->contextId,
-        kernel->streamId,
-        0,
-        0,
-        0,
+        "kernel", kernel->name ? kernel->name : "", kernel->start, kernel->end,
+        0,        0,                                0,
     };
   } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
     auto* copy = reinterpret_cast<CUpti_ActivityMemcpy6*>(record);
     activity = {
-        "memcpy",
-        "MEMCPY",
-        copy->start,
-        copy->end,
-        copy->correlationId,
-        copy->deviceId,
-        copy->contextId,
-        copy->streamId,
-        copy->copyKind,
-        copy->bytes,
-        0,
+        "memcpy",       "MEMCPY",     copy->start, copy->end,
+        copy->copyKind, copy->bytes,  0,
     };
   } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
     auto* memset = reinterpret_cast<CUpti_ActivityMemset4*>(record);
     activity = {
-        "memset",
-        "MEMSET",
-        memset->start,
-        memset->end,
-        memset->correlationId,
-        memset->deviceId,
-        memset->contextId,
-        memset->streamId,
-        0,
-        memset->bytes,
-        memset->value,
+        "memset", "MEMSET",      memset->start, memset->end,
+        0,        memset->bytes, memset->value,
     };
   } else {
     return;
@@ -175,12 +147,16 @@ void stop() {
   if (!g_active) {
     return;
   }
+  // Clear the flag before tearing down. A failing flush or disable still
+  // reports its error, but must not wedge the collector: the Python side
+  // always drops its own flag, and start() re-enables every kind and resets
+  // the buffer, so a later session has to be able to run.
+  g_active = false;
   cudaDeviceSynchronize();
   CUPTI_CHECK(cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED));
   CUPTI_CHECK(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMSET));
   CUPTI_CHECK(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY));
   CUPTI_CHECK(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL));
-  g_active = false;
 }
 
 py::dict activity_dict(const ActivityRecord& activity) {
@@ -189,29 +165,9 @@ py::dict activity_dict(const ActivityRecord& activity) {
   out["name"] = activity.name;
   out["start_ns"] = activity.start;
   out["end_ns"] = activity.end;
-  out["correlation_id"] = activity.correlation;
-  out["device_id"] = activity.device;
-  out["context_id"] = activity.context;
-  out["stream_id"] = activity.stream;
   out["copy_kind"] = activity.copy_kind;
   out["bytes"] = activity.bytes;
   out["value"] = activity.value;
-  return out;
-}
-
-py::dict results() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-
-  py::list activities;
-  for (const auto& activity : g_activities) {
-    activities.append(activity_dict(activity));
-  }
-
-  py::dict out;
-  // Keep the historical key so existing trace readers continue to work. The
-  // list now contains normalized GPU activities, not only kernels.
-  out["kernels"] = activities;
-  out["dropped"] = g_dropped;
   return out;
 }
 
@@ -262,5 +218,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("stop", &stop);
   m.def("checkpoint", &checkpoint);
   m.def("results_range", &results_range);
-  m.def("results", &results);
 }

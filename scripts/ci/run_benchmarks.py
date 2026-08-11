@@ -44,7 +44,7 @@ TEARDOWN_TIMEOUT_S = 120
 # prints the log while pytest's FAILURES section is still in the buffer.
 # The run exit code leaves via the pipe before interpreter teardown.
 _CHILD = """\
-import ctypes, os, subprocess, sys
+import ctypes, os, sys
 
 status = os.environ["TILEOPS_COLLECT_STATUS"]
 open(status, "w").write("started")
@@ -59,42 +59,7 @@ class Heartbeat:
         with open(beat, "w") as fh:
             fh.write(nodeid)
 
-rc_collect = int(pytest.main(["--assert=plain", "--collect-only", "-q", sys.argv[3]]))
-torch_loaded = "torch" in sys.modules
-cuda_initialized = "not-loaded"
-if torch_loaded:
-    try:
-        cuda_initialized = str(sys.modules["torch"].cuda.is_initialized())
-    except Exception as exc:
-        cuda_initialized = f"error:{type(exc).__name__}:{exc}"
-gpu_rows = []
-try:
-    proc = subprocess.run(
-        [
-            "nvidia-smi",
-            "--query-compute-apps=pid,process_name,used_gpu_memory",
-            "--format=csv,noheader,nounits",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    if proc.returncode == 0:
-        for line in proc.stdout.splitlines():
-            parts = [part.strip() for part in line.split(",")]
-            if parts and parts[0] == str(os.getpid()):
-                gpu_rows.append(line.strip())
-    else:
-        gpu_rows.append(f"nvidia-smi-error:{proc.stderr.strip()}")
-except Exception as exc:
-    gpu_rows.append(f"probe-error:{type(exc).__name__}:{exc}")
-gpu_status = (
-    f"pid={os.getpid()} bench_file={sys.argv[3]} rc_collect={rc_collect} "
-    f"torch_loaded={torch_loaded} cuda_initialized={cuda_initialized} "
-    f"gpu_rows={gpu_rows}"
-)
-open(status + ".gpu", "w").write(gpu_status + "\\n")
-print("COLLECT_GPU_STATUS " + gpu_status, flush=True)
+rc_collect = int(pytest.main(["--collect-only", "-q", sys.argv[3]]))
 open(status, "w").write(str(rc_collect))
 sys.stdin.readline()
 open(beat, "w").write("")
@@ -114,7 +79,6 @@ class Child:
         log_path: Path,
         status_path: Path,
         beat_path: Path,
-        env_overrides: dict[str, str] | None = None,
     ):
         read_fd, write_fd = os.pipe()
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -130,7 +94,6 @@ class Child:
                     **os.environ,
                     "TILEOPS_COLLECT_STATUS": str(status_path),
                     "TILEOPS_HEARTBEAT": str(beat_path),
-                    **(env_overrides or {}),
                 },
             )
         finally:
@@ -361,14 +324,6 @@ def main() -> int:
         default=4,
         help="upcoming files importing in advance while the current file runs",
     )
-    parser.add_argument(
-        "--strict-serial",
-        action="store_true",
-        help=(
-            "run one child at a time and wait for interpreter teardown before "
-            "starting the next benchmark file"
-        ),
-    )
     args = parser.parse_args()
 
     dump_dir = Path(args.dump_dir)
@@ -393,22 +348,13 @@ def main() -> int:
 
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
-            argv = ["-q", bench_files[index], "--assert=plain", f"--junit-xml={fragment}"]
-            case_trace_dir = (
-                dump_dir.resolve()
-                / "cupti_traces"
-                / f"{index:03d}_{Path(bench_files[index]).stem}"
-            )
+            argv = ["-q", bench_files[index], f"--junit-xml={fragment}"]
             return Child(
                 _CHILD,
                 argv,
                 work_dir / f"{index:03d}.log",
                 work_dir / f"{index:03d}.collect",
                 work_dir / f"{index:03d}.beat",
-                env_overrides={
-                    "TILEOPS_CUPTI_BENCH_FILE": bench_files[index],
-                    "TILEOPS_CUPTI_CASE_TRACE_DIR": str(case_trace_dir),
-                },
             )
 
         pending: deque[Child] = deque()
@@ -417,8 +363,7 @@ def main() -> int:
 
         def top_up() -> None:
             nonlocal spawned
-            target = 1 if args.strict_serial else args.prewarm + 1
-            while len(pending) < target and spawned < len(bench_files):
+            while len(pending) <= args.prewarm and spawned < len(bench_files):
                 pending.append(spawn_at(spawned))
                 spawned += 1
 
@@ -437,8 +382,7 @@ def main() -> int:
                     unrun.extend(os.path.relpath(f) for f in bench_files[index:])
                     break
                 child = pending.popleft()
-                if not args.strict_serial:
-                    top_up()
+                top_up()
                 rel = os.path.relpath(bench_file)
                 print(f"\n=== [{index + 1}/{len(bench_files)}] {rel} ===", flush=True)
                 fragment = work_dir / f"{index:03d}.xml"
@@ -527,10 +471,6 @@ def main() -> int:
                     collect_failed.append((rel, outcome))
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
                 _absorb_profile_log(profile_parts)
-                if args.strict_serial:
-                    note_anomalies(_reap_lingering(lingering, block=True))
-                    print(f"LIFECYCLE: {rel}: teardown complete", flush=True)
-                    top_up()
         finally:
             for leftover in pending:
                 leftover.kill()

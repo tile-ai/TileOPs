@@ -10,12 +10,9 @@ import torch
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
-    _activity_identity,
     _attributed_latency_samples_ms,
     _bench_meta,
-    _kernel_span_us,
     _NativeCUPTIAttributionError,
-    _select_expected_sequence,
     _ShiftingTensorPool,
     bench_kernel,
     workloads_to_params,
@@ -158,93 +155,16 @@ def test_multi_input_op_raises_keyerror():
         workloads_to_params("GroupedQueryAttentionFwdOp")
 
 
-def test_kernel_span_uses_activity_envelope():
-    kernels = [
-        {"name": "first", "start_ns": 1000, "end_ns": 9000},
-        {"name": "second", "start_ns": 5000, "end_ns": 7000},
-    ]
-    assert _kernel_span_us(kernels) == 8.0
-
-
 def _kernel(name: str, start_ns: int, end_ns: int) -> dict:
-    return {"name": name, "start_ns": start_ns, "end_ns": end_ns}
+    return {"kind": "kernel", "name": name, "start_ns": start_ns, "end_ns": end_ns}
 
 
-def test_activity_identity_distinguishes_copy_and_set_parameters():
-    memcpy = {"kind": "memcpy", "name": "MEMCPY", "copy_kind": 8, "bytes": 4096}
-    memset = {"kind": "memset", "name": "MEMSET", "bytes": 4096, "value": 0}
-
-    assert _activity_identity(memcpy) == "memcpy:8:4096"
-    assert _activity_identity(memset) == "memset:4096:0"
-    assert _activity_identity({"kind": "kernel", "name": "op"}) == "kernel:op"
+def _seq(*names: str) -> tuple[str, ...]:
+    """Discovered sequences hold activity identities, not bare kernel names."""
+    return tuple(f"kernel:{name}" for name in names)
 
 
-def test_select_expected_sequence_accepts_exact_and_concurrent_reorder():
-    exact = [_kernel("a", 1_000, 2_000), _kernel("b", 2_000, 3_000)]
-    reordered = [_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)]
-
-    assert _select_expected_sequence(exact, ("a", "b")) == exact
-    assert _select_expected_sequence(reordered, ("a", "b")) == reordered
-
-
-def test_select_expected_sequence_rejects_serial_reorder():
-    reordered = [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)]
-
-    assert _select_expected_sequence(reordered, ("a", "b")) is None
-
-
-def test_select_expected_sequence_handles_duplicate_kernel_names():
-    kernels = [
-        _kernel("a", 1_000, 2_000),
-        _kernel("b", 1_500, 3_000),
-        _kernel("a", 2_000, 2_500),
-    ]
-
-    assert _select_expected_sequence(kernels, ("a", "a", "b")) == kernels
-    assert _select_expected_sequence(kernels, ("a", "b", "b")) is None
-
-
-@pytest.mark.parametrize(
-    "actual",
-    [
-        [_kernel("a", 1_000, 2_000)],
-        [
-            _kernel("a", 1_000, 2_000),
-            _kernel("b", 2_000, 3_000),
-            _kernel("unexpected", 3_000, 4_000),
-        ],
-        [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
-    ],
-)
-def test_select_expected_sequence_rejects_incomplete_or_changed_call(actual):
-    assert _select_expected_sequence(actual, ("a", "b")) is None
-
-
-def test_attributed_latency_requires_every_repeat():
-    trace = {
-        "dropped": 0,
-        "kernels": [
-            _kernel("a", 2_000, 4_000),
-            _kernel("b", 3_000, 8_000),
-            _kernel("a", 21_000, 22_000),
-            _kernel("b", 23_000, 29_000),
-        ],
-    }
-
-    samples = _attributed_latency_samples_ms(trace, ("a", "b"), n_repeat=2)
-    assert samples == pytest.approx([0.006, 0.008])
-    assert _bench_meta.cupti_sampled_calls == 2
-    assert _bench_meta.cupti_expected_activity_count == 2
-
-    trace["kernels"].append(_kernel("unexpected", 29_000, 29_500))
-    with pytest.raises(
-        _NativeCUPTIAttributionError,
-        match="activity count does not match",
-    ):
-        _attributed_latency_samples_ms(trace, ("a", "b"), n_repeat=2)
-
-
-def test_case_sequence_attribution_excludes_prepare_and_preserves_operator_gap():
+def test_attribution_excludes_prepare_and_keeps_the_operator_gap():
     trace = {
         "dropped": 0,
         "kernels": [
@@ -261,9 +181,9 @@ def test_case_sequence_attribution_excludes_prepare_and_preserves_operator_gap()
 
     samples_ms = _attributed_latency_samples_ms(
         trace,
-        ("op-a", "op-b"),
+        _seq("op-a", "op-b"),
         n_repeat=2,
-        expected_prepare_sequence=("copy", "fill"),
+        expected_prepare_sequence=_seq("copy", "fill"),
     )
 
     # Operator envelopes are 6 us and 8 us. Prepare kernels are validated but
@@ -272,39 +192,80 @@ def test_case_sequence_attribution_excludes_prepare_and_preserves_operator_gap()
 
 
 @pytest.mark.parametrize(
-    "kernels",
+    "kernels, expected_sequence",
     [
-        [
-            _kernel("fill", 1_000, 2_000),
-            _kernel("op", 3_000, 4_000),
-            _kernel("fill", 5_000, 6_000),
-        ],
-        [
-            _kernel("fill", 1_000, 2_000),
-            _kernel("op", 3_000, 4_000),
-            _kernel("extra", 4_100, 4_200),
-            _kernel("fill", 5_000, 6_000),
-            _kernel("op", 7_000, 8_000),
-        ],
+        # CUPTI may publish two concurrent kernels in either start-time order.
+        ([_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)], _seq("a", "b")),
+        # A repeated kernel name is matched by occurrence, not by identity.
+        (
+            [
+                _kernel("a", 1_000, 2_000),
+                _kernel("b", 1_500, 3_000),
+                _kernel("a", 2_000, 2_500),
+            ],
+            _seq("a", "a", "b"),
+        ),
     ],
 )
-def test_case_sequence_attribution_fails_closed_on_missing_or_extra_activity(kernels):
-    with pytest.raises(_NativeCUPTIAttributionError, match="activity count does not match"):
-        _attributed_latency_samples_ms(
-            {"dropped": 0, "kernels": kernels},
-            ("op",),
-            n_repeat=2,
-            expected_prepare_sequence=("fill",),
-        )
+def test_attribution_accepts_overlapping_activities_in_either_order(
+    kernels, expected_sequence,
+):
+    samples_ms = _attributed_latency_samples_ms(
+        {"dropped": 0, "kernels": kernels}, expected_sequence, n_repeat=1,
+    )
+    assert samples_ms == pytest.approx([0.002])
 
 
-def test_attributed_latency_rejects_dropped_records():
-    with pytest.raises(_NativeCUPTIAttributionError, match="dropped 1 records"):
-        _attributed_latency_samples_ms(
-            {"dropped": 1, "kernels": []},
-            ("a",),
-            n_repeat=1,
-        )
+@pytest.mark.parametrize(
+    "trace, expected_sequence, message",
+    [
+        # A dropped record makes the whole trial unattributable.
+        ({"dropped": 1, "kernels": []}, _seq("a"), "dropped 1 records"),
+        # One activity short of the discovered sequence.
+        (
+            {"dropped": 0, "kernels": [_kernel("a", 1_000, 2_000)]},
+            _seq("a", "b"),
+            "activity count does not match",
+        ),
+        # A dynamic path launched an extra kernel.
+        (
+            {
+                "dropped": 0,
+                "kernels": [
+                    _kernel("a", 1_000, 2_000),
+                    _kernel("b", 2_000, 3_000),
+                    _kernel("extra", 3_000, 4_000),
+                ],
+            },
+            _seq("a", "b"),
+            # The observed sequence names the unexpected activity, so a CI
+            # abort is diagnosable from the log alone.
+            r"activity count does not match.*observed=.*kernel:extra",
+        ),
+        # Right count, different kernels.
+        (
+            {
+                "dropped": 0,
+                "kernels": [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
+            },
+            _seq("a", "b"),
+            "attributed 0/1",
+        ),
+        # Serially reordered kernels are a real sequence change, not a
+        # publication-order artifact.
+        (
+            {
+                "dropped": 0,
+                "kernels": [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
+            },
+            _seq("a", "b"),
+            "attributed 0/1",
+        ),
+    ],
+)
+def test_attribution_fails_closed(trace, expected_sequence, message):
+    with pytest.raises(_NativeCUPTIAttributionError, match=message):
+        _attributed_latency_samples_ms(trace, expected_sequence, n_repeat=1)
 
 
 def test_shifting_tensor_pool_preserves_layout_values_and_alignment():
@@ -337,7 +298,7 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
     """A callable launching no CUDA kernel cannot be attributed by CUPTI."""
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
     with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
-        bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
+        bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2)
 
 
 @pytest.mark.smoke
@@ -345,9 +306,11 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
 def test_native_cupti_failure_falls_back_when_enabled(monkeypatch):
     """CUDA-event fallback remains available for local diagnosis."""
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1")
-    latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
+    latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2)
     assert latency >= 0.0
     assert _bench_meta.timing == "cuda-events"
+    # The spread around the reported median travels with it.
+    assert _bench_meta.latency_p10_ms <= latency <= _bench_meta.latency_p90_ms
 
 
 @pytest.mark.smoke
@@ -358,7 +321,7 @@ def test_kernel_runtime_error_propagates():
         raise RuntimeError("kernel failure")
 
     with pytest.raises(RuntimeError, match="kernel failure"):
-        bench_kernel(boom, n_warmup=0, n_repeat=1, n_trials=1)
+        bench_kernel(boom, n_warmup=0, n_repeat=1)
 
 
 @pytest.fixture

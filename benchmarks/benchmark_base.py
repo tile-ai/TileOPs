@@ -143,16 +143,12 @@ class _ShiftingTensorPool:
 
 def _activity_identity(activity: dict) -> str:
     """Return a stable identity for a timed GPU activity."""
-    kind = activity.get("kind")
-    name = str(activity["name"])
-    if kind is None:
-        # Backward compatibility for existing synthetic tests and v1 traces.
-        return name
+    kind = activity["kind"]
     if kind == "memcpy":
-        return f"memcpy:{int(activity.get('copy_kind', 0))}:{int(activity.get('bytes', 0))}"
+        return f"memcpy:{int(activity['copy_kind'])}:{int(activity['bytes'])}"
     if kind == "memset":
-        return f"memset:{int(activity.get('bytes', 0))}:{int(activity.get('value', 0))}"
-    return f"kernel:{name}"
+        return f"memset:{int(activity['bytes'])}:{int(activity['value'])}"
+    return f"kernel:{activity['name']}"
 
 
 def _kernel_sequence(kernels: list[dict]) -> tuple[str, ...]:
@@ -218,19 +214,18 @@ def _kernel_span_us(kernels: list[dict]) -> float:
     return (end_ns - start_ns) / 1000.0
 
 
-def _short_kernel_name(name: str) -> str:
-    if len(name) <= 96:
-        return name
-    return name[:93] + "..."
+def _format_sequence(seq: tuple[str, ...], limit: int = 8) -> str:
+    """Render an activity sequence for an error message.
 
-
-def _format_sequence(seq: tuple[str, ...]) -> str:
+    An observed timing sequence spans every repeat, so cap the entry count as
+    well as each mangled kernel name.
+    """
     if not seq:
         return "<empty>"
-    names = [_short_kernel_name(name) for name in seq]
-    if len(names) <= 4:
-        return " -> ".join(names)
-    return " -> ".join(names[:2] + ["..."] + names[-2:])
+    names = [name if len(name) <= 96 else name[:93] + "..." for name in seq[:limit]]
+    if len(seq) > limit:
+        names.append(f"...(+{len(seq) - limit} more)")
+    return " -> ".join(names)
 
 
 def _ordered_trace_kernels(trace: dict) -> list[dict]:
@@ -264,14 +259,21 @@ def _stable_discovery_sequence(traces: list[dict], phase: str) -> tuple[str, ...
     return expected
 
 
+def _discovery_repeats() -> int:
+    return int(os.getenv("TILEOPS_CUPTI_DISCOVERY_REPEATS", "3"))
+
+
+def _cuda_events_fallback_enabled() -> bool:
+    return os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
+
+
 def _discover_expected_sequences(
     run_one: Callable[[int], None],
     prepare_one: Callable[[int], None],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    n_discovery = int(os.getenv("TILEOPS_CUPTI_DISCOVERY_REPEATS", "3"))
     prepare_traces, operator_traces = native_cupti.collect_discovery(
         run_one,
-        n_discovery,
+        _discovery_repeats(),
         prepare_one,
     )
     return (
@@ -302,7 +304,10 @@ def _attributed_latency_samples_ms(
         raise _NativeCUPTIAttributionError(
             "CUPTI timing activity count does not match the deterministic "
             f"op-sequence ledger: got {len(kernels)}, expected {expected_total} "
-            f"({n_repeat} x ({prepare_count} prepare + {operator_count} operator))"
+            f"({n_repeat} x ({prepare_count} prepare + {operator_count} operator)); "
+            f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
+            f"operator=[{_format_sequence(expected_sequence)}]; "
+            f"observed=[{_format_sequence(_kernel_sequence(kernels))}]"
         )
 
     for repeat in range(n_repeat):
@@ -318,28 +323,30 @@ def _attributed_latency_samples_ms(
             continue
         samples_us.append(_kernel_span_us(selected))
 
-    if not samples_us:
-        reason = "CUPTI timing found no complete expected kernel sequence"
-        raise _NativeCUPTIAttributionError(
-            reason + f"; kernels={len(kernels)}; "
-            f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
-            f"operator=[{_format_sequence(expected_sequence)}]"
-        )
     if len(samples_us) != n_repeat:
-        reason = (
-            f"CUPTI timing attributed {len(samples_us)}/{n_repeat} complete "
-            "expected kernel sequences"
-        )
         raise _NativeCUPTIAttributionError(
-            reason + f"; kernels={len(kernels)}; "
+            f"CUPTI timing attributed {len(samples_us)}/{n_repeat} complete "
+            f"expected kernel sequences; kernels={len(kernels)}; "
             f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
-            f"operator=[{_format_sequence(expected_sequence)}]"
+            f"operator=[{_format_sequence(expected_sequence)}]; "
+            f"observed=[{_format_sequence(_kernel_sequence(kernels))}]"
         )
-
-    _bench_meta.cupti_sampled_calls = len(samples_us)
-    _bench_meta.cupti_expected_activity_count = len(expected_sequence)
-    _bench_meta.cupti_dropped_records = 0
     return [sample_us * 1e-3 for sample_us in samples_us]
+
+
+def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None, None]:
+    """Return the 10th and 90th percentile of one op's timed samples.
+
+    The reported latency is a median. Without the spread around it, a stable
+    measurement and one dominated by launch jitter read the same downstream.
+    """
+    if len(samples) < 2:
+        return None, None
+    ordered = sorted(samples)
+    last = len(ordered) - 1
+    # Nearest rank, rounded rather than truncated: truncating collapses both
+    # percentiles onto the minimum for small sample counts.
+    return ordered[round(0.1 * last)], ordered[round(0.9 * last)]
 
 
 # L2 cache flush buffer, allocated lazily.
@@ -397,37 +404,31 @@ def _native_output_suppressor():
 # NVIDIA SOL-ExecBench–style benchmark
 
 
-def _bench_kernel_impl(
+def bench_kernel(
     fn: Callable,
     args: tuple[Any, ...] = (),
     n_warmup: int = 10,
     n_repeat: int = 50,
-    n_trials: int = 1,
-    *,
-    cupti_setup_error: RuntimeError | None = None,
 ) -> float:
     """Benchmark a GPU callable with CUPTI activity timing.
 
     Protocol (adapted from NVIDIA SOL-ExecBench, arxiv.org/abs/2603.19173):
       1. Lock GPU clocks externally (nvidia-smi).
-      2. Run *n_warmup* un-timed iterations with L2 flush.
-      3. Profile one set of *n_repeat* iterations
-         under CUPTI to get activity time without host launch overhead.
-         Persisting L2 is reset and a 2x-L2 buffer is cleared before every
-         iteration. Input tensors are prepared in a SOL-style shifting pool
-         before L2 preparation so each measured call uses a different data
-         pointer without warming the flushed cache.
+      2. Run one first call plus *n_warmup* un-timed iterations, absorbing
+         module/library lazy init, JIT/autotune, and allocator growth.
+      3. Discover the per-call activity sequence, then profile one set of
+         *n_repeat* iterations under CUPTI. Persisting L2 is reset and a
+         2x-L2 buffer cleared before every iteration; inputs come from a
+         shifting pool so each measured call sees a different data pointer
+         without warming the flushed cache.
       4. Report the median per-iteration latency.
 
-    Uses native CUPTI activity timestamps for SOL-style attribution instead of
-    PyTorch profiler/Kineto projection. A discovery pass records the expected
-    per-call kernel sequence; timed repeats then measure each complete sequence
-    from the earliest selected kernel start to the latest selected kernel end.
-    This degenerates to pure kernel duration for single-kernel calls and
-    preserves inter-kernel gaps for multi-kernel calls. Falls back to CUDA
-    events only if native CUPTI is unavailable or cannot attribute any complete
-    call. CUDA events fallback is opt-in via
-    ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
+    Each timed call is measured from the earliest to the latest activity of
+    its discovered sequence, so a single-activity call degenerates to pure
+    kernel duration and a multi-activity call keeps its inter-kernel gaps.
+    Attribution fails closed: a missing, unexpected, or dropped record raises
+    unless ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1`` opts into diagnostic
+    CUDA-event timing, which includes per-call launch overhead.
 
     Args:
         fn: Callable to benchmark.  If *args* is provided, called with
@@ -435,52 +436,29 @@ def _bench_kernel_impl(
         args: Tensor arguments to rotate each iteration.  Non-tensor
             values are passed through unchanged.
         n_warmup: Warmup iterations (default 10).
-        n_repeat: Timed iterations per trial (default 50).
-        n_trials: Must be 1; retained as an explicit protocol assertion.
+        n_repeat: Timed iterations (default 50).
 
     Returns:
         Kernel latency in **milliseconds**.
     """
-    if n_trials != 1:
-        raise ValueError("SOL activity protocol requires n_trials=1")
+    if not isinstance(args, tuple):
+        raise TypeError(
+            f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
+            "Check that gen_inputs() returns a tuple."
+        )
 
+    allow_fallback = _cuda_events_fallback_enabled()
     _bench_meta.timing = None
-    _bench_meta.input_policy = None
-    _bench_meta.input_policy_seed = None
-    _bench_meta.benchmark_protocol = native_cupti.BENCHMARK_PROTOCOL
-    _bench_meta.activity_kinds = "kernel,memcpy,memset"
-    _bench_meta.summary_statistic = "median(samples)"
-    _bench_meta.n_warmup = n_warmup
-    _bench_meta.n_discovery = int(os.getenv("TILEOPS_CUPTI_DISCOVERY_REPEATS", "3"))
-    _bench_meta.n_repeat = n_repeat
-    _bench_meta.n_trials = 1
-    _bench_meta.cupti_session_scope = "phase"
-    _bench_meta.cache_policy = "reset-persisting-l2+clear-2x-l2"
-    _bench_meta.fallback_enabled = (
-        os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
-    )
-    _bench_meta.cupti_sampled_calls = None
-    _bench_meta.cupti_expected_activity_count = None
-    _bench_meta.cupti_expected_prepare_activity_count = None
-    _bench_meta.cupti_dropped_records = None
     _bench_meta.fallback_reason = None
 
     cache = _get_l2_flush_cache()
-    has_args = len(args) > 0
 
-    if has_args:
-        discovery_repeats = int(os.getenv("TILEOPS_CUPTI_DISCOVERY_REPEATS", "3"))
-        total_iterations = (
-            1  # first call
-            + n_warmup
-            + discovery_repeats
-            + n_repeat
-            + n_repeat  # possible CUDA-events fallback
-        )
+    if args:
+        total_iterations = 1 + n_warmup + _discovery_repeats() + n_repeat
+        if allow_fallback:
+            total_iterations += n_repeat  # the fallback re-runs every repeat
         seed = int(os.getenv("TILEOPS_INPUT_POOL_SEED", "0"))
         arg_pool = _ShiftingTensorPool(args, total_iterations, seed=seed)
-        _bench_meta.input_policy = "shifting-pool"
-        _bench_meta.input_policy_seed = seed
         prepared_args: tuple[Any, ...] | None = None
 
         def _prepare_args(i):
@@ -493,7 +471,6 @@ def _bench_kernel_impl(
             return fn(*prepared_args)
     else:
         arg_pool = None
-        _bench_meta.input_policy = "none"
 
         def _prepare_args(i):
             return None
@@ -507,9 +484,7 @@ def _bench_kernel_impl(
         cache.zero_()
         torch.cuda.synchronize()
 
-    # First call and warmup are present in the op trace but outside every
-    # activity-index timing segment. They absorb module/library lazy init,
-    # JIT/autotune, and allocator growth.
+    # The first call and the warmup run outside every timing segment.
     _prepare_iteration(0)
     _run(0)
     torch.cuda.synchronize()
@@ -521,14 +496,11 @@ def _bench_kernel_impl(
 
     measurements_ms: list[float] = []
     try:
-        if cupti_setup_error is not None:
-            raise cupti_setup_error
         with _native_output_suppressor():
             prepare_sequence, expected_sequence = _discover_expected_sequences(
                 _run,
                 _prepare_iteration,
             )
-            _bench_meta.cupti_expected_prepare_activity_count = len(prepare_sequence)
             trace = native_cupti.collect_repeats(
                 _run,
                 n_repeat,
@@ -540,134 +512,44 @@ def _bench_kernel_impl(
                 n_repeat,
                 prepare_sequence,
             )
-        _bench_meta.timing = "native-cupti-phase-sequence"
-    except _NativeCUPTIAttributionError as exc:
-        # Check if cuda-events fallback is allowed
-        allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
-
+        _bench_meta.timing = "native-cupti"
+    except (_NativeCUPTIAttributionError, native_cupti.NativeCUPTIError) as exc:
         if not allow_fallback:
             raise RuntimeError(
-                f"Native CUPTI profiling failed: {exc}. "
-                "CUDA-events fallback is disabled (TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0). "
-                "This prevents silently mixing CUPTI timing with CUDA-events timing. "
-                "To debug: run with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1 and check logs."
+                f"Native CUPTI profiling failed: {exc}. CUDA-events fallback is "
+                "disabled (TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0), which keeps the "
+                "run from silently mixing two timing methods."
             ) from exc
-
-        _bench_meta.fallback_reason = str(exc)
-        _bench_meta.cupti_sampled_calls = None
-        _bench_meta.cupti_expected_activity_count = None
-        _bench_meta.cupti_expected_prepare_activity_count = None
-        _bench_meta.cupti_dropped_records = None
-        _logger.warning(
-            "Native CUPTI attribution failed (%s); falling back to CUDA-events "
-            "timing, which includes launch/stream gaps per call. "
-            "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.", exc,
-        )
-        measurements_ms = []
-    except native_cupti.NativeCUPTIError as exc:
-        allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
-        if not allow_fallback:
-            raise
-        _bench_meta.fallback_reason = str(exc)
-        _bench_meta.cupti_sampled_calls = None
-        _bench_meta.cupti_expected_activity_count = None
-        _bench_meta.cupti_expected_prepare_activity_count = None
-        _bench_meta.cupti_dropped_records = None
-        _logger.warning(
-            "Native CUPTI setup failed (%s); falling back to CUDA-events timing.",
-            exc,
-        )
-        measurements_ms = []
-
-    # Fallback to CUDA events if CUPTI failed
-    if not measurements_ms:
         _bench_meta.timing = "cuda-events"
-        # Mimic CUPTI behavior: flush L2 before measurement window
+        _bench_meta.fallback_reason = str(exc)
+        _logger.warning(
+            "Native CUPTI timing failed (%s); falling back to CUDA events, which "
+            "include per-call launch and stream gaps.", exc,
+        )
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-
         for i in range(n_repeat):
             _prepare_iteration(i)
             start_events[i].record()
             _run(i)
             end_events[i].record()
         torch.cuda.synchronize()
-
         measurements_ms = [
             start.elapsed_time(end)
             for start, end in zip(start_events, end_events, strict=True)
         ]
 
-    # Free the arg pool and release cached GPU memory to prevent
-    # accumulation across hundreds of benchmark calls.
-    if arg_pool is not None:
-        del arg_pool
+    latency_ms = statistics.median(measurements_ms)
+    _bench_meta.latency_p10_ms, _bench_meta.latency_p90_ms = _sample_spread_ms(
+        measurements_ms
+    )
+    # Drop the pool and its last handed-out view first: empty_cache() cannot
+    # reclaim blocks these still reference, and the pools of hundreds of
+    # benchmark calls would accumulate.
+    arg_pool = None
+    prepared_args = None
     torch.cuda.empty_cache()
-
-    return statistics.median(measurements_ms)
-
-
-def bench_kernel(
-    fn: Callable,
-    args: tuple[Any, ...] = (),
-    n_warmup: int = 10,
-    n_repeat: int = 50,
-    n_trials: int = 1,
-) -> float:
-    """Run one op segment inside a case-scoped CUPTI activity session."""
-    if not isinstance(args, tuple):
-        raise TypeError(
-            f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
-            "Check that gen_inputs() returns a tuple."
-        )
-
-    setup_error: RuntimeError | None = None
-    owns_case_session = not native_cupti.case_session_active()
-    if owns_case_session:
-        try:
-            # Standalone callers outside pytest still get a correctly scoped
-            # session. Benchmark pytest cases are opened by conftest instead.
-            native_cupti.start_case_session("standalone")
-        except native_cupti.NativeCUPTIError as exc:
-            setup_error = exc
-
-    op_index = native_cupti.begin_op() if setup_error is None else None
-    error: BaseException | None = None
-
-    try:
-        return _bench_kernel_impl(
-            fn,
-            args=args,
-            n_warmup=n_warmup,
-            n_repeat=n_repeat,
-            n_trials=n_trials,
-            cupti_setup_error=setup_error,
-        )
-    except BaseException as exc:
-        error = exc
-        raise
-    finally:
-        try:
-            if op_index is not None:
-                native_cupti.finish_op(
-                    op_index,
-                    status="failed" if error is not None else "passed",
-                    error=str(error) if error is not None else None,
-                )
-        except Exception:
-            if error is None:
-                raise
-            _logger.exception("Failed to close native CUPTI op ledger after op failure")
-        finally:
-            if owns_case_session and native_cupti.case_session_active():
-                try:
-                    native_cupti.stop_case_session()
-                except Exception:
-                    if error is None:
-                        raise
-                    _logger.exception(
-                        "Failed to close native CUPTI session after case failure"
-                    )
+    return latency_ms
 
 
 def _get_env_metadata() -> list[str]:
@@ -768,52 +650,13 @@ class BenchmarkBase(Generic[W], ABC):
 
     def _build_result(self, latency: float) -> dict:
         result = {"latency_ms": latency}
-        # Deviations from the default protocol must be visible in reports.
-        timing = getattr(_bench_meta, "timing", None)
-        if timing is not None and timing != "cupti":
-            result["timing"] = timing
-        benchmark_protocol = getattr(_bench_meta, "benchmark_protocol", None)
-        if benchmark_protocol is not None:
-            result["benchmark_protocol"] = benchmark_protocol
-        sampled_calls = getattr(_bench_meta, "cupti_sampled_calls", None)
-        if sampled_calls is not None:
-            result["cupti_sampled_calls"] = sampled_calls
-        expected_activity_count = getattr(
-            _bench_meta, "cupti_expected_activity_count", None
-        )
-        if expected_activity_count is not None:
-            result["cupti_expected_activity_count"] = expected_activity_count
-        expected_prepare_activity_count = getattr(
-            _bench_meta, "cupti_expected_prepare_activity_count", None
-        )
-        if expected_prepare_activity_count is not None:
-            result["cupti_expected_prepare_activity_count"] = (
-                expected_prepare_activity_count
-            )
-        for key in (
-            "activity_kinds",
-            "summary_statistic",
-            "n_warmup",
-            "n_discovery",
-            "n_repeat",
-            "n_trials",
-            "cupti_session_scope",
-            "cupti_dropped_records",
-            "cache_policy",
-            "fallback_enabled",
-        ):
+        # How the number was measured, and how tightly, must travel with it: a
+        # run that fell back to CUDA events is not comparable with a CUPTI-timed
+        # one, and a median with a wide spread is not a latency.
+        for key in ("timing", "fallback_reason", "latency_p10_ms", "latency_p90_ms"):
             value = getattr(_bench_meta, key, None)
             if value is not None:
                 result[key] = value
-        input_policy = getattr(_bench_meta, "input_policy", None)
-        if input_policy is not None:
-            result["input_policy"] = input_policy
-        input_policy_seed = getattr(_bench_meta, "input_policy_seed", None)
-        if input_policy_seed is not None:
-            result["input_policy_seed"] = input_policy_seed
-        fallback_reason = getattr(_bench_meta, "fallback_reason", None)
-        if fallback_reason is not None:
-            result["fallback_reason"] = fallback_reason
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9
