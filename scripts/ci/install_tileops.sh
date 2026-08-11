@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install tileops with --no-deps so pip never re-resolves tilelang (which would drift the
-# cu129 stack). tilelang must already be present — baked into the runner image, or
+# cu132 stack). tilelang must already be present — baked into the runner image, or
 # installed by the developer locally — before this runs.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

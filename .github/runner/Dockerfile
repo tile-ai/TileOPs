@@ -1,14 +1,11 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage CI runner image for the self-hosted GPU runner.
-ARG BASE_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu22.04
+# cu132 is the newest variant the PyTorch index publishes; the base must match the torch wheels.
+ARG BASE_IMAGE=nvidia/cuda:13.2.1-devel-ubuntu22.04
 
-# ── runtime ──
-# devel (not runtime) base: nvcc is needed both at build time (FA3 / tilelang source builds)
-# and at runtime (tilelang JIT).
+# devel, not runtime: nvcc is needed at build (FA3, tilelang) and at runtime (tilelang JIT).
 FROM ${BASE_IMAGE} AS runtime
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_BREAK_SYSTEM_PACKAGES=1
-# 22.04 ships python3.10; install 3.12 from deadsnakes and make it the default python.
-# software-properties-common is purged after adding the PPA to keep the image lean.
+# 22.04 ships python3.10; 3.12 comes from deadsnakes.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl gnupg \
@@ -23,89 +20,76 @@ RUN apt-get update \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && python -m pip install --upgrade pip
-COPY constraints.txt /tmp/constraints.txt
-# torch / torchvision / torchaudio: cu129 wheels from the pytorch index (the PyPI default is a
-# different CUDA variant, so pin +cu129). Installing torchvision/torchaudio as cu129 here means
-# vllm later finds its exact-pinned versions already satisfied and never swaps them off cu129.
-RUN python -m pip install \
-        --index-url https://download.pytorch.org/whl/cu129 \
-        --extra-index-url https://pypi.org/simple \
-        -c /tmp/constraints.txt \
-        "torch==2.10.0+cu129" "torchvision==0.25.0+cu129" "torchaudio==2.10.0+cu129"
-# tilelang's build backend (scikit-build-core + patchelf, its [build-system].requires) and its
-# runtime deps, installed here so the tilelang stage can build with --no-build-isolation. cmake
-# from pip provides >=3.26.1 (tilelang's [tool.scikit-build] floor); jammy apt cmake is 3.22.
-RUN python -m pip install -c /tmp/constraints.txt \
+COPY constraints.txt constraints-runner-lock.txt /tmp/
+# Env, not a flag per install: it reaches build backends too, and a step added later cannot forget
+# it. pip keeps its own copy because the tilelang stage builds the wheel through `pip wheel`.
+ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
+# pip only bootstraps uv; constraints.txt pins it, since the installer cannot come from the lock
+# it produces.
+RUN python -m pip install uv
+# These mirror the lock's header. uv defaults to first-index, which resolves a package against
+# whichever index lists it first rather than the one the lock was compiled against; install and
+# compile must agree on all four or the lock stops applying.
+ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
+    UV_EXTRA_INDEX_URL="https://pypi.org/simple https://download.pytorch.org/whl/cpu" \
+    UV_INDEX_STRATEGY=unsafe-best-match \
+    UV_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt" \
+    UV_SYSTEM_PYTHON=1 UV_BREAK_SYSTEM_PACKAGES=1 UV_NO_CACHE=1
+# The CPU index serves torchaudio alone: no cu132 build of it exists, and a CUDA build of another
+# minor refuses to load beside this torch, so vllm's pin is met by the extension-free CPU wheel.
+RUN uv pip install "torch==2.13.0+cu132" "torchvision==0.28.0+cu132"
+# tilelang's build backend and runtime deps, so its stage can use --no-build-isolation. The wheel
+# cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22.
+RUN uv pip install \
         setuptools wheel ninja scikit-build-core patchelf cmake \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 ARG MAX_JOBS=64
 ARG NVCC_THREADS=4
-# TORCH_CUDA_ARCH_LIST=9.0: the runner pool is Hopper (H200) only. Drives the FA3 and tilelang
-# source builds in later stages, and runtime tilelang JIT.
-ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0
+# ARCH_LIST 9.0: the pool is Hopper (H200) only. CUDA_HOME/PATH pin the base toolkit — bench
+# baselines drop a later nvcc into site-packages, and building against that mismatches the runtime.
+ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0 \
+    CUDA_HOME=/usr/local/cuda PATH=/usr/local/cuda/bin:${PATH}
 
-# ── post-fa3 ──
-# Test tooling + FlashAttention-3 (a bench baseline). tilelang is NOT built here — it is built
-# last (the `tilelang` stage) so a SHA bump rebuilds only that layer and so it links against
-# the final post-bench stack.
 FROM runtime AS post-fa3
-RUN python -m pip install --no-cache-dir -c /tmp/constraints.txt \
-        pytest pytest-xdist ruff pytest-timeout py-spy
-# FlashAttention-3 (Hopper) has no PyPI wheel — build it from the repo's hopper/ dir.
-# Fetch ONLY the csrc/cutlass submodule the build needs: a full --recursive also pulls the AMD
-# composable_kernel submodule, which the sm_90 build never uses and which is large and
-# slow/timeout-prone to clone. Best-effort: a bench baseline must not break the image. The
-# source tree is removed whether or not the build succeeds, so it never lands in the image.
-RUN git clone --depth 1 --branch v2.8.3 \
-        https://github.com/Dao-AILab/flash-attention.git /tmp/flash-attention \
+RUN uv pip install pytest pytest-xdist ruff pytest-timeout py-spy
+# Hopper FA3 has no wheel. A commit, not the v2.8.3 tag: releases through 2.8.3.post1 swap in a
+# downloaded CUDA 12.6 nvcc unless the system CUDA is exactly 12.8, and that toolchain ships no
+# CCCL, so every translation unit fails on `cuda/std/utility`. Only main takes the CUDA 13 path.
+# Only csrc/cutlass: --recursive also pulls AMD composable_kernel, unused at sm_90 and slow.
+ARG FLASH_ATTENTION_GIT_SHA=a369df707e1980fb328abcc1733e3457ec10155f
+RUN { mkdir -p /tmp/flash-attention \
         && cd /tmp/flash-attention \
+        && git init -q \
+        && git remote add origin https://github.com/Dao-AILab/flash-attention.git \
+        && git fetch --depth 1 origin "${FLASH_ATTENTION_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
         && git submodule update --init --depth 1 csrc/cutlass \
-        && cd hopper && python setup.py install; \
+        && cd hopper && python setup.py install; }; \
     status=$?; rm -rf /tmp/flash-attention; \
     [ "$status" -eq 0 ] || echo "WARNING: FlashAttention-3 (hopper) build failed (non-fatal)"
 
-# ── fa2 ──
-# FlashAttention-2 in its OWN stage/layer: no prebuilt wheel for this torch/cu129/py, so it
-# builds from source (~minutes). Isolating it means changes to the bench-install loop
-# (fullstack) never invalidate this expensive compile. flash-attn does not re-resolve torch.
-# Best-effort: a bench baseline must not fail the image.
+# Own layer: no wheel for this torch/py, so it builds from source and changes to the bench loop
+# below must not recompile it.
 FROM post-fa3 AS fa2
-RUN python -m pip install --no-cache-dir --no-build-isolation \
-        --index-url https://download.pytorch.org/whl/cu129 \
-        --extra-index-url https://pypi.org/simple \
-        -c /tmp/constraints.txt "flash-attn==2.8.3" \
+RUN uv pip install --no-build-isolation "flash-attn==2.8.3.post1" \
     || echo "WARNING: flash-attn (FA2) install failed (non-fatal)"
 
-# ── fullstack ──
-# Remaining bench baselines (comparison targets). Best-effort. Freeze the cu129 torch trio
-# that `runtime` installed into a constraint first so a bench dep's unversioned `torch`
-# requirement cannot swap torch off the cu129 stack; constraints.txt itself stays bare so it
-# also fits the CPU preflight. vllm pulls flashinfer 0.6.6 (upgraded below) and has no
-# apache-tvm-ffi pin, so it does not conflict with tilelang. sgl-kernel is not installed.
+# This vllm and no other: its apache-tvm-ffi pin (0.1.11) is the one the tilelang commit needs.
+# sgl-kernel is not installed.
 FROM fa2 AS fullstack
-RUN python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)==' > /tmp/torch-cu129.txt \
-    && for pkg in \
-        "flash-linear-attention==0.4.2" \
-        "vllm==0.19.1"; do \
-        python -m pip install --no-cache-dir --no-build-isolation \
-            --index-url https://download.pytorch.org/whl/cu129 \
-            --extra-index-url https://pypi.org/simple \
-            -c /tmp/constraints.txt -c /tmp/torch-cu129.txt "$pkg" \
+RUN for pkg in \
+        "flash-linear-attention==0.5.2" \
+        "vllm==0.27.1"; do \
+        uv pip install --no-build-isolation "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
-# The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
-# best-effort and dependency-free so it cannot re-resolve the CUDA-specific torch/triton stack
-# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. mamba_ssm's
-# package import loads selective_scan_cuda, so the CUDA extension must be built even when the
-# benchmark uses the Triton modules.
+# --no-deps so mamba_ssm cannot pull its own newer tilelang pin. The CUDA extension must still
+# build: importing the package loads selective_scan_cuda even for the Triton path the bench uses.
 RUN MAMBA_FORCE_BUILD=TRUE \
-    python -m pip install --no-cache-dir --no-build-isolation --no-deps \
-        -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
-        "mamba-ssm==2.3.1" \
-    || echo "WARNING: mamba-ssm 2.3.1 install failed (non-fatal)"
-# The grouped-GEMM benchmark can compare against DeepGEMM. Install from the official tag
-# instead of PyPI's stale 1.0.0 sdist, and fetch only the submodules needed for its headers.
+    uv pip install --no-build-isolation --no-deps "mamba-ssm==2.3.2.post1" \
+    || echo "WARNING: mamba-ssm 2.3.2.post1 install failed (non-fatal)"
+# From the official tag; PyPI's 1.0.0 sdist is stale.
 ARG DEEPGEMM_GIT_SHA=c9f8b34dcdacc20aa746b786f983492c51072870
 RUN { mkdir -p /tmp/DeepGEMM \
         && cd /tmp/DeepGEMM \
@@ -128,32 +112,18 @@ RUN { mkdir -p /tmp/DeepGEMM \
             if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
             sleep "$((attempt * 10))"; \
         done \
-        && DG_FORCE_BUILD=1 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
-            -c /tmp/constraints.txt -c /tmp/torch-cu129.txt .; } \
+        && DG_FORCE_BUILD=1 uv pip install --no-build-isolation --no-deps .; } \
     || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
     rm -rf /tmp/DeepGEMM
-# The attention benchmarks (benchmarks/ops/attention/) need a flashinfer newer than the 0.6.6
-# vllm pulls. Upgrade flashinfer-python/-cubin with --no-deps so torch and vllm's other deps are
-# untouched; add plain cuda-tile (flashinfer>=0.6.7 needs it — the [tileiras] extra would pull a
-# CUDA-13 toolchain). vllm's flashinfer pin is left unsatisfied, which is safe: vllm's only
-# TileOPs-used path (fused_moe) does not import flashinfer.
-RUN { python -m pip install --no-cache-dir --no-deps -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
-            "flashinfer-python==0.6.11.post2" "flashinfer-cubin==0.6.11.post2" \
-        && python -m pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
-            cuda-tile nvidia-cudnn-frontend "nvidia-cutlass-dsl>=4.5.0" nvidia-ml-py; } \
-    || echo "WARNING: flashinfer 0.6.11.post2 upgrade failed (non-fatal)"
 
-# ── tilelang ──
-# Built LAST (after all bench): a TILELANG_GIT_SHA bump then rebuilds only this layer (bench
-# stays cached), and tilelang compiles/links against the exact final stack so its ABI always
-# matches what ships. ARG is declared here — not earlier — so changing it never invalidates
-# the bench layers above.
+# Built LAST: a SHA bump rebuilds only this layer, tilelang links against the final stack, and the
+# ARGs live here so changing them never invalidates the bench layers. vllm pins an exact tilelang
+# release, which this stage overwrites — leaving that pin unsatisfied is the point.
 FROM fullstack AS tilelang
 ARG TILELANG_GIT_SHA
 ARG TILELANG_VERSION
-# main mode:    --build-arg TILELANG_GIT_SHA=<commit>  → clone + compile that commit
-# release mode: --build-arg TILELANG_VERSION=<version> → pip install the PyPI release
-# Either way --no-deps, so pip never re-resolves the cu129 stack.
+# --no-deps: never re-resolve the cu132 stack. --reinstall: a same-version PyPI tilelang must not
+# read as already satisfied. `pip wheel` stays on pip — uv has no equivalent subcommand.
 RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         mkdir -p /tmp/tilelang && cd /tmp/tilelang \
         && git init -q \
@@ -165,27 +135,21 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
             python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
-        && python -m pip install --no-deps /opt/tilelang-wheels/tilelang-*.whl \
+        && uv pip install --no-deps --reinstall /opt/tilelang-wheels/tilelang-*.whl \
         && rm -rf /tmp/tilelang; \
     elif [ -n "${TILELANG_VERSION}" ]; then \
-        python -m pip install --no-deps "tilelang==${TILELANG_VERSION}"; \
+        uv pip install --no-deps --reinstall "tilelang==${TILELANG_VERSION}"; \
     else \
         echo "ERROR: set --build-arg TILELANG_GIT_SHA=<commit> (main) or TILELANG_VERSION=<ver> (release)"; \
         exit 1; \
     fi
-# CUPTI binding for benchmark timing. --no-deps: it pins cuda-bindings==12.8.0 against torch's
-# ==12.9.4, and a resolved install downgrades torch's pin while pip only warns.
-RUN python -m pip install --no-cache-dir --no-deps "cupti-python==12.8.0"
-# Guard the final stack (GPU-free, runs at build): tilelang must import, the installed
-# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, torch must still be
-# the cu129 build, and cupti-python must not have dragged cuda-bindings off torch's pin.
+# --no-deps: it must not re-resolve a CUDA wheel under torch.
+RUN uv pip install --no-deps "cupti-python==13.2.0"
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 
-# ── final ──
 FROM tilelang AS final
-# Cache dir defaults (host bind-mounts /ci-cache at runtime; pre-created below so they stay
-# writable when run unmounted). PIP_NO_CACHE_DIR=0 re-enables caching (build stages disable it).
+# The host bind-mounts /ci-cache; the dirs are pre-created for unmounted runs.
 ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TILELANG_CACHE_DIR=/ci-cache/tilelang \
     TILELANG_TMP_DIR=/ci-cache/tilelang/tmp \
@@ -193,22 +157,9 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     PIP_CACHE_DIR=/ci-cache/pip \
     PIP_NO_CACHE_DIR=0
 ARG RUNNER_VERSION=2.336.0
-# The /ci-cache chown below serves only the unmounted image-verification path
-# (`docker run <image> python ...`, see README): ci-runner writes the root-created cache dirs
-# directly. In the mounted CI path the host bind-mount shadows these dirs, so the chown is a
-# no-op and host ownership wins.
-# useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
-# Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
-# hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
-# FlashInfer's flashinfer-cubin package keeps its packaged cubin tree under site-packages.
-# Some baselines materialize TRTLLM GEMM entries there at runtime, so the unprivileged runner
-# must own the writable directories instead of inheriting pip's root-owned directories.
-RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner \
-    && FLASHINFER_CUBIN_DIR="$(python -c 'import pathlib, flashinfer_cubin; print(pathlib.Path(flashinfer_cubin.get_cubin_dir()))' 2>/dev/null || true)" \
-    && if [ -n "${FLASHINFER_CUBIN_DIR}" ]; then \
-        mkdir -p "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
-        find "${FLASHINFER_CUBIN_DIR}" -type d -exec chown ci-runner:ci-runner {} +; \
-    fi
+# UID/GID 1000: the account must own the shared /ci-cache bind-mount across hosts. The chown below
+# matters only unmounted — in CI the bind-mount shadows those dirs.
+RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \
@@ -218,7 +169,6 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
     && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
-# chmod as root before the USER drop.
 COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 USER ci-runner

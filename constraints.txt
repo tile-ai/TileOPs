@@ -1,20 +1,20 @@
-# Version lock for CI / runner builds. Pins versions only; membership lives in pyproject
-# (project dependencies) or the runner Dockerfile install lists (CI-only tooling).
-# torch/torchvision/torchaudio bare (no `+cu129`): the CUDA variant comes from the install
-# index, not this pin, so the same lock also fits the CPU preflight. Do not add `+cu129`.
-# torchvision/torchaudio are pinned to vllm 0.19.1's exact requirements (the newest vllm on
-# the torch 2.10 / CUDA-12 line — vllm 0.20+ are CUDA-13 builds, unrunnable on a 12.9 driver).
-torch==2.10.0
-torchvision==0.25.0
-torchaudio==2.10.0
-triton==3.6.0
-# apache-tvm-ffi is ABI-coupled to the baked tilelang wheel: it MUST sit inside the range
-# tilelang's own metadata declares for the pinned commit (verified at build time by
-# scripts/ci/verify_runtime_stack.py). Re-confirm this pin whenever TILELANG_GIT_SHA changes.
+# Versions for CI / runner builds, with the reasoning. Membership lives in pyproject (project
+# deps) or the runner Dockerfile's install lists (CI-only tooling); the resolved closure lives in
+# constraints-runner-lock.txt.
+#
+# No `+cu132`: the CUDA variant comes from the install index, so this file also fits the CPU
+# preflight. torch/torchvision follow vllm 0.27.1's exact pins; see requirements.in for torchaudio.
+torch==2.13.0
+torchvision==0.28.0
+torchaudio==2.11.0
+# What torch 2.13.0 requires. Follow torch; never pick independently.
+triton==3.7.1
+# ABI-coupled to the baked tilelang wheel: MUST sit inside the range tilelang's metadata declares
+# for the pinned commit (verify_runtime_stack.py checks it). Re-confirm on every TILELANG_GIT_SHA.
 apache-tvm-ffi==0.1.11
 cloudpickle==3.1.2
 ml_dtypes==0.5.4
-# numpy<2.3 required by vllm 0.19.1's numba dep; 2.2.6 also satisfies tilelang (>=1.23.5).
+# vllm takes numpy unconstrained; 2.2.6 satisfies tilelang (>=1.23.5).
 numpy==2.2.6
 psutil==7.2.2
 tqdm==4.67.3
@@ -22,10 +22,13 @@ typing_extensions==4.15.0
 Cython==3.2.4
 z3-solver==4.15.4.0
 torch_c_dlpack_ext==0.1.5
-# CI tooling: versions locked here; the runner image install lists carry bare names.
+# CI tooling; the Dockerfile install lists carry the bare names.
 pytest==9.0.2
 pytest-xdist==3.8.0
 ruff==0.14.13
 pytest-timeout==2.3.1
 # Stack dump of a hung benchmark child before the runner kills it.
 py-spy==0.4.2
+# The installer. It cannot come from the lock it produces, and the same version must compile the
+# lock and install from it.
+uv==0.12.3

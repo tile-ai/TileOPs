@@ -1,0 +1,39 @@
+# Direct requirements of the runner image. The source-built packages (tilelang, FA2, FA3,
+# mamba-ssm, DeepGEMM) are absent: no wheel to resolve, and they go in with --no-deps.
+# Compile with the command in constraints-runner-lock.txt's header.
+--index-url https://download.pytorch.org/whl/cu132
+--extra-index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cu132
+torchvision==0.28.0+cu132
+# Here only because vllm pins it and transformers imports it unconditionally. No cu132 build
+# exists, and a CUDA build of another minor refuses to load beside this torch; the CPU wheel
+# carries no such extension.
+torchaudio==2.11.0+cpu
+setuptools
+wheel
+ninja
+scikit-build-core
+patchelf
+cmake
+triton
+apache-tvm-ffi
+cloudpickle
+ml_dtypes
+numpy
+psutil
+tqdm
+typing_extensions
+Cython
+z3-solver
+torch_c_dlpack_ext
+einops
+PyYAML>=6.0
+pytest
+pytest-xdist
+ruff
+pytest-timeout
+py-spy
+flash-linear-attention==0.5.2
+vllm==0.27.1
+cupti-python==13.2.0
