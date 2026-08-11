@@ -20,16 +20,9 @@ Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes to
 kernel's block_l (chosen automatically by the kernel's default_config).
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm.batch_norm import (
-    BatchNormBwdKernel,
-    BatchNormFwdInferKernel,
-    BatchNormFwdTrainKernel,
-)
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
@@ -87,9 +80,11 @@ class BatchNormFwdOp(Op):
             manifest the default is ``False``.
         momentum: Running-stat update momentum (used in training mode).
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "BatchNormFwdOp"
 
     def __init__(
         self,
@@ -97,7 +92,7 @@ class BatchNormFwdOp(Op):
         momentum: float = 0.1,
         eps: float = 1e-5,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ) -> None:
         self.N: Optional[int] = None
@@ -110,18 +105,10 @@ class BatchNormFwdOp(Op):
         self.momentum = momentum
         self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
-        self.train_kernel: Optional[BatchNormFwdTrainKernel] = None
-        self.infer_kernel: Optional[BatchNormFwdInferKernel] = None
+        self.target = target
+        self.dispatch_kernel()
         self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "fwd_train_kernel": BatchNormFwdTrainKernel,
-            "fwd_infer_kernel": BatchNormFwdInferKernel,
-        }
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -187,35 +174,6 @@ class BatchNormFwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (C, L, dtype)
 
-    def _get_kernel(
-        self,
-        C: int,
-        L: int,
-        dtype: torch.dtype,
-        device_index: Optional[int],
-    ) -> Kernel:
-        # Train and infer are separate slots, so the mode is not part of the key.
-        key = (C, L, dtype, device_index, self.eps, self.momentum, self.tune)
-        if self.training:
-            kernel = self.get_or_build_kernel(
-                "fwd_train_kernel",
-                key,
-                lambda: self.kernel_map["fwd_train_kernel"](
-                    C, L, dtype, self.eps, self.momentum, tune=self.tune,
-                ),
-            )
-            self.train_kernel = kernel
-        else:
-            kernel = self.get_or_build_kernel(
-                "fwd_infer_kernel",
-                key,
-                lambda: self.kernel_map["fwd_infer_kernel"](
-                    C, L, dtype, self.eps, tune=self.tune,
-                ),
-            )
-            self.infer_kernel = kernel
-        self.kernel = kernel
-        return kernel
 
     def _forward_impl(
         self,
@@ -225,6 +183,8 @@ class BatchNormFwdOp(Op):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
+        (x, running_mean, running_var, weight, bias), params = self._bind_call(
+            x, running_mean, running_var, weight, bias)
         N, C, spatial, L, dtype = self._resolve_spec(x)
         self._validate_channel_tensor("running_mean", running_mean, C, x.device, torch.float32)
         self._validate_channel_tensor("running_var", running_var, C, x.device, torch.float32)
@@ -232,16 +192,17 @@ class BatchNormFwdOp(Op):
         self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
         self._bind_spec(N, C, spatial, L, dtype)
         x_cl, orig_shape = self._prepare(x)
-        kernel = self._get_kernel(C, L, dtype, x.device.index)
+        # The kernel wants its own order and fp32 affine, so the specs it is chosen by
+        # describe these tensors, not the public ones.
+        weight_f, bias_f = weight.float(), bias.float()
+        kernel = self.backend_kernel(
+            x_cl, weight_f, bias_f, running_mean, running_var, **params)
 
         if self.training:
             y_cl, _mean, _rstd = kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
+                x_cl, weight_f, bias_f, running_mean, running_var)
         else:
-            y_cl = kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
+            y_cl = kernel(x_cl, weight_f, bias_f, running_mean, running_var)
         return _restore_shape(y_cl, orig_shape)
 
     def forward(
@@ -290,14 +251,16 @@ class BatchNormBwdOp(Op):
         to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "BatchNormBwdOp"
 
     def __init__(
         self,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ) -> None:
         self.N: Optional[int] = None
@@ -307,14 +270,10 @@ class BatchNormBwdOp(Op):
         self.dtype: Optional[torch.dtype] = None
         self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
-        self.bwd_kernel: Optional[BatchNormBwdKernel] = None
+        self.target = target
+        self.dispatch_kernel()
         self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"bwd_kernel": BatchNormBwdKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -377,24 +336,6 @@ class BatchNormBwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (C, L, dtype)
 
-    def _get_kernel(
-        self,
-        C: int,
-        L: int,
-        dtype: torch.dtype,
-        device_index: Optional[int],
-    ) -> Kernel:
-        kernel = self.get_or_build_kernel(
-            "bwd_kernel",
-            (C, L, dtype, device_index, self.tune),
-            lambda: self.kernel_map["bwd_kernel"](
-                C, L, dtype, tune=self.tune,
-            ),
-        )
-        self.kernel = kernel
-        self.bwd_kernel = kernel
-        return kernel
-
     @staticmethod
     def _validate_channel_tensor(
         name: str,
@@ -420,6 +361,8 @@ class BatchNormBwdOp(Op):
         mean: torch.Tensor,
         rstd: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        (grad_out, x, weight, mean, rstd), params = self._bind_call(
+            grad_out, x, weight, mean, rstd)
         N, C, spatial, L, dtype = self._resolve_spec(grad_out, x)
         self._validate_channel_tensor("weight", weight, C, grad_out.device, torch.float32)
         self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
@@ -428,10 +371,10 @@ class BatchNormBwdOp(Op):
         orig_shape = grad_out.shape
         go_cl = self._prepare(grad_out)
         x_cl = self._prepare(x)
-        kernel = self._get_kernel(C, L, dtype, grad_out.device.index)
+        weight_f = weight.float()
+        kernel = self.backend_kernel(go_cl, x_cl, weight_f, mean, rstd, **params)
 
-        grad_x_cl, grad_weight, grad_bias = kernel(
-            go_cl, x_cl, weight.float(), mean, rstd)
+        grad_x_cl, grad_weight, grad_bias = kernel(go_cl, x_cl, weight_f, mean, rstd)
 
         grad_x = _restore_shape(grad_x_cl, orig_shape)
         return grad_x, grad_weight, grad_bias

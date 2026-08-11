@@ -207,15 +207,19 @@ def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
 
     x1 = torch.randn(512, n, dtype=dtype, device="cuda")
     y1 = op(x1, weight, bias)
-    first_kernel = op.built_kernels("layer_norm")[(512, dtype)]
+    built = op.built_kernels(op.OP_NAME)
+    first_key, = built
+    first_kernel = built[first_key]
     assert y1.shape == x1.shape
 
     x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
-    # A separate cache entry for the new M, and the first one is still there.
-    assert op.built_kernels("layer_norm")[(1024, dtype)] is not first_kernel
-    assert op.built_kernels("layer_norm")[(512, dtype)] is first_kernel
+    # A separate entry for the new M, and the first one is still there.
+    built = op.built_kernels(op.OP_NAME)
+    assert len(built) == 2
+    assert built[first_key] is first_kernel
+    assert {key[0].shape[0] for key in built} == {512, 1024}
 
     y_ref = F.layer_norm(
         x2.float(), (n,),

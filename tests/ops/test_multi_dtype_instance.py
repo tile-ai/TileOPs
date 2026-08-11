@@ -55,7 +55,10 @@ def test_layer_norm_keys_on_both_shape_and_dtype():
         w = torch.randn(n, dtype=dtype, device="cuda")
         b = torch.randn(n, dtype=dtype, device="cuda")
         assert op(x, w, b).dtype == dtype
-    assert set(op.built_kernels("layer_norm")) == {(16, dt) for dt in _DTYPES}
+    built = op.built_kernels(op.OP_NAME)
+    assert {(key[0].shape, key[0].dtype) for key in built} == {
+        ((16, n), dt) for dt in _DTYPES
+    }
 
 
 @pytest.mark.smoke

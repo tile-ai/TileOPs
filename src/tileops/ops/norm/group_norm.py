@@ -12,12 +12,9 @@ Input tensors accept shape (N, C, *spatial); the op reshapes to
 """
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 
 from ..op_base import Op
 
@@ -50,16 +47,18 @@ class GroupNormFwdOp(Op):
         num_groups: Number of groups (manifest ``params.num_groups``).
             Must divide *C* evenly.
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "GroupNormFwdOp"
 
     def __init__(
         self,
         num_groups: int,
         eps: float = 1e-5,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.N: Optional[int] = None
@@ -72,13 +71,10 @@ class GroupNormFwdOp(Op):
         self.spatial_size: Optional[int] = None
         self.D: Optional[int] = None
         self.M: Optional[int] = None
-        self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.target = target
+        self.dispatch_kernel()
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"group_norm": GroupNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -135,24 +131,6 @@ class GroupNormFwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (N, C, spatial_size, dtype)
 
-    def _get_kernel(
-        self,
-        M: int,
-        D: int,
-        cpg: int,
-        dtype: torch.dtype,
-        device_index: Optional[int],
-    ) -> Kernel:
-        key = (M, D, cpg, dtype, device_index, self.eps, self.tune)
-        kernel = self.get_or_build_kernel(
-            "group_norm",
-            key,
-            lambda: self.kernel_map["group_norm"](
-                M, D, self.eps, dtype, self.num_groups, cpg, tune=self.tune,
-            ),
-        )
-        self.kernel = kernel
-        return kernel
 
     def forward(
         self,
@@ -176,6 +154,7 @@ class GroupNormFwdOp(Op):
             ValueError: If any tensor is not on CUDA, dtypes mismatch, or
                 shapes are incompatible with the configured dimensions.
         """
+        (x, weight, bias), params = self._bind_call(x, weight, bias)
         (
             N,
             C,
@@ -226,9 +205,9 @@ class GroupNormFwdOp(Op):
             )
 
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype)
-        kernel = self._get_kernel(M, D, cpg, dtype, x.device.index)
         orig_shape = x.shape
         x_2d = x.contiguous().reshape(M, D)
+        kernel = self.backend_kernel(x_2d, weight, bias, **params)
 
         # The kernel derives each element's channel from its position in the
         # row, so the per-channel affine is applied inside the kernel.
@@ -258,16 +237,18 @@ class GroupNormNoAffineFwdOp(Op):
         num_groups: Number of groups (manifest ``params.num_groups``).
             Must divide *C* evenly.
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "GroupNormNoAffineFwdOp"
 
     def __init__(
         self,
         num_groups: int,
         eps: float = 1e-5,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.N: Optional[int] = None
@@ -280,13 +261,10 @@ class GroupNormNoAffineFwdOp(Op):
         self.spatial_size: Optional[int] = None
         self.D: Optional[int] = None
         self.M: Optional[int] = None
-        self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.target = target
+        self.dispatch_kernel()
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"group_norm_no_affine": GroupNormNoAffineKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -343,23 +321,6 @@ class GroupNormNoAffineFwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (N, C, spatial_size, dtype)
 
-    def _get_kernel(
-        self,
-        M: int,
-        D: int,
-        dtype: torch.dtype,
-        device_index: Optional[int],
-    ) -> Kernel:
-        key = (M, D, dtype, device_index, self.eps, self.tune)
-        kernel = self.get_or_build_kernel(
-            "group_norm_no_affine",
-            key,
-            lambda: self.kernel_map["group_norm_no_affine"](
-                M, D, self.eps, dtype, tune=self.tune,
-            ),
-        )
-        self.kernel = kernel
-        return kernel
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply group normalization without affine.
@@ -375,6 +336,7 @@ class GroupNormNoAffineFwdOp(Op):
                 device than the op was constructed for, or its dtype does
                 not match the configured dtype.
         """
+        (x,), params = self._bind_call(x)
         (
             N,
             C,
@@ -386,12 +348,11 @@ class GroupNormNoAffineFwdOp(Op):
             dtype,
         ) = self._resolve_spec(x)
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype)
-        kernel = self._get_kernel(M, D, dtype, x.device.index)
-
         orig_shape = x.shape
         x = x.contiguous()
         x_reshaped = x.reshape(N, self.num_groups, cpg, *spatial)
         x_2d = x_reshaped.reshape(M, D)
+        kernel = self.backend_kernel(x_2d, **params)
 
         y_2d = kernel(x_2d)
 

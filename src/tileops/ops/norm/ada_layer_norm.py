@@ -1,9 +1,6 @@
-from typing import Dict, Optional
+from typing import Optional
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import AdaLayerNormKernel
 
 from ..op_base import Op
 
@@ -38,16 +35,19 @@ class AdaLayerNormFwdOp(Op):
         N: Optional committed hidden dimension. Preferred API infers it from
             ``x.shape[-1]``.
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "AdaLayerNormFwdOp"
 
     def __init__(
         self,
         M: Optional[int] = None,
         N: Optional[int] = None,
         eps: float = 1e-5,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.M = M
@@ -55,13 +55,11 @@ class AdaLayerNormFwdOp(Op):
         self._committed_M = M
         self._committed_N = N
         self.eps = eps
+        self.target = target
         self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self.dispatch_kernel()
         self._last_roofline_mn: Optional[tuple[int, int]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ada_layer_norm": AdaLayerNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
@@ -73,17 +71,6 @@ class AdaLayerNormFwdOp(Op):
         elem_bytes = self.dtype.itemsize
         return 5 * M * N, 4 * M * N * elem_bytes
 
-    def _get_kernel(
-        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
-    ) -> Kernel:
-        key = (M, N, dtype, device_index)
-        return self.get_or_build_kernel(
-            "ada_layer_norm",
-            key,
-            lambda: self.kernel_map["ada_layer_norm"](
-                M, N, self.eps, dtype, has_gate=False, tune=self.tune,
-            ),
-        )
 
     def forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor,
@@ -102,6 +89,7 @@ class AdaLayerNormFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch,
                 or shapes are incompatible with the configured dimensions.
         """
+        (x, scale, shift), params = self._bind_call(x, scale, shift)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if not scale.is_cuda:
@@ -140,7 +128,7 @@ class AdaLayerNormFwdOp(Op):
         self.N = N
         dtype = expected_dtype
         assert dtype is not None
-        kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
+        kernel = self.backend_kernel(x, scale, shift, **params)
         y = kernel(x, scale, shift)
         self._last_roofline_mn = (M_actual, N)
         self.dtype = expected_dtype

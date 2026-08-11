@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tileops.backend import registry
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
@@ -156,19 +157,44 @@ def _batch_norm_bwd_ref(
     return _from_cl(grad_x_cl, x.shape), grad_weight, grad_bias
 
 
+def _only_kernel(op):
+    """The single kernel this op has built so far."""
+    kernels = list(op.iter_kernels())
+    assert len(kernels) == 1, f"expected one kernel, got {len(kernels)}"
+    return kernels[0]
+
+
+@pytest.fixture
+def fake_batch_norm_backend():
+    """Serve the batch norm ops from a target of this test's own, and put the registry back.
+
+    Registering a backend is how a caller substitutes kernels now: there is no kernel map to
+    override, and a fake target proves the same lazy-cache behaviour without compiling.
+    """
+    state = registry.snapshot()
+
+    def fwd(x, weight, bias, running_mean, running_var, *, training, momentum, eps):
+        channels, length = x.shape
+        cls = _FakeBatchNormFwdTrainKernel if training else _FakeBatchNormFwdInferKernel
+        return cls(channels, length, x.dtype, eps, momentum) if training else cls(
+            channels, length, x.dtype, eps)
+
+    def bwd(grad_out, x, weight, mean, rstd):
+        return _FakeBatchNormBwdKernel(x.shape[0], x.shape[1], x.dtype)
+
+    registry.register(op="BatchNormFwdOp", target="fake", get_kernel=fwd)
+    registry.register(op="BatchNormBwdOp", target="fake", get_kernel=bwd)
+    yield
+    registry.restore(state)
+
+
 @pytest.mark.smoke
-def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
+def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization(fake_batch_norm_backend) -> None:
     """BatchNorm op-layer cache reuses identical specs and caches changed specs."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required for forward call")
 
-    op = BatchNormFwdOp(
-        training=False,
-        kernel_map={
-            "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
-            "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
-        },
-    )
+    op = BatchNormFwdOp(training=False, target="fake")
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
         x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
@@ -184,7 +210,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
-    first_kernel = op.kernel
+    first_kernel = _only_kernel(op)
     assert op.eval_roofline() == (
         10 * 8 * 32,
         2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4,
@@ -192,11 +218,11 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
-    assert op.kernel is first_kernel
+    assert _only_kernel(op) is first_kernel
 
     run_case(3, 12, (2, 8), torch.bfloat16)
     assert len(list(op.iter_kernels())) == 2
-    assert op.kernel is not first_kernel
+    assert first_kernel in set(op.iter_kernels())
     assert op.eval_roofline() == (
         10 * 12 * 48,
         2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4,
@@ -204,18 +230,14 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 
 
 @pytest.mark.smoke
-def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None:
+def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization(
+    fake_batch_norm_backend,
+) -> None:
     """Training BatchNorm forward cache path is executable under fake kernels."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required for forward call")
 
-    op = BatchNormFwdOp(
-        training=True,
-        kernel_map={
-            "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
-            "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
-        },
-    )
+    op = BatchNormFwdOp(training=True, target="fake")
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
         x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
@@ -230,7 +252,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
-    first_kernel = op.kernel
+    first_kernel = _only_kernel(op)
     assert op.eval_roofline() == (
         10 * 8 * 32,
         2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4,
@@ -238,11 +260,11 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
-    assert op.kernel is first_kernel
+    assert _only_kernel(op) is first_kernel
 
     run_case(3, 12, (2, 8), torch.bfloat16)
     assert len(list(op.iter_kernels())) == 2
-    assert op.kernel is not first_kernel
+    assert first_kernel in set(op.iter_kernels())
     assert op.eval_roofline() == (
         10 * 12 * 48,
         2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4,
@@ -250,13 +272,13 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 
 
 @pytest.mark.smoke
-def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
+def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization(fake_batch_norm_backend) -> None:
     """BatchNorm backward cache path is executable under fake kernels."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required for backward call")
 
     eps = 1e-5
-    op = BatchNormBwdOp(kernel_map={"bwd_kernel": _FakeBatchNormBwdKernel})
+    op = BatchNormBwdOp(target="fake")
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
         x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
@@ -274,7 +296,7 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
-    first_kernel = op.kernel
+    first_kernel = _only_kernel(op)
     assert op.eval_roofline() == (
         8 * 8 * 32,
         3 * 8 * 32 * torch.float16.itemsize + 3 * 8 * 4,
@@ -282,11 +304,11 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
-    assert op.kernel is first_kernel
+    assert _only_kernel(op) is first_kernel
 
     run_case(3, 12, (2, 8), torch.bfloat16)
     assert len(list(op.iter_kernels())) == 2
-    assert op.kernel is not first_kernel
+    assert first_kernel in set(op.iter_kernels())
     assert op.eval_roofline() == (
         8 * 12 * 48,
         3 * 12 * 48 * torch.bfloat16.itemsize + 3 * 12 * 4,

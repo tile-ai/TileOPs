@@ -1,9 +1,6 @@
-from typing import Dict, Optional, Sequence
+from typing import Optional, Sequence
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import LayerNormKernel
 
 from ..op_base import Op
 from .norm_base import normalized_shape_to_n
@@ -42,29 +39,29 @@ class LayerNormFwdOp(Op):
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
             ``None`` uses the PyTorch default ``1e-5``.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "LayerNormFwdOp"
 
     def __init__(
         self,
         normalized_shape: Sequence[int],
         eps: Optional[float] = 1e-5,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
         # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
         self.eps = 1e-5 if eps is None else float(eps)
+        self.target = target
         self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self.dispatch_kernel()
         self._last_m: Optional[int] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"layer_norm": LayerNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_m is None or self.dtype is None:
@@ -98,6 +95,7 @@ class LayerNormFwdOp(Op):
                 shapes are incompatible with the configured
                 ``normalized_shape``.
         """
+        (x, weight, bias), params = self._bind_call(x, weight, bias)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if not weight.is_cuda:
@@ -136,14 +134,7 @@ class LayerNormFwdOp(Op):
         weight = weight.contiguous().reshape(self.N)
         bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
-        key = (m_actual, x.dtype)
-        kernel = self.get_or_build_kernel(
-            "layer_norm",
-            key,
-            lambda: self.kernel_map["layer_norm"](
-                m_actual, self.N, self.eps, x.dtype, tune=self.tune,
-            ),
-        )
+        kernel = self.backend_kernel(x, weight, bias, **params)
         self._last_m = m_actual
 
         y = kernel(x, weight, bias)

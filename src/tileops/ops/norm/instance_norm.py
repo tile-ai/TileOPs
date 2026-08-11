@@ -13,15 +13,9 @@ Input tensors accept shape ``(N, C, *spatial)``.
 """
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import (
-    GroupNormKernel,
-    InstanceNormNoAffineKernel,
-)
 
 from ..op_base import Op
 
@@ -62,7 +56,7 @@ class InstanceNormFwdOp(Op):
             the op instance for API parity with PyTorch but unused on
             the per-batch (``use_input_stats=True``) path.
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
 
     Raises:
@@ -70,13 +64,15 @@ class InstanceNormFwdOp(Op):
             (the deferred running-stats path).
     """
 
+    OP_NAME = "InstanceNormFwdOp"
+
     def __init__(
         self,
         use_input_stats: bool = True,
         momentum: float = 0.1,
         eps: float = 1e-5,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         if not use_input_stats:
@@ -96,13 +92,10 @@ class InstanceNormFwdOp(Op):
         self.spatial_size: Optional[int] = None
         self.D: Optional[int] = None
         self.M: Optional[int] = None
-        self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.target = target
+        self.dispatch_kernel()
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"group_norm": GroupNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -171,26 +164,6 @@ class InstanceNormFwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (N, C, spatial_size, dtype)
 
-    def _get_kernel(
-        self,
-        M: int,
-        D: int,
-        C: int,
-        dtype: torch.dtype,
-        device_index: Optional[int],
-    ) -> Kernel:
-        # One group per channel, so a row's every element belongs to the same
-        # channel: num_groups=C with channels_per_group=1.
-        key = (M, D, C, dtype, device_index, self.eps, self.tune)
-        kernel = self.get_or_build_kernel(
-            "group_norm",
-            key,
-            lambda: self.kernel_map["group_norm"](
-                M, D, self.eps, dtype, C, 1, tune=self.tune,
-            ),
-        )
-        self.kernel = kernel
-        return kernel
 
     def forward(
         self,
@@ -214,6 +187,7 @@ class InstanceNormFwdOp(Op):
             ValueError: If any tensor is not on CUDA, dtypes mismatch, or
                 shapes are incompatible with the configured dimensions.
         """
+        (x, weight, bias), params = self._bind_call(x, weight, bias)
         if not isinstance(weight, torch.Tensor):
             raise ValueError(
                 "weight is required; use InstanceNormNoAffineFwdOp for the "
@@ -248,9 +222,9 @@ class InstanceNormFwdOp(Op):
             )
 
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype)
-        kernel = self._get_kernel(M, D, C, dtype, x.device.index)
         orig_shape = x.shape
         x_2d = x.contiguous().reshape(M, D)
+        kernel = self.backend_kernel(x_2d, weight, bias, **params)
 
         # Row m of the (N*C, spatial_size) view is channel m % C throughout,
         # so the kernel applies the per-channel affine itself.
@@ -287,9 +261,11 @@ class InstanceNormNoAffineFwdOp(Op):
             forward path (no running-stat update on ``use_input_stats=True``;
             no running-stat update on ``use_input_stats=False`` either).
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "InstanceNormNoAffineFwdOp"
 
     def __init__(
         self,
@@ -297,7 +273,7 @@ class InstanceNormNoAffineFwdOp(Op):
         momentum: float = 0.1,
         eps: float = 1e-5,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.N: Optional[int] = None
@@ -312,13 +288,10 @@ class InstanceNormNoAffineFwdOp(Op):
         self.D: Optional[int] = None
         self.M: Optional[int] = None
         self._running_stats_broadcast_shape: Optional[list[int]] = None
-        self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.target = target
+        self.dispatch_kernel()
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"instance_norm_no_affine": InstanceNormNoAffineKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -426,23 +399,6 @@ class InstanceNormNoAffineFwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (N, C, spatial_size, dtype)
 
-    def _get_kernel(
-        self,
-        M: int,
-        D: int,
-        dtype: torch.dtype,
-        device_index: Optional[int],
-    ) -> Kernel:
-        key = (M, D, dtype, device_index, self.eps, self.tune)
-        kernel = self.get_or_build_kernel(
-            "instance_norm_no_affine",
-            key,
-            lambda: self.kernel_map["instance_norm_no_affine"](
-                M, D, self.eps, dtype, tune=self.tune,
-            ),
-        )
-        self.kernel = kernel
-        return kernel
 
     def forward(
         self,
@@ -470,6 +426,7 @@ class InstanceNormNoAffineFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch, or
                 shapes are incompatible with the configured dimensions.
         """
+        (x, running_mean, running_var), params = self._bind_call(x, running_mean, running_var)
         self._validate_dtypes(x, running_mean, running_var)
         (
             N,
@@ -498,7 +455,7 @@ class InstanceNormNoAffineFwdOp(Op):
         x = x.contiguous()
         x_2d = x.reshape(M, D)
 
-        kernel = self._get_kernel(M, D, dtype, x.device.index)
+        kernel = self.backend_kernel(x_2d, **params)
         y_2d = kernel(x_2d)
 
         return y_2d.reshape(orig_shape)

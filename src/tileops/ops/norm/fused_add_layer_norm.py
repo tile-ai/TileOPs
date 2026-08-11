@@ -1,9 +1,6 @@
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import FusedAddLayerNormKernel
 
 from ..op_base import Op
 
@@ -41,16 +38,19 @@ class FusedAddLayerNormFwdOp(Op):
         N: Optional committed hidden dimension. Preferred API infers it from
             ``x.shape[-1]``.
         eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
+        target: Which backend serves this op, or ``None`` to detect from the input device.
         tune: If ``True``, autotune tile configurations.
     """
+
+    OP_NAME = "FusedAddLayerNormFwdOp"
 
     def __init__(
         self,
         M: Optional[int] = None,
         N: Optional[int] = None,
         eps: float = 1e-5,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Optional[str] = None,
         tune: bool = False,
     ):
         self.M = M
@@ -58,13 +58,11 @@ class FusedAddLayerNormFwdOp(Op):
         self._committed_M = M
         self._committed_N = N
         self.eps = eps
+        self.target = target
         self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self.dispatch_kernel()
         self._last_roofline_mn: Optional[tuple[int, int]] = None
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fused_add_layer_norm": FusedAddLayerNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
@@ -79,17 +77,6 @@ class FusedAddLayerNormFwdOp(Op):
             (4 * M * N + 2 * N) * elem_bytes,
         )
 
-    def _get_kernel(
-        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
-    ) -> Kernel:
-        key = (M, N, dtype, device_index)
-        return self.get_or_build_kernel(
-            "fused_add_layer_norm",
-            key,
-            lambda: self.kernel_map["fused_add_layer_norm"](
-                M, N, self.eps, dtype, tune=self.tune,
-            ),
-        )
 
     def forward(
         self,
@@ -115,6 +102,7 @@ class FusedAddLayerNormFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch,
                 or shapes are incompatible with the configured dimensions.
         """
+        (x, residual, weight, bias), params = self._bind_call(x, residual, weight, bias)
         expected_dtype = x.dtype
         for name, tensor in [("x", x), ("residual", residual), ("weight", weight), ("bias", bias)]:
             if not tensor.is_cuda:
@@ -162,7 +150,7 @@ class FusedAddLayerNormFwdOp(Op):
         dtype = expected_dtype
         assert dtype is not None
 
-        kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
+        kernel = self.backend_kernel(x, residual, weight, bias, **params)
         y, residual_out = kernel(x, residual, weight, bias)
         self._last_roofline_mn = (M_actual, N)
         self.dtype = expected_dtype
