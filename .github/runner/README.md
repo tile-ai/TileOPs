@@ -4,8 +4,14 @@ Multi-stage image for the self-hosted GPU runner. It bakes a tilelang wheel plus
 test/benchmark stack onto a public CUDA base, so CI never recompiles tilelang per PR.
 
 Built **manually on a GPU host** — never in CI. One package, two tags from the same tilelang
-commit: `<tilelang-sha>` (`--target final`, the CI runners, includes the Actions agent) and
-`<tilelang-sha>-torch2.13-dev` (`--target tilelang`, local development, no agent).
+commit, both naming the three versions that decide what the image can run:
+
+```
+cu<cuda-minor>-torch<major.minor>-tl-<tilelang-short-sha>[-dev]
+```
+
+`--target final` takes the bare tag (the CI runners, includes the Actions agent); `--target tilelang` takes the `-dev` suffix (local development, no agent). Rebuilding the same three
+versions appends a numeric suffix: `…-tl-<sha>-2`.
 
 The Dockerfile carries no commit literal. Pass **exactly one** tilelang source —
 `TILELANG_GIT_SHA=<commit>` compiles that main commit, `TILELANG_VERSION=<version>` installs
@@ -19,7 +25,7 @@ the repository root; the context must contain `constraints.txt`, `constraints-ru
 `scripts/ci/`, and `.github/runner/entrypoint.sh`.
 
 ```bash
-IMG=ghcr.io/tile-ai/tileops-runner:<short-sha>   # rebuilding the same commit: add -2
+IMG=ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-<short-sha>
 
 # 1. Build. --target tilelang for the dev tag, otherwise the same command.
 DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target final \
@@ -32,7 +38,7 @@ docker run --rm --gpus all -v "$PWD:/src" "$IMG" python /src/scripts/ci/verify_r
 docker run --rm --gpus all -v "$PWD:/src" -w /src "$IMG" \
   bash -c 'scripts/ci/install_tileops.sh && pytest -m smoke'
 
-# 4. Push, then repeat 1 and 4 with --target tilelang and -t "$IMG-torch2.13-dev".
+# 4. Push, then repeat 1 and 4 with --target tilelang and -t "$IMG-dev".
 docker push "$IMG"
 ```
 
@@ -75,7 +81,7 @@ docker run -d --gpus all \
   -e RUNNER_TOKEN=<registration-token> \
   -e RUNNER_LABELS=self-hosted,tile-ops,nightly \
   -v <host-cache-dir>:/ci-cache \
-  ghcr.io/tile-ai/tileops-runner:<short-sha>
+  ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-<short-sha>
 ```
 
 The third label decides which jobs the runner takes: `nightly` for the shared pool, `fork` for
