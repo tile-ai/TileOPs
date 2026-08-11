@@ -237,6 +237,20 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-small-m8-splitk",
                 ),
+                # swap_ab band (n wide enough for the operand-swapped grid): bf16,
+                # a non-block_nn-divisible n exercising the predicated transpose
+                # epilogue, and the deep-ring stage count of the mid-CTA bucket.
+                pytest.param(
+                    4,
+                    5000,
+                    2048,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-small-m4-swap-ab-ntail",
+                ),
             ],
         ),
     ]
@@ -567,12 +581,13 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
 
 @pytest.mark.smoke
 def test_small_batch_dispatch() -> None:
-    """small_batch dispatches only at m == 2 on underfilled NT grids.
+    """small_batch dispatches only at m == 2 on grids no generic path fills.
 
     m == 1 stays on gemv, m >= 3 / full grids / non-NT stay on the generic
-    kernel (whose small-m band picks split-K / simple configs analytically).
-    Dispatch only — ``_get_kernel`` constructs kernel objects without triggering
-    a JIT compile (that happens on first forward), so this stays smoke-fast.
+    kernel (whose small-m band picks swap_ab / split-K / simple configs
+    analytically). Dispatch only — ``_get_kernel`` constructs kernel objects
+    without triggering a JIT compile (that happens on first forward), so this
+    stays smoke-fast.
     """
     from tileops.utils import get_sm_version
 
@@ -580,9 +595,13 @@ def test_small_batch_dispatch() -> None:
         pytest.skip("small_batch kernel-mode is SM90-only")
 
     op = GemmFwdOp(trans_a=False, trans_b=True)  # NT
-    # m == 2 on an underfilled generic grid: the bandwidth kernel's band.
+    # m == 2, and n too narrow for the operand-swapped grid (2112 / 64 = 33
+    # CTAs): the bandwidth kernel's remaining band.
     assert op._get_kernel(2, 2112, 7168, torch.float16)[0] == "small_batch"
-    assert op._get_kernel(2, 7168, 2048, torch.float16)[0] == "small_batch"
+    # m == 2 but n wide enough for swap_ab (7168 / 64 = 112 CTAs, 4096 -> 64):
+    # the generic kernel streams the same weights on a wider grid and wins.
+    assert op._get_kernel(2, 7168, 2048, torch.float16)[0] == "gemm"
+    assert op._get_kernel(2, 4096, 7168, torch.float16)[0] == "gemm"
     # m >= 3: the split-K / simple generic configs overtake the bandwidth
     # kernel (its per-element CUDA-core cost scales with m).
     assert op._get_kernel(3, 2112, 7168, torch.float16)[0] == "gemm"

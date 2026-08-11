@@ -9,6 +9,7 @@ import torch
 from ..call_spec import CallSpec
 from .call_spec import CallSpec
 from .heuristics import TINY_M_BLOCK_N
+from .heuristics import TINY_M_BLOCK_N, swap_ab_stages
 from tileops.utils import get_sm_count
 
 __all__ = ["GemmCall", "gemv_region", "small_batch_region"]
@@ -54,9 +55,17 @@ def small_batch_region(call: GemmCall) -> bool:
     competes with — the tiny-m generic band's ``block_n`` — because with that
     grid at a full wave the streaming kernel has no idle SMs to reclaim.
 
+    It also steps aside wherever the operand-swapped generic kernel applies:
+    that one streams the same weights on a grid twice as wide with no padded
+    ``A`` re-read, and measures 1.07-1.08x cuBLAS at ``m = 2`` on the down and
+    attention shapes against this kernel's 1.01x.
+
     ``m == 1`` is the GEMV region. NT only: the reduction over ``K`` needs
     ``K`` contiguous.
     """
     if call.trans_a or not call.trans_b or call.m != 2:
         return False
-    return -(-call.n // TINY_M_BLOCK_N) < get_sm_count()
+    sm_count = get_sm_count()
+    if swap_ab_stages(call.n, sm_count) is not None:
+        return False
+    return -(-call.n // TINY_M_BLOCK_N) < sm_count
