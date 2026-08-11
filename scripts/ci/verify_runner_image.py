@@ -9,7 +9,6 @@ Run inside the image:
 """
 
 import sys
-from pathlib import Path
 
 import torch
 
@@ -25,14 +24,8 @@ def main() -> int:
     print(f"tilelang {tilelang.__version__}")
 
     import flashinfer
-    import flashinfer_cubin
 
     print(f"flashinfer {flashinfer.__version__}")
-    # The cubin dir must be writable: flashinfer downloads kernels into it at runtime.
-    probe = Path(flashinfer_cubin.get_cubin_dir()) / "flashinfer" / "_tileops_write_probe"
-    probe.mkdir(parents=True, exist_ok=True)
-    (probe / "probe.txt").write_text("ok")
-    print("flashinfer cubin dir writable")
 
     import mamba_ssm
     import selective_scan_cuda  # noqa: F401 - import is the check

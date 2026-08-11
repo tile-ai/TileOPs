@@ -26,7 +26,12 @@ RUN apt-get update \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && python -m pip install --upgrade pip
-COPY constraints.txt /tmp/constraints.txt
+COPY constraints.txt constraints-runner-lock.txt /tmp/
+# PIP_CONSTRAINT rather than a -c flag per install: it reaches every pip in the build, including
+# the ones a build backend spawns under --no-build-isolation, and a step added later cannot
+# forget it. The lock is the resolved closure of the whole image, so any install that would move
+# a version another step settled on fails here instead of quietly winning.
+ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
 # torch / torchvision: cu132 wheels from the pytorch index (the PyPI default is a different
 # CUDA variant, so pin +cu132). Installing torchvision as cu132 here means vllm later finds its
 # exact-pinned version already satisfied and never swaps it off cu132. torchaudio is absent on
@@ -36,12 +41,11 @@ COPY constraints.txt /tmp/constraints.txt
 RUN python -m pip install \
         --index-url https://download.pytorch.org/whl/cu132 \
         --extra-index-url https://pypi.org/simple \
-        -c /tmp/constraints.txt \
         "torch==2.13.0+cu132" "torchvision==0.28.0+cu132"
 # tilelang's build backend (scikit-build-core + patchelf, its [build-system].requires) and its
 # runtime deps, installed here so the tilelang stage can build with --no-build-isolation. cmake
 # from pip provides >=3.26.1 (tilelang's [tool.scikit-build] floor); jammy apt cmake is 3.22.
-RUN python -m pip install -c /tmp/constraints.txt \
+RUN python -m pip install \
         setuptools wheel ninja scikit-build-core patchelf cmake \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
@@ -60,7 +64,7 @@ ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0 \
 # last (the `tilelang` stage) so a SHA bump rebuilds only that layer and so it links against
 # the final post-bench stack.
 FROM runtime AS post-fa3
-RUN python -m pip install --no-cache-dir -c /tmp/constraints.txt \
+RUN python -m pip install --no-cache-dir \
         pytest pytest-xdist ruff pytest-timeout py-spy
 # FlashAttention-3 (Hopper) has no PyPI wheel — build it from the repo's hopper/ dir.
 # Fetch ONLY the csrc/cutlass submodule the build needs: a full --recursive also pulls the AMD
@@ -84,30 +88,23 @@ FROM post-fa3 AS fa2
 RUN python -m pip install --no-cache-dir --no-build-isolation \
         --index-url https://download.pytorch.org/whl/cu132 \
         --extra-index-url https://pypi.org/simple \
-        -c /tmp/constraints.txt "flash-attn==2.8.3.post1" \
+        "flash-attn==2.8.3.post1" \
     || echo "WARNING: flash-attn (FA2) install failed (non-fatal)"
 
 # ── fullstack ──
-# Remaining bench baselines (comparison targets). Best-effort. Freeze what `runtime` installed
-# into a constraint first so a bench dep's unversioned requirement cannot swap it: the torch
-# packages themselves, and — new on the CUDA 13 line — every CUDA runtime library torch pulls
-# in, since replacing one of those breaks the c10 ABI just as thoroughly as replacing torch.
-# Two naming schemes have to be caught: the `nvidia-*` wheels, and the unsuffixed
-# `cuda-toolkit` / `cuda-bindings` / `cuda-pathfinder` that torch 2.13 depends on directly.
-# constraints.txt itself stays bare so it also fits the CPU preflight. vllm pins an exact
-# flashinfer (upgraded below) and has no apache-tvm-ffi pin, so it does not conflict with
-# tilelang. sgl-kernel is not installed.
+# Remaining bench baselines (comparison targets). Best-effort. Their versions, and the versions
+# of everything they pull in, are settled by the lock — vllm alone brings in most of the image's
+# package count, so this is where an unpinned stack would drift. vllm's apache-tvm-ffi pin
+# (0.1.11) is the one the tilelang commit needs, which is why this vllm and no other.
+# sgl-kernel is not installed.
 FROM fa2 AS fullstack
-RUN python -m pip freeze \
-        | grep -iE '^(torch|torchvision|torchaudio|triton|nvidia-[a-z0-9-]+|cuda-[a-z0-9-]+)==' \
-        > /tmp/torch-pin.txt \
-    && for pkg in \
+RUN for pkg in \
         "flash-linear-attention==0.5.2" \
         "vllm==0.27.1"; do \
         python -m pip install --no-cache-dir --no-build-isolation \
             --index-url https://download.pytorch.org/whl/cu132 \
             --extra-index-url https://pypi.org/simple \
-            -c /tmp/constraints.txt -c /tmp/torch-pin.txt "$pkg" \
+            "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
 # The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
@@ -117,7 +114,7 @@ RUN python -m pip freeze \
 # benchmark uses the Triton modules.
 RUN MAMBA_FORCE_BUILD=TRUE \
     python -m pip install --no-cache-dir --no-build-isolation --no-deps \
-        -c /tmp/constraints.txt -c /tmp/torch-pin.txt \
+        \
         "mamba-ssm==2.3.2.post1" \
     || echo "WARNING: mamba-ssm 2.3.2.post1 install failed (non-fatal)"
 # The grouped-GEMM benchmark can compare against DeepGEMM. Install from the official tag
@@ -145,20 +142,9 @@ RUN { mkdir -p /tmp/DeepGEMM \
             sleep "$((attempt * 10))"; \
         done \
         && DG_FORCE_BUILD=1 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
-            -c /tmp/constraints.txt -c /tmp/torch-pin.txt .; } \
+            .; } \
     || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
     rm -rf /tmp/DeepGEMM
-# The attention benchmarks (benchmarks/ops/attention/) need a flashinfer newer than the
-# 0.6.16.post3 vllm pins. Upgrade flashinfer-python/-cubin with --no-deps so torch and vllm's
-# other deps are untouched; add plain cuda-tile (flashinfer needs it). nvidia-cutlass-dsl takes
-# vllm's exact pin and its cu13 extra, so this step cannot pull a second CUTLASS build. vllm's
-# flashinfer pin is left unsatisfied, which is safe: vllm's only TileOPs-used path (fused_moe)
-# does not import flashinfer.
-RUN { python -m pip install --no-cache-dir --no-deps -c /tmp/constraints.txt -c /tmp/torch-pin.txt \
-            "flashinfer-python==0.6.17" "flashinfer-cubin==0.6.17" \
-        && python -m pip install --no-cache-dir -c /tmp/constraints.txt -c /tmp/torch-pin.txt \
-            cuda-tile nvidia-cudnn-frontend "nvidia-cutlass-dsl[cu13]==4.6.0" nvidia-ml-py; } \
-    || echo "WARNING: flashinfer 0.6.17 upgrade failed (non-fatal)"
 
 # ── tilelang ──
 # Built LAST (after all bench): a TILELANG_GIT_SHA bump then rebuilds only this layer (bench
@@ -174,6 +160,9 @@ ARG TILELANG_VERSION
 # main mode:    --build-arg TILELANG_GIT_SHA=<commit>  → clone + compile that commit
 # release mode: --build-arg TILELANG_VERSION=<version> → pip install the PyPI release
 # Either way --no-deps, so pip never re-resolves the cu132 stack.
+# Each mode records the version it meant to install in /tmp/tilelang-expected-version. The guard
+# below compares that against what is actually importable, so the PyPI tilelang vllm pulled in
+# cannot survive here — silently, this stage would look like it had succeeded.
 RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         mkdir -p /tmp/tilelang && cd /tmp/tilelang \
         && git init -q \
@@ -185,10 +174,13 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
             python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
-        && python -m pip install --no-deps /opt/tilelang-wheels/tilelang-*.whl \
+        && wheel="$(ls /opt/tilelang-wheels/tilelang-*.whl)" \
+        && python -m pip install --no-deps "${wheel}" \
+        && basename "${wheel}" | cut -d- -f2 > /tmp/tilelang-expected-version \
         && rm -rf /tmp/tilelang; \
     elif [ -n "${TILELANG_VERSION}" ]; then \
-        python -m pip install --no-deps "tilelang==${TILELANG_VERSION}"; \
+        python -m pip install --no-deps "tilelang==${TILELANG_VERSION}" \
+        && echo "${TILELANG_VERSION}" > /tmp/tilelang-expected-version; \
     else \
         echo "ERROR: set --build-arg TILELANG_GIT_SHA=<commit> (main) or TILELANG_VERSION=<ver> (release)"; \
         exit 1; \
@@ -199,8 +191,9 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
 # cuda-bindings off torch's pin would only warn, and the guard below is what catches it.
 RUN python -m pip install --no-cache-dir --no-deps "cupti-python==13.2.0"
 # Guard the final stack (GPU-free, runs at build): tilelang must import, the installed
-# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, torch must still be
-# the cu132 build, and cupti-python must not have dragged cuda-bindings off torch's pin.
+# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, the importable tilelang
+# must be the one this stage installed, torch must still be the cu132 build, and cupti-python
+# must not have dragged cuda-bindings off torch's pin.
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 
@@ -222,15 +215,7 @@ ARG RUNNER_VERSION=2.336.0
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
 # Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
 # hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
-# FlashInfer's flashinfer-cubin package keeps its packaged cubin tree under site-packages.
-# Some baselines materialize TRTLLM GEMM entries there at runtime, so the unprivileged runner
-# must own the writable directories instead of inheriting pip's root-owned directories.
-RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner \
-    && FLASHINFER_CUBIN_DIR="$(python -c 'import pathlib, flashinfer_cubin; print(pathlib.Path(flashinfer_cubin.get_cubin_dir()))' 2>/dev/null || true)" \
-    && if [ -n "${FLASHINFER_CUBIN_DIR}" ]; then \
-        mkdir -p "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
-        find "${FLASHINFER_CUBIN_DIR}" -type d -exec chown ci-runner:ci-runner {} +; \
-    fi
+RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \
