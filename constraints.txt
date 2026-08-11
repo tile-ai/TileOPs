@@ -1,22 +1,21 @@
-# Version lock for CI / runner builds. Pins versions only; membership lives in pyproject
-# (project dependencies) or the runner Dockerfile install lists (CI-only tooling).
-# torch/torchvision/torchaudio bare (no `+cu132`): the CUDA variant comes from the install
-# index, not this pin, so the same lock also fits the CPU preflight. Do not add `+cu132`.
-# torch/torchvision are pinned to vllm 0.27.1's exact requirements. torchaudio has no cu132 build
-# at any version and TileOPs imports nothing from it; it is here only because vllm requires it,
-# and its dependency-free PyPI wheel satisfies that without disturbing the cu132 torch.
+# Versions for CI / runner builds, with the reasoning. Membership lives in pyproject (project
+# deps) or the runner Dockerfile's install lists (CI-only tooling); the resolved closure lives in
+# constraints-runner-lock.txt.
+#
+# No `+cu132` here: the CUDA variant comes from the install index, so this file also fits the CPU
+# preflight. torch/torchvision follow vllm 0.27.1's exact pins. torchaudio has no cu132 build and
+# TileOPs never imports it — it is here only because vllm requires it.
 torch==2.13.0
 torchvision==0.28.0
 torchaudio==2.11.0
-# What torch 2.13.0 itself requires. Follow torch; never pick this independently.
+# What torch 2.13.0 requires. Follow torch; never pick independently.
 triton==3.7.1
-# apache-tvm-ffi is ABI-coupled to the baked tilelang wheel: it MUST sit inside the range
-# tilelang's own metadata declares for the pinned commit (verified at build time by
-# scripts/ci/verify_runtime_stack.py). Re-confirm this pin whenever TILELANG_GIT_SHA changes.
+# ABI-coupled to the baked tilelang wheel: MUST sit inside the range tilelang's metadata declares
+# for the pinned commit (verify_runtime_stack.py checks it). Re-confirm on every TILELANG_GIT_SHA.
 apache-tvm-ffi==0.1.11
 cloudpickle==3.1.2
 ml_dtypes==0.5.4
-# vllm 0.27.1 takes numpy unconstrained; 2.2.6 satisfies tilelang (>=1.23.5).
+# vllm takes numpy unconstrained; 2.2.6 satisfies tilelang (>=1.23.5).
 numpy==2.2.6
 psutil==7.2.2
 tqdm==4.67.3
@@ -24,7 +23,7 @@ typing_extensions==4.15.0
 Cython==3.2.4
 z3-solver==4.15.4.0
 torch_c_dlpack_ext==0.1.5
-# CI tooling: versions locked here; the runner image install lists carry bare names.
+# CI tooling; the Dockerfile install lists carry the bare names.
 pytest==9.0.2
 pytest-xdist==3.8.0
 ruff==0.14.13

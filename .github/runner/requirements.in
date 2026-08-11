@@ -1,0 +1,36 @@
+# Direct requirements of the runner image, matching the Dockerfile's install lists. The
+# source-built packages (tilelang, FA2, FA3, mamba-ssm, DeepGEMM) are absent: they have no wheel
+# to resolve and go in with --no-deps.
+#
+# Compile to constraints-runner-lock.txt with the command in that file's header.
+--index-url https://download.pytorch.org/whl/cu132
+--extra-index-url https://pypi.org/simple
+torch==2.13.0+cu132
+torchvision==0.28.0+cu132
+setuptools
+wheel
+ninja
+scikit-build-core
+patchelf
+cmake
+triton
+apache-tvm-ffi
+cloudpickle
+ml_dtypes
+numpy
+psutil
+tqdm
+typing_extensions
+Cython
+z3-solver
+torch_c_dlpack_ext
+einops
+PyYAML>=6.0
+pytest
+pytest-xdist
+ruff
+pytest-timeout
+py-spy
+flash-linear-attention==0.5.2
+vllm==0.27.1
+cupti-python==13.2.0

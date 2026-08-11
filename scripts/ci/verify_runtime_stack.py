@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
-"""Build-time guard for the runner image: fail the build unless the baked stack is coherent.
+"""Fail the runner-image build unless the baked stack is coherent. Runs GPU-free.
 
-Runs GPU-free, so it works during `docker build` (no GPU attached). Catches the failure
-modes that a plain `import tilelang` smoke check misses:
+Each check covers a failure a plain `import tilelang` misses:
 
-  1. tilelang imports at all — catches gross ABI breakage that aborts on import (e.g. an
-     apache-tvm-ffi too new for the baked wheel, which double-registers and calls abort()).
-  2. the installed apache-tvm-ffi satisfies tilelang's own declared requirement — catches
-     the case that imports lazily here but crashes the first time a kernel compiles under
-     GPU (apache-tvm-ffi too old: `undefined symbol: tvm::ffi::ReprPrint`). A no-GPU import
-     does not load the compiler library, so only the version range exposes this at build.
-  3. torch is still the cu132 build — a bench baseline that pulls torch from PyPI silently
-     swaps it to cu128, which breaks prebuilt c10-ABI extensions (e.g. vllm's `_C`:
-     `undefined symbol: c10::cuda::c10_cuda_check_implementation`).
-  4. cupti-python is present and did not drag cuda-bindings off torch's pin — it carries its
-     own CUDA-runtime requirements, so it is installed with --no-deps; a resolved install that
-     moved cuda-bindings only warns, and the benchmark timing path breaks later.
+  1. tilelang imports — an apache-tvm-ffi too new double-registers and calls abort().
+  2. the installed apache-tvm-ffi satisfies tilelang's declared range — too old crashes only
+     when a kernel first compiles under GPU, which a no-GPU import never reaches.
+  3. torch is still the cu132 build — a baseline pulling torch from PyPI breaks every
+     prebuilt c10-ABI extension.
+  4. cupti-python is present and left cuda-bindings on torch's pin — it must go in with
+     --no-deps; pip only warns when a resolved install moves it.
 """
 import importlib.metadata as md
 import sys
@@ -33,7 +27,7 @@ def _torch_pin(name: str) -> Requirement | None:
             return req
     return None
 
-# Matches the cu132 base image; bump together with the base/torch CUDA major.minor.
+# Bump together with the base image's CUDA major.minor.
 EXPECTED_TORCH_CUDA = "13.2"
 
 installed = md.version("apache-tvm-ffi")
@@ -53,20 +47,17 @@ if not ffi_req.specifier.contains(installed, prereleases=True):
 if torch.version.cuda != EXPECTED_TORCH_CUDA:
     sys.exit(
         f"FAIL: torch CUDA is {torch.version.cuda}, expected {EXPECTED_TORCH_CUDA} (cu132). "
-        "A bench baseline pulled torch from PyPI; reinstall torch from the cu132 index in "
-        "that layer so the c10 ABI stays consistent."
+        "A bench baseline pulled torch from PyPI; reinstall it from the cu132 index in that layer."
     )
 
 try:
     cupti_version = md.version("cupti-python")
 except md.PackageNotFoundError:
     sys.exit(
-        "FAIL: cupti-python is missing; the benchmark layer times kernels through it. "
-        "Install it with --no-deps (see the post-fa3 stage)."
+        "FAIL: cupti-python is missing; the benchmark layer times kernels through it."
     )
 
-# No import here: the build has no GPU, and the point of this check is the resolver,
-# not the driver. A broken binding surfaces at benchmark time, which fails closed.
+# Not imported: no GPU here, and the check is about the resolver, not the driver.
 bindings_pin = _torch_pin("cuda-bindings")
 bindings_installed = md.version("cuda-bindings")
 if bindings_pin is not None and not bindings_pin.specifier.contains(
@@ -74,8 +65,7 @@ if bindings_pin is not None and not bindings_pin.specifier.contains(
 ):
     sys.exit(
         f"FAIL: cuda-bindings {bindings_installed} violates torch's requirement "
-        f"{bindings_pin.specifier}. cupti-python carries its own cuda-bindings requirement, so "
-        "it must be installed with --no-deps; a resolved install moves it and pip only warns."
+        f"{bindings_pin.specifier}. Install cupti-python with --no-deps."
     )
 
 print(
