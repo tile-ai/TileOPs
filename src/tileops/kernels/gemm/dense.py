@@ -1460,6 +1460,210 @@ def _gemm_simple_kernel(
     return _simple_func
 
 
+@functools.lru_cache(maxsize=32)
+def _gemm_coop2s_kernel(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
+) -> Callable:
+    """Single-tile 2-consumer (cooperative) GEMM for small NN shapes (SM90).
+
+    ``_gemm_coop2_kernel`` stripped of its persistent loop: the grid *is* the
+    tile grid (``n / block_n`` by ``m / block_m``), so a CTA computes exactly
+    one output tile and needs no cross-wave ring carry, no tile decode and no
+    grouped swizzle. Small square shapes cannot amortize that machinery — the
+    mainloop is only ``k / block_k`` iterations — and the single-consumer
+    structures cap at 0.87x cuBLAS there across a 13-variant tile sweep.
+
+    The shape of the kernel is cuBLAS's own winner on square-1k
+    (``nvjet_tst_128x64_64x8_1x2_h_bz_NNT``: 384 threads / 3 warpgroups over a
+    128x64 tile): one producer warpgroup issues TMA into a ``num_stages`` ring;
+    two consumer warpgroups each own ``block_m // 2 = 64`` rows and share the
+    ``B`` tile (split-A / shared-B).
+
+    NN only (``A[m,k] @ B[k,n]``): ``B`` tiles load as ``(block_k, block_n)``
+    and feed WGMMA with ``transpose_B=False``. Requires tiles that divide the
+    problem exactly; the builder raises ``ValueError`` otherwise. Selected via
+    config only (``coop2s: True``, pinned per-shape in
+    ``GemmKernel._TUNED_CONFIGS``).
+
+    Args:
+        m: Rows of ``A`` / ``C``.
+        n: Columns of ``B`` / ``C``.
+        k: Contraction dim.
+        trans_a: Must be ``False`` (NN layout).
+        trans_b: Must be ``False`` (NN layout).
+        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
+        num_stages)`` returns the compiled ``prim_func``.
+    """
+    if trans_a or trans_b:
+        raise ValueError("_gemm_coop2s_kernel is NN-only (trans_a=False, trans_b=False)")
+    accum_dtype = "float"
+    block_m = 128  # cooperative: two consumers each own block_m // 2 = 64 rows
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _gemm_coop2s_func(block_n: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
+        if m % block_m or n % block_n or k % block_k:
+            raise ValueError(
+                f"_gemm_coop2s_kernel requires exact tiling: got "
+                f"m={m} % {block_m}, n={n} % {block_n}, k={k} % {block_k}"
+            )
+        half_m = block_m // 2
+        nr = (half_m * block_n) // 128  # fp32 accum regs per consumer thread
+        k_iters = k // block_k
+
+        @T.prim_func
+        def _gemm_coop2s_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((k, n), dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(n // block_n, m // block_m, threads=384) as (bx, by):
+                a_smem_top = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                a_smem_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                b_smem = T.alloc_shared((num_stages, block_k, block_n), dtype)
+                c_local_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                c_local_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                c_cast_0 = T.alloc_fragment((half_m, block_n), dtype)
+                c_cast_1 = T.alloc_fragment((half_m, block_n), dtype)
+                c_smem_0 = T.alloc_shared((half_m, block_n), dtype)
+                c_smem_1 = T.alloc_shared((half_m, block_n), dtype)
+
+                T.annotate_layout(
+                    {
+                        a_smem_top: tilelang.layout.make_swizzled_layout(a_smem_top),
+                        a_smem_bot: tilelang.layout.make_swizzled_layout(a_smem_bot),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        c_smem_0: tilelang.layout.make_swizzled_layout(c_smem_0),
+                        c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
+                    }
+                )
+
+                # Producer (arrive_count 128) fills a slot; both consumers
+                # (arrive_count 256) must drain it before the producer refills.
+                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_empty = T.alloc_barrier([256] * num_stages)
+
+                gi_prod = T.alloc_var("int32", init=0)
+                gi_cons_0 = T.alloc_var("int32", init=0)
+                gi_cons_1 = T.alloc_var("int32", init=0)
+                m_start = by * block_m
+                n_start = bx * block_n
+                tx = T.get_thread_binding()
+
+                if tx < 128:
+                    # ── Producer WG: TMA the A halves and the shared B tile. ──
+                    T.dec_max_nreg(24)
+                    for ki in T.serial(k_iters):
+                        slot = gi_prod % num_stages
+                        phase = (gi_prod // num_stages) % 2
+                        ks = ki * block_k
+                        # Unrolled so each TMA sees a compile-time slot index.
+                        for s in range(num_stages):
+                            if slot == s:
+                                T.barrier_wait(ab_empty[s], phase ^ 1)
+                                T.tma_copy(
+                                    a[m_start : m_start + half_m, ks : ks + block_k],
+                                    a_smem_top[s, :, :],
+                                    barrier=ab_full[s],
+                                )
+                                T.tma_copy(
+                                    a[m_start + half_m : m_start + block_m, ks : ks + block_k],
+                                    a_smem_bot[s, :, :],
+                                    barrier=ab_full[s],
+                                )
+                                T.tma_copy(
+                                    b[ks : ks + block_k, n_start : n_start + block_n],
+                                    b_smem[s, :, :],
+                                    barrier=ab_full[s],
+                                )
+                                T.barrier_arrive(ab_full[s])
+                        gi_prod = gi_prod + 1
+                elif tx < 256:
+                    # ── Consumer WG0: top half rows [0, half_m). ──
+                    T.inc_max_nreg(224)
+                    T.clear(c_local_0)
+                    for ki in T.serial(k_iters):
+                        slot = gi_cons_0 % num_stages
+                        phase = (gi_cons_0 // num_stages) % 2
+                        for s in range(num_stages):
+                            if slot == s:
+                                T.barrier_wait(ab_full[s], phase)
+                                T.wgmma_gemm(
+                                    a_smem_top[s, :, :],
+                                    b_smem[s, :, :],
+                                    c_local_0,
+                                    transpose_B=False,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(ki == 0),
+                                )
+                        if ki > 0:
+                            prev = (gi_cons_0 - 1) % num_stages
+                            T.wait_wgmma(1)
+                            T.warpgroup_fence_operand(c_local_0, num_regs=nr)
+                            for s in range(num_stages):
+                                if prev == s:
+                                    T.barrier_arrive(ab_empty[s])
+                        gi_cons_0 = gi_cons_0 + 1
+                    T.wait_wgmma(0)
+                    T.warpgroup_fence_operand(c_local_0, num_regs=nr)
+                    for s in range(num_stages):
+                        if (gi_cons_0 - 1) % num_stages == s:
+                            T.barrier_arrive(ab_empty[s])
+                    T.copy(c_local_0, c_cast_0)
+                    T.sync_threads(barrier_id=4, arrive_count=128)
+                    T.copy(c_cast_0, c_smem_0)
+                    T.fence_proxy_async()
+                    T.sync_threads(barrier_id=4, arrive_count=128)
+                    T.copy(c_smem_0, c[m_start, n_start])
+                else:
+                    # ── Consumer WG1: bottom half rows [half_m, block_m). ──
+                    T.inc_max_nreg(224)
+                    T.clear(c_local_1)
+                    for ki in T.serial(k_iters):
+                        slot = gi_cons_1 % num_stages
+                        phase = (gi_cons_1 // num_stages) % 2
+                        for s in range(num_stages):
+                            if slot == s:
+                                T.barrier_wait(ab_full[s], phase)
+                                T.wgmma_gemm(
+                                    a_smem_bot[s, :, :],
+                                    b_smem[s, :, :],
+                                    c_local_1,
+                                    transpose_B=False,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(ki == 0),
+                                )
+                        if ki > 0:
+                            prev = (gi_cons_1 - 1) % num_stages
+                            T.wait_wgmma(1)
+                            T.warpgroup_fence_operand(c_local_1, num_regs=nr)
+                            for s in range(num_stages):
+                                if prev == s:
+                                    T.barrier_arrive(ab_empty[s])
+                        gi_cons_1 = gi_cons_1 + 1
+                    T.wait_wgmma(0)
+                    T.warpgroup_fence_operand(c_local_1, num_regs=nr)
+                    for s in range(num_stages):
+                        if (gi_cons_1 - 1) % num_stages == s:
+                            T.barrier_arrive(ab_empty[s])
+                    T.copy(c_local_1, c_cast_1)
+                    T.sync_threads(barrier_id=5, arrive_count=128)
+                    T.copy(c_cast_1, c_smem_1)
+                    T.fence_proxy_async()
+                    T.sync_threads(barrier_id=5, arrive_count=128)
+                    T.copy(c_smem_1, c[m_start + half_m, n_start])
+
+        return _gemm_coop2s_main
+
+    return _gemm_coop2s_func
+
+
 @torch.library.custom_op("tileops::gemm_wrapped_kernel", mutates_args=())
 def _gemm_wrapped_kernel(
     m: int,
@@ -1518,8 +1722,9 @@ class GemmKernel(Kernel):
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
     default structure is warp-specialized: one producer warpgroup issues TMA
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
-    over K. Structure flags in ``config`` select the coop2 / coop2_splitk /
-    simple / split-K variants instead (see ``forward``). fp16 / bf16 inputs,
+    over K. Structure flags in ``config`` select the coop2 / coop2s /
+    coop2_splitk / simple / split-K variants instead (see ``forward``).
+    fp16 / bf16 inputs,
     fp32 accumulation. Hopper-only — TMA + WGMMA require SM90.
     """
 
@@ -1594,17 +1799,21 @@ class GemmKernel(Kernel):
             "num_stages": 4,
             "split_k": 4,
         },
+        # square-1k (NN): the single-tile 2-consumer kernel (``coop2s``) is the
+        # only structure that clears the 0.87x ceiling the single-consumer tile
+        # menu tops out at — it reproduces cuBLAS's own 384-thread / 128x64
+        # layout on this shape. 0.82x -> 0.94x. See ``_gemm_coop2s_kernel``.
         (1024, 1024, 1024, False, False, "float16"): {
-            "block_m": 64,
-            "block_n": 128,
+            "coop2s": True,
+            "block_n": 64,
             "block_k": 128,
-            "panel_size": 10,
+            "num_stages": 4,
         },
         (1024, 1024, 1024, False, False, "bfloat16"): {
-            "block_m": 64,
-            "block_n": 128,
+            "coop2s": True,
+            "block_n": 64,
             "block_k": 128,
-            "panel_size": 10,
+            "num_stages": 4,
         },
         # decode-down family (skinny-M NT, n=7168, k=2048): the non-warp-
         # specialized pipelined kernel (``simple``) wins the short-mainloop
@@ -1708,9 +1917,10 @@ class GemmKernel(Kernel):
             (self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str)
         )
         if override is not None:
-            # coop2 configs are self-contained (own schema); do not merge the
-            # single-consumer modal keys into them.
-            return dict(override) if override.get("coop2") else {**modal, **override}
+            # coop2 / coop2s configs are self-contained (own schema); do not
+            # merge the single-consumer modal keys into them.
+            self_contained = override.get("coop2") or override.get("coop2s")
+            return dict(override) if self_contained else {**modal, **override}
         return _heuristic_best_config(
             self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count
         )
@@ -1742,6 +1952,16 @@ class GemmKernel(Kernel):
                 cfg.get("panel_size", 8),
                 cfg.get("cluster_m", 1),
             )
+            return compiled(a, b)
+
+        # coop2s path: single-tile 2-consumer kernel for small NN shapes whose
+        # mainloop is too short to amortize the persistent loop. Selected via
+        # config (``coop2s``) from ``_TUNED_CONFIGS``.
+        if self.config.get("coop2s"):
+            cfg = self.config
+            compiled = _gemm_coop2s_kernel(
+                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
+            )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
         # coop2 path: persistent 2-consumer (cooperative) kernel for large-M NT
