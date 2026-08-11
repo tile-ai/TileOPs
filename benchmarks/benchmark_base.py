@@ -1,10 +1,13 @@
 import contextlib
 import logging
 import os
+import random
+import statistics
 import subprocess
 import sys
 import threading
 from abc import ABC, abstractmethod
+from collections import Counter
 from datetime import datetime
 from typing import (
     Any,
@@ -17,7 +20,6 @@ from typing import (
 
 import pytest
 import torch
-from torch.autograd.profiler import DeviceType
 
 from tileops.manifest import (
     WORKLOAD_RESERVED_KEYS,
@@ -44,6 +46,20 @@ W = TypeVar("W")
 
 _logger = logging.getLogger("tileops.bench")
 
+# Per-phase wall-time budgets in ms; iteration counts derive from them, so a
+# short kernel gets many samples and a long one few.
+DRY_RUN_MS = 25.0
+REPEAT_MS = 100.0
+_CALIBRATION_ITERS = 3
+# Every repeat must match the discovered sequence, so an unbounded count turns
+# one hiccup into a failed case.
+_MIN_ITERS = 10
+_MAX_ITERS = 200
+
+
+def _clamp_iters(raw: float) -> int:
+    return max(_MIN_ITERS, min(_MAX_ITERS, int(raw)))
+
 # Thread-local storage for conftest hook to pick up per-test bench results.
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
@@ -51,64 +67,422 @@ _bench_results = threading.local()
 # Latest bench_kernel measurement metadata; deviations from the default
 # protocol are surfaced in results by BenchmarkBase._build_result.
 _bench_meta = threading.local()
+_cuda_runtime = None
 
 
-class _CuptiProjectionError(Exception):
-    """CUPTI trace lacked a projected annotation window for every repeat."""
+class _CUPTIAttributionError(Exception):
+    """A CUPTI trace could not be attributed to logical benchmark calls."""
 
 
-# Name of the ``record_function`` annotation wrapping the timed call. Kineto
-# projects this scope onto the device timeline. The L2-flush ``cache.zero_()``
-# is synchronized to completion before the window opens (see ``bench_kernel``),
-# so its device event cannot fall inside a window regardless of how the
-# projection behaves; kernels the timed call launches do.
-_KERNEL_REGION = "tileops_bench_kernel"
+class _ShiftingTensorPool:
+    """SOL-style input pool returning a unique tensor data_ptr per call."""
+
+    _POOL_ALIGNMENT = 256
+    _MAX_SHIFT_BYTES = 2048
+
+    def __init__(
+        self,
+        args: tuple[Any, ...],
+        total_iterations: int,
+        *,
+        seed: int,
+    ) -> None:
+        self._call_idx = 0
+        self._total_iterations = total_iterations
+        self._offset_blocks = self._compute_offset_blocks(total_iterations, seed)
+        self._entries = [self._make_entry(arg) for arg in args]
+
+    @classmethod
+    def _compute_offset_blocks(cls, total_iterations: int, seed: int) -> list[int]:
+        max_multiplier = cls._MAX_SHIFT_BYTES // cls._POOL_ALIGNMENT
+        rng = random.Random(seed)
+        offsets = [0]
+        for _ in range(max(0, total_iterations - 1)):
+            offsets.append(offsets[-1] + rng.randint(1, max_multiplier))
+        return offsets
+
+    @staticmethod
+    def _storage_span(tensor: torch.Tensor) -> int:
+        if tensor.numel() == 0:
+            return 0
+        span = 1
+        for size, stride in zip(tensor.shape, tensor.stride(), strict=True):
+            if size > 1:
+                span += (size - 1) * stride
+        return span
+
+    def _make_entry(self, arg: Any) -> dict[str, Any]:
+        if not isinstance(arg, torch.Tensor):
+            return {"scalar": arg}
+        tensor = arg.contiguous() if any(stride < 0 for stride in arg.stride()) else arg
+        storage_span = self._storage_span(tensor)
+        elem_size = tensor.element_size()
+        block_numel = max(1, self._POOL_ALIGNMENT // elem_size)
+        pool_numel = storage_span + self._offset_blocks[-1] * block_numel
+        pool = torch.empty(pool_numel, dtype=tensor.dtype, device=tensor.device)
+        source = tensor.as_strided((storage_span,), (1,))
+        return {
+            "pool": pool,
+            "source": source,
+            "shape": tuple(tensor.shape),
+            "strides": tensor.stride(),
+            "storage_span": storage_span,
+            "block_numel": block_numel,
+        }
+
+    def next_args(self) -> tuple[Any, ...]:
+        if self._call_idx >= self._total_iterations:
+            raise RuntimeError(
+                "ShiftingTensorPool exhausted: called "
+                f"{self._call_idx + 1} times but allocated for "
+                f"{self._total_iterations} iterations"
+            )
+
+        block_offset = self._offset_blocks[self._call_idx]
+        result: list[Any] = []
+        for entry in self._entries:
+            if "scalar" in entry:
+                result.append(entry["scalar"])
+                continue
+            start = block_offset * entry["block_numel"]
+            entry["pool"].narrow(0, start, entry["storage_span"]).copy_(entry["source"])
+            result.append(
+                entry["pool"].as_strided(entry["shape"], entry["strides"], start)
+            )
+        self._call_idx += 1
+        return tuple(result)
 
 
-def _sum_kernel_time_us(kineto_results):
-    """Sum device time of the kernels the timed call launched.
+# CUPTI activity collection, via NVIDIA's cupti-python binding.
 
-    Sums only kernels inside a :data:`_KERNEL_REGION` annotation window, so the
-    L2-flush fill is excluded and the kernel under test is counted regardless of
-    its name. A call launching several kernels contributes all of them.
+_CUPTI = None
+_COLLECTOR_ACTIVE = False
+_CALLBACKS_REGISTERED = False
+_BUFFER_BYTES = 8 * 1024 * 1024
+_BUFFER_ALIGN = 8
+_RECORDS: list[dict[str, Any]] = []
 
-    Iterates the C++ Kineto events directly to bypass ``key_averages()``, which
-    is ~16x slower (~130ms of Python parsing/tree-building) for large traces.
 
-    Returns:
-        ``(total_us, n_regions)``: summed kernel time in microseconds and the
-        number of annotation windows. The caller checks ``n_regions ==
-        n_repeat`` to confirm the scope projected on every iteration.
+class CUPTIError(RuntimeError):
+    """The CUPTI collector is unavailable or could not be operated."""
+
+
+def _load_cupti():
+    global _CUPTI
+    if _CUPTI is not None:
+        return _CUPTI
+    try:
+        from cupti import cupti
+    except Exception as exc:  # noqa: BLE001
+        raise CUPTIError(
+            "cupti-python is unavailable. Install it with "
+            "`pip install --no-deps cupti-python==12.8.0`; --no-deps is required "
+            "or it downgrades torch's cuda-bindings pin."
+        ) from exc
+    _CUPTI = cupti
+    return _CUPTI
+
+
+def _buffer_requested():
+    return _BUFFER_BYTES, _BUFFER_ALIGN
+
+
+def _buffer_completed(records) -> None:
+    # Copy the fields out and keep no record alive: the binding's other
+    # accessors misread a newer libcupti's struct and raise, including from
+    # __del__ at shutdown.
+    for record in records:
+        _RECORDS.append({
+            "kind": "kernel",
+            "name": str(record.name),
+            "start_ns": int(record.start),
+            "end_ns": int(record.end),
+        })
+
+
+@contextlib.contextmanager
+def _phase_session():
+    """Own one session, so a discovery mismatch leaves nothing for timing."""
+    global _COLLECTOR_ACTIVE, _CALLBACKS_REGISTERED
+    if _COLLECTOR_ACTIVE:
+        raise RuntimeError("CUPTI collector is already active")
+    cupti = _load_cupti()
+    try:
+        if not _CALLBACKS_REGISTERED:
+            cupti.activity_register_callbacks(_buffer_requested, _buffer_completed)
+            _CALLBACKS_REGISTERED = True
+        _RECORDS.clear()
+        cupti.activity_enable(cupti.ActivityKind.CONCURRENT_KERNEL)
+    except Exception as exc:  # noqa: BLE001
+        raise CUPTIError(f"CUPTI collector failed to start: {exc}") from exc
+    _COLLECTOR_ACTIVE = True
+    try:
+        yield
+    finally:
+        _COLLECTOR_ACTIVE = False
+        try:
+            cupti.activity_disable(cupti.ActivityKind.CONCURRENT_KERNEL)
+        except Exception as exc:  # noqa: BLE001
+            raise CUPTIError(f"CUPTI collector failed to stop: {exc}") from exc
+
+
+def _flush() -> list[dict[str, Any]]:
+    """Return the records completed since the previous flush."""
+    cupti = _load_cupti()
+    torch.cuda.synchronize()
+    try:
+        cupti.activity_flush_all(1)  # CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
+    except Exception as exc:  # noqa: BLE001
+        raise CUPTIError(f"CUPTI flush failed: {exc}") from exc
+    drained = list(_RECORDS)
+    _RECORDS.clear()
+    return drained
+
+
+def collect_discovery(
+    run_one: Callable[[int], None],
+    n_repeat: int,
+    prepare_one: Callable[[int], None],
+) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+    """Capture prepare and operator activity separately, untimed."""
+    prepare_traces, operator_traces = [], []
+    with _phase_session():
+        for i in range(n_repeat):
+            prepare_one(i)
+            prepare_traces.append(_flush())
+            run_one(i)
+            operator_traces.append(_flush())
+    return prepare_traces, operator_traces
+
+
+def collect_repeats(
+    run_one: Callable[[int], None],
+    n_repeat: int,
+    prepare_one: Callable[[int], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Capture a complete timed trial as one ordered activity-record range."""
+    with _phase_session():
+        for i in range(n_repeat):
+            if prepare_one is not None:
+                prepare_one(i)
+            run_one(i)
+        return _flush()
+
+
+def _activity_identity(activity: dict) -> str:
+    """Return a stable identity for a timed GPU activity."""
+    kind = activity["kind"]
+    if kind == "memcpy":
+        return f"memcpy:{int(activity['copy_kind'])}:{int(activity['bytes'])}"
+    if kind == "memset":
+        return f"memset:{int(activity['bytes'])}:{int(activity['value'])}"
+    return f"kernel:{activity['name']}"
+
+
+def _kernel_sequence(kernels: list[dict]) -> tuple[str, ...]:
+    return tuple(_activity_identity(activity) for activity in kernels)
+
+
+def _select_expected_sequence(
+    kernels: list[dict],
+    expected_sequence: tuple[str, ...],
+) -> list[dict] | None:
+    """Select a complete discovered kernel sequence from one logical call.
+
+    Every kernel activity attributed to the call must belong to the discovered
+    sequence. Silently discarding an unknown activity could underestimate the
+    call when a dynamic path launches an extra kernel before or after the
+    expected sequence.
     """
-    import bisect
+    if not expected_sequence:
+        return None
 
-    windows: list[tuple[int, int]] = []
-    kernels: list[tuple[int, int]] = []  # (start_ns, duration_ns)
-    for evt in kineto_results.events():
-        if evt.device_type() != DeviceType.CUDA:
+    expected_count = len(expected_sequence)
+    if len(kernels) != expected_count:
+        return None
+
+    actual_sequence = _kernel_sequence(kernels)
+    if actual_sequence == expected_sequence:
+        return kernels
+    if Counter(actual_sequence) != Counter(expected_sequence):
+        return None
+
+    # CUPTI may publish concurrently executing kernels in either start-time
+    # order. Accept an inversion only when the two activities overlap; a
+    # reordered serial launch is a real sequence change and must fail closed.
+    expected_positions: dict[str, list[int]] = {}
+    for position, name in enumerate(expected_sequence):
+        expected_positions.setdefault(name, []).append(position)
+    seen: Counter[str] = Counter()
+    actual_to_expected = []
+    for name in actual_sequence:
+        occurrence = seen[name]
+        actual_to_expected.append(expected_positions[name][occurrence])
+        seen[name] += 1
+
+    for left in range(expected_count):
+        for right in range(left + 1, expected_count):
+            if actual_to_expected[left] <= actual_to_expected[right]:
+                continue
+            left_kernel = kernels[left]
+            right_kernel = kernels[right]
+            if (
+                int(left_kernel["end_ns"]) <= int(right_kernel["start_ns"])
+                or int(right_kernel["end_ns"]) <= int(left_kernel["start_ns"])
+            ):
+                return None
+    return kernels
+
+
+def _kernel_span_us(kernels: list[dict]) -> float:
+    if not kernels:
+        return 0.0
+    start_ns = min(int(kernel["start_ns"]) for kernel in kernels)
+    end_ns = max(int(kernel["end_ns"]) for kernel in kernels)
+    return (end_ns - start_ns) / 1000.0
+
+
+def _format_sequence(seq: tuple[str, ...], limit: int = 8) -> str:
+    """Render an activity sequence for an error message.
+
+    An observed timing sequence spans every repeat, so cap the entry count as
+    well as each mangled kernel name.
+    """
+    if not seq:
+        return "<empty>"
+    names = [name if len(name) <= 96 else name[:93] + "..." for name in seq[:limit]]
+    if len(seq) > limit:
+        names.append(f"...(+{len(seq) - limit} more)")
+    return " -> ".join(names)
+
+
+def _ordered_trace_kernels(records: list[dict]) -> list[dict]:
+    return sorted(
+        records,
+        key=lambda kernel: (int(kernel["start_ns"]), int(kernel["end_ns"])),
+    )
+
+
+def _stable_discovery_sequence(traces: list[list[dict]], phase: str) -> tuple[str, ...]:
+    groups = [_ordered_trace_kernels(records) for records in traces]
+    sequences = [_kernel_sequence(kernels) for kernels in groups]
+    if not sequences or any(not sequence for sequence in sequences):
+        raise _CUPTIAttributionError(
+            f"CUPTI discovery found no CUDA kernel sequence for {phase}"
+        )
+    expected = sequences[0]
+    if any(
+        _select_expected_sequence(kernels, expected) is None
+        for kernels in groups[1:]
+    ):
+        rendered = "; ".join(_format_sequence(sequence) for sequence in sequences)
+        raise _CUPTIAttributionError(
+            f"CUPTI discovery saw inconsistent {phase} sequences: {rendered}"
+        )
+    return expected
+
+
+def _discovery_repeats() -> int:
+    return int(os.getenv("TILEOPS_CUPTI_DISCOVERY_REPEATS", "3"))
+
+
+def _cuda_events_fallback_enabled() -> bool:
+    return os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
+
+
+def _discover_expected_sequences(
+    run_one: Callable[[int], None],
+    prepare_one: Callable[[int], None],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    prepare_traces, operator_traces = collect_discovery(
+        run_one,
+        _discovery_repeats(),
+        prepare_one,
+    )
+    return (
+        _stable_discovery_sequence(prepare_traces, "prepare"),
+        _stable_discovery_sequence(operator_traces, "operator"),
+    )
+
+
+def _attributed_latency_samples_ms(
+    records: list[dict],
+    expected_sequence: tuple[str, ...],
+    n_repeat: int,
+    expected_prepare_sequence: tuple[str, ...] = (),
+) -> list[float]:
+    samples_us: list[float] = []
+    kernels = _ordered_trace_kernels(records)
+    prepare_count = len(expected_prepare_sequence)
+    operator_count = len(expected_sequence)
+    cycle_count = prepare_count + operator_count
+    expected_total = n_repeat * cycle_count
+
+    if cycle_count == 0 or len(kernels) != expected_total:
+        raise _CUPTIAttributionError(
+            "CUPTI timing activity count does not match the deterministic "
+            f"op-sequence ledger: got {len(kernels)}, expected {expected_total} "
+            f"({n_repeat} x ({prepare_count} prepare + {operator_count} operator)); "
+            f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
+            f"operator=[{_format_sequence(expected_sequence)}]; "
+            f"observed=[{_format_sequence(_kernel_sequence(kernels))}]"
+        )
+
+    for repeat in range(n_repeat):
+        begin = repeat * cycle_count
+        prepare = kernels[begin:begin + prepare_count]
+        operator = kernels[begin + prepare_count:begin + cycle_count]
+        prepare_ok = (
+            not expected_prepare_sequence
+            or _select_expected_sequence(prepare, expected_prepare_sequence) is not None
+        )
+        selected = _select_expected_sequence(operator, expected_sequence)
+        if not prepare_ok or selected is None:
             continue
-        if evt.is_user_annotation():
-            if evt.name() == _KERNEL_REGION:
-                windows.append((evt.start_ns(), evt.end_ns()))
-            continue
-        kernels.append((evt.start_ns(), evt.duration_ns()))
+        samples_us.append(_kernel_span_us(selected))
 
-    windows.sort()
-    starts = [w[0] for w in windows]
-    ends = [w[1] for w in windows]
-    total_us = 0.0
-    for start_ns, dur_ns in kernels:
-        # Count only kernels that fall inside a timed-call window; everything
-        # outside (notably the L2-flush fill) is excluded.
-        idx = bisect.bisect_right(starts, start_ns) - 1
-        if idx >= 0 and start_ns < ends[idx]:
-            total_us += dur_ns / 1000.0
-    return total_us, len(windows)
+    if len(samples_us) != n_repeat:
+        raise _CUPTIAttributionError(
+            f"CUPTI timing attributed {len(samples_us)}/{n_repeat} complete "
+            f"expected kernel sequences; kernels={len(kernels)}; "
+            f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
+            f"operator=[{_format_sequence(expected_sequence)}]; "
+            f"observed=[{_format_sequence(_kernel_sequence(kernels))}]"
+        )
+    return [sample_us * 1e-3 for sample_us in samples_us]
 
 
-# L2 cache flush buffer (sized to actual L2, allocated lazily)
+def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None, None]:
+    """Return the 10th and 90th percentile of one op's timed samples.
+
+    The reported latency is a median. Without the spread around it, a stable
+    measurement and one dominated by launch jitter read the same downstream.
+    """
+    if len(samples) < 2:
+        return None, None
+    ordered = sorted(samples)
+    last = len(ordered) - 1
+    # Nearest rank, rounded rather than truncated: truncating collapses both
+    # percentiles onto the minimum for small sample counts.
+    return ordered[round(0.1 * last)], ordered[round(0.9 * last)]
+
+
+# L2 cache flush buffer, allocated lazily.
 
 _l2_flush_cache: Optional[torch.Tensor] = None
+
+
+def _reset_persisting_l2_cache() -> None:
+    global _cuda_runtime
+    if _cuda_runtime is None:
+        from cuda.bindings import runtime as cuda_runtime
+
+        _cuda_runtime = cuda_runtime
+
+    result = _cuda_runtime.cudaCtxResetPersistingL2Cache()
+    if isinstance(result, tuple):
+        result = result[0]
+    torch.cuda.check_error(int(result))
 
 
 def _get_l2_flush_cache() -> torch.Tensor:
@@ -121,7 +495,7 @@ def _get_l2_flush_cache() -> torch.Tensor:
                 "instead", l2_bytes,
             )
             l2_bytes = int(256e6)
-        _l2_flush_cache = torch.empty(l2_bytes // 4, dtype=torch.int, device="cuda")
+        _l2_flush_cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device="cuda")
     return _l2_flush_cache
 
 
@@ -148,39 +522,32 @@ def _native_output_suppressor():
 # NVIDIA SOL-ExecBench–style benchmark
 
 
+def _capture_bench_meta() -> dict:
+    """Snapshot how the last measurement was taken."""
+    return {
+        key: value
+        for key in ("timing", "fallback_reason")
+        if (value := getattr(_bench_meta, key, None)) is not None
+    }
+
+
 def bench_kernel(
     fn: Callable,
     args: tuple[Any, ...] = (),
-    n_warmup: int = 10,
-    n_repeat: int = 50,
-    n_trials: int = 3,
-) -> float:
-    """Benchmark a GPU kernel with pure kernel timing via CUPTI.
+    dry_run_ms: float = DRY_RUN_MS,
+    repeat_ms: float = REPEAT_MS,
+) -> list[float]:
+    """Time *fn* with CUPTI kernel-activity attribution.
 
-    Protocol (adapted from NVIDIA SOL-ExecBench, arxiv.org/abs/2603.19173):
-      1. Lock GPU clocks externally (nvidia-smi).
-      2. Run *n_warmup* un-timed iterations with L2 flush.
-      3. For each of *n_trials* trials, profile *n_repeat* iterations
-         under CUPTI to get pure kernel execution time (no launch overhead).
-         L2 is flushed before every iteration.  Input tensors are cloned
-         each iteration so the kernel always sees fresh addresses.
-      4. Report the median trial mean (robust to outlier trials).
-
-    Uses CUPTI via torch.profiler for accurate kernel-only timing, with
-    direct Kineto C++ event iteration to avoid Python parsing overhead.
-    Falls back to CUDA events if CUPTI is unavailable.
-
-    Args:
-        fn: Callable to benchmark.  If *args* is provided, called as
-            ``fn(*cloned_args)``; otherwise called as ``fn()``.
-        args: Tensor arguments to clone each iteration.  Non-tensor
-            values are passed through unchanged.
-        n_warmup: Warmup iterations (default 10).
-        n_repeat: Timed iterations per trial (default 50).
-        n_trials: Independent trials (default 3).
+    A calibration pass measures one iteration, then warmup and measurement each
+    run for their millisecond budget, so a short op is sampled many times and a
+    long one few. L2 is cleared and inputs rotated before every iteration. Each
+    call spans the earliest to the latest activity of its discovered sequence,
+    keeping inter-kernel gaps. Attribution fails closed unless
+    ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
 
     Returns:
-        Kernel latency in **milliseconds**.
+        Per-iteration latencies in **milliseconds**.
     """
     if not isinstance(args, tuple):
         raise TypeError(
@@ -188,138 +555,102 @@ def bench_kernel(
             "Check that gen_inputs() returns a tuple."
         )
 
+    allow_fallback = _cuda_events_fallback_enabled()
+    _bench_meta.timing = None
+    _bench_meta.fallback_reason = None
     cache = _get_l2_flush_cache()
-    has_args = len(args) > 0
 
-    # Pre-clone a small pool of input tensors so the kernel sees different
-    # addresses across iterations.  Skip cloning if total tensor memory
-    # exceeds 1 GB to avoid OOM on large workloads.
-    _N_CLONES = 3
-    _MAX_CLONE_BYTES = 1 << 30  # 1 GB
-    if has_args:
-        tensor_mask = tuple(isinstance(a, torch.Tensor) for a in args)
-        total_bytes = sum(a.nelement() * a.element_size()
-                          for a, m in zip(args, tensor_mask, strict=True) if m)
-        if total_bytes * _N_CLONES <= _MAX_CLONE_BYTES:
-            arg_pool = [
-                tuple(a.clone() if m else a for a, m in zip(args, tensor_mask, strict=True))
-                for _ in range(_N_CLONES)
-            ]
-            def _run(i):
-                return fn(*arg_pool[i % _N_CLONES])
-        else:
-            _logger.warning(
-                "bench_kernel: inputs total %.2f GiB; skipping per-iteration "
-                "cloning (kernel sees identical addresses)",
-                total_bytes / (1 << 30),
-            )
-            arg_pool = None
-            def _run(i):
-                return fn(*args)
+    def _flush_l2():
+        _reset_persisting_l2_cache()
+        cache.zero_()
+
+    # Calibrate on the raw args, before the pool exists to be sized. The flush
+    # is inside the timed region, so counts self-limit for tiny kernels.
+    def _call_raw():
+        return fn(*args) if args else fn()
+
+    _flush_l2()
+    _call_raw()
+    torch.cuda.synchronize()
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(_CALIBRATION_ITERS):
+        _flush_l2()
+        _call_raw()
+    end.record()
+    torch.cuda.synchronize()
+    per_iter_ms = max(start.elapsed_time(end) / _CALIBRATION_ITERS, 1e-6)
+
+    n_warmup = _clamp_iters(dry_run_ms / per_iter_ms)
+    n_repeat = _clamp_iters(repeat_ms / per_iter_ms)
+
+    if args:
+        total = 1 + n_warmup + _discovery_repeats() + n_repeat
+        if allow_fallback:
+            total += n_repeat
+        seed = int(os.getenv("TILEOPS_INPUT_POOL_SEED", "0"))
+        arg_pool = _ShiftingTensorPool(args, total, seed=seed)
+        prepared: tuple[Any, ...] | None = None
+
+        def _prepare_args(i):
+            nonlocal prepared
+            prepared = arg_pool.next_args()
+
+        def _run(i):
+            return fn(*prepared)
     else:
         arg_pool = None
+
+        def _prepare_args(i):
+            return None
+
         def _run(i):
             return fn()
-    _bench_meta.inputs_cloned = arg_pool is not None or not has_args
 
-    # Warmup (no profiling)
+    def _prepare_iteration(i):
+        _prepare_args(i)
+        _flush_l2()
+        torch.cuda.synchronize()
+
+    _prepare_iteration(0)
+    _run(0)
+    torch.cuda.synchronize()
     for i in range(n_warmup):
-        cache.zero_()
+        _prepare_iteration(i)
         _run(i)
     torch.cuda.synchronize()
 
-    # One plain profiler context per trial; torch.profiler.schedule is avoided
-    # because queued launches leak across its warmup/active boundary.
-    # Kineto's window projection may include a flush merely enqueued before
-    # the window, so the flush is drained (sync) before the timed call and
-    # the call is drained before the next flush; the syncs add host-side
-    # latency only.
-    trial_means: list[float] = []
     try:
         with _native_output_suppressor():
-            for _ in range(n_trials):
-                with torch.profiler.profile(
-                    # CPU activity is required for Kineto to project the
-                    # annotation window; it never adds device time.
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                ) as profiler:
-                    for i in range(n_repeat):
-                        cache.zero_()
-                        torch.cuda.synchronize()
-                        with torch.profiler.record_function(_KERNEL_REGION):
-                            _run(i)
-                        torch.cuda.synchronize()
-                total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
-                # Untrustworthy trace → CUDA-events fallback; genuine CUDA
-                # errors and OOM propagate.
-                if n_regions != n_repeat:
-                    # Count actual CUDA kernels for diagnostics
-                    n_cuda_kernels = sum(
-                        1 for evt in profiler.profiler.kineto_results.events()
-                        if evt.device_type() == DeviceType.CUDA and not evt.is_user_annotation()
-                    )
-                    _logger.debug(
-                        "CUPTI projection mismatch: %d annotation windows vs %d repeats "
-                        "(%d CUDA kernels captured). This may indicate torch.profiler "
-                        "instability in the current environment. Falling back to CUDA events.",
-                        n_regions, n_repeat, n_cuda_kernels,
-                    )
-                    raise _CuptiProjectionError(
-                        f"{n_regions}/{n_repeat} annotation windows projected, "
-                        f"{n_cuda_kernels} CUDA kernels captured"
-                    )
-                trial_means.append((total_us / n_repeat) * 1e-3)
+            prepare_seq, operator_seq = _discover_expected_sequences(_run, _prepare_iteration)
+            records = collect_repeats(_run, n_repeat, prepare_one=_prepare_iteration)
+            samples = _attributed_latency_samples_ms(
+                records, operator_seq, n_repeat, prepare_seq)
         _bench_meta.timing = "cupti"
-    except _CuptiProjectionError as exc:
-        # Check if cuda-events fallback is allowed
-        allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1") == "1"
-
+    except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
             raise RuntimeError(
-                f"CUPTI profiling failed: {exc}. "
-                "CUDA-events fallback is disabled (TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0). "
-                "This prevents generating inaccurate benchmark data with ~7x inflated latency. "
-                "To debug: run with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1 and check logs."
+                f"CUPTI profiling failed: {exc}. CUDA-events fallback is disabled "
+                "(TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0), which keeps the run from "
+                "silently mixing two timing methods."
             ) from exc
-
-        _logger.warning(
-            "CUPTI projection failed (%s); falling back to CUDA-events "
-            "timing, which includes ~50-60us launch overhead per call. "
-            "Latency will be inflated by ~6-7x for fast kernels (<10us). "
-            "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.", exc,
-        )
-        trial_means = []
-
-    # Fallback to CUDA events if CUPTI failed
-    if not trial_means:
         _bench_meta.timing = "cuda-events"
-        # Mimic CUPTI behavior: flush L2 before measurement window
-        for _ in range(n_trials):
-            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+        _bench_meta.fallback_reason = str(exc)
+        _logger.warning("CUPTI timing failed (%s); falling back to CUDA events.", exc)
+        starts = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+        ends = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+        for i in range(n_repeat):
+            _prepare_iteration(i)
+            starts[i].record()
+            _run(i)
+            ends[i].record()
+        torch.cuda.synchronize()
+        samples = [s.elapsed_time(e) for s, e in zip(starts, ends, strict=True)]
 
-            for i in range(n_repeat):
-                cache.zero_()
-                torch.cuda.synchronize()  # Drain flush before measurement
-                start_events[i].record()
-                _run(i)
-                end_events[i].record()
-            torch.cuda.synchronize()
-
-            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
-            trial_means.append(sum(times) / len(times))
-
-    # Free the arg pool and release cached GPU memory to prevent
-    # accumulation across hundreds of benchmark calls.
-    if arg_pool is not None:
-        del arg_pool
+    arg_pool = None
+    prepared = None
     torch.cuda.empty_cache()
-
-    trial_means.sort()
-    return trial_means[len(trial_means) // 2]
+    return samples
 
 
 def _get_env_metadata() -> list[str]:
@@ -395,37 +726,60 @@ class BenchmarkBase(Generic[W], ABC):
     def calculate_memory(self) -> Optional[float]:
         raise NotImplementedError
 
-    def profile(self,
-                functor: Any,
-                *inputs: Any) -> dict:
-        """Profile a callable and return structured results.
-
-        Uses the NVIDIA SOL-ExecBench protocol: CUPTI kernel timing,
-        10 warmup, 50 repeats × 3 trials, L2 flush sized to actual
-        cache, input tensors cloned each iteration.
-        """
+    def profile(self, functor: Any, *inputs: Any) -> dict:
+        """Profile a callable and return its structured result."""
         with torch.no_grad():
-            latency = bench_kernel(functor, args=inputs)
-        return self._build_result(latency)
+            return self._build_result(bench_kernel(functor, args=inputs))
 
     def profile_autograd(self, functor: Any) -> dict:
-        """Profile a callable that requires autograd (e.g. fwd+bwd).
+        """Profile a zero-arg closure that builds an autograd graph."""
+        return self._build_result(bench_kernel(functor))
 
-        Same as profile() but without torch.no_grad(), so the callable
-        can build autograd graphs and call .backward() internally.
-        The functor must be a zero-arg closure that captures its inputs.
+    def compare(
+        self,
+        functors: dict[str, Any],
+        *inputs: Any,
+        record_as: Any = None,
+        params: Optional[dict] = None,
+    ) -> dict[str, dict]:
+        """Time several implementations against each other and record them all.
+
+        Each implementation is timed twice, once in the given order and once in
+        reverse, so clock and thermal drift across the case lands on all of them
+        equally instead of on whichever ran last.
+
+        A value is either a callable, timed on the shared *inputs*, or a
+        ``(callable, args)`` pair for an implementation that takes its own.
         """
-        latency = bench_kernel(functor)
-        return self._build_result(latency)
+        plan = {
+            tag: value if isinstance(value, tuple) else (value, inputs)
+            for tag, value in functors.items()
+        }
+        tags = list(plan)
+        samples: dict[str, list[float]] = {tag: [] for tag in tags}
+        meta: dict[str, dict] = {}
+        for tag in tags + tags[::-1]:
+            functor, args = plan[tag]
+            with torch.no_grad():
+                samples[tag].extend(bench_kernel(functor, args=args))
+            meta[tag] = _capture_bench_meta()
+        results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
+        if record_as is not None:
+            for tag in tags:
+                BenchmarkReport.record(record_as, params or {}, results[tag], tag=tag)
+        return results
 
-    def _build_result(self, latency: float) -> dict:
-        result = {"latency_ms": latency}
-        # Deviations from the default protocol must be visible in reports.
-        timing = getattr(_bench_meta, "timing", None)
-        if timing is not None and timing != "cupti":
-            result["timing"] = timing
-        if getattr(_bench_meta, "inputs_cloned", True) is False:
-            result["inputs_cloned"] = False
+    def _build_result(self, samples: list[float], meta: Optional[dict] = None) -> dict:
+        if not samples:
+            raise ValueError("bench_kernel returned no samples")
+        latency = statistics.median(samples)
+        result = {"latency_ms": latency, "n_samples": len(samples)}
+        p10, p90 = _sample_spread_ms(samples)
+        if p10 is not None:
+            result["latency_p10_ms"], result["latency_p90_ms"] = p10, p90
+        # How the number was measured must travel with it: a run that fell back
+        # to CUDA events is not comparable with a CUPTI-timed one.
+        result.update(meta if meta is not None else _capture_bench_meta())
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9

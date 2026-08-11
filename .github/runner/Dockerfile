@@ -173,9 +173,12 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         echo "ERROR: set --build-arg TILELANG_GIT_SHA=<commit> (main) or TILELANG_VERSION=<ver> (release)"; \
         exit 1; \
     fi
+# CUPTI binding for benchmark timing. --no-deps: it pins cuda-bindings==12.8.0 against torch's
+# ==12.9.4, and a resolved install downgrades torch's pin while pip only warns.
+RUN python -m pip install --no-cache-dir --no-deps "cupti-python==12.8.0"
 # Guard the final stack (GPU-free, runs at build): tilelang must import, the installed
-# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, and torch must still be
-# the cu129 build.
+# apache-tvm-ffi must sit in the tilelang wheel's declared ABI range, torch must still be
+# the cu129 build, and cupti-python must not have dragged cuda-bindings off torch's pin.
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 
