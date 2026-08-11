@@ -441,11 +441,6 @@ def _bench_kernel_impl(
     Returns:
         Kernel latency in **milliseconds**.
     """
-    if not isinstance(args, tuple):
-        raise TypeError(
-            f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
-            "Check that gen_inputs() returns a tuple."
-        )
     if n_trials != 1:
         raise ValueError("SOL activity protocol requires n_trials=1")
 

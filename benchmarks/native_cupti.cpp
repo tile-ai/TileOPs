@@ -220,9 +220,9 @@ py::dict checkpoint() {
     throw std::runtime_error("native CUPTI collector is not active");
   }
 
-  // Every benchmark iteration synchronizes before a checkpoint.  A forced
-  // flush therefore only publishes completed activity records; it does not
-  // stop/restart collection or introduce work into the measured GPU span.
+  // Synchronize before the forced flush so the checkpoint only publishes
+  // completed activity records. This does not stop/restart collection or
+  // introduce work into the measured GPU span.
   cudaError_t cuda_status = cudaDeviceSynchronize();
   if (cuda_status != cudaSuccess) {
     throw std::runtime_error(

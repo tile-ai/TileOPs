@@ -111,7 +111,6 @@ def _stop_collector(*, capture_phase: str | None = None) -> dict[str, Any]:
         return {"kernels": [], "dropped": 0}
     ext = load_extension()
     try:
-        torch.cuda.synchronize()
         _call_extension(ext.stop)
         trace = dict(_call_extension(ext.results))
         if capture_phase is not None:
@@ -250,7 +249,6 @@ def collect_discovery(
 
             begin_operator = end_prepare
             run_one(i)
-            torch.cuda.synchronize()
             end_operator = _checkpoint()
             operator_traces.append(
                 _trace_between(begin_operator, end_operator, phase="discovery_operator", repeats=1)
