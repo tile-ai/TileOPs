@@ -54,7 +54,7 @@ def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
         raise BackendError(
             f"detector for target {target!r} ({registry.describe(detect)}) raised on "
             f"device {device}: {exc!r}. A detector must return False for devices it does "
-            f"not serve."
+            f"not serve.{registry.load_failure_suffix()}"
         ) from exc
 
 

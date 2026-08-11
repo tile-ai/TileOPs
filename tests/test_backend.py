@@ -412,6 +412,21 @@ def test_a_detector_that_raises_names_the_target_that_owns_it(installed):
     assert "vendor runtime missing" in str(excinfo.value)
 
 
+def test_every_error_can_still_blame_a_wheel_that_failed_to_load(installed):
+    """Otherwise a broken install presents itself as a detector or a target misbehaving."""
+    installed(
+        wont_import=lambda: _raise(ImportError("libacme.so not found")),
+        rude_detector=lambda: backend.register_detector(
+            "rude", lambda device: _raise(RuntimeError("vendor runtime missing"))
+        ),
+    )
+
+    with (pytest.warns(RuntimeWarning),
+          pytest.raises(BackendError, match="detector for target 'rude'") as excinfo):
+        detect_target(torch.device("cpu"))
+    assert "1 backend(s) failed to load" in str(excinfo.value)
+
+
 # --------------------------------------------------------------------------------------
 # The packaging boundary
 # --------------------------------------------------------------------------------------
