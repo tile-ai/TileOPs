@@ -10,6 +10,7 @@ from tileops.trace import trace
 from tileops.utils import get_sm_count, get_sm_version, str2dtype
 
 from .gemm_call import gemv_region, small_batch_region
+from .gemm_heuristics import SWAP_AB_MPAD as _SWAP_AB_MPAD
 from .gemm_heuristics import best_config as _heuristic_best_config
 from .gemm_heuristics import gemv_config, small_batch_config
 
@@ -1438,6 +1439,82 @@ def _gemm_simple_kernel(
 
 
 @functools.lru_cache(maxsize=32)
+def _gemm_swap_ab_kernel(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
+) -> Callable:
+    """Operand-swapped tiny-m NT GEMM: ``C[m,n] = A[m,k] @ B[n,k]ᵀ``, m <= 8.
+
+    Tiling the output the usual way wastes the M dimension at ``m <= 8``: WGMMA
+    needs 64 rows, so ``A`` is padded 8-32x and the grid is only
+    ``ceil(n / block_n)`` CTAs — 56 of an H200's 132 on the decode-down shape,
+    which streams the weights at ~2.2 TB/s where the ``m = 1`` GEMV reaches
+    2.7 TB/s.
+
+    Computing the transpose instead, ``Cᵀ[n,m] = B[n,k] @ A[m,k]ᵀ``, keeps the
+    same NT operand form but puts ``n`` on the 64-row WGMMA axis and ``m`` on
+    the 8-wide one: no padding waste, and the grid becomes
+    ``ceil(n / block_nn)``. The epilogue stages the ``(block_nn, 8)`` tile
+    through SMEM and writes ``c[mi, n0 + j]``, contiguous along ``n``.
+
+    Only worth it when that grid fills enough of the device — see
+    ``gemm_heuristics.swap_ab_stages``, which also sets ``num_stages``: with
+    fewer CTAs resident the ring has to be deeper to hide the same latency.
+
+    Args:
+        m: Batch rows (2..8).
+        n: Output columns (weight rows).
+        k: Contraction dim; innermost for both ``a`` and ``b``.
+        trans_a: Must be ``False`` (NT layout).
+        trans_b: Must be ``True`` (NT layout).
+        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_nn, block_k,
+        num_stages)`` returns the compiled ``prim_func``.
+    """
+    if trans_a or not trans_b:
+        raise ValueError("_gemm_swap_ab_kernel is NT-only (trans_a=False, trans_b=True)")
+    if m > _SWAP_AB_MPAD:
+        raise ValueError(f"_gemm_swap_ab_kernel serves m <= {_SWAP_AB_MPAD}, got m={m}")
+    accum_dtype = "float"
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _swap_ab_func(block_nn: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
+        mpad = _SWAP_AB_MPAD
+
+        @T.prim_func
+        def _gemm_swap_ab_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(T.ceildiv(n, block_nn), threads=128) as bx:
+                b_smem = T.alloc_shared((block_nn, block_k), dtype)
+                a_smem = T.alloc_shared((mpad, block_k), dtype)
+                ct_local = T.alloc_fragment((block_nn, mpad), accum_dtype)
+                ct_cast = T.alloc_fragment((block_nn, mpad), dtype)
+                ct_smem = T.alloc_shared((block_nn, mpad), dtype)
+                T.clear(ct_local)
+                for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    # Partial tiles zero-fill, so the K tail and the m < mpad
+                    # rows contribute nothing to the accumulator.
+                    T.copy(b[bx * block_nn, ki * block_k], b_smem)
+                    T.copy(a[0, ki * block_k], a_smem)
+                    T.gemm(b_smem, a_smem, ct_local, transpose_B=True)
+                T.copy(ct_local, ct_cast)
+                T.copy(ct_cast, ct_smem)
+                # Transpose out of SMEM: consecutive threads take consecutive
+                # ``j`` so each row of C is written coalesced.
+                for mi, j in T.Parallel(mpad, block_nn):
+                    if mi < m and bx * block_nn + j < n:
+                        c[mi, bx * block_nn + j] = ct_smem[j, mi]
+
+        return _gemm_swap_ab_main
+
+    return _swap_ab_func
+
+
+@functools.lru_cache(maxsize=32)
 def _gemm_coop2s_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
@@ -1931,6 +2008,16 @@ class GemmKernel(Kernel):
                 cfg.get("panel_size", 8),
                 cfg.get("cluster_m", 1),
             )
+            return compiled(a, b)
+
+        # swap_ab path: operand-swapped tiny-m NT kernel. Selected by the
+        # analytic band (``gemm_heuristics._tiny_m_config``) whenever its
+        # ``ceil(n / block_nn)`` grid fills enough of the device.
+        if self.config.get("swap_ab"):
+            cfg = self.config
+            compiled = _gemm_swap_ab_kernel(
+                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
+            )(cfg["block_nn"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
         # coop2s path: single-tile 2-consumer kernel for small NN shapes whose

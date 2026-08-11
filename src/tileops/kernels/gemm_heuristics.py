@@ -42,8 +42,10 @@ Resource model mirrors ``tileops/kernels/gemm.py``:
 import functools
 import math
 from dataclasses import dataclass
+from typing import Optional
 
-__all__ = ["best_config", "gemv_config", "small_batch_config"]
+__all__ = ["SWAP_AB_BLOCK_NN", "SWAP_AB_MPAD", "best_config", "gemv_config",
+           "small_batch_config", "swap_ab_stages"]
 
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
@@ -53,6 +55,12 @@ _DEFAULT_SM_COUNT = 132  # H100/H200 SXM fallback when no device is bound
 # prices its underfill gate on the competing generic grid with the same width
 # — retune them together.
 TINY_M_BLOCK_N = 128
+
+# Operand-swapped tiny-m kernel geometry (``_gemm_swap_ab_kernel``): ``n`` rides
+# the 64-row WGMMA axis, ``m`` the 8-wide one — 8 being the WGMMA N minimum, so
+# every m in the band pads into a single tile.
+SWAP_AB_BLOCK_NN = 64
+SWAP_AB_MPAD = 8
 
 # Validated num_stages ranges per structure in the shipped kernels.
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
@@ -213,7 +221,33 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
     return us
 
 
-def _tiny_m_config(k: int) -> dict:
+def swap_ab_stages(n: int, sm_count: int = _DEFAULT_SM_COUNT) -> Optional[int]:
+    """``num_stages`` for the tiny-m swap_ab kernel, or None if it underfills.
+
+    ``_gemm_swap_ab_kernel`` puts ``n`` on the 64-row WGMMA axis, so its grid
+    is ``ceil(n / SWAP_AB_BLOCK_NN)`` CTAs — the whole point being that this is
+    twice the CTA count of the ``block_n = 128`` output tiling, with no padded
+    ``A`` re-read. Below roughly three-eighths of a wave that advantage is gone
+    and the split-K path (which multiplies its own grid by ``split_k``) wins.
+
+    Measured on H200 vs ``min(torch, cuBLASLt-best)`` (per-rep interleaved,
+    fp32-guarded, bf16 NT), best swap_ab config against the path it replaces:
+
+    - ``n=2112`` (33 CTAs): 0.94x at ns=6, against 1.05x for split-K;
+    - ``n=4096`` (64 CTAs): 1.12x at ns=8, against 1.04x for split-K;
+    - ``n=7168`` (112 CTAs): 1.07x at ns=4, against 0.91x for the plain tile.
+
+    The stage count falls as the grid grows: with more CTAs resident the device
+    already has enough loads in flight, and a deeper ring only costs SMEM. Both
+    ends are measured points; the boundary between them is interpolated.
+    """
+    ctas = -(-n // SWAP_AB_BLOCK_NN)
+    if ctas * 8 < sm_count * 3:
+        return None
+    return 4 if ctas * 4 >= sm_count * 3 else 8
+
+
+def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
     """m <= 8 NT band: bandwidth-regime rule, not the compute-regime score.
 
     The score above divides byte terms by wave efficiency — right when SMs
@@ -237,7 +271,15 @@ def _tiny_m_config(k: int) -> dict:
 
     Both use block_n=128: half the CTAs of bn=64 still saturate the weight
     stream, and the padded-A reread (block_m=64 vs m <= 8) through L2 halves.
+
+    Both are also beaten outright wherever the operand-swapped kernel's grid
+    fills the device, which removes the padded-A re-read instead of halving it
+    (:func:`swap_ab_stages`); the rules below serve the shapes it leaves.
     """
+    stages = swap_ab_stages(n, sm_count)
+    if stages is not None:
+        return {"swap_ab": True, "block_nn": SWAP_AB_BLOCK_NN,
+                "block_k": 128, "num_stages": stages}
     k_iters = math.ceil(k / 128)
     for sk in (4, 2):
         if k_iters % sk == 0 and k_iters // sk >= 12:
@@ -252,7 +294,7 @@ def _best_config_cached(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
                         sm_count: int) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
     if m <= 8 and not trans_a and trans_b:
-        return _tiny_m_config(k)
+        return _tiny_m_config(n, k, sm_count)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
     if not cands:  # degenerate shapes: fall back to the modal default
         return {"block_m": 128, "block_n": 128, "block_k": 64,
