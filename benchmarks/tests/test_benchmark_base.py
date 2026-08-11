@@ -232,7 +232,7 @@ def test_record_lazy_with_dummy_kernel_keeps_kernel_config():
     class _LazyDummyOp(_FakeOp):
         def __init__(self):
             self.kernel = _FakeKernel({"block_m": 8})
-            self.get_or_build_kernel("fwd", 1, lambda: self.kernel)
+            self.get_or_build_kernel("fwd", key=1, build=lambda: self.kernel)
 
     BenchmarkReport.record(_LazyDummyOp(), params={}, result=_result(), tag="t")
     records = BenchmarkReport._records["_LazyDummyOp"]
@@ -247,7 +247,7 @@ def test_record_pure_lazy_cache_op_keeps_kernel_config():
     class _PureLazyOp(_FakeOp):
         def __init__(self):
             self.get_or_build_kernel(
-                "fwd", (32, 256), lambda: _FakeKernel({"block_m": 4, "tile_n": 0}))
+                "fwd", key=(32, 256), build=lambda: _FakeKernel({"block_m": 4, "tile_n": 0}))
 
     BenchmarkReport.record(_PureLazyOp(), params={}, result=_result(), tag="t")
     records = BenchmarkReport._records["_PureLazyOp"]
@@ -276,7 +276,7 @@ def test_record_composite_op_keeps_delegate_kernel_config():
     class _DelegateOp(_FakeOp):
         def __init__(self):
             self.get_or_build_kernel(
-                "fwd", torch.float16, lambda: _FakeKernel({"block_m": 8}))
+                "fwd", key=torch.float16, build=lambda: _FakeKernel({"block_m": 8}))
 
     class _CompositeOp(_FakeOp):
         def __init__(self):
