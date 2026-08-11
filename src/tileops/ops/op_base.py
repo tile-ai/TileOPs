@@ -41,10 +41,7 @@ _UNRESOLVED = _Unresolved()
 
 
 def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
-    """The device of the first tensor a call carries, or None if it carries none.
-
-    One level into sequences, since several ops take a list of tensors.
-    """
+    """The device of the first tensor a call carries, one level into sequences."""
     for value in (*args, *kwargs.values()):
         if isinstance(value, torch.Tensor):
             return value.device
@@ -103,8 +100,8 @@ class Op(ABC):
     """
 
     # Which set of kernels serves this instance: a target name, ``BUILTIN`` for the in-tree
-    # implementation, or None to decide from the input device. Constructor-only — it settles
-    # kernel identity, so it must not vary per call. Ops accept it as they are migrated.
+    # implementation, or None to decide from the input device. Constructor-only: it settles
+    # kernel identity, so it must not vary per call.
     target: Target = None
     # The resolved answer: ``_UNRESOLVED``, ``None`` (in-tree), or a target's build_kernel.
     _builder: object = _UNRESOLVED
@@ -311,9 +308,7 @@ class Op(ABC):
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
-        # Import the installed backends here rather than on the first call, which may be
-        # inside a ``torch.compile`` region where the lock discovery takes cannot be traced.
-        ensure_loaded()
+        ensure_loaded()  # before any traced region, which the first call may be inside
         self._install_kernel_map(kernel_map)
         # Conforming __init__s all pass through here — the zero-boilerplate
         # registration point for the compile dispatch boundary.
@@ -336,9 +331,8 @@ class Op(ABC):
             inputs: The tensors this kernel will be handed, in ``signature.inputs`` order.
                 An external target needs them; omitting them leaves this op in-tree only.
             key: What the *in-tree* kernel specializes on, typically
-                ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. An external
-                target does not use it — what its kernel specializes on is known only to
-                whoever wrote it, so that path keys on the input signature.
+                ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
+                path keys on the input signature instead.
             build: How the *in-tree* kernel is constructed, called once per key. See
                 ``_entry_kernels`` for what it may return.
 
@@ -391,8 +385,7 @@ class Op(ABC):
     ) -> object:
         """Ask the target for a kernel; a build that produces no callable pins nothing.
 
-        The instance goes back to undecided, so the next call resolves again rather than
-        staying aimed at a target that could not serve it.
+        The instance goes back to undecided, so the next call resolves again.
         """
         target = self._settled_target
         try:
@@ -412,8 +405,8 @@ class Op(ABC):
         """The op's manifest params, by name, with the values this instance settled on.
 
         ``build_kernel`` is called with these by keyword. Names come from the manifest
-        (``_params_codegen``), values off the instance — so a param the manifest defaults to
-        null arrives as the number the op chose, never as None.
+        (``_params_codegen``), values off the instance, so a param the manifest defaults to
+        null arrives as the number the op chose.
 
         Raises:
             AttributeError: The op declares a manifest param it keeps under another name.
@@ -520,9 +513,7 @@ class Op(ABC):
         """Decide which target serves this instance and remember its builder.
 
         Once decided it does not change: the kernels this instance has built belong to that
-        target, so a later ``set_default_target`` must not re-aim it. A call carrying no
-        tensor probed no device and so decides nothing — settling it would pin the instance
-        to the in-tree kernels even once a call arrives on a device a target claims.
+        target. A call carrying no tensor probes no device and decides nothing.
 
         Raises:
             OpNotAvailableError: The selected target registers no builder for this op.

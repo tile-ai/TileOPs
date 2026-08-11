@@ -8,11 +8,7 @@ import torch
 
 
 class TensorSpec(NamedTuple):
-    """What one tensor is, without the tensor.
-
-    ``build_kernel`` is handed these instead of real tensors, so "do not read the data, do
-    not keep a reference" needs no rule: neither is possible.
-    """
+    """What one tensor is, without the tensor. Handed to ``build_kernel``."""
 
     device: torch.device
     dtype: torch.dtype
@@ -25,19 +21,16 @@ class TensorSpec(NamedTuple):
 
 
 #: One call's result. A purely mutating op returns ``None``: ``torch.library.custom_op``
-#: cannot express a return value aliasing an input, so the op layer adds the chaining
-#: convenience above this boundary.
+#: cannot express a return value aliasing an input.
 KernelResult = Union[torch.Tensor, tuple[torch.Tensor, ...], None]
 
-#: Called ``build_kernel(*inputs, **params)``: a :class:`TensorSpec` per input in the op's
-#: manifest ``signature.inputs`` order, then its ``signature.params`` by keyword. Returns
-#: something callable with the tensors those specs describe. Both lists are per-op, which
-#: the type system cannot express, hence ``...``.
+#: Called ``build_kernel(*inputs, **params)``: a :class:`TensorSpec` per input in
+#: ``signature.inputs`` order, then ``signature.params`` by keyword. Both lists are per-op,
+#: which the type system cannot express, hence ``...``.
 BuildKernel = Callable[..., Callable[..., KernelResult]]
 
 #: "Is this the kind of device my kernels are written for" — ``False``, not an exception,
-#: for devices it does not serve. Whether a particular call is supported is ``build_kernel``'s
-#: answer, which sees the dtypes and shapes too.
+#: for the rest. Per-call support is ``build_kernel``'s answer; it sees the dtypes too.
 DetectFn = Callable[[torch.device], bool]
 
 
@@ -50,11 +43,9 @@ class _Builtin:
         return "BUILTIN"
 
 
-#: Ask for the in-tree implementation whatever is installed. Not a target name: unregistered,
-#: no table entry, never in ``registered_targets()``. ``None`` means "decide for me", which
-#: cannot say this once a third-party backend claims the device.
+#: Ask for the in-tree implementation whatever is installed. Not a target name: unregistered
+#: and never in ``registered_targets()``.
 BUILTIN: Final = _Builtin()
 
-#: What ``target=`` and the process default accept: a target name, :data:`BUILTIN`, or
-#: ``None`` for "decide from the device".
+#: What ``target=`` and the process default accept.
 Target = Union[str, _Builtin, None]

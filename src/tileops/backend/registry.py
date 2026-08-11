@@ -25,20 +25,17 @@ BUILDERS: dict[tuple[str, str], BuildKernel] = {}
 #: printed.
 LOAD_FAILURES: list[str] = []
 
-#: Which target ops use when they name none. No constant here: the in-tree implementation is
-#: not a target, so "no default" means "replace nothing". Beside the tables so the load
-#: transaction and test isolation cover it.
+#: Which target ops use when they name none. ``None`` replaces nothing.
 default_target: Target = None
 
 #: Set only once every entry point has been tried, so no thread sees a half-built registry.
 _loaded = False
 
-#: Reentrant: discovery holds it while importing backend modules, whose top level calls
-#: the register functions and takes it again.
+#: Reentrant: discovery holds it while importing backends, whose top level registers.
 LOCK = threading.RLock()
 
-#: Set on the thread running discovery, which must read the partial registry it is
-#: building while every other thread waits on the lock for the finished one.
+#: Set on the discovery thread, which reads the partial registry it is building while the
+#: others wait for the finished one.
 _LOADING = threading.local()
 
 
@@ -103,9 +100,7 @@ def known_targets() -> set[str]:
 def ensure_loaded() -> None:
     """Import every declared backend module, once.
 
-    Called when the first op is constructed: at ``import tileops`` this would pull in every
-    installed backend and tilelang with them; on the first call it would land inside a
-    ``torch.compile`` region, which cannot trace the lock below.
+    Called when the first op is constructed, which is before any traced region.
     """
     global _loaded
     if _loaded:  # fast path: one bool read, no lock
@@ -121,8 +116,7 @@ def ensure_loaded() -> None:
             _loaded = True
         finally:
             _LOADING.active = False
-    # Warned only now: under ``-W error`` a warning raises, and warning before discovery is
-    # published means the next call redoes it and double-records every failure.
+    # Warned only after discovery is published, so that ``-W error`` cannot truncate it.
     for failure in failed:
         warnings.warn(
             f"TileOPs backend failed to load and was skipped: {failure} "
@@ -139,8 +133,7 @@ def _load_all() -> list[str]:
     """
     failed = []
     for ep in sorted(entry_points(group=ENTRY_POINT_GROUP), key=lambda e: (e.name, e.value)):
-        # All-or-nothing per entry point: a backend registering eighty ops and then raising
-        # would leave the registry advertising ops it never finished initializing.
+        # All-or-nothing: a partial registration advertises ops the backend never finished.
         checkpoint = snapshot()
         try:
             ep.load()

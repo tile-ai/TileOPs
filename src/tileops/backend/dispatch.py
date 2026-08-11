@@ -12,13 +12,10 @@ from .protocol import BUILTIN, BuildKernel, DetectFn, Target
 def detect_target(device: torch.device) -> str | None:
     """Return the target whose kernels are written for *device*, or None if there is none.
 
-    None is the normal case: no backend is installed for this hardware, so the in-tree
-    implementation runs. *device* is passed through untouched — reading ``.type`` is the
-    vendor knowledge being delegated.
-
-    Neither memoized nor locked: a target is settled once per op instance, so each detector
-    is asked once per op. A table would cost a lock, an invalidation rule and a staleness
-    question — and the lock cannot be traced by dynamo, which sees an op's first call.
+    None means no backend is installed for this hardware, so the in-tree implementation runs.
+    *device* is passed through untouched: reading ``.type`` is the vendor knowledge being
+    delegated. Neither memoized nor locked — a target is settled once per op instance, and
+    an op's first call can be inside a region dynamo traces.
 
     Raises:
         AmbiguousTargetError: More than one target claimed it. Pass ``target=`` to choose.

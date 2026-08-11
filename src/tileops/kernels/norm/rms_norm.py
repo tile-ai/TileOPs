@@ -120,18 +120,15 @@ class RMSNormKernel(Kernel):
     ):
         """Build for a hidden size and dtype.
 
-        ``M`` is not a construction argument: it changes every step of decode, so taking it
-        here would mean one kernel per row count. The program for a given ``M`` is resolved
-        in ``forward`` and memoized by ``_rms_norm_kernel``.
+        The program for a given row count is resolved in ``forward``, memoized by
+        ``_rms_norm_kernel``.
         """
         super().__init__()
         self.N = N
         self.eps = eps
         self.dtype = dtype
         self.N_padded = _align_up(N, ALIGNMENT)
-        # Tuning needs a compiled program, and a program needs M — so it waits for the
-        # first call, which is also outside any captured graph.
-        self._tune_pending = tune
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
     @property
@@ -152,8 +149,8 @@ class RMSNormKernel(Kernel):
         Returns:
             Tensor shaped like *x*.
 
-        The 2-D rows and flat weight this kernel wants are its own business, so flattening
-        happens here rather than in the op — as does the padding the prim_func requires.
+        Flattening to 2-D rows and a flat weight happens here, as does the alignment padding
+        the prim_func requires.
         """
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

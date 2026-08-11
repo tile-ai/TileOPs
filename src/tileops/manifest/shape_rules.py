@@ -22,13 +22,10 @@ them by bare name::
 Inline-string rules continue to work unchanged so ops can migrate one
 at a time.
 
-Helper semantics intentionally mirror the inline reduction expressions
-that previously lived in the manifest, so a malformed ``dim`` (e.g. a
-list whose elements are not ints) propagates the same ``TypeError`` the
-inline expression would have raised. The validator already classifies
-such eval errors as warnings (the rule is treated as un-evaluatable
-under mock inputs and the parity check is skipped), so behavioural
-parity with the equivalent inline expressions is preserved end-to-end.
+A malformed ``dim`` — say a list whose elements are not ints — propagates
+its own ``TypeError``. The validator classifies such eval errors as
+warnings: the rule counts as un-evaluatable under mock inputs and the
+parity check is skipped.
 """
 
 from __future__ import annotations
@@ -45,9 +42,8 @@ def dim_range_validity(x: Any, dim: Any) -> bool:
     short-circuits to True (callers fall back to "all axes"); a single
     int wraps into a one-element list before the bounds check; any other
     value is iterated directly. Non-iterable values, or sequences whose
-    elements cannot be compared to ``int``, propagate the same exception
-    the inline form would raise — the validator classifies that as an
-    eval error and surfaces it as a warning (parity check skipped).
+    elements cannot be compared to ``int``, propagate their own exception;
+    the validator surfaces that as a warning (parity check skipped).
 
     Args:
         x: A tensor-like object exposing ``.ndim``.
@@ -77,8 +73,7 @@ def dim_uniqueness(x: Any, dim: Any) -> bool:
     sequence inputs normalize each entry via ``d % x.ndim`` and require
     the resulting set to retain the original cardinality. Non-iterable
     values, or sequences whose elements cannot be reduced modulo an int,
-    propagate the same exception the inline form would raise — the
-    validator classifies that as an eval error and surfaces it as a
+    propagate their own exception; the validator surfaces that as a
     warning (parity check skipped).
 
     Args:
@@ -114,13 +109,11 @@ def reduced_axes(x: Any, dim: Any) -> frozenset:
     ``==`` or use the result inside ``len(...)`` / ``in`` see no
     behaviour change.
 
-    ``isinstance(dim, int)`` accepts ``bool`` too (bool subclasses int);
-    that quirk is intentional parity. A list/tuple with elements that
-    cannot be reduced modulo an int propagates the same exception the
-    inline form would raise — the validator classifies that as an eval
-    error and surfaces it as a warning (parity check skipped). Anything
-    else (``None``, a set, a string, etc.) falls through to the "all
-    axes" branch, matching the inline expression's else clause.
+    ``isinstance(dim, int)`` accepts ``bool`` too, since bool subclasses
+    int. A list/tuple with elements that cannot be reduced modulo an int
+    propagates its own exception; the validator surfaces that as a warning
+    (parity check skipped). Anything else (``None``, a set, a string) falls
+    through to the "all axes" branch.
 
     Pair this helper with :func:`dim_range_validity` and
     :func:`dim_uniqueness` so range / uniqueness violations surface
