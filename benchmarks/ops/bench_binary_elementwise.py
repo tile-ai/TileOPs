@@ -220,13 +220,12 @@ def test_logical_bench(
     inputs = test.gen_inputs()
 
     op = op_cls(a_shape=shape, b_shape=shape)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     # Baseline uses bool tensors
     a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
-    result_bl = bm.profile(baseline_fn, a_bool, b_bool)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    functors["torch"] = (baseline_fn, (a_bool, b_bool, ))
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 # Bitwise ops (3)

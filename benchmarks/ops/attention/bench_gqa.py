@@ -321,16 +321,15 @@ def test_gqa_bwd_bench(
 
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_GQA_BWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     fa3_fn = _fa3_gqa_bwd(test)
     if fa3_fn is not None:
-        result_bl = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+        functors["fa3"] = fa3_fn
     else:
-        result_bl = bm.profile(_torch_gqa_bwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+        functors["torch-sdpa"] = _torch_gqa_bwd(test)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
@@ -383,16 +382,15 @@ def test_gqa_prefill_fwd_bench(
         softcap=softcap,
     )
     bm = ManifestBenchmark(_GQA_PREFILL_FWD_OP, op, test)
-    result = bm.profile(op, *packed_inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
-    result_bl = bm.profile(_torch_gqa_prefill_ref(test), *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    functors["torch-ref"] = (_torch_gqa_prefill_ref(test), (*inputs, ))
 
     fi_fn = _flashinfer_gqa_fwd(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = (fi_fn, (*inputs, ))
+
+    bm.compare(functors, *packed_inputs, record_as=op, params=locals())
 
 
 _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [

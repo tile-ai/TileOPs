@@ -134,22 +134,20 @@ def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
         tune=tune,
     )
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     fa3_fn = _fa3_gqa_decode_fwd(test)
     if fa3_fn is not None:
-        result_bl = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+        functors["fa3"] = fa3_fn
 
     fi_fn = _flashinfer_gqa_decode_fwd(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+        functors["torch-sdpa"] = test.ref_program
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

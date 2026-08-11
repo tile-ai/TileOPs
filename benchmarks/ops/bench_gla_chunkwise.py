@@ -136,8 +136,7 @@ def test_gla_fwd_bench(
     # --- TileOPs ---
     scale = dim_k ** -0.5
     op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
-    result = bm.profile(op.forward, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op.forward}
 
     if chunk_gla is not None:
         # --- FLA ---
@@ -146,15 +145,12 @@ def test_gla_fwd_bench(
         def fla_fwd():
             return chunk_gla(q, k, v, g, scale=scale)
 
-        result_fla = bm.profile(fla_fwd)
-        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
+        functors["fla"] = (fla_fwd, ())
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(
-            lambda q, k, v, g: gla_fwd_chunked_torch(q, k, v, g, chunk_size),
-            *inputs,
-        )
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        functors["torch"] = lambda q, k, v, g: gla_fwd_chunked_torch(q, k, v, g, chunk_size)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 # Backward benchmark

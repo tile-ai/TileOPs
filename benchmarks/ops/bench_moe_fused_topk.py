@@ -100,8 +100,7 @@ def test_fused_topk_bench(
     op(gating_output)  # warmup / JIT compile
     torch.cuda.synchronize()
 
-    result = bm.profile(op, gating_output)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     # vLLM baseline (optional)
     has_external = False
@@ -121,8 +120,7 @@ def test_fused_topk_bench(
         _vllm_fn(gating_output)  # warmup
         torch.cuda.synchronize()
 
-        result_vllm = bm.profile(_vllm_fn, gating_output)
-        BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
+        functors["vllm"] = _vllm_fn
 
     # Fallback: torch reference baseline (only when no external baselines)
     if not has_external:
@@ -132,5 +130,6 @@ def test_fused_topk_bench(
         _ref_fn(gating_output)  # warmup
         torch.cuda.synchronize()
 
-        result_ref = bm.profile(_ref_fn, gating_output)
-        BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
+        functors["torch-ref"] = _ref_fn
+
+    bm.compare(functors, gating_output, record_as=op, params=locals())

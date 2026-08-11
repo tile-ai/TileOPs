@@ -57,8 +57,8 @@ _MIN_ITERS = 10
 _MAX_ITERS = 200
 
 
-def _clamp_iters(raw: float) -> int:
-    return max(_MIN_ITERS, min(_MAX_ITERS, int(raw)))
+def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS) -> int:
+    return max(_MIN_ITERS, min(max_iters, int(raw)))
 
 # Thread-local storage for conftest hook to pick up per-test bench results.
 # A single test function may call record() multiple times (tileops + baseline).
@@ -536,6 +536,7 @@ def bench_kernel(
     args: tuple[Any, ...] = (),
     dry_run_ms: float = DRY_RUN_MS,
     repeat_ms: float = REPEAT_MS,
+    max_iters: int = _MAX_ITERS,
 ) -> list[float]:
     """Time *fn* with CUPTI kernel-activity attribution.
 
@@ -581,8 +582,8 @@ def bench_kernel(
     torch.cuda.synchronize()
     per_iter_ms = max(start.elapsed_time(end) / _CALIBRATION_ITERS, 1e-6)
 
-    n_warmup = _clamp_iters(dry_run_ms / per_iter_ms)
-    n_repeat = _clamp_iters(repeat_ms / per_iter_ms)
+    n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters)
+    n_repeat = _clamp_iters(repeat_ms / per_iter_ms, max_iters)
 
     if args:
         total = 1 + n_warmup + _discovery_repeats() + n_repeat
@@ -756,12 +757,21 @@ class BenchmarkBase(Generic[W], ABC):
             for tag, value in functors.items()
         }
         tags = list(plan)
+        order = tags + tags[::-1]
+        # Split the budget across the two passes rather than spending it twice:
+        # the point is symmetry, not more samples.
+        passes = 2
         samples: dict[str, list[float]] = {tag: [] for tag in tags}
         meta: dict[str, dict] = {}
-        for tag in tags + tags[::-1]:
+        for tag in order:
             functor, args = plan[tag]
             with torch.no_grad():
-                samples[tag].extend(bench_kernel(functor, args=args))
+                samples[tag].extend(bench_kernel(
+                    functor, args=args,
+                    dry_run_ms=DRY_RUN_MS / passes,
+                    repeat_ms=REPEAT_MS / passes,
+                    max_iters=_MAX_ITERS // passes,
+                ))
             meta[tag] = _capture_bench_meta()
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
         if record_as is not None:

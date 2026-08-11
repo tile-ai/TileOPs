@@ -95,8 +95,7 @@ def test_gated_deltanet_decode_bench(
 
     op = GatedDeltaNetDecodeOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     if fused_recurrent_gated_delta_rule is not None:
         # --- FLA: fused_recurrent_gated_delta_rule with T=1 ---
@@ -116,12 +115,12 @@ def test_gated_deltanet_decode_bench(
                 output_final_state=True,
             )
 
-        result_fla = bm.profile(fla_decode)
-        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
+        functors["fla"] = (fla_decode, ())
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        functors["torch-ref"] = test.ref_program
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

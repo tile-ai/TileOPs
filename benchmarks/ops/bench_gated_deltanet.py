@@ -236,8 +236,7 @@ def test_gated_deltanet_vs_fla_fwd(
 
     # --- TileOPs (BHSD) ---
     op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     if chunk_gated_delta_rule is not None:
         # --- FLA (BTHK) ---
@@ -248,12 +247,12 @@ def test_gated_deltanet_vs_fla_fwd(
         def fla_fwd():
             return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
 
-        result_fla = bm.profile(fla_fwd)
-        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
+        functors["fla"] = (fla_fwd, ())
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        functors["torch"] = test.ref_program
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 # Backward benchmark
@@ -314,8 +313,7 @@ def test_gated_deltanet_vs_fla_bwd(
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
 
     bwd_op = GatedDeltaNetBwdOp(chunk_size=BC, tune=tune)
-    result = bm.profile(bwd_op.forward, do, q, k, v, g, beta, S_fwd)
-    BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
+    functors = {"tileops": bwd_op.forward}
 
     if chunk_gated_delta_rule is not None:
         # --- FLA: bwd only via autograd (BTHK layout) ---
@@ -337,14 +335,14 @@ def test_gated_deltanet_vs_fla_bwd(
             o_fla.backward(do_fla, retain_graph=True)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = bm.profile(fla_bwd)
-        BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla")
+        functors["fla"] = (fla_bwd, ())
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
-        result_bl = bm.profile(torch_bwd)
-        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
+        functors["torch"] = (torch_bwd, ())
+
+    bm.compare(functors, do, q, k, v, g, beta, S_fwd, record_as=bwd_op, params=locals())
 
 
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)

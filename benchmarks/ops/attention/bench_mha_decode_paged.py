@@ -97,22 +97,20 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_decode_paged(test, k, v)
     if fa3_fn is not None:
-        result_fa3 = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fa3, tag="fa3")
+        functors["fa3"] = fa3_fn
 
     fi_fn = _flashinfer_mha_decode_paged(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        functors["torch-ref"] = test.ref_program
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

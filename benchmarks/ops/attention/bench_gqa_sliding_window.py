@@ -141,24 +141,22 @@ def test_gqa_sliding_window_fwd_bench(
     op(*inputs)
     torch.cuda.synchronize()
 
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     # FA3 baseline
     fa3_fn = _fa3_baseline(is_causal, wl, wr)
     if fa3_fn is not None:
-        result_bl = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+        functors["fa3"] = fa3_fn
 
     # FlashInfer baseline
     fi_fn = _flashinfer_sliding_window_fwd(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(_torch_sliding_window_fwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        functors["torch"] = _torch_sliding_window_fwd(test)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

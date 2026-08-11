@@ -71,8 +71,7 @@ def test_moe_permute_nopad_bench(
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 
-    result = bm.profile(op, hidden_states, topk_ids)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     # vLLM baseline (optional)
     if _VLLM_AVAILABLE:
@@ -82,8 +81,7 @@ def test_moe_permute_nopad_bench(
         _vllm_fn(hidden_states, topk_ids)  # warmup
         torch.cuda.synchronize()
 
-        result_vllm = bm.profile(_vllm_fn, hidden_states, topk_ids)
-        BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
+        functors["vllm"] = _vllm_fn
     else:
         # PyTorch vectorized baseline: counting sort + gather
         numel = total_tokens * top_k
@@ -115,8 +113,9 @@ def test_moe_permute_nopad_bench(
         _torch_fn(hidden_states, topk_ids)  # warmup
         torch.cuda.synchronize()
 
-        result_torch = bm.profile(_torch_fn, hidden_states, topk_ids)
-        BenchmarkReport.record(op, locals(), result_torch, tag="torch-ref")
+        functors["torch-ref"] = _torch_fn
+
+    bm.compare(functors, hidden_states, topk_ids, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

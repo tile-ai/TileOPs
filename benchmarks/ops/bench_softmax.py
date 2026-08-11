@@ -33,19 +33,16 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = SoftmaxFwdOp(dim=-1, tune=True)
     bm = ManifestBenchmark(_SOFTMAX_OP, op, test)
+    def baseline_fn(x):
+        return F.softmax(x, dim=-1)
+
     try:
-        result = bm.profile(op, *inputs)
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    def baseline_fn(x):
-        return F.softmax(x, dim=-1)
-
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # LogSoftmax benchmarks
@@ -58,19 +55,16 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = LogSoftmaxFwdOp(dim=-1, tune=True)
     bm = ManifestBenchmark(_LOG_SOFTMAX_OP, op, test)
+    def baseline_fn(x):
+        return F.log_softmax(x, dim=-1)
+
     try:
-        result = bm.profile(op, *inputs)
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    def baseline_fn(x):
-        return F.log_softmax(x, dim=-1)
-
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # LogSumExp benchmarks
@@ -89,22 +83,19 @@ def test_logsumexp_bench(
     op_params.setdefault("dim", -1)
     op = LogSumExpFwdOp(tune=True, **op_params)
     bm = ManifestBenchmark(_LOGSUMEXP_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return torch.logsumexp(x, dim=dim, keepdim=keepdim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 if __name__ == "__main__":

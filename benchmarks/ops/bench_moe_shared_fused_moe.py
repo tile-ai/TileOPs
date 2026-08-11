@@ -144,11 +144,7 @@ def test_shared_fused_moe_bench(
         return op(hidden, gating, w_gate_up, w_down, correction_bias,
                   shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down)
 
-    result = bm.profile(
-        _tileops_fn, hidden, gating, w_gate_up, w_down, correction_bias,
-        shared_w_gate_up, shared_w_down,
-    )
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": _tileops_fn}
 
     # ── vLLM baseline (optional) ──────────────────────────────────────────────
     if _VLLM_AVAILABLE:
@@ -181,11 +177,7 @@ def test_shared_fused_moe_bench(
                  shared_w_gate_up, shared_w_down)  # warmup
         torch.cuda.synchronize()
 
-        result_vllm = bm.profile(
-            _vllm_fn, hidden, gating, correction_bias, w_gate_up, w_down,
-            shared_w_gate_up, shared_w_down,
-        )  # all positional — OK
-        BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
+        functors["vllm"] = (_vllm_fn, (hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down, ))
     else:
         # torch-ref: per-expert GEMM loop + manual shared MLP
         fk = FusedTopKOp(
@@ -227,8 +219,6 @@ def test_shared_fused_moe_bench(
                 shared_w_gate_up, shared_w_down)  # warmup
         torch.cuda.synchronize()
 
-        result_ref = bm.profile(
-            _ref_fn, hidden, gating, correction_bias, w_gate_up, w_down,
-            shared_w_gate_up, shared_w_down,
-        )
-        BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
+        functors["torch-ref"] = (_ref_fn, (hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down, ))
+
+    bm.compare(functors, hidden, gating, w_gate_up, w_down, correction_bias, shared_w_gate_up, shared_w_down, record_as=op, params=locals())

@@ -189,8 +189,7 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
     # Pass inputs directly so bench_kernel clones them each iteration,
     # giving accurate per-clone addressing and fair kernel-only timing.
     # Include dt_bias so all three paths see the same input distribution.
-    result = bm.profile(op.forward, x, dt, A, B, C, dt_bias)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op.forward}
 
     # ── Official mamba_ssm Triton baseline ───────────────────────────────────
     # Pass the same 5 tensor inputs so both paths get identical clone treatment.
@@ -205,11 +204,11 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
                 dt_softplus=dt_softplus,
             )
 
-        result_mamba = bm.profile(_mamba_wrapper, x, dt, A, B, C)
-        BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
+        functors["mamba"] = (_mamba_wrapper, (x, dt, A, B, C, ))
     else:
         def _torch_wrapper(x, dt, A, B, C):
             return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus)
 
-        result_torch = bm.profile(_torch_wrapper, x, dt, A, B, C)
-        BenchmarkReport.record(op, locals(), result_torch, tag="torch-ref")
+        functors["torch-ref"] = (_torch_wrapper, (x, dt, A, B, C, ))
+
+    bm.compare(functors, x, dt, A, B, C, dt_bias, record_as=op, params=locals())
