@@ -254,3 +254,23 @@ def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
 
     assert Untyped.__manifest_param_names__ == ()
     assert RMSNormFwdOp.__manifest_param_names__ == ("normalized_shape", "eps")
+
+def test_a_call_that_fails_validation_pins_nothing():
+    """One invalid call must not aim the instance for good.
+
+    The first tensor's device picks the target, so a mixed-device call would otherwise send
+    every later call where that one pointed.
+    """
+    recorder = _Recorder()
+    registry.register_detector("cpu_target", lambda device: device.type == "cpu")
+    registry.register_kernel_builder("RMSNormFwdOp", "cpu_target", recorder.build_kernel)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+
+    with pytest.raises(ValueError):
+        op(torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
+           torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16))
+
+    assert op._settled_target is None and not op.built_kernels("rms_norm")
+    op(*_inputs())
+    assert op._settled_target == "cpu_target", "the first call that worked decides"
+    assert len(recorder.calls) == 1

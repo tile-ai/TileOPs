@@ -382,22 +382,13 @@ class Op(ABC):
     def _build_external(
         self, builder: BuildKernel, name: str, specs: tuple[TensorSpec, ...],
     ) -> object:
-        """Ask the target for a kernel; a build that produces no callable pins nothing.
-
-        The instance goes back to undecided, so the next call resolves again.
-        """
-        target = self._settled_target
-        try:
-            kernel = builder(*specs, **self._manifest_params())
-            if not callable(kernel):
-                raise OpNotAvailableError(
-                    f"target {target!r} built {kernel!r} for {type(self).__name__}.{name}, "
-                    f"which is not callable; a builder returns something the op can call "
-                    f"with the tensors it was described")
-        except Exception:
-            self._builder = _UNRESOLVED
-            self._settled_target = None
-            raise
+        """Ask the target for a kernel and hold it to the one rule this boundary has."""
+        kernel = builder(*specs, **self._manifest_params())
+        if not callable(kernel):
+            raise OpNotAvailableError(
+                f"target {self._settled_target!r} built {kernel!r} for "
+                f"{type(self).__name__}.{name}, which is not callable; a builder returns "
+                f"something the op can call with the tensors it was described")
         return kernel
 
     def _manifest_params(self) -> dict[str, object]:
@@ -503,10 +494,24 @@ class Op(ABC):
         Settles which set of kernels serves this instance, once, then delegates to
         ``forward`` — which is the same for every target. The only fork is inside
         :meth:`get_or_build_kernel`.
+
+        A call that fails settles nothing. Otherwise one invalid call would aim the instance
+        for good: ``op(x_cpu, weight_cuda)`` picks a target from the first tensor, then
+        ``forward`` rejects the mismatch, and every later call would go where that one
+        pointed.
         """
-        if self._builder is _UNRESOLVED:
-            self._resolve_builder(args, kwargs)
-        return self.forward(*args, **kwargs)
+        if self._builder is not _UNRESOLVED:
+            return self.forward(*args, **kwargs)
+
+        self._resolve_builder(args, kwargs)
+        try:
+            return self.forward(*args, **kwargs)
+        except Exception:
+            # Also drop what was built: those kernels belong to the target just unpinned.
+            self._builder = _UNRESOLVED
+            self._settled_target = None
+            self._kernel_roles = {}
+            raise
 
     def _resolve_builder(self, args: tuple, kwargs: dict) -> None:
         """Decide which target serves this instance and remember its builder.
