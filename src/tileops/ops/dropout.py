@@ -90,8 +90,8 @@ class DropoutOp(Op):
     def _get_kernel(self, x: torch.Tensor) -> Kernel:
         return self.get_or_build_kernel(
             self._op_name,
-            (x.numel(), x.dtype, x.device.index),
-            lambda: self.kernel_map[self._op_name](
+            key=(x.numel(), x.dtype, x.device.index),
+            build=lambda: self.kernel_map[self._op_name](
                 x.numel(), x.dtype, p=self.p, seed=self.seed, tune=self.tune,
             ),
         )

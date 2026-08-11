@@ -111,8 +111,8 @@ class GLAFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GLAFwdKernel",
-            key,
-            lambda: self.kernel_map["GLAFwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["GLAFwdKernel"](
                 batch,
                 seq_len,
                 heads,
@@ -225,8 +225,8 @@ class GLABwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GLABwdKernel",
-            key,
-            lambda: self.kernel_map["GLABwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["GLABwdKernel"](
                 batch,
                 seq_len,
                 heads,

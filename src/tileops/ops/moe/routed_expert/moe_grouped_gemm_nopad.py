@@ -55,8 +55,8 @@ class MoeGroupedGemmNopadFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "moe_grouped_gemm_kernel",
-            dtype,
-            lambda: self.kernel_map["moe_grouped_gemm_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["moe_grouped_gemm_kernel"](
                 self.numel, self.num_experts, self.n, self.k,
                 dtype=dtype, tune=self.tune,
             ),

@@ -54,8 +54,8 @@ class EngramDecodeOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "engram_decode",
-            dtype,
-            lambda: self.kernel_map["engram_decode"](
+            key=dtype,
+            build=lambda: self.kernel_map["engram_decode"](
                 self.batch, self.d_mem, self.d, self.max_conv_len,
                 self.conv_kernel_size, self.dilation, self.eps, dtype,
                 tune=self.tune,

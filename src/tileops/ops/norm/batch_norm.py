@@ -199,8 +199,8 @@ class BatchNormFwdOp(Op):
         if self.training:
             kernel = self.get_or_build_kernel(
                 "fwd_train_kernel",
-                key,
-                lambda: self.kernel_map["fwd_train_kernel"](
+                key=key,
+                build=lambda: self.kernel_map["fwd_train_kernel"](
                     C, L, dtype, self.eps, self.momentum, tune=self.tune,
                 ),
             )
@@ -208,8 +208,8 @@ class BatchNormFwdOp(Op):
         else:
             kernel = self.get_or_build_kernel(
                 "fwd_infer_kernel",
-                key,
-                lambda: self.kernel_map["fwd_infer_kernel"](
+                key=key,
+                build=lambda: self.kernel_map["fwd_infer_kernel"](
                     C, L, dtype, self.eps, tune=self.tune,
                 ),
             )
@@ -386,8 +386,8 @@ class BatchNormBwdOp(Op):
     ) -> Kernel:
         kernel = self.get_or_build_kernel(
             "bwd_kernel",
-            (C, L, dtype, device_index, self.tune),
-            lambda: self.kernel_map["bwd_kernel"](
+            key=(C, L, dtype, device_index, self.tune),
+            build=lambda: self.kernel_map["bwd_kernel"](
                 C, L, dtype, tune=self.tune,
             ),
         )

@@ -49,8 +49,8 @@ class EngramGateConvFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "engram_gate_conv_fwd",
-            dtype,
-            lambda: self.kernel_map["engram_gate_conv_fwd"](
+            key=dtype,
+            build=lambda: self.kernel_map["engram_gate_conv_fwd"](
                 self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
             ),
         )
@@ -143,8 +143,8 @@ class EngramGateConvBwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "engram_gate_conv_bwd",
-            dtype,
-            lambda: self.kernel_map["engram_gate_conv_bwd"](
+            key=dtype,
+            build=lambda: self.kernel_map["engram_gate_conv_bwd"](
                 self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
             ),
         )

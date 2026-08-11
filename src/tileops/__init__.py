@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from tileops.backend import (
+        BUILTIN,
         AmbiguousTargetError,
         BackendError,
         OpNotAvailableError,
@@ -21,6 +22,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
 
 _LAZY = dict.fromkeys(
     (
+        "BUILTIN",
         "AmbiguousTargetError",
         "BackendError",
         "OpNotAvailableError",

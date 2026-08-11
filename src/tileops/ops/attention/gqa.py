@@ -196,7 +196,7 @@ class GroupedQueryAttentionFwdOp(Op):
         def build() -> Kernel:
             return _build_packed_prefill_kernel(self.kernel_map, key, call)
 
-        return self.get_or_build_kernel(key, dtype, build)
+        return self.get_or_build_kernel(key, key=dtype, build=build)
 
     def _uniform_cu_seqlens(self, device: torch.device) -> torch.Tensor:
         cu_seqlens = self._cu_seqlens.get(device)
@@ -360,7 +360,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         def build() -> Kernel:
             return _build_packed_prefill_kernel(self.kernel_map, key, call)
 
-        return self.get_or_build_kernel(key, call.dtype, build)
+        return self.get_or_build_kernel(key, key=call.dtype, build=build)
 
     def _infer_output_shapes(
         self,
@@ -591,7 +591,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel("gqa_prefill_varlen_fwd_kernel", dtype, build)
+        return self.get_or_build_kernel("gqa_prefill_varlen_fwd_kernel", key=dtype, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -861,7 +861,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
                 tune=call.tune,
             )
 
-        return self.get_or_build_kernel(key, call.dtype, build)
+        return self.get_or_build_kernel(key, key=call.dtype, build=build)
 
     def _rope_tables(self, device: torch.device, dtype: torch.dtype):
         """Rotary tables for this op, or ``(None, None)`` when it fuses no RoPE."""
@@ -1105,8 +1105,8 @@ class GroupedQueryAttentionBwdOp(Op):
             )
 
         return (
-            self.get_or_build_kernel("gqa_bwd_preprocess_kernel", dtype, build_preprocess),
-            self.get_or_build_kernel("gqa_bwd_kernel", dtype, build_backward),
+            self.get_or_build_kernel("gqa_bwd_preprocess_kernel", key=dtype, build=build_preprocess),
+            self.get_or_build_kernel("gqa_bwd_kernel", key=dtype, build=build_backward),
         )
 
     @property
@@ -1171,7 +1171,7 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
                 call.batch, call.heads, call.heads_kv, call.seqlen_kv, call.dim, call.dtype,
                 sm_scale=call.sm_scale, softcap=call.softcap, tune=call.tune)
 
-        return self.get_or_build_kernel(key, dtype, build)
+        return self.get_or_build_kernel(key, key=dtype, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1252,7 +1252,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
                 call.page_size, call.dtype,
                 sm_scale=call.sm_scale, softcap=call.softcap, tune=call.tune)
 
-        return self.get_or_build_kernel(key, dtype, build)
+        return self.get_or_build_kernel(key, key=dtype, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1354,7 +1354,7 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel("gqa_sliding_window_fwd_kernel", dtype, build)
+        return self.get_or_build_kernel("gqa_sliding_window_fwd_kernel", key=dtype, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1515,7 +1515,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         # The launch bound is a constructor fact for this slot, so the
         # specialization carries it alongside the element type.
         return self.get_or_build_kernel(
-            "gqa_sliding_window_varlen_fwd_kernel", (dtype, max_seqlen_q), build)
+            "gqa_sliding_window_varlen_fwd_kernel", key=(dtype, max_seqlen_q), build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

@@ -640,8 +640,8 @@ class _PerDtypeKernels:
         """
         entry = self.get_or_build_kernel(
             self._op_name,
-            (dtype, *shape) if shape else dtype,
-            lambda: self._build_entry(dtype, *shape),
+            key=(dtype, *shape) if shape else dtype,
+            build=lambda: self._build_entry(dtype, *shape),
         )
         self._note_call(dtype)
         return entry

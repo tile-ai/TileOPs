@@ -107,8 +107,8 @@ class BmmFwdOp(Op):
         """Return the cached BmmKernel for the given dims, building lazily."""
         return self.get_or_build_kernel(
             "bmm_kernel",
-            (batch, m, n, k, dtype),
-            lambda: self.kernel_map["bmm_kernel"](
+            key=(batch, m, n, k, dtype),
+            build=lambda: self.kernel_map["bmm_kernel"](
                 batch, m, n, k, dtype, tune=self.tune),
         )
 
@@ -280,8 +280,8 @@ class BmmFp8Op(Op):
     ) -> Kernel:
         return self.get_or_build_kernel(
             "bmm_fp8_kernel",
-            (batch, m, n, k, dtype, self.out_dtype, device),
-            lambda: self.kernel_map["bmm_fp8_kernel"](
+            key=(batch, m, n, k, dtype, self.out_dtype, device),
+            build=lambda: self.kernel_map["bmm_fp8_kernel"](
                 batch, m, n, k, dtype, self.out_dtype, device=device,
                 tune=self.tune),
         )

@@ -80,8 +80,8 @@ class AdaLayerNormZeroFwdOp(Op):
         key = (M, N, dtype, device_index)
         return self.get_or_build_kernel(
             "ada_layer_norm",
-            key,
-            lambda: self.kernel_map["ada_layer_norm"](
+            key=key,
+            build=lambda: self.kernel_map["ada_layer_norm"](
                 M, N, self.eps, dtype, has_gate=True, tune=self.tune,
             ),
         )

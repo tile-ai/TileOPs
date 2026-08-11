@@ -112,21 +112,28 @@ class RMSNormKernel(Kernel):
 
     def __init__(
         self,
-        M: int,
         N: int,
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
+        """Build for a hidden size and dtype. The row count is a launch-time fact.
+
+        ``M`` is not a construction argument: it changes every step of decode, so taking it
+        here would mean one kernel per row count. The program specialized for a given ``M``
+        is resolved in ``forward`` and memoized by ``_rms_norm_kernel``.
+        """
         super().__init__()
-        self.M = M
         self.N = N
         self.eps = eps
         self.dtype = dtype
         self.N_padded = _align_up(N, ALIGNMENT)
-        self.kernel = _rms_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
-        self.init_config(config, tune)
+        # Tuning needs a compiled program, and a program needs M. Deferred to the first
+        # call, which is also where it belongs: tuning must not happen inside a captured
+        # graph, and a captured graph is preceded by a warm-up call.
+        self._tune_pending = tune
+        self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
@@ -137,29 +144,45 @@ class RMSNormKernel(Kernel):
         return select_row_configs(self.N_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Normalize ``x`` row-wise.
+        """Normalize ``x`` over its trailing ``N`` elements.
 
         Args:
-            x: Input of shape ``(M, N)``.
-            weight: Affine scale of shape ``(N,)``.
+            x: Input whose trailing axes multiply to ``N``, contiguous. Any leading shape.
+            weight: Affine scale holding ``N`` elements, contiguous.
 
         Returns:
-            Tensor of shape ``(M, N)``. The alignment padding the prim_func
-            requires is applied and trimmed here, so callers only ever see
-            the semantic ``N``-wide result.
+            Tensor shaped like *x*.
+
+        The two shapes this kernel wants — a 2-D row block and a flat weight — are its own
+        business, so the flattening happens here rather than in the op. So does the
+        alignment padding the prim_func requires: callers only ever see the semantic result.
         """
+        original_shape = x.shape
+        rows = x.reshape(-1, self.N)
+        weight = weight.reshape(self.N)
+        m = rows.shape[0]
+
+        # The program for this row count. Exposed as ``self.kernel`` because that is what
+        # autotune and profiling read.
+        self.kernel = _rms_norm_kernel(m, self.N, self.eps, self.dtype_str)
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
         pad = self.N_padded - self.N
         if pad:
-            x = F.pad(x, (0, pad))
+            rows = F.pad(rows, (0, pad))
             weight = F.pad(weight, (0, pad))
         y = _rms_norm_wrapped(
-            self.M,
+            m,
             self.N,
             self.eps,
             self.dtype_str,
             self.config["block_m"],
             self.config["threads"],
-            x,
+            rows,
             weight,
         )
-        return y[:, : self.N] if pad else y
+        if pad:
+            y = y[:, : self.N]
+        return y.reshape(original_shape)

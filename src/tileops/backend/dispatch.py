@@ -1,55 +1,45 @@
-"""Reading the tables: which target serves a call, and which callback to hand it to."""
+"""Reading the tables: which target serves a call, and which builder to hand it to."""
 
 from __future__ import annotations
 
 import torch
 
 from . import registry
-from .errors import (
-    AmbiguousTargetError,
-    BackendError,
-    BackendLoadFailure,
-    OpNotAvailableError,
-    UnknownTargetError,
-)
-from .protocol import DetectFn, GetKernelFn
+from .errors import AmbiguousTargetError, BackendError, UnknownTargetError
+from .protocol import BUILTIN, BuildKernel, DetectFn, Target
 
 
-def detect_target(device: torch.device) -> str:
-    """Return the target serving *device*.
+def detect_target(device: torch.device) -> str | None:
+    """Return the target whose kernels are written for *device*, or None if there is none.
+
+    Nothing claiming *device* is the normal case — it means no third-party backend is
+    installed for this hardware, so the in-tree implementation runs. Only a genuine
+    conflict raises.
 
     *device* is passed through untouched — neither ``.type`` read nor mapped to hardware,
-    since that knowledge is exactly what is being delegated. ``cuda`` and ``cuda:0`` are
-    therefore separate memo entries; normalizing them would mean materializing the device
-    to learn its index. Memoizing an unindexed device is sound because a target claims a
-    device *type*, not an index.
+    since that knowledge is exactly what is being delegated.
+
+    Not memoized, and not locked. An op settles which target serves it once per instance, so
+    each detector is asked once per op rather than once per call; a table to remember that
+    would cost a lock, an invalidation rule, and a staleness question, to save a handful of
+    one-line predicates. Staying lock-free also matters because this runs inside a
+    dynamo-traced ``forward`` the first time an op is called, and dynamo cannot trace
+    entering a lock.
 
     Raises:
-        UnknownTargetError: Nothing claimed *device*.
-        AmbiguousTargetError: More than one did. Pass ``target=`` to bypass detection.
+        AmbiguousTargetError: More than one target claimed it. Pass ``target=`` to choose.
         BackendError: A detector raised instead of answering.
     """
     registry.ensure_loaded()
-    with registry.LOCK:
-        # Under the lock, memo included: a backend arriving concurrently clears it. Cold
-        # path -- the op layer memoizes the kernel, so this is not per call.
-        cached = registry.RESOLVED.get(device)
-        if cached is not None:
-            return cached
-        claimed = [t for t, d in registry.DETECTORS.items() if _claims(t, d, device)]
-        if not claimed:
-            raise UnknownTargetError(
-                f"no registered target claims device {device}; registered targets: "
-                f"{sorted(registry.DETECTORS)}{registry.load_failure_suffix()}"
-            )
-        if len(claimed) > 1:
-            raise AmbiguousTargetError(
-                f"device {device} is claimed by {sorted(claimed)}; pass target= to "
-                f"choose{registry.load_failure_suffix()}"
-            )
-        # Neither failure above is memoized: a later registration can change both.
-        registry.RESOLVED[device] = claimed[0]
-        return claimed[0]
+    claimed = [t for t, d in list(registry.DETECTORS.items()) if _claims(t, d, device)]
+    if not claimed:
+        return None  # no backend serves this device; the in-tree implementation does
+    if len(claimed) > 1:
+        raise AmbiguousTargetError(
+            f"device {device} is claimed by {sorted(claimed)}; pass target= to "
+            f"choose{registry.load_failure_suffix()}"
+        )
+    return claimed[0]
 
 
 def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
@@ -68,55 +58,48 @@ def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
         ) from exc
 
 
-def select_target(explicit: str | None, device: torch.device | None) -> str:
+def select_target(requested: Target, device: torch.device | None) -> Target:
     """Decide which target serves this call, in the one place that decides it.
 
-    *explicit* wins, then the process default, then detection. Every op comes through here;
-    a copy of this order per op class is how the three drift apart.
+    *requested* wins, then the process default, then detection. Every op comes through
+    here; a copy of this order per op class is how the three drift apart.
 
     Args:
-        explicit: The op's ``target=``, honoured as named and not checked against *device*
-            — naming a target is how a caller overrides detection.
+        requested: The op's ``target=``. A name is honoured as given and not checked
+            against *device* — naming a target is how a caller overrides detection.
+            :data:`~.protocol.BUILTIN` forces the in-tree implementation.
         device: Where to detect from, or None when the call has no tensor input.
+
+    Returns:
+        A target name, :data:`~.protocol.BUILTIN`, or ``None``. The last two both mean
+        "run the in-tree implementation"; they differ only in how that was decided, which
+        the op layer needs in order to know whether to remember the answer.
+
+    Raises:
+        UnknownTargetError: A named target registered nothing.
     """
-    registry.ensure_loaded()  # even the no-device error must be able to blame a bad wheel
-    if explicit is not None:
-        return explicit
+    registry.ensure_loaded()  # even the no-device answer must be able to blame a bad wheel
+    if requested is not None:
+        if requested is not BUILTIN and requested not in registry.known_targets():
+            raise UnknownTargetError(
+                f"no backend registered target {requested!r}; known targets: "
+                f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}")
+        return requested
     if registry.default_target is not None:
         return registry.default_target
     if device is None:
-        raise UnknownTargetError(
-            "this call has no tensor input, so there is no device to detect from; pass "
-            f"target= or set tileops.set_default_target(){registry.load_failure_suffix()}"
-        )
+        return None
     return detect_target(device)
 
 
-def resolve_get_kernel(op: str, target: str) -> GetKernelFn:
-    """Return *target*'s ``get_kernel`` for *op*.
+def registered_kernel_builder(op: str, target: str) -> BuildKernel | None:
+    """Return *target*'s ``build_kernel`` for *op*, or None when it registered none.
 
-    Raises:
-        OpNotAvailableError: That cell is empty. Never falls back to another target:
-            running somewhere else silently makes "where did this run" unanswerable.
+    The caller decides what a missing one means; see :class:`~.errors.OpNotAvailableError`
+    for why it is never a fallback to the in-tree implementation.
     """
     registry.ensure_loaded()
-    try:
-        return registry.KERNELS[(op, target)]
-    except KeyError:
-        raise OpNotAvailableError(
-            f"no get_kernel registered for {(op, target)}; registered targets for this "
-            f"op: {registered_targets(op)}{registry.load_failure_suffix()}"
-        ) from None
-
-
-def registrations() -> frozenset[tuple[str, str]]:
-    """Every registered ``(op, target)``.
-
-    Keys only: handing out the callbacks would open a second way to reach a ``get_kernel``
-    beside :func:`resolve_get_kernel`.
-    """
-    registry.ensure_loaded()
-    return frozenset(registry.KERNELS)
+    return registry.BUILDERS.get((op, target))
 
 
 def registered_targets(op: str | None = None) -> list[str]:
@@ -124,34 +107,38 @@ def registered_targets(op: str | None = None) -> list[str]:
     registry.ensure_loaded()
     if op is None:
         return sorted(registry.known_targets())
-    return sorted(target for name, target in registry.KERNELS if name == op)
+    return sorted(target for name, target in registry.BUILDERS if name == op)
 
 
-def set_default_target(target: str | None) -> None:
-    """Route ops with no explicit ``target=`` to *target*; None restores detection.
+def set_default_target(target: Target) -> None:
+    """Route ops with no explicit ``target=`` to *target*.
 
-    One process-wide setting, and no environment variable: configuration that changes which
-    kernel runs should be visible in the program.
+    ``None`` restores detection; :data:`~.protocol.BUILTIN` turns replacement off
+    process-wide. One setting, and no environment variable: configuration that changes
+    which kernel runs should be visible in the program.
+
+    Raises:
+        UnknownTargetError: *target* is a name no backend registered.
     """
     registry.ensure_loaded()
-    if target is not None and target not in registry.known_targets():
+    if (target is not None and target is not BUILTIN
+            and target not in registry.known_targets()):
         raise UnknownTargetError(
             f"no backend registered target {target!r}; known targets: "
-            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
-        )
+            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}")
     registry.default_target = target
 
 
-def default_target() -> str | None:
+def default_target() -> Target:
     """The process-wide default, or None when the device decides."""
     return registry.default_target
 
 
-def load_failures() -> tuple[BackendLoadFailure, ...]:
-    """Backends that failed to import and were skipped.
+def load_failures() -> tuple[str, ...]:
+    """Backends that failed to import and were skipped, one line each.
 
     Every error above points here, so a broken wheel cannot present itself as "no target
-    claimed this device".
+    serves this device".
     """
     registry.ensure_loaded()
     return tuple(registry.LOAD_FAILURES)

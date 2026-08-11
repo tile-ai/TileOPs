@@ -411,8 +411,8 @@ class _RopeOpBase(Op):
         )
         return self.get_or_build_kernel(
             self._op_name,
-            key,
-            lambda: self.kernel_map[self._op_name](
+            key=key,
+            build=lambda: self.kernel_map[self._op_name](
                 seq_len=self.seq_len,
                 head_dim=self.head_dim,
                 dtype=self.dtype,
@@ -588,8 +588,8 @@ class RopeNeoxPositionIdsOp(Op):
         )
         return self.get_or_build_kernel(
             self._op_name,
-            key,
-            lambda: self.kernel_map[self._op_name](
+            key=key,
+            build=lambda: self.kernel_map[self._op_name](
                 num_tokens=self.num_tokens,
                 num_heads=self.num_heads,
                 head_dim=self.head_dim,

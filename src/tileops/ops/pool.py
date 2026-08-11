@@ -73,8 +73,8 @@ class MeanPoolingForwardOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mean_pooling_fwd_kernel",
-            dtype,
-            lambda: self.kernel_map["mean_pooling_fwd_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
                 **self._kernel_params, dtype=dtype,
             ),
         )
@@ -268,7 +268,7 @@ class _AvgPoolFwdOpBase(Op):
                     kernel_kwargs["divisor_override"] = self.divisor_override
             return self.kernel_map[kernel_name](**kernel_kwargs)
 
-        return self.get_or_build_kernel(kernel_name, key, build)
+        return self.get_or_build_kernel(kernel_name, key=key, build=build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -573,7 +573,7 @@ class _MaxPoolFwdOpBase(Op):
                 kernel_kwargs[f"dilation_{name}"] = self.dilation[k]
             return self.kernel_map[self._kernel_slot](**kernel_kwargs)
 
-        return self.get_or_build_kernel(self._kernel_slot, key, build)
+        return self.get_or_build_kernel(self._kernel_slot, key=key, build=build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -1067,8 +1067,8 @@ class _AdaptivePool2dFwdOpBase(Op):
         key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x), self.tune)
         kernel = self.get_or_build_kernel(
             self._kernel_slot,
-            key,
-            lambda: self.kernel_map[self._kernel_slot](
+            key=key,
+            build=lambda: self.kernel_map[self._kernel_slot](
                 n=n,
                 c_in=c_in,
                 h_in=h_in,

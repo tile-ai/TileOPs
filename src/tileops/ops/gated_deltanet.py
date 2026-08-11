@@ -137,8 +137,8 @@ class GatedDeltaNetFwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "GatedDeltaNetFwdKernel",
-            key,
-            lambda: self.kernel_map["GatedDeltaNetFwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["GatedDeltaNetFwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -305,8 +305,8 @@ class GatedDeltaNetPrefillFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GatedDeltaNetPrefillFwdKernel",
-            key,
-            lambda: self.kernel_map["GatedDeltaNetPrefillFwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["GatedDeltaNetPrefillFwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -464,8 +464,8 @@ class GatedDeltaNetBwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "GatedDeltaNetBwdKernel",
-            key,
-            lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -606,8 +606,8 @@ class GatedDeltaNetOp(Op):
         )
         return self.get_or_build_kernel(
             "GatedDeltaNetFwdKernel",
-            key,
-            lambda: (
+            key=key,
+            build=lambda: (
                 self.kernel_map["GatedDeltaNetFwdKernel"](
                     batch, heads, seq_len, self.chunk_size, dim_k, dim_v,
                     dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
@@ -704,7 +704,7 @@ class GatedDeltaNetDecodeOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel(chosen, key, build)
+        return self.get_or_build_kernel(chosen, key=key, build=build)
 
     def _infer_output_shapes(
         self,

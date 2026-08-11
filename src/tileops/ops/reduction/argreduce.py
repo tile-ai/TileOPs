@@ -26,8 +26,8 @@ class _ArgreduceOpBase(_ReduceOpBase):
     def _get_or_create_strided_kernel(self, M: int, N: int, inner_stride: int, dtype):
         return self.get_or_build_kernel(
             self._kernel_key,
-            (M, N, dtype, inner_stride),
-            lambda: self.kernel_map[self._kernel_key](
+            key=(M, N, dtype, inner_stride),
+            build=lambda: self.kernel_map[self._kernel_key](
                 M, N, self._op_kind, dtype, inner_stride=inner_stride,
                 tune=self.tune, **self._build_kernel_kwargs(),
             ),

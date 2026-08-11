@@ -84,8 +84,8 @@ class FusedAddRMSNormFwdOp(Op):
         key = (M, N, dtype, device_index)
         return self.get_or_build_kernel(
             "fused_add_rms_norm",
-            key,
-            lambda: self.kernel_map["fused_add_rms_norm"](
+            key=key,
+            build=lambda: self.kernel_map["fused_add_rms_norm"](
                 M, N, self.eps, dtype, tune=self.tune,
             ),
         )

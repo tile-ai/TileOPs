@@ -355,7 +355,7 @@ class Conv1dFwdOp(Op):
                     dilation_l=self.dilation,
                 )
 
-        return self.get_or_build_kernel("conv1d_kernel", key, build)
+        return self.get_or_build_kernel("conv1d_kernel", key=key, build=build)
 
     def forward(
         self,
@@ -818,7 +818,7 @@ class Conv2dFwdOp(Op):
                     dilation_w=self.dilation[1],
                 )
 
-        return self.get_or_build_kernel("conv2d_kernel", key, build)
+        return self.get_or_build_kernel("conv2d_kernel", key=key, build=build)
 
     def forward(
         self,
@@ -1308,7 +1308,7 @@ class Conv3dFwdOp(Op):
                     **kernel_kwargs
                 )
 
-        return self.get_or_build_kernel("conv3d_kernel", key, build)
+        return self.get_or_build_kernel("conv3d_kernel", key=key, build=build)
 
     def forward(
         self,

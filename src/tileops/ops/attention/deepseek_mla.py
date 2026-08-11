@@ -35,8 +35,8 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mla_decode_kernel",
-            dtype,
-            lambda: self.kernel_map["mla_decode_kernel"](
+            key=dtype,
+            build=lambda: self.kernel_map["mla_decode_kernel"](
                 self.batch, self.heads, self.heads_kv, self.seqlen_kv,
                 self.dim, self.pe_dim, dtype, tune=self.tune),
         )

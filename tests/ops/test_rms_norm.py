@@ -103,5 +103,49 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
 
 
+# --------------------------------------------------------------------------------------
+# What the seam must not cost: one memo entry per dtype, and a capturable replay
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_row_count_no_longer_splits_the_cache() -> None:
+    """The kernel specializes on N and dtype; the row count is a launch-time fact.
+
+    It used to be a constructor argument, which meant one compiled kernel per M — and M
+    changes every step of decode.
+    """
+    op = RMSNormFwdOp(normalized_shape=(4096,))
+    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+
+    for rows in (128, 129, 1024):
+        op(torch.randn(rows, 4096, dtype=torch.float16, device="cuda"), weight)
+    op(torch.randn(2, 8, 4096, dtype=torch.float16, device="cuda"), weight)
+
+    assert list(op.built_kernels("rms_norm")) == [torch.float16]
+
+
+@pytest.mark.smoke
+def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
+    """Building a kernel may compile, so capture only ever sees a memo hit and a launch."""
+    op = RMSNormFwdOp(normalized_shape=(4096,))
+    x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+
+    expected = op(x, weight)  # warm-up, outside the capture
+    torch.cuda.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    static_x = x.clone()
+    with torch.cuda.graph(graph):
+        static_out = op(static_x, weight)
+
+    static_x.copy_(x)
+    graph.replay()
+    torch.cuda.synchronize()
+
+    assert torch.allclose(static_out, expected, atol=1e-3, rtol=1e-3)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

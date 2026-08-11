@@ -189,7 +189,7 @@ class _SlottedOp(Op):
             self.builds.append((role, key))
             return _RecordingKernel(name, self._tuned)
 
-        return self.get_or_build_kernel(role, key, factory)
+        return self.get_or_build_kernel(role, key=key, build=factory)
 
 
 class TestGetOrBuildKernel:
@@ -241,11 +241,11 @@ class TestIterKernels:
         class BundleOp(_SlottedOp):
             def populate(self):
                 self.get_or_build_kernel(
-                    "pair", torch.float16,
-                    lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)))
+                    "pair", key=torch.float16,
+                    build=lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)))
                 self.get_or_build_kernel(
-                    "entry", torch.bfloat16,
-                    lambda: Entry(_RecordingKernel("record", tuned), torch.float32))
+                    "entry", key=torch.bfloat16,
+                    build=lambda: Entry(_RecordingKernel("record", tuned), torch.float32))
 
         op = BundleOp(tuned)
         op.populate()
@@ -308,7 +308,7 @@ class TestIterKernels:
                 return (delegate,)
 
         composite = CompositeOp(tuned)
-        composite.get_or_build_kernel("fwd", torch.float16, lambda: shared)
+        composite.get_or_build_kernel("fwd", key=torch.float16, build=lambda: shared)
         assert [k.name for k in composite.iter_kernels()] == ["shared"]
 
 
@@ -365,7 +365,7 @@ class _TunableOp(Op):
                 kernel.autotune()
             return kernel
 
-        return self.get_or_build_kernel("fwd", dtype, factory)
+        return self.get_or_build_kernel("fwd", key=dtype, build=factory)
 
 
 class TestTunedMode:

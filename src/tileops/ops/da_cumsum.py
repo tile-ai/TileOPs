@@ -101,8 +101,8 @@ class DaCumsumFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "da_cumsum_fwd",
-            key,
-            lambda: self.kernel_map["da_cumsum_fwd"](
+            key=key,
+            build=lambda: self.kernel_map["da_cumsum_fwd"](
                 batch,
                 num_chunks,
                 self.chunk_len,

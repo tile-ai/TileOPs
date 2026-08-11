@@ -71,8 +71,8 @@ class DeltaNetFwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "DeltaNetFwdKernel",
-            key,
-            lambda: self.kernel_map["DeltaNetFwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["DeltaNetFwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -191,8 +191,8 @@ class DeltaNetBwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "DeltaNetBwdKernel",
-            key,
-            lambda: self.kernel_map["DeltaNetBwdKernel"](
+            key=key,
+            build=lambda: self.kernel_map["DeltaNetBwdKernel"](
                 batch,
                 heads,
                 seq_len,
@@ -379,8 +379,8 @@ class DeltaNetOp(Op):
         )
         return self.get_or_build_kernel(
             "DeltaNetFwdKernel",
-            key,
-            lambda: (
+            key=key,
+            build=lambda: (
                 self.kernel_map["DeltaNetFwdKernel"](
                     batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
                     dtype=Kernel.dtype_to_str(dtype), tune=self.tune),

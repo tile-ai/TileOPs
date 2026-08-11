@@ -78,8 +78,8 @@ class CumulativeOp(Op):
         key = (M, N, dtype, device_index)
         return self.get_or_build_kernel(
             "cumulative_fwd",
-            key,
-            lambda: self.kernel_map["cumulative_fwd"](
+            key=key,
+            build=lambda: self.kernel_map["cumulative_fwd"](
                 M, N, self._op_kind, dtype, tune=self.tune,
             ),
         )

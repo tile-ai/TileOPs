@@ -70,8 +70,8 @@ class SSDChunkScanFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "ssd_chunk_scan_fwd",
-            key,
-            lambda: self.kernel_map["ssd_chunk_scan_fwd"](
+            key=key,
+            build=lambda: self.kernel_map["ssd_chunk_scan_fwd"](
                 batch,
                 num_chunks,
                 chunk_len,

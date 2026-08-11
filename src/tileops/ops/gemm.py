@@ -107,15 +107,15 @@ class GemmOp(Op):
             gemv_cls = self.kernel_map["gemv_kernel"]
             kernel = self.get_or_build_kernel(
                 "gemv_kernel",
-                (mode, m, n, k, dtype),
-                lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
+                key=(mode, m, n, k, dtype),
+                build=lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
             )
             return mode, kernel
 
         kernel = self.get_or_build_kernel(
             "gemm_kernel",
-            (m, n, k, dtype),
-            lambda: self.kernel_map["gemm_kernel"](
+            key=(m, n, k, dtype),
+            build=lambda: self.kernel_map["gemm_kernel"](
                 m, n, k, dtype, tune=self.tune, trans_a=self.trans_a, trans_b=self.trans_b
             ),
         )
@@ -285,8 +285,8 @@ class GemmFp8Op(Op):
     ) -> Kernel:
         return self.get_or_build_kernel(
             kernel_name,
-            (m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
-            lambda: self.kernel_map[kernel_name](
+            key=(m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
+            build=lambda: self.kernel_map[kernel_name](
                 m, n, k, dtype, self.out_dtype, tune=self.tune),
         )
 
@@ -446,8 +446,8 @@ class GemmW4A16Op(Op):
     ) -> Kernel:
         return self.get_or_build_kernel(
             "gemm_w4a16_kernel",
-            (m, n, k, dtype, self.group_size),
-            lambda: self.kernel_map["gemm_w4a16_kernel"](
+            key=(m, n, k, dtype, self.group_size),
+            build=lambda: self.kernel_map["gemm_w4a16_kernel"](
                 m, n, k, dtype, tune=self.tune, group_size=self.group_size
             ),
         )
