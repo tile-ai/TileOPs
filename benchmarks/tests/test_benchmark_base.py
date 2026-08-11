@@ -58,22 +58,19 @@ def _seq(*names: str) -> tuple[str, ...]:
 
 
 def test_attribution_excludes_prepare_and_keeps_the_operator_gap():
-    trace = {
-        "dropped": 0,
-        "kernels": [
-            _kernel("copy", 1_000, 2_000),
-            _kernel("fill", 2_100, 3_000),
-            _kernel("op-a", 4_000, 6_000),
-            _kernel("op-b", 9_000, 10_000),
-            _kernel("copy", 20_000, 21_000),
-            _kernel("fill", 21_100, 22_000),
-            _kernel("op-a", 23_000, 24_000),
-            _kernel("op-b", 29_000, 31_000),
-        ],
-    }
+    records = [
+        _kernel("copy", 1_000, 2_000),
+        _kernel("fill", 2_100, 3_000),
+        _kernel("op-a", 4_000, 6_000),
+        _kernel("op-b", 9_000, 10_000),
+        _kernel("copy", 20_000, 21_000),
+        _kernel("fill", 21_100, 22_000),
+        _kernel("op-a", 23_000, 24_000),
+        _kernel("op-b", 29_000, 31_000),
+    ]
 
     samples_ms = _attributed_latency_samples_ms(
-        trace,
+        records,
         _seq("op-a", "op-b"),
         n_repeat=2,
         expected_prepare_sequence=_seq("copy", "fill"),
@@ -104,32 +101,28 @@ def test_attribution_accepts_overlapping_activities_in_either_order(
     kernels, expected_sequence,
 ):
     samples_ms = _attributed_latency_samples_ms(
-        {"dropped": 0, "kernels": kernels}, expected_sequence, n_repeat=1,
+        kernels, expected_sequence, n_repeat=1,
     )
     assert samples_ms == pytest.approx([0.002])
 
 
 @pytest.mark.parametrize(
-    "trace, expected_sequence, message",
+    "records, expected_sequence, message",
     [
-        # A dropped record makes the whole trial unattributable.
-        ({"dropped": 1, "kernels": []}, _seq("a"), "dropped 1 records"),
-        # One activity short of the discovered sequence.
+        # One activity short of the discovered sequence. A CUPTI record dropped
+        # for want of buffer space lands here too: the count stops matching.
         (
-            {"dropped": 0, "kernels": [_kernel("a", 1_000, 2_000)]},
+            [_kernel("a", 1_000, 2_000)],
             _seq("a", "b"),
             "activity count does not match",
         ),
         # A dynamic path launched an extra kernel.
         (
-            {
-                "dropped": 0,
-                "kernels": [
-                    _kernel("a", 1_000, 2_000),
-                    _kernel("b", 2_000, 3_000),
-                    _kernel("extra", 3_000, 4_000),
-                ],
-            },
+            [
+                _kernel("a", 1_000, 2_000),
+                _kernel("b", 2_000, 3_000),
+                _kernel("extra", 3_000, 4_000),
+            ],
             _seq("a", "b"),
             # The observed sequence names the unexpected activity, so a CI
             # abort is diagnosable from the log alone.
@@ -137,28 +130,22 @@ def test_attribution_accepts_overlapping_activities_in_either_order(
         ),
         # Right count, different kernels.
         (
-            {
-                "dropped": 0,
-                "kernels": [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
-            },
+            [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
             _seq("a", "b"),
             "attributed 0/1",
         ),
         # Serially reordered kernels are a real sequence change, not a
         # publication-order artifact.
         (
-            {
-                "dropped": 0,
-                "kernels": [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
-            },
+            [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
             _seq("a", "b"),
             "attributed 0/1",
         ),
     ],
 )
-def test_attribution_fails_closed(trace, expected_sequence, message):
+def test_attribution_fails_closed(records, expected_sequence, message):
     with pytest.raises(_CUPTIAttributionError, match=message):
-        _attributed_latency_samples_ms(trace, expected_sequence, n_repeat=1)
+        _attributed_latency_samples_ms(records, expected_sequence, n_repeat=1)
 
 
 def test_shifting_tensor_pool_preserves_layout_values_and_alignment():

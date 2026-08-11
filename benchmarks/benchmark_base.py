@@ -162,10 +162,6 @@ _BUFFER_BYTES = 8 * 1024 * 1024
 _BUFFER_ALIGN = 8
 _RECORDS: list[dict[str, Any]] = []
 
-# CUPTI reports drops per (context, stream) through pointers this layer does not
-# hold; a drop instead shows up as an activity count attribution fails closed on.
-_UNKNOWN_DROPS = 0
-
 
 class CUPTIError(RuntimeError):
     """The CUPTI collector is unavailable or could not be operated."""
@@ -247,15 +243,15 @@ def collect_discovery(
     run_one: Callable[[int], None],
     n_repeat: int,
     prepare_one: Callable[[int], None],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
     """Capture prepare and operator activity separately, untimed."""
     prepare_traces, operator_traces = [], []
     with _phase_session():
         for i in range(n_repeat):
             prepare_one(i)
-            prepare_traces.append({"kernels": _flush(), "dropped": _UNKNOWN_DROPS})
+            prepare_traces.append(_flush())
             run_one(i)
-            operator_traces.append({"kernels": _flush(), "dropped": _UNKNOWN_DROPS})
+            operator_traces.append(_flush())
     return prepare_traces, operator_traces
 
 
@@ -263,14 +259,14 @@ def collect_repeats(
     run_one: Callable[[int], None],
     n_repeat: int,
     prepare_one: Callable[[int], None] | None = None,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     """Capture a complete timed trial as one ordered activity-record range."""
     with _phase_session():
         for i in range(n_repeat):
             if prepare_one is not None:
                 prepare_one(i)
             run_one(i)
-        return {"kernels": _flush(), "dropped": _UNKNOWN_DROPS}
+        return _flush()
 
 
 def _activity_identity(activity: dict) -> str:
@@ -360,20 +356,15 @@ def _format_sequence(seq: tuple[str, ...], limit: int = 8) -> str:
     return " -> ".join(names)
 
 
-def _ordered_trace_kernels(trace: dict) -> list[dict]:
+def _ordered_trace_kernels(records: list[dict]) -> list[dict]:
     return sorted(
-        trace.get("kernels", []),
+        records,
         key=lambda kernel: (int(kernel["start_ns"]), int(kernel["end_ns"])),
     )
 
 
-def _stable_discovery_sequence(traces: list[dict], phase: str) -> tuple[str, ...]:
-    for trace in traces:
-        if int(trace.get("dropped", 0)) != 0:
-            raise _CUPTIAttributionError(
-                f"CUPTI dropped {trace['dropped']} records during {phase} discovery"
-            )
-    groups = [_ordered_trace_kernels(trace) for trace in traces]
+def _stable_discovery_sequence(traces: list[list[dict]], phase: str) -> tuple[str, ...]:
+    groups = [_ordered_trace_kernels(records) for records in traces]
     sequences = [_kernel_sequence(kernels) for kernels in groups]
     if not sequences or any(not sequence for sequence in sequences):
         raise _CUPTIAttributionError(
@@ -415,18 +406,13 @@ def _discover_expected_sequences(
 
 
 def _attributed_latency_samples_ms(
-    trace: dict,
+    records: list[dict],
     expected_sequence: tuple[str, ...],
     n_repeat: int,
     expected_prepare_sequence: tuple[str, ...] = (),
 ) -> list[float]:
-    if int(trace.get("dropped", 0)) != 0:
-        raise _CUPTIAttributionError(
-            f"CUPTI dropped {trace['dropped']} records during timing"
-        )
-
     samples_us: list[float] = []
-    kernels = _ordered_trace_kernels(trace)
+    kernels = _ordered_trace_kernels(records)
     prepare_count = len(expected_prepare_sequence)
     operator_count = len(expected_sequence)
     cycle_count = prepare_count + operator_count
@@ -637,8 +623,9 @@ def bench_kernel(
     try:
         with _native_output_suppressor():
             prepare_seq, operator_seq = _discover_expected_sequences(_run, _prepare_iteration)
-            trace = collect_repeats(_run, n_repeat, prepare_one=_prepare_iteration)
-            samples = _attributed_latency_samples_ms(trace, operator_seq, n_repeat, prepare_seq)
+            records = collect_repeats(_run, n_repeat, prepare_one=_prepare_iteration)
+            samples = _attributed_latency_samples_ms(
+                records, operator_seq, n_repeat, prepare_seq)
         _bench_meta.timing = "cupti"
     except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
