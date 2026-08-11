@@ -15,6 +15,28 @@ from tileops.backend import InputSpec, Kernel
 from ._load import kernel_class
 
 
+class _Adapter:
+    """A kernel called in manifest order, wrapping one that wants something else.
+
+    The protocol hands every kernel its op's inputs in the manifest's order and dtypes. A
+    kernel of this backend's own is free to want another order, an extra cast, or fewer
+    tensors; reconciling the two is this backend's work and stops here.
+    """
+
+    def __init__(self, kernel, adapt):
+        self._kernel = kernel
+        self._adapt = adapt
+
+    def __call__(self, *tensors):
+        return self._kernel(*self._adapt(*tensors))
+
+    def autotune(self, *example):
+        tune = getattr(self._kernel, "autotune", None)
+        if tune is None:
+            return
+        tune(*self._adapt(*example)) if example else tune()
+
+
 def rms_norm(x: InputSpec, weight: InputSpec, *, normalized_shape, eps) -> Kernel:
     """Build the RMS norm kernel for a call shaped like *x* and *weight*.
 
@@ -91,20 +113,28 @@ def instance_norm(
     )
 
 
-def instance_norm_no_affine(x: InputSpec, *, use_input_stats, momentum, eps) -> Kernel:
-    """Build the affine-free instance norm kernel."""
+def instance_norm_no_affine(
+    x: InputSpec, running_mean: InputSpec, running_var: InputSpec, *,
+    use_input_stats, momentum, eps,
+) -> Kernel:
+    """Build the affine-free instance norm kernel.
+
+    It computes from *x* alone; the running stats arrive because the op declares them and
+    are dropped here, which is this backend's business rather than the op's.
+    """
     m, d = x.shape
-    return kernel_class("InstanceNormNoAffineFwdOp", "instance_norm_no_affine")(
+    kernel = kernel_class("InstanceNormNoAffineFwdOp", "instance_norm_no_affine")(
         m, d, eps, x.dtype
     )
+    return _Adapter(kernel, lambda x_2d, _mean, _var: (x_2d,))
 
 
 def batch_norm(
     x: InputSpec,
-    weight: InputSpec,
-    bias: InputSpec,
     running_mean: InputSpec,
     running_var: InputSpec,
+    weight: InputSpec,
+    bias: InputSpec,
     *,
     training,
     momentum,
@@ -112,26 +142,34 @@ def batch_norm(
 ) -> Kernel:
     """Build the batch norm kernel for the mode this op runs in.
 
-    Train and infer are separate kernels here; which one serves the call is decided inside
-    this backend, which is the whole point of the callback. *x* describes the ``(C, L)``
-    view the op hands over.
+    Train and infer are separate kernels here, and which one serves the call is decided
+    inside this backend — the whole point of the callback. *x* describes the ``(C, L)`` view
+    the op hands over.
+
+    These kernels want the affine terms first and in fp32, so the adapter puts them there.
+    Reshaping the call to what a kernel accepts is a backend's job; the boundary stays in
+    the manifest's order.
     """
     channels, length = x.shape
-    if training:
-        return kernel_class("BatchNormFwdOp", "fwd_train_kernel")(
-            channels, length, x.dtype, eps, momentum
-        )
-    return kernel_class("BatchNormFwdOp", "fwd_infer_kernel")(
-        channels, length, x.dtype, eps
+    role = "fwd_train_kernel" if training else "fwd_infer_kernel"
+    args = (channels, length, x.dtype, eps, momentum) if training else (
+        channels, length, x.dtype, eps)
+    kernel = kernel_class("BatchNormFwdOp", role)(*args)
+    return _Adapter(
+        kernel,
+        lambda x_cl, mean, var, w, b: (x_cl, w.float(), b.float(), mean, var),
     )
 
 
 def batch_norm_bwd(
     grad_out: InputSpec, x: InputSpec, weight: InputSpec, mean: InputSpec, rstd: InputSpec
 ) -> Kernel:
-    """Build the batch norm backward kernel."""
+    """Build the batch norm backward kernel, which wants its affine term in fp32."""
     channels, length = x.shape
-    return kernel_class("BatchNormBwdOp", "bwd_kernel")(channels, length, x.dtype)
+    kernel = kernel_class("BatchNormBwdOp", "bwd_kernel")(channels, length, x.dtype)
+    return _Adapter(
+        kernel, lambda go, x_cl, w, mean, rstd: (go, x_cl, w.float(), mean, rstd)
+    )
 
 
 #: op name -> its ``get_kernel``. An op is served by this backend once it appears here;

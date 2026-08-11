@@ -455,7 +455,7 @@ class InstanceNormNoAffineFwdOp(Op):
         x = x.contiguous()
         x_2d = x.reshape(M, D)
 
-        kernel = self.backend_kernel(x_2d, **params)
-        y_2d = kernel(x_2d)
+        kernel = self.backend_kernel(x_2d, running_mean, running_var, **params)
+        y_2d = kernel(x_2d, running_mean, running_var)
 
         return y_2d.reshape(orig_shape)

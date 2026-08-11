@@ -1,9 +1,13 @@
 """Binding a forward call from the manifest, and dispatching the bound call to a target."""
 
+import inspect
+
 import pytest
 import torch
 
 from tileops.backend import InputSpec, OpNotAvailableError, registry
+from tileops.backends.nv._builders import BUILDERS
+from tileops.manifest import load_manifest
 from tileops.ops._bind_codegen import synthesize_bind_call
 from tileops.ops.op_base import Op
 
@@ -165,3 +169,29 @@ def test_an_explicit_target_that_does_not_serve_this_op_does_not_fall_back(regis
     """Even with a detector that would have claimed the device."""
     with pytest.raises(OpNotAvailableError, match=r"'absent'.*this op: \['fake'\]"):
         _Routed(target="absent")(torch.zeros(2, 4), torch.ones(4))
+
+
+# --------------------------------------------------------------------------------------
+# The order the boundary promises
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("op_name", sorted(BUILDERS))
+def test_a_builder_accepts_its_op_s_manifest_inputs_by_name(op_name):
+    """The protocol promises manifest order, and a builder's parameters are that promise.
+
+    Positional order alone cannot be checked at run time — several ops take channel tensors
+    of identical shape and dtype, so passing them shuffled raises nothing and returns wrong
+    numbers. Naming the parameters after the manifest inputs makes the mismatch a signature
+    error at review time and here.
+    """
+    entry = load_manifest()[op_name]
+    expected = tuple(entry["signature"]["inputs"])
+    params = list(inspect.signature(BUILDERS[op_name]).parameters)
+    positional = tuple(params[: len(expected)])
+
+    assert positional == expected, (
+        f"{op_name}'s builder takes {positional}, manifest declares {expected}"
+    )
+    keyword = set(params[len(expected) :])
+    assert keyword == set(entry["signature"].get("params") or {})

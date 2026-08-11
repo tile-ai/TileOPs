@@ -192,17 +192,13 @@ class BatchNormFwdOp(Op):
         self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
         self._bind_spec(N, C, spatial, L, dtype)
         x_cl, orig_shape = self._prepare(x)
-        # The kernel wants its own order and fp32 affine, so the specs it is chosen by
-        # describe these tensors, not the public ones.
-        weight_f, bias_f = weight.float(), bias.float()
         kernel = self.backend_kernel(
-            x_cl, weight_f, bias_f, running_mean, running_var, **params)
+            x_cl, running_mean, running_var, weight, bias, **params)
 
         if self.training:
-            y_cl, _mean, _rstd = kernel(
-                x_cl, weight_f, bias_f, running_mean, running_var)
+            y_cl, _mean, _rstd = kernel(x_cl, running_mean, running_var, weight, bias)
         else:
-            y_cl = kernel(x_cl, weight_f, bias_f, running_mean, running_var)
+            y_cl = kernel(x_cl, running_mean, running_var, weight, bias)
         return _restore_shape(y_cl, orig_shape)
 
     def forward(
@@ -371,10 +367,9 @@ class BatchNormBwdOp(Op):
         orig_shape = grad_out.shape
         go_cl = self._prepare(grad_out)
         x_cl = self._prepare(x)
-        weight_f = weight.float()
-        kernel = self.backend_kernel(go_cl, x_cl, weight_f, mean, rstd, **params)
+        kernel = self.backend_kernel(go_cl, x_cl, weight, mean, rstd, **params)
 
-        grad_x_cl, grad_weight, grad_bias = kernel(go_cl, x_cl, weight_f, mean, rstd)
+        grad_x_cl, grad_weight, grad_bias = kernel(go_cl, x_cl, weight, mean, rstd)
 
         grad_x = _restore_shape(grad_x_cl, orig_shape)
         return grad_x, grad_weight, grad_bias

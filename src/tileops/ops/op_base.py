@@ -34,12 +34,12 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
     carrying them alongside what else the specialization implies. An entry that
     hides its kernels from this walk is invisible to ``autotune``.
 
-    Recognized structurally as well as by type: what a backend returns only has to be
-    callable, and one that also offers ``autotune`` is tunable. Demanding the in-tree base
-    class here would leave the built-in backend the only tunable one.
+    Recognized structurally as well as by type: being callable is all the protocol asks of
+    what a backend returns, and ``autotune`` is optional on top of that. Demanding the
+    in-tree base class, or demanding ``autotune``, would hide a third-party kernel from
+    every walk that goes through here.
     """
-    if isinstance(entry, Kernel) or (
-            callable(entry) and callable(getattr(entry, "autotune", None))):
+    if isinstance(entry, Kernel) or callable(entry):
         return [entry]
     if isinstance(entry, (tuple, list)):
         return [k for item in entry for k in _entry_kernels(item)]

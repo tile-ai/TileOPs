@@ -173,14 +173,29 @@ def fake_batch_norm_backend():
     """
     state = registry.snapshot()
 
-    def fwd(x, weight, bias, running_mean, running_var, *, training, momentum, eps):
+    class _InManifestOrder:
+        """Called the way the protocol promises: manifest order, public dtypes."""
+
+        def __init__(self, kernel, reorder):
+            self._kernel, self._reorder = kernel, reorder
+
+        def __call__(self, *tensors):
+            return self._kernel(*self._reorder(*tensors))
+
+    def fwd(x, running_mean, running_var, weight, bias, *, training, momentum, eps):
         channels, length = x.shape
-        cls = _FakeBatchNormFwdTrainKernel if training else _FakeBatchNormFwdInferKernel
-        return cls(channels, length, x.dtype, eps, momentum) if training else cls(
-            channels, length, x.dtype, eps)
+        if training:
+            kernel = _FakeBatchNormFwdTrainKernel(
+                channels, length, x.dtype, eps, momentum)
+        else:
+            kernel = _FakeBatchNormFwdInferKernel(channels, length, x.dtype, eps)
+        return _InManifestOrder(
+            kernel, lambda t, mean, var, w, b: (t, w.float(), b.float(), mean, var))
 
     def bwd(grad_out, x, weight, mean, rstd):
-        return _FakeBatchNormBwdKernel(x.shape[0], x.shape[1], x.dtype)
+        kernel = _FakeBatchNormBwdKernel(x.shape[0], x.shape[1], x.dtype)
+        return _InManifestOrder(
+            kernel, lambda go, t, w, mean, rstd: (go, t, w.float(), mean, rstd))
 
     registry.register(op="BatchNormFwdOp", target="fake", get_kernel=fwd)
     registry.register(op="BatchNormBwdOp", target="fake", get_kernel=bwd)
