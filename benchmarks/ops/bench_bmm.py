@@ -90,11 +90,8 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
 
     # eval_roofline() is read lazily after profiling, by which point
     # forward() has bound the dims.
-    result = bm.profile(op, a, b)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(torch.bmm, a, b)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cublas")
+    bm.compare({"tileops": op, "torch-cublas": torch.bmm}, a, b, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("batch, m, n, k, dtype_str", _manifest_fp8_params())

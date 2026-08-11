@@ -41,11 +41,8 @@ def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group
 
     op = TopkSelectorOp(topk=topk, tune=_TUNE)
     bm = ManifestBenchmark(_TOPK_SELECTOR_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

@@ -53,11 +53,8 @@ def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index
 
     op = FP8LightningIndexerOp(clean_logits=clean_logits, config=_CONFIG, tune=_TUNE)
     bm = ManifestBenchmark(_FP8_LIGHTNING_INDEXER_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

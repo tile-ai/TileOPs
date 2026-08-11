@@ -45,15 +45,12 @@ def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
 
     op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: torch.nn.functional.group_norm
     def baseline_fn(x, weight, bias):
         return F.group_norm(x, num_groups, weight=weight, bias=bias, eps=1e-5)
 
-    result_bl = bm.profile(baseline_fn, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, x, weight, bias, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune",
@@ -66,14 +63,11 @@ def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
 
     op = GroupNormNoAffineFwdOp(num_groups=num_groups, tune=tune)
     bm = ManifestBenchmark(_OP_NAME_NO_AFFINE, op, test)
-    result = bm.profile(op, x)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_no_affine(x):
         return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)
 
-    result_bl = bm.profile(baseline_no_affine, x)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_no_affine}, x, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

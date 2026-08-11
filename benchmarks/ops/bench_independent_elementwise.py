@@ -109,14 +109,11 @@ def test_clamp_tensor_bench(
 
     op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape)
     bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
-    result = bm.profile(op, x, t_min, t_max)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x, t_min, t_max):
         return torch.clamp(x, t_min, t_max)
 
-    result_bl = bm.profile(baseline_fn, x, t_min, t_max)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, x, t_min, t_max, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize(
@@ -136,14 +133,11 @@ def test_clamp_min_bench(
 
     op = ClampMinFwdOp(input=input_shape, min=min_shape)
     bm = ManifestBenchmark(_CLAMP_MIN_OP, op, test)
-    result = bm.profile(op, x, t_min)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x, t_min):
         return torch.maximum(x, t_min)
 
-    result_bl = bm.profile(baseline_fn, x, t_min)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, x, t_min, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize(
@@ -163,14 +157,11 @@ def test_clamp_max_bench(
 
     op = ClampMaxFwdOp(input=input_shape, max=max_shape)
     bm = ManifestBenchmark(_CLAMP_MAX_OP, op, test)
-    result = bm.profile(op, x, t_max)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x, t_max):
         return torch.minimum(x, t_max)
 
-    result_bl = bm.profile(baseline_fn, x, t_max)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, x, t_max, record_as=op, params=locals())
 
 
 # alibi & sinusoidal (generative: no input tensors)
@@ -231,11 +222,7 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
     bm = ManifestBenchmark(_ALIBI_OP, op, workload)
 
-    result = bm.profile(op)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    result_bl = bm.profile(lambda: _alibi_reference(seq_len, num_heads, dtype))
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": lambda: _alibi_reference(seq_len, num_heads, dtype)}, record_as=op, params=locals())
 
 
 @SinusoidalBenchFixture
@@ -244,11 +231,7 @@ def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> Non
     workload = _GenerativeWorkload((seq_len, d_model), dtype)
     bm = ManifestBenchmark(_SINUSOIDAL_OP, op, workload)
 
-    result = bm.profile(op)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    result_bl = bm.profile(lambda: _sinusoidal_reference(seq_len, d_model, dtype))
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": lambda: _sinusoidal_reference(seq_len, d_model, dtype)}, record_as=op, params=locals())
 
 
 # fp8 benchmarks: representative independent ops with e4m3fn / e5m2
@@ -313,15 +296,12 @@ def test_fp8_unary_independent_bench(
         op = op_cls(input=shape, **extra_kwargs)
     else:
         op = op_cls(N_total=n_total, **extra_kwargs)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(f"{op_name}_fp8", locals(), result, tag="tileops")
 
     # Baseline: PyTorch fp16 compute then cast back to fp8
     def baseline(x):
         return baseline_fn(x.to(torch.float16)).to(dtype)
 
-    result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": baseline}, *inputs, record_as=f'{op_name}_fp8', params=locals())
 
 
 # fp8 where / masked_fill (selection ops - pass fp8 through directly)

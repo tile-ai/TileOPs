@@ -53,11 +53,8 @@ def test_grouped_gemm_bench(batch_sum: int, batch_count: int, N: int, K: int,
 
     op = GroupedGemmOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)
     bm = ManifestBenchmark(_GROUPED_GEMM_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(name, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(name, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=name, params=locals())
 
 
 if __name__ == "__main__":

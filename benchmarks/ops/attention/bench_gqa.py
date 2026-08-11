@@ -457,11 +457,8 @@ def test_gqa_prefill_varlen_fwd_bench(
         batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
     bm = GQAPrefillVarlenFwdBenchmark(test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(_torch_gqa_prefill_varlen_ref(test), *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}, *inputs, record_as=op, params=locals())
 
 
 def _fp8_paged_cache_inputs(

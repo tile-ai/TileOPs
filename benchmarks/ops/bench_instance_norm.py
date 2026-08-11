@@ -39,15 +39,12 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
 
     op = InstanceNormFwdOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: torch.nn.functional.instance_norm
     def baseline_fn(x, weight, bias):
         return F.instance_norm(x, weight=weight, bias=bias, eps=1e-5)
 
-    result_bl = bm.profile(baseline_fn, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, x, weight, bias, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("n, c, spatial, dtype, tune", _NO_AFFINE_PARAMS)

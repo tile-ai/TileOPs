@@ -56,9 +56,6 @@ def test_moe_grouped_gemm_nopad_bench(
     op(a, b, true_sizes, true_offsets)
     torch.cuda.synchronize()
 
-    result = bm.profile(op, a, b, true_sizes, true_offsets)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     # PyTorch baseline: per-expert NT matmul.
     sizes_l = true_sizes.tolist()
     offsets_l = true_offsets.tolist()
@@ -76,8 +73,7 @@ def test_moe_grouped_gemm_nopad_bench(
     _torch_fn(a, b, true_sizes, true_offsets)  # warmup
     torch.cuda.synchronize()
 
-    result_torch = bm.profile(_torch_fn, a, b, true_sizes, true_offsets)
-    BenchmarkReport.record(op, locals(), result_torch, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": _torch_fn}, a, b, true_sizes, true_offsets, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

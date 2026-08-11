@@ -103,14 +103,9 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     test = BatchNormFwdWorkload(N, C, spatial, dtype, training)
     bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
 
-    result = bm.profile(lambda *a: op(*a), *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(
-        lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv), *inputs,
-    )
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cudnn")
+    bm.compare({"tileops": lambda *a: op(*a), "torch-cudnn": lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv)}, *inputs, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("N, C, spatial, dtype", _manifest_bwd_params())
@@ -122,12 +117,9 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     test = BatchNormBwdWorkload(N, C, spatial, dtype)
     bm = ManifestBenchmark(_BWD_OP_NAME, op, test)
 
-    result = bm.profile(op, *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(_torch_bn_bwd, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-autograd")
+    bm.compare({"tileops": op, "torch-autograd": _torch_bn_bwd}, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

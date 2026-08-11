@@ -45,9 +45,6 @@ def test_shared_mlp_bench(num_tokens, hidden_size, ffn_size, dtype):
     kernel(hidden, w_gate_up, w_down)  # warmup
     torch.cuda.synchronize()
 
-    result = bm.profile(kernel, hidden, w_gate_up, w_down)
-    BenchmarkReport.record(kernel, locals(), result, tag="tileops")
-
     # PyTorch baseline
     def pytorch_fn(hidden, w_gate_up, w_down):
         gate = torch.nn.functional.linear(hidden, w_gate_up[:ffn_size])
@@ -58,8 +55,7 @@ def test_shared_mlp_bench(num_tokens, hidden_size, ffn_size, dtype):
     pytorch_fn(hidden, w_gate_up, w_down)  # warmup
     torch.cuda.synchronize()
 
-    result_torch = bm.profile(pytorch_fn, hidden, w_gate_up, w_down)
-    BenchmarkReport.record(kernel, locals(), result_torch, tag="torch")
+    bm.compare({"tileops": kernel, "torch": pytorch_fn}, hidden, w_gate_up, w_down, record_as=kernel, params=locals())
 
 
 if __name__ == "__main__":

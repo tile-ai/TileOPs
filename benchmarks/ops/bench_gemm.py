@@ -264,11 +264,8 @@ def test_gemm_bench(
 
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
-    result = bm.profile(op, a, b)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(workload.torch_matmul, a, b)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cublas")
+    bm.compare({"tileops": op, "torch-cublas": workload.torch_matmul}, a, b, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())
