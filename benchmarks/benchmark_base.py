@@ -259,24 +259,18 @@ def collect_discovery(
 def collect_repeats(
     run_one: Callable[[int], None],
     n_repeat: int,
-    prepare_one: Callable[[int], None] | None = None,
+    prepare_one: Callable[[int], None],
 ) -> list[dict[str, Any]]:
     """Capture a complete timed trial as one ordered activity-record range."""
     with _phase_session():
         for i in range(n_repeat):
-            if prepare_one is not None:
-                prepare_one(i)
+            prepare_one(i)
             run_one(i)
         return _flush()
 
 
 def _activity_identity(activity: dict) -> str:
     """Return a stable identity for a timed GPU activity."""
-    kind = activity["kind"]
-    if kind == "memcpy":
-        return f"memcpy:{int(activity['copy_kind'])}:{int(activity['bytes'])}"
-    if kind == "memset":
-        return f"memset:{int(activity['bytes'])}:{int(activity['value'])}"
     return f"kernel:{activity['name']}"
 
 
@@ -454,17 +448,12 @@ def _attributed_latency_samples_ms(
 
 
 def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None, None]:
-    """Return the 10th and 90th percentile of one op's timed samples.
-
-    The reported latency is a median. Without the spread around it, a stable
-    measurement and one dominated by launch jitter read the same downstream.
-    """
+    """Return the 10th and 90th percentile, so a median carries its spread."""
     if len(samples) < 2:
         return None, None
     ordered = sorted(samples)
     last = len(ordered) - 1
-    # Nearest rank, rounded rather than truncated: truncating collapses both
-    # percentiles onto the minimum for small sample counts.
+    # Rounded, not truncated: truncating collapses both onto the minimum.
     return ordered[round(0.1 * last)], ordered[round(0.9 * last)]
 
 
@@ -540,17 +529,13 @@ def bench_kernel(
     max_iters: int = _MAX_ITERS,
     min_iters: int = _MIN_ITERS,
 ) -> list[float]:
-    """Time *fn* with CUPTI kernel-activity attribution.
+    """Return per-iteration latencies in ms, attributed from CUPTI activity.
 
-    A calibration pass measures one iteration, then warmup and measurement each
-    run for their millisecond budget, so a short op is sampled many times and a
-    long one few. L2 is cleared and inputs rotated before every iteration. Each
-    call spans the earliest to the latest activity of its discovered sequence,
-    keeping inter-kernel gaps. Attribution fails closed unless
+    Calibration sizes the warmup and measurement loops to their millisecond
+    budgets, so a short op is sampled many times and a long one few. L2 is
+    cleared and inputs rotated per iteration; each call spans its discovered
+    activity sequence, gaps included. Fails closed unless
     ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
-
-    Returns:
-        Per-iteration latencies in **milliseconds**.
     """
     if not isinstance(args, tuple):
         raise TypeError(
@@ -709,14 +694,7 @@ def _get_env_metadata() -> list[str]:
 
 
 class BenchmarkBase(Generic[W], ABC):
-    """Abstract base class for op benchmarking.
-
-    Generic over workload type so subclasses can declare the exact
-    capability they need.  ``WorkloadBase`` remains the typical in-repo
-    implementation, but the public contract is the type parameter.
-
-    Subclass must implement calculate_flops() and calculate_memory().
-    """
+    """Turns measured latency into the op's roofline-relative metrics."""
 
     def __init__(self, workload: W):
         self.workload = workload
@@ -742,17 +720,13 @@ class BenchmarkBase(Generic[W], ABC):
         params: Optional[dict] = None,
         needs_grad: tuple[str, ...] = (),
     ) -> dict[str, dict]:
-        """Time several implementations against each other and record them all.
+        """Time several implementations forward then reversed, and record them.
 
-        Each implementation is timed twice, once in the given order and once in
-        reverse, so clock and thermal drift across the case lands on all of them
-        equally instead of on whichever ran last.
-
-        A value is either a callable, timed on the shared *inputs*, or a
-        ``(callable, args)`` pair for an implementation that takes its own.
-
-        Tags in *needs_grad* run with autograd enabled. Ops never need it; a
-        baseline does when it builds its graph inside the timed callable.
+        Timing each one twice in opposite orders keeps drift across the case
+        from landing on whichever ran last. A value is a callable timed on
+        *inputs*, or a ``(callable, args)`` pair. Tags in *needs_grad* keep
+        autograd on, which only a baseline that builds its graph inside the
+        timed callable needs.
         """
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
@@ -877,21 +851,10 @@ def workload_field_params(workloads: list, keys: tuple) -> list:
 
 
 class ManifestBenchmark(BenchmarkBase[Any]):
-    """Generic benchmark that reads FLOP/memory counts from an Op instance.
+    """Reads the roofline off ``op.eval_roofline()``, never off the workload.
 
-    Accepts an op name, an instantiated Op, and the workload that produced
-    the inputs.  Roofline numbers come from ``op.eval_roofline()``, so the
-    workload needs no ``shape`` / ``dtype`` metadata — it is retained only
-    for subclasses that read their own fields off it.  Dynamic-shape ops may
-    bind roofline variables during ``forward()``, so this helper calls
-    ``op.eval_roofline()`` only while building a result after profiling has
-    executed the op.
-
-    Usage::
-
-        op = SumFwdOp(dim=0)
-        bm = ManifestBenchmark("SumFwdOp", op, workload)
-        result = bm.profile(op, *inputs)
+    Called lazily while building a result, because a dynamic-shape op binds its
+    roofline variables during ``forward()``.
     """
 
     def __init__(
@@ -973,12 +936,6 @@ class BenchmarkReport:
     def record(op_or_name, params: dict, result: dict, tag: str = "tileops") -> None:
         """Record a benchmark result.
 
-        Args:
-            op_or_name: Op instance or benchmark group name string.
-                If an Op instance, class name and module are extracted automatically.
-            params: Parameter dict (typically from locals())
-            result: Dict with latency_ms, tflops, bandwidth_tbs
-            tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
         """
         if isinstance(op_or_name, str):
             name = op_or_name
