@@ -278,22 +278,20 @@ def test_gqa_fwd_bench(
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_GQA_FWD_OP, op, test)
     tileops_variant = _tileops_gqa_variant(op, dtype)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag=f"tileops_{tileops_variant}")
+    functors = {f"tileops_{tileops_variant}": op}
 
     fa3_fn = _fa3_gqa_fwd(test)
     if fa3_fn is not None:
-        result_bl = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+        functors["fa3"] = fa3_fn
 
     fi_fn = _flashinfer_gqa_fwd(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(_torch_gqa_fwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+        functors["torch-sdpa"] = _torch_gqa_fwd(test)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 # GQA backward benchmark parameters (training only).

@@ -108,24 +108,25 @@ def test_bmm_fp8_bench(
     # Fast path: feed [B, N, K] (K-innermost) via explicit b_layout='nk'.
     op = BmmFp8Op(out_dtype=out_dtype, tune=True, b_layout="nk")
     bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
-    result = bm.profile(op, a, b_nk, scale_a, scale_b)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {
+        "tileops": (op, (a, b_nk, scale_a, scale_b)),
+        "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),
+    }
 
-    result_bl = bm.profile(workload.torch_fp32_bmm_ref, a, b_kn, scale_a, scale_b)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-fp32-ref")
+    def flashinfer_fn(a_, b_, sa_, sb_):
+        return _flashinfer_bmm_fp8_per_tensor_ref(workload, a_, b_, sa_, sb_)
 
-    flashinfer = pytest.importorskip("flashinfer")
+    # flashinfer is optional and shape-sensitive. Probe it once and drop only
+    # its row when it cannot run; skipping the case would take the op's own
+    # numbers down with it.
     try:
-        result_flashinfer = bm.profile(
-            lambda a_, b_, sa_, sb_: _flashinfer_bmm_fp8_per_tensor_ref(
-                workload, a_, b_, sa_, sb_),
-            a, b_kmajor, scale_a, scale_b,
-        )
-    except RuntimeError as exc:
-        pytest.skip(f"flashinfer bmm_fp8 unavailable for this shape: {exc}")
-    BenchmarkReport.record(
-        op, locals(), result_flashinfer, tag="flashinfer-bmm-fp8",
-    )
+        flashinfer_fn(a, b_kmajor, scale_a, scale_b)
+    except (ImportError, RuntimeError) as exc:
+        print(f"  [skip] flashinfer-bmm-fp8: {exc}")
+    else:
+        functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kmajor, scale_a, scale_b))
+
+    bm.compare(functors, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

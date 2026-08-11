@@ -83,15 +83,12 @@ def _profile_and_record(
     instead of reflecting only this helper's locals.
     """
     try:
-        result = bm.profile(op, *inputs)
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=params)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-    BenchmarkReport.record(op, params, result, tag="tileops")
-
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, params, result_bl, tag="torch")
 
 
 # Per-op constants and tests — one block per manifest entry so the

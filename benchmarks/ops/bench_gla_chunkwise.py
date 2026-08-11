@@ -211,8 +211,7 @@ def test_gla_bwd_bench(
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
 
     bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
-    result = bm.profile(bwd_op.forward, q, k, v, g, h, do, dht)
-    BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
+    functors = {"tileops": (bwd_op.forward, (q, k, v, g, h, do, dht))}
 
     if chunk_gla is not None:
         # --- FLA: bwd via autograd ---
@@ -231,16 +230,16 @@ def test_gla_bwd_bench(
             o_fla.backward(do_fla, retain_graph=True)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = bm.profile(fla_bwd)
-        BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla")
+        functors["fla"] = (fla_bwd, ())
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
-        # torch_bwd builds its forward graph inside the timed callable, so it
-        # needs the autograd-enabled path; profile() runs under no_grad.
-        result_bl = bm.profile_autograd(torch_bwd)
-        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
+
+        functors["torch"] = (torch_bwd, ())
+
+    # Only torch_bwd builds its graph inside the timed call.
+    bm.compare(functors, record_as=bwd_op, params=locals(), needs_grad=("torch",))
 
 
 # Combined fwd+bwd benchmark
@@ -304,8 +303,7 @@ def test_gla_fwdbwd_bench(
         dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
         return bwd_op.forward(q, k, v, g, h, do, dht)
 
-    result = bm.profile_autograd(tileops_fwdbwd)
-    BenchmarkReport.record(fwd_op, locals(), result, tag="tileops")
+    functors = {"tileops": tileops_fwdbwd}
 
     if chunk_gla is not None:
         # --- FLA: fwd+bwd via autograd ---
@@ -321,13 +319,16 @@ def test_gla_fwdbwd_bench(
             o.backward(do_fla)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = bm.profile_autograd(fla_fwdbwd)
-        BenchmarkReport.record(fwd_op, locals(), result_fla, tag="fla")
+        functors["fla"] = fla_fwdbwd
     else:
         def ref_autograd_fwdbwd():
             return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
-        result_bl = bm.profile_autograd(ref_autograd_fwdbwd)
-        BenchmarkReport.record(fwd_op, locals(), result_bl, tag="torch")
+
+        functors["torch"] = ref_autograd_fwdbwd
+
+    # Only the baselines build their graph inside the timed call.
+    bm.compare(functors, record_as=fwd_op, params=locals(),
+               needs_grad=("fla", "torch"))
 
 
 if __name__ == "__main__":

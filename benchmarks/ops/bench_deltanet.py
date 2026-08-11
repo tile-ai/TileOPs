@@ -377,8 +377,7 @@ def test_deltanet_vs_fla_fwdbwd(
         o.backward(do)
         return q.grad, k.grad, v.grad
 
-    result = bm.profile_autograd(tileops_fwdbwd)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": tileops_fwdbwd}
 
     if chunk_delta_rule is not None:
         # --- FLA: fwd+bwd via autograd ---
@@ -395,14 +394,16 @@ def test_deltanet_vs_fla_fwdbwd(
             o.backward(do_fla)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = bm.profile_autograd(fla_fwdbwd)
-        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
+        functors["fla"] = fla_fwdbwd
     else:
         # --- Torch autograd reference baseline ---
         def torch_fwdbwd():
             return deltanet_autograd_bwd_torch(do, q.data, k.data, v.data, beta.data, BC)
-        result_bl = bm.profile_autograd(torch_fwdbwd)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        functors["torch"] = torch_fwdbwd
+
+    # Every closure builds its graph and calls backward inside the timed call.
+    bm.compare(functors, record_as=op, params=locals(),
+               needs_grad=("tileops", "fla", "torch"))
 
 
 if __name__ == "__main__":

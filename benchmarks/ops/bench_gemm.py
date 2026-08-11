@@ -284,42 +284,42 @@ def test_gemm_fp8_bench(
     op = GemmFp8Op(out_dtype=out_dtype)
     bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
 
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    if scale_mode not in ("per_tensor", "block128"):
+        raise ValueError(f"unsupported FP8 GEMM scale_mode for benchmark: {scale_mode!r}")
 
-    result_bl = bm.profile(workload.torch_scaled_matmul, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-scaled-mm")
+    functors = {"tileops": op, "torch-scaled-mm": workload.torch_scaled_matmul}
 
     if scale_mode == "per_tensor":
         unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
         if unsupported_reason is not None:
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
-            return
-        flashinfer = pytest.importorskip("flashinfer")
-        prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(workload, *inputs)
+        else:
+            # Probe once and drop only the flashinfer row when it cannot run;
+            # skipping would take the op's own numbers down with it.
+            try:
+                import flashinfer
+
+                prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(workload, *inputs)
+
+                def flashinfer_fn(a):
+                    return flashinfer.mm_fp8(a, prepared_b, alpha, out_dtype=out_dtype)
+
+                flashinfer_fn(inputs[0])
+            except (ImportError, RuntimeError) as exc:
+                print(f"  [skip] flashinfer-mm-fp8: {str(exc).splitlines()[0]}")
+            else:
+                functors["flashinfer-mm-fp8"] = (flashinfer_fn, (inputs[0],))
+    else:
         try:
-            result_flashinfer = bm.profile(
-                lambda a: flashinfer.mm_fp8(a, prepared_b, alpha, out_dtype=out_dtype),
-                inputs[0],
+            import flashinfer  # noqa: F401
+        except ImportError as exc:
+            print(f"  [skip] flashinfer-fp8-blockscale-sm90: {exc}")
+        else:
+            functors["flashinfer-fp8-blockscale-sm90"] = (
+                lambda *args: _flashinfer_fp8_blockscale_ref(workload, *args), inputs,
             )
-        except RuntimeError as exc:
-            reason = str(exc).splitlines()[0]
-            print(f"  [skip] flashinfer-mm-fp8: {reason}")
-            return
-        BenchmarkReport.record(op, locals(), result_flashinfer, tag="flashinfer-mm-fp8")
-        return
 
-    if scale_mode == "block128":
-        pytest.importorskip("flashinfer")
-        result_flashinfer = bm.profile(
-            lambda *args: _flashinfer_fp8_blockscale_ref(workload, *args), *inputs
-        )
-        BenchmarkReport.record(
-            op, locals(), result_flashinfer, tag="flashinfer-fp8-blockscale-sm90"
-        )
-        return
-
-    raise ValueError(f"unsupported FP8 GEMM scale_mode for benchmark: {scale_mode!r}")
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("m, n, k, group_size, dtype_str", _manifest_w4a16_params())
@@ -337,11 +337,10 @@ def test_gemm_w4a16_bench(
     op = GemmW4A16Op(group_size=group_size)
     bm = ManifestBenchmark(_W4A16_OP_NAME, op, workload)
 
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    result_bl = bm.profile(workload.torch_dequantized_matmul, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-dequantized-matmul")
+    functors = {
+        "tileops": op,
+        "torch-dequantized-matmul": workload.torch_dequantized_matmul,
+    }
 
     if m == 1:
         for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
@@ -356,8 +355,9 @@ def test_gemm_w4a16_bench(
             if actual.shape != (m, n) or not torch.isfinite(actual).all():
                 raise RuntimeError("Marlin W4A16 baseline smoke check failed")
             torch.cuda.synchronize()
-            result_marlin = bm.profile(marlin, *marlin_inputs)
-            BenchmarkReport.record(op, locals(), result_marlin, tag=f"marlin-{reduce_mode}")
+            functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

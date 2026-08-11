@@ -369,14 +369,12 @@ def test_fp8_selection_bench(
         x, mask = test.gen_inputs()
 
         op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0)
-        result = bm.profile(op, x, mask)
-        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
         def baseline(x, mask):
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
-        result_bl = bm.profile(baseline, x, mask)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        bm.compare({"tileops": op, "torch-ref": baseline}, x, mask,
+                   record_as=op, params=locals())
 
 
 if __name__ == "__main__":

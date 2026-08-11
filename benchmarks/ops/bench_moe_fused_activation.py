@@ -198,26 +198,23 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
     _run_torch_ref(hidden, w_gate_up, w_down, topk_weights, topk_ids)  # warmup
     torch.cuda.synchronize()
 
-    result_torch = bm.profile(_run_torch_ref, hidden, w_gate_up, w_down, topk_weights, topk_ids)
+    # Recorded by hand: the fused row belongs to a different op.
+    results = bm.compare(
+        {
+            "torch-ref": _run_torch_ref,
+            "tileops-unfused": _run_unfused,
+            "tileops-fused": _run_fused,
+        },
+        hidden, w_gate_up, w_down, topk_weights, topk_ids,
+    )
+    result_torch = results["torch-ref"]
+    result_unfused = results["tileops-unfused"]
+    result_fused = results["tileops-fused"]
     BenchmarkReport.record(op_unfused, locals(), result_torch, tag="torch-ref")
+    BenchmarkReport.record(op_unfused, locals(), result_unfused, tag="tileops-unfused")
+    BenchmarkReport.record(op_fused, locals(), result_fused, tag="tileops-fused")
     ms_torch = result_torch["latency_ms"]
-
-    # ---- Timing: unfused ----------------------------------------------------
-    result_unfused = bm.profile(
-        _run_unfused, hidden, w_gate_up, w_down, topk_weights, topk_ids,
-    )
-    BenchmarkReport.record(
-        op_unfused, locals(), result_unfused, tag="tileops-unfused",
-    )
     ms_unfused = result_unfused["latency_ms"]
-
-    # ---- Timing: fused ------------------------------------------------------
-    result_fused = bm.profile(
-        _run_fused, hidden, w_gate_up, w_down, topk_weights, topk_ids,
-    )
-    BenchmarkReport.record(
-        op_fused, locals(), result_fused, tag="tileops-fused",
-    )
     ms_fused = result_fused["latency_ms"]
 
     # ---- Console summary for this regime ------------------------------------

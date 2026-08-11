@@ -198,15 +198,14 @@ def _profile_conv(
         def baseline_with_static_weight(x_i):
             return baseline_fn(x_i, weight, bias)
 
-        functors = {"tileops": op_with_static_weight}
-
-        functors["torch"] = baseline_with_static_weight
+        bm.compare(
+            {"tileops": op_with_static_weight, "torch": baseline_with_static_weight},
+            x, record_as=op, params=params,
+        )
         return
 
-    functors["tileops"] = (op, (*inputs, ))
-
-    functors["torch"] = (baseline_fn, (*inputs, ))
-    bm.compare(functors, x, record_as=op, params=params)
+    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+               record_as=op, params=params)
 
 
 # Conv1d

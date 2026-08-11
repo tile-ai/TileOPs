@@ -57,8 +57,9 @@ _MIN_ITERS = 10
 _MAX_ITERS = 200
 
 
-def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS) -> int:
-    return max(_MIN_ITERS, min(max_iters, int(raw)))
+def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS,
+                 min_iters: int = _MIN_ITERS) -> int:
+    return max(min_iters, min(max_iters, int(raw)))
 
 # Thread-local storage for conftest hook to pick up per-test bench results.
 # A single test function may call record() multiple times (tileops + baseline).
@@ -537,6 +538,7 @@ def bench_kernel(
     dry_run_ms: float = DRY_RUN_MS,
     repeat_ms: float = REPEAT_MS,
     max_iters: int = _MAX_ITERS,
+    min_iters: int = _MIN_ITERS,
 ) -> list[float]:
     """Time *fn* with CUPTI kernel-activity attribution.
 
@@ -582,8 +584,8 @@ def bench_kernel(
     torch.cuda.synchronize()
     per_iter_ms = max(start.elapsed_time(end) / _CALIBRATION_ITERS, 1e-6)
 
-    n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters)
-    n_repeat = _clamp_iters(repeat_ms / per_iter_ms, max_iters)
+    n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters, min_iters)
+    n_repeat = _clamp_iters(repeat_ms / per_iter_ms, max_iters, min_iters)
 
     if args:
         total = 1 + n_warmup + _discovery_repeats() + n_repeat
@@ -732,16 +734,13 @@ class BenchmarkBase(Generic[W], ABC):
         with torch.no_grad():
             return self._build_result(bench_kernel(functor, args=inputs))
 
-    def profile_autograd(self, functor: Any) -> dict:
-        """Profile a zero-arg closure that builds an autograd graph."""
-        return self._build_result(bench_kernel(functor))
-
     def compare(
         self,
         functors: dict[str, Any],
         *inputs: Any,
         record_as: Any = None,
         params: Optional[dict] = None,
+        needs_grad: tuple[str, ...] = (),
     ) -> dict[str, dict]:
         """Time several implementations against each other and record them all.
 
@@ -751,6 +750,9 @@ class BenchmarkBase(Generic[W], ABC):
 
         A value is either a callable, timed on the shared *inputs*, or a
         ``(callable, args)`` pair for an implementation that takes its own.
+
+        Tags in *needs_grad* run with autograd enabled. Ops never need it; a
+        baseline does when it builds its graph inside the timed callable.
         """
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
@@ -765,12 +767,14 @@ class BenchmarkBase(Generic[W], ABC):
         meta: dict[str, dict] = {}
         for tag in order:
             functor, args = plan[tag]
-            with torch.no_grad():
+            grad = contextlib.nullcontext() if tag in needs_grad else torch.no_grad()
+            with grad:
                 samples[tag].extend(bench_kernel(
                     functor, args=args,
                     dry_run_ms=DRY_RUN_MS / passes,
                     repeat_ms=REPEAT_MS / passes,
                     max_iters=_MAX_ITERS // passes,
+                    min_iters=max(1, _MIN_ITERS // passes),
                 ))
             meta[tag] = _capture_bench_meta()
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
