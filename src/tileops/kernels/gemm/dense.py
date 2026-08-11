@@ -1870,10 +1870,15 @@ class GemmKernel(Kernel):
     # below only pin per-shape tuning:
     #   prefill-attn / k-dominant / wide-n: ns=3 g=16 (deepest full-epilogue
     #     ring bn=256/bk=64 allows in 227 KB SMEM).
-    #   prefill-down (shallow K=2048): block_k=32 lets the A/B ring go ns=6 with
-    #     an un-chunked (stage_n=0) epilogue inside 227 KB — the deeper ring
-    #     keeps the producer far enough ahead to hide the short mainloop's
-    #     SMEM-fill scoreboard stall. Beats the bk=64/ns=4/chunked config.
+    #   prefill-down (shallow K=2048): block_k=64 with a half-width (stage_n=128)
+    #     epilogue. Chunking the store halves the C staging, which buys the
+    #     fourth ring stage inside 227 KB; that beats spending the same SMEM on
+    #     a bk=32 ring deep enough to reach ns=6 (0.921-0.927x vs 0.910-0.916x,
+    #     three independent rounds). stage_n=32 measures the same as 128 — what
+    #     pays is freeing the SMEM, not the chunk width.
+    #     The same swap on wide-n is a mirage: it read +1.8pp in one round and
+    #     -1.5pp in two more, on a row where cuBLASLt's algorithm choice swings
+    #     the baseline 394-435 us between rounds. wide-n keeps ns=3/stage_n=0.
     #   gate-up (N=2112): block_n=192 (2112=192*11, no tail waste — bn=256
     #     wastes the 8.25th tile and drops to 0.68x); ns=5, stage_n=96.
     _TUNED_CONFIGS: dict = {
@@ -1961,10 +1966,10 @@ class GemmKernel(Kernel):
         (4096, 7168, 2048, False, True, "bfloat16"): {
             "coop2": True,
             "block_n": 256,
-            "block_k": 32,
-            "num_stages": 6,
+            "block_k": 64,
+            "num_stages": 4,
             "group_size_m": 16,
-            "stage_n": 0,
+            "stage_n": 128,
         },
         (4096, 7168, 16384, False, True, "bfloat16"): {
             "coop2": True,
