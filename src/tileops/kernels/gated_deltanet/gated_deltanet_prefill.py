@@ -27,6 +27,8 @@ from .gated_deltanet_fwd import (
 
 __all__ = ["GatedDeltaNetPrefillFwdKernel"]
 
+_PREFILL_AUTO_PARTITION_MIN_TOKENS = 32768
+
 
 def _normalize_prefill_layout(layout: str) -> str:
     layout = layout.lower()
@@ -55,9 +57,27 @@ def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int) -> int:
         max_local_chunks = 2 ** round(
             math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3)
         )
+        if num_heads <= 16 and num_chunks == 512:
+            max_local_chunks = max(max_local_chunks, 64)
         if num_heads >= 64 and num_chunks >= 512:
             max_local_chunks = max(max_local_chunks, 256)
     return max(max_local_chunks, 4)
+
+
+def _prefill_should_partition(
+    num_tokens: int,
+    num_chunks: int,
+    num_heads: int,
+    max_local_chunks: int,
+    force_partition: bool,
+) -> bool:
+    if num_chunks <= max_local_chunks:
+        return False
+    if force_partition:
+        return True
+    if num_tokens < _PREFILL_AUTO_PARTITION_MIN_TOKENS:
+        return False
+    return num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
 
 
 def _prefill_partitioned_initial_state_bthd(
@@ -80,7 +100,6 @@ def _prefill_partitioned_initial_state_bthd(
     num_chunks = tilelang.cdiv(num_tokens, chunk_size)
     max_local_chunks = _prefill_auto_cp_local_chunks(num_chunks, num_heads)
 
-    has_partition = num_chunks > max_local_chunks
     force_partition = (
         os.environ.get(
             "TILEOPS_GDN_PREFILL_FORCE_PARTITION",
@@ -88,8 +107,12 @@ def _prefill_partitioned_initial_state_bthd(
         )
         == "1"
     )
-    use_partition = has_partition and (
-        force_partition or num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
+    use_partition = _prefill_should_partition(
+        num_tokens,
+        num_chunks,
+        num_heads,
+        max_local_chunks,
+        force_partition,
     )
     if not use_partition:
         return None, raw_cu_seqlens, None, None

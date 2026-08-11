@@ -1,7 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.gated_deltanet.gated_deltanet_prefill import (
+    _prefill_auto_cp_local_chunks,
+    _prefill_should_partition,
+)
 from tileops.ops import GatedDeltaNetPrefillFwdOp
 from workloads.linear_attention import (
     GatedDeltaNetPrefillFwdWorkload,
@@ -214,6 +220,52 @@ def butterfly_prefix_structured_transitions_torch(
 
 class GatedDeltaNetPrefillFwdTest(GatedDeltaNetPrefillFwdWorkload, TestBase):
     pass
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "num_tokens, num_chunks, num_heads, max_local_chunks, force, expected",
+    [
+        (4096, 64, 16, 8, False, False),
+        (32768, 512, 16, 32, False, True),
+        (4096, 64, 16, 8, True, True),
+        (32768, 512, 48, 32, False, True),
+        (32768, 512, 65, 32, False, False),
+    ],
+)
+def test_gated_deltanet_prefill_partition_selection(
+    num_tokens: int,
+    num_chunks: int,
+    num_heads: int,
+    max_local_chunks: int,
+    force: bool,
+    expected: bool,
+) -> None:
+    assert (
+        _prefill_should_partition(
+            num_tokens,
+            num_chunks,
+            num_heads,
+            max_local_chunks,
+            force,
+        )
+        is expected
+    )
+
+
+@pytest.mark.smoke
+def test_gated_deltanet_prefill_prefers_longer_local_scan_at_32k_h16(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("TILEOPS_GDN_PREFILL_MAX_LOCAL_CHUNKS", raising=False)
+    monkeypatch.delenv("TILEOPS_GDN_PREFILL_CP_MAX_LOCAL_CHUNKS", raising=False)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda: SimpleNamespace(multi_processor_count=132),
+    )
+
+    assert _prefill_auto_cp_local_chunks(num_chunks=512, num_heads=16) == 64
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:

@@ -9,7 +9,6 @@ The benchmark measures the serving-oriented BTHD layout because that is the
 production fast path used by FLA/Qwen-style inference prefill.
 """
 
-import inspect
 from typing import Any, Sequence
 
 import pytest
@@ -83,9 +82,6 @@ def _fla_prefill_fwd():
     if chunk_gated_delta_rule is None:
         return None
 
-    signature = inspect.signature(chunk_gated_delta_rule)
-    supports_output_final_state = "output_final_state" in signature.parameters
-
     def baseline_fn(
         q: torch.Tensor,
         k: torch.Tensor,
@@ -93,10 +89,17 @@ def _fla_prefill_fwd():
         g: torch.Tensor,
         beta: torch.Tensor,
     ):
-        kwargs: dict[str, Any] = {"scale": 1.0}
-        if supports_output_final_state:
-            kwargs["output_final_state"] = True
-        return chunk_gated_delta_rule(q, k, v, g, beta, **kwargs)
+        o, final_state = chunk_gated_delta_rule(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            scale=1.0,
+            initial_state=None,
+            output_final_state=True,
+        )
+        return o, final_state.to(q.dtype)
 
     return baseline_fn
 
