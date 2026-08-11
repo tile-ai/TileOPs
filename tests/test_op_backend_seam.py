@@ -196,7 +196,7 @@ def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device(
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
 
     assert op._builder is None or op._builder is not recorder.build_kernel
-    with pytest.raises(RuntimeError):  # a CUDA kernel cannot run on these CPU tensors
+    with pytest.raises(ValueError, match="is a CUDA kernel"):
         op(*_inputs())
     assert recorder.calls == [], "BUILTIN went to the in-tree implementation"
 

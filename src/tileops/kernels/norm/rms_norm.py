@@ -143,15 +143,23 @@ class RMSNormKernel(Kernel):
         """Normalize ``x`` over its trailing ``N`` elements.
 
         Args:
-            x: Input whose trailing axes multiply to ``N``, contiguous. Any leading shape.
-            weight: Affine scale holding ``N`` elements, contiguous.
+            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device.
 
         Returns:
             Tensor shaped like *x*.
 
+        Raises:
+            ValueError: Either input is not on a CUDA device.
+
         Flattening to 2-D rows and a flat weight happens here, as does the alignment padding
         the prim_func requires.
         """
+        if not (x.is_cuda and weight.is_cuda):
+            raise ValueError(
+                f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
+                f"{weight.device}. Another target's backend serves other devices.")
+
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
         weight = weight.reshape(self.N)

@@ -109,20 +109,34 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
 
 @pytest.mark.smoke
-def test_row_count_no_longer_splits_the_cache() -> None:
-    """The kernel specializes on N and dtype; the row count is a launch-time fact.
+def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
+    """The op keys on dtype: the row count reaches the kernel as an argument.
 
-    It used to be a constructor argument, which meant one compiled kernel per M — and M
-    changes every step of decode.
+    The TileLang program is still specialized per row count inside
+    ``_rms_norm_kernel``; moving that into the kernel's own cache is kernel-side work.
     """
+    from tileops.kernels.norm.rms_norm import _rms_norm_kernel
+
     op = RMSNormFwdOp(normalized_shape=(4096,))
     weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+    programs_before = _rms_norm_kernel.cache_info().currsize
 
     for rows in (128, 129, 1024):
         op(torch.randn(rows, 4096, dtype=torch.float16, device="cuda"), weight)
     op(torch.randn(2, 8, 4096, dtype=torch.float16, device="cuda"), weight)
 
-    assert list(op.built_kernels("rms_norm")) == [torch.float16]
+    assert list(op.built_kernels("rms_norm")) == [torch.float16], "one kernel object"
+    grew = _rms_norm_kernel.cache_info().currsize - programs_before
+    assert grew == 3, "one program per distinct row count, held by the kernel not the op"
+
+
+@pytest.mark.smoke
+def test_the_in_tree_kernel_says_it_is_a_cuda_kernel() -> None:
+    """The op layer is device-agnostic; the requirement belongs to these kernels."""
+    op = RMSNormFwdOp(normalized_shape=(256,))
+
+    with pytest.raises(ValueError, match="is a CUDA kernel"):
+        op(torch.randn(4, 256, dtype=torch.float16), torch.randn(256, dtype=torch.float16))
 
 
 @pytest.mark.smoke
