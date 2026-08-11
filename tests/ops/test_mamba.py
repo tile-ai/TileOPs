@@ -1,6 +1,5 @@
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
 from tileops.ops.cb_producer import CBProducerOp
@@ -23,6 +22,11 @@ from workloads.mamba import (
     SSDStatePassingFwdWorkload,
     da_cumsum_fwd_ref,
     ssd_chunk_state_fwd_ref,
+)
+from workloads.mamba2_e2e import (
+    Mamba2PrimaryWorkload,
+    mamba2_direct_ref,
+    mamba2_fwd_ref,
 )
 
 
@@ -277,127 +281,157 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     allclose_compare(state, state_ref, atol=atol, rtol=rtol)
 
 
-def mamba2_fwd_ref(
-    x: torch.Tensor,
-    dt: torch.Tensor,
-    A: torch.Tensor,
-    B: torch.Tensor,
-    C: torch.Tensor,
-    dt_bias: torch.Tensor | None,
-    chunk_size: int,
-    dt_softplus: bool,
-) -> torch.Tensor:
-    """Pure-PyTorch reference for the Mamba-2 State-Space Dual (SSD) forward pass.
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_mamba2_primary_matches_direct_recurrence_across_chunk_boundary(dtype):
+    """The no-bias path returns post-update y and final state across a boundary."""
+    torch.manual_seed(42)
+    workload = Mamba2PrimaryWorkload(
+        1, 512, 4, 64, 32, 2, dtype,
+        chunk_size=256,
+        dt_softplus=True,
+    )
+    inputs = workload.gen_inputs()
+    op = Mamba2FwdOp(chunk_size=256, dt_softplus=True, has_initial_states=False)
+    actual = op.forward(*inputs, return_final_states=True)
+    expected = mamba2_direct_ref(*inputs)
 
-    Computes the same result as mamba_chunk_scan_combined from mamba_ssm:
-      out[l,p] = exp(dA[l]) * C[l] @ prev_state
-               + sum_{s<=l} (C[l]@B[s]) * exp(dA[l]-dA[s]) * dt[s] * x[s,p]
-
-    Inputs:
-        x:           (B, S, H, P)     dtype
-        dt:          (B, S, H)        float32
-        A:           (H,)             float32  (log-space, <= 0)
-        B:           (B, S, G, N)     dtype
-        C:           (B, S, G, N)     dtype
-        dt_bias:     (H,)             float32, optional
-        chunk_size:  int
-        dt_softplus: bool
-
-    Returns:
-        y: (B, S, H, P)  float32
-    """
-    b, S, h, p = x.shape
-    n = B.shape[-1]
-    g = B.shape[2]
-    hpg = h // g
-    Q = chunk_size
-    num_chunks = S // Q
-
-    # Step 1: DaCumsum
-    dt_val = dt.float()
-    if dt_bias is not None:
-        dt_val = dt_val + dt_bias.float()
-    if dt_softplus:
-        dt_val = F.softplus(dt_val)
-    dt_val = torch.clamp(dt_val, min=0.0)
-    dt_chunked = dt_val.reshape(b, num_chunks, Q, h).permute(0, 3, 1, 2)
-    dA = dt_chunked * A.float().view(1, h, 1, 1)
-    dA_cumsum = dA.cumsum(dim=-1)
-
-    # Step 2: CB = C[l] @ B[s]^T per chunk, lower-triangular, group-owned.
-    B_c = B.float().reshape(b, num_chunks, Q, g, n)
-    C_c = C.float().reshape(b, num_chunks, Q, g, n)
-    cb = torch.einsum("bcqgn,bcsgn->bcgqs", C_c, B_c)
-    mask = torch.ones(Q, Q, device=x.device, dtype=torch.bool).tril()
-    cb = cb * mask.view(1, 1, 1, Q, Q)
-
-    # Step 3: SSDChunkState
-    decay = torch.exp(dA_cumsum[:, :, :, -1:] - dA_cumsum)
-    decay_c = decay.permute(0, 2, 3, 1)
-    dt_c = dt_chunked.permute(0, 2, 3, 1)
-    x_c = x.float().reshape(b, num_chunks, Q, h, p)
-    B_heads = B_c[:, :, :, torch.arange(h, device=x.device) // hpg, :]
-    wx = x_c * (decay_c * dt_c).unsqueeze(-1)
-    chunk_states = torch.einsum("bcqhp,bcqhn->bchpn", wx, B_heads)
-
-    # Step 4: SSDStatePassing
-    exp_dA_chunk = torch.exp(dA_cumsum[:, :, :, -1])
-    s = torch.zeros(b, h, p, n, device=x.device, dtype=torch.float32)
-    prev_states_list = []
-    for ci in range(num_chunks):
-        prev_states_list.append(s.unsqueeze(1))
-        scale = exp_dA_chunk[:, :, ci].view(b, h, 1, 1)
-        s = scale * s + chunk_states[:, ci]
-    prev_states = torch.cat(prev_states_list, dim=1)
-
-    # Step 5: SSDChunkScan
-    dA_c = dA_cumsum.permute(0, 2, 3, 1)
-    C_heads = C_c[:, :, :, torch.arange(h, device=x.device) // hpg, :]
-
-    y_hist = torch.einsum("bcqhn,bchpn->bcqhp", C_heads, prev_states.float())
-    y_hist = y_hist * torch.exp(dA_c).unsqueeze(-1)
-
-    dA_l = dA_cumsum.unsqueeze(-1)
-    dA_s = dA_cumsum.unsqueeze(-2)
-    decay_ls = torch.exp(dA_l - dA_s).masked_fill(
-        ~mask.view(1, 1, 1, Q, Q), 0.0
-    ).permute(0, 2, 1, 3, 4)
-    cb_heads = cb[:, :, torch.arange(h, device=x.device) // hpg, :, :]
-    lcb = cb_heads * decay_ls * dt_c.permute(0, 1, 3, 2).unsqueeze(-2)
-    wx_t = x_c.permute(0, 1, 3, 2, 4)
-    y_intra = torch.einsum("bchls,bchsp->bchlp", lcb, wx_t).permute(0, 1, 3, 2, 4)
-
-    return (y_hist + y_intra).reshape(b, S, h, p)
+    atol = 1e-2 if dtype == torch.float16 else 2e-2
+    assert actual[0].shape == (1, 512, 4, 64)
+    assert actual[1].shape == (1, 4, 64, 32)
+    assert actual[0].dtype == torch.float32
+    assert actual[1].dtype == torch.float32
+    allclose_compare(actual[0], expected[0], atol=atol, rtol=1e-3)
+    allclose_compare(actual[1], expected[1], atol=atol, rtol=1e-3)
+    assert next(iter(op._da_cumsum_ops.values())).has_dt_bias is False
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("batch,seqlen,n_heads,d_head,d_state,n_groups,chunk_size", [
-    (1, 256,  4, 64, 32,  1, 256),
-    (2, 512,  8, 64, 64,  2, 256),
-    (1, 512,  4, 64, 128, 1, 256),   # d_state=16 not supported by SSDChunkScanFwdKernel
-])
-def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dtype):
-    """Mamba2FwdOp output must match the pure-PyTorch reference within tolerance."""
-    dev = "cuda"
-    torch.manual_seed(42)
-    x       = torch.randn(batch, seqlen, n_heads, d_head,   dtype=dtype,          device=dev) * 0.1
-    dt_raw  = torch.randn(batch, seqlen, n_heads,           dtype=torch.float32,  device=dev) * 0.5
-    A       = -torch.rand(n_heads,                          dtype=torch.float32,  device=dev)
-    B       = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype,          device=dev) * 0.1
-    C       = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype,          device=dev) * 0.1
-    dt_bias = torch.randn(n_heads,                          dtype=torch.float32,  device=dev) * 0.1
-
-    op = Mamba2FwdOp(
-        chunk_size=chunk_size,
+@pytest.mark.parametrize("with_bias,with_initial", [(True, False), (False, True)])
+def test_mamba2_optional_variants_regressions(with_bias, with_initial):
+    """Primary specialization must preserve bias and initial-state variants."""
+    torch.manual_seed(43)
+    workload = Mamba2PrimaryWorkload(
+        1, 512, 4, 64, 32, 1, torch.float16,
+        chunk_size=256,
         dt_softplus=True,
-        has_initial_states=False,
     )
-    y_op, _ = op.forward(x, dt_raw, A, B, C, dt_bias=dt_bias)
-    y_ref   = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
+    inputs = workload.gen_inputs()
+    bias = torch.randn(4, device="cuda", dtype=torch.float32) * 0.1 if with_bias else None
+    initial = (
+        torch.randn(1, 4, 64, 32, device="cuda", dtype=torch.float32) * 0.1
+        if with_initial else None
+    )
+    op = Mamba2FwdOp(
+        chunk_size=256,
+        dt_softplus=True,
+        has_initial_states=with_initial,
+    )
+    actual = op.forward(
+        *inputs,
+        dt_bias=bias,
+        initial_states=initial,
+        return_final_states=True,
+    )
+    expected = mamba2_fwd_ref(
+        *inputs, bias, 256, True, initial_states=initial
+    )
+    allclose_compare(actual[0], expected[0], atol=1e-2, rtol=1e-3)
+    allclose_compare(actual[1], expected[1], atol=1e-2, rtol=1e-3)
+    assert next(iter(op._da_cumsum_ops.values())).has_dt_bias is with_bias
+
+
+@pytest.mark.smoke
+def test_mamba2_bias_dispatch_cache_is_call_sensitive():
+    """One reusable op keeps distinct kernels for biased and unbiased calls."""
+    torch.manual_seed(45)
+    workload = Mamba2PrimaryWorkload(
+        1, 256, 4, 64, 32, 1, torch.float16,
+        chunk_size=256,
+        dt_softplus=True,
+    )
+    inputs = workload.gen_inputs()
+    bias = torch.randn(4, device="cuda", dtype=torch.float32) * 0.1
+    op = Mamba2FwdOp(chunk_size=256, dt_softplus=True, has_initial_states=False)
+
+    unbiased_y, unbiased_final = op.forward(*inputs)
+    biased_y, biased_final = op.forward(*inputs, dt_bias=bias)
+    unbiased_again_y, _ = op.forward(*inputs)
+
+    assert unbiased_final is None
+    assert biased_final is None
+    assert set(op._da_cumsum_ops) == {
+        (torch.float16, False),
+        (torch.float16, True),
+    }
+    assert torch.equal(unbiased_y, unbiased_again_y)
+    assert not torch.equal(unbiased_y, biased_y)
+
+
+@pytest.mark.parametrize(
+    "batch,seqlen,n_heads,d_head,d_state,n_groups,dtype",
+    [
+        pytest.param(
+            1, 512, 4, 64, 32, 2, torch.float16,
+            id="smoke-fp16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            1, 512, 4, 64, 32, 2, torch.bfloat16,
+            id="smoke-bf16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            1, 2048, 80, 64, 128, 1, torch.bfloat16,
+            id="mamba2-2p7b-b1-s2k",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            1, 8192, 64, 64, 128, 1, torch.float16,
+            id="mamba2-1p3b-b1-s8k",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_mamba2_primary_manifest_outputs(
+    batch, seqlen, n_heads, d_head, d_state, n_groups, dtype
+):
+    """Both manifest outputs agree with independent PyTorch and official Mamba."""
+    ssd_combined = pytest.importorskip("mamba_ssm.ops.triton.ssd_combined")
+    torch.manual_seed(44)
+    workload = Mamba2PrimaryWorkload(
+        batch, seqlen, n_heads, d_head, d_state, n_groups, dtype,
+        chunk_size=256,
+        dt_softplus=True,
+    )
+    inputs = workload.gen_inputs()
+    op = Mamba2FwdOp(chunk_size=256, dt_softplus=True, has_initial_states=False)
+    actual = op.forward(*inputs, return_final_states=True)
+    independent = workload.ref_program(*inputs)
+    official_y, official_final = ssd_combined.mamba_chunk_scan_combined(
+        *inputs,
+        256,
+        dt_bias=None,
+        initial_states=None,
+        dt_softplus=True,
+        return_final_states=True,
+    )
+    official = official_y.float(), official_final.float()
 
     atol = 1e-2 if dtype == torch.float16 else 2e-2
-    allclose_compare(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)
+    for output, ref, baseline in zip(actual, independent, official, strict=True):
+        assert output.dtype == torch.float32
+        allclose_compare(output, ref, atol=atol, rtol=1e-3)
+        allclose_compare(output, baseline, atol=atol, rtol=1e-3)
+
+    assert actual[0].shape == (batch, seqlen, n_heads, d_head)
+    assert actual[1].shape == (batch, n_heads, d_head, d_state)
+    assert op._chunk_state_op.kernel.config == {
+        "block_n": min(128, d_state),
+        "block_p": 64,
+        "block_l": 32,
+        "threads": 128,
+    }
 
 
 if __name__ == "__main__":

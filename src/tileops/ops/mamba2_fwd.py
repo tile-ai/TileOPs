@@ -73,7 +73,7 @@ class Mamba2FwdOp:
         self._heads_per_group = None
         self.tune = tune
 
-        self._da_cumsum_ops: dict[torch.dtype, DaCumsumFwdOp] = {}
+        self._da_cumsum_ops: dict[tuple[torch.dtype, bool], DaCumsumFwdOp] = {}
         self._chunk_state_op = SSDChunkStateFwdOp(
             has_seq_idx=False,
             tune=tune,
@@ -96,16 +96,19 @@ class Mamba2FwdOp:
         self._zero_init_flat: Optional[torch.Tensor] = None
         self._zero_seq_idx: Optional[torch.Tensor]   = None
 
-    def _get_da_cumsum_op(self, dtype: torch.dtype) -> DaCumsumFwdOp:
-        if dtype not in self._da_cumsum_ops:
-            self._da_cumsum_ops[dtype] = DaCumsumFwdOp(
+    def _get_da_cumsum_op(
+        self, dtype: torch.dtype, has_dt_bias: bool
+    ) -> DaCumsumFwdOp:
+        key = (dtype, has_dt_bias)
+        if key not in self._da_cumsum_ops:
+            self._da_cumsum_ops[key] = DaCumsumFwdOp(
                 chunk_len=self.chunk_size,
                 dtype=dtype,
                 dt_softplus=self.dt_softplus,
-                has_dt_bias=True,
+                has_dt_bias=has_dt_bias,
                 tune=self.tune,
             )
-        return self._da_cumsum_ops[dtype]
+        return self._da_cumsum_ops[key]
 
     def _get_cb_producer_op(
         self,
@@ -220,10 +223,13 @@ class Mamba2FwdOp:
         ):
             self._zero_seq_idx = torch.zeros(seq_idx_shape, dtype=torch.int32, device=dev)
         # ── 1. DaCumsum ──────────────────────────────────────────────────────
-        if dt_bias is None:
+        has_dt_bias = dt_bias is not None
+        if not has_dt_bias:
             dt_bias = self._zero_dt_bias
 
-        dt_out, dA_cumsum = self._get_da_cumsum_op(x.dtype).forward(dt, A, dt_bias)
+        dt_out, dA_cumsum = self._get_da_cumsum_op(
+            x.dtype, has_dt_bias
+        ).forward(dt, A, dt_bias)
         # dt_out:    (B, H, C, Q)  dtype
         # dA_cumsum: (B, H, C, Q)  float32
 
