@@ -86,7 +86,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     # batch_padded_offsets[E-1] + batch_sizes[E-1] gives the true
                     # end of the last expert's padded block.  When batch_sum is a
                     # conservative upper bound (e.g. T*K + E*block_m in MoE), the
-                    # extra CTAs would otherwise execute full K-loops with all-zero
+                    # keeps extra CTAs off the K-loop, which for them reads all-zero
                     # inputs, wasting SM cycles and B-tensor bandwidth.
                     total_valid_rows = (batch_padded_offsets[batch_count - 1] +
                                         batch_sizes[batch_count - 1])

@@ -101,7 +101,7 @@ def _device_index(tensor: torch.Tensor) -> int | None:
 _POOL_LAYOUTS: Dict[int, str] = {1: "NCL", 2: "NCHW", 3: "NCDHW"}
 _POOL_DIM_NAMES: Dict[int, Tuple[str, ...]] = {1: ("l",), 2: ("h", "w"), 3: ("d", "h", "w")}
 # Kernel-kwarg suffixes for kernel_size/stride/padding(/dilation).
-# Why: the 1d max-pool kernels historically name their pooling axis `w`.
+# Why: the 1d max-pool kernels name their pooling axis `w`, not `l`.
 _AVG_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = _POOL_DIM_NAMES
 _MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
     1: ("w",),

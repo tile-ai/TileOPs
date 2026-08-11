@@ -237,11 +237,10 @@ class Op(ABC):
     def forwarded_overrides(self) -> Optional[dict[str, Kernel]]:
         """The caller's replacements, to hand to a sub-op this op builds.
 
-        A composite op must not pass its own resolved ``kernel_map`` down: every
-        key would arrive at the sub-op looking replaced, and a replacement that
-        cannot serve a call is refused rather than passed over — so a default
-        the sub-op would have selected around becomes an error. Only what the
-        caller actually supplied is an override.
+        Only what the caller supplied. A composite op that passed its whole
+        resolved ``kernel_map`` down would mark every key as replaced, and a
+        replacement that cannot serve a call is an error rather than something to
+        select around.
         """
         if not self._overridden_keys or not self.kernel_map:
             return None

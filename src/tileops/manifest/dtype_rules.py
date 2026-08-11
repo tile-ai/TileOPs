@@ -1,8 +1,8 @@
 """Grammar for manifest ``signature`` dtype expressions.
 
 A dtype expression is a concrete dtype name, a ``|`` union of tokens,
-``same_as(<name>)``, or ``promote_int_to_float(<name>)``. Three consumers read
-it and each used to carry its own regex; the copies had already drifted.
+``same_as(<name>)``, or ``promote_int_to_float(<name>)``. This module is the one
+place that parses it; its three consumers read the accessors below.
 
 Accessors return the referenced *name*, not a dtype — this package depends on
 nothing beyond the standard library and PyYAML.

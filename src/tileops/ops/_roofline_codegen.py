@@ -72,10 +72,9 @@ def _resolve_tensor_binding(op: Any, name: str, op_name: str) -> Any:
     2. ``self.<name>_shape`` is a shape tuple/list; wrapped in a
        :class:`_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
 
-    Anything else raises :class:`ValueError` so the missing binding is
-    surfaced with the op and input name rather than the vacuous
-    ``'NoneType' object has no attribute 'shape'`` that would otherwise
-    reach the caller from inside the generated body.
+    Anything else raises :class:`ValueError`, naming the op and the input, so a
+    missing binding is diagnosable rather than a vacuous ``'NoneType' object has
+    no attribute 'shape'`` from inside the generated body.
 
     Op-family-specific aliases (``self.shape`` / ``self.num_channels``
     / ``self.N_total``) are *not* consulted; ops opting into inline
