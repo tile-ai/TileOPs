@@ -48,6 +48,20 @@ W = TypeVar("W")
 
 _logger = logging.getLogger("tileops.bench")
 
+# Per-phase wall-time budgets in ms; iteration counts derive from them, so a
+# short kernel gets many samples and a long one few.
+DRY_RUN_MS = 25.0
+REPEAT_MS = 100.0
+_CALIBRATION_ITERS = 3
+# Every repeat must match the discovered sequence, so an unbounded count turns
+# one hiccup into a failed case.
+_MIN_ITERS = 10
+_MAX_ITERS = 200
+
+
+def _clamp_iters(raw: float) -> int:
+    return max(_MIN_ITERS, min(_MAX_ITERS, int(raw)))
+
 # Thread-local storage for conftest hook to pick up per-test bench results.
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
@@ -404,42 +418,32 @@ def _native_output_suppressor():
 # NVIDIA SOL-ExecBench–style benchmark
 
 
+def _capture_bench_meta() -> dict:
+    """Snapshot how the last measurement was taken."""
+    return {
+        key: value
+        for key in ("timing", "fallback_reason")
+        if (value := getattr(_bench_meta, key, None)) is not None
+    }
+
+
 def bench_kernel(
     fn: Callable,
     args: tuple[Any, ...] = (),
-    n_warmup: int = 10,
-    n_repeat: int = 50,
-) -> float:
-    """Benchmark a GPU callable with CUPTI activity timing.
+    dry_run_ms: float = DRY_RUN_MS,
+    repeat_ms: float = REPEAT_MS,
+) -> list[float]:
+    """Time *fn* with CUPTI kernel-activity attribution.
 
-    Protocol (adapted from NVIDIA SOL-ExecBench, arxiv.org/abs/2603.19173):
-      1. Lock GPU clocks externally (nvidia-smi).
-      2. Run one first call plus *n_warmup* un-timed iterations, absorbing
-         module/library lazy init, JIT/autotune, and allocator growth.
-      3. Discover the per-call activity sequence, then profile one set of
-         *n_repeat* iterations under CUPTI. Persisting L2 is reset and a
-         2x-L2 buffer cleared before every iteration; inputs come from a
-         shifting pool so each measured call sees a different data pointer
-         without warming the flushed cache.
-      4. Report the median per-iteration latency.
-
-    Each timed call is measured from the earliest to the latest activity of
-    its discovered sequence, so a single-activity call degenerates to pure
-    kernel duration and a multi-activity call keeps its inter-kernel gaps.
-    Attribution fails closed: a missing, unexpected, or dropped record raises
-    unless ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1`` opts into diagnostic
-    CUDA-event timing, which includes per-call launch overhead.
-
-    Args:
-        fn: Callable to benchmark.  If *args* is provided, called with
-            tensors from the shifting input pool; otherwise called as ``fn()``.
-        args: Tensor arguments to rotate each iteration.  Non-tensor
-            values are passed through unchanged.
-        n_warmup: Warmup iterations (default 10).
-        n_repeat: Timed iterations (default 50).
+    A calibration pass measures one iteration, then warmup and measurement each
+    run for their millisecond budget, so a short op is sampled many times and a
+    long one few. L2 is cleared and inputs rotated before every iteration. Each
+    call spans the earliest to the latest activity of its discovered sequence,
+    keeping inter-kernel gaps. Attribution fails closed unless
+    ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
 
     Returns:
-        Kernel latency in **milliseconds**.
+        Per-iteration latencies in **milliseconds**.
     """
     if not isinstance(args, tuple):
         raise TypeError(
@@ -450,25 +454,46 @@ def bench_kernel(
     allow_fallback = _cuda_events_fallback_enabled()
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
-
     cache = _get_l2_flush_cache()
 
+    def _flush_l2():
+        _reset_persisting_l2_cache()
+        cache.zero_()
+
+    # Calibrate on the raw args, before the pool exists to be sized. The flush
+    # is inside the timed region, so counts self-limit for tiny kernels.
+    def _call_raw():
+        return fn(*args) if args else fn()
+
+    _flush_l2()
+    _call_raw()
+    torch.cuda.synchronize()
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(_CALIBRATION_ITERS):
+        _flush_l2()
+        _call_raw()
+    end.record()
+    torch.cuda.synchronize()
+    per_iter_ms = max(start.elapsed_time(end) / _CALIBRATION_ITERS, 1e-6)
+
+    n_warmup = _clamp_iters(dry_run_ms / per_iter_ms)
+    n_repeat = _clamp_iters(repeat_ms / per_iter_ms)
+
     if args:
-        total_iterations = 1 + n_warmup + _discovery_repeats() + n_repeat
+        total = 1 + n_warmup + _discovery_repeats() + n_repeat
         if allow_fallback:
-            total_iterations += n_repeat  # the fallback re-runs every repeat
+            total += n_repeat
         seed = int(os.getenv("TILEOPS_INPUT_POOL_SEED", "0"))
-        arg_pool = _ShiftingTensorPool(args, total_iterations, seed=seed)
-        prepared_args: tuple[Any, ...] | None = None
+        arg_pool = _ShiftingTensorPool(args, total, seed=seed)
+        prepared: tuple[Any, ...] | None = None
 
         def _prepare_args(i):
-            nonlocal prepared_args
-            prepared_args = arg_pool.next_args()
+            nonlocal prepared
+            prepared = arg_pool.next_args()
 
         def _run(i):
-            if prepared_args is None:
-                raise RuntimeError("bench_kernel called _run before preparing args")
-            return fn(*prepared_args)
+            return fn(*prepared)
     else:
         arg_pool = None
 
@@ -480,76 +505,47 @@ def bench_kernel(
 
     def _prepare_iteration(i):
         _prepare_args(i)
-        _reset_persisting_l2_cache()
-        cache.zero_()
+        _flush_l2()
         torch.cuda.synchronize()
 
-    # The first call and the warmup run outside every timing segment.
     _prepare_iteration(0)
     _run(0)
     torch.cuda.synchronize()
-
     for i in range(n_warmup):
         _prepare_iteration(i)
         _run(i)
     torch.cuda.synchronize()
 
-    measurements_ms: list[float] = []
     try:
         with _native_output_suppressor():
-            prepare_sequence, expected_sequence = _discover_expected_sequences(
-                _run,
-                _prepare_iteration,
-            )
-            trace = native_cupti.collect_repeats(
-                _run,
-                n_repeat,
-                prepare_one=_prepare_iteration,
-            )
-            measurements_ms = _attributed_latency_samples_ms(
-                trace,
-                expected_sequence,
-                n_repeat,
-                prepare_sequence,
-            )
-        _bench_meta.timing = "native-cupti"
+            prepare_seq, operator_seq = _discover_expected_sequences(_run, _prepare_iteration)
+            trace = native_cupti.collect_repeats(_run, n_repeat, prepare_one=_prepare_iteration)
+            samples = _attributed_latency_samples_ms(trace, operator_seq, n_repeat, prepare_seq)
+        _bench_meta.timing = "cupti"
     except (_NativeCUPTIAttributionError, native_cupti.NativeCUPTIError) as exc:
         if not allow_fallback:
             raise RuntimeError(
-                f"Native CUPTI profiling failed: {exc}. CUDA-events fallback is "
-                "disabled (TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0), which keeps the "
-                "run from silently mixing two timing methods."
+                f"CUPTI profiling failed: {exc}. CUDA-events fallback is disabled "
+                "(TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0), which keeps the run from "
+                "silently mixing two timing methods."
             ) from exc
         _bench_meta.timing = "cuda-events"
         _bench_meta.fallback_reason = str(exc)
-        _logger.warning(
-            "Native CUPTI timing failed (%s); falling back to CUDA events, which "
-            "include per-call launch and stream gaps.", exc,
-        )
-        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+        _logger.warning("CUPTI timing failed (%s); falling back to CUDA events.", exc)
+        starts = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+        ends = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
         for i in range(n_repeat):
             _prepare_iteration(i)
-            start_events[i].record()
+            starts[i].record()
             _run(i)
-            end_events[i].record()
+            ends[i].record()
         torch.cuda.synchronize()
-        measurements_ms = [
-            start.elapsed_time(end)
-            for start, end in zip(start_events, end_events, strict=True)
-        ]
+        samples = [s.elapsed_time(e) for s, e in zip(starts, ends, strict=True)]
 
-    latency_ms = statistics.median(measurements_ms)
-    _bench_meta.latency_p10_ms, _bench_meta.latency_p90_ms = _sample_spread_ms(
-        measurements_ms
-    )
-    # Drop the pool and its last handed-out view first: empty_cache() cannot
-    # reclaim blocks these still reference, and the pools of hundreds of
-    # benchmark calls would accumulate.
     arg_pool = None
-    prepared_args = None
+    prepared = None
     torch.cuda.empty_cache()
-    return latency_ms
+    return samples
 
 
 def _get_env_metadata() -> list[str]:
@@ -625,38 +621,60 @@ class BenchmarkBase(Generic[W], ABC):
     def calculate_memory(self) -> Optional[float]:
         raise NotImplementedError
 
-    def profile(self,
-                functor: Any,
-                *inputs: Any) -> dict:
-        """Profile a callable and return structured results.
-
-        Uses the NVIDIA SOL-ExecBench protocol: CUPTI activity timing,
-        first-call plus warmup, one set of 50 repeats, and SOL-style
-        L2 preparation outside the timed window.
-        """
+    def profile(self, functor: Any, *inputs: Any) -> dict:
+        """Profile a callable and return its structured result."""
         with torch.no_grad():
-            latency = bench_kernel(functor, args=inputs)
-        return self._build_result(latency)
+            return self._build_result(bench_kernel(functor, args=inputs))
 
     def profile_autograd(self, functor: Any) -> dict:
-        """Profile a callable that requires autograd (e.g. fwd+bwd).
+        """Profile a zero-arg closure that builds an autograd graph."""
+        return self._build_result(bench_kernel(functor))
 
-        Same as profile() but without torch.no_grad(), so the callable
-        can build autograd graphs and call .backward() internally.
-        The functor must be a zero-arg closure that captures its inputs.
+    def compare(
+        self,
+        functors: dict[str, Any],
+        *inputs: Any,
+        record_as: Any = None,
+        params: Optional[dict] = None,
+    ) -> dict[str, dict]:
+        """Time several implementations against each other and record them all.
+
+        Each implementation is timed twice, once in the given order and once in
+        reverse, so clock and thermal drift across the case lands on all of them
+        equally instead of on whichever ran last.
+
+        A value is either a callable, timed on the shared *inputs*, or a
+        ``(callable, args)`` pair for an implementation that takes its own.
         """
-        latency = bench_kernel(functor)
-        return self._build_result(latency)
+        plan = {
+            tag: value if isinstance(value, tuple) else (value, inputs)
+            for tag, value in functors.items()
+        }
+        tags = list(plan)
+        samples: dict[str, list[float]] = {tag: [] for tag in tags}
+        meta: dict[str, dict] = {}
+        for tag in tags + tags[::-1]:
+            functor, args = plan[tag]
+            with torch.no_grad():
+                samples[tag].extend(bench_kernel(functor, args=args))
+            meta[tag] = _capture_bench_meta()
+        results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
+        if record_as is not None:
+            for tag in tags:
+                BenchmarkReport.record(record_as, params or {}, results[tag], tag=tag)
+        return results
 
-    def _build_result(self, latency: float) -> dict:
-        result = {"latency_ms": latency}
-        # How the number was measured, and how tightly, must travel with it: a
-        # run that fell back to CUDA events is not comparable with a CUPTI-timed
-        # one, and a median with a wide spread is not a latency.
-        for key in ("timing", "fallback_reason", "latency_p10_ms", "latency_p90_ms"):
-            value = getattr(_bench_meta, key, None)
-            if value is not None:
-                result[key] = value
+    def _build_result(self, samples: list[float], meta: Optional[dict] = None) -> dict:
+        if not samples:
+            raise ValueError("bench_kernel returned no samples")
+        latency = statistics.median(samples)
+        result = {"latency_ms": latency, "n_samples": len(samples)}
+        p10, p90 = _sample_spread_ms(samples)
+        if p10 is not None:
+            result["latency_p10_ms"], result["latency_p90_ms"] = p10, p90
+        # How the number was measured must travel with it: a run that fell back
+        # to CUDA events is not comparable with a CUPTI-timed one.
+        result.update(meta if meta is not None else _capture_bench_meta())
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9

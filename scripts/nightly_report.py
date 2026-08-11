@@ -109,7 +109,7 @@ def parse_bench_xml(path: str) -> list[dict]:
         # Perf data
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
                      "tileops_variant", "tileops_timing",
-                     "tileops_latency_p10_ms", "tileops_latency_p90_ms",
+                     "tileops_latency_p10_ms", "tileops_latency_p90_ms", "tileops_n_samples",
                      "baseline_tag", "baseline_latency_ms", "baseline_tflops",
                      "baseline_ratio"):
             if key in props:
@@ -188,7 +188,7 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         config_entry = {"name": r["name"]}
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
                      "tileops_variant", "tileops_timing",
-                     "tileops_latency_p10_ms", "tileops_latency_p90_ms",
+                     "tileops_latency_p10_ms", "tileops_latency_p90_ms", "tileops_n_samples",
                      "baseline_tag", "baseline_latency_ms", "baseline_tflops",
                      "baseline_ratio", "baselines"):
             if key in r:

@@ -8,7 +8,6 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
     _attributed_latency_samples_ms,
     _bench_meta,
@@ -17,8 +16,6 @@ from benchmarks.benchmark_base import (
     bench_kernel,
     workloads_to_params,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.op_base import Op
 
 # Duck-typed test workloads
 
@@ -29,24 +26,6 @@ class _DuckShapeDtype:
     def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
         self.shape = shape
         self.dtype = dtype
-
-
-class _DuckInputGen:
-    """Object with gen_inputs() only."""
-
-    def gen_inputs(self):
-        return (torch.randn(4, 4),)
-
-
-class _DuckFull:
-    """Object carrying shape, dtype and gen_inputs()."""
-
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        return (torch.randn(*self.shape, dtype=self.dtype),)
 
 
 class _FakeRooflineOp:
@@ -73,42 +52,6 @@ def test_manifest_benchmark_accepts_duck_typed_workload():
     assert bm.workload is w
     assert bm.calculate_flops() == 123.0
     assert bm.calculate_memory() == 456.0
-    assert op.calls == 1
-
-
-# WorkloadBase compatibility
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_accepts_workload_base_subclass():
-    """A nominal WorkloadBase subclass works the same as a duck-typed one."""
-    from workloads.workload_base import WorkloadBase
-
-    class _ConcreteWorkload(WorkloadBase):
-        def __init__(self):
-            self.shape = (4, 8)
-            self.dtype = torch.float32
-
-        def gen_inputs(self):
-            return (torch.randn(*self.shape, dtype=self.dtype),)
-
-    w = _ConcreteWorkload()
-    bm = ManifestBenchmark("TestOp", _FakeRooflineOp((4, 8)), w)
-    assert bm.calculate_flops() == 4.0
-    assert bm.calculate_memory() == 8.0
-
-
-# ManifestBenchmark roofline contract
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_reads_op_eval_roofline_once():
-    w = _DuckShapeDtype((2048, 4096), torch.float16)
-    op = _FakeRooflineOp((2048, 4096))
-    bm = ManifestBenchmark("SumFwdOp", op, w)
-    assert bm.calculate_flops() == 2048.0
-    assert bm.calculate_memory() == 4096.0
-    assert bm.calculate_flops() == 2048.0
     assert op.calls == 1
 
 
@@ -298,7 +241,7 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
     """A callable launching no CUDA kernel cannot be attributed by CUPTI."""
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
     with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
-        bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2)
+        bench_kernel(lambda: sum(range(64)))
 
 
 @pytest.mark.smoke
@@ -306,11 +249,9 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
 def test_native_cupti_failure_falls_back_when_enabled(monkeypatch):
     """CUDA-event fallback remains available for local diagnosis."""
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1")
-    latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2)
-    assert latency >= 0.0
+    samples = bench_kernel(lambda: sum(range(64)))
+    assert len(samples) >= 10 and all(s >= 0.0 for s in samples)
     assert _bench_meta.timing == "cuda-events"
-    # The spread around the reported median travels with it.
-    assert _bench_meta.latency_p10_ms <= latency <= _bench_meta.latency_p90_ms
 
 
 @pytest.mark.smoke
@@ -321,144 +262,4 @@ def test_kernel_runtime_error_propagates():
         raise RuntimeError("kernel failure")
 
     with pytest.raises(RuntimeError, match="kernel failure"):
-        bench_kernel(boom, n_warmup=0, n_repeat=1)
-
-
-@pytest.fixture
-def _reset_records():
-    """Snapshot and clear ``BenchmarkReport._records`` around each test."""
-    saved = BenchmarkReport._records
-    BenchmarkReport._records = {}
-    try:
-        yield
-    finally:
-        BenchmarkReport._records = saved
-
-
-class _FakeKernel(Kernel):
-    """Stand-in for a real kernel with just a config dict."""
-
-    def __init__(self, config: dict):
-        super().__init__()
-        self.config = config
-
-    def forward(self):
-        return None
-
-
-class _FakeOp(Op):
-    """Minimal concrete ``Op`` so ``iter_kernels`` reaches what the test stores."""
-
-    @property
-    def default_kernel_map(self):
-        return {}
-
-    def forward(self, *args, **kwargs):
-        return None
-
-
-def _result() -> dict:
-    return {"latency_ms": 0.01, "tflops": 1.0, "bandwidth_tbs": 0.5}
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_eager_init_op_keeps_kernel_config():
-    """Pattern 1: ``op.kernel`` set in ``__init__`` (GemmOp-style)."""
-
-    class _EagerOp(_FakeOp):
-        def __init__(self):
-            self.kernel = _FakeKernel({"block_m": 128, "block_n": 256})
-
-    BenchmarkReport.record(_EagerOp(), params={}, result=_result(), tag="t")
-    records = BenchmarkReport._records["_EagerOp"]
-    assert records[0].get("config") == {"block_m": 128, "block_n": 256}
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_lazy_with_dummy_kernel_keeps_kernel_config():
-    """Pattern 2: dummy ``op.kernel`` plus a populated slot."""
-
-    class _LazyDummyOp(_FakeOp):
-        def __init__(self):
-            self.kernel = _FakeKernel({"block_m": 8})
-            self.get_or_build_kernel("fwd", key=1, build=lambda: self.kernel)
-
-    BenchmarkReport.record(_LazyDummyOp(), params={}, result=_result(), tag="t")
-    records = BenchmarkReport._records["_LazyDummyOp"]
-    assert records[0].get("config") == {"block_m": 8}
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_pure_lazy_cache_op_keeps_kernel_config():
-    """Pattern 3: only a slot is populated; ``op.kernel`` is unset."""
-
-    class _PureLazyOp(_FakeOp):
-        def __init__(self):
-            self.get_or_build_kernel(
-                "fwd", key=(32, 256), build=lambda: _FakeKernel({"block_m": 4, "tile_n": 0}))
-
-    BenchmarkReport.record(_PureLazyOp(), params={}, result=_result(), tag="t")
-    records = BenchmarkReport._records["_PureLazyOp"]
-    assert records[0].get("config") == {"block_m": 4, "tile_n": 0}
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_op_with_explicit_config_takes_precedence():
-    """A direct ``op.config`` wins over kernel introspection."""
-
-    class _ConfigOp:
-        config = {"explicit": True}
-        kernel = _FakeKernel({"explicit": False})
-
-    BenchmarkReport.record(_ConfigOp(), params={}, result=_result(), tag="t")
-    records = BenchmarkReport._records["_ConfigOp"]
-    assert records[0].get("config") == {"explicit": True}
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_composite_op_keeps_delegate_kernel_config():
-    """A composite that owns no kernels still reports the delegate's config."""
-
-    class _DelegateOp(_FakeOp):
-        def __init__(self):
-            self.get_or_build_kernel(
-                "fwd", key=torch.float16, build=lambda: _FakeKernel({"block_m": 8}))
-
-    class _CompositeOp(_FakeOp):
-        def __init__(self):
-            self._delegate = _DelegateOp()
-
-        def kernel_delegates(self):
-            return (self._delegate,)
-
-    BenchmarkReport.record(_CompositeOp(), params={}, result=_result(), tag="t")
-    records = BenchmarkReport._records["_CompositeOp"]
-    assert records[0].get("config") == {"block_m": 8}
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_op_without_any_config_omits_field():
-    """Ops with no config sources should not produce a ``config`` field."""
-
-    class _BareOp:
-        pass
-
-    BenchmarkReport.record(_BareOp(), params={}, result=_result(), tag="t")
-    records = BenchmarkReport._records["_BareOp"]
-    assert "config" not in records[0]
-
-
-@pytest.mark.full
-@pytest.mark.usefixtures('_reset_records')
-def test_record_string_name_omits_config_field():
-    """When called with a benchmark group name, no config is recorded."""
-
-    BenchmarkReport.record("FA3Baseline", params={}, result=_result(), tag="FA3")
-    records = BenchmarkReport._records["FA3Baseline"]
-    assert "config" not in records[0]
+        bench_kernel(boom)

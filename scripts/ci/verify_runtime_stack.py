@@ -13,6 +13,9 @@ modes that a plain `import tilelang` smoke check misses:
   3. torch is still the cu129 build — a bench baseline that pulls torch from PyPI silently
      swaps it to cu128, which breaks prebuilt c10-ABI extensions (e.g. vllm's `_C`:
      `undefined symbol: c10::cuda::c10_cuda_check_implementation`).
+  4. cupti-python is present and did not drag cuda-bindings off torch's pin — it must be
+     installed with --no-deps, because its own pin is one minor behind torch's and a
+     resolved install downgrades cuda-bindings while pip only warns.
 """
 import importlib.metadata as md
 import sys
@@ -20,6 +23,15 @@ import sys
 import tilelang
 import torch
 from packaging.requirements import Requirement
+
+
+def _torch_pin(name: str) -> Requirement | None:
+    """Return torch's own requirement on *name*, ignoring environment markers."""
+    for raw in md.requires("torch") or []:
+        req = Requirement(raw)
+        if req.name == name:
+            return req
+    return None
 
 # Matches the cu129 base image; bump together with the base/torch CUDA major.minor.
 EXPECTED_TORCH_CUDA = "12.9"
@@ -45,8 +57,30 @@ if torch.version.cuda != EXPECTED_TORCH_CUDA:
         "that layer so the c10 ABI stays consistent."
     )
 
+try:
+    cupti_version = md.version("cupti-python")
+except md.PackageNotFoundError:
+    sys.exit(
+        "FAIL: cupti-python is missing; the benchmark layer times kernels through it. "
+        "Install it with --no-deps (see the post-fa3 stage)."
+    )
+
+# No import here: the build has no GPU, and the point of this check is the resolver,
+# not the driver. A broken binding surfaces at benchmark time, which fails closed.
+bindings_pin = _torch_pin("cuda-bindings")
+bindings_installed = md.version("cuda-bindings")
+if bindings_pin is not None and not bindings_pin.specifier.contains(
+    bindings_installed, prereleases=True
+):
+    sys.exit(
+        f"FAIL: cuda-bindings {bindings_installed} violates torch's requirement "
+        f"{bindings_pin.specifier}. cupti-python pins an older cuda-bindings, so it must be "
+        "installed with --no-deps; a resolved install downgrades it and pip only warns."
+    )
+
 print(
     f"runtime-stack OK: tilelang {tilelang.__version__} | "
     f"torch {torch.__version__} (cuda {torch.version.cuda}) | "
-    f"apache-tvm-ffi {installed} satisfies {ffi_req.specifier}"
+    f"apache-tvm-ffi {installed} satisfies {ffi_req.specifier} | "
+    f"cupti-python {cupti_version} with cuda-bindings {bindings_installed}"
 )

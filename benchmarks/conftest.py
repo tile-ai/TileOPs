@@ -69,6 +69,9 @@ def pytest_runtest_call(item):
                 value = tileops_entry.get(key)
                 if value is not None:
                     item.user_properties.append((f"tileops_{key}", f"{value:.4f}"))
+            n_samples = tileops_entry.get("n_samples")
+            if n_samples is not None:
+                item.user_properties.append(("tileops_n_samples", str(n_samples)))
             timing = tileops_entry.get("timing")
             if timing is not None:
                 item.user_properties.append(("tileops_timing", str(timing)))
