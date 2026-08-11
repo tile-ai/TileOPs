@@ -1,17 +1,14 @@
-# Direct requirements of the runner image, matching the Dockerfile's install lists. The
-# source-built packages (tilelang, FA2, FA3, mamba-ssm, DeepGEMM) are absent: they have no wheel
-# to resolve and go in with --no-deps.
-#
-# Compile to constraints-runner-lock.txt with the command in that file's header.
+# Direct requirements of the runner image. The source-built packages (tilelang, FA2, FA3,
+# mamba-ssm, DeepGEMM) are absent: no wheel to resolve, and they go in with --no-deps.
+# Compile with the command in constraints-runner-lock.txt's header.
 --index-url https://download.pytorch.org/whl/cu132
 --extra-index-url https://pypi.org/simple
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.13.0+cu132
 torchvision==0.28.0+cu132
-# CPU build on purpose. Nothing here uses torchaudio; it is present only because vllm pins it,
-# and transformers imports it unconditionally. No cu132 build exists, and the CUDA builds carry an
-# extension that refuses to load against a torch of a different CUDA minor -- the CPU wheel has no
-# such extension, so the import transformers needs succeeds.
+# Here only because vllm pins it and transformers imports it unconditionally. No cu132 build
+# exists, and a CUDA build of another minor refuses to load beside this torch; the CPU wheel
+# carries no such extension.
 torchaudio==2.11.0+cpu
 setuptools
 wheel

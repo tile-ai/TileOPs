@@ -2,10 +2,8 @@
 # deps) or the runner Dockerfile's install lists (CI-only tooling); the resolved closure lives in
 # constraints-runner-lock.txt.
 #
-# No `+cu132` here: the CUDA variant comes from the install index, so this file also fits the CPU
-# preflight. torch/torchvision follow vllm 0.27.1's exact pins. torchaudio is here only because
-# vllm requires it and transformers imports it unconditionally; the runner installs the CPU build,
-# whose missing CUDA extension is what lets it load next to a torch of a different CUDA minor.
+# No `+cu132`: the CUDA variant comes from the install index, so this file also fits the CPU
+# preflight. torch/torchvision follow vllm 0.27.1's exact pins; see requirements.in for torchaudio.
 torch==2.13.0
 torchvision==0.28.0
 torchaudio==2.11.0
@@ -31,6 +29,6 @@ ruff==0.14.13
 pytest-timeout==2.3.1
 # Stack dump of a hung benchmark child before the runner kills it.
 py-spy==0.4.2
-# The installer itself. pip bootstraps it, so it cannot come from the lock it helps produce;
-# the same version must compile the lock and install from it.
+# The installer. It cannot come from the lock it produces, and the same version must compile the
+# lock and install from it.
 uv==0.12.3

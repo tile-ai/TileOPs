@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """Fail the runner-image build unless the baked stack is coherent. Runs GPU-free.
 
-Each check covers a failure a plain `import tilelang` misses:
-
-  1. tilelang imports — an apache-tvm-ffi too new double-registers and calls abort().
-  2. the installed apache-tvm-ffi satisfies tilelang's declared range — too old crashes only
-     when a kernel first compiles under GPU, which a no-GPU import never reaches.
-  3. torch is still the cu132 build — a baseline pulling torch from PyPI breaks every
-     prebuilt c10-ABI extension.
-  4. cupti-python is present and left cuda-bindings on torch's pin — it must go in with
-     --no-deps; pip only warns when a resolved install moves it.
+Two checks are not self-evident. The bare `import tilelang` is one: an apache-tvm-ffi too new
+double-registers and calls abort(). The apache-tvm-ffi range check is the other: too old crashes
+only when a kernel first compiles under GPU, which no import here reaches. Each failure below
+names its own fix.
 """
 import importlib.metadata as md
 import sys
