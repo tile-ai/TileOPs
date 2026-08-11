@@ -7,7 +7,7 @@ Workload shapes and roofline formulas are loaded from the ops manifest (src/tile
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -41,6 +41,30 @@ _VAR_OP = "VarFwdOp"
 _VAR_MEAN_OP = "VarMeanFwdOp"
 
 
+def _torch_sum(x, *, dim, keepdim):
+    return torch.sum(x, dim=dim, keepdim=keepdim)
+
+
+def _torch_mean(x, *, dim, keepdim):
+    return torch.mean(x, dim=dim, keepdim=keepdim)
+
+
+def _torch_prod(x):
+    return torch.prod(x, dim=-1)
+
+
+def _torch_std(x, *, dim, keepdim):
+    return torch.std(x, dim=dim, keepdim=keepdim, correction=1)
+
+
+def _torch_var(x, *, dim, keepdim):
+    return torch.var(x, dim=dim, keepdim=keepdim, correction=1)
+
+
+def _torch_var_mean(x, *, dim, keepdim):
+    return torch.var_mean(x, dim=dim, keepdim=keepdim, correction=1)
+
+
 # Sum benchmarks
 
 
@@ -59,7 +83,7 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
+        return _torch_sum(x, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
@@ -87,7 +111,7 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
+        return _torch_mean(x, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
@@ -163,12 +187,8 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = ProdFwdOp()
     bm = ManifestBenchmark(_PROD_OP, op, test)
-
-    def baseline_fn(x):
-        return x.float().prod(dim=-1).to(x.dtype)
-
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": _torch_prod}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -193,7 +213,7 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return x.float().std(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
+        return _torch_std(x, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
@@ -221,7 +241,7 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
+        return _torch_var(x, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
@@ -249,9 +269,7 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        v = x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
-        m = x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
-        return (v, m)
+        return _torch_var_mean(x, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())

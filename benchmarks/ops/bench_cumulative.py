@@ -8,11 +8,7 @@ Workload shapes and roofline formulas are loaded from the ops manifest
 import pytest
 import torch
 
-from benchmarks.benchmark_base import (
-    BenchmarkReport,
-    ManifestBenchmark,
-    workloads_to_params,
-)
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from workloads.reduction import CumulativeWorkload
 
 _CUMSUM_OP = "CumsumFwdOp"
@@ -41,6 +37,14 @@ class CumulativeBenchmarkWorkload(CumulativeWorkload):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
+def _torch_cumsum(x: torch.Tensor) -> torch.Tensor:
+    return torch.cumsum(x, dim=-1)
+
+
+def _torch_cumprod(x: torch.Tensor) -> torch.Tensor:
+    return torch.cumprod(x, dim=-1)
+
+
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
 def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = CumulativeBenchmarkWorkload(shape, dtype, "cumsum")
@@ -49,7 +53,12 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = _make_op(shape, dtype, "cumsum")
     bm = ManifestBenchmark(_CUMSUM_OP, op, test)
 
-    bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch": _torch_cumsum},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
@@ -60,4 +69,9 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = _make_op(shape, dtype, "cumprod")
     bm = ManifestBenchmark(_CUMPROD_OP, op, test)
 
-    bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch": _torch_cumprod},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )

@@ -7,7 +7,7 @@ Workload shapes and roofline formulas are loaded from the ops manifest (src/tile
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 
@@ -16,6 +16,10 @@ from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 _L1_NORM_OP = "L1NormFwdOp"
 _L2_NORM_OP = "L2NormFwdOp"
 _INF_NORM_OP = "InfNormFwdOp"
+
+
+def _torch_vector_norm(x, *, ord, dim, keepdim):
+    return torch.linalg.vector_norm(x, ord=ord, dim=dim, keepdim=keepdim)
 
 
 # L1 Norm benchmarks
@@ -36,12 +40,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return torch.linalg.vector_norm(
-            x.float(),
-            ord=1,
-            dim=dim,
-            keepdim=keepdim,
-        ).to(x.dtype)
+        return _torch_vector_norm(x, ord=1, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
@@ -69,12 +68,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return torch.linalg.vector_norm(
-            x.float(),
-            ord=2,
-            dim=dim,
-            keepdim=keepdim,
-        ).to(x.dtype)
+        return _torch_vector_norm(x, ord=2, dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
@@ -102,12 +96,7 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return torch.linalg.vector_norm(
-            x.float(),
-            ord=float("inf"),
-            dim=dim,
-            keepdim=keepdim,
-        ).to(x.dtype)
+        return _torch_vector_norm(x, ord=float("inf"), dim=dim, keepdim=keepdim)
 
     try:
         bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())

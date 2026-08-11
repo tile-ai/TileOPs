@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
@@ -18,6 +18,10 @@ from workloads.normalization import (
 )
 
 _RMS_OP_NAME = "RMSNormFwdOp"
+
+
+def _torch_rms_norm(x, weight, *, normalized_shape, eps):
+    return F.rms_norm(x, normalized_shape, weight=weight, eps=eps)
 
 
 def _rms_params():
@@ -40,8 +44,14 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     op = RMSNormFwdOp(normalized_shape=(n,), tune=tune)
     bm = ManifestBenchmark(_RMS_OP_NAME, op, test)
 
+    def baseline_fn(x, weight):
+        return _torch_rms_norm(x, weight, normalized_shape=(n,), eps=test.eps)
+
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {"tileops": op, "torch": baseline_fn},
+        *inputs,
+        record_as=op,
+        params=locals(),
     )
 
 
