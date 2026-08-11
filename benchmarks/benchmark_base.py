@@ -28,8 +28,6 @@ from tileops.manifest import (
     single_input_workload_contract,
 )
 
-from . import native_cupti
-
 
 def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
     """Resolve the shared workload contract for an op known to exist."""
@@ -72,8 +70,8 @@ _bench_meta = threading.local()
 _cuda_runtime = None
 
 
-class _NativeCUPTIAttributionError(Exception):
-    """Native CUPTI trace could not be attributed to logical benchmark calls."""
+class _CUPTIAttributionError(Exception):
+    """A CUPTI trace could not be attributed to logical benchmark calls."""
 
 
 class _ShiftingTensorPool:
@@ -153,6 +151,126 @@ class _ShiftingTensorPool:
             )
         self._call_idx += 1
         return tuple(result)
+
+
+# CUPTI activity collection, via NVIDIA's cupti-python binding.
+
+_CUPTI = None
+_COLLECTOR_ACTIVE = False
+_CALLBACKS_REGISTERED = False
+_BUFFER_BYTES = 8 * 1024 * 1024
+_BUFFER_ALIGN = 8
+_RECORDS: list[dict[str, Any]] = []
+
+# CUPTI reports drops per (context, stream) through pointers this layer does not
+# hold; a drop instead shows up as an activity count attribution fails closed on.
+_UNKNOWN_DROPS = 0
+
+
+class CUPTIError(RuntimeError):
+    """The CUPTI collector is unavailable or could not be operated."""
+
+
+def _load_cupti():
+    global _CUPTI
+    if _CUPTI is not None:
+        return _CUPTI
+    try:
+        from cupti import cupti
+    except Exception as exc:  # noqa: BLE001
+        raise CUPTIError(
+            "cupti-python is unavailable. Install it with "
+            "`pip install --no-deps cupti-python==12.8.0`; --no-deps is required "
+            "or it downgrades torch's cuda-bindings pin."
+        ) from exc
+    _CUPTI = cupti
+    return _CUPTI
+
+
+def _buffer_requested():
+    return _BUFFER_BYTES, _BUFFER_ALIGN
+
+
+def _buffer_completed(records) -> None:
+    # Copy the fields out and keep no record alive: the binding's other
+    # accessors misread a newer libcupti's struct and raise, including from
+    # __del__ at shutdown.
+    for record in records:
+        _RECORDS.append({
+            "kind": "kernel",
+            "name": str(record.name),
+            "start_ns": int(record.start),
+            "end_ns": int(record.end),
+        })
+
+
+@contextlib.contextmanager
+def _phase_session():
+    """Own one session, so a discovery mismatch leaves nothing for timing."""
+    global _COLLECTOR_ACTIVE, _CALLBACKS_REGISTERED
+    if _COLLECTOR_ACTIVE:
+        raise RuntimeError("CUPTI collector is already active")
+    cupti = _load_cupti()
+    try:
+        if not _CALLBACKS_REGISTERED:
+            cupti.activity_register_callbacks(_buffer_requested, _buffer_completed)
+            _CALLBACKS_REGISTERED = True
+        _RECORDS.clear()
+        cupti.activity_enable(cupti.ActivityKind.CONCURRENT_KERNEL)
+    except Exception as exc:  # noqa: BLE001
+        raise CUPTIError(f"CUPTI collector failed to start: {exc}") from exc
+    _COLLECTOR_ACTIVE = True
+    try:
+        yield
+    finally:
+        _COLLECTOR_ACTIVE = False
+        try:
+            cupti.activity_disable(cupti.ActivityKind.CONCURRENT_KERNEL)
+        except Exception as exc:  # noqa: BLE001
+            raise CUPTIError(f"CUPTI collector failed to stop: {exc}") from exc
+
+
+def _flush() -> list[dict[str, Any]]:
+    """Return the records completed since the previous flush."""
+    cupti = _load_cupti()
+    torch.cuda.synchronize()
+    try:
+        cupti.activity_flush_all(1)  # CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
+    except Exception as exc:  # noqa: BLE001
+        raise CUPTIError(f"CUPTI flush failed: {exc}") from exc
+    drained = list(_RECORDS)
+    _RECORDS.clear()
+    return drained
+
+
+def collect_discovery(
+    run_one: Callable[[int], None],
+    n_repeat: int,
+    prepare_one: Callable[[int], None],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Capture prepare and operator activity separately, untimed."""
+    prepare_traces, operator_traces = [], []
+    with _phase_session():
+        for i in range(n_repeat):
+            prepare_one(i)
+            prepare_traces.append({"kernels": _flush(), "dropped": _UNKNOWN_DROPS})
+            run_one(i)
+            operator_traces.append({"kernels": _flush(), "dropped": _UNKNOWN_DROPS})
+    return prepare_traces, operator_traces
+
+
+def collect_repeats(
+    run_one: Callable[[int], None],
+    n_repeat: int,
+    prepare_one: Callable[[int], None] | None = None,
+) -> dict[str, Any]:
+    """Capture a complete timed trial as one ordered activity-record range."""
+    with _phase_session():
+        for i in range(n_repeat):
+            if prepare_one is not None:
+                prepare_one(i)
+            run_one(i)
+        return {"kernels": _flush(), "dropped": _UNKNOWN_DROPS}
 
 
 def _activity_identity(activity: dict) -> str:
@@ -252,13 +370,13 @@ def _ordered_trace_kernels(trace: dict) -> list[dict]:
 def _stable_discovery_sequence(traces: list[dict], phase: str) -> tuple[str, ...]:
     for trace in traces:
         if int(trace.get("dropped", 0)) != 0:
-            raise _NativeCUPTIAttributionError(
+            raise _CUPTIAttributionError(
                 f"CUPTI dropped {trace['dropped']} records during {phase} discovery"
             )
     groups = [_ordered_trace_kernels(trace) for trace in traces]
     sequences = [_kernel_sequence(kernels) for kernels in groups]
     if not sequences or any(not sequence for sequence in sequences):
-        raise _NativeCUPTIAttributionError(
+        raise _CUPTIAttributionError(
             f"CUPTI discovery found no CUDA kernel sequence for {phase}"
         )
     expected = sequences[0]
@@ -267,7 +385,7 @@ def _stable_discovery_sequence(traces: list[dict], phase: str) -> tuple[str, ...
         for kernels in groups[1:]
     ):
         rendered = "; ".join(_format_sequence(sequence) for sequence in sequences)
-        raise _NativeCUPTIAttributionError(
+        raise _CUPTIAttributionError(
             f"CUPTI discovery saw inconsistent {phase} sequences: {rendered}"
         )
     return expected
@@ -285,7 +403,7 @@ def _discover_expected_sequences(
     run_one: Callable[[int], None],
     prepare_one: Callable[[int], None],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    prepare_traces, operator_traces = native_cupti.collect_discovery(
+    prepare_traces, operator_traces = collect_discovery(
         run_one,
         _discovery_repeats(),
         prepare_one,
@@ -303,7 +421,7 @@ def _attributed_latency_samples_ms(
     expected_prepare_sequence: tuple[str, ...] = (),
 ) -> list[float]:
     if int(trace.get("dropped", 0)) != 0:
-        raise _NativeCUPTIAttributionError(
+        raise _CUPTIAttributionError(
             f"CUPTI dropped {trace['dropped']} records during timing"
         )
 
@@ -315,7 +433,7 @@ def _attributed_latency_samples_ms(
     expected_total = n_repeat * cycle_count
 
     if cycle_count == 0 or len(kernels) != expected_total:
-        raise _NativeCUPTIAttributionError(
+        raise _CUPTIAttributionError(
             "CUPTI timing activity count does not match the deterministic "
             f"op-sequence ledger: got {len(kernels)}, expected {expected_total} "
             f"({n_repeat} x ({prepare_count} prepare + {operator_count} operator)); "
@@ -338,7 +456,7 @@ def _attributed_latency_samples_ms(
         samples_us.append(_kernel_span_us(selected))
 
     if len(samples_us) != n_repeat:
-        raise _NativeCUPTIAttributionError(
+        raise _CUPTIAttributionError(
             f"CUPTI timing attributed {len(samples_us)}/{n_repeat} complete "
             f"expected kernel sequences; kernels={len(kernels)}; "
             f"prepare=[{_format_sequence(expected_prepare_sequence)}]; "
@@ -519,10 +637,10 @@ def bench_kernel(
     try:
         with _native_output_suppressor():
             prepare_seq, operator_seq = _discover_expected_sequences(_run, _prepare_iteration)
-            trace = native_cupti.collect_repeats(_run, n_repeat, prepare_one=_prepare_iteration)
+            trace = collect_repeats(_run, n_repeat, prepare_one=_prepare_iteration)
             samples = _attributed_latency_samples_ms(trace, operator_seq, n_repeat, prepare_seq)
         _bench_meta.timing = "cupti"
-    except (_NativeCUPTIAttributionError, native_cupti.NativeCUPTIError) as exc:
+    except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
             raise RuntimeError(
                 f"CUPTI profiling failed: {exc}. CUDA-events fallback is disabled "

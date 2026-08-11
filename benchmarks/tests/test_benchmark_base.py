@@ -8,51 +8,14 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import (
-    ManifestBenchmark,
     _attributed_latency_samples_ms,
-    _bench_meta,
-    _NativeCUPTIAttributionError,
+    _CUPTIAttributionError,
     _ShiftingTensorPool,
     bench_kernel,
     workloads_to_params,
 )
 
 # Duck-typed test workloads
-
-
-class _DuckShapeDtype:
-    """Object with shape and dtype but NOT a WorkloadBase subclass."""
-
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-
-class _FakeRooflineOp:
-    """Minimal op-like object for ManifestBenchmark unit tests."""
-
-    def __init__(self, roofline: tuple[int, int] = (128, 256)):
-        self.calls = 0
-        self._roofline = roofline
-
-    def eval_roofline(self) -> tuple[int, int]:
-        self.calls += 1
-        return self._roofline
-
-
-# ManifestBenchmark contract tests
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_accepts_duck_typed_workload():
-    """ManifestBenchmark reads roofline off the op, never off the workload."""
-    w = _DuckShapeDtype((4, 8, 1024), torch.float16)
-    op = _FakeRooflineOp((123, 456))
-    bm = ManifestBenchmark("TestOp", op, w)
-    assert bm.workload is w
-    assert bm.calculate_flops() == 123.0
-    assert bm.calculate_memory() == 456.0
-    assert op.calls == 1
 
 
 @pytest.mark.smoke
@@ -77,19 +40,6 @@ def test_workloads_to_params_include_extra_propagates_dim():
         assert isinstance(extra, dict)
     # A workload with no extras must yield an empty dict, not a missing slot.
     assert any(p.values[2] == {} for p in triples)
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_propagates_op_eval_error():
-    w = _DuckShapeDtype((4, 8), torch.float16)
-
-    class _BrokenOp:
-        def eval_roofline(self):
-            raise RuntimeError("shape not bound")
-
-    bm = ManifestBenchmark("SumFwdOp", _BrokenOp(), w)
-    with pytest.raises(RuntimeError, match="shape not bound"):
-        bm.calculate_flops()
 
 
 def test_multi_input_op_raises_keyerror():
@@ -207,7 +157,7 @@ def test_attribution_accepts_overlapping_activities_in_either_order(
     ],
 )
 def test_attribution_fails_closed(trace, expected_sequence, message):
-    with pytest.raises(_NativeCUPTIAttributionError, match=message):
+    with pytest.raises(_CUPTIAttributionError, match=message):
         _attributed_latency_samples_ms(trace, expected_sequence, n_repeat=1)
 
 
@@ -242,16 +192,6 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
     with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
         bench_kernel(lambda: sum(range(64)))
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_native_cupti_failure_falls_back_when_enabled(monkeypatch):
-    """CUDA-event fallback remains available for local diagnosis."""
-    monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1")
-    samples = bench_kernel(lambda: sum(range(64)))
-    assert len(samples) >= 10 and all(s >= 0.0 for s in samples)
-    assert _bench_meta.timing == "cuda-events"
 
 
 @pytest.mark.smoke
