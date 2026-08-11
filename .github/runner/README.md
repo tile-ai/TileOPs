@@ -108,7 +108,7 @@ Cache env vars (`TILELANG_CACHE_DIR`, `TRITON_CACHE_DIR`, `PIP_CACHE_DIR`, …) 
 | `MAX_JOBS`         | `64`                                       | Parallelism for the tilelang / FA2 / FA3 source builds.                   |
 | `NVCC_THREADS`     | `4`                                        | Per-`nvcc` threads.                                                       |
 | `DEEPGEMM_GIT_SHA` | `c9f8b34dcdacc20aa746b786f983492c51072870` | DeepGEMM commit for the grouped-GEMM benchmark baseline (`v2.1.1.post3`). |
-| `RUNNER_VERSION`   | `2.334.0`                                  | GitHub Actions runner version baked into `final`.                         |
+| `RUNNER_VERSION`   | `2.336.0`                                  | GitHub Actions runner version baked into `final`.                         |
 
 ### Stages (`--target`)
 
