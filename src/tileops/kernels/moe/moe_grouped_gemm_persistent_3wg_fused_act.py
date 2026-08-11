@@ -29,6 +29,11 @@ _DEFAULT_CONFIG = {
     "num_stages": 3, "threads": 384, "group_size_m": 1,
 }
 
+_SPARSE_EXPERT_CONFIG = {
+    "block_m": 64, "block_n": 128, "block_k": 64,
+    "num_stages": 2, "threads": 384, "group_size_m": 1,
+}
+
 
 def _act_expr(name):
     """Return a fn(g_fp32) -> activated fp32 TIR expr (compile-time specialized)."""
@@ -68,6 +73,10 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # With at most 16 routed rows per expert, BM64 avoids enough empty work
+        # to offset the cooperative BM128 template's stronger weight reuse.
+        if self.numel <= 16 * self.num_experts:
+            return dict(_SPARSE_EXPERT_CONFIG)
         return dict(_DEFAULT_CONFIG)
 
     @property
@@ -141,7 +150,10 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
             print("Autotune failed for all configs, using default.")
 
     def forward(self, A, B, true_sizes, true_offsets):
-        C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
+        # Every locally routed row is fully written, including the predicated
+        # tail-M path. EP-only unused tail rows are excluded by true_sizes and
+        # fwd_idx, so no downstream consumer observes an unwritten element.
+        C = torch.empty(self.numel, self.N, dtype=self.dtype, device=A.device)
         bm, bn, bk = self.config["block_m"], self.config["block_n"], self.config["block_k"]
         if self.K % bk != 0:
             raise ValueError(f"K-aligned only: K={self.K}, block_k={bk}")

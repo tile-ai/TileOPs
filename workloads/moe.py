@@ -287,6 +287,33 @@ class MoeExpertsWorkload(WorkloadBase):
         topk_ids = torch.randint(0, self.num_experts, (self.num_tokens, self.top_k), dtype=torch.int32, device=dev)
         return hidden, w1, w2, topk_weights, topk_ids
 
+    def ref_program(self, hidden, w1, w2, topk_weights, topk_ids):
+        """FP32 per-expert oracle for the routed SwiGLU expert block."""
+        output = torch.zeros(
+            self.num_tokens,
+            self.hidden_size,
+            dtype=torch.float32,
+            device=hidden.device,
+        )
+        ids_i64 = topk_ids.to(torch.int64)
+        for expert in range(self.num_experts):
+            mask = ids_i64 == expert
+            if not mask.any():
+                continue
+            token_idx, route_idx = mask.nonzero(as_tuple=True)
+            gate_up = hidden[token_idx].float() @ w1[expert].float().t()
+            inner = (
+                torch.nn.functional.silu(gate_up[:, : self.ffn_size])
+                * gate_up[:, self.ffn_size :]
+            )
+            down = inner @ w2[expert].float().t()
+            output.index_add_(
+                0,
+                token_idx,
+                down * topk_weights[token_idx, route_idx].float().unsqueeze(-1),
+            )
+        return output.to(hidden.dtype)
+
 
 class MoeFusedActivationWorkload(WorkloadBase):
     """Workload descriptor for fused vs unfused activation benchmark."""

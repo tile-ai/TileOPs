@@ -17,26 +17,16 @@ from tileops.ops.moe.routed_expert.fused_routed_expert import (
 from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad_fused_act import (
     MoeGroupedGemmNopad3WGFusedActFwdOp,
 )
+from workloads.moe import MoeExpertsWorkload
 
 
-def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
-    """Per-expert PyTorch reference: ground-truth MoE FFN."""
+def _workload_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
     T, H = hidden.shape
     E, twoF, _ = w1.shape
-    F_dim = twoF // 2
-    output = torch.zeros(T, H, dtype=torch.float32, device=hidden.device)
-    ids_i64 = topk_ids.to(torch.int64)
-    for e in range(E):
-        mask = (ids_i64 == e)
-        if not mask.any():
-            continue
-        t_idx, k_idx = mask.nonzero(as_tuple=True)
-        h = hidden[t_idx].float()
-        gate_up = h @ w1[e].float().t()
-        act = F.silu(gate_up[:, :F_dim]) * gate_up[:, F_dim:]
-        down = act @ w2[e].float().t()
-        output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
-    return output.to(hidden.dtype)
+    workload = MoeExpertsWorkload(
+        T, E, topk_ids.shape[1], H, twoF // 2, hidden.dtype
+    )
+    return workload.ref_program(hidden, w1, w2, topk_weights, topk_ids)
 
 
 def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation="silu_and_mul"):
@@ -199,7 +189,9 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             hidden_size=d["H"], ffn_size=d["F"],
         )
 
-        ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
+        ref_out = _workload_ref_moe(
+            d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"]
+        )
 
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
         ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
@@ -240,7 +232,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             for rec in caplog.records
         ), f"expected fallback warning, got: {[rec.message for rec in caplog.records]}"
 
-        ref_out = _torch_ref_moe(hidden, w1, w2, weights, ids)
+        ref_out = _workload_ref_moe(hidden, w1, w2, weights, ids)
         output = torch.empty(T, H, dtype=dtype, device="cuda")
         ws1 = torch.empty(0, dtype=dtype, device="cuda")
         ws2 = torch.empty(0, dtype=dtype, device="cuda")
@@ -584,3 +576,35 @@ def test_fused_act_fwd_op_shape_and_values():
         gu = A[o:o+n].float() @ B[e].float().t()
         exp[o:o+n] = (F.silu(gu[:, :ffn]) * gu[:, ffn:]).to(torch.bfloat16)
     torch.testing.assert_close(out, exp, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.smoke
+def test_fused_act_sparse_experts_tail_and_empty_groups():
+    """The sparse-expert config writes every row across empty groups and an M tail."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    numel, E, ffn, K = 130, 64, 128, 64
+    sizes = torch.zeros(E, dtype=torch.int32, device="cuda")
+    sizes[0], sizes[7], sizes[-1] = 65, 1, 64
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
+
+    op = MoeGroupedGemmNopad3WGFusedActFwdOp(
+        numel=numel, num_experts=E, ffn=ffn, k=K,
+        activation="silu_and_mul",
+    )
+    out = op(A, B, sizes, offsets)
+    kernels = op.built_kernels("moe_grouped_gemm_fused_act_kernel")
+    assert kernels and all(kernel.config["block_m"] == 64 for kernel in kernels.values())
+
+    expected = torch.empty_like(out)
+    for expert in (0, 7, E - 1):
+        count, offset = int(sizes[expert]), int(offsets[expert])
+        gate_up = A[offset:offset + count].float() @ B[expert].float().t()
+        expected[offset:offset + count] = (
+            F.silu(gate_up[:, :ffn]) * gate_up[:, ffn:]
+        ).to(torch.bfloat16)
+    assert torch.isfinite(out.float()).all()
+    torch.testing.assert_close(out, expected, rtol=2e-2, atol=2e-2)
