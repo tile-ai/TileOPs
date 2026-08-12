@@ -787,6 +787,25 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
 
 
 @pytest.mark.smoke
+def test_gemm_revalidates_cached_signature_dtypes() -> None:
+    """A changed ``b`` dtype reaches the op's gate, not TileLang's.
+
+    ``forward`` skips validation when the input signature matches the previous
+    call, so that signature has to carry every dtype the gate reads. It carried
+    only ``a``'s: behind an fp16 warm-up a bf16 ``b`` went unvalidated into the
+    fp16 kernel and failed inside TileLang. ``_validate_dtypes`` is the only
+    dtype gate an op has, and it runs per call.
+    """
+    a = torch.randn(256, 128, dtype=torch.float16, device="cuda")
+    b = torch.randn(512, 128, dtype=torch.float16, device="cuda")
+    op = GemmOp()
+    op(a, b)
+
+    with pytest.raises(ValueError, match=r"input 'b' has dtype torch.bfloat16"):
+        op(a, b.to(torch.bfloat16))
+
+
+@pytest.mark.smoke
 def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
     """A rank-3 operand is refused at the op boundary, not inside TileLang.
 

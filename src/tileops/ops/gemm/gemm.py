@@ -185,7 +185,9 @@ class GemmFwdOp(Op):
         # built/JIT'd kernel directly, skipping dtype validation, shape
         # inference, and the cache lookup (this is the steady state in
         # benchmarking / serving, where per-call Python overhead matters).
-        sig = (a.shape, b.shape, a.dtype)
+        # Because it skips the gate, the signature carries every dtype that gate
+        # reads — a further input dtype has to be added here as well.
+        sig = (a.shape, b.shape, a.dtype, b.dtype)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)
             m, n, k = self._infer_mnk(a, b)
