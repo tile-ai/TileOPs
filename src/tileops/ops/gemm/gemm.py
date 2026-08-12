@@ -1,4 +1,4 @@
-from typing import Dict, Hashable, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -79,9 +79,20 @@ class GemmFwdOp(Op):
         }
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
-        """Derive logical ``(m, n, k)`` from input shapes per the trans flags."""
-        k_a, m = (a.shape[0], a.shape[1]) if self.trans_a else (a.shape[1], a.shape[0])
-        n, k_b = (b.shape[0], b.shape[1]) if self.trans_b else (b.shape[1], b.shape[0])
+        """Derive logical ``(m, n, k)`` from input shapes per the trans flags.
+
+        Rank is checked first: an extra axis is otherwise dropped silently, and
+        the dims read out of the remaining axes reach the kernel builder, which
+        compiles for a shape the call does not have before TileLang rejects the
+        arguments.
+        """
+        if a.ndim != 2 or b.ndim != 2:
+            raise ValueError(
+                f"GemmOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
+            )
+        m, n = self._infer_output_shapes(a.shape, b.shape)["d"]
+        k_a = a.shape[0] if self.trans_a else a.shape[1]
+        k_b = b.shape[1] if self.trans_b else b.shape[0]
         if k_a != k_b:
             raise ValueError(
                 f"GEMM contraction dim mismatch: a contributes K={k_a}, b contributes K={k_b} "
@@ -89,17 +100,6 @@ class GemmFwdOp(Op):
                 f"trans_a={self.trans_a}, trans_b={self.trans_b})"
             )
         return m, n, k_a
-
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
-        """Project onto the dims the kernel actually specializes on."""
-        return (
-            self.m,
-            self.n,
-            self.k,
-            self.trans_a,
-            self.trans_b,
-            None if self.dtype is None else str(self.dtype),
-        )
 
     def _get_kernel(
         self, inputs: "tuple[torch.Tensor | None, ...]", m: int, n: int, k: int, dtype: torch.dtype
@@ -113,7 +113,7 @@ class GemmFwdOp(Op):
         ``(trans_a, trans_b)`` layouts.
 
         Which one serves the call is stated by the candidates themselves
-        (``gemm_call.gemv_region`` / ``small_batch_region``, read through
+        (``call_spec.gemv_region`` / ``small_batch_region``, read through
         ``Kernel.applies``); this method owns only mechanism: mapping the
         selected key to a kernel instance and caching it.
         """
