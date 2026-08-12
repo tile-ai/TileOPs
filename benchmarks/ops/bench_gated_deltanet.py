@@ -342,101 +342,10 @@ def test_gated_deltanet_vs_fla_bwd(
             return gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
         functors["torch"] = (torch_bwd, ())
 
-    bm.compare(functors, do, q, k, v, g, beta, S_fwd, record_as=bwd_op, params=locals())
+    # torch_bwd builds its forward graph inside the timed callable, so it needs
+    # autograd left on; compare() runs under no_grad otherwise.
+    bm.compare(functors, do, q, k, v, g, beta, S_fwd,
+               record_as=bwd_op, params=locals(), needs_grad=("torch",))
 
 
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
-
-class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
-        return 6.0 * B * H * S * DK * DV  # fwd (2x) + bwd (4x)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        return B * H * S * (6 * DK + 5 * DV + 6) * elem
-
-
-class GatedDeltaNetVsFlaFwdBwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            # chunk_size=32
-            (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
-            # chunk_size=64
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-        ]),
-    ]
-
-
-@GatedDeltaNetVsFlaFwdBwdFixture
-def test_gated_deltanet_vs_fla_fwdbwd(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    bm = GatedDeltaNetFwdBwdBenchmark(test)
-
-    B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-
-    # --- TileOPs: combined fwd+bwd via GatedDeltaNetOp ---
-    op = GatedDeltaNetOp(chunk_size=BC, tune=tune)
-
-    q = (torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
-    k = (torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
-    v = (torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
-    g = (-torch.rand(B, H, S, device="cuda", dtype=dtype)).detach().requires_grad_(True)
-    beta = (torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5).detach().requires_grad_(True)
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-
-    def tileops_fwdbwd():
-        q.grad = k.grad = v.grad = g.grad = beta.grad = None
-        o = op(q, k, v, g, beta)
-        o.backward(do, retain_graph=True)
-        return q.grad, k.grad, v.grad
-
-    functors = {"tileops": tileops_fwdbwd}
-
-    if chunk_gated_delta_rule is not None:
-        # --- FLA: fwd+bwd via autograd ---
-        scale = DK ** -0.5
-        q_fla = (q.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
-        k_fla = (k.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
-        v_fla = (v.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
-        g_fla = (g.data.permute(0, 2, 1).contiguous()).detach().requires_grad_(True)
-        beta_fla = (beta.data.permute(0, 2, 1).contiguous()).detach().requires_grad_(True)
-        do_fla = do.permute(0, 2, 1, 3).contiguous()
-
-        def fla_fwdbwd():
-            q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
-            o, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-            o.backward(do_fla)
-            return q_fla.grad, k_fla.grad, v_fla.grad
-
-        functors["fla"] = fla_fwdbwd
-    else:
-        # --- Torch autograd reference baseline ---
-        def torch_fwdbwd():
-            return gated_deltanet_autograd_bwd_torch(do, q.data, k.data, v.data, g.data, beta.data, BC)
-        functors["torch"] = torch_fwdbwd
-
-    # Every closure builds its graph and calls backward inside the timed call.
-    bm.compare(functors, record_as=op, params=locals(),
-               needs_grad=("tileops", "fla", "torch"))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

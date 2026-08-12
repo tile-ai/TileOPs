@@ -3,7 +3,7 @@ import gc
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, _bench_results
+from benchmarks.report import BenchmarkReport, _bench_results
 
 
 def _release_cuda_cache_after_case() -> None:

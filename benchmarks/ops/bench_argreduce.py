@@ -55,7 +55,3 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
 
     bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op,
                 params={"shape": shape, "dtype": dtype, "dim": dim})
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

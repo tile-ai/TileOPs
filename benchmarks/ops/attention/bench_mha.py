@@ -148,7 +148,3 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
         functors["torch-sdpa"] = _torch_mha_bwd(test)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

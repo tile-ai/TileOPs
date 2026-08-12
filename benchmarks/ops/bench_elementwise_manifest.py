@@ -705,7 +705,3 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     op = LerpTensorFwdOp(input=shape, end=shape, weight=shape)
     bm = ManifestBenchmark(_LERP_TENSOR_OP, op, test)
     bm.compare({"tileops": op, "torch": torch.lerp}, x, end, weight, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

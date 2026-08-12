@@ -358,7 +358,3 @@ def test_gemm_w4a16_bench(
             functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

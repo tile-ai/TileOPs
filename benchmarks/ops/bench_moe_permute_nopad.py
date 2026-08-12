@@ -116,7 +116,3 @@ def test_moe_permute_nopad_bench(
         functors["torch-ref"] = _torch_fn
 
     bm.compare(functors, hidden_states, topk_ids, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

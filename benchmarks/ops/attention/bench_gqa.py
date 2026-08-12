@@ -575,7 +575,3 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

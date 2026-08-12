@@ -74,7 +74,3 @@ def test_moe_grouped_gemm_nopad_bench(
     torch.cuda.synchronize()
 
     bm.compare({"tileops": op, "torch-ref": _torch_fn}, a, b, true_sizes, true_offsets, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -66,7 +66,3 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
 
     functors["torch"] = (baseline_no_affine, (x, ))
     bm.compare(functors, x, rm, rv, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

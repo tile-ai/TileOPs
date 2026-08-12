@@ -127,7 +127,3 @@ def test_gla_decode_bench(
         functors["torch"] = test.ref_program
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

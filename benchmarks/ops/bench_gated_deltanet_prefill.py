@@ -214,7 +214,3 @@ def test_gated_deltanet_prefill_fwd_bench(
     else:
         BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
         BenchmarkReport.record(op, locals(), results["torch-ref"], tag="torch-ref")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

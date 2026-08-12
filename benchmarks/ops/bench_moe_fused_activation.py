@@ -226,7 +226,3 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
         f"  unfused={ms_unfused:.4f}ms  fused={ms_fused:.4f}ms"
         f"  speedup(fused/unfused)={speedup:.3f}x{note}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

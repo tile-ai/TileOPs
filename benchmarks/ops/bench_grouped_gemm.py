@@ -55,7 +55,3 @@ def test_grouped_gemm_bench(batch_sum: int, batch_count: int, N: int, K: int,
     bm = ManifestBenchmark(_GROUPED_GEMM_OP, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=name, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

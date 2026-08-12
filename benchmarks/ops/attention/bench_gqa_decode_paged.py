@@ -171,7 +171,3 @@ def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv
         functors["torch-ref"] = test.ref_program
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -104,7 +104,3 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
         functors["torch-ref"] = _torch_fn
 
     bm.compare(functors, mm2_pad, fwd_idx, topk_weights, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
