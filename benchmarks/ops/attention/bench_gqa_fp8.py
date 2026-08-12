@@ -118,6 +118,21 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
         pytest.skip("torch fp8 is unavailable")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("requires Hopper FP8 WGMMA")
+    # FIXME(staged-rollout): manifest workloads with more than 4 query heads per KV head
+    # are declared but not measured.
+    #
+    # Broken invariant: every manifest workload of an implemented op produces a number.
+    # Why: the BN224 warp-specialized kernel deadlocks on the device at
+    #   heads // heads_kv == 8 when built by the CUDA 13.2 toolchain, and the whole
+    #   benchmark file is killed after stalling 900s. The same shape completes under
+    #   CUDA 12.9 from byte-identical generated code, so the kernel is not fixed here.
+    # Cleanup: drop this skip once the kernel serves 8 query heads per KV head on the
+    #   toolchain the runner image ships.
+    if case.heads // case.heads_kv > 4:
+        pytest.skip(
+            f"{case.label}: BN224 FP8 kernel deadlocks at "
+            f"heads//heads_kv={case.heads // case.heads_kv} on this toolchain"
+        )
 
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=case.batch,
