@@ -89,7 +89,3 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

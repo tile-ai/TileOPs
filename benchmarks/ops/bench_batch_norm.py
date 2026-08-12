@@ -120,7 +120,3 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
     bm.compare({"tileops": op, "torch-autograd": _torch_bn_bwd}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

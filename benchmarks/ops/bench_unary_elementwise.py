@@ -361,6 +361,3 @@ def test_isfinite_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = IsfiniteFwdOp(N_total=n_total)
     bm = ManifestBenchmark(_ISFINITE_OP, op, UnaryWorkload(shape, dtype))
     _profile_and_record(op, bm, inputs, torch.isfinite, {"shape": shape, "dtype": dtype, "n_total": n_total})
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

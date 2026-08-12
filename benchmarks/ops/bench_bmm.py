@@ -127,7 +127,3 @@ def test_bmm_fp8_bench(
         functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kmajor, scale_a, scale_b))
 
     bm.compare(functors, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

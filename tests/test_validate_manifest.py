@@ -2053,7 +2053,7 @@ class TestBench:
                 workloads = load_workloads('test_op')
                 op.eval_roofline()
             """, None),
-            ("indirect benchmark_base helpers pass", """\
+            ("indirect base helpers pass", """\
                 from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
                 params = workloads_to_params('test_op')
                 ManifestBenchmark('test_op', op, params[0])

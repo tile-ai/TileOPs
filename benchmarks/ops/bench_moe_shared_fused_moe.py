@@ -6,8 +6,8 @@ Covers Kimi K2 configuration (the primary model with shared experts):
   Kimi K2  7168  2048  384  8  18432  sigmoid   True    True   2.827
 
 Baselines:
-  - vllm:      vLLM fused_topk + fused_experts + F.linear shared MLP
-  - torch-ref: per-expert GEMM loop + manual shared MLP (fallback when vLLM absent)
+  - vllm: fused_topk + fused_experts + F.linear shared MLP. Absent without vLLM
+    installed -- no row is recorded rather than a slower stand-in.
 
 FLOPs:
   Routed:  T*K * 6*F*H   (gate+up + down)
@@ -15,6 +15,7 @@ FLOPs:
   Total  = T*K*6*F*H + T*6*Fs*H
 """
 
+import warnings
 from typing import Optional
 
 import pytest
@@ -33,7 +34,7 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops.moe import FusedTopKOp, SharedFusedMoE
+from tileops.ops.moe import SharedFusedMoE
 from workloads.moe import SharedFusedMoeWorkload
 from workloads.workload_base import FixtureBase
 
@@ -93,14 +94,16 @@ class SharedFusedMoEBenchmark(BenchmarkBase[SharedFusedMoeWorkload]):
     def calculate_memory(self) -> Optional[float]:
         t = self.workload
         elem = 2  # bf16 = 2 bytes
-        routed_w = (
-            t.num_experts * 2 * t.ffn_size * t.hidden_size
-            + t.num_experts * t.hidden_size * t.ffn_size
-        ) * elem
-        shared_w = (
-            2 * t.shared_ffn_size * t.hidden_size
-            + t.hidden_size * t.shared_ffn_size
-        ) * elem
+        # A call reads only the experts its tokens routed to. With T tokens each picking
+        # K of E, and this workload drawing gating at random, the expected number of
+        # distinct experts is E * (1 - (1 - K/E)^T): K of them at T=1, all E once T*K
+        # covers the pool. Counting all E regardless is right in the prefill limit and
+        # overstates decode traffic by E/K -- 48x on the Kimi K2 config below.
+        touched = t.num_experts * (
+            1.0 - (1.0 - t.top_k / t.num_experts) ** t.num_tokens
+        )
+        routed_w = touched * 3 * t.ffn_size * t.hidden_size * elem
+        shared_w = 3 * t.shared_ffn_size * t.hidden_size * elem
         act = t.num_tokens * t.hidden_size * elem * 2
         return routed_w + shared_w + act
 
@@ -148,7 +151,6 @@ def test_shared_fused_moe_bench(
 
     # ── vLLM baseline (optional) ──────────────────────────────────────────────
     if _VLLM_AVAILABLE:
-        gating_f32 = gating.float()
         # vLLM shared expert: separate gate/up weights [Fs, H]
         sw_gate = shared_w_gate_up[:shared_ffn_size]   # [Fs, H]
         sw_up   = shared_w_gate_up[shared_ffn_size:]   # [Fs, H]
@@ -158,7 +160,7 @@ def test_shared_fused_moe_bench(
                      shared_w_gate_up, shared_w_down):
             tw, tids, _ = _vllm_fused_topk(
                 hidden_states=hidden,
-                gating_output=gating_f32,
+                gating_output=gating.float(),
                 topk=top_k,
                 renormalize=renormalize,
                 scoring_func=scoring_func,
@@ -179,46 +181,13 @@ def test_shared_fused_moe_bench(
 
         functors["vllm"] = (_vllm_fn, (hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down, ))
     else:
-        # torch-ref: per-expert GEMM loop + manual shared MLP
-        fk = FusedTopKOp(
-            top_k=top_k,
-            scoring_func=scoring_func, renormalize=renormalize,
-            with_correction_bias=with_correction_bias,
+        # No baseline rather than a misleading one. The per-expert Python loop this used
+        # to time is a correctness reference: it upcasts to fp32 and index_add_s one
+        # expert at a time, so "TileOPs is 30x faster" said nothing about either.
+        warnings.warn(
+            "vLLM is not installed; recording no baseline for SharedFusedMoE. "
+            "Install vllm to compare against fused_topk + fused_experts.",
+            stacklevel=2,
         )
-        topk_weights, topk_ids = fk(gating, correction_bias)
-        output_buf = torch.zeros(num_tokens, hidden_size, dtype=torch.float32, device=hidden.device)
-        ids_i64 = topk_ids.to(torch.int64)
-
-        def _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down,
-                    shared_w_gate_up, shared_w_down):
-            E = w_gate_up.shape[0]
-            ffn_dim = w_gate_up.shape[1] // 2
-            output_buf.zero_()
-            for e in range(E):
-                mask = (ids_i64 == e)
-                if not mask.any():
-                    continue
-                t_idx, k_idx = mask.nonzero(as_tuple=True)
-                h = hidden[t_idx].float()
-                gate_up = h @ w_gate_up[e].float().t()
-                act = F.silu(gate_up[:, :ffn_dim]) * gate_up[:, ffn_dim:]
-                down = act @ w_down[e].float().t()
-                weights = topk_weights[t_idx, k_idx].float().unsqueeze(-1)
-                output_buf.index_add_(0, t_idx, down * weights)
-            routed_out = (output_buf * routed_scaling_factor).to(hidden.dtype)
-            # Shared expert
-            sw_gate = shared_w_gate_up[:shared_ffn_size]
-            sw_up   = shared_w_gate_up[shared_ffn_size:]
-            gate = F.linear(hidden, sw_gate)
-            up   = F.linear(hidden, sw_up)
-            act  = F.silu(gate) * up
-            shared_out = F.linear(act, shared_w_down)
-            return shared_out, routed_out
-
-        _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down,
-                shared_w_gate_up, shared_w_down)  # warmup
-        torch.cuda.synchronize()
-
-        functors["torch-ref"] = (_ref_fn, (hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down, ))
 
     bm.compare(functors, hidden, gating, w_gate_up, w_down, correction_bias, shared_w_gate_up, shared_w_down, record_as=op, params=locals())

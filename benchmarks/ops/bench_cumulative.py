@@ -60,7 +60,3 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = ManifestBenchmark(_CUMPROD_OP, op, test)
 
     bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

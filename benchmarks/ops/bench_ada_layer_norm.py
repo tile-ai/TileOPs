@@ -54,7 +54,3 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
         return gate * (scale * normed + shift)
 
     bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

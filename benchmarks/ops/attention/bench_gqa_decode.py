@@ -148,7 +148,3 @@ def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
         functors["torch-sdpa"] = test.ref_program
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

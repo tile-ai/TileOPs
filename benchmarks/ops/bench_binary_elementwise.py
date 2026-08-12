@@ -472,7 +472,3 @@ def test_broadcast_bench(
     op = op_cls(a_shape=a_shape, b_shape=b_shape)
 
     bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=f'{op_name}_bcast', params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

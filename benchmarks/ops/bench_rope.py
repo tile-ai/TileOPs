@@ -218,7 +218,3 @@ def test_rope_neox_position_ids_bench(
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
     bm.compare({"tileops": op, "torch-ref": baseline_fn}, x, position_ids, record_as=op, params=params)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

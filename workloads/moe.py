@@ -334,21 +334,6 @@ class MoeFusedActivationWorkload(WorkloadBase):
         return hidden, w_gate_up, w_down, topk_weights, topk_ids
 
 
-class MoeSharedExpertMlpWorkload(WorkloadBase):
-    def __init__(self, num_tokens, hidden_size, ffn_size, dtype):
-        self.num_tokens = num_tokens
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        device = torch.device("cuda")
-        hidden = torch.randn(self.num_tokens, self.hidden_size, dtype=self.dtype, device=device)
-        w_gate_up = torch.randn(self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=device)
-        w_down = torch.randn(self.hidden_size, self.ffn_size, dtype=self.dtype, device=device)
-        return hidden, w_gate_up, w_down
-
-
 def ref_permute_align(
     topk_ids: torch.Tensor, block_size: int, num_experts: int
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -28,7 +28,3 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
     bm.compare({"tileops": op, "torch-cufft": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

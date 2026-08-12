@@ -1,12 +1,11 @@
 import pytest
 import torch
 
-from benchmarks.benchmark_base import (
+from benchmarks.benchmark_base import workloads_to_params
+from benchmarks.timing import (
     _attributed_latency_samples_ms,
     _CUPTIAttributionError,
-    _ShiftingTensorPool,
     bench_kernel,
-    workloads_to_params,
 )
 
 
@@ -41,109 +40,61 @@ def test_multi_input_op_raises_keyerror():
 
 
 def _kernel(name: str, start_ns: int, end_ns: int) -> dict:
-    return {"kind": "kernel", "name": name, "start_ns": start_ns, "end_ns": end_ns}
-
-
-def _seq(*names: str) -> tuple[str, ...]:
-    """Discovered sequences hold activity identities, not bare kernel names."""
-    return tuple(f"kernel:{name}" for name in names)
+    return {"name": name, "start_ns": start_ns, "end_ns": end_ns}
 
 
 def test_attribution_excludes_prepare_and_keeps_the_operator_gap():
+    """Only activity inside a call's own window counts toward its span."""
     records = [
-        _kernel("copy", 1_000, 2_000),
-        _kernel("fill", 2_100, 3_000),
+        _kernel("prepare-copy", 1_000, 2_000),
         _kernel("op-a", 4_000, 6_000),
         _kernel("op-b", 9_000, 10_000),
-        _kernel("copy", 20_000, 21_000),
-        _kernel("fill", 21_100, 22_000),
+        _kernel("prepare-copy", 20_000, 21_000),
         _kernel("op-a", 23_000, 24_000),
         _kernel("op-b", 29_000, 31_000),
     ]
+    windows = [(3_000, 19_000), (22_000, 40_000)]
 
-    samples_ms = _attributed_latency_samples_ms(
-        records,
-        _seq("op-a", "op-b"),
-        n_repeat=2,
-        expected_prepare_sequence=_seq("copy", "fill"),
-    )
+    samples_ms = _attributed_latency_samples_ms(records, windows, n_repeat=2)
 
-    # Operator envelopes are 6 us and 8 us. Prepare kernels are validated but
-    # excluded, while the 3/5 us inter-kernel gaps remain part of op latency.
+    # Operator envelopes are 6 us and 8 us; the 3/5 us inter-kernel gaps stay inside the
+    # call, and the prepare copies fall outside both windows.
     assert samples_ms == pytest.approx([0.006, 0.008])
 
 
-def test_attribution_accepts_concurrent_activities_in_either_order():
-    """CUPTI may publish two overlapping kernels in either start-time order."""
-    kernels = [_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)]
-    samples_ms = _attributed_latency_samples_ms(kernels, _seq("a", "b"), n_repeat=1)
-    assert samples_ms == pytest.approx([0.002])
+def test_attribution_measures_a_call_whose_activity_count_varies():
+    """A dynamic path launching an extra kernel is measured, not rejected."""
+    records = [
+        _kernel("op", 1_000, 2_000),
+        _kernel("op", 10_000, 11_000),
+        _kernel("op-extra", 11_500, 13_000),
+    ]
 
-
-@pytest.mark.parametrize(
-    "records, expected_sequence, message",
-    [
-        # One activity short of the discovered sequence. A CUPTI record dropped
-        # for want of buffer space lands here too: the count stops matching.
-        (
-            [_kernel("a", 1_000, 2_000)],
-            _seq("a", "b"),
-            "activity count does not match",
-        ),
-        # A dynamic path launched an extra kernel.
-        (
-            [
-                _kernel("a", 1_000, 2_000),
-                _kernel("b", 2_000, 3_000),
-                _kernel("extra", 3_000, 4_000),
-            ],
-            _seq("a", "b"),
-            # The observed sequence names the unexpected activity, so a CI
-            # abort is diagnosable from the log alone.
-            r"activity count does not match.*observed=.*kernel:extra",
-        ),
-        # Right count, different kernels.
-        (
-            [_kernel("a", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
-            _seq("a", "b"),
-            "attributed 0/1",
-        ),
-        # Serially reordered kernels are a real sequence change, not a
-        # publication-order artifact.
-        (
-            [_kernel("b", 1_000, 2_000), _kernel("a", 2_000, 3_000)],
-            _seq("a", "b"),
-            "attributed 0/1",
-        ),
-    ],
-)
-def test_attribution_fails_closed(records, expected_sequence, message):
-    with pytest.raises(_CUPTIAttributionError, match=message):
-        _attributed_latency_samples_ms(records, expected_sequence, n_repeat=1)
-
-
-def test_shifting_tensor_pool_preserves_layout_values_and_alignment():
-    source = torch.arange(24, dtype=torch.float32).reshape(4, 6).T
-    pool = _ShiftingTensorPool((source, 7), total_iterations=3, seed=123)
-    pointers = []
-
-    for _ in range(3):
-        shifted, scalar = pool.next_args()
-        assert scalar == 7
-        assert shifted.stride() == source.stride()
-        torch.testing.assert_close(shifted, source)
-        pointers.append(shifted.data_ptr())
-        shifted.zero_()
-
-    assert len(set(pointers)) == 3
-    assert all(
-        (pointer - pointers[0]) % _ShiftingTensorPool._POOL_ALIGNMENT == 0
-        for pointer in pointers[1:]
+    samples_ms = _attributed_latency_samples_ms(
+        records, [(500, 5_000), (9_000, 15_000)], n_repeat=2,
     )
-    expected = torch.arange(24, dtype=torch.float32).reshape(4, 6).T
-    torch.testing.assert_close(source, expected)
-    with pytest.raises(RuntimeError, match="ShiftingTensorPool exhausted"):
-        pool.next_args()
+
+    assert samples_ms == pytest.approx([0.001, 0.003])
+
+
+def test_attribution_counts_activity_launched_from_another_thread():
+    """A window holds the call's activity whichever CPU thread launched it."""
+    records = [
+        _kernel("fwd", 1_000, 2_000),
+        _kernel("bwd-on-another-thread", 3_000, 7_000),
+    ]
+
+    samples_ms = _attributed_latency_samples_ms(records, [(500, 9_000)], n_repeat=1)
+
+    assert samples_ms == pytest.approx([0.006])
+
+
+def test_attribution_fails_closed_when_an_iteration_reaches_no_device():
+    records = [_kernel("a", 1_000, 2_000)]
+    with pytest.raises(_CUPTIAttributionError, match="produced no GPU activity"):
+        _attributed_latency_samples_ms(
+            records, [(500, 3_000), (4_000, 5_000)], n_repeat=2,
+        )
 
 
 @pytest.mark.smoke

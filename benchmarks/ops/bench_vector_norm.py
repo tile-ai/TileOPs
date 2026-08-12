@@ -115,7 +115,3 @@ def test_inf_norm_bench(
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

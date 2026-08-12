@@ -36,7 +36,3 @@ def test_dsa_decode_bench(batch: int, heads: int, seq_len_q: int, seq_len_kv: in
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

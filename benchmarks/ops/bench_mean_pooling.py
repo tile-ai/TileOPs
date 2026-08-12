@@ -93,7 +93,3 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
     op = MeanPoolingForwardOp(**params)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

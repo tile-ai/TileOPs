@@ -55,7 +55,3 @@ def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index
     bm = ManifestBenchmark(_FP8_LIGHTNING_INDEXER_OP, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

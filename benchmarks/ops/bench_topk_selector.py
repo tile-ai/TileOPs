@@ -43,7 +43,3 @@ def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group
     bm = ManifestBenchmark(_TOPK_SELECTOR_OP, op, test)
 
     bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -218,7 +218,3 @@ def test_permute_align_bench(
         functors["sgl-kernel"] = _sgl_fn
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

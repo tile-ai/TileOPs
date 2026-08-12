@@ -311,7 +311,3 @@ def test_conv3d_bias_bench(case: ConvCase) -> None:
     )
     bm = ManifestBenchmark(_CONV3D_BIAS_OP, op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv3d, case, with_bias=True)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

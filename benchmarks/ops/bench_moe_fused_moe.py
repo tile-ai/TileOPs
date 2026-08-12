@@ -236,7 +236,3 @@ def test_fused_moe_fwd_cb_bench(
         scoring_func, renormalize, with_correction_bias,
         routed_scaling_factor, dtype,
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

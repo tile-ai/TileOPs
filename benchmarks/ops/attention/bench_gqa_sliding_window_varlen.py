@@ -198,7 +198,3 @@ def test_gqa_sliding_window_varlen_fwd_bench(
         functors["torch"] = _torch_sliding_window_varlen_fwd(test)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -144,7 +144,3 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=test.eps), add_result
 
     bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

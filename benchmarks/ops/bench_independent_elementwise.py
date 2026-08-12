@@ -375,7 +375,3 @@ def test_fp8_selection_bench(
 
         bm.compare({"tileops": op, "torch-ref": baseline}, x, mask,
                    record_as=op, params=locals())
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
