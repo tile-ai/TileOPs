@@ -24,7 +24,6 @@ Outputs:
   fwd_idx                   [T*K]       int32 forward mapping: flat pos → tight slot
 """
 
-import os
 from typing import Optional
 
 import tilelang
@@ -32,8 +31,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-
-_ATOMIC_HELPER_H = os.path.join(os.path.dirname(__file__), "_atomic_helper.h")
 
 __all__ = ["MoePermuteNopadKernel"]
 
@@ -43,7 +40,7 @@ _SCAN_THREADS = 1024
 def _make_scan_kernel_nopad(numel: int, num_experts: int, top_k: int):
     """Phase 1: count → prefix-sum → tight layout → fwd_idx (no block_m padding)."""
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-include", _ATOMIC_HELPER_H])
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scan(threads: int):
 
         @T.prim_func
@@ -102,13 +99,9 @@ def _make_scan_kernel_nopad(numel: int, num_experts: int, top_k: int):
                     idx = i * threads + tx
                     if idx < numel:
                         eid = flat_ids[idx]
-                        # Keep the side-effecting extern result in a local buffer.  Newer
-                        # TileLang may otherwise duplicate the call while lowering bounds
-                        # checks for the following indexed stores.
-                        slot_buf[0] = T.call_extern(
-                            "int32", "tl_atomic_add_offset",
-                            T.address_of(write_offsets[0]), eid, T.int32(1)
-                        )
+                        # Keep the returned slot in a local buffer: TileLang may otherwise
+                        # duplicate the atomic while lowering bounds checks for the stores.
+                        slot_buf[0] = T.atomic_add(write_offsets[eid], T.int32(1), return_prev=True)
                         slot = slot_buf[0]
                         permuted_idx[slot] = idx // T.int32(top_k)
                         # For no-pad: tight slot IS the fwd_idx (no padding offset)
@@ -132,7 +125,7 @@ def _make_scan_kernel_nopad_ep(
     Local token-expert pairs are remapped to local expert id and sorted normally.
     """
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-include", _ATOMIC_HELPER_H])
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scan_ep(threads: int):
 
         @T.prim_func
@@ -199,13 +192,9 @@ def _make_scan_kernel_nopad_ep(
                         if local_eid < T.int32(0):
                             fwd_idx[idx] = T.int32(-1)
                         else:
-                            # Keep the side-effecting extern result in a local buffer.  Newer
-                            # TileLang may otherwise duplicate the call while lowering bounds
-                            # checks for the following indexed stores.
-                            slot_buf[0] = T.call_extern(
-                                "int32", "tl_atomic_add_offset",
-                                T.address_of(write_offsets[0]), local_eid, T.int32(1)
-                            )
+                            # Keep the returned slot in a local buffer: TileLang may otherwise
+                            # duplicate the atomic while lowering bounds checks for the stores.
+                            slot_buf[0] = T.atomic_add(write_offsets[local_eid], T.int32(1), return_prev=True)
                             slot = slot_buf[0]
                             permuted_idx[slot] = idx // T.int32(top_k)
                             fwd_idx[idx] = slot

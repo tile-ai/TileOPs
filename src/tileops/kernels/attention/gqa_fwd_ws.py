@@ -23,8 +23,6 @@ __all__ = [
 ]
 
 NUM_SMS = int(os.environ.get("V2P_NUM_SMS", "132"))
-_ANCHOR_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "_named_barrier.h"))
 _MATH_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_math_helper.h"))
 
 
@@ -92,8 +90,6 @@ def _gqa_fwd_ws_persistent_kernel(
             "-DENABLE_BF16",
             "-include",
             _MATH_HELPER_PATH,
-            "-include",
-            _ANCHOR_HELPER_PATH,
         ],
     )
     def func(block_m: int, block_n: int):
@@ -229,7 +225,7 @@ def _gqa_fwd_ws_persistent_kernel(
                     # Bootstrap the named-barrier carry state once per CTA.
                     # Later sync_threads(barrier_id=1/2, arrive_count=256)
                     # intentionally reuses that steady-state carryover protocol.
-                    T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                    T.named_barrier_arrive(1, 256)
                     for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
                         [batch, heads_kv, T.ceildiv(seq_len, block_m), groups],
                         wave_size=NUM_SMS,
@@ -257,7 +253,7 @@ def _gqa_fwd_ws_persistent_kernel(
                                     T.wgmma_gemm(q_shared_1, k_smem_0, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
                                 else:
                                     T.wgmma_gemm(q_shared_1, k_smem_1, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
-                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
+                                T.named_barrier_arrive(2, 256)
                                 T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                 T.barrier_arrive(k_empty)
@@ -273,7 +269,7 @@ def _gqa_fwd_ws_persistent_kernel(
                                     T.wgmma_gemm(acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
                                 else:
                                     T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
-                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
+                                T.named_barrier_arrive(2, 256)
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                 T.barrier_arrive(k_empty)
@@ -338,7 +334,7 @@ def _gqa_fwd_ws_persistent_kernel(
                                     T.wgmma_gemm(q_shared_2, k_smem_0, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
                                 else:
                                     T.wgmma_gemm(q_shared_2, k_smem_1, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
-                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                                T.named_barrier_arrive(1, 256)
                                 T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                 T.barrier_arrive(k_empty)
@@ -354,7 +350,7 @@ def _gqa_fwd_ws_persistent_kernel(
                                     T.wgmma_gemm(acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
                                 else:
                                     T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
-                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                                T.named_barrier_arrive(1, 256)
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                 T.barrier_arrive(k_empty)
@@ -435,8 +431,6 @@ def _gqa_fwd_ws_persistent_causal_kernel(
             "-DENABLE_BF16",
             "-include",
             _MATH_HELPER_PATH,
-            "-include",
-            _ANCHOR_HELPER_PATH,
         ],
     )
     def func(block_m: int, block_n: int):
@@ -575,7 +569,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
                 elif tx < 256:
                     T.inc_max_nreg(240)
-                    T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                    T.named_barrier_arrive(1, 256)
                     for tile_b, tile_hkv_section, pair_idx, tile_local_hkv, tile_g in T.Persistent(
                         [batch, hkv_sections, half_m_blocks, 1, groups],
                         wave_size=NUM_SMS,
@@ -606,7 +600,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                         T.wgmma_gemm(q_shared_1, k_smem_0, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
                                     else:
                                         T.wgmma_gemm(q_shared_1, k_smem_1, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
-                                    T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
+                                    T.named_barrier_arrive(2, 256)
                                     T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
@@ -634,7 +628,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                         T.wgmma_gemm(acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
                                     else:
                                         T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
-                                    T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
+                                    T.named_barrier_arrive(2, 256)
                                     T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
@@ -711,7 +705,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                         T.wgmma_gemm(q_shared_2, k_smem_0, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
                                     else:
                                         T.wgmma_gemm(q_shared_2, k_smem_1, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
-                                    T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                                    T.named_barrier_arrive(1, 256)
                                     T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
@@ -739,7 +733,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                         T.wgmma_gemm(acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
                                     else:
                                         T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
-                                    T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                                    T.named_barrier_arrive(1, 256)
                                     T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
