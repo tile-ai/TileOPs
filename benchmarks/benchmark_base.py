@@ -19,6 +19,7 @@ from benchmarks.timing import (
     DRY_RUN_MS,
     REPEAT_MS,
     CUPTIError,
+    Sample,
     _capture_bench_meta,
     _sample_spread_ms,
     bench_kernel,
@@ -99,7 +100,7 @@ class BenchmarkBase(Generic[W], ABC):
         # Split the budget across the two passes rather than spending it twice:
         # the point is symmetry, not more samples.
         passes = 2
-        samples: dict[str, list[float]] = {tag: [] for tag in tags}
+        samples: dict[str, list[Sample]] = {tag: [] for tag in tags}
         meta: dict[str, dict] = {}
         for tag in order:
             functor, args = plan[tag]
@@ -128,25 +129,42 @@ class BenchmarkBase(Generic[W], ABC):
                 BenchmarkReport.record(record_as, params or {}, results[tag], tag=tag)
         return results
 
-    def _build_result(self, samples: list[float], meta: Optional[dict] = None) -> dict:
+    def _build_result(self, samples: list[Sample], meta: Optional[dict] = None) -> dict:
+        """Turn per-iteration samples into the row a report records.
+
+        ``device_busy_ms`` is the conclusion quantity: it counts only the time the
+        device spent executing this call's kernels, so it does not move with how fast
+        the host issued them. ``latency_ms`` additionally spans the gaps between those
+        kernels, whose cause the records cannot separate into the op's own dependencies
+        and the host being late, and is therefore a diagnostic.
+        """
         if not samples:
             raise ValueError("bench_kernel returned no samples")
-        latency = statistics.median(samples)
-        result = {"latency_ms": latency, "n_samples": len(samples)}
-        p10, p90 = _sample_spread_ms(samples)
+        busy = statistics.median(s.device_busy_ms for s in samples)
+        latency = statistics.median(s.latency_ms for s in samples)
+        result = {
+            "device_busy_ms": busy,
+            "latency_ms": latency,
+            "gap_ms": latency - busy,
+            "n_kernels": statistics.median(s.n_kernels for s in samples),
+            "n_samples": len(samples),
+        }
+        p10, p90 = _sample_spread_ms([s.device_busy_ms for s in samples])
         if p10 is not None:
-            result["latency_p10_ms"], result["latency_p90_ms"] = p10, p90
+            result["device_busy_p10_ms"], result["device_busy_p90_ms"] = p10, p90
         # How the number was measured must travel with it: a run that fell back
         # to CUDA events is not comparable with a CUPTI-timed one.
         result.update(meta if meta is not None else _capture_bench_meta())
+        # Roofline describes throughput reached while the device was executing, so the
+        # denominator excludes the gaps.
         flops = self.calculate_flops()
         if flops is not None:
             result["flops"] = flops
-            result["tflops"] = flops / latency * 1e-9
+            result["tflops"] = flops / busy * 1e-9
         memory = self.calculate_memory()
         if memory is not None:
             result["bytes"] = memory
-            result["bandwidth_tbs"] = memory / latency * 1e-9
+            result["bandwidth_tbs"] = memory / busy * 1e-9
         return result
 
 

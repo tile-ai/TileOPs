@@ -60,8 +60,12 @@ def pytest_runtest_call(item):
             tag = tileops_entry["tag"]
             if tag != "tileops" and tag.startswith("tileops_"):
                 item.user_properties.append(("tileops_variant", tag[len("tileops_"):]))
-            item.user_properties.append(("tileops_latency_ms",
-                                         f"{tileops_entry.get('latency_ms', 0):.4f}"))
+            for key in ("device_busy_ms", "latency_ms", "gap_ms"):
+                item.user_properties.append(
+                    (f"tileops_{key}", f"{tileops_entry.get(key, 0):.4f}"))
+            n_kernels = tileops_entry.get("n_kernels")
+            if n_kernels is not None:
+                item.user_properties.append(("tileops_n_kernels", f"{n_kernels:.0f}"))
             tflops = tileops_entry.get("tflops")
             if tflops is not None:
                 item.user_properties.append(("tileops_tflops", _rate(tflops)))
@@ -77,7 +81,7 @@ def pytest_runtest_call(item):
                 item.user_properties.append(("tileops_dtype", str(dtype)))
             # Trust metadata for the reported median: which timer produced it,
             # and how wide the samples it summarizes were.
-            for key in ("latency_p10_ms", "latency_p90_ms"):
+            for key in ("device_busy_p10_ms", "device_busy_p90_ms"):
                 value = tileops_entry.get(key)
                 if value is not None:
                     item.user_properties.append((f"tileops_{key}", f"{value:.4f}"))
@@ -90,33 +94,40 @@ def pytest_runtest_call(item):
 
         # Write all baselines into JUnit XML properties.
         # The first baseline uses the legacy unprefixed names (baseline_tag, etc.)
-        # for backward compatibility.  Additional baselines use "{tag}_latency_ms",
+        # for backward compatibility.  Additional baselines use "{tag}_device_busy_ms",
         # "{tag}_tflops", "{tag}_ratio" so the report can display multiple columns.
         for idx, be in enumerate(baseline_entries):
             tag = be["tag"]
+            bl_busy = be.get("device_busy_ms", 0)
             bl_latency = be.get("latency_ms", 0)
             bl_tflops = be.get("tflops")
 
             if idx == 0:
                 # Legacy unprefixed keys — consumed by existing nightly_report.py
                 item.user_properties.append(("baseline_tag", tag))
+                item.user_properties.append(
+                    ("baseline_device_busy_ms", f"{bl_busy:.4f}"))
                 item.user_properties.append(("baseline_latency_ms", f"{bl_latency:.4f}"))
                 if bl_tflops is not None:
                     item.user_properties.append(("baseline_tflops", _rate(bl_tflops)))
                 if tileops_entry:
-                    tl = tileops_entry.get("latency_ms", 0)
-                    if tl > 0 and bl_latency > 0:
+                    # Ratios compare device_busy_ms: latency additionally carries the
+                    # gaps between kernels, which the two implementations need not
+                    # have in equal number.
+                    tl = tileops_entry.get("device_busy_ms", 0)
+                    if tl > 0 and bl_busy > 0:
                         item.user_properties.append(("baseline_ratio",
-                                                     f"{bl_latency / tl:.4f}"))
+                                                     f"{bl_busy / tl:.4f}"))
 
             # Tag-prefixed keys — always written for every baseline
+            item.user_properties.append((f"{tag}_device_busy_ms", f"{bl_busy:.4f}"))
             item.user_properties.append((f"{tag}_latency_ms", f"{bl_latency:.4f}"))
             if bl_tflops is not None:
                 item.user_properties.append((f"{tag}_tflops", _rate(bl_tflops)))
             if tileops_entry:
-                tl = tileops_entry.get("latency_ms", 0)
-                if tl > 0 and bl_latency > 0:
-                    item.user_properties.append((f"{tag}_ratio", f"{bl_latency / tl:.4f}"))
+                tl = tileops_entry.get("device_busy_ms", 0)
+                if tl > 0 and bl_busy > 0:
+                    item.user_properties.append((f"{tag}_ratio", f"{bl_busy / tl:.4f}"))
     finally:
         _bench_results.entries = []
         _release_cuda_cache_after_case()
