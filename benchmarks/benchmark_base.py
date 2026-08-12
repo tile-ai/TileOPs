@@ -146,9 +146,13 @@ class BenchmarkBase(Generic[W], ABC):
             "device_busy_ms": busy,
             "latency_ms": latency,
             "gap_ms": latency - busy,
-            "n_kernels": statistics.median(s.n_kernels for s in samples),
             "n_samples": len(samples),
         }
+        counts = [s.n_kernels for s in samples]
+        if all(c is not None for c in counts):
+            # The largest count observed: a median would round a call that varies
+            # between one and two kernels to a number it never launched.
+            result["n_kernels"] = max(counts)
         p10, p90 = _sample_spread_ms([s.device_busy_ms for s in samples])
         if p10 is not None:
             result["device_busy_p10_ms"], result["device_busy_p90_ms"] = p10, p90

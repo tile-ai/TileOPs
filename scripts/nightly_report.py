@@ -244,26 +244,34 @@ def prune_history(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAYS
 _CONCLUSION_KEY = "device_busy_ms"
 
 
-def _conclusion_ms(cfg: dict) -> float | None:
-    """The reading a verdict is drawn on, from a parsed config entry.
+def _conclusion(cfg: dict) -> tuple[float | None, str]:
+    """The reading a verdict is drawn on, and which key it came from.
 
-    Falls back to latency for runs recorded before the switch, and for the
-    CUDA-events path, which cannot separate execution from the gaps and reports the
-    same number under both keys.
+    Runs recorded before the switch carry only ``latency_ms``. The key travels with
+    the value so history is compared like with like: for an op launching several
+    kernels the two differ by the gaps between them, and comparing across the pair
+    would read as a change the op did not make.
     """
     busy = cfg.get(f"tileops_{_CONCLUSION_KEY}")
-    return busy if busy is not None else cfg.get("tileops_latency_ms")
+    if busy is not None:
+        return busy, _CONCLUSION_KEY
+    return cfg.get("tileops_latency_ms"), "latency_ms"
 
 
-def find_best_latency(runs: list[dict], op: str, config_name: str) -> float | None:
+def _conclusion_ms(cfg: dict) -> float | None:
+    return _conclusion(cfg)[0]
+
+
+def find_best_latency(
+    runs: list[dict], op: str, config_name: str, key: str = _CONCLUSION_KEY,
+) -> float | None:
     """Find the best (lowest) tileops reading for an op+config across history."""
     best = None
     for run in runs:
-        op_data = run.get("ops", {}).get(op, {})
-        cfg_data = op_data.get(config_name, {})
-        tileops_data = cfg_data.get("tileops", {})
-        # Runs recorded before the switch carry only latency_ms.
-        lat = tileops_data.get(_CONCLUSION_KEY, tileops_data.get("latency_ms"))
+        tileops_data = (
+            run.get("ops", {}).get(op, {}).get(config_name, {}).get("tileops", {})
+        )
+        lat = tileops_data.get(key)
         if lat is not None and (best is None or lat < best):
             best = lat
     return best
@@ -274,10 +282,10 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     regressions = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            lat = _conclusion_ms(cfg)
+            lat, key = _conclusion(cfg)
             if lat is None:
                 continue
-            best = find_best_latency(history_runs, op, cfg["name"])
+            best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
             delta = (lat - best) / best
@@ -300,10 +308,10 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
     improvements = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            lat = _conclusion_ms(cfg)
+            lat, key = _conclusion(cfg)
             if lat is None:
                 continue
-            best = find_best_latency(history_runs, op, cfg["name"])
+            best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
             delta = (lat - best) / best

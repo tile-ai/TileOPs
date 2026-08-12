@@ -172,7 +172,8 @@ class Sample(NamedTuple):
     """Union of the call's kernel execution intervals. Host-independent."""
     latency_ms: float
     """Earliest kernel start to latest kernel end. Includes gaps the host caused."""
-    n_kernels: int
+    n_kernels: int | None
+    """Kernels attributed to the call, or None when the timer cannot see them."""
 
 
 def _kernel_span_us(kernels: list[dict]) -> float:
@@ -420,7 +421,7 @@ def bench_kernel(
         # Events bracket the call, so they cannot separate execution from the gaps
         # between kernels. Both fields carry the same number and `timing` says why.
         samples = [
-            Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=0)
+            Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)
             for elapsed in (
                 s.elapsed_time(e) for s, e in zip(starts, ends, strict=True)
             )
