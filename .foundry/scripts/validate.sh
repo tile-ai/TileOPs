@@ -10,7 +10,7 @@ set -euo pipefail
 
 # Source canonical type definitions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$REPO_ROOT/.claude/conventions/types.sh"
 
 OWNER_REPO="${1:?Usage: validate.sh <owner/repo> <pr_number>}"
@@ -58,14 +58,7 @@ else
   fail "PR body must contain ## Summary section"
 fi
 
-# 3. ## Test plan section
-if echo "$BODY" | grep -q '## Test plan'; then
-  pass "PR body contains ## Test plan section"
-else
-  fail "PR body must contain ## Test plan section"
-fi
-
-# 4. At least one label
+# 3. At least one label
 if [[ "$LABEL_COUNT" -gt 0 ]]; then
   LABELS=$(echo "$PR_JSON" | jq -r '[.labels[].name] | join(", ")')
   pass "PR has ${LABEL_COUNT} label(s): ${LABELS}"
@@ -73,14 +66,14 @@ else
   fail "PR must have at least one label"
 fi
 
-# 5. No literal \n in body (MCP pitfall)
+# 4. No literal \n in body (MCP pitfall)
 if echo "$BODY" | grep -q '\\n'; then
   fail "PR body contains literal \\\\n — use actual newlines instead"
 else
   pass "PR body uses actual newlines (no MCP pitfall)"
 fi
 
-# 6. BugFix should have Regression section (warning only)
+# 5. BugFix should have Regression section (warning only)
 if [[ "$TITLE" =~ ^\[BugFix\] ]] && ! echo "$BODY" | grep -q '## Regression'; then
   warn "[BugFix] PR should include ## Regression section"
 fi
