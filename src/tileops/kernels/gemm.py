@@ -890,6 +890,28 @@ def _gemm_coop2_kernel(
     (``group_size_m``) keeps concurrently-resident CTAs on a shared ``B`` column
     stripe for L2 reuse.
 
+    Wave quantization is the dominant residual against cuBLAS here. Sweeping
+    ``n`` at a fixed config, the ratio to cuBLAS moves with
+    ``tiles / (ceil(tiles / sm_count) * sm_count)``: over n in
+    {1920, 2112, 2304, 2496, 3168} the two agree within 4% (ratio/fill spans
+    0.96-1.03). That is a correlation across five different problems, not an
+    attribution -- cuBLAS's own tiling quantizes too, and how much is not
+    observable from here. Two ways of removing it were measured and rejected:
+
+    - every wave-filling tile shape costs more than the fill is worth. On
+      prefill-gate-up (4096x2112x7168) ``block_n=64`` gives 33 n-tiles, exactly
+      8 waves on 132 SMs, and measures 385-452 TF depending on structure
+      against 715 TF for the shipped ``block_n=192`` at 89% fill.
+    - stream-K tail balancing -- whole tiles for the even rounds, the leftover
+      tiles split along K across the full grid, fp32 partials combined by TMA
+      region reduce under a counter election -- is numerically correct but the
+      workspace path costs more than it recovers. Holding geometry fixed and
+      toggling only the path, a control doing the *same* whole-tile work
+      measures 181 us without it and 229 us with it: +27% for a prize worth
+      11%. The penalty is proportional rather than fixed, so a long mainloop
+      does not amortize it; the same effect closed the fused split-K route on
+      the much shorter decode shapes.
+
     NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
     back to ``_gemm_kernel``. M / N tails are handled by a predicated scalar
