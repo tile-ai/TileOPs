@@ -296,9 +296,15 @@ def _best_config_cached(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
     if m <= 8 and not trans_a and trans_b:
         return _tiny_m_config(n, k, sm_count)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
-    if not cands:  # degenerate shapes: fall back to the modal default
-        return {"block_m": 128, "block_n": 128, "block_k": 64,
-                "num_stages": 4, "panel_size": 16, "split_k": 1}
+    if not cands:
+        # Unreachable: the single-consumer family is enumerated without reference
+        # to m/n/k and bm = bn = 64 always clears both budgets. Stated as an
+        # invariant rather than the modal-config fallback that stood here, which
+        # read as an any-shape safety net this module does not provide -- shapes
+        # it cannot serve are refused by ``GemmKernel``, not silently retiled.
+        raise AssertionError(
+            f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
+            f"trans_b={trans_b}, sm_count={sm_count})")
     # Residual score ties break toward larger block_k (fewer K iterations,
     # measured faster whenever the byte model cannot separate candidates).
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count),
