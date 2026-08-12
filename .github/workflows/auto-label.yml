@@ -42,7 +42,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           sparse-checkout: .claude/conventions
           sparse-checkout-cone-mode: false
-      - name: Extract type from title and apply label
+      - name: Extract type and origin from title and apply labels
         if: ${{ steps.guard.outputs.should_run == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,6 +63,26 @@ jobs:
             TITLE="$PR_TITLE"
             NUMBER="$PR_NUMBER"
             GH_CMD="pr"
+          fi
+
+          CURRENT_LABELS=$(gh "$GH_CMD" view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+
+          # Origin tag (e.g. [Perf][foundry]) — synced before the type flow below,
+          # which exits early on titles carrying no recognized type.
+          ORIGIN=$(echo "$TITLE" | grep -oP "^\[(${COMMIT_PR_TYPES})\]\[\K(${ORIGIN_TAGS})(?=\])" || true)
+          ORIGIN_LABEL="${ORIGIN:+${ORIGIN_TO_LABEL[$ORIGIN]}}"
+
+          for l in $ALL_ORIGIN_LABELS; do
+            if [ "$l" != "$ORIGIN_LABEL" ] && echo "$CURRENT_LABELS" | grep -qx "$l"; then
+              gh "$GH_CMD" edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l"
+              echo "Removed origin label no longer in title: $l"
+            fi
+          done
+
+          if [ -n "$ORIGIN_LABEL" ] && ! echo "$CURRENT_LABELS" | grep -qx "$ORIGIN_LABEL"; then
+            # Tolerate a deleted origin label: warn, but let the type flow run.
+            gh "$GH_CMD" edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$ORIGIN_LABEL" \
+              || echo "::warning::could not apply origin label '$ORIGIN_LABEL'"
           fi
 
           # Try commit/PR-style types first (e.g. [BugFix])
@@ -86,7 +106,6 @@ jobs:
           echo "Detected type: $TYPE -> label: $LABEL"
 
           # Check if correct label already applied
-          CURRENT_LABELS=$(gh "$GH_CMD" view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
           if echo "$CURRENT_LABELS" | grep -qx "$LABEL"; then
             echo "Label '$LABEL' already applied, skipping"
             exit 0
