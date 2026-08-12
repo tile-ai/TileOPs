@@ -139,9 +139,6 @@ class BenchmarkBase(Generic[W], ABC):
         # How the number was measured must travel with it: a run that fell back
         # to CUDA events is not comparable with a CUPTI-timed one.
         result.update(meta if meta is not None else _capture_bench_meta())
-        # The roofline inputs travel with the derived rates: a consumer that
-        # only sees a rounded rate cannot tell a workload with no FLOPs from one
-        # whose rate rounded to zero, and cannot recompute arithmetic intensity.
         flops = self.calculate_flops()
         if flops is not None:
             result["flops"] = flops

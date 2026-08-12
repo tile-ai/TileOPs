@@ -7,11 +7,7 @@ from benchmarks.report import BenchmarkReport, _bench_results
 
 
 def _rate(value: float) -> str:
-    """Format a throughput for the XML.
-
-    Throughputs across the suite span six orders of magnitude, so a fixed number
-    of decimals would write a small but real rate out as ``0.00``.
-    """
+    """Format a throughput; significant digits, so a small rate is not ``0.00``."""
     return f"{value:.6g}"
 
 
@@ -72,7 +68,6 @@ def pytest_runtest_call(item):
             bw = tileops_entry.get("bandwidth_tbs")
             if bw is not None:
                 item.user_properties.append(("tileops_bandwidth_tbs", _rate(bw)))
-            # The roofline inputs the rates were derived from.
             for key in ("flops", "bytes"):
                 value = tileops_entry.get(key)
                 if value is not None:
@@ -118,9 +113,6 @@ def pytest_runtest_call(item):
             item.user_properties.append((f"{tag}_latency_ms", f"{bl_latency:.4f}"))
             if bl_tflops is not None:
                 item.user_properties.append((f"{tag}_tflops", _rate(bl_tflops)))
-            bl_bw = be.get("bandwidth_tbs")
-            if bl_bw is not None:
-                item.user_properties.append((f"{tag}_bandwidth_tbs", _rate(bl_bw)))
             if tileops_entry:
                 tl = tileops_entry.get("latency_ms", 0)
                 if tl > 0 and bl_latency > 0:
