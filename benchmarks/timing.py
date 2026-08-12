@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 import torch
 
@@ -36,7 +36,11 @@ _cuda_runtime = None
 _CUPTI = None
 _COLLECTOR_ACTIVE = False
 _CALLBACKS_REGISTERED = False
-_BUFFER_BYTES = 8 * 1024 * 1024
+# Whatever CUPTI does with a buffer between handing it back and asking for the next one
+# scales with its size and runs on this thread, inside a timed call. On a three-kernel
+# call whose kernels occupy 19.1 us: 8 MB stalls 23 of 60 iterations past 200 us, 32 MB
+# 30 of 60, 256 KB none. Only latency_ms picks it up; the records are the same.
+_BUFFER_BYTES = 256 * 1024
 _BUFFER_ALIGN = 8
 _RECORDS: list[dict[str, Any]] = []
 
@@ -160,12 +164,39 @@ def collect_repeats(
         return _flush(), windows
 
 
+class Sample(NamedTuple):
+    """One iteration's reading."""
+
+    device_busy_ms: float
+    """Union of the call's kernel execution intervals. Host-independent."""
+    latency_ms: float
+    """Earliest kernel start to latest kernel end. Includes gaps the host caused."""
+    n_kernels: int | None
+    """Kernels attributed to the call, or None when the timer cannot see them."""
+
+
 def _kernel_span_us(kernels: list[dict]) -> float:
     if not kernels:
         return 0.0
     start_ns = min(int(kernel["start_ns"]) for kernel in kernels)
     end_ns = max(int(kernel["end_ns"]) for kernel in kernels)
     return (end_ns - start_ns) / 1000.0
+
+
+def _kernel_busy_us(kernels: list[dict]) -> float:
+    """Total time the device spent executing these kernels, overlaps counted once."""
+    intervals = sorted(
+        (int(k["start_ns"]), int(k["end_ns"])) for k in kernels
+    )
+    total = 0
+    current_start, current_end = intervals[0]
+    for start, end in intervals[1:]:
+        if start > current_end:
+            total += current_end - current_start
+            current_start, current_end = start, end
+        else:
+            current_end = max(current_end, end)
+    return (total + current_end - current_start) / 1000.0
 
 
 def _ordered_trace_kernels(records: list[dict]) -> list[dict]:
@@ -179,12 +210,12 @@ def _cuda_events_fallback_enabled() -> bool:
     return os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
 
 
-def _attributed_latency_samples_ms(
+def _attributed_samples(
     records: list[dict],
     windows: list[tuple[int, int]],
     n_repeat: int,
-) -> list[float]:
-    """Return each iteration's latency, in milliseconds.
+) -> list[Sample]:
+    """Return one Sample per iteration.
 
     Attribution is which window an activity started in. Nothing is inferred from the
     order or the identity of what ran, so a call whose activity count varies between
@@ -196,14 +227,18 @@ def _attributed_latency_samples_ms(
             f"{len(windows)} timing windows for {n_repeat} iterations"
         )
 
-    samples_us = []
+    samples = []
     empty = []
     for repeat, (begin, end) in enumerate(windows):
         inside = [r for r in records if begin <= r["start_ns"] < end]
         if not inside:
             empty.append(repeat)
             continue
-        samples_us.append(_kernel_span_us(inside))
+        samples.append(Sample(
+            device_busy_ms=_kernel_busy_us(inside) * 1e-3,
+            latency_ms=_kernel_span_us(inside) * 1e-3,
+            n_kernels=len(inside),
+        ))
 
     if empty:
         raise _CUPTIAttributionError(
@@ -211,7 +246,7 @@ def _attributed_latency_samples_ms(
             f"(first: iteration {empty[0]}); a call that never reaches the device is "
             f"not being measured"
         )
-    return [sample_us * 1e-3 for sample_us in samples_us]
+    return samples
 
 
 def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None, None]:
@@ -300,18 +335,14 @@ def bench_kernel(
     repeat_ms: float = REPEAT_MS,
     max_iters: int = _MAX_ITERS,
     min_iters: int = _MIN_ITERS,
-) -> list[float]:
-    """Time *fn* with CUPTI kernel-activity attribution.
+) -> list[Sample]:
+    """Time *fn* through CUPTI, one :class:`Sample` per iteration.
 
-    A calibration pass measures one iteration, then warmup and measurement each
-    run for their millisecond budget, so a short op is sampled many times and a
-    long one few. L2 is cleared and inputs rotated before every iteration. Each
-    call spans the earliest to the latest activity of its discovered sequence,
-    keeping inter-kernel gaps. Attribution fails closed unless
-    ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
-
-    Returns:
-        Per-iteration latencies in **milliseconds**.
+    A calibration pass measures one iteration, then warmup and measurement each run
+    for their millisecond budget, so a short op is sampled many times and a long one
+    few. L2 is cleared before every iteration, and each call is bracketed by a device
+    synchronize so its window holds only its own activity. Attribution fails closed
+    unless ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
     """
     if not isinstance(args, tuple):
         raise TypeError(
@@ -366,7 +397,7 @@ def bench_kernel(
     try:
         with _native_output_suppressor():
             records, windows = collect_repeats(_run, n_repeat, _prepare_iteration)
-            samples = _attributed_latency_samples_ms(records, windows, n_repeat)
+            samples = _attributed_samples(records, windows, n_repeat)
         _bench_meta.timing = "cupti"
     except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
@@ -386,7 +417,14 @@ def bench_kernel(
             _run(i)
             ends[i].record()
         torch.cuda.synchronize()
-        samples = [s.elapsed_time(e) for s, e in zip(starts, ends, strict=True)]
+        # Events bracket the call, so they cannot separate execution from the gaps
+        # between kernels. Both fields carry the same number and `timing` says why.
+        samples = [
+            Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)
+            for elapsed in (
+                s.elapsed_time(e) for s, e in zip(starts, ends, strict=True)
+            )
+        ]
 
     torch.cuda.empty_cache()
     return samples

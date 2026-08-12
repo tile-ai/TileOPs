@@ -130,7 +130,7 @@ class BenchmarkReport:
             op_or_name: Op instance or benchmark group name string.
                 If an Op instance, class name and module are extracted automatically.
             params: Parameter dict (typically from locals())
-            result: Dict with latency_ms, tflops, bandwidth_tbs
+            result: Dict with device_busy_ms, latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
         """
         if isinstance(op_or_name, str):
@@ -175,11 +175,14 @@ class BenchmarkReport:
         entry = {"tag": tag, "op": name, **result}
         if op_module:
             entry["op_module"] = op_module
+        dtype = filtered_params.get("dtype")
+        if isinstance(dtype, torch.dtype):
+            entry["dtype"] = str(dtype).removeprefix("torch.")
         _bench_results.entries.append(entry)
 
-        _logger.info("op=%s module=%s tag=%s latency_ms=%.4f tflops=%.2f",
+        _logger.info("op=%s module=%s tag=%s device_busy_ms=%.4f tflops=%.2f",
                       name, op_module or "N/A", tag,
-                      result.get("latency_ms", 0),
+                      result.get("device_busy_ms", 0),
                       result.get("tflops", 0))
 
     @staticmethod
@@ -198,7 +201,11 @@ class BenchmarkReport:
         lines.extend(_get_env_metadata())
         lines.append("")
 
-        default_result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
+        # device_busy_ms leads: it is the column implementations are compared on.
+        default_result_keys = [
+            "device_busy_ms", "latency_ms", "gap_ms", "n_kernels",
+            "tflops", "bandwidth_tbs",
+        ]
 
         for name, entries in BenchmarkReport._records.items():
             if not entries:

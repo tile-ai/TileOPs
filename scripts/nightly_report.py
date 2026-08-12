@@ -107,11 +107,12 @@ def parse_bench_xml(path: str) -> list[dict]:
                                 else None),
         }
         # Perf data
-        for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
+        for key in ("tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
+                     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
                      "tileops_variant", "tileops_timing",
-                     "tileops_latency_p10_ms", "tileops_latency_p90_ms", "tileops_n_samples",
-                     "baseline_tag", "baseline_latency_ms", "baseline_tflops",
-                     "baseline_ratio"):
+                     "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
+                     "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
+                     "baseline_latency_ms", "baseline_tflops", "baseline_ratio"):
             if key in props:
                 try:
                     entry[key] = float(props[key])
@@ -122,7 +123,11 @@ def parse_bench_xml(path: str) -> list[dict]:
         # flashinfer_latency_ms).  Each baseline becomes a dict in "baselines".
         baselines = {}
         for pkey, pval in props.items():
-            if pkey.endswith("_latency_ms") and pkey not in (
+            if pkey.endswith("_device_busy_ms") and pkey not in (
+                    "tileops_device_busy_ms", "baseline_device_busy_ms"):
+                tag = pkey.removesuffix("_device_busy_ms")
+                baselines.setdefault(tag, {})["device_busy_ms"] = _try_float(pval)
+            elif pkey.endswith("_latency_ms") and pkey not in (
                     "tileops_latency_ms", "baseline_latency_ms"):
                 tag = pkey.removesuffix("_latency_ms")
                 baselines.setdefault(tag, {})["latency_ms"] = _try_float(pval)
@@ -186,10 +191,12 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         if not d["module"]:
             d["module"] = r.get("op_module")
         config_entry = {"name": r["name"]}
-        for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
+        for key in ("tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
+                     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
                      "tileops_variant", "tileops_timing",
-                     "tileops_latency_p10_ms", "tileops_latency_p90_ms", "tileops_n_samples",
-                     "baseline_tag", "baseline_latency_ms", "baseline_tflops",
+                     "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
+                     "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
+                     "baseline_latency_ms", "baseline_tflops",
                      "baseline_ratio", "baselines"):
             if key in r:
                 config_entry[key] = r[key]
@@ -231,14 +238,39 @@ def prune_history(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAYS
     return [r for r in runs if r.get("date", "") >= cutoff]
 
 
-def find_best_latency(runs: list[dict], op: str, config_name: str) -> float | None:
-    """Find the best (lowest) tileops latency for an op+config across history."""
+# Verdicts are drawn on device execution time, not on the span that also covers the
+# gaps between a call's kernels.
+_CONCLUSION_KEY = "device_busy_ms"
+
+
+def _conclusion(cfg: dict) -> tuple[float | None, str]:
+    """The reading a verdict is drawn on, and which key it came from.
+
+    Runs recorded before the switch carry only ``latency_ms``. The key travels with
+    the value so history is compared like with like: for an op launching several
+    kernels the two differ by the gaps between them, and comparing across the pair
+    would read as a change the op did not make.
+    """
+    busy = cfg.get(f"tileops_{_CONCLUSION_KEY}")
+    if busy is not None:
+        return busy, _CONCLUSION_KEY
+    return cfg.get("tileops_latency_ms"), "latency_ms"
+
+
+def _conclusion_ms(cfg: dict) -> float | None:
+    return _conclusion(cfg)[0]
+
+
+def find_best_latency(
+    runs: list[dict], op: str, config_name: str, key: str = _CONCLUSION_KEY,
+) -> float | None:
+    """Find the best (lowest) tileops reading for an op+config across history."""
     best = None
     for run in runs:
-        op_data = run.get("ops", {}).get(op, {})
-        cfg_data = op_data.get(config_name, {})
-        tileops_data = cfg_data.get("tileops", {})
-        lat = tileops_data.get("latency_ms")
+        tileops_data = (
+            run.get("ops", {}).get(op, {}).get(config_name, {}).get("tileops", {})
+        )
+        lat = tileops_data.get(key)
         if lat is not None and (best is None or lat < best):
             best = lat
     return best
@@ -249,10 +281,10 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     regressions = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            lat = cfg.get("tileops_latency_ms")
+            lat, key = _conclusion(cfg)
             if lat is None:
                 continue
-            best = find_best_latency(history_runs, op, cfg["name"])
+            best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
             delta = (lat - best) / best
@@ -275,10 +307,10 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
     improvements = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            lat = cfg.get("tileops_latency_ms")
+            lat, key = _conclusion(cfg)
             if lat is None:
                 continue
-            best = find_best_latency(history_runs, op, cfg["name"])
+            best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
             delta = (lat - best) / best
@@ -305,8 +337,9 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
                 alerts.append({
                     "op": op,
                     "config": cfg["name"],
-                    "tileops_ms": cfg.get("tileops_latency_ms"),
-                    "baseline_ms": cfg.get("baseline_latency_ms"),
+                    "tileops_ms": _conclusion_ms(cfg),
+                    "baseline_ms": cfg.get(f"baseline_{_CONCLUSION_KEY}",
+                                           cfg.get("baseline_latency_ms")),
                     "ratio": ratio,
                     "baseline_tag": cfg.get("baseline_tag", "baseline"),
                 })
@@ -320,8 +353,9 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
                     alerts.append({
                         "op": op,
                         "config": cfg["name"],
-                        "tileops_ms": cfg.get("tileops_latency_ms"),
-                        "baseline_ms": bl.get("latency_ms"),
+                        "tileops_ms": _conclusion_ms(cfg),
+                        "baseline_ms": bl.get(_CONCLUSION_KEY,
+                                              bl.get("latency_ms")),
                         "ratio": bl_ratio,
                         "baseline_tag": tag,
                     })
@@ -343,16 +377,25 @@ def build_history_entry(bench_ops: dict) -> dict:
         for cfg in data["configs"]:
             entry = {}
             lat = cfg.get("tileops_latency_ms")
-            if lat is not None:
-                entry["tileops"] = {"latency_ms": lat}
+            busy = cfg.get("tileops_device_busy_ms")
+            if lat is not None or busy is not None:
+                entry["tileops"] = {}
+                for key, value in (("latency_ms", lat), (_CONCLUSION_KEY, busy)):
+                    if value is not None:
+                        entry["tileops"][key] = value
                 tflops = cfg.get("tileops_tflops")
                 if tflops is not None:
                     entry["tileops"]["tflops"] = tflops
             bl_lat = cfg.get("baseline_latency_ms")
-            if bl_lat is not None:
+            bl_busy = cfg.get(f"baseline_{_CONCLUSION_KEY}")
+            if bl_lat is not None or bl_busy is not None:
                 tag = cfg.get("baseline_tag", "baseline")
                 if isinstance(tag, str):
-                    entry[tag] = {"latency_ms": bl_lat}
+                    entry[tag] = {}
+                    for key, value in (("latency_ms", bl_lat),
+                                       (_CONCLUSION_KEY, bl_busy)):
+                        if value is not None:
+                            entry[tag][key] = value
                     bl_tflops = cfg.get("baseline_tflops")
                     if bl_tflops is not None:
                         entry[tag]["tflops"] = bl_tflops
@@ -578,7 +621,7 @@ def generate_report(
                      "|:----|------:|")
         for op in sorted(bench_ops):
             for cfg in bench_ops[op]["configs"]:
-                lat = cfg.get("tileops_latency_ms")
+                lat = _conclusion_ms(cfg)
                 tflops = cfg.get("tileops_tflops")
                 bw = cfg.get("tileops_bandwidth_tbs")
                 variant = cfg.get("tileops_variant")

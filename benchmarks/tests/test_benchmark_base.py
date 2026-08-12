@@ -3,7 +3,7 @@ import torch
 
 from benchmarks.benchmark_base import workloads_to_params
 from benchmarks.timing import (
-    _attributed_latency_samples_ms,
+    _attributed_samples,
     _CUPTIAttributionError,
     bench_kernel,
 )
@@ -39,61 +39,56 @@ def test_multi_input_op_raises_keyerror():
         workloads_to_params("GroupedQueryAttentionFwdOp")
 
 
-def _kernel(name: str, start_ns: int, end_ns: int) -> dict:
-    return {"name": name, "start_ns": start_ns, "end_ns": end_ns}
+def _kernel(start_ns: int, end_ns: int) -> dict:
+    return {"name": "k", "start_ns": start_ns, "end_ns": end_ns}
 
 
-def test_attribution_excludes_prepare_and_keeps_the_operator_gap():
-    """Only activity inside a call's own window counts toward its span."""
+def test_attribution_separates_execution_from_the_gaps_and_the_prepare():
+    """busy counts execution only; latency additionally spans the gaps between."""
     records = [
-        _kernel("prepare-copy", 1_000, 2_000),
-        _kernel("op-a", 4_000, 6_000),
-        _kernel("op-b", 9_000, 10_000),
-        _kernel("prepare-copy", 20_000, 21_000),
-        _kernel("op-a", 23_000, 24_000),
-        _kernel("op-b", 29_000, 31_000),
+        _kernel(1_000, 2_000),          # prepare, outside both windows
+        _kernel(4_000, 6_000),
+        _kernel(9_000, 10_000),
+        _kernel(20_000, 21_000),        # prepare
+        _kernel(23_000, 24_000),
+        _kernel(29_000, 31_000),
     ]
     windows = [(3_000, 19_000), (22_000, 40_000)]
 
-    samples_ms = _attributed_latency_samples_ms(records, windows, n_repeat=2)
+    first, second = _attributed_samples(records, windows, n_repeat=2)
 
-    # Operator envelopes are 6 us and 8 us; the 3/5 us inter-kernel gaps stay inside the
-    # call, and the prepare copies fall outside both windows.
-    assert samples_ms == pytest.approx([0.006, 0.008])
+    assert (first.device_busy_ms, first.latency_ms) == pytest.approx((0.003, 0.006))
+    assert (second.device_busy_ms, second.latency_ms) == pytest.approx((0.003, 0.008))
+    assert (first.n_kernels, second.n_kernels) == (2, 2)
 
 
-def test_attribution_measures_a_call_whose_activity_count_varies():
+def test_busy_counts_overlapping_kernels_once():
+    """Concurrent kernels occupy the device once, however they are summed."""
+    records = [_kernel(1_000, 5_000), _kernel(2_000, 9_000)]
+
+    sample, = _attributed_samples(records, [(0, 10_000)], n_repeat=1)
+
+    assert sample.device_busy_ms == pytest.approx(0.008)
+    assert sample.latency_ms == pytest.approx(0.008)
+
+
+def test_attribution_measures_a_call_whose_kernel_count_varies():
     """A dynamic path launching an extra kernel is measured, not rejected."""
-    records = [
-        _kernel("op", 1_000, 2_000),
-        _kernel("op", 10_000, 11_000),
-        _kernel("op-extra", 11_500, 13_000),
-    ]
+    records = [_kernel(1_000, 2_000), _kernel(10_000, 11_000), _kernel(11_500, 13_000)]
 
-    samples_ms = _attributed_latency_samples_ms(
+    first, second = _attributed_samples(
         records, [(500, 5_000), (9_000, 15_000)], n_repeat=2,
     )
 
-    assert samples_ms == pytest.approx([0.001, 0.003])
-
-
-def test_attribution_counts_activity_launched_from_another_thread():
-    """A window holds the call's activity whichever CPU thread launched it."""
-    records = [
-        _kernel("fwd", 1_000, 2_000),
-        _kernel("bwd-on-another-thread", 3_000, 7_000),
-    ]
-
-    samples_ms = _attributed_latency_samples_ms(records, [(500, 9_000)], n_repeat=1)
-
-    assert samples_ms == pytest.approx([0.006])
+    assert (first.n_kernels, second.n_kernels) == (1, 2)
+    assert second.device_busy_ms == pytest.approx(0.0025)
+    assert second.latency_ms == pytest.approx(0.003)
 
 
 def test_attribution_fails_closed_when_an_iteration_reaches_no_device():
-    records = [_kernel("a", 1_000, 2_000)]
     with pytest.raises(_CUPTIAttributionError, match="produced no GPU activity"):
-        _attributed_latency_samples_ms(
-            records, [(500, 3_000), (4_000, 5_000)], n_repeat=2,
+        _attributed_samples(
+            [_kernel(1_000, 2_000)], [(500, 3_000), (4_000, 5_000)], n_repeat=2,
         )
 
 
