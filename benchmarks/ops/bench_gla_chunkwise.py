@@ -181,6 +181,11 @@ class GLABwdFixture(FixtureBase):
     ]
 
 
+@pytest.mark.xfail(
+    reason="TileLang emits a WGMMA descriptor for a B operand whose layout the "
+           "assert rejects: 'Not a canonical GMMA_MN layout'. Fails on main too.",
+    strict=False,
+)
 @GLABwdFixture
 def test_gla_bwd_bench(
     batch: int,
