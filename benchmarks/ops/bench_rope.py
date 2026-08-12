@@ -112,15 +112,11 @@ def _profile_rope(op, bm: ManifestBenchmark, shape: tuple[int, ...],
     x = torch.randn(shape, device="cuda", dtype=dtype)
     params = {"shape": shape, "dtype": dtype, "layout": layout}
 
-    result = bm.profile(op, x)
-    BenchmarkReport.record(op, params, result, tag="tileops")
-
     seq_len = shape[0] if layout == "1d" else shape[1]
     cos, sin = _rope_tables(seq_len, shape[-1], dtype)
     if layout != "1d":
         cos, sin = (t.view(1, seq_len, 1, shape[-1]) for t in (cos, sin))
-    result_bl = bm.profile(lambda t: _rotate(t, cos, sin), x)
-    BenchmarkReport.record(op, params, result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": lambda t: _rotate(t, cos, sin)}, x, record_as=op, params=params)
 
 
 # Per-op tests — one block per manifest entry.
@@ -215,17 +211,13 @@ def test_rope_neox_position_ids_bench(
     bm = ManifestBenchmark(_POSITION_IDS_OP, op, RopeWorkload(shape, dtype))
     params = {"shape": shape, "dtype": dtype, "max_position": max_position}
 
-    result = bm.profile(op, x, position_ids)
-    BenchmarkReport.record(op, params, result, tag="tileops")
-
     cos, sin = _rope_tables(max_position, head_dim, dtype)
 
     def baseline_fn(t: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         idx = pos.long()
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
-    result_bl = bm.profile(baseline_fn, x, position_ids)
-    BenchmarkReport.record(op, params, result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": baseline_fn}, x, position_ids, record_as=op, params=params)
 
 
 if __name__ == "__main__":

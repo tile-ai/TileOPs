@@ -231,10 +231,7 @@ def _record_unary(
     inputs: tuple[torch.Tensor, ...],
     baseline_fn: Callable,
 ) -> None:
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, _manifest_params(bm), result, tag="tileops")
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=_manifest_params(bm))
 
 
 def _record_binary(
@@ -243,10 +240,7 @@ def _record_binary(
     inputs: tuple[torch.Tensor, torch.Tensor],
     baseline_fn: Callable,
 ) -> None:
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, _manifest_params(bm), result, tag="tileops")
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=_manifest_params(bm))
 
 
 _RELU_OP = "ReluFwdOp"
@@ -417,10 +411,7 @@ def test_prelu_manifest_bench(
     x, weight = test.gen_inputs()
     op = PreluFwdOp(shape=input_shape, num_channels=test.num_channels)
     bm = ManifestBenchmark(_PRELU_OP, op, test)
-    result = bm.profile(op, x, weight)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(F.prelu, x, weight)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": F.prelu}, x, weight, record_as=op, params=locals())
 
 
 _MASKED_FILL_OP = "MaskedFillFwdOp"
@@ -441,10 +432,7 @@ def test_masked_fill_tensor_manifest_bench(
     x, mask, value = test.gen_inputs()
     op = MaskedFillFwdOp(input=input_shape, mask=mask_shape, value=value_shape)
     bm = ManifestBenchmark(_MASKED_FILL_OP, op, test)
-    result = bm.profile(op, x, mask, value)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(lambda a, m, v: a.masked_fill(m, v), x, mask, value)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": lambda a, m, v: a.masked_fill(m, v)}, x, mask, value, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize(
@@ -459,10 +447,7 @@ def test_masked_fill_scalar_manifest_bench(
     x, mask = test.gen_inputs()
     op = MaskedFillScalarFwdOp(input=shape, mask=shape, value=-100.0)
     bm = ManifestBenchmark(_MASKED_FILL_SCALAR_OP, op, test)
-    result = bm.profile(op, x, mask)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(lambda a, m: a.masked_fill(m, -100.0), x, mask)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": lambda a, m: a.masked_fill(m, -100.0)}, x, mask, record_as=op, params=locals())
 
 
 _ADD_OP = "AddFwdOp"
@@ -710,10 +695,7 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
     cond, x, other = test.gen_inputs()
     op = WhereFwdOp(condition=shape, input=shape, other=shape)
     bm = ManifestBenchmark(_WHERE_OP, op, test)
-    result = bm.profile(op, cond, x, other)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(torch.where, cond, x, other)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": torch.where}, cond, x, other, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_LERP_TENSOR_OP)))
@@ -722,10 +704,7 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     x, end, weight = test.gen_inputs()
     op = LerpTensorFwdOp(input=shape, end=shape, weight=shape)
     bm = ManifestBenchmark(_LERP_TENSOR_OP, op, test)
-    result = bm.profile(op, x, end, weight)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(torch.lerp, x, end, weight)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": torch.lerp}, x, end, weight, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

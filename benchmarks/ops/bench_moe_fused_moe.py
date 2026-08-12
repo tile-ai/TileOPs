@@ -133,8 +133,7 @@ def _run_bench(
     op(*forward_args_tileops)  # warmup / JIT compile
     torch.cuda.synchronize()
 
-    result = bm.profile(op, *forward_args_tileops)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     # -- Baseline ----------------------------------------------------------
     # vLLM's ``fused_topk`` has no correction_bias parameter, so routing for
@@ -160,10 +159,7 @@ def _run_bench(
         _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down)
         torch.cuda.synchronize()
 
-        result_vllm = bm.profile(
-            _vllm_fn, hidden, gating, correction_bias, w_gate_up, w_down,
-        )
-        BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
+        functors["vllm"] = (_vllm_fn, (hidden, gating, correction_bias, w_gate_up, w_down, ))
     else:
         # torch-ref baseline: memory-efficient per-expert GEMM loop.
         fk = FusedTopKOp(
@@ -197,10 +193,9 @@ def _run_bench(
         _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down)
         torch.cuda.synchronize()
 
-        result_ref = bm.profile(
-            _ref_fn, hidden, gating, correction_bias, w_gate_up, w_down,
-        )
-        BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
+        functors["torch-ref"] = (_ref_fn, (hidden, gating, correction_bias, w_gate_up, w_down, ))
+
+    bm.compare(functors, *forward_args_tileops, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize(

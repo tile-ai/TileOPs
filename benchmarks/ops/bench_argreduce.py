@@ -27,16 +27,14 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
 
     op = ArgmaxFwdOp(**extra)
     bm = ManifestBenchmark(_ARGMAX_OP, op, workload)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     dim = extra["dim"]
 
     def baseline_fn(x):
         return x.argmax(dim=dim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op,
+                params={"shape": shape, "dtype": dtype, "dim": dim})
 
 
 # Argmin benchmarks
@@ -49,16 +47,14 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
 
     op = ArgminFwdOp(**extra)
     bm = ManifestBenchmark(_ARGMIN_OP, op, workload)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     dim = extra["dim"]
 
     def baseline_fn(x):
         return x.argmin(dim=dim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op,
+                params={"shape": shape, "dtype": dtype, "dim": dim})
 
 
 if __name__ == "__main__":

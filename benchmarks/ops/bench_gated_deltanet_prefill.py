@@ -196,18 +196,24 @@ def test_gated_deltanet_prefill_fwd_bench(
 
     op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, tune=tune, layout=layout)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-
+    functors = {"tileops": op}
     if fla_fn is not None:
         fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
-        result_fla = bm.profile(fla_fn, *fla_inputs)
-        result["speedup_vs_fla"] = result_fla["latency_ms"] / result["latency_ms"]
-        BenchmarkReport.record(op, locals(), result, tag="tileops")
-        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
+        functors["fla"] = (fla_fn, fla_inputs)
     else:
-        BenchmarkReport.record(op, locals(), result, tag="tileops")
-        result_ref = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
+        functors["torch-ref"] = test.ref_program
+
+    # Recorded by hand: the tileops row carries a derived speedup field.
+    results = bm.compare(functors, *inputs)
+    if fla_fn is not None:
+        results["tileops"]["speedup_vs_fla"] = (
+            results["fla"]["latency_ms"] / results["tileops"]["latency_ms"]
+        )
+        BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
+        BenchmarkReport.record(op, locals(), results["fla"], tag="fla")
+    else:
+        BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
+        BenchmarkReport.record(op, locals(), results["torch-ref"], tag="torch-ref")
 
 
 if __name__ == "__main__":

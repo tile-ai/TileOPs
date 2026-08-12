@@ -39,15 +39,12 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
 
     op = InstanceNormFwdOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: torch.nn.functional.instance_norm
     def baseline_fn(x, weight, bias):
         return F.instance_norm(x, weight=weight, bias=bias, eps=1e-5)
 
-    result_bl = bm.profile(baseline_fn, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": baseline_fn}, x, weight, bias, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("n, c, spatial, dtype, tune", _NO_AFFINE_PARAMS)
@@ -62,14 +59,13 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     # use_input_stats=True path; pass placeholders.
     rm = torch.zeros(c, dtype=torch.float32, device="cuda")
     rv = torch.ones(c, dtype=torch.float32, device="cuda")
-    result = bm.profile(op, x, rm, rv)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     def baseline_no_affine(x):
         return F.instance_norm(x, weight=None, bias=None, eps=1e-5)
 
-    result_bl = bm.profile(baseline_no_affine, x)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    functors["torch"] = (baseline_no_affine, (x, ))
+    bm.compare(functors, x, rm, rv, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

@@ -31,16 +31,13 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     op = AdaLayerNormFwdOp()
     bm = ManifestBenchmark(_ADA_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic
     def baseline_fn(x, scale, shift):
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return scale * normed + shift
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_ZERO_OP_NAME)))
@@ -50,16 +47,13 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     op = AdaLayerNormZeroFwdOp()
     bm = ManifestBenchmark(_ADA_ZERO_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic + gate
     def baseline_fn(x, scale, shift, gate):
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return gate * (scale * normed + shift)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

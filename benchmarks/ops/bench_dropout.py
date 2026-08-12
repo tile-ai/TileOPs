@@ -32,11 +32,8 @@ def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = DropoutOp(p=test.p, seed=42)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, x)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, x)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": test.ref_program}, x, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

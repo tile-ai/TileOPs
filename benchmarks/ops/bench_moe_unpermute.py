@@ -68,8 +68,7 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     op(mm2_pad, fwd_idx, topk_weights)  # warmup / JIT compile
     torch.cuda.synchronize()
 
-    result = bm.profile(op, mm2_pad, fwd_idx, topk_weights)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     # vLLM baseline (optional)
     if _VLLM_AVAILABLE:
@@ -87,8 +86,7 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
         _vllm_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
         torch.cuda.synchronize()
 
-        result_vllm = bm.profile(_vllm_fn, mm2_pad, fwd_idx, topk_weights)
-        BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
+        functors["vllm"] = _vllm_fn
     else:
         # Fallback: PyTorch vectorized baseline (gather + weighted sum)
         fwd_idx_long = fwd_idx.long()
@@ -103,8 +101,9 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
         _torch_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
         torch.cuda.synchronize()
 
-        result_torch = bm.profile(_torch_fn, mm2_pad, fwd_idx, topk_weights)
-        BenchmarkReport.record(op, locals(), result_torch, tag="torch-ref")
+        functors["torch-ref"] = _torch_fn
+
+    bm.compare(functors, mm2_pad, fwd_idx, topk_weights, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

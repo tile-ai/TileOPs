@@ -57,22 +57,19 @@ def test_sum_bench(
     op_params.setdefault("dim", -1)  # baseline below reduces dim=-1
     op = SumFwdOp(**op_params)
     bm = ManifestBenchmark(_SUM_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params.get("dim", -1)
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 # Mean benchmarks
@@ -91,22 +88,19 @@ def test_mean_bench(
     op_params.setdefault("dim", -1)  # baseline below mirrors the op's dim
     op = MeanFwdOp(**op_params)
     bm = ManifestBenchmark(_MEAN_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 # Amax benchmarks
@@ -125,22 +119,19 @@ def test_amax_bench(
     op_params.setdefault("dim", -1)
     op = AmaxFwdOp(**op_params)
     bm = ManifestBenchmark(_AMAX_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return x.amax(dim=dim, keepdim=keepdim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 # Amin benchmarks
@@ -159,22 +150,19 @@ def test_amin_bench(
     op_params.setdefault("dim", -1)
     op = AminFwdOp(**op_params)
     bm = ManifestBenchmark(_AMIN_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return x.amin(dim=dim, keepdim=keepdim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 # Prod benchmarks
@@ -187,19 +175,16 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = ProdFwdOp()
     bm = ManifestBenchmark(_PROD_OP, op, test)
+    def baseline_fn(x):
+        return x.float().prod(dim=-1).to(x.dtype)
+
     try:
-        result = bm.profile(op, *inputs)
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    def baseline_fn(x):
-        return x.float().prod(dim=-1).to(x.dtype)
-
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # Std benchmarks
@@ -218,22 +203,19 @@ def test_std_bench(
     op_params.setdefault("dim", -1)
     op = StdFwdOp(correction=1, **op_params)
     bm = ManifestBenchmark(_STD_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return x.float().std(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 # Var benchmarks
@@ -252,22 +234,19 @@ def test_var_bench(
     op_params.setdefault("dim", -1)
     op = VarFwdOp(correction=1, **op_params)
     bm = ManifestBenchmark(_VAR_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
         return x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 # VarMean benchmarks
@@ -286,14 +265,6 @@ def test_var_mean_bench(
     op_params.setdefault("dim", -1)
     op = VarMeanFwdOp(correction=1, **op_params)
     bm = ManifestBenchmark(_VAR_MEAN_OP, op, test)
-    try:
-        result = bm.profile(op, *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -302,8 +273,13 @@ def test_var_mean_bench(
         m = x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
         return (v, m)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    try:
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
+                   record_as=op, params=locals())
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
 
 
 if __name__ == "__main__":

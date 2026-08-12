@@ -43,11 +43,8 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
 
     op = EngramGateConvFwdOp(M, seq_len, d, tune=_TUNE)
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
 
 
 _ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
@@ -63,15 +60,12 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
 
     op = EngramGateConvBwdOp(M, seq_len, d, tune=_TUNE)
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_BWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     @torch.enable_grad()
     def ref_with_grad(*args):
         return test.ref_program(*args)
 
-    result_bl = bm.profile(ref_with_grad, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    bm.compare({"tileops": op, "torch": ref_with_grad}, *inputs, record_as=op, params=locals())
 
 
 _ENGRAM_DECODE_OP = "EngramDecodeOp"
@@ -93,11 +87,8 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
         batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=_TUNE,
     )
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

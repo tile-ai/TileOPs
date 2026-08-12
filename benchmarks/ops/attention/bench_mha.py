@@ -112,22 +112,20 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
 
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_MHA_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_fwd(test)
     if fa3_fn is not None:
-        result_bl = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+        functors["fa3"] = fa3_fn
 
     fi_fn = _flashinfer_mha_fwd(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(_torch_mha_fwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+        functors["torch-sdpa"] = _torch_mha_fwd(test)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 _MHA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_BWD_OP), mha_qkv_args)
@@ -141,16 +139,15 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
 
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_MHA_BWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_bwd(test)
     if fa3_fn is not None:
-        result_bl = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+        functors["fa3"] = fa3_fn
     else:
-        result_bl = bm.profile(_torch_mha_bwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+        functors["torch-sdpa"] = _torch_mha_bwd(test)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

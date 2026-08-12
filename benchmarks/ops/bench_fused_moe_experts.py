@@ -122,8 +122,7 @@ def test_moe_experts_nopad_bench(
     _nopad_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 
-    result = bm.profile(_nopad_fn, hidden, w1, w2, topk_weights, topk_ids)
-    BenchmarkReport.record(nopad, locals(), result, tag="tileops-nopad-3wg")
+    functors = {"tileops-nopad-3wg": _nopad_fn}
 
     # -- vLLM Triton baseline -------------------------------------------------
     if _VLLM_TRITON_AVAILABLE:
@@ -133,8 +132,7 @@ def test_moe_experts_nopad_bench(
         _vllm_triton_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
         torch.cuda.synchronize()
 
-        result_triton = bm.profile(_vllm_triton_fn, hidden, w1, w2, topk_weights, topk_ids)
-        BenchmarkReport.record(nopad, locals(), result_triton, tag="vllm-triton")
+        functors["vllm-triton"] = _vllm_triton_fn
 
     # -- vLLM CUTLASS baseline ------------------------------------------------
     if _VLLM_CUTLASS_AVAILABLE:
@@ -145,8 +143,7 @@ def test_moe_experts_nopad_bench(
             _vllm_cutlass_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
             torch.cuda.synchronize()
 
-            result_cutlass = bm.profile(_vllm_cutlass_fn, hidden, w1, w2, topk_weights, topk_ids)
-            BenchmarkReport.record(nopad, locals(), result_cutlass, tag="vllm-cutlass")
+            functors["vllm-cutlass"] = _vllm_cutlass_fn
         except Exception as e:
             print(f"[vllm-cutlass] skipped: {e}")
 
@@ -173,8 +170,9 @@ def test_moe_experts_nopad_bench(
         _torch_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
         torch.cuda.synchronize()
 
-        result_torch = bm.profile(_torch_fn, hidden, w1, w2, topk_weights, topk_ids)
-        BenchmarkReport.record(nopad, locals(), result_torch, tag="torch-ref")
+        functors["torch-ref"] = _torch_fn
+
+    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids, record_as=nopad, params=locals())
 
 
 if __name__ == "__main__":

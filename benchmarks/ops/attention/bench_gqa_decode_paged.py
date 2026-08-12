@@ -157,22 +157,20 @@ def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv
         batch, heads, heads_kv, seqlen_kv, dim, page_size,
         sm_scale=sm_scale, softcap=softcap, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    functors = {"tileops": op}
 
     fa3_fn = _fa3_gqa_decode_paged(test, k, v)
     if fa3_fn is not None:
-        result_fa3 = bm.profile(fa3_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fa3, tag="fa3")
+        functors["fa3"] = fa3_fn
 
     fi_fn = _flashinfer_gqa_decode_paged(test, *inputs)
     if fi_fn is not None:
-        result_fi = bm.profile(fi_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+        functors["flashinfer"] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        functors["torch-ref"] = test.ref_program
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 if __name__ == "__main__":

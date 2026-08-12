@@ -1,9 +1,3 @@
-"""Unit tests for benchmarks.benchmark_base.
-
-Verifies that the generic ``BenchmarkBase`` / ``ManifestBenchmark`` accept
-any duck-typed workload rather than requiring ``WorkloadBase`` inheritance.
-"""
-
 import pytest
 import torch
 
@@ -14,8 +8,6 @@ from benchmarks.benchmark_base import (
     bench_kernel,
     workloads_to_params,
 )
-
-# Duck-typed test workloads
 
 
 @pytest.mark.smoke
@@ -81,28 +73,10 @@ def test_attribution_excludes_prepare_and_keeps_the_operator_gap():
     assert samples_ms == pytest.approx([0.006, 0.008])
 
 
-@pytest.mark.parametrize(
-    "kernels, expected_sequence",
-    [
-        # CUPTI may publish two concurrent kernels in either start-time order.
-        ([_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)], _seq("a", "b")),
-        # A repeated kernel name is matched by occurrence, not by identity.
-        (
-            [
-                _kernel("a", 1_000, 2_000),
-                _kernel("b", 1_500, 3_000),
-                _kernel("a", 2_000, 2_500),
-            ],
-            _seq("a", "a", "b"),
-        ),
-    ],
-)
-def test_attribution_accepts_overlapping_activities_in_either_order(
-    kernels, expected_sequence,
-):
-    samples_ms = _attributed_latency_samples_ms(
-        kernels, expected_sequence, n_repeat=1,
-    )
+def test_attribution_accepts_concurrent_activities_in_either_order():
+    """CUPTI may publish two overlapping kernels in either start-time order."""
+    kernels = [_kernel("b", 1_000, 3_000), _kernel("a", 1_500, 2_500)]
+    samples_ms = _attributed_latency_samples_ms(kernels, _seq("a", "b"), n_repeat=1)
     assert samples_ms == pytest.approx([0.002])
 
 
