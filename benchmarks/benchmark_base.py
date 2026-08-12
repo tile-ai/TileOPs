@@ -750,7 +750,16 @@ class BenchmarkBase(Generic[W], ABC):
                     max_iters=_MAX_ITERS // passes,
                     min_iters=max(1, _MIN_ITERS // passes),
                 ))
-            meta[tag] = _capture_bench_meta()
+            pass_meta = _capture_bench_meta()
+            previous = meta.get(tag)
+            if previous is not None and previous["timing"] != pass_meta["timing"]:
+                raise RuntimeError(
+                    f"{tag}: the two passes timed with different methods "
+                    f"({previous['timing']} then {pass_meta['timing']}); pooling "
+                    "them would report one median over two kinds of measurement. "
+                    "Only reachable with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1."
+                )
+            meta[tag] = pass_meta
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
         if record_as is not None:
             for tag in tags:

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, bench_kernel
+from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillFwdOp
 from workloads.gqa_fp8_utils import (
@@ -134,25 +134,11 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     inputs = _make_inputs(case)
     op(*inputs)
     torch.cuda.synchronize()
-    latency_ms = bench_kernel(op, args=inputs, n_warmup=1, n_repeat=3)
-    flops, bytes_moved = op.eval_roofline()
-    result = {
-        "latency_ms": latency_ms,
-        "tflops": flops / latency_ms * 1e-9 if latency_ms > 0 else 0.0,
-        "gbps": bytes_moved / latency_ms * 1e-6 if latency_ms > 0 else 0.0,
-        "flops": flops,
-        "bytes": bytes_moved,
-    }
-    BenchmarkReport.record(op, {"case": case.label}, result, tag="tileops")
 
+    bm = ManifestBenchmark(_OP_NAME, op, case)
+    functors = {"tileops": op}
     fa3_fn = _fa3_gqa_fp8_fwd(case)
     if fa3_fn is not None:
-        fa3_latency_ms = bench_kernel(fa3_fn, args=inputs, n_warmup=1, n_repeat=3)
-        fa3_result = {
-            "latency_ms": fa3_latency_ms,
-            "tflops": flops / fa3_latency_ms * 1e-9 if fa3_latency_ms > 0 else 0.0,
-            "gbps": bytes_moved / fa3_latency_ms * 1e-6 if fa3_latency_ms > 0 else 0.0,
-            "flops": flops,
-            "bytes": bytes_moved,
-        }
-        BenchmarkReport.record(op, {"case": case.label}, fa3_result, tag="fa3")
+        functors["fa3"] = fa3_fn
+
+    bm.compare(functors, *inputs, record_as=op, params={"case": case.label})
