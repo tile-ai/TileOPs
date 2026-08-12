@@ -185,7 +185,11 @@ def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
     op = GemmOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
     if dtype == torch.float16:
-        tolerances = {"atol": 1e-3, "rtol": 1e-3}
+        # Only GEMV sums in a different order than cuBLAS; there cancellation
+        # leaves atol alone to carry the reduction error, 3.3e-3 at K=16384.
+        gemv = not trans_a and ((m == 1 and trans_b) or (n == 1 and not trans_b))
+        atol = 1e-3 * max(1.0, k / 2048) if gemv else 1e-3
+        tolerances = {"atol": atol, "rtol": 1e-3}
     else:
         tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
