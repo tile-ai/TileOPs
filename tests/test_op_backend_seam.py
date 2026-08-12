@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 
 pytestmark = pytest.mark.smoke
@@ -340,3 +341,138 @@ def test_a_settled_instance_is_bound_to_that_target_s_devices():
 
     with pytest.raises(ValueError, match="is a CUDA kernel"):
         op(*_inputs())  # same signature, CPU tensors
+
+
+# --------------------------------------------------------------------------------------
+# A complex op: canonical packed GQA prefill
+# --------------------------------------------------------------------------------------
+
+
+class _GQARecorder:
+    """A fake GQA target that records construction separately from invocation."""
+
+    def __init__(self):
+        self.builds = []
+        self.invocations = []
+
+    def build_kernel(self, *specs, **params):
+        self.builds.append((specs, params))
+
+        def kernel(*inputs):
+            assert len(inputs) == 8
+            assert all(tensor.is_contiguous() for tensor in inputs)
+            self.invocations.append(tuple(tensor.clone() for tensor in inputs))
+            return torch.full_like(inputs[0], 7)
+
+        return kernel
+
+
+def _register_gqa(recorder):
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillFwdOp", "fake", recorder.build_kernel
+    )
+
+
+def _gqa_op():
+    return GroupedQueryAttentionPrefillFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        dim=8,
+        max_seqlen_q=3,
+        max_seqlen_kv=3,
+        dtype=torch.float16,
+        is_causal=True,
+        backend="auto",
+        target="fake",
+    )
+
+
+def _gqa_inputs(cu_values=(0, 3, 6), *, noncontiguous_q=False):
+    total = cu_values[-1]
+    if noncontiguous_q:
+        q = torch.randn(total, 4, 16, dtype=torch.float16)[:, :, ::2]
+        assert not q.is_contiguous()
+    else:
+        q = torch.randn(total, 4, 8, dtype=torch.float16)
+    k = torch.randn(total, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    cu_q = torch.tensor(cu_values, dtype=torch.int32)
+    cu_kv = torch.tensor(cu_values, dtype=torch.int32)
+    scales = tuple(torch.ones(2, 2, dtype=torch.float32) for _ in range(3))
+    return q, k, v, cu_q, cu_kv, *scales
+
+
+def test_gqa_target_gets_the_exact_manifest_contract(monkeypatch):
+    """A complex op still exposes only its manifest contract to a target."""
+    recorder = _GQARecorder()
+    _register_gqa(recorder)
+    op = _gqa_op()
+    inputs = _gqa_inputs(noncontiguous_q=True)
+
+    # CallSpec, architecture probes and implementation names belong to BUILTIN.
+    monkeypatch.setattr(
+        op,
+        "select_kernel_key",
+        lambda *args, **kwargs: pytest.fail("external dispatch selected a builtin kernel"),
+    )
+    monkeypatch.setattr(
+        op,
+        "attention_call",
+        lambda *args, **kwargs: pytest.fail("external dispatch constructed a builtin call"),
+    )
+    monkeypatch.setattr(
+        "tileops.utils.get_sm_version",
+        lambda: pytest.fail("external dispatch inspected an NVIDIA architecture"),
+    )
+    monkeypatch.setattr(
+        "tileops.utils.is_h200",
+        lambda: pytest.fail("external dispatch inspected an NVIDIA product"),
+    )
+    output = op(*inputs)
+
+    ((specs, params),) = recorder.builds
+    normalized = tuple(tensor.contiguous() for tensor in inputs)
+    assert specs == tuple(TensorSpec.of(tensor) for tensor in normalized)
+    assert params == {
+        "max_seqlen_q": 3,
+        "max_seqlen_kv": 3,
+        "is_causal": True,
+        "sm_scale": 8**-0.5,
+        "softcap": 0.0,
+        "window_size_left": -1,
+        "window_size_right": -1,
+        "backend": "auto",
+        "validate_uniform_cu_seqlens": True,
+        "dtype": torch.float16,
+    }
+    assert torch.equal(output, torch.full_like(normalized[0], 7))
+
+
+def test_gqa_same_signature_different_contents_reuses_the_callable():
+    """Runtime sequence contents do not fragment the external signature cache."""
+    recorder = _GQARecorder()
+    _register_gqa(recorder)
+    op = _gqa_op()
+
+    op(*_gqa_inputs((0, 1, 4)))
+    op(*_gqa_inputs((0, 3, 4)))
+
+    assert len(recorder.builds) == 1
+    assert len(recorder.invocations) == 2
+    assert recorder.invocations[0][3].tolist() == [0, 1, 4]
+    assert recorder.invocations[1][3].tolist() == [0, 3, 4]
+    assert len(op.built_kernels("gqa_prefill")) == 1
+
+
+def test_gqa_public_semantics_are_checked_before_an_external_builder():
+    """A target replaces kernels, not the op's user-visible parameter rules."""
+    recorder = _GQARecorder()
+    _register_gqa(recorder)
+    op = _gqa_op()
+    op.backend = "dense"
+
+    with pytest.raises(ValueError, match="backend='dense' requires uniform"):
+        op(*_gqa_inputs((0, 1, 4)))
+
+    assert recorder.builds == []

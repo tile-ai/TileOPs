@@ -5,7 +5,7 @@ contradict the user-visible ``backend`` parameter. Choosing among the keys is
 ``Op.select_kernel_key``; see docs/design/ops-design.md § Kernel selection.
 """
 
-from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype, uses_sliding_window
+from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype
 
 __all__ = [
     "DECODE_KEYS",
@@ -14,6 +14,7 @@ __all__ = [
     "PAGED_PREFILL_KEYS",
     "AttentionCall",
     "check_packed_prefill_request",
+    "check_packed_prefill_semantics",
     "fp8_dtype",
 ]
 
@@ -47,9 +48,6 @@ DECODE_KEYS = ("gqa_decode_bs1_kernel", "gqa_decode_kernel")
 #: Implementations of paged GQA decode.
 PAGED_DECODE_KEYS = ("gqa_decode_paged_bs1_kernel", "gqa_decode_paged_kernel")
 
-#: Implementations of paged MHA decode.
-MHA_PAGED_DECODE_KEYS = ("mha_decode_paged_ws_kernel", "mha_decode_paged_kernel")
-
 
 def check_packed_prefill_request(call: AttentionCall) -> None:
     """Reject a packed prefill request its ``backend`` knob cannot describe.
@@ -61,27 +59,57 @@ def check_packed_prefill_request(call: AttentionCall) -> None:
     Raises:
         ValueError: When ``backend`` contradicts the request.
     """
-    if call.is_fp8:
-        if call.backend not in ("auto", "fp8"):
+    check_packed_prefill_semantics(
+        is_fp8=call.is_fp8,
+        is_uniform=call.is_uniform,
+        is_causal=call.is_causal,
+        max_seqlen_q=call.max_seqlen_q,
+        max_seqlen_kv=call.max_seqlen_kv,
+        window_size_left=call.window_size_left,
+        window_size_right=call.window_size_right,
+        backend=call.backend,
+    )
+
+
+def check_packed_prefill_semantics(
+    *,
+    is_fp8: bool,
+    is_uniform: bool,
+    is_causal: bool,
+    max_seqlen_q: int,
+    max_seqlen_kv: int,
+    window_size_left: int,
+    window_size_right: int,
+    backend: str,
+) -> None:
+    """Validate packed-prefill API semantics without inspecting a device.
+
+    This is the target-neutral half of :func:`check_packed_prefill_request`.
+    ``AttentionCall`` and its architecture facts belong only to the in-tree
+    implementation, while these user-visible parameter rules apply to every target.
+    """
+    uses_window = window_size_left != -1 or window_size_right != -1
+    if is_fp8:
+        if backend not in ("auto", "fp8"):
             raise ValueError("FP8 prefill requires backend='auto' or backend='fp8'.")
-        if call.is_causal:
+        if is_causal:
             raise ValueError("FP8 prefill currently supports non-causal prefill only.")
-        if uses_sliding_window(call):
+        if uses_window:
             raise ValueError("FP8 prefill does not support sliding-window dispatch.")
-        if call.max_seqlen_q != call.max_seqlen_kv:
+        if max_seqlen_q != max_seqlen_kv:
             raise ValueError("FP8 prefill requires max_seqlen_q == max_seqlen_kv.")
-        if not call.is_uniform:
+        if not is_uniform:
             raise ValueError("FP8 prefill requires uniform packed cu_seqlens.")
         return
-    if call.backend == "fp8":
+    if backend == "fp8":
         raise ValueError("backend='fp8' requires float8_e4m3fn q/k/v.")
-    if uses_sliding_window(call):
-        if call.backend not in ("auto", "sliding_window"):
+    if uses_window:
+        if backend not in ("auto", "sliding_window"):
             raise ValueError(
                 "sliding-window prefill requires backend='auto' or backend='sliding_window'."
             )
         return
-    if call.backend == "sliding_window":
+    if backend == "sliding_window":
         raise ValueError("backend='sliding_window' requires window_size_left or window_size_right.")
-    if call.backend == "dense" and not call.is_uniform:
+    if backend == "dense" and not is_uniform:
         raise ValueError("backend='dense' requires uniform packed cu_seqlens.")
