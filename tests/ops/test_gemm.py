@@ -69,6 +69,20 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-nt-dense-ws",
                 ),
+                # The only ``trans_a=True`` case, and so the only cover for A stored
+                # ``[K, M]``: its TMA descriptor addresses M rather than K, and the
+                # logical M comes from a's second axis.
+                pytest.param(
+                    256,
+                    512,
+                    128,
+                    torch.float16,
+                    True,
+                    False,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-tn-trans-a",
+                ),
                 pytest.param(
                     1,
                     7168,
