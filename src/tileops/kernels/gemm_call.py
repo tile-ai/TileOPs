@@ -8,7 +8,7 @@ import torch
 from tileops.utils import get_sm_count
 
 from .call_spec import CallSpec
-from .gemm_heuristics import TINY_M_BLOCK_N, swap_ab_stages
+from .gemm_heuristics import swap_ab_stages
 
 __all__ = ["GemmCall", "gemv_region", "small_batch_region"]
 
@@ -49,21 +49,20 @@ def small_batch_region(call: GemmCall) -> bool:
     beats the best general config at ``m = 2`` on all three families and loses
     from ``m = 3`` up (gate-up 1.02x vs 1.05x, down 0.81x vs 0.92x).
 
-    The occupancy condition stands, priced on the grid this kernel actually
-    competes with — the tiny-m generic band's ``block_n`` — because with that
-    grid at a full wave the streaming kernel has no idle SMs to reclaim.
-
-    It also steps aside wherever the operand-swapped generic kernel applies:
-    that one streams the same weights on a grid twice as wide with no padded
-    ``A`` re-read, and measures 1.07-1.08x cuBLAS at ``m = 2`` on the down and
+    It steps aside wherever the operand-swapped generic kernel applies: that
+    one streams the same weights on a grid twice as wide with no padded ``A``
+    re-read, and measures 1.07-1.08x cuBLAS at ``m = 2`` on the down and
     attention shapes against this kernel's 1.01x.
+
+    That exclusion also settles occupancy: ``swap_ab`` claims every ``n`` past
+    three-eighths of a wave on its 64-wide grid (``n > 24 * sm_count``), while
+    a full wave of the tiny-m generic band needs ``n >= TINY_M_BLOCK_N *
+    sm_count`` — so nothing reaching here is out of idle SMs to reclaim.
+    Narrowing ``swap_ab``'s band brings that condition back.
 
     ``m == 1`` is the GEMV region. NT only: the reduction over ``K`` needs
     ``K`` contiguous.
     """
     if call.trans_a or not call.trans_b or call.m != 2:
         return False
-    sm_count = get_sm_count()
-    if swap_ab_stages(call.n, sm_count) is not None:
-        return False
-    return -(-call.n // TINY_M_BLOCK_N) < sm_count
+    return swap_ab_stages(call.n, get_sm_count()) is None

@@ -602,13 +602,14 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
 
 @pytest.mark.smoke
 def test_small_batch_dispatch() -> None:
-    """small_batch dispatches only at m == 2 on grids no generic path fills.
+    """small_batch dispatches only at m == 2, on the n band swap_ab leaves it.
 
-    m == 1 stays on gemv, m >= 3 / full grids / non-NT stay on the generic
-    kernel (whose small-m band picks swap_ab / split-K / simple configs
-    analytically). Dispatch only — ``_get_kernel`` constructs kernel objects
-    without triggering a JIT compile (that happens on first forward), so this
-    stays smoke-fast.
+    One case per clause of ``gemm_call.small_batch_region``: m == 1 stays on
+    gemv, m >= 3 and non-NT stay on the generic kernel (whose small-m band
+    picks swap_ab / split-K / simple configs analytically), and so does any n
+    wide enough for the operand-swapped grid. Dispatch only — ``_get_kernel``
+    constructs kernel objects without triggering a JIT compile (that happens on
+    first forward), so this stays smoke-fast.
     """
     from tileops.utils import get_sm_version
 
@@ -619,22 +620,13 @@ def test_small_batch_dispatch() -> None:
     # m == 2, and n too narrow for the operand-swapped grid (2112 / 64 = 33
     # CTAs): the bandwidth kernel's remaining band.
     assert op._get_kernel(2, 2112, 7168, torch.float16)[0] == "small_batch"
-    # m == 2 but n wide enough for swap_ab (7168 / 64 = 112 CTAs, 4096 -> 64):
-    # the generic kernel streams the same weights on a wider grid and wins.
+    # n wide enough for swap_ab (7168 / 64 = 112 CTAs): the generic kernel
+    # streams the same weights on a wider grid and wins.
     assert op._get_kernel(2, 7168, 2048, torch.float16)[0] == "gemm"
-    assert op._get_kernel(2, 4096, 7168, torch.float16)[0] == "gemm"
-    # m >= 3: the split-K / simple generic configs overtake the bandwidth
-    # kernel (its per-element CUDA-core cost scales with m).
+    # m == 3 is the first m the bandwidth body loses (its per-element CUDA-core
+    # cost scales with m); m == 1 is the GEMV region below it.
     assert op._get_kernel(3, 2112, 7168, torch.float16)[0] == "gemm"
-    assert op._get_kernel(4, 7168, 2048, torch.float16)[0] == "gemm"
-    assert op._get_kernel(8, 2112, 7168, torch.float16)[0] == "gemm"
-    # boundaries
-    assert op._get_kernel(1, 2112, 7168, torch.float16)[0] == "lhs_row"  # gemv
-    from tileops.kernels.gemm_heuristics import TINY_M_BLOCK_N
-    from tileops.utils import get_sm_count
-
-    wide_n = get_sm_count() * TINY_M_BLOCK_N  # generic fills the GPU
-    assert op._get_kernel(2, wide_n, 2048, torch.float16)[0] == "gemm"
+    assert op._get_kernel(1, 2112, 7168, torch.float16)[0] == "lhs_row"
     op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
     assert op_nn._get_kernel(2, 2112, 7168, torch.float16)[0] == "gemm"
 
@@ -748,13 +740,13 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
 def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
     """A rank-3 operand is refused at the op boundary, not inside TileLang.
 
-    ``GemmOp``'s manifest inputs declare no ``shape``, so rank is stated
+    ``GemmFwdOp``'s manifest inputs declare no ``shape``, so rank is stated
     nowhere but here (both sibling ops check it themselves). Without the check
     the trailing axis was dropped: ``(4, 16, 64)`` NT inferred ``m=4, n=4,
     k=16``, bound those on the op, compiled a kernel for them, and only then
     failed TileLang's argument check.
     """
-    op = GemmOp()
+    op = GemmFwdOp()
     a = torch.empty(4, 16, 64, dtype=torch.float16, device="cuda")
 
     with pytest.raises(ValueError, match=r"contracts two matrices.*a\.ndim=3"):
