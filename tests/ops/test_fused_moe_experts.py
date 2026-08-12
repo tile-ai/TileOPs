@@ -163,6 +163,60 @@ def moe_tensors(request):
 class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
     @pytest.mark.smoke
+    @pytest.mark.parametrize(
+        "num_tokens,num_experts,expected_decode_strategy",
+        [
+            pytest.param(512, 128, True, id="qwen-decode"),
+            pytest.param(4096, 128, False, id="qwen-prefill"),
+            pytest.param(512, 256, True, id="deepseek-decode"),
+            pytest.param(4096, 256, False, id="deepseek-prefill"),
+        ],
+    )
+    def test_manifest_shapes_select_production_strategy(
+        self, num_tokens, num_experts, expected_decode_strategy,
+    ):
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=num_tokens,
+            num_experts=num_experts,
+            top_k=8,
+            hidden_size=7168,
+            ffn_size=2048,
+        )
+        assert experts.use_fused_activation is expected_decode_strategy
+        assert (experts._down_kernel_config is not None) is expected_decode_strategy
+        if expected_decode_strategy:
+            assert experts._down_kernel_config["block_m"] == 64
+        else:
+            assert experts._activation_op is not None
+
+    @pytest.mark.smoke
+    def test_sparse_routing_requires_enough_cta_parallelism(self):
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=8,
+            num_experts=128,
+            top_k=8,
+            hidden_size=7168,
+            ffn_size=2048,
+        )
+        assert experts.use_fused_activation is False
+        assert experts._down_kernel_config is None
+
+    @pytest.mark.smoke
+    def test_explicit_gemm_override_disables_production_dispatch(self):
+        from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
+
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=512,
+            num_experts=128,
+            top_k=8,
+            hidden_size=7168,
+            ffn_size=2048,
+            gemm_kernel=GroupedGemmPersistent3WGKernel,
+        )
+        assert experts.use_fused_activation is False
+        assert experts._down_kernel_config is None
+
+    @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(

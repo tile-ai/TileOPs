@@ -62,6 +62,74 @@ def test_output_shape():
     assert C.shape == (numel, ffn)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "T_count,E,expected_block_m,expected_stages",
+    [
+        pytest.param(256, 64, 128, 2, id="dense-decode"),
+        pytest.param(256, 128, 64, 1, id="sparse-decode"),
+    ],
+)
+def test_decode_bk128_config_and_correctness(
+    T_count, E, expected_block_m, expected_stages
+):
+    top_k, ffn, K = 8, 256, 256
+    A, B, sizes, offsets, numel = make_inputs(
+        T_count, E, top_k, ffn, K, torch.bfloat16,
+    )
+    kernel = MoeGroupedGemmPersistent3WGFusedActKernel(
+        numel=numel,
+        num_experts=E,
+        N=ffn,
+        K=K,
+        dtype=torch.bfloat16,
+        activation="silu_and_mul",
+    )
+    assert kernel.config == {
+        "block_m": expected_block_m,
+        "block_n": 128,
+        "block_k": 128,
+        "num_stages": expected_stages,
+        "threads": 384,
+        "group_size_m": 1,
+    }
+    actual = kernel(A, B, sizes, offsets)
+    expected = _ref_fused_act(A, B, sizes, offsets, ffn, "silu_and_mul")
+    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.smoke
+def test_cooperative_sparse_bottom_half_paths():
+    """Exercise both partial and empty WG1 halves in one cooperative launch."""
+    E, ffn, K = 2, 256, 128
+    sizes = torch.tensor([96, 32], dtype=torch.int32, device="cuda")
+    offsets = torch.tensor([0, 96], dtype=torch.int32, device="cuda")
+    numel = int(sizes.sum())
+    torch.manual_seed(17)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    config = {
+        "block_m": 128,
+        "block_n": 128,
+        "block_k": 128,
+        "num_stages": 2,
+        "threads": 384,
+        "group_size_m": 1,
+    }
+    kernel = MoeGroupedGemmPersistent3WGFusedActKernel(
+        numel=numel,
+        num_experts=E,
+        N=ffn,
+        K=K,
+        dtype=torch.bfloat16,
+        activation="silu_and_mul",
+        config=config,
+    )
+    actual = kernel(A, B, sizes, offsets)
+    expected = _ref_fused_act(A, B, sizes, offsets, ffn, "silu_and_mul")
+    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
+
+
 @pytest.mark.nightly
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 def test_pingpong_against_reference(activation):
