@@ -135,8 +135,8 @@ class GemmFwdOp(Op):
             sb_cls = self.kernel_map["small_batch_kernel"]
             kernel = self.get_or_build_kernel(
                 "small_batch_kernel",
-                (m, n, k, dtype),
-                lambda: sb_cls(m, n, k, dtype, tune=self.tune),
+                key=(m, n, k, dtype),
+                build=lambda: sb_cls(m, n, k, dtype, tune=self.tune),
             )
             return "small_batch", kernel
 
