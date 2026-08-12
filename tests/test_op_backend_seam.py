@@ -373,8 +373,8 @@ def _register_gqa(recorder):
     )
 
 
-def _gqa_op():
-    return GroupedQueryAttentionPrefillFwdOp(
+def _gqa_op(**overrides):
+    kwargs = dict(
         batch=2,
         heads=4,
         heads_kv=2,
@@ -386,6 +386,8 @@ def _gqa_op():
         backend="auto",
         target="fake",
     )
+    kwargs.update(overrides)
+    return GroupedQueryAttentionPrefillFwdOp(**kwargs)
 
 
 def _gqa_inputs(cu_values=(0, 3, 6), *, noncontiguous_q=False):
@@ -413,21 +415,8 @@ def test_gqa_target_gets_the_exact_manifest_contract(monkeypatch):
     # CallSpec, architecture probes and implementation names belong to BUILTIN.
     monkeypatch.setattr(
         op,
-        "select_kernel_key",
-        lambda *args, **kwargs: pytest.fail("external dispatch selected a builtin kernel"),
-    )
-    monkeypatch.setattr(
-        op,
-        "attention_call",
-        lambda *args, **kwargs: pytest.fail("external dispatch constructed a builtin call"),
-    )
-    monkeypatch.setattr(
-        "tileops.utils.get_sm_version",
-        lambda: pytest.fail("external dispatch inspected an NVIDIA architecture"),
-    )
-    monkeypatch.setattr(
-        "tileops.utils.is_h200",
-        lambda: pytest.fail("external dispatch inspected an NVIDIA product"),
+        "_build_builtin_kernel",
+        lambda **kwargs: pytest.fail("external dispatch entered the builtin factory"),
     )
     output = op(*inputs)
 
@@ -469,8 +458,7 @@ def test_gqa_public_semantics_are_checked_before_an_external_builder():
     """A target replaces kernels, not the op's user-visible parameter rules."""
     recorder = _GQARecorder()
     _register_gqa(recorder)
-    op = _gqa_op()
-    op.backend = "dense"
+    op = _gqa_op(backend="dense")
 
     with pytest.raises(ValueError, match="backend='dense' requires uniform"):
         op(*_gqa_inputs((0, 1, 4)))

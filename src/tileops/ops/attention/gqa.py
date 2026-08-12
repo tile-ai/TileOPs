@@ -1,4 +1,4 @@
-from typing import Callable, Dict, Optional
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -33,7 +33,6 @@ from .selection import (
     PAGED_DECODE_KEYS,
     PAGED_PREFILL_KEYS,
     AttentionCall,
-    check_packed_prefill_semantics,
     fp8_dtype,
 )
 
@@ -283,10 +282,10 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         window_size_right: int = -1,
         backend: str = "auto",
         validate_uniform_cu_seqlens: bool = True,
-        *,
-        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
@@ -340,14 +339,35 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             "gqa_prefill_fp8_tensor_core_fwd_kernel": GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
         }
 
-    def attention_call(self, *, is_fp8: bool, is_uniform: bool) -> AttentionCall:
+    def attention_call(
+        self,
+        *,
+        is_fp8: bool,
+        is_uniform: bool,
+        device: Optional[torch.device] = None,
+    ) -> AttentionCall:
         """State what one prefill call is, for selection to filter candidates against.
 
         Args:
             is_fp8: Whether the inputs carry ``torch.float8_e4m3fn`` elements.
             is_uniform: Whether both ``cu_seqlens`` describe equal-length requests.
+            device: The CUDA device whose in-tree implementations are being selected.
+                ``None`` preserves the direct-selection helper's current-device behavior.
         """
+        arch = -1
+        h200 = False
+        if device is not None:
+            if device.type != "cuda":
+                raise ValueError(
+                    f"the in-tree GQA prefill kernels require a CUDA device, got {device}"
+                )
+            from tileops.utils import get_sm_version, is_h200
+
+            arch = get_sm_version(device.index)
+            h200 = is_h200(device.index)
         return AttentionCall(
+            arch=arch,
+            h200=h200,
             dtype=self.dtype,
             batch=self.batch,
             heads=self.heads,
@@ -366,39 +386,56 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             tune=self.tune,
         )
 
-    def _build_builtin_kernel(self, *, is_fp8: bool, is_uniform: bool) -> Kernel:
+    def _build_builtin_kernel(
+        self,
+        *,
+        device: torch.device,
+        is_fp8: bool,
+        is_uniform: bool,
+    ) -> Kernel:
         """Select and construct the in-tree implementation for this call.
 
         This is deliberately inside the BUILTIN factory.  A third-party target owns its
         kernel names and selection rules, so it must never execute the in-tree
         ``PACKED_PREFILL_KEYS`` dispatch on the way to its registered builder.
         """
-        call = self.attention_call(is_fp8=is_fp8, is_uniform=is_uniform)
+        call = self.attention_call(
+            is_fp8=is_fp8,
+            is_uniform=is_uniform,
+            device=device,
+        )
         key = self.select_kernel_key(PACKED_PREFILL_KEYS, call)
         return _build_packed_prefill_kernel(self.kernel_map, key, call)
 
-    def _get_kernel(
-        self,
-        inputs: tuple[torch.Tensor, ...],
-        *,
-        is_fp8: bool,
-        is_uniform: bool,
-    ) -> Callable[..., torch.Tensor]:
-        """Return the callable serving one manifest-shaped packed-prefill call."""
-        # ``is_uniform`` depends on cu_seqlens contents, so the in-tree implementation may
-        # select a different kernel for tensors with the same dtype and shape.  The external
-        # path ignores this key and follows the RFC contract: one callable per full input
-        # signature must serve every legal set of tensor contents with that signature.
-        builtin_key = (inputs[0].device, self.dtype, is_fp8, is_uniform)
-        return self.get_or_build_kernel(
-            "gqa_prefill",
-            inputs,
-            key=builtin_key,
-            build=lambda: self._build_builtin_kernel(
-                is_fp8=is_fp8,
-                is_uniform=is_uniform,
-            ),
-        )
+    def _validate_request(self, *, is_fp8: bool, is_uniform: bool) -> None:
+        """Validate the public packed-prefill request for every target."""
+        uses_window = self.window_size_left != -1 or self.window_size_right != -1
+        if is_fp8:
+            if self.backend not in ("auto", "fp8"):
+                raise ValueError("FP8 prefill requires backend='auto' or backend='fp8'.")
+            if self.is_causal:
+                raise ValueError("FP8 prefill currently supports non-causal prefill only.")
+            if uses_window:
+                raise ValueError("FP8 prefill does not support sliding-window dispatch.")
+            if self.max_seqlen_q != self.max_seqlen_kv:
+                raise ValueError("FP8 prefill requires max_seqlen_q == max_seqlen_kv.")
+            if not is_uniform:
+                raise ValueError("FP8 prefill requires uniform packed cu_seqlens.")
+            return
+        if self.backend == "fp8":
+            raise ValueError("backend='fp8' requires float8_e4m3fn q/k/v.")
+        if uses_window:
+            if self.backend not in ("auto", "sliding_window"):
+                raise ValueError(
+                    "sliding-window prefill requires backend='auto' or backend='sliding_window'."
+                )
+            return
+        if self.backend == "sliding_window":
+            raise ValueError(
+                "backend='sliding_window' requires window_size_left or window_size_right."
+            )
+        if self.backend == "dense" and not is_uniform:
+            raise ValueError("backend='dense' requires uniform packed cu_seqlens.")
 
     def _infer_output_shapes(
         self,
@@ -545,6 +582,9 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         v_scale: torch.Tensor,
     ) -> torch.Tensor:
         self._validate_dtypes(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
+        self._validate_common_shapes(
+            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
+        )
         # Contiguity belongs to the hardware-neutral op contract.  Both BUILTIN and an
         # external target receive exactly the manifest tensors, normalized the same way.
         q = q.contiguous()
@@ -555,9 +595,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         q_scale = q_scale.contiguous()
         k_scale = k_scale.contiguous()
         v_scale = v_scale.contiguous()
-        self._validate_common_shapes(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
-        )
         if self.backend == "auto" or (
             self.backend in ("dense", "fp8") and self.validate_uniform_cu_seqlens
         ):
@@ -568,22 +605,21 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             is_uniform = True
 
         is_fp8 = self._is_fp8_tensor(q)
-        check_packed_prefill_semantics(
-            is_fp8=is_fp8,
-            is_uniform=is_uniform,
-            is_causal=self.is_causal,
-            max_seqlen_q=self.max_seqlen_q,
-            max_seqlen_kv=self.max_seqlen_kv,
-            window_size_left=self.window_size_left,
-            window_size_right=self.window_size_right,
-            backend=self.backend,
-        )
+        self._validate_request(is_fp8=is_fp8, is_uniform=is_uniform)
         inputs = (q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
-        output = self._get_kernel(
+        # ``is_uniform`` depends on tensor contents. It belongs to the in-tree key only;
+        # an external callable must serve all contents sharing one input signature.
+        kernel = self.get_or_build_kernel(
+            "gqa_prefill",
             inputs,
-            is_fp8=is_fp8,
-            is_uniform=is_uniform,
-        )(*inputs)
+            key=(q.device, self.dtype, is_fp8, is_uniform),
+            build=lambda: self._build_builtin_kernel(
+                device=q.device,
+                is_fp8=is_fp8,
+                is_uniform=is_uniform,
+            ),
+        )
+        output = kernel(*inputs)
         self._record_roofline(q, k, cu_seqlens_q, cu_seqlens_kv)
         return output
 

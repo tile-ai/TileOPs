@@ -1237,7 +1237,11 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
         kernel_map=_stand_in_prefill_map(),
     )
 
-    kernel = packed._build_builtin_kernel(is_fp8=False, is_uniform=True)
+    kernel = packed._build_builtin_kernel(
+        device=torch.device("cuda"),
+        is_fp8=False,
+        is_uniform=True,
+    )
 
     assert kernel.kwargs["max_seqlen_q"] == max_seqlen_q
     assert kernel.kwargs["max_seqlen_kv"] == max_seqlen_kv
