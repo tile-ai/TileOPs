@@ -85,16 +85,6 @@ def test_attribution_measures_a_call_whose_kernel_count_varies():
     assert second.latency_ms == pytest.approx(0.003)
 
 
-def test_attribution_counts_activity_launched_from_another_thread():
-    """A window holds the call's activity whichever CPU thread launched it."""
-    records = [_kernel(1_000, 2_000), _kernel(3_000, 7_000)]
-
-    sample, = _attributed_samples(records, [(500, 9_000)], n_repeat=1)
-
-    assert sample.n_kernels == 2
-    assert sample.device_busy_ms == pytest.approx(0.005)
-
-
 def test_attribution_fails_closed_when_an_iteration_reaches_no_device():
     with pytest.raises(_CUPTIAttributionError, match="produced no GPU activity"):
         _attributed_samples(

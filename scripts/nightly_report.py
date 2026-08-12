@@ -238,9 +238,8 @@ def prune_history(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAYS
     return [r for r in runs if r.get("date", "") >= cutoff]
 
 
-# Conclusions are drawn on device execution time. Latency additionally spans the gaps
-# between a call's kernels, whose cause the records cannot separate into the op's own
-# dependencies and the host being late to issue the next launch.
+# Verdicts are drawn on device execution time, not on the span that also covers the
+# gaps between a call's kernels.
 _CONCLUSION_KEY = "device_busy_ms"
 
 

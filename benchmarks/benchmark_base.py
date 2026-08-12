@@ -132,11 +132,8 @@ class BenchmarkBase(Generic[W], ABC):
     def _build_result(self, samples: list[Sample], meta: Optional[dict] = None) -> dict:
         """Turn per-iteration samples into the row a report records.
 
-        ``device_busy_ms`` is the conclusion quantity: it counts only the time the
-        device spent executing this call's kernels, so it does not move with how fast
-        the host issued them. ``latency_ms`` additionally spans the gaps between those
-        kernels, whose cause the records cannot separate into the op's own dependencies
-        and the host being late, and is therefore a diagnostic.
+        ``device_busy_ms`` carries the conclusions; the rest are diagnostics. See
+        :class:`~benchmarks.timing.Sample` for what each one counts.
         """
         if not samples:
             raise ValueError("bench_kernel returned no samples")

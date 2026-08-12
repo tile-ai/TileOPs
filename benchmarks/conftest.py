@@ -111,9 +111,8 @@ def pytest_runtest_call(item):
                 if bl_tflops is not None:
                     item.user_properties.append(("baseline_tflops", _rate(bl_tflops)))
                 if tileops_entry:
-                    # Ratios compare device_busy_ms: latency additionally carries the
-                    # gaps between kernels, which the two implementations need not
-                    # have in equal number.
+                    # Ratios compare device_busy_ms: two implementations need not
+                    # have the same number of gaps between kernels.
                     tl = tileops_entry.get("device_busy_ms", 0)
                     if tl > 0 and bl_busy > 0:
                         item.user_properties.append(("baseline_ratio",
