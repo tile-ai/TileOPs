@@ -45,6 +45,10 @@ Rules:
   - **FP16**: `rtol=1e-3`, `atol=1e-3`
   - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
 - Use exact comparison (`torch.equal`) for non-floating outputs (bool, masks, index tensors).
+- Size `atol` by the summation order, not the reduction length. Where a kernel sums differently from
+  the reference (GEMV, cross-thread allreduce, split-K), cancellation puts outputs far below the
+  typical magnitude and only `atol` covers their error; order-matching kernels (dense GEMM, BMM
+  against cuBLAS) come out bit-exact. Measure before loosening.
 
 ### Coverage rules
 
