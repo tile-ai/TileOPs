@@ -745,6 +745,27 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
 
 
 @pytest.mark.smoke
+def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
+    """A rank-3 operand is refused at the op boundary, not inside TileLang.
+
+    ``GemmOp``'s manifest inputs declare no ``shape``, so rank is stated
+    nowhere but here (both sibling ops check it themselves). Without the check
+    the trailing axis was dropped: ``(4, 16, 64)`` NT inferred ``m=4, n=4,
+    k=16``, bound those on the op, compiled a kernel for them, and only then
+    failed TileLang's argument check.
+    """
+    op = GemmOp()
+    a = torch.empty(4, 16, 64, dtype=torch.float16, device="cuda")
+
+    with pytest.raises(ValueError, match=r"contracts two matrices.*a\.ndim=3"):
+        op(a, a)
+    # The dims the refused call would have inferred are neither bound (the
+    # roofline reads them) nor compiled for.
+    assert (op.m, op.n, op.k) == (None, None, None)
+    assert not op.built_kernels("gemm_kernel")
+
+
+@pytest.mark.smoke
 def test_structure_routing_matches_test_ids() -> None:
     """Each ``GemmFixture`` case reaches the structure its id names.
 

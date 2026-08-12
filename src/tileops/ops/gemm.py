@@ -1,4 +1,4 @@
-from typing import Dict, Hashable, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -74,10 +74,31 @@ class GemmFwdOp(Op):
             "small_batch_kernel": SmallBatchGemmKernel,
         }
 
+    def _infer_output_shapes(
+        self,
+        a_shape: Tuple[int, ...],
+        b_shape: Tuple[int, ...],
+    ) -> dict[str, Tuple[int, int]]:
+        """Logical ``[M, N]``: each operand's non-K axis, per the trans flags."""
+        m = a_shape[1] if self.trans_a else a_shape[0]
+        n = b_shape[0] if self.trans_b else b_shape[1]
+        return {"d": (m, n)}
+
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
-        """Derive logical ``(m, n, k)`` from input shapes per the trans flags."""
-        k_a, m = (a.shape[0], a.shape[1]) if self.trans_a else (a.shape[1], a.shape[0])
-        n, k_b = (b.shape[0], b.shape[1]) if self.trans_b else (b.shape[1], b.shape[0])
+        """Derive logical ``(m, n, k)`` from input shapes per the trans flags.
+
+        Rank is checked first: an extra axis is otherwise dropped silently, and
+        the dims read out of the remaining axes reach the kernel builder, which
+        compiles for a shape the call does not have before TileLang rejects the
+        arguments.
+        """
+        if a.ndim != 2 or b.ndim != 2:
+            raise ValueError(
+                f"GemmOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
+            )
+        m, n = self._infer_output_shapes(a.shape, b.shape)["d"]
+        k_a = a.shape[0] if self.trans_a else a.shape[1]
+        k_b = b.shape[1] if self.trans_b else b.shape[0]
         if k_a != k_b:
             raise ValueError(
                 f"GEMM contraction dim mismatch: a contributes K={k_a}, b contributes K={k_b} "
@@ -85,17 +106,6 @@ class GemmFwdOp(Op):
                 f"trans_a={self.trans_a}, trans_b={self.trans_b})"
             )
         return m, n, k_a
-
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
-        """Project onto the dims the kernel actually specializes on."""
-        return (
-            self.m,
-            self.n,
-            self.k,
-            self.trans_a,
-            self.trans_b,
-            None if self.dtype is None else str(self.dtype),
-        )
 
     def _get_kernel(self, m: int, n: int, k: int, dtype: torch.dtype) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
