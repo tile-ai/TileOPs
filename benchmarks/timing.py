@@ -36,7 +36,12 @@ _cuda_runtime = None
 _CUPTI = None
 _COLLECTOR_ACTIVE = False
 _CALLBACKS_REGISTERED = False
-_BUFFER_BYTES = 8 * 1024 * 1024
+# Whatever CUPTI does with a buffer between handing it back and asking for the next one
+# scales with its size, and it happens on this thread inside a timed call. Measured on a
+# decode-shaped three-kernel call whose kernels occupy 19.1 us: at 8 MB, 23 of 60
+# iterations read over 200 us; at 32 MB, 30 of 60 and a 2068 us median; at 256 KB, none.
+# The delivered records are identical either way -- only the span picks it up.
+_BUFFER_BYTES = 256 * 1024
 _BUFFER_ALIGN = 8
 _RECORDS: list[dict[str, Any]] = []
 
