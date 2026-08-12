@@ -6,6 +6,15 @@ import torch
 from benchmarks.report import BenchmarkReport, _bench_results
 
 
+def _rate(value: float) -> str:
+    """Format a throughput for the XML.
+
+    Throughputs across the suite span six orders of magnitude, so a fixed number
+    of decimals would write a small but real rate out as ``0.00``.
+    """
+    return f"{value:.6g}"
+
+
 def _release_cuda_cache_after_case() -> None:
     """Drop per-case Python references and cached CUDA blocks between benchmarks."""
     gc.collect()
@@ -59,10 +68,18 @@ def pytest_runtest_call(item):
                                          f"{tileops_entry.get('latency_ms', 0):.4f}"))
             tflops = tileops_entry.get("tflops")
             if tflops is not None:
-                item.user_properties.append(("tileops_tflops", f"{tflops:.2f}"))
+                item.user_properties.append(("tileops_tflops", _rate(tflops)))
             bw = tileops_entry.get("bandwidth_tbs")
             if bw is not None:
-                item.user_properties.append(("tileops_bandwidth_tbs", f"{bw:.2f}"))
+                item.user_properties.append(("tileops_bandwidth_tbs", _rate(bw)))
+            # The roofline inputs the rates were derived from.
+            for key in ("flops", "bytes"):
+                value = tileops_entry.get(key)
+                if value is not None:
+                    item.user_properties.append((f"tileops_{key}", f"{value:.0f}"))
+            dtype = tileops_entry.get("dtype")
+            if dtype is not None:
+                item.user_properties.append(("tileops_dtype", str(dtype)))
             # Trust metadata for the reported median: which timer produced it,
             # and how wide the samples it summarizes were.
             for key in ("latency_p10_ms", "latency_p90_ms"):
@@ -90,7 +107,7 @@ def pytest_runtest_call(item):
                 item.user_properties.append(("baseline_tag", tag))
                 item.user_properties.append(("baseline_latency_ms", f"{bl_latency:.4f}"))
                 if bl_tflops is not None:
-                    item.user_properties.append(("baseline_tflops", f"{bl_tflops:.2f}"))
+                    item.user_properties.append(("baseline_tflops", _rate(bl_tflops)))
                 if tileops_entry:
                     tl = tileops_entry.get("latency_ms", 0)
                     if tl > 0 and bl_latency > 0:
@@ -100,7 +117,10 @@ def pytest_runtest_call(item):
             # Tag-prefixed keys — always written for every baseline
             item.user_properties.append((f"{tag}_latency_ms", f"{bl_latency:.4f}"))
             if bl_tflops is not None:
-                item.user_properties.append((f"{tag}_tflops", f"{bl_tflops:.2f}"))
+                item.user_properties.append((f"{tag}_tflops", _rate(bl_tflops)))
+            bl_bw = be.get("bandwidth_tbs")
+            if bl_bw is not None:
+                item.user_properties.append((f"{tag}_bandwidth_tbs", _rate(bl_bw)))
             if tileops_entry:
                 tl = tileops_entry.get("latency_ms", 0)
                 if tl > 0 and bl_latency > 0:

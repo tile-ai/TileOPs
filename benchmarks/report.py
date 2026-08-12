@@ -175,6 +175,12 @@ class BenchmarkReport:
         entry = {"tag": tag, "op": name, **result}
         if op_module:
             entry["op_module"] = op_module
+        # The dtype a case ran in decides which compute ceiling its throughput
+        # is measured against, so it travels with the measurement rather than
+        # being parsed back out of the case id.
+        dtype = filtered_params.get("dtype")
+        if isinstance(dtype, torch.dtype):
+            entry["dtype"] = str(dtype).removeprefix("torch.")
         _bench_results.entries.append(entry)
 
         _logger.info("op=%s module=%s tag=%s latency_ms=%.4f tflops=%.2f",
