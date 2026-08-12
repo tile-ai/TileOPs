@@ -10,17 +10,12 @@ N-tiling is over ffn; the two accumulators are fused in the epilogue so the
 """
 import functools
 import math
-import os
 
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-
-_ANCHOR_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../grouped_gemm/_anchor_helper.h")
-)
 
 __all__ = ["MoeGroupedGemmPersistent3WGFusedActKernel"]
 
@@ -903,7 +898,7 @@ def _fused_act_kernel(numel, num_experts, ffn, K, dtype, activation, sm_count, b
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", _ANCHOR_HELPER_PATH],
+        compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
         if block_m <= 64:

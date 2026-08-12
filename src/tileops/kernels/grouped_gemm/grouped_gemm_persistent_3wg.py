@@ -30,7 +30,6 @@ limit pruning).
 """
 import functools
 import math
-import os
 
 import tilelang
 import tilelang.language as T
@@ -38,10 +37,6 @@ import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
-
-_ANCHOR_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "_anchor_helper.h")
-)
 
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
@@ -1038,7 +1033,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", _ANCHOR_HELPER_PATH],
+        compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
         if block_m <= 64:

@@ -23,7 +23,6 @@ Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
 
 import functools
 import math
-import os
 from typing import Optional
 
 import tilelang
@@ -31,12 +30,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-
-# Path to the CUDA helper header for the scatter kernel.
-# Provides tl_atomic_add_offset() — a workaround for TileLang's codegen
-# limitation that T.atomic_add(..., return_prev=True) does not support
-# dynamic (indirect) global-memory indices.
-_ATOMIC_HELPER_H = os.path.join(os.path.dirname(__file__), "_atomic_helper.h")
 
 __all__ = ["MoePermuteAlignKernel"]
 
@@ -184,7 +177,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     scatter_blocks = min(math.ceil(numel / _SCATTER_THREADS), 65535)
     total_scatter_threads = scatter_blocks * _SCATTER_THREADS
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-include", _ATOMIC_HELPER_H])
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scatter():
 
         @T.prim_func
@@ -201,15 +194,9 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
                     idx = gid + i * total_scatter_threads
                     if idx < numel:
                         eid = flat[idx]
-                        # T.atomic_add(..., return_prev=True) does not support dynamic
-                        # global-memory indices (TileLang codegen limitation).
-                        # Use tl_atomic_add_offset() from _atomic_helper.h instead.
-                        # Store the side-effecting result before indexing with it so
-                        # TileLang's bounds-check lowering does not duplicate the call.
-                        slot_buf[0] = T.call_extern(
-                            "int32", "tl_atomic_add_offset",
-                            T.address_of(cumsum[0]), eid, T.int32(1)
-                        )
+                        # Store the returned slot before indexing with it, so
+                        # TileLang's bounds-check lowering cannot duplicate the atomic.
+                        slot_buf[0] = T.atomic_add(cumsum[eid], T.int32(1), return_prev=True)
                         slot = slot_buf[0]
                         sorted_token_ids[slot] = idx
 

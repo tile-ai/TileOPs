@@ -23,12 +23,11 @@ CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
 # As they appear in the wheel; `_in_src` gives the repo and sdist form.
 MANIFEST_YAMLS = ["tileops/manifest/attention.yaml", "tileops/manifest/gemm.yaml"]
-NESTED_HEADER = "tileops/kernels/attention/_anchor_helper.h"
-MOE_HEADER = "tileops/kernels/moe/_atomic_helper.h"
+NESTED_HEADER = "tileops/kernels/attention/_fp8_gqa_helper.h"
 PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
 
 # Every tracked non-.py file the fixture package ships.
-RESOURCES = [*MANIFEST_YAMLS, NESTED_HEADER, MOE_HEADER, PERF_PROFILE]
+RESOURCES = [*MANIFEST_YAMLS, NESTED_HEADER, PERF_PROFILE]
 SOURCES = ["tileops/__init__.py", "tileops/perf/profile.py"]
 
 
