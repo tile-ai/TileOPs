@@ -41,8 +41,10 @@ jobs:
           source .claude/conventions/types.sh
           if [[ ! "$PR_TITLE" =~ $COMMIT_MSG_PATTERN ]]; then
             echo "::error::PR title does not follow TileOPs format."
-            echo "Expected: [Type] description  or  [Type][Scope] description"
+            echo "Expected: [Type][Origin][Scope] description"
+            echo "Origin and Scope are optional; when both appear, Origin comes first."
             echo "Types: $COMMIT_PR_TYPES"
+            echo "Origins: $ORIGIN_TAGS"
             echo "Got: $PR_TITLE"
             exit 1
           fi
