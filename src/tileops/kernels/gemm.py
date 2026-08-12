@@ -14,6 +14,19 @@ from .gemm_heuristics import SWAP_AB_MPAD as _SWAP_AB_MPAD
 from .gemm_heuristics import best_config as _heuristic_best_config
 from .gemm_heuristics import gemv_config, small_batch_config
 
+# Named-barrier ids for the per-warpgroup epilogues of the 2-consumer kernels.
+# TileLang allocates its own ids for the syncs it inserts around a
+# fragment-to-shared copy, and it hands them out from the bottom: with 4 and 5
+# here it took 3 for one consumer and 4 for the other, so that consumer's
+# implicit barrier aliased the other's explicit one and could release it early
+# -- a store could then read a half-written ``c_smem``. Five of the six shipped
+# coop2 configs aliased that way (``compute-sanitizer --tool synccheck`` flags
+# it; results stayed right only because the two warpgroups run near lockstep).
+# Keep these clear of the range TileLang allocates from, and re-run synccheck
+# over the generated source after touching either epilogue.
+_CONSUMER_BAR_WG0 = 8
+_CONSUMER_BAR_WG1 = 9
+
 __all__ = [
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",
@@ -1080,10 +1093,10 @@ def _gemm_coop2_kernel(
                             if arows == T.int32(half_m) and acols == T.int32(block_n):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
-                                    T.sync_threads(barrier_id=4, arrive_count=128)
+                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
                                     T.copy(c_cast_0[:, c0 : c0 + sn], c_smem_0)
                                     T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=4, arrive_count=128)
+                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
                                     T.copy(c_smem_0, c[m_start, n_start + c0])
                             else:
                                 for i, j in T.Parallel(half_m, block_n):
@@ -1127,10 +1140,10 @@ def _gemm_coop2_kernel(
                             if arows == T.int32(half_m) and acols == T.int32(block_n):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
-                                    T.sync_threads(barrier_id=5, arrive_count=128)
+                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
                                     T.copy(c_cast_1[:, c0 : c0 + sn], c_smem_1)
                                     T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=5, arrive_count=128)
+                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
                                     T.copy(c_smem_1, c[m_start + half_m, n_start + c0])
                             elif arows > T.int32(0):
                                 for i, j in T.Parallel(half_m, block_n):
@@ -1692,10 +1705,10 @@ def _gemm_coop2s_kernel(
                         if (gi_cons_0 - 1) % num_stages == s:
                             T.barrier_arrive(ab_empty[s])
                     T.copy(c_local_0, c_cast_0)
-                    T.sync_threads(barrier_id=4, arrive_count=128)
+                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
                     T.copy(c_cast_0, c_smem_0)
                     T.fence_proxy_async()
-                    T.sync_threads(barrier_id=4, arrive_count=128)
+                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
                     T.copy(c_smem_0, c[m_start, n_start])
                 else:
                     # ── Consumer WG1: bottom half rows [half_m, block_m). ──
@@ -1729,10 +1742,10 @@ def _gemm_coop2s_kernel(
                         if (gi_cons_1 - 1) % num_stages == s:
                             T.barrier_arrive(ab_empty[s])
                     T.copy(c_local_1, c_cast_1)
-                    T.sync_threads(barrier_id=5, arrive_count=128)
+                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
                     T.copy(c_cast_1, c_smem_1)
                     T.fence_proxy_async()
-                    T.sync_threads(barrier_id=5, arrive_count=128)
+                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
                     T.copy(c_smem_1, c[m_start + half_m, n_start])
 
         return _gemm_coop2s_main
