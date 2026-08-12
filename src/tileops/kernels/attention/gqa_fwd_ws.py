@@ -24,7 +24,7 @@ __all__ = [
 
 NUM_SMS = int(os.environ.get("V2P_NUM_SMS", "132"))
 _ANCHOR_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "_anchor_helper.h"))
+    os.path.join(os.path.dirname(__file__), "_named_barrier.h"))
 _MATH_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_math_helper.h"))
 
 
@@ -139,7 +139,6 @@ def _gqa_fwd_ws_persistent_kernel(
                 ssum_2 = T.alloc_fragment([half_m], accum_dtype)
                 ls_2 = T.alloc_fragment([half_m], accum_dtype)
 
-                anchor_sink = T.alloc_shared([2], "int32")
                 k_full = T.alloc_barrier(arrive_count=128)
                 k_empty = T.alloc_barrier(arrive_count=256)
                 v_full = T.alloc_barrier(arrive_count=128)
@@ -275,11 +274,11 @@ def _gqa_fwd_ws_persistent_kernel(
                                 else:
                                     T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
                                 T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
-                                T.call_extern("handle", "tl::wait_wgmma_anchor<1>", T.address_of(anchor_sink[0]), gi_kc1)
+                                T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                 T.barrier_arrive(k_empty)
                                 softmax_1(acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1)
-                                T.call_extern("handle", "tl::wait_wgmma_anchor<0>", T.address_of(anchor_sink[0]), gi_kc1)
+                                T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                                 T.barrier_arrive(v_empty)
                                 rescale_1(acc_o_1, ss_1)
@@ -356,11 +355,11 @@ def _gqa_fwd_ws_persistent_kernel(
                                 else:
                                     T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
                                 T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
-                                T.call_extern("handle", "tl::wait_wgmma_anchor<1>", T.address_of(anchor_sink[1]), gi_kc2)
+                                T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                 T.barrier_arrive(k_empty)
                                 softmax_2(acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2)
-                                T.call_extern("handle", "tl::wait_wgmma_anchor<0>", T.address_of(anchor_sink[1]), gi_kc2)
+                                T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                                 T.barrier_arrive(v_empty)
                                 rescale_2(acc_o_2, ss_2)
@@ -488,7 +487,6 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                 ssum_2 = T.alloc_fragment([half_m], accum_dtype)
                 ls_2 = T.alloc_fragment([half_m], accum_dtype)
 
-                anchor_sink = T.alloc_shared([2], "int32")
                 k_full = T.alloc_barrier(arrive_count=128)
                 k_empty = T.alloc_barrier(arrive_count=256)
                 v_full = T.alloc_barrier(arrive_count=128)
@@ -637,7 +635,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     else:
                                         T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
                                     T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
-                                    T.call_extern("handle", "tl::wait_wgmma_anchor<1>", T.address_of(anchor_sink[0]), gi_kc1)
+                                    T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
                                     if use_softcap and n_idx == loop_range - 1:
@@ -653,7 +651,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                                 -T.infinity(accum_dtype),
                                             )
                                     softmax_1(acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1)
-                                    T.call_extern("handle", "tl::wait_wgmma_anchor<0>", T.address_of(anchor_sink[0]), gi_kc1)
+                                    T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                                     T.barrier_arrive(v_empty)
                                     rescale_1(acc_o_1, ss_1)
@@ -742,7 +740,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     else:
                                         T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
                                     T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
-                                    T.call_extern("handle", "tl::wait_wgmma_anchor<1>", T.address_of(anchor_sink[1]), gi_kc2)
+                                    T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
                                     if use_softcap and n_idx == loop_range - 1:
@@ -758,7 +756,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                                 -T.infinity(accum_dtype),
                                             )
                                     softmax_2(acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2)
-                                    T.call_extern("handle", "tl::wait_wgmma_anchor<0>", T.address_of(anchor_sink[1]), gi_kc2)
+                                    T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                                     T.barrier_arrive(v_empty)
                                     rescale_2(acc_o_2, ss_2)

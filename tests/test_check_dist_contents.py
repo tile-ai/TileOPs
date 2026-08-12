@@ -23,7 +23,7 @@ CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
 # As they appear in the wheel; `_in_src` gives the repo and sdist form.
 MANIFEST_YAMLS = ["tileops/manifest/attention.yaml", "tileops/manifest/gemm.yaml"]
-NESTED_HEADER = "tileops/kernels/attention/_anchor_helper.h"
+NESTED_HEADER = "tileops/kernels/attention/_named_barrier.h"
 MOE_HEADER = "tileops/kernels/moe/_atomic_helper.h"
 PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
 

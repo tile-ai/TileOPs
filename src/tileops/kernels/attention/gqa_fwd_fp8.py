@@ -21,7 +21,6 @@ TMA_INTERLEAVE_NONE = 0
 TMA_SWIZZLE_128B = 3
 TMA_L2_PROMOTION_128B = 2
 TMA_OOB_FILL_NONE = 0
-_ANCHOR_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_anchor_helper.h"))
 _FP8_GQA_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_fp8_gqa_helper.h"))
 
 
@@ -61,8 +60,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         compile_flags=[
             "-O3",
             "-DENABLE_BF16",
-            "-include",
-            _ANCHOR_HELPER_PATH,
             "-include",
             _FP8_GQA_HELPER_PATH,
         ],
