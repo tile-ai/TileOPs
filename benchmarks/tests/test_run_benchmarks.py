@@ -175,8 +175,8 @@ def test_teardown_crash_is_reported(tmp_path):
     assert _error_node_count(out_xml, "bench_teardown_abort") == 1
 
 
-def test_teardown_deadline_enforced_during_next_file(tmp_path):
-    """A teardown-stuck child is killed while the next file runs, not after."""
+def test_teardown_deadline_kills_a_stuck_child(tmp_path):
+    """A child that never finishes teardown is killed at its deadline, not waited on."""
     bench_dir = _write_bench_dir(
         tmp_path,
         {
@@ -185,10 +185,7 @@ def test_teardown_deadline_enforced_during_next_file(tmp_path):
                 "atexit.register(time.sleep, 60)\n"
                 "def test_ok():\n    pass\n"
             ),
-            "bench_b_next.py": (
-                "import time\n"
-                "def test_next():\n    time.sleep(8)\n"
-            ),
+            "bench_b_next.py": "def test_next():\n    pass\n",
         },
     )
     proc, out_xml, _ = _run_runner(
@@ -199,8 +196,35 @@ def test_teardown_deadline_enforced_during_next_file(tmp_path):
     assert proc.returncode == 1, proc.stdout + proc.stderr
     out = proc.stdout
     assert "stuck in teardown" in out
-    assert out.index("stuck in teardown") < out.index("bench_b_next.py finished")
+    assert out.index("stuck in teardown") < out.index("bench_a_slow_teardown.py finished")
     assert any("bench_a_slow_teardown" in k for k in _cases(out_xml))
+
+
+def test_next_file_starts_only_after_the_previous_child_exited(tmp_path):
+    """The GPU stays owned by one file until its process is gone, not until it reported."""
+    bench_dir = _write_bench_dir(
+        tmp_path,
+        {
+            # The sleep is the margin: restoring the overlap only shows up as a
+            # failure if the next file reaches its assertion while this teardown
+            # is still running, and a loaded machine is slow to get there.
+            "bench_a_slow_teardown.py": (
+                "import atexit, time\n"
+                "def _exit():\n"
+                "    time.sleep(5)\n"
+                "    open('teardown_done', 'w').write('gone')\n"
+                "atexit.register(_exit)\n"
+                "def test_ok():\n    pass\n"
+            ),
+            "bench_b_next.py": (
+                "import os\n"
+                "def test_next():\n    assert os.path.exists('teardown_done')\n"
+            ),
+        },
+    )
+    proc, _, _ = _run_runner(tmp_path, bench_dir, stall_timeout="120")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 @pytest.mark.smoke
