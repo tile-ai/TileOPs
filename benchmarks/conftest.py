@@ -91,6 +91,11 @@ def pytest_runtest_call(item):
             timing = tileops_entry.get("timing")
             if timing is not None:
                 item.user_properties.append(("tileops_timing", str(timing)))
+            # Present only when CUPTI lost records: a rising count across nights is the
+            # collector degrading, not the op.
+            retries = tileops_entry.get("attribution_retries")
+            if retries is not None:
+                item.user_properties.append(("tileops_attribution_retries", str(retries)))
 
         # Write all baselines into JUnit XML properties.
         # The first baseline uses the legacy unprefixed names (baseline_tag, etc.)

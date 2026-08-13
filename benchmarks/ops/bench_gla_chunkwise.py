@@ -2,14 +2,17 @@
 
 Compares forward and backward latency across sequence lengths and dtypes.
 
-When FLA is not installed, benchmarks still run using a pure-torch reference
-implementation as baseline (tagged "baseline"), so the nightly CI is never
-blocked by a missing optional dependency.
+When FLA is not installed, the forward benchmark still runs against a pure-torch
+reference baseline (tagged "torch"), so a missing optional dependency never
+blocks the nightly. The backward benchmark has no such fallback: a reference
+backward reached through autograd runs on the engine's thread, where the timer
+cannot tell which iteration launched a kernel.
 
 Layout convention:
     Both TileOPs and FLA use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
 """
 
+import warnings
 from typing import Optional
 
 import pytest
@@ -67,27 +70,10 @@ def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
     return torch.cat(o_chunks, dim=1)
 
 
-def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
-    """Compute GLA backward gradients via autograd on the differentiable forward."""
-    sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
-
-    q_ = q.float().detach().requires_grad_(True)
-    k_ = k.float().detach().requires_grad_(True)
-    v_ = v.float().detach().requires_grad_(True)
-    g_ = g.float().detach().requires_grad_(True)
-
-    o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
-    loss = (o * do.float()).sum()
-    dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
-    return dq, dk, dv, dg
-
 try:
     from fla.ops.gla import chunk_gla
 except ImportError:
     chunk_gla = None
-
-
-# Test helper (shared between fwd and bwd benchmarks)
 
 
 # Forward benchmark
@@ -219,7 +205,7 @@ def test_gla_bwd_bench(
     functors = {"tileops": (bwd_op.forward, (q, k, v, g, h, do, dht))}
 
     if chunk_gla is not None:
-        # --- FLA: bwd via autograd ---
+        # --- FLA: the backward node, called directly ---
         # NOTE: FLA's backward recomputes h internally (not saved from fwd),
         # so this measures bwd + h recomputation, not pure bwd.
         q_fla = q.float().detach().requires_grad_(True)
@@ -229,22 +215,25 @@ def test_gla_bwd_bench(
         do_fla = do.float()
 
         o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=scale)
+        # Applying the node keeps the launches on this thread, where the timer can
+        # attribute them, and leaves the engine's overhead out of the number. One
+        # grad per forward output.
+        bwd_node, node_grads = o_fla.grad_fn, (do_fla, None)
 
         def fla_bwd():
-            q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = None
-            o_fla.backward(do_fla, retain_graph=True)
-            return q_fla.grad, k_fla.grad, v_fla.grad
+            return bwd_node.apply(*node_grads)
 
         functors["fla"] = (fla_bwd, ())
     else:
-        # --- Torch autograd reference baseline ---
-        def torch_bwd():
-            return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
+        warnings.warn(
+            "fla is unavailable and the torch autograd reference cannot be timed "
+            "(its backward runs on autograd's engine thread, where the timer cannot "
+            "attribute the kernels); the baseline column will be omitted from results.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
-        functors["torch"] = (torch_bwd, ())
-
-    # Only torch_bwd builds its graph inside the timed call.
-    bm.compare(functors, record_as=bwd_op, params=locals(), needs_grad=("torch",))
+    bm.compare(functors, record_as=bwd_op, params=locals())
 
 
 # Combined fwd+bwd benchmark

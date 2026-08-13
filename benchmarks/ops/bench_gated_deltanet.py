@@ -2,9 +2,11 @@
 
 Compares forward and backward latency across sequence lengths and dtypes.
 
-When FLA is not installed, benchmarks still run using a pure-torch reference
-implementation as baseline (tagged "baseline"), so the nightly CI is never
-blocked by a missing optional dependency.
+When FLA is not installed, the forward benchmark still runs against a pure-torch
+reference baseline (tagged "torch"), so a missing optional dependency never blocks
+the nightly. The backward benchmark has no such fallback: a reference backward
+reached through autograd runs on the engine's thread, where the timer cannot tell
+which iteration launched a kernel.
 
 Layout convention:
     TileOPs uses BHSD: q/k [B, H, S, DK], v [B, H, S, DV], g/beta [B, H, S].
@@ -13,6 +15,7 @@ Layout convention:
     compute the same function.
 """
 
+import warnings
 from typing import Optional
 
 import pytest
@@ -22,56 +25,6 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
-
-
-def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
-    """Fully differentiable chunked forward matching paper (Eq. 10 via WY)."""
-    B, H, S, DK = q.shape
-    DV = v.shape[-1]
-    BC = chunk_size
-    NC = S // BC
-    g_cum = g_raw.float().reshape(B, H, NC, BC).cumsum(-1).reshape(B, H, S)
-    h = q.new_zeros(B, H, DK, DV)
-    o_chunks = []
-    eye = torch.eye(BC, device=q.device, dtype=torch.float32)
-    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
-    for c in range(NC):
-        sl = slice(c * BC, (c + 1) * BC)
-        qc = q[:, :, sl, :].float()
-        kc = k[:, :, sl, :].float()
-        vc = v[:, :, sl, :].float()
-        gc = g_cum[:, :, sl]
-        bc = beta[:, :, sl].float()
-        Gram = torch.einsum("bhik,bhjk->bhij", kc, kc)
-        Gamma = torch.exp(gc.unsqueeze(-1) - gc.unsqueeze(-2))
-        M = bc.unsqueeze(-1) * (Gamma * Gram)
-        A = eye + torch.tril(M, diagonal=-1)
-        A_inv = torch.linalg.inv(A)
-        wc = A_inv @ (kc * bc.unsqueeze(-1))
-        uc = A_inv @ (vc * bc.unsqueeze(-1))
-        g_last = gc[:, :, -1:]
-        v_new = uc - (wc * torch.exp(gc + g_last).unsqueeze(-1)) @ h
-        o_part = (qc @ h) * torch.exp(gc).unsqueeze(-1)
-        attn = (qc @ kc.transpose(-2, -1)) * Gamma * mask
-        o_c = o_part + attn @ v_new
-        o_chunks.append(o_c)
-        k_sc = kc * torch.exp(g_last - gc).unsqueeze(-1)
-        h = h * torch.exp(g_last).unsqueeze(-1) + k_sc.transpose(-2, -1) @ v_new
-    return torch.cat(o_chunks, dim=2)
-
-
-def gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, chunk_size):
-    """Compute backward gradients via autograd on the differentiable forward."""
-    q_ = q.float().detach().requires_grad_(True)
-    k_ = k.float().detach().requires_grad_(True)
-    v_ = v.float().detach().requires_grad_(True)
-    g_ = g.float().detach().requires_grad_(True)
-    beta_ = beta.float().detach().requires_grad_(True)
-
-    o = _differentiable_fwd(q_, k_, v_, g_, beta_, chunk_size)
-    loss = (o * do.float()).sum()
-    dq, dk, dv, dg, dbeta = torch.autograd.grad(loss, [q_, k_, v_, g_, beta_])
-    return dq, dk, dv, dg, dbeta
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
@@ -327,25 +280,28 @@ def test_gated_deltanet_vs_fla_bwd(
         g_fla = g_fla.detach().requires_grad_(True)
         beta_fla = beta_fla.detach().requires_grad_(True)
 
-        # Run fwd once to build computation graph, then time only backward
+        # Run fwd once to build the graph, then time the backward node directly
         o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+        # Applying the node keeps the launches on this thread, where the timer can
+        # attribute them, and leaves the engine's overhead out of the number. One
+        # grad per forward output.
+        bwd_node, node_grads = o_fla.grad_fn, (do_fla, None)
 
         def fla_bwd():
-            q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
-            o_fla.backward(do_fla, retain_graph=True)
-            return q_fla.grad, k_fla.grad, v_fla.grad
+            return bwd_node.apply(*node_grads)
 
         functors["fla"] = (fla_bwd, ())
     else:
-        # --- Torch autograd reference baseline ---
-        def torch_bwd():
-            return gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
-        functors["torch"] = (torch_bwd, ())
+        warnings.warn(
+            "fla is unavailable and the torch autograd reference cannot be timed "
+            "(its backward runs on autograd's engine thread, where the timer cannot "
+            "attribute the kernels); the baseline column will be omitted from results.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
-    # torch_bwd builds its forward graph inside the timed callable, so it needs
-    # autograd left on; compare() runs under no_grad otherwise.
     bm.compare(functors, do, q, k, v, g, beta, S_fwd,
-               record_as=bwd_op, params=locals(), needs_grad=("torch",))
+               record_as=bwd_op, params=locals())
 
 
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
