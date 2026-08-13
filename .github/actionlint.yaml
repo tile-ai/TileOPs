@@ -1,6 +1,5 @@
 self-hosted-runner:
   labels:
     - tile-ops
-    - venv
     - shared
     - bench
