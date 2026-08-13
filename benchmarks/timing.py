@@ -24,8 +24,9 @@ import torch
 
 _logger = logging.getLogger("tileops.bench")
 
-# Per-phase wall-time budgets in ms; iteration counts derive from them, so a
-# short kernel gets many samples and a long one few.
+# Per-phase wall-time budgets in ms, divided by the cost of one cold-isolated iteration.
+# That cost includes the L2 flush, which the reading excludes and which on its own
+# outweighs a microsecond kernel, so most ops take their count from _MAX_ITERS instead.
 DRY_RUN_MS = 25.0
 REPEAT_MS = 100.0
 _CALIBRATION_ITERS = 3
@@ -330,6 +331,8 @@ def _kernel_span_us(kernels: list[dict]) -> float:
 
 def _kernel_busy_us(kernels: list[dict]) -> float:
     """Total time the device spent executing these kernels, overlaps counted once."""
+    if not kernels:
+        return 0.0
     intervals = sorted(
         (int(k["start_ns"]), int(k["end_ns"])) for k in kernels
     )
@@ -454,11 +457,6 @@ def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None,
     return ordered[round(0.1 * last)], ordered[round(0.9 * last)]
 
 
-# L2 cache flush buffer, allocated lazily.
-
-_l2_flush_cache: Optional[torch.Tensor] = None
-
-
 def _reset_persisting_l2_cache() -> None:
     global _cuda_runtime
     if _cuda_runtime is None:
@@ -506,9 +504,6 @@ def _native_output_suppressor():
     return suppress_stdout_stderr()
 
 
-# NVIDIA SOL-ExecBench–style benchmark
-
-
 def _capture_bench_meta() -> dict:
     """Snapshot how the last measurement was taken."""
     return {
@@ -528,12 +523,13 @@ def bench_kernel(
 ) -> list[Sample]:
     """Time *fn* through CUPTI, one :class:`Sample` per iteration.
 
-    A calibration pass measures one iteration, then warmup and measurement each run
-    for their millisecond budget, so a short op is sampled many times and a long one
-    few. L2 is cleared before every iteration, and each call is drained before the next
-    begins. Each kernel is attributed to the iteration that launched it, so *fn* must
-    launch its own work rather than hand it to another thread. A phase whose records
-    CUPTI discarded is measured again; attribution otherwise fails closed unless
+    A calibration pass measures one cold-isolated iteration and the millisecond budgets
+    divide into it, clamped to ``[min_iters, max_iters]``; an op faster than the L2 flush
+    takes its count from the clamp. L2 is cleared before every iteration, and each call
+    is drained before the next begins. Each kernel is attributed to the iteration that
+    launched it, so *fn* must launch its own work rather than hand it to another thread.
+    A phase whose records CUPTI discarded is measured again; attribution otherwise
+    fails closed unless
     ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
     """
     if not isinstance(args, tuple):
@@ -552,8 +548,6 @@ def bench_kernel(
         _reset_persisting_l2_cache()
         cache.zero_()
 
-    # Calibrate on the raw args, before the pool exists to be sized. The flush
-    # is inside the timed region, so counts self-limit for tiny kernels.
     def _call_raw():
         return fn(*args) if args else fn()
 
@@ -579,9 +573,6 @@ def bench_kernel(
         _flush_l2()
         torch.cuda.synchronize()
 
-    _prepare_iteration(0)
-    _run(0)
-    torch.cuda.synchronize()
     for i in range(n_warmup):
         _prepare_iteration(i)
         _run(i)
