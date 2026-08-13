@@ -93,6 +93,36 @@ jobs:
             exit 1
           fi
 
+          # The runner is ephemeral, so this log is the only record of which
+          # card the job got.
+          echo "GPU under test:"
+          nvidia-smi --query-gpu=uuid,compute_mode,memory.used --format=csv
+
+          compute_mode=$(nvidia-smi --query-gpu=compute_mode --format=csv,noheader | xargs)
+          if [ "${compute_mode}" != "Exclusive_Process" ]; then
+            echo "::error::expected compute mode Exclusive_Process, found ${compute_mode}"
+            exit 1
+          fi
+
+          # Read memory, not --query-compute-apps: the container's PID namespace
+          # makes process queries come back empty even for a busy card.
+          MAX_USED_MIB=64
+          mem_used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | xargs)
+          # A non-numeric reading ([N/A], empty) would make the comparison below
+          # error out, and an error inside `if` does not trip set -e: the guard
+          # would pass. Reject it here so an unreadable GPU fails closed.
+          case "${mem_used}" in
+            ''|*[!0-9]*)
+              echo "::error::could not read GPU memory use, got '${mem_used}'"
+              exit 1
+              ;;
+          esac
+          if [ "${mem_used}" -gt "${MAX_USED_MIB}" ]; then
+            echo "::error::GPU is not idle: ${mem_used} MiB in use, limit ${MAX_USED_MIB} MiB"
+            nvidia-smi
+            exit 1
+          fi
+
           TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do

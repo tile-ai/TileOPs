@@ -136,23 +136,6 @@ class Child:
         # EOF without a status report: the child died; reap the reason.
         return self.proc.wait()
 
-    def poll_teardown(self, deadline: float) -> str | None:
-        """Return the teardown outcome once the child is gone, else None.
-
-        Outcomes: "" for a normal exit, otherwise a message describing a
-        teardown crash (unexpected signal) or a deadline kill.
-        """
-        rc = self.proc.poll()
-        if rc is not None:
-            if rc < 0:
-                sig = signal.Signals(-rc)
-                return f"died in teardown: signal {sig.value} ({sig.name})"
-            return ""
-        if time.monotonic() < deadline:
-            return None
-        self.kill()
-        return "stuck in teardown; killed at deadline"
-
     def kill(self) -> None:
         """Kill the child's whole process group and reap it."""
         with contextlib.suppress(ProcessLookupError):
@@ -162,27 +145,17 @@ class Child:
             os.close(self.status_fd)
 
 
-def _reap_lingering(
-    lingering: list[tuple[Child, float, str]], block: bool
-) -> list[tuple[str, str]]:
-    """Drop finished children, killing any past its teardown deadline.
-
-    Returns (bench_file, message) for every abnormal teardown. With
-    block=True, waits out the remaining deadlines (end of run).
-    """
-    anomalies: list[tuple[str, str]] = []
-    while True:
-        remaining = []
-        for child, deadline, bench_file in lingering:
-            outcome = child.poll_teardown(deadline)
-            if outcome is None:
-                remaining.append((child, deadline, bench_file))
-            elif outcome:
-                anomalies.append((bench_file, outcome))
-        lingering[:] = remaining
-        if not lingering or not block:
-            return anomalies
-        time.sleep(1.0)
+def _reap_teardown(child: Child, timeout_s: float) -> str:
+    """Wait out a reported child's teardown; "" if normal, else an anomaly message."""
+    try:
+        rc = child.proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        return "stuck in teardown; killed at deadline"
+    if rc < 0:
+        sig = signal.Signals(-rc)
+        return f"died in teardown: signal {sig.value} ({sig.name})"
+    return ""
 
 
 def _dump_stack(pid: int, dump_path: Path) -> None:
@@ -330,14 +303,17 @@ def main() -> int:
     suites: list[ET.Element] = []
     profile_parts: list[str] = []
     failed: list[str] = []
-    lingering: list[tuple[Child, float, str]] = []
 
-    def note_anomalies(anomalies: list[tuple[str, str]]) -> None:
-        for anomaly_file, message in anomalies:
-            rel_a = os.path.relpath(anomaly_file)
-            print(f"TEARDOWN: {rel_a}: {message}", flush=True)
-            suites.append(_synthetic_suite(anomaly_file, message, ""))
-            failed.append(rel_a)
+    def mark_failed(rel: str) -> None:
+        """Record a file once: it can both fail its tests and crash in teardown."""
+        if rel not in failed:
+            failed.append(rel)
+
+    def note_teardown_anomaly(bench_file: str, message: str) -> None:
+        rel_a = os.path.relpath(bench_file)
+        print(f"TEARDOWN: {rel_a}: {message}", flush=True)
+        suites.append(_synthetic_suite(bench_file, message, ""))
+        mark_failed(rel_a)
 
     with tempfile.TemporaryDirectory(prefix="bench_runner_") as work:
         work_dir = Path(work)
@@ -358,6 +334,7 @@ def main() -> int:
             )
 
         pending: deque[Child] = deque()
+        current: Child | None = None
         collect_failed: list[tuple[str, str]] = []
         spawned = 0
 
@@ -381,7 +358,7 @@ def main() -> int:
                 if budget_spent():
                     unrun.extend(os.path.relpath(f) for f in bench_files[index:])
                     break
-                child = pending.popleft()
+                child = current = pending.popleft()
                 top_up()
                 rel = os.path.relpath(bench_file)
                 print(f"\n=== [{index + 1}/{len(bench_files)}] {rel} ===", flush=True)
@@ -390,10 +367,8 @@ def main() -> int:
 
                 start = time.monotonic()
                 child.release()
-                # Poll in short steps so lingering teardown deadlines are
-                # enforced while this file runs, not after it. The deadline
-                # tracks the last test start, not the file start: a file of
-                # many slow tests is progressing, not stuck.
+                # The deadline tracks the last test start, not the file start:
+                # a file of many slow tests is progressing, not stuck.
                 stall_deadline = start + args.stall_timeout
                 last_beat = 0.0
                 out_of_budget = False
@@ -402,7 +377,6 @@ def main() -> int:
                         stall_deadline, run_deadline
                     )
                     rc = child.wait_result(min(1.0, max(0.0, limit - time.monotonic())))
-                    note_anomalies(_reap_lingering(lingering, block=False))
                     if rc is not None:
                         break
                     beat_mtime, _ = child.beat()
@@ -441,40 +415,44 @@ def main() -> int:
                     )
                     print(f"STALLED: {rel}: {message}", flush=True)
                     suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                    failed.append(rel)
+                    mark_failed(rel)
                 else:
-                    if rc >= 0:
-                        # A pre-status signal death (rc < 0) is already reaped
-                        # and recorded below; enqueue only status-reported
-                        # children so post-status deaths stay observable.
-                        lingering.append(
-                            (child, time.monotonic() + args.teardown_timeout, bench_file)
-                        )
                     sys.stdout.write(log_path.read_text(errors="replace"))
+                    if rc >= 0:
+                        # A status-reported child still holds its CUDA context,
+                        # and the card is in EXCLUSIVE_PROCESS mode: the next
+                        # file's first allocation is refused until this process
+                        # is gone. A pre-status signal death (rc < 0) is already
+                        # reaped by wait_result.
+                        teardown = _reap_teardown(child, args.teardown_timeout)
+                        current = None
+                        if teardown:
+                            note_teardown_anomaly(bench_file, teardown)
                     if rc < 0:
                         sig = signal.Signals(-rc)
                         message = f"killed by signal {sig.value} ({sig.name})"
                         print(f"CRASH: {rel}: {message}", flush=True)
                         suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                        failed.append(rel)
+                        mark_failed(rel)
                     elif fragment.exists():
                         suites.extend(_fragment_suites(fragment))
                         # 0 = all passed, 5 = nothing collected (e.g. all skipped).
                         if rc not in (0, 5):
-                            failed.append(rel)
+                            mark_failed(rel)
                     else:
                         message = f"pytest exited with {rc} without writing results"
                         suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                        failed.append(rel)
+                        mark_failed(rel)
                 outcome = _collect_outcome(work_dir / f"{index:03d}.collect")
                 if outcome is not None:
                     collect_failed.append((rel, outcome))
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
                 _absorb_profile_log(profile_parts)
         finally:
-            for leftover in pending:
+            # The file being run owns the card; an exception before its teardown
+            # was awaited would leave that process holding it.
+            for leftover in ([current] if current else []) + list(pending):
                 leftover.kill()
-            note_anomalies(_reap_lingering(lingering, block=True))
 
     # Absent from the sweep, not passing: the report must show the gap.
     for rel in unrun:
