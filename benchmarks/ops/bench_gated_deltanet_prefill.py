@@ -1,9 +1,8 @@
 """Benchmark: TileOPs Gated DeltaNet inference prefill.
 
-When FLA is installed, record it as the independent baseline. A pure-torch
-reference is kept only for small manifest fallback rows; the long-context Qwen
-rows require FLA so no-FLA runs do not spend minutes or OOM inside the
-reference recurrence.
+FLA is required, not optional: this file exists to compare against
+chunk_gated_delta_rule, and the reference recurrence is not a comparison worth
+recording -- it spends minutes or OOMs on the long-context Qwen rows.
 
 The benchmark measures the serving-oriented BTHD layout because that is the
 production fast path used by FLA/Qwen-style inference prefill.
@@ -14,75 +13,17 @@ from typing import Any, Sequence
 
 import pytest
 import torch
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
-from benchmarks.ops.bench_gated_deltanet import (
-    compute_w_u_torch,
-    kernel2_gated_deltanet_torch,
-    prepare_wy_repr_gated_torch,
-)
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillFwdOp
 from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
 
 _OP_NAME = "GatedDeltaNetPrefillFwdOp"
-_TORCH_FALLBACK_MAX_SEQ_LEN = 4096
-
-
-try:
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-except ImportError:
-    chunk_gated_delta_rule = None
-
-
-class GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdWorkload):
-    """Times the batched WY inversion rather than the reference's loop.
-
-    ``prepare_wy_repr_gated_torch`` here resolves to this package's batched
-    helper, not the per-chunk loop the workload reference calls. Same result,
-    different cost, so timing it answers a different question.
-    """
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        q, k, v, g, beta = convert_gdn_prefill_layout(
-            (q, k, v, g, beta), self.layout, "bhtd"
-        )
-        batch, heads, seq_len, dim_k = k.shape
-        dim_v = v.shape[-1]
-        chunk_size = self.chunk_size
-        num_chunks = seq_len // chunk_size
-        g_cum = (
-            g.float()
-            .reshape(batch, heads, num_chunks, chunk_size)
-            .cumsum(-1)
-            .reshape(batch, heads, seq_len)
-            .to(g.dtype)
-        )
-        aw, au = prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size)
-        w, u = compute_w_u_torch(aw, au, k, v, beta, chunk_size)
-        initial_state = torch.zeros(
-            batch, heads, dim_k, dim_v, dtype=torch.float32, device=q.device
-        )
-        final_state, o = kernel2_gated_deltanet_torch(
-            q, k, g_cum, w, u, initial_state, chunk_size
-        )
-        (o,) = convert_gdn_prefill_layout((o.to(self.dtype),), "bhtd", self.layout)
-        return o, final_state.to(self.dtype)
-
-
 def _fla_prefill_fwd():
-    """Return the FLA prefill baseline callable, or None if unavailable."""
-    if chunk_gated_delta_rule is None:
-        return None
-
+    """Return the FLA prefill baseline callable."""
     signature = inspect.signature(chunk_gated_delta_rule)
     supports_output_final_state = "output_final_state" in signature.parameters
 
@@ -159,10 +100,6 @@ def _gdn_prefill_args(
     )
 
 
-def _can_use_torch_fallback(seq_len: int) -> bool:
-    return seq_len <= _TORCH_FALLBACK_MAX_SEQ_LEN
-
-
 _BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), _gdn_prefill_args, tune=False)
 
 
@@ -182,35 +119,20 @@ def test_gated_deltanet_prefill_fwd_bench(
     tune: bool,
 ) -> None:
     fla_fn = _fla_prefill_fwd()
-    if fla_fn is None and not _can_use_torch_fallback(seq_len):
-        pytest.skip(
-            "FLA is required for long-context GDN prefill benchmark rows; "
-            "the pure-torch fallback is capped at "
-            f"S <= {_TORCH_FALLBACK_MAX_SEQ_LEN}"
-        )
-
-    test = GatedDeltaNetPrefillFwdTestBaseline(
+    test = GatedDeltaNetPrefillFwdWorkload(
         batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, layout=layout
     )
     inputs = test.gen_inputs()
 
     op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, tune=tune, layout=layout)
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    functors = {"tileops": op}
-    if fla_fn is not None:
-        fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
-        functors["fla"] = (fla_fn, fla_inputs)
-    else:
-        functors["torch-ref"] = test.ref_program
+    fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
+    functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}
 
     # Recorded by hand: the tileops row carries a derived speedup field.
     results = bm.compare(functors, *inputs)
-    if fla_fn is not None:
-        results["tileops"]["speedup_vs_fla"] = (
-            results["fla"]["latency_ms"] / results["tileops"]["latency_ms"]
-        )
-        BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
-        BenchmarkReport.record(op, locals(), results["fla"], tag="fla")
-    else:
-        BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
-        BenchmarkReport.record(op, locals(), results["torch-ref"], tag="torch-ref")
+    results["tileops"]["speedup_vs_fla"] = (
+        results["fla"]["latency_ms"] / results["tileops"]["latency_ms"]
+    )
+    BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
+    BenchmarkReport.record(op, locals(), results["fla"], tag="fla")
