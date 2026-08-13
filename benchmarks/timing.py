@@ -177,22 +177,23 @@ def _buffer_completed(records) -> None:
 
 
 def _trace_launches_only(cupti) -> None:
-    """Silence every traced API except kernel launches.
+    """Silence every traced API except the ones that launch kernels.
 
-    Tracing all of them costs ~15 records per iteration instead of one, and only the
-    launch carries the correlation id a kernel needs. Must run after ``activity_enable``,
-    which resets the per-API filter -- measured, not assumed.
+    Tracing all of them costs ~15 records per iteration instead of one, and only a launch
+    carries the correlation id a kernel needs. Graph launches count: a replayed graph's
+    kernels are unattributable without ``cudaGraphLaunch`` / ``cuGraphLaunch``. Must run
+    after ``activity_enable``, which resets the per-API filter -- measured, not assumed.
     """
-    for toggle, cbids, launch_prefix in (
-        (cupti.activity_enable_runtime_api, cupti.runtime_api_trace_cbid, "cudaLaunch"),
-        (cupti.activity_enable_driver_api, cupti.driver_api_trace_cbid, "cuLaunch"),
+    for toggle, cbids in (
+        (cupti.activity_enable_runtime_api, cupti.runtime_api_trace_cbid),
+        (cupti.activity_enable_driver_api, cupti.driver_api_trace_cbid),
     ):
         for name in dir(cbids):
             cbid = getattr(cbids, name, None)
             if name.startswith("_") or not isinstance(cbid, int):
                 continue
             try:
-                toggle(int(cbid), 1 if name.startswith(launch_prefix) else 0)
+                toggle(int(cbid), 1 if "Launch" in name else 0)
             except Exception:  # noqa: BLE001, S112
                 # The enums carry sentinels (INVALID, SIZE) that CUPTI refuses.
                 continue
@@ -364,9 +365,14 @@ def _attributed_samples(
     orphans = []
     for kernel in kernels:
         iteration = iteration_of.get(kernel["correlation_id"])
-        if iteration is None:
+        if iteration == _PREPARE_ID:
+            continue
+        if iteration is None or not 0 <= iteration < n_repeat:
+            # An id outside the range this phase pushed is as unattributable as no id:
+            # something else pushed onto the same stack, and guessing an owner for its
+            # kernels would put another call's work in this one's reading.
             orphans.append(kernel)
-        elif iteration != _PREPARE_ID:
+        else:
             claimed.setdefault(iteration, []).append(kernel)
 
     unmeasured = [i for i in range(n_repeat) if i not in claimed]
