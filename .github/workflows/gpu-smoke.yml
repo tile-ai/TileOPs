@@ -375,7 +375,7 @@ jobs:
     # Trust-level routing: untrusted (external) PRs go to the on-demand `fork` pool whose
     # runner mounts an overlay cache (read-only shared lower + throwaway upper) so their cache
     # writes never reach the shared cache. Trusted runs use the resident shared-cache pool.
-    runs-on: ${{ needs.security-policy.outputs.is_fork == 'true' && fromJSON('["self-hosted", "tile-ops", "fork"]') || fromJSON('["self-hosted", "tile-ops", "nightly"]') }}
+    runs-on: ${{ needs.security-policy.outputs.is_fork == 'true' && fromJSON('["self-hosted", "tile-ops", "fork"]') || fromJSON('["self-hosted", "tile-ops", "shared"]') }}
     # Hard backstop so a wedged kernel can never hold the single runner indefinitely; the
     # per-test --timeout below is the first line of defense, this is the ceiling.
     timeout-minutes: 90
