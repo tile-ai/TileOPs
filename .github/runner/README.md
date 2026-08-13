@@ -70,21 +70,13 @@ command in its own header after changing a version or a requirement, and read th
 is excluded there: it is source-built in its own stage, and vLLM's exact-release dependency on it
 is overwritten by `--force-reinstall`.
 
-## Register a self-hosted runner
+## Runner registration
 
-`entrypoint.sh` registers an ephemeral runner (one job per container) and deregisters on exit.
-It strips `RUNNER_TOKEN` from the environment before the runner starts, so jobs cannot read it.
+`entrypoint.sh` registers an ephemeral runner — one job per container — and deregisters on
+exit. It strips `RUNNER_TOKEN` from the environment before the runner starts, so jobs cannot
+read it.
 
-```bash
-docker run -d --gpus all \
-  -e RUNNER_URL=https://github.com/tile-ai/TileOPs \
-  -e RUNNER_TOKEN=<registration-token> \
-  -e RUNNER_LABELS=self-hosted,tile-ops,nightly \
-  -v <host-cache-dir>:/ci-cache \
-  ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-<short-sha>
-```
-
-The third label decides which jobs the runner takes: `nightly` for the shared pool, `fork` for
-the pool that serves pull requests from forks. Any other label leaves it idle — no workflow
-requests one. Cache env vars (`TILELANG_CACHE_DIR`, `TRITON_CACHE_DIR`, …) point under
-`/ci-cache`, pre-created so the container also works unmounted.
+The image expects a cache directory bind-mounted at `/ci-cache`; `TILELANG_CACHE_DIR`,
+`TRITON_CACHE_DIR` and friends point under it and are pre-created, so the container also works
+unmounted. Which labels a runner registers with, and how the pools are provisioned, is a
+maintainer task outside this repository.
