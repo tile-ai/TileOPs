@@ -35,12 +35,40 @@ __all__ = [
     "BenchmarkReport",
     "CUPTIError",
     "ManifestBenchmark",
+    "backward_of",
     "bench_kernel",
     "workload_field_params",
     "workloads_to_params",
 ]
 
 W = TypeVar("W")
+
+
+def backward_of(output: torch.Tensor) -> Any:
+    """Return a callable running *output*'s backward on the thread that calls it.
+
+    How a baseline reaches its gradients: ``Tensor.backward`` hands the graph to
+    autograd's engine thread, and a kernel launched there carries no iteration for the
+    timer to attribute it to. Applying the node runs the same backward here, and leaves
+    the engine's own overhead out of a number that a tileops backward op never pays.
+
+    Takes one gradient per output of the op that produced *output*, so an op returning
+    ``(out, lse)`` is driven with ``(grad, None)``.
+
+    Example:
+        >>> out = flash_attn_func(q, k, v)          # doctest: +SKIP
+        >>> bwd = backward_of(out)                  # doctest: +SKIP
+        >>> dq, dk, dv = bwd(grad_output)[:3]       # doctest: +SKIP
+    """
+    node = output.grad_fn
+    if node is None:
+        raise ValueError(
+            f"{type(output).__name__} has no grad_fn; build the graph under "
+            "enable_grad on inputs that require grad before timing its backward."
+        )
+    # A Python autograd.Function's node exposes apply() and is not callable; a node
+    # built in C++ is callable and has no apply(). Neither offers the other's form.
+    return getattr(node, "apply", None) or node
 
 
 def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:

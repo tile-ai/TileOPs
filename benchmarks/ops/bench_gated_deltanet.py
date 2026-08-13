@@ -21,7 +21,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, backward_of
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
@@ -282,13 +282,11 @@ def test_gated_deltanet_vs_fla_bwd(
 
         # Run fwd once to build the graph, then time the backward node directly
         o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-        # Applying the node keeps the launches on this thread, where the timer can
-        # attribute them, and leaves the engine's overhead out of the number. One
-        # grad per forward output.
-        bwd_node, node_grads = o_fla.grad_fn, (do_fla, None)
+        # One grad per forward output: fla returns (o, final_state).
+        fla_backward = backward_of(o_fla)
 
         def fla_bwd():
-            return bwd_node.apply(*node_grads)
+            return fla_backward(do_fla, None)
 
         functors["fla"] = (fla_bwd, ())
     else:

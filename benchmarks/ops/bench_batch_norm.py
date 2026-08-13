@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, backward_of
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
@@ -49,7 +49,7 @@ def _torch_bn_fwd(x, weight, bias, running_mean, running_var):
 
 
 def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
-    """PyTorch reference backward via autograd."""
+    """PyTorch reference backward, driven on this thread. Recomputes the forward."""
     with torch.enable_grad():
         x32 = x.float().requires_grad_(True)
         w32 = weight.float().requires_grad_(True)
@@ -58,8 +58,7 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
         rv = torch.ones(x.shape[1], device=x.device, dtype=torch.float32)
         y = torch.nn.functional.batch_norm(
             x32, rm, rv, w32, b32, training=True, eps=1e-5)
-        y.backward(grad_out.float())
-    return x32.grad, w32.grad, b32.grad
+    return backward_of(y)(grad_out.float())
 
 
 # Manifest-driven params

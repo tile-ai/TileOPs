@@ -4,7 +4,12 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    ManifestBenchmark,
+    backward_of,
+)
 from benchmarks.ops.attention.manifest_params import (
     gqa_prefill_args,
     gqa_prefill_paged_args,
@@ -86,10 +91,10 @@ def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdWorkload):
         q = q.detach().requires_grad_(True)
         k = k.detach().requires_grad_(True)
         v = v.detach().requires_grad_(True)
-        out = flash_attn_func(q, k, v, causal=test.is_causal)
-        out = out[0] if isinstance(out, tuple) else out
-        out.backward(grad_output)
-        return q.grad, k.grad, v.grad
+        raw = flash_attn_func(q, k, v, causal=test.is_causal)
+        outputs = raw if isinstance(raw, tuple) else (raw,)
+        # One gradient per output; only the attention output has one to propagate.
+        return backward_of(outputs[0])(grad_output, *(None,) * (len(outputs) - 1))
 
     return baseline_fn
 def _flashinfer_gqa_fwd(test, q, k, v):
@@ -161,8 +166,9 @@ def _torch_gqa_bwd(test):
             is_causal=test.is_causal,
             enable_gqa=True,
         )
-        out.transpose(1, 2).contiguous().backward(grad_output)
-        return q.grad, k.grad, v.grad
+        # grad_output wears the [B, S, H, D] layout of the op under test; transposing it
+        # back into SDPA's is a view, so the baseline measures SDPA's backward alone.
+        return backward_of(out)(grad_output.transpose(1, 2))
 
     return fn
 

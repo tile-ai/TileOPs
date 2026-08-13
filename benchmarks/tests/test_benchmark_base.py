@@ -1,3 +1,6 @@
+import ast
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -37,6 +40,29 @@ def test_workloads_to_params_include_extra_propagates_dim():
         assert isinstance(extra, dict)
     # A workload with no extras must yield an empty dict, not a missing slot.
     assert any(p.values[2] == {} for p in triples)
+
+
+def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
+    """A backward baseline drives its own node; the engine launches on its own thread.
+
+    Cheap where the alternative is not: catching this by running the benchmarks costs
+    the nightly 36 minutes, and no PR-stage job executes ``benchmarks/ops`` at all.
+    """
+    ops_dir = Path(__file__).resolve().parents[1] / "ops"
+    offenders = []
+    for path in sorted(ops_dir.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            call = ast.unparse(node.func)
+            if node.func.attr == "backward" or call.endswith("autograd.grad"):
+                offenders.append(f"{path.name}:{node.lineno}: {call}()")
+
+    assert not offenders, (
+        "these launch their kernels from autograd's engine thread, where the timer "
+        "cannot tell which iteration they belong to; call the backward node instead, "
+        "via benchmarks.benchmark_base.backward_of:\n  " + "\n  ".join(offenders)
+    )
 
 
 def test_multi_input_op_raises_keyerror():
