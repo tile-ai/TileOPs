@@ -9,7 +9,8 @@ which matches names literally — it will not catch a draw helper under another 
 
 ______________________________________________________________________
 
-- Every benchmark records ≥1 non-`tileops` baseline. If the external baseline is conditional, add a local torch fallback.
+- Every benchmark records ≥1 non-`tileops` baseline. Where a torch reference is a meaningful comparison, add one as a local fallback for a missing external baseline. Where it is not — an op whose point is beating a specialized library — require the library and let the import fail, rather than record a comparison nobody would read.
+- A baseline reaches its gradients through `backward_of`, never `Tensor.backward`: the autograd engine launches on its own thread, where the timer cannot attribute the kernels. Checked by `benchmarks/tests/test_benchmark_base.py`.
 - Tag names: lowercase, hyphen-separated. Tags starting with `tileops` are TileOPs entries; everything else is a baseline.
 - `calculate_flops()` / `calculate_memory()` return `None` to omit the metric.
 - Benchmark shapes reflect real DNN workloads (LLaMA-family by default). Annotate shape constants with the model/scenario; never use arbitrary flat numbers (262K, 1M, 4M).

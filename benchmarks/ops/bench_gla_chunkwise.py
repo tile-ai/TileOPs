@@ -2,79 +2,23 @@
 
 Compares forward and backward latency across sequence lengths and dtypes.
 
-When FLA is not installed, the forward benchmark still runs against a pure-torch
-reference baseline (tagged "torch"), so a missing optional dependency never
-blocks the nightly. The backward benchmark has no such fallback: a reference
-backward reached through autograd runs on the engine's thread, where the timer
-cannot tell which iteration launched a kernel.
+FLA is required, not optional: this file exists to compare against chunk_gla, and a
+torch reference is not a comparison worth recording.
 
 Layout convention:
     Both TileOPs and FLA use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
 """
 
-import warnings
 from typing import Optional
 
 import pytest
 import torch
+from fla.ops.gla import chunk_gla
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, backward_of
 from tileops.ops import GLABwdOp, GLAFwdOp
 from workloads.linear_attention import GLAChunkwiseWorkload
 from workloads.workload_base import FixtureBase
-
-
-def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
-    """Fully differentiable chunked GLA forward in float32."""
-    B, T, H, K = q.shape
-    V = v.shape[-1]
-    BC = chunk_size
-    NC = T // BC
-
-    if scale is None:
-        scale = K ** -0.5
-
-    q = q.float() * scale
-    k = k.float()
-    v = v.float()
-    g = g.float()
-
-    g_cum = g.reshape(B, NC, BC, H, K).cumsum(dim=2).reshape(B, T, H, K)
-
-    h = q.new_zeros(B, H, K, V)
-    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
-
-    o_chunks = []
-    for c in range(NC):
-        sl = slice(c * BC, (c + 1) * BC)
-        qc = q[:, sl, :, :]
-        kc = k[:, sl, :, :]
-        vc = v[:, sl, :, :]
-        gc = g_cum[:, sl, :, :]
-        g_last = gc[:, -1:, :, :]
-
-        q_gated = qc * torch.exp(gc)
-        o_inter = torch.einsum("bthk,bhkv->bthv", q_gated, h)
-
-        k_ungated = kc * torch.exp(-gc)
-        A = torch.einsum("bihk,bjhk->bhij", q_gated, k_ungated)
-        A = A * mask.unsqueeze(0).unsqueeze(0)
-        o_intra = torch.einsum("bhij,bjhv->bihv", A, vc)
-
-        o_chunks.append(o_inter + o_intra)
-
-        k_adj = kc * torch.exp(g_last - gc)
-        h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
-        h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
-
-    return torch.cat(o_chunks, dim=1)
-
-
-try:
-    from fla.ops.gla import chunk_gla
-except ImportError:
-    chunk_gla = None
-
 
 # Forward benchmark
 
@@ -124,17 +68,13 @@ def test_gla_fwd_bench(
     op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
     functors = {"tileops": op.forward}
 
-    if chunk_gla is not None:
-        # --- FLA ---
-        q, k, v, g = inputs
+    # --- FLA ---
+    q, k, v, g = inputs
 
-        def fla_fwd():
-            return chunk_gla(q, k, v, g, scale=scale)
+    def fla_fwd():
+        return chunk_gla(q, k, v, g, scale=scale)
 
-        functors["fla"] = (fla_fwd, ())
-    else:
-        # --- Torch reference baseline ---
-        functors["torch"] = lambda q, k, v, g: gla_fwd_chunked_torch(q, k, v, g, chunk_size)
+    functors["fla"] = (fla_fwd, ())
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
@@ -204,32 +144,23 @@ def test_gla_bwd_bench(
     bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
     functors = {"tileops": (bwd_op.forward, (q, k, v, g, h, do, dht))}
 
-    if chunk_gla is not None:
-        # --- FLA: the backward node, called directly ---
-        # NOTE: FLA's backward recomputes h internally (not saved from fwd),
-        # so this measures bwd + h recomputation, not pure bwd.
-        q_fla = q.float().detach().requires_grad_(True)
-        k_fla = k.float().detach().requires_grad_(True)
-        v_fla = v.float().detach().requires_grad_(True)
-        g_fla = g.float().detach().requires_grad_(True)
-        do_fla = do.float()
+    # --- FLA: the backward node, called directly ---
+    # NOTE: FLA's backward recomputes h internally (not saved from fwd),
+    # so this measures bwd + h recomputation, not pure bwd.
+    q_fla = q.float().detach().requires_grad_(True)
+    k_fla = k.float().detach().requires_grad_(True)
+    v_fla = v.float().detach().requires_grad_(True)
+    g_fla = g.float().detach().requires_grad_(True)
+    do_fla = do.float()
 
-        o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=scale)
-        # One grad per forward output: fla returns (o, final_state).
-        fla_backward = backward_of(o_fla)
+    o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=scale)
+    # One grad per forward output: fla returns (o, final_state).
+    fla_backward = backward_of(o_fla)
 
-        def fla_bwd():
-            return fla_backward(do_fla, None)
+    def fla_bwd():
+        return fla_backward(do_fla, None)
 
-        functors["fla"] = (fla_bwd, ())
-    else:
-        warnings.warn(
-            "fla is unavailable and the torch autograd reference cannot be timed "
-            "(its backward runs on autograd's engine thread, where the timer cannot "
-            "attribute the kernels); the baseline column will be omitted from results.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    functors["fla"] = (fla_bwd, ())
 
     bm.compare(functors, record_as=bwd_op, params=locals())
 
