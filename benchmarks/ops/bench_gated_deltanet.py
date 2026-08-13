@@ -170,9 +170,7 @@ def test_gated_deltanet_vs_fla_bwd(
     g_fla = g_fla.detach().requires_grad_(True)
     beta_fla = beta_fla.detach().requires_grad_(True)
 
-    # Run fwd once to build the graph, then time the backward node directly
     o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-    # One grad per forward output: fla returns (o, final_state).
     fla_backward = backward_of(o_fla)
 
     def fla_bwd():

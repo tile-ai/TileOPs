@@ -135,12 +135,16 @@ def test_attribution_fails_closed_when_an_iteration_reaches_no_device():
         _attributed_samples([_kernel(1_000, 2_000, 1)], {1: 0}, n_repeat=2)
 
 
-def test_a_kernel_launched_off_thread_is_named_as_such():
+@pytest.mark.parametrize("iteration_of", [
+    {1: 0},                 # the second kernel carries an id nothing mapped
+    {1: 0, 99: 7},          # ... or one from outside the range this phase pushed
+])
+def test_a_kernel_no_iteration_pushed_is_named_as_such(iteration_of):
     """Autograd's engine thread never sees the pushed id, and that is not a lost record."""
     kernels = [_kernel(1_000, 2_000, 1), _kernel(3_000, 4_000, 99)]
 
     with pytest.raises(_OffThreadLaunchError, match="carry no iteration id"):
-        _attributed_samples(kernels, {1: 0}, n_repeat=1)
+        _attributed_samples(kernels, iteration_of, n_repeat=1)
 
 
 def test_a_discarded_record_is_not_reported_as_a_call_that_missed_the_device():

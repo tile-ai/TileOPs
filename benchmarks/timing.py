@@ -58,7 +58,7 @@ _ITERATION_OF: dict[int, int] = {}
 _ATTRIBUTION_ATTEMPTS = 3
 _DROPPED_COUNT_UNREADABLE = False
 _DROP_COUNTER_LIVE: Optional[bool] = None
-# The id worn by the L2 flush and anything else run between iterations. Labelling that
+# Pushed around the L2 flush and anything else run between iterations. Labelling that
 # work is what lets a kernel with no id at all mean one thing only: a thread the id was
 # never pushed on launched it. Out of range of any iteration index.
 _PREPARE_ID = 1 << 32
@@ -368,9 +368,7 @@ def _attributed_samples(
         if iteration == _PREPARE_ID:
             continue
         if iteration is None or not 0 <= iteration < n_repeat:
-            # An id outside the range this phase pushed is as unattributable as no id:
-            # something else pushed onto the same stack, and guessing an owner for its
-            # kernels would put another call's work in this one's reading.
+            # An id this phase never pushed is as unattributable as no id at all.
             orphans.append(kernel)
         else:
             claimed.setdefault(iteration, []).append(kernel)

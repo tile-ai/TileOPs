@@ -154,7 +154,6 @@ def test_gla_bwd_bench(
     do_fla = do.float()
 
     o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=scale)
-    # One grad per forward output: fla returns (o, final_state).
     fla_backward = backward_of(o_fla)
 
     def fla_bwd():

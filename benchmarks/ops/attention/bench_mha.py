@@ -43,7 +43,6 @@ def _fa3_mha_bwd(test: MhaBwdWorkload):
         v = v.detach().requires_grad_(True)
         raw = flash_attn_func(q, k, v, causal=test.is_causal)
         outputs = raw if isinstance(raw, tuple) else (raw,)
-        # One gradient per output; only the attention output has one to propagate.
         return backward_of(outputs[0])(grad_output, *(None,) * (len(outputs) - 1))
 
     return baseline_fn
@@ -96,8 +95,8 @@ def _torch_mha_bwd(test):
         out = F.scaled_dot_product_attention(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
             is_causal=test.is_causal)
-        # grad_output wears the [B, S, H, D] layout of the op under test; transposing it
-        # back into SDPA's is a view, so the baseline measures SDPA's backward alone.
+        # Transposing grad_output into SDPA's layout is a view, so the baseline
+        # measures SDPA's backward alone.
         return backward_of(out)(grad_output.transpose(1, 2))
     return fn
 

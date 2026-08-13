@@ -48,17 +48,10 @@ def backward_of(output: torch.Tensor) -> Any:
     """Return a callable running *output*'s backward on the thread that calls it.
 
     How a baseline reaches its gradients: ``Tensor.backward`` hands the graph to
-    autograd's engine thread, and a kernel launched there carries no iteration for the
-    timer to attribute it to. Applying the node runs the same backward here, and leaves
-    the engine's own overhead out of a number that a tileops backward op never pays.
-
-    Takes one gradient per output of the op that produced *output*, so an op returning
-    ``(out, lse)`` is driven with ``(grad, None)``.
-
-    Example:
-        >>> out = flash_attn_func(q, k, v)          # doctest: +SKIP
-        >>> bwd = backward_of(out)                  # doctest: +SKIP
-        >>> dq, dk, dv = bwd(grad_output)[:3]       # doctest: +SKIP
+    autograd's engine thread, whose kernels carry no iteration id for the timer to
+    attribute them to, and charges the baseline for engine overhead a tileops backward
+    op never pays. Takes one gradient per output of the op that produced *output*, so
+    one returning ``(out, lse)`` is driven with ``(grad, None)``.
     """
     node = output.grad_fn
     if node is None:
