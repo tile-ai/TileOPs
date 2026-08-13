@@ -25,9 +25,9 @@ concurrency:
 jobs:
   reclaim-disk:
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
-    # `nightly` (not `fork`) keeps maintenance on the resident shared-cache runners; the
+    # `shared` (not `fork`) keeps maintenance on the resident shared-cache runners; the
     # destructive autotuner age-trim must never run against a fork pool's overlay cache.
-    runs-on: [self-hosted, tile-ops, nightly]
+    runs-on: [self-hosted, tile-ops, shared]
     timeout-minutes: 60
     steps:
       # Invoke the action directly via owner/repo/path@ref so this workflow

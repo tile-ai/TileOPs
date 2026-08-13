@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 # ---------------------------------------------------------------------------
-# All nightly jobs run on a containerized self-hosted runner (label: nightly).
+# All nightly jobs run on a containerized self-hosted runner (label: shared, or bench).
 # The runner container is provisioned by the host with GPU access, persistent
 # cache mounts, and the runtime environment variables below.
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ jobs:
     # 5h07m with nothing cached, and minutes once it is. Must exceed
     # --total-budget below so the runner, not GitHub, ends the sweep.
     timeout-minutes: 380
-    runs-on: [self-hosted, tile-ops, nightly]
+    runs-on: [self-hosted, tile-ops, bench]
     env:
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
       # before late large MoE input tensors allocate 14-21 GiB weight blocks.
@@ -173,7 +173,7 @@ jobs:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [benchmark]
     timeout-minutes: 180
-    runs-on: [self-hosted, tile-ops, nightly]
+    runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -404,7 +404,7 @@ jobs:
     needs: [op_test]
     permissions:
       contents: write
-    runs-on: [self-hosted, tile-ops, nightly]
+    runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
