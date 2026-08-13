@@ -2,9 +2,8 @@
 
 Compares forward and backward latency across sequence lengths and dtypes.
 
-When FLA is not installed, benchmarks still run using a pure-torch reference
-implementation as baseline (tagged "baseline"), so the nightly CI is never
-blocked by a missing optional dependency.
+FLA is required, not optional: this file exists to compare against
+chunk_gated_delta_rule, and a torch reference is not a comparison worth recording.
 
 Layout convention:
     TileOPs uses BHSD: q/k [B, H, S, DK], v [B, H, S, DV], g/beta [B, H, S].
@@ -17,163 +16,12 @@ from typing import Optional
 
 import pytest
 import torch
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, backward_of
+from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
-
-
-def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
-    """Fully differentiable chunked forward matching paper (Eq. 10 via WY)."""
-    B, H, S, DK = q.shape
-    DV = v.shape[-1]
-    BC = chunk_size
-    NC = S // BC
-    g_cum = g_raw.float().reshape(B, H, NC, BC).cumsum(-1).reshape(B, H, S)
-    h = q.new_zeros(B, H, DK, DV)
-    o_chunks = []
-    eye = torch.eye(BC, device=q.device, dtype=torch.float32)
-    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
-    for c in range(NC):
-        sl = slice(c * BC, (c + 1) * BC)
-        qc = q[:, :, sl, :].float()
-        kc = k[:, :, sl, :].float()
-        vc = v[:, :, sl, :].float()
-        gc = g_cum[:, :, sl]
-        bc = beta[:, :, sl].float()
-        Gram = torch.einsum("bhik,bhjk->bhij", kc, kc)
-        Gamma = torch.exp(gc.unsqueeze(-1) - gc.unsqueeze(-2))
-        M = bc.unsqueeze(-1) * (Gamma * Gram)
-        A = eye + torch.tril(M, diagonal=-1)
-        A_inv = torch.linalg.inv(A)
-        wc = A_inv @ (kc * bc.unsqueeze(-1))
-        uc = A_inv @ (vc * bc.unsqueeze(-1))
-        g_last = gc[:, :, -1:]
-        v_new = uc - (wc * torch.exp(gc + g_last).unsqueeze(-1)) @ h
-        o_part = (qc @ h) * torch.exp(gc).unsqueeze(-1)
-        attn = (qc @ kc.transpose(-2, -1)) * Gamma * mask
-        o_c = o_part + attn @ v_new
-        o_chunks.append(o_c)
-        k_sc = kc * torch.exp(g_last - gc).unsqueeze(-1)
-        h = h * torch.exp(g_last).unsqueeze(-1) + k_sc.transpose(-2, -1) @ v_new
-    return torch.cat(o_chunks, dim=2)
-
-
-def gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, chunk_size):
-    """Compute backward gradients via autograd on the differentiable forward."""
-    q_ = q.float().detach().requires_grad_(True)
-    k_ = k.float().detach().requires_grad_(True)
-    v_ = v.float().detach().requires_grad_(True)
-    g_ = g.float().detach().requires_grad_(True)
-    beta_ = beta.float().detach().requires_grad_(True)
-
-    o = _differentiable_fwd(q_, k_, v_, g_, beta_, chunk_size)
-    loss = (o * do.float()).sum()
-    dq, dk, dv, dg, dbeta = torch.autograd.grad(loss, [q_, k_, v_, g_, beta_])
-    return dq, dk, dv, dg, dbeta
-
-
-def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
-    B, H, S, DK = k.shape
-    _, _, _, DV = v.shape
-    BC = chunk_size
-    num_chunks = S // BC
-    k_beta = k.float() * beta.unsqueeze(-1)
-    v_beta = v.float() * beta.unsqueeze(-1)
-    Aw_ = Aw.reshape(B, H, num_chunks, BC, BC)
-    Au_ = Au.reshape(B, H, num_chunks, BC, BC)
-    k_beta_ = k_beta.reshape(B, H, num_chunks, BC, DK)
-    v_beta_ = v_beta.reshape(B, H, num_chunks, BC, DV)
-    w = torch.einsum("bhcij,bhcjd->bhcid", Aw_, k_beta_).reshape(B, H, S, DK)
-    u = torch.einsum("bhcij,bhcjd->bhcid", Au_, v_beta_).reshape(B, H, S, DV)
-    return w, u
-
-
-def kernel2_gated_deltanet_torch(q, k, g, w, u, S_0, chunk_size):
-    B, H, S_len, DK = q.shape
-    _, _, _, DV = u.shape
-    BC = chunk_size
-    num_chunks = S_len // BC
-    q, k, g, w, u = q.float(), k.float(), g.float(), w.float(), u.float()
-    h = S_0.float().clone()
-
-    o = torch.zeros(B, H, S_len, DV, dtype=torch.float32, device=q.device)
-    for c in range(num_chunks):
-        i0, i1 = c * BC, (c + 1) * BC
-        q_c = q[:, :, i0:i1, :]
-        k_c = k[:, :, i0:i1, :]
-        g_c = g[:, :, i0:i1]
-        w_c = w[:, :, i0:i1, :]
-        u_c = u[:, :, i0:i1, :]
-
-        g_last_val = g_c[:, :, -1:]
-        v_new_c = u_c - (w_c * torch.exp(g_c + g_last_val).unsqueeze(-1)) @ h
-
-        o_part = torch.einsum("bhnk,bhkv->bhnv", q_c, h)
-        o_part = o_part * torch.exp(g_c).unsqueeze(-1)
-        attn = torch.einsum("bhnk,bhmk->bhnm", q_c, k_c)
-        Gamma_causal = torch.exp(g_c.unsqueeze(-1) - g_c.unsqueeze(-2))
-        mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.bool), diagonal=0)
-        attn = (attn * Gamma_causal).masked_fill(~mask.unsqueeze(0).unsqueeze(0), 0.0)
-        o_c = o_part + torch.einsum("bhnm,bhmv->bhnv", attn, v_new_c)
-        o[:, :, i0:i1, :] = o_c
-
-        g_last = g_c[:, :, -1:]
-        k_scaled = k_c * torch.exp(g_last - g_c).unsqueeze(-1)
-        h = h * torch.exp(g_last).view(B, H, 1, 1)
-        h = h + torch.einsum("bhnk,bhnv->bhkv", k_scaled, v_new_c)
-    return h, o
-
-
-def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
-    B, H, S, DK = k.shape
-    assert S % chunk_size == 0
-    BC = chunk_size
-    NC = S // BC
-    kc = k.float().reshape(B, H, NC, BC, DK)
-    gc = g_cum.float().reshape(B, H, NC, BC)
-    bc = beta.float().reshape(B, H, NC, BC)
-    gram = kc @ kc.transpose(-2, -1)
-    gamma = torch.exp(gc.unsqueeze(-1) - gc.unsqueeze(-2))
-    m = bc.unsqueeze(-1) * (gamma * gram)
-    eye = torch.eye(BC, dtype=torch.float32, device=k.device)
-    a_g = eye + torch.tril(m, diagonal=-1)
-    a_g_inv = torch.linalg.inv(a_g).reshape(B, H, S, BC)
-    return a_g_inv, a_g_inv.clone()
-
-
-class GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdWorkload):
-    """Times the batched WY-representation idiom, not the workload reference.
-
-    ``prepare_wy_repr_gated_torch`` in this module inverts every chunk in one
-    batched call; the workload reference loops over (batch, head, chunk) so the
-    test can read it. Same math, different cost.
-    """
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        B, H, S, DK = k.shape
-        _, _, _, DV = v.shape
-        # Chunk-local cumulative sum of g (paper requires cumulated gates)
-        BC = self.chunk_size
-        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
-        Aw, Au = prepare_wy_repr_gated_torch(k, g_cum, beta, self.chunk_size)
-        w, u = compute_w_u_torch(Aw, Au, k, v, beta, self.chunk_size)
-        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = kernel2_gated_deltanet_torch(q, k, g_cum, w, u, S_0, self.chunk_size)
-        return o.to(self.dtype)
-
-try:
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-except ImportError:
-    chunk_gated_delta_rule = None
 
 
 def _to_fla_layout(q, k, v, g, beta):
@@ -230,7 +78,7 @@ def test_gated_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, g, beta  (BHSD)
 
@@ -238,19 +86,15 @@ def test_gated_deltanet_vs_fla_fwd(
     op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
     functors = {"tileops": op}
 
-    if chunk_gated_delta_rule is not None:
-        # --- FLA (BTHK) ---
-        q, k, v, g, beta = inputs
-        scale = dim_k ** -0.5
-        q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
+    # --- FLA (BTHK) ---
+    q, k, v, g, beta = inputs
+    scale = dim_k ** -0.5
+    q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
 
-        def fla_fwd():
-            return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+    def fla_fwd():
+        return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
 
-        functors["fla"] = (fla_fwd, ())
-    else:
-        # --- Torch reference baseline ---
-        functors["torch"] = test.ref_program
+    functors["fla"] = (fla_fwd, ())
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
@@ -297,7 +141,7 @@ def test_gated_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -315,37 +159,23 @@ def test_gated_deltanet_vs_fla_bwd(
     bwd_op = GatedDeltaNetBwdOp(chunk_size=BC, tune=tune)
     functors = {"tileops": bwd_op.forward}
 
-    if chunk_gated_delta_rule is not None:
-        # --- FLA: bwd only via autograd (BTHK layout) ---
-        scale = DK ** -0.5
-        q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
-        do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
+    # --- FLA (BTHK layout) ---
+    scale = DK ** -0.5
+    q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
+    do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
 
-        q_fla = q_fla.detach().requires_grad_(True)
-        k_fla = k_fla.detach().requires_grad_(True)
-        v_fla = v_fla.detach().requires_grad_(True)
-        g_fla = g_fla.detach().requires_grad_(True)
-        beta_fla = beta_fla.detach().requires_grad_(True)
+    q_fla = q_fla.detach().requires_grad_(True)
+    k_fla = k_fla.detach().requires_grad_(True)
+    v_fla = v_fla.detach().requires_grad_(True)
+    g_fla = g_fla.detach().requires_grad_(True)
+    beta_fla = beta_fla.detach().requires_grad_(True)
 
-        # Run fwd once to build computation graph, then time only backward
-        o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+    o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+    fla_backward = backward_of(o_fla)
 
-        def fla_bwd():
-            q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
-            o_fla.backward(do_fla, retain_graph=True)
-            return q_fla.grad, k_fla.grad, v_fla.grad
+    def fla_bwd():
+        return fla_backward(do_fla, None)
 
-        functors["fla"] = (fla_bwd, ())
-    else:
-        # --- Torch autograd reference baseline ---
-        def torch_bwd():
-            return gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
-        functors["torch"] = (torch_bwd, ())
-
-    # torch_bwd builds its forward graph inside the timed callable, so it needs
-    # autograd left on; compare() runs under no_grad otherwise.
+    functors["fla"] = (fla_bwd, ())
     bm.compare(functors, do, q, k, v, g, beta, S_fwd,
-               record_as=bwd_op, params=locals(), needs_grad=("torch",))
-
-
-# Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
+               record_as=bwd_op, params=locals())

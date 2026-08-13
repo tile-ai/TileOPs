@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, backward_of
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_qkv_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
@@ -41,10 +41,9 @@ def _fa3_mha_bwd(test: MhaBwdWorkload):
         q = q.detach().requires_grad_(True)
         k = k.detach().requires_grad_(True)
         v = v.detach().requires_grad_(True)
-        out = flash_attn_func(q, k, v, causal=test.is_causal)
-        out = out[0] if isinstance(out, tuple) else out
-        out.backward(grad_output)
-        return q.grad, k.grad, v.grad
+        raw = flash_attn_func(q, k, v, causal=test.is_causal)
+        outputs = raw if isinstance(raw, tuple) else (raw,)
+        return backward_of(outputs[0])(grad_output, *(None,) * (len(outputs) - 1))
 
     return baseline_fn
 
@@ -96,8 +95,9 @@ def _torch_mha_bwd(test):
         out = F.scaled_dot_product_attention(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
             is_causal=test.is_causal)
-        out.transpose(1, 2).contiguous().backward(grad_output)
-        return q.grad, k.grad, v.grad
+        # Transposing grad_output into SDPA's layout is a view, so the baseline
+        # measures SDPA's backward alone.
+        return backward_of(out)(grad_output.transpose(1, 2))
     return fn
 
 

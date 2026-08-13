@@ -4,7 +4,6 @@ Timing lives in :mod:`benchmarks.timing`, reporting in :mod:`benchmarks.report`.
 are re-exported here, so a bench file keeps importing what it always did.
 """
 
-import contextlib
 import statistics
 from abc import ABC, abstractmethod
 from typing import Any, Generic, Optional, TypeVar
@@ -36,12 +35,33 @@ __all__ = [
     "BenchmarkReport",
     "CUPTIError",
     "ManifestBenchmark",
+    "backward_of",
     "bench_kernel",
     "workload_field_params",
     "workloads_to_params",
 ]
 
 W = TypeVar("W")
+
+
+def backward_of(output: torch.Tensor) -> Any:
+    """Return a callable running *output*'s backward on the thread that calls it.
+
+    How a baseline reaches its gradients: ``Tensor.backward`` hands the graph to
+    autograd's engine thread, whose kernels carry no iteration id for the timer to
+    attribute them to, and charges the baseline for engine overhead a tileops backward
+    op never pays. Takes one gradient per output of the op that produced *output*, so
+    one returning ``(out, lse)`` is driven with ``(grad, None)``.
+    """
+    node = output.grad_fn
+    if node is None:
+        raise ValueError(
+            f"{type(output).__name__} has no grad_fn; build the graph under "
+            "enable_grad on inputs that require grad before timing its backward."
+        )
+    # A Python autograd.Function's node exposes apply() and is not callable; a node
+    # built in C++ is callable and has no apply(). Neither offers the other's form.
+    return getattr(node, "apply", None) or node
 
 
 def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
@@ -81,15 +101,15 @@ class BenchmarkBase(Generic[W], ABC):
         *inputs: Any,
         record_as: Any = None,
         params: Optional[dict] = None,
-        needs_grad: tuple[str, ...] = (),
     ) -> dict[str, dict]:
         """Time several implementations forward then reversed, and record them.
 
         Timing each one twice in opposite orders keeps drift across the case
         from landing on whichever ran last. A value is a callable timed on
-        *inputs*, or a ``(callable, args)`` pair. Tags in *needs_grad* keep
-        autograd on, which only a baseline that builds its graph inside the
-        timed callable needs.
+        *inputs*, or a ``(callable, args)`` pair. Every callable runs under
+        ``no_grad``: a graph built inside the timed region is host work, and a
+        backward reached through autograd runs where the timer cannot attribute
+        it. A backward baseline is timed by applying its node directly.
         """
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
@@ -104,8 +124,7 @@ class BenchmarkBase(Generic[W], ABC):
         meta: dict[str, dict] = {}
         for tag in order:
             functor, args = plan[tag]
-            grad = contextlib.nullcontext() if tag in needs_grad else torch.no_grad()
-            with grad:
+            with torch.no_grad():
                 samples[tag].extend(bench_kernel(
                     functor, args=args,
                     dry_run_ms=DRY_RUN_MS / passes,

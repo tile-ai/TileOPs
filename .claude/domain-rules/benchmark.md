@@ -9,7 +9,8 @@ which matches names literally — it will not catch a draw helper under another 
 
 ______________________________________________________________________
 
-- Every benchmark records ≥1 non-`tileops` baseline. If the external baseline is conditional, add a local torch fallback.
+- Every benchmark records ≥1 non-`tileops` baseline. Add a local torch fallback where a torch reference is a meaningful comparison; where it is not, require the external library and let the import fail.
+- A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
 - Tag names: lowercase, hyphen-separated. Tags starting with `tileops` are TileOPs entries; everything else is a baseline.
 - `calculate_flops()` / `calculate_memory()` return `None` to omit the metric.
 - Benchmark shapes reflect real DNN workloads (LLaMA-family by default). Annotate shape constants with the model/scenario; never use arbitrary flat numbers (262K, 1M, 4M).

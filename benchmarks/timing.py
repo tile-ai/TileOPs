@@ -3,9 +3,17 @@
 The timing layer owns the measurement and nothing else -- it knows how to run a callable
 n times and return each run's device latency. What the numbers mean, and where they are
 written, belong to the layers above.
+
+A kernel belongs to the iteration whose external correlation id it carries, so nothing
+is inferred from timestamps and a kernel shorter than the host overhead around it is
+attributed as reliably as a long one. CUPTI's id stack is per-thread, which is this
+protocol's one demand on a timed callable: it must launch its own work rather than hand
+it to another thread (``Tensor.backward`` hands it to autograd's engine thread;
+``grad_fn.apply`` does not).
 """
 
 import contextlib
+import ctypes
 import logging
 import os
 import sys
@@ -42,7 +50,18 @@ _CALLBACKS_REGISTERED = False
 # 30 of 60, 256 KB none. Only latency_ms picks it up; the records are the same.
 _BUFFER_BYTES = 256 * 1024
 _BUFFER_ALIGN = 8
-_RECORDS: list[dict[str, Any]] = []
+# What the next buffer request answers with. A phase that lost records raises it for
+# the retry: a stall costs one iteration's latency_ms, a lost record costs the case.
+_buffer_bytes = _BUFFER_BYTES
+_KERNELS: list[dict[str, Any]] = []
+_ITERATION_OF: dict[int, int] = {}
+_ATTRIBUTION_ATTEMPTS = 3
+_DROPPED_COUNT_UNREADABLE = False
+_DROP_COUNTER_LIVE: Optional[bool] = None
+# Pushed around the L2 flush and anything else run between iterations. Labelling that
+# work is what lets a kernel with no id at all mean one thing only: a thread the id was
+# never pushed on launched it. Out of range of any iteration index.
+_PREPARE_ID = 1 << 32
 
 
 # L2 cache flush buffer, allocated lazily.
@@ -56,6 +75,14 @@ def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS,
 
 class _CUPTIAttributionError(Exception):
     """A CUPTI trace could not be attributed to logical benchmark calls."""
+
+
+class _CUPTIRecordsLostError(_CUPTIAttributionError):
+    """A reading was taken and then discarded. Its own class because it can be retried."""
+
+
+class _OffThreadLaunchError(_CUPTIAttributionError):
+    """Kernels ran that no iteration claims, so a thread without the id launched them."""
 
 
 class CUPTIError(RuntimeError):
@@ -79,89 +106,207 @@ def _load_cupti():
 
 
 def _buffer_requested():
-    return _BUFFER_BYTES, _BUFFER_ALIGN
+    return _buffer_bytes, _BUFFER_ALIGN
+
+
+def _read_dropped() -> Optional[int]:
+    """Read CUPTI's drop counter, which resets on every read. None if the call fails."""
+    global _DROPPED_COUNT_UNREADABLE
+    cupti = _load_cupti()
+    dropped = ctypes.c_size_t(0)
+    try:
+        # Kernel records land on the global queue, which is context 0, and the binding
+        # takes the out-parameter as an address rather than returning it.
+        cupti.activity_get_num_dropped_records(0, 0, ctypes.addressof(dropped))
+    except Exception as exc:  # noqa: BLE001
+        if not _DROPPED_COUNT_UNREADABLE:
+            _DROPPED_COUNT_UNREADABLE = True
+            _logger.warning(
+                "CUPTI dropped-record count is unreadable (%s); an unmeasured iteration "
+                "can no longer be told apart from a lost record.", exc,
+            )
+        return None
+    return int(dropped.value)
+
+
+def _drop_counter_is_live() -> bool:
+    """Prove the drop counter reports a loss, by causing one, before trusting it.
+
+    A counter stuck at zero -- wrong queue, unimplemented in this binding -- would turn
+    every lost record into "the call never reached the device", the misdiagnosis this
+    path exists to prevent. Measured once per process rather than assumed.
+    """
+    global _DROP_COUNTER_LIVE
+    if _DROP_COUNTER_LIVE is not None:
+        return _DROP_COUNTER_LIVE
+    probe_kernels = 4
+    probe = torch.empty(1, device="cuda")
+    with _phase_session(buffer_bytes=8):  # too small to hold one record
+        for _ in range(probe_kernels):
+            probe.zero_()
+        torch.cuda.synchronize()
+        _load_cupti().activity_flush_all(1)
+    dropped = _read_dropped()
+    _DROP_COUNTER_LIVE = bool(dropped)
+    if not _DROP_COUNTER_LIVE:
+        _logger.warning(
+            "CUPTI reported %s dropped records after discarding %d on purpose; the "
+            "counter cannot be trusted, so an unmeasured iteration will not be blamed "
+            "on the call.", dropped, probe_kernels,
+        )
+    return _DROP_COUNTER_LIVE
 
 
 def _buffer_completed(records) -> None:
     # Copy the fields out and keep no record alive: the binding's other
     # accessors misread a newer libcupti's struct and raise, including from
     # __del__ at shutdown.
+    cupti = _load_cupti()
     for record in records:
-        _RECORDS.append({
-            "name": str(record.name),
-            "start_ns": int(record.start),
-            "end_ns": int(record.end),
-        })
+        kind = int(record.kind)
+        if kind == int(cupti.ActivityKind.CONCURRENT_KERNEL):
+            _KERNELS.append({
+                "name": str(record.name),
+                "start_ns": int(record.start),
+                "end_ns": int(record.end),
+                "correlation_id": int(record.correlation_id),
+            })
+        elif kind == int(cupti.ActivityKind.EXTERNAL_CORRELATION):
+            _ITERATION_OF[int(record.correlation_id)] = int(record.external_id)
+        # Launch-API records are collected only so CUPTI emits the correlation above.
+
+
+def _trace_launches_only(cupti) -> None:
+    """Silence every traced API except the ones that launch kernels.
+
+    Tracing all of them costs ~15 records per iteration instead of one, and only a launch
+    carries the correlation id a kernel needs. Graph launches count: a replayed graph's
+    kernels are unattributable without ``cudaGraphLaunch`` / ``cuGraphLaunch``. Must run
+    after ``activity_enable``, which resets the per-API filter -- measured, not assumed.
+    """
+    for toggle, cbids in (
+        (cupti.activity_enable_runtime_api, cupti.runtime_api_trace_cbid),
+        (cupti.activity_enable_driver_api, cupti.driver_api_trace_cbid),
+    ):
+        for name in dir(cbids):
+            cbid = getattr(cbids, name, None)
+            if name.startswith("_") or not isinstance(cbid, int):
+                continue
+            try:
+                toggle(int(cbid), 1 if "Launch" in name else 0)
+            except Exception:  # noqa: BLE001, S112
+                # The enums carry sentinels (INVALID, SIZE) that CUPTI refuses.
+                continue
 
 
 @contextlib.contextmanager
-def _phase_session():
+def _phase_session(buffer_bytes: int = _BUFFER_BYTES):
     """Own one session, so a failed trial leaves nothing behind for the next."""
-    global _COLLECTOR_ACTIVE, _CALLBACKS_REGISTERED
+    global _COLLECTOR_ACTIVE, _CALLBACKS_REGISTERED, _buffer_bytes
     if _COLLECTOR_ACTIVE:
         raise RuntimeError("CUPTI collector is already active")
     cupti = _load_cupti()
-    # Kernels only. A workspace memset or a staging copy is not the arithmetic being
-    # timed, and enabling the API-call kinds that would let CUPTI attribute activity by
-    # correlation id instead of by time costs 14x the records -- enough callback work
-    # between two launches of the same call to leave the device idle inside its span.
-    kinds = (cupti.ActivityKind.CONCURRENT_KERNEL,)
+    # Kernels, the launches that carry their correlation ids, and the records mapping
+    # those ids to the pushed iteration index. No other kind: a workspace memset or a
+    # staging copy is not the arithmetic being timed.
+    kinds = (
+        cupti.ActivityKind.CONCURRENT_KERNEL,
+        cupti.ActivityKind.EXTERNAL_CORRELATION,
+        cupti.ActivityKind.RUNTIME,
+        cupti.ActivityKind.DRIVER,
+    )
+    previous_bytes = _buffer_bytes
     try:
         if not _CALLBACKS_REGISTERED:
             cupti.activity_register_callbacks(_buffer_requested, _buffer_completed)
             _CALLBACKS_REGISTERED = True
-        _RECORDS.clear()
+        _buffer_bytes = buffer_bytes
+        _KERNELS.clear()
+        _ITERATION_OF.clear()
+        # Read and discard, so the count taken after the flush belongs to this phase
+        # alone. Raw, because proving the counter live opens a session of its own.
+        _read_dropped()
         for kind in kinds:
             cupti.activity_enable(kind)
+        _trace_launches_only(cupti)
     except Exception as exc:  # noqa: BLE001
+        _buffer_bytes = previous_bytes
         raise CUPTIError(f"CUPTI collector failed to start: {exc}") from exc
     _COLLECTOR_ACTIVE = True
     try:
         yield
     finally:
         _COLLECTOR_ACTIVE = False
+        _buffer_bytes = previous_bytes
         try:
-            for kind in kinds:
+            for kind in reversed(kinds):
                 cupti.activity_disable(kind)
         except Exception as exc:  # noqa: BLE001
             raise CUPTIError(f"CUPTI collector failed to stop: {exc}") from exc
 
 
-def _flush() -> list[dict[str, Any]]:
-    """Return the records completed since the previous flush."""
+def _flush() -> tuple[list[dict[str, Any]], dict[int, int]]:
+    """Return the kernels recorded since the previous flush, and their iteration map."""
     cupti = _load_cupti()
     torch.cuda.synchronize()
     try:
         cupti.activity_flush_all(1)  # CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
     except Exception as exc:  # noqa: BLE001
         raise CUPTIError(f"CUPTI flush failed: {exc}") from exc
-    drained = list(_RECORDS)
-    _RECORDS.clear()
-    return drained
+    kernels, iteration_of = list(_KERNELS), dict(_ITERATION_OF)
+    _KERNELS.clear()
+    _ITERATION_OF.clear()
+    return kernels, iteration_of
+
+
+class Trace(NamedTuple):
+    """One phase of collection: what CUPTI recorded, and what it lost."""
+
+    kernels: list[dict[str, Any]]
+    iteration_of: dict[int, int]
+    """Which iteration each correlation id belongs to."""
+    dropped: Optional[int]
+    """Records discarded for want of buffer space, or None if the count is unproven."""
 
 
 def collect_repeats(
     run_one: Callable[[int], None],
     n_repeat: int,
     prepare_one: Callable[[int], None],
-) -> tuple[list[dict[str, Any]], list[tuple[int, int]]]:
-    """Run the timed repeats, bracketing each call in a window of its own.
+    buffer_bytes: int = _BUFFER_BYTES,
+) -> Trace:
+    """Run the timed repeats, each labelled with its iteration index.
 
-    ``prepare_one`` leaves the device idle, so opening the window after it and closing
-    it once the call has drained makes the window hold exactly that call's activity --
-    whichever CPU thread launched it. CUPTI stamps activity on the clock
-    ``get_timestamp`` reads, so the two are directly comparable.
+    ``prepare_one`` runs under an id of its own and leaves the device idle, and each
+    call is drained before the next begins, so an iteration's kernels neither overlap
+    nor borrow a neighbour's cache state.
     """
     cupti = _load_cupti()
-    windows = []
-    with _phase_session():
+    kind = cupti.ExternalCorrelationKind.CUSTOM0
+    # Before the session, not inside it: the proof runs a phase of its own.
+    _drop_counter_is_live()
+
+    @contextlib.contextmanager
+    def _labelled(external_id: int):
+        cupti.activity_push_external_correlation_id(kind, external_id)
+        try:
+            yield
+        finally:
+            cupti.activity_pop_external_correlation_id(kind)
+
+    with _phase_session(buffer_bytes):
         for i in range(n_repeat):
-            prepare_one(i)
-            begin = cupti.get_timestamp()
-            run_one(i)
+            with _labelled(_PREPARE_ID):
+                prepare_one(i)
+            with _labelled(i):
+                run_one(i)
             torch.cuda.synchronize()
-            windows.append((begin, cupti.get_timestamp()))
-        return _flush(), windows
+        kernels, iteration_of = _flush()
+        # Counted after the flush, once CUPTI has handed back what it did keep. Unproven
+        # counter reports None, not zero: it is the only evidence separating a lost
+        # reading from a call that launched nothing.
+        dropped = _read_dropped() if _drop_counter_is_live() else None
+        return Trace(kernels, iteration_of, dropped)
 
 
 class Sample(NamedTuple):
@@ -199,54 +344,99 @@ def _kernel_busy_us(kernels: list[dict]) -> float:
     return (total + current_end - current_start) / 1000.0
 
 
-def _ordered_trace_kernels(records: list[dict]) -> list[dict]:
-    return sorted(
-        records,
-        key=lambda kernel: (int(kernel["start_ns"]), int(kernel["end_ns"])),
-    )
-
-
 def _cuda_events_fallback_enabled() -> bool:
     return os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
 
 
 def _attributed_samples(
-    records: list[dict],
-    windows: list[tuple[int, int]],
+    kernels: list[dict],
+    iteration_of: dict[int, int],
     n_repeat: int,
+    dropped: Optional[int] = 0,
 ) -> list[Sample]:
     """Return one Sample per iteration.
 
-    Attribution is which window an activity started in. Nothing is inferred from the
-    order or the identity of what ran, so a call whose activity count varies between
-    iterations is measured rather than rejected, and work the call launched from
-    another thread -- autograd runs its graph on the engine's -- still counts.
+    A kernel belongs to the iteration whose correlation id it carries, so a call whose
+    kernel count varies between iterations is measured rather than rejected. Both ways
+    of coming up short -- an unclaimed kernel, an iteration with none -- can also mean
+    the record was taken and then discarded, which is what ``dropped`` distinguishes.
     """
-    if len(windows) != n_repeat:
-        raise _CUPTIAttributionError(
-            f"{len(windows)} timing windows for {n_repeat} iterations"
-        )
-
-    samples = []
-    empty = []
-    for repeat, (begin, end) in enumerate(windows):
-        inside = [r for r in records if begin <= r["start_ns"] < end]
-        if not inside:
-            empty.append(repeat)
+    claimed: dict[int, list[dict]] = {}
+    orphans = []
+    for kernel in kernels:
+        iteration = iteration_of.get(kernel["correlation_id"])
+        if iteration == _PREPARE_ID:
             continue
-        samples.append(Sample(
-            device_busy_ms=_kernel_busy_us(inside) * 1e-3,
-            latency_ms=_kernel_span_us(inside) * 1e-3,
-            n_kernels=len(inside),
-        ))
+        if iteration is None or not 0 <= iteration < n_repeat:
+            # An id this phase never pushed is as unattributable as no id at all.
+            orphans.append(kernel)
+        else:
+            claimed.setdefault(iteration, []).append(kernel)
 
-    if empty:
+    unmeasured = [i for i in range(n_repeat) if i not in claimed]
+    if orphans or unmeasured:
+        short = (f"{len(unmeasured)} of {n_repeat} iterations have no kernel of their "
+                 f"own and {len(orphans)} kernels belong to no iteration")
+        if dropped:
+            raise _CUPTIRecordsLostError(
+                f"{short}; CUPTI discarded {dropped} activity records for want of "
+                f"buffer space, so those readings were lost rather than never taken"
+            )
+        if dropped is None:
+            raise _CUPTIAttributionError(
+                f"{short}; CUPTI's dropped-record count is unproven, so a lost record "
+                f"cannot be ruled out"
+            )
+        if orphans:
+            raise _OffThreadLaunchError(
+                f"{len(orphans)} of {len(kernels)} kernels carry no iteration id "
+                f"(first: {orphans[0]['name']}); the call handed its work to a thread "
+                f"the id was not pushed on"
+            )
         raise _CUPTIAttributionError(
-            f"{len(empty)} of {n_repeat} timed iterations produced no GPU activity "
-            f"(first: iteration {empty[0]}); a call that never reaches the device is "
-            f"not being measured"
+            f"{len(unmeasured)} of {n_repeat} iterations launched no kernel "
+            f"(first: iteration {unmeasured[0]}); CUPTI discarded nothing, so a call "
+            f"that never reaches the device is not being measured"
         )
-    return samples
+
+    return [
+        Sample(
+            device_busy_ms=_kernel_busy_us(claimed[i]) * 1e-3,
+            latency_ms=_kernel_span_us(claimed[i]) * 1e-3,
+            n_kernels=len(claimed[i]),
+        )
+        for i in range(n_repeat)
+    ]
+
+
+def _collect_attributed(
+    run_one: Callable[[int], None],
+    n_repeat: int,
+    prepare_one: Callable[[int], None],
+) -> list[Sample]:
+    """Collect one fully attributed phase, re-measuring what CUPTI loses.
+
+    A discarded record is the instrument failing rather than the op: the iteration ran
+    and only its reading is gone, so the phase is run again, each attempt asking for a
+    larger buffer. Anything the drop counter does not explain fails on the first attempt.
+    """
+    buffer_bytes = _BUFFER_BYTES
+    for attempt in range(_ATTRIBUTION_ATTEMPTS):
+        trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes)
+        try:
+            return _attributed_samples(
+                trace.kernels, trace.iteration_of, n_repeat, trace.dropped,
+            )
+        except _CUPTIRecordsLostError as exc:
+            _bench_meta.attribution_retries = attempt + 1
+            if attempt == _ATTRIBUTION_ATTEMPTS - 1:
+                raise
+            buffer_bytes *= 4
+            _logger.warning(
+                "%s; re-measuring with a %d KB buffer (attempt %d of %d).",
+                exc, buffer_bytes // 1024, attempt + 2, _ATTRIBUTION_ATTEMPTS,
+            )
+    raise AssertionError("the loop returns or raises on its last attempt")
 
 
 def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None, None]:
@@ -323,7 +513,7 @@ def _capture_bench_meta() -> dict:
     """Snapshot how the last measurement was taken."""
     return {
         key: value
-        for key in ("timing", "fallback_reason")
+        for key in ("timing", "fallback_reason", "attribution_retries")
         if (value := getattr(_bench_meta, key, None)) is not None
     }
 
@@ -340,9 +530,11 @@ def bench_kernel(
 
     A calibration pass measures one iteration, then warmup and measurement each run
     for their millisecond budget, so a short op is sampled many times and a long one
-    few. L2 is cleared before every iteration, and each call is bracketed by a device
-    synchronize so its window holds only its own activity. Attribution fails closed
-    unless ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
+    few. L2 is cleared before every iteration, and each call is drained before the next
+    begins. Each kernel is attributed to the iteration that launched it, so *fn* must
+    launch its own work rather than hand it to another thread. A phase whose records
+    CUPTI discarded is measured again; attribution otherwise fails closed unless
+    ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
     """
     if not isinstance(args, tuple):
         raise TypeError(
@@ -353,6 +545,7 @@ def bench_kernel(
     allow_fallback = _cuda_events_fallback_enabled()
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
+    _bench_meta.attribution_retries = None
     cache = _get_l2_flush_cache()
 
     def _flush_l2():
@@ -396,8 +589,7 @@ def bench_kernel(
 
     try:
         with _native_output_suppressor():
-            records, windows = collect_repeats(_run, n_repeat, _prepare_iteration)
-            samples = _attributed_samples(records, windows, n_repeat)
+            samples = _collect_attributed(_run, n_repeat, _prepare_iteration)
         _bench_meta.timing = "cupti"
     except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
