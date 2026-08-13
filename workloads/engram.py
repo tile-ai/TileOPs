@@ -175,7 +175,11 @@ def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
     conv_out = F.conv1d(v_padded, cw_expanded, groups=d).permute(0, 2, 1)
     Y_ag = F.silu(conv_out) + v_hat_ag
 
-    Y_ag.backward(dY.float())
+    # On this thread, not autograd's engine thread: a benchmark timing this
+    # reference cannot attribute kernels launched where its iteration id was
+    # never pushed. Same gradients either way.
+    with torch.autograd.set_multithreading_enabled(False):
+        Y_ag.backward(dY.float())
 
     return (
         H_ag.grad.to(H.dtype),
