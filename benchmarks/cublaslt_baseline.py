@@ -85,12 +85,27 @@ class _HeuristicResult(ctypes.Structure):
 _lib: Optional[ctypes.CDLL] = None
 
 
+def _sonames() -> tuple[str, ...]:
+    """Library names to try, most specific first.
+
+    The soname carries the CUDA major version, so it moves with the toolkit —
+    a pinned one silently costs this baseline on any build with a different
+    version, and silence is the failure mode a benchmark can least afford. Take
+    the version from the torch that is going to run the comparison, so the
+    library matches the runtime rather than whatever this file was written
+    against; the unversioned name is a last resort, since the CUDA wheels ship
+    only the versioned one.
+    """
+    major = (torch.version.cuda or "").split(".")[0]
+    return ((f"libcublasLt.so.{major}",) if major.isdigit() else ()) + ("libcublasLt.so",)
+
+
 def _load() -> Optional[ctypes.CDLL]:
     """Load libcublasLt once; return None if unavailable."""
     global _lib
     if _lib is not None:
         return _lib
-    for name in ("libcublasLt.so.12", "libcublasLt.so"):
+    for name in _sonames():
         try:
             _lib = ctypes.CDLL(name)
             break
