@@ -2277,6 +2277,14 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
 
                 for bk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
                     T.copy(b[bn * block_n, bk * block_k], b_shared, disable_tma=True)
+                    # Both loads reach past ``k`` on the last iteration whenever
+                    # ``block_k`` does not divide it, and both are guarded -- by
+                    # the buffer extents, not by anything written here. The
+                    # emitted code peels that iteration into a
+                    # ``cp_async_gs_conditional`` for b and a
+                    # ``threadIdx.x < (k - bk * block_k) / tile_k`` branch for a.
+                    # Verified at k=3000 with block_k=1024: an ``a`` whose tail
+                    # is filled with NaN leaves the result unchanged.
                     for mi in T.serial(m):
                         for _k in T.vectorized(tile_k):
                             a_local[mi, _k] = a[mi, bk * block_k + tk * tile_k + _k]
