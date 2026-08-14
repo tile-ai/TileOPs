@@ -365,14 +365,7 @@ def test_gemm_w4a16_bench(
     bm = ManifestBenchmark(_W4A16_OP_NAME, op, workload)
 
     expected = workload.ref_program(*inputs)
-    actual_tileops = op(*inputs)
-    torch.testing.assert_close(actual_tileops, expected, atol=7e-2, rtol=5e-2)
-    tileops_abs = (actual_tileops.float() - expected.float()).abs()
-    tileops_rel = tileops_abs / expected.float().abs().clamp_min(1e-12)
-    print(
-        f"  [correctness] tileops max_abs={tileops_abs.max().item():.9g} "
-        f"max_rel={tileops_rel.max().item():.9g}"
-    )
+    torch.testing.assert_close(op(*inputs), expected, atol=7e-2, rtol=5e-2)
 
     functors = {
         "tileops": op,
@@ -395,22 +388,13 @@ def test_gemm_w4a16_bench(
             actual = marlin(*marlin_inputs)
             if actual.shape != (m, n) or not torch.isfinite(actual).all():
                 raise RuntimeError("Marlin W4A16 baseline smoke check failed")
-            marlin_abs = (actual.float() - expected.float()).abs()
-            marlin_rel = marlin_abs / expected.float().abs().clamp_min(1e-12)
+            # A baseline that does not reproduce the reference is dropped from
+            # the comparison rather than compared against under a wrong layout.
             try:
                 torch.testing.assert_close(actual, expected, atol=7e-2, rtol=5e-2)
             except AssertionError as exc:
-                print(
-                    f"  [skip] marlin-{reduce_mode} equivalence failed: "
-                    f"max_abs={marlin_abs.max().item():.9g} "
-                    f"max_rel={marlin_rel.max().item():.9g}: {exc}"
-                )
+                print(f"  [skip] marlin-{reduce_mode} disagrees with the reference: {exc}")
                 continue
-            print(
-                f"  [correctness] marlin-{reduce_mode} "
-                f"max_abs={marlin_abs.max().item():.9g} "
-                f"max_rel={marlin_rel.max().item():.9g}"
-            )
             torch.cuda.synchronize()
             functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
 

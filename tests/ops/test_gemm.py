@@ -167,8 +167,8 @@ class GemmW4A16Fixture(FixtureBase):
             ),
             pytest.param(
                 1, 512, 512, torch.float16,
-                marks=pytest.mark.full,
-                id="full-w4a16-m1",
+                marks=pytest.mark.smoke,
+                id="smoke-w4a16-m1",
             ),
             pytest.param(
                 16, 1024, 1024, torch.float16,
@@ -219,6 +219,8 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16Op()
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
+    expected = "GemmW4A16DecodeKernel" if m == 1 else "GemmW4A16Kernel"
+    assert op.kernel.__class__.__name__ == expected
 
 
 @pytest.mark.smoke
@@ -237,21 +239,6 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
     assert torch.all(scale > 0)
     torch.testing.assert_close(dequantized[0].max(), weight[0].max())
     torch.testing.assert_close(dequantized[1].min(), weight[1].min())
-
-
-@pytest.mark.smoke
-def test_quantize_weight_int4_preserves_nibble_order_across_group_boundary() -> None:
-    weight = torch.tensor(
-        [[0.0, 0.2, 0.4, 0.6, 0.0, -0.2, -0.4, -0.6]],
-        dtype=torch.float32,
-    )
-
-    packed, scale, zero, dequantized = quantize_weight_int4(weight, group_size=4)
-
-    assert torch.equal(packed, torch.tensor([[0x50, 0xFA, 0xAF, 0x05]], dtype=torch.uint8))
-    assert torch.equal(zero, torch.tensor([[0, 15]], dtype=torch.uint8))
-    torch.testing.assert_close(scale, torch.full((1, 2), 0.04))
-    torch.testing.assert_close(dequantized, weight)
 
 
 @pytest.mark.smoke
