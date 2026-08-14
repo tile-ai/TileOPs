@@ -61,6 +61,11 @@ repos:
         files: ^(src/tileops|tests|benchmarks|scripts|workloads)/
         exclude: ^src/tileops/manifest/
         types: [text]
+      - id: workload-names-lint
+        name: benchmark case name lint
+        entry: python scripts/lint/workload_names_lint.py
+        language: python
+        files: ^benchmarks/ops/.*\.py$
 
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22

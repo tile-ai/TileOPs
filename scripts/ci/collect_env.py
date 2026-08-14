@@ -14,26 +14,6 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Our stack, then every baseline the suite times against.
-_PACKAGES = {
-    "tilelang": "tilelang",
-    "triton": "triton",
-    "flashinfer": "flashinfer-python",
-    "flash-attn": "flash_attn",
-    "vllm": "vllm",
-    "mamba-ssm": "mamba_ssm",
-    "deep_gemm": "deep_gemm",
-    "fla": "flash-linear-attention",
-}
-
-
-def _version(dist: str) -> str | None:
-    try:
-        return md.version(dist)
-    except md.PackageNotFoundError:
-        return None
-
-
 def _driver() -> str | None:
     try:
         out = subprocess.run(
@@ -63,14 +43,25 @@ def collect() -> dict:
     except ImportError:
         pass
 
+    # tilelang beside torch, not only in the inventory below: the two compile
+    # every kernel these numbers describe.
+    try:
+        import tilelang
+        env["tilelang"] = tilelang.__version__
+    except ImportError:
+        pass
+
     driver = _driver()
     if driver:
         env["driver"] = driver
 
-    for label, dist in _PACKAGES.items():
-        version = _version(dist)
-        if version:
-            env[label] = version
+    # Every installed distribution, not a chosen few: which library matters to
+    # a number is the reader's question, and a list written here would answer it
+    # for a suite that has since added a baseline.
+    env["packages"] = {
+        dist.metadata["Name"]: dist.version
+        for dist in md.distributions() if dist.metadata.get("Name")
+    }
 
     # Run as a script, sys.path[0] is scripts/ci, not the repo root.
     sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
@@ -87,7 +78,7 @@ def main() -> int:
     env = collect()
     json.dump(env, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
-    missing = [k for k in ("image", "gpu", "driver", "cuda", "torch", "tilelang")
+    missing = [k for k in ("image", "gpu", "driver", "cuda", "torch")
                if k not in env]
     if missing:
         print("collect_env: not recorded: " + ", ".join(missing), file=sys.stderr)

@@ -6,6 +6,7 @@ benchmark job recorded. A missing environment stays missing.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -22,12 +23,17 @@ def main() -> int:
 
     env = {}
     if os.path.exists(args.env_json):
-        with open(args.env_json, encoding="utf-8") as f:
+        # A truncated file must not block publishing the numbers.
+        with contextlib.suppress(json.JSONDecodeError), \
+                open(args.env_json, encoding="utf-8") as f:
             env = json.load(f)
     if not env:
         print("::warning::env.json missing or empty; the Benchmarks page will "
               "report the run environment as unpublished", file=sys.stderr)
 
+    # The installed set sits beside the environment rather than inside it: the
+    # environment is a table a reader scans, and this is an inventory to search.
+    packages = env.pop("packages", None)
     meta = {
         "commit": args.commit,
         "date": args.date,
@@ -36,6 +42,8 @@ def main() -> int:
     }
     if env:
         meta["environment"] = env
+    if packages:
+        meta["packages"] = packages
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, sort_keys=True)
         f.write("\n")
