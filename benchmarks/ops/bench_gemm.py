@@ -3,7 +3,6 @@ from typing import Any, Callable, Optional
 import pytest
 import torch
 
-from benchmarks.baselines import (
     DEEPGEMM_TAG,
     FLAGGEMS_TAG,
     assert_matches_reference,
@@ -11,7 +10,9 @@ from benchmarks.baselines import (
     flaggems_op,
     reference_tolerance,
 )
+from benchmarks.baselines import (
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workload_params
+from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.cublaslt_baseline import make_cublaslt_best
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
@@ -294,15 +295,30 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    # flag_gems' mm takes row-major operands; a transposed row is its own layout,
-    # which its kernel does not express, so those rows carry cuBLAS alone.
+    # Stronger baseline: cuBLASLt's fastest algorithm found by heuristic search
+    # (falling back to the plain torch.matmul path when that is faster).
+    # torch.matmul alone uses cuBLAS's default top-1 heuristic, measurably
+    # slower than searchable algorithms on some shapes (small-M, tall-skinny,
+    # awkward-N) — comparing against it can credit a kernel with a win a
+    # cuBLASLt user would not concede. It goes in the same plan as the others
+    # so every entry is timed in one forward-then-reversed pass: profiling it
+    # separately would time it in whatever thermal state the algorithm search
+    # left, against entries measured before that search ran. Absent from the
+    # plan when cuBLASLt cannot be loaded, leaving the torch-cublas baseline.
     functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
+    best_fn = make_cublaslt_best(m, n, k, dtype, trans_a, trans_b)
+    if best_fn is not None:
+        functors["cublaslt-best"] = best_fn
+
     deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
     if deepgemm_fn is not None:
         assert_matches_reference(
             deepgemm_fn, workload.torch_matmul, a, b, **reference_tolerance(dtype)
         )
         functors[DEEPGEMM_TAG] = deepgemm_fn
+
+    # flag_gems' mm takes row-major operands; a transposed row is its own layout,
+    # which its kernel does not express, so those rows carry cuBLAS alone.
     if not trans_a and not trans_b:
         flaggems_mm = flaggems_op("mm")
         assert_matches_reference(
@@ -311,18 +327,6 @@ def test_gemm_bench(
         functors[FLAGGEMS_TAG] = flaggems_mm
 
     bm.compare(functors, a, b, record_as=op, params=locals())
-
-    # Stronger baseline: cuBLASLt's fastest algorithm found by heuristic search
-    # (falling back to the default torch.matmul path when that is faster), timed
-    # by the same CUPTI harness. torch.matmul alone uses only cuBLAS's default
-    # top-1 heuristic, which is measurably slower than searchable algorithms on
-    # some shapes (small-M, tall-skinny, awkward-N) — comparing against it can
-    # credit a kernel with a win a cuBLASLt user would not concede. Conditional:
-    # skipped (leaving the torch-cublas baseline) when cuBLASLt is unavailable.
-    best_fn = make_cublaslt_best(m, n, k, dtype, trans_a, trans_b)
-    if best_fn is not None:
-        result_lt = bm.profile(best_fn, a, b)
-        BenchmarkReport.record(op, locals(), result_lt, tag="cublaslt-best")
 
 
 @pytest.mark.parametrize(
