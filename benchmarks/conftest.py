@@ -6,6 +6,27 @@ import torch
 from benchmarks.report import BenchmarkReport, _bench_results
 
 
+def pytest_make_parametrize_id(config, val, argname):
+    """Render the values pytest would otherwise collect as `shape0`, `dtype0`.
+
+    A case id is the workload's name everywhere it is read later — the nightly
+    report, the published page, the perf history key. This covers the values
+    with no readable repr; it does not invent a name for the case, which is the
+    author's job (see .claude/domain-rules/benchmark.md).
+    """
+    if isinstance(val, torch.dtype):
+        return str(val).removeprefix("torch.")
+    if isinstance(val, tuple) and val and all(isinstance(v, int) for v in val):
+        return "x".join(str(v) for v in val)
+    if isinstance(val, bool):
+        name = argname
+        for prefix in ("has_", "is_", "use_", "with_", "num_", "n_"):
+            name = name.removeprefix(prefix)
+        name = name.replace("_", "")
+        return name if val else f"no{name}"
+    return None
+
+
 def _rate(value: float) -> str:
     """Format a throughput; significant digits, so a small rate is not ``0.00``."""
     return f"{value:.6g}"

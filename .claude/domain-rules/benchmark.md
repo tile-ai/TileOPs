@@ -11,6 +11,8 @@ ______________________________________________________________________
 
 - Every benchmark records ≥1 non-`tileops` baseline. Add a local torch fallback where a torch reference is a meaningful comparison; where it is not, require the external library and let the import fail.
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
+- Every case is named. Take the name from a manifest workload's `label` where one exists; when a bench parametrizes locally, pass `id=` to `pytest.param`. The name says which scenario the case stands for (`serving-130m-4k`), not which parameters it holds. Checked by `benchmarks/tests/test_workload_names.py`, which grandfathers the files that predate the rule and never lets a file add more.
+- A workload `label` does not repeat the dtype: the case id appends it.
 - Tag names: lowercase, hyphen-separated. Tags starting with `tileops` are TileOPs entries; everything else is a baseline.
 - `calculate_flops()` / `calculate_memory()` return `None` to omit the metric.
 - Benchmark shapes reflect real DNN workloads (LLaMA-family by default). Annotate shape constants with the model/scenario; never use arbitrary flat numbers (262K, 1M, 4M).
