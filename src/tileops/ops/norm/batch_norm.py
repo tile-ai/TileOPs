@@ -217,7 +217,7 @@ class BatchNormFwdOp(Op):
         self.kernel = kernel
         return kernel
 
-    def _forward_impl(
+    def _eager_forward(
         self,
         x: torch.Tensor,
         running_mean: torch.Tensor,
@@ -273,7 +273,8 @@ class BatchNormFwdOp(Op):
         Returns:
             Normalized output tensor with the same shape as ``x``.
         """
-        return self._forward_impl(x, running_mean, running_var, weight, bias)
+        return _batch_norm_fwd_wrapped(
+            x, running_mean, running_var, weight, bias, self._instance_key)
 
 
 class BatchNormBwdOp(Op):
@@ -412,7 +413,7 @@ class BatchNormBwdOp(Op):
         if tensor.ndim != 1 or tensor.shape[0] != C:
             raise ValueError(f"Expected {name} shape ({C},), got {tuple(tensor.shape)}")
 
-    def _forward_impl(
+    def _eager_forward(
         self,
         grad_out: torch.Tensor,
         x: torch.Tensor,
@@ -464,7 +465,8 @@ class BatchNormBwdOp(Op):
             has the same shape as ``x``, ``grad_weight`` has shape ``(C,)``,
             and ``grad_bias`` has shape ``(C,)``.
         """
-        return self._forward_impl(grad_out, x, weight, mean, rstd)
+        return _batch_norm_bwd_wrapped(
+            grad_out, x, weight, mean, rstd, self._instance_key)
 
 
 # torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
@@ -499,40 +501,6 @@ def _batch_norm_fwd_fake(
     return torch.empty_like(x)
 
 
-BatchNormFwdOp._wrapped = _batch_norm_fwd_wrapped
-
-
-def _batchnorm_fwd_eager_forward(
-    self,
-    x: torch.Tensor,
-    running_mean: torch.Tensor,
-    running_var: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    """Direct kernel call (no torch.compile wrapping)."""
-    return self._forward_impl(x, running_mean, running_var, weight, bias)
-
-
-BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
-
-
-
-def _patched_fwd_forward(
-    self,
-    x: torch.Tensor,
-    running_mean: torch.Tensor,
-    running_var: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _batch_norm_fwd_wrapped(
-        x, running_mean, running_var, weight, bias, self._instance_key)
-
-
-BatchNormFwdOp.forward = _patched_fwd_forward
-
-
 @torch.library.custom_op("top::batch_norm_bwd", mutates_args=())
 def _batch_norm_bwd_wrapped(
     grad_out: torch.Tensor,
@@ -561,30 +529,3 @@ def _batch_norm_bwd_fake(
         torch.empty(C, device=grad_out.device, dtype=torch.float32),
         torch.empty(C, device=grad_out.device, dtype=torch.float32),
     )
-
-
-BatchNormBwdOp._wrapped = _batch_norm_bwd_wrapped
-
-
-def _batchnorm_bwd_eager_forward(
-    self,
-    grad_out: torch.Tensor,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    mean: torch.Tensor,
-    rstd: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Direct kernel call (no torch.compile wrapping)."""
-    return self._forward_impl(grad_out, x, weight, mean, rstd)
-
-
-BatchNormBwdOp._eager_forward = _batchnorm_bwd_eager_forward
-
-
-
-def _patched_bwd_forward(self, grad_out, x, weight, mean, rstd):
-    return _batch_norm_bwd_wrapped(
-        grad_out, x, weight, mean, rstd, self._instance_key)
-
-
-BatchNormBwdOp.forward = _patched_bwd_forward

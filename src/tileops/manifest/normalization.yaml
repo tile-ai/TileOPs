@@ -8,6 +8,7 @@ RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

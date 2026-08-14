@@ -80,26 +80,6 @@ def _rms_norm_kernel(M, N, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("top::rms_norm_fwd", mutates_args=())
-def _rms_norm_wrapped(
-    M: int,
-    N: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-) -> torch.Tensor:
-    return _rms_norm_kernel(M, N, eps, dtype_str)(block_m, threads)(x, weight)
-
-
-@_rms_norm_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, x, weight):
-    N_padded = _align_up(N, ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
-
-
 class RMSNormKernel(Kernel):
     """RMS Norm kernel.
 
@@ -175,16 +155,7 @@ class RMSNormKernel(Kernel):
         if pad:
             rows = F.pad(rows, (0, pad))
             weight = F.pad(weight, (0, pad))
-        y = _rms_norm_wrapped(
-            m,
-            self.N,
-            self.eps,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            rows,
-            weight,
-        )
+        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight)
         if pad:
             y = y[:, : self.N]
         return y.reshape(original_shape)

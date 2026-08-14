@@ -7,6 +7,7 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import RMSNormKernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 
 __all__ = ["RMSNormFwdOp"]
@@ -65,6 +66,14 @@ class RMSNormFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
 
+    def _infer_output_shapes(
+        self,
+        x_shape: Tuple[int, ...],
+        weight_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
+        return {"output": tuple(x_shape)}
+
     def eval_roofline(self) -> Tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
             raise RuntimeError(
@@ -89,6 +98,10 @@ class RMSNormFwdOp(Op):
             ValueError: Dtypes or devices disagree, or shapes are incompatible with the
                 configured ``normalized_shape``.
         """
+        return _rms_norm_fwd(x, weight, self._instance_key)
+
+    def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        """Validate, normalize, resolve the kernel and launch — all untraced."""
         ns = self.normalized_shape
         k = len(ns)
         self._validate_dtypes(x, weight)
@@ -122,3 +135,25 @@ class RMSNormFwdOp(Op):
         )
         self._last_roofline_mn = (x.numel() // self.N, self.N)
         return kernel(x, weight)
+
+
+# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
+
+
+@torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())
+def _rms_norm_fwd(
+    x: torch.Tensor, weight: torch.Tensor, instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(x, weight)
+
+
+@_rms_norm_fwd.register_fake
+def _rms_norm_fwd_fake(
+    x: torch.Tensor, weight: torch.Tensor, instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake. Dtype is the
+    # manifest's ``same_as(x)``.
+    return x.new_empty(shapes["output"])
