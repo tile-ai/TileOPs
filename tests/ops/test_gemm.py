@@ -167,8 +167,8 @@ class GemmW4A16Fixture(FixtureBase):
             ),
             pytest.param(
                 1, 512, 512, torch.float16,
-                marks=pytest.mark.full,
-                id="full-w4a16-m1",
+                marks=pytest.mark.smoke,
+                id="smoke-w4a16-m1",
             ),
             pytest.param(
                 16, 1024, 1024, torch.float16,
@@ -219,6 +219,8 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16Op()
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
+    expected = "GemmW4A16DecodeKernel" if m == 1 else "GemmW4A16Kernel"
+    assert op.kernel.__class__.__name__ == expected
 
 
 @pytest.mark.smoke

@@ -170,6 +170,8 @@ def _gemm_w4a16_kernel(
 class GemmW4A16Kernel(Kernel):
     """W4A16 GEMM with group128 affine dequantization and A16 Tensor Core GEMM."""
 
+    general = True
+
     def __init__(
         self,
         m: int,

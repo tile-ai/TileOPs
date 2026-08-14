@@ -29,6 +29,7 @@ IMG=ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-<short-sha>
 
 # 1. Build. --target tilelang for the dev tag, otherwise the same command.
 DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target final \
+  --provenance=false --sbom=false \
   --build-arg TILELANG_GIT_SHA=<commit> \
   --build-arg TILEOPS_RUNNER_IMAGE="$IMG" -t "$IMG" .
 
@@ -45,6 +46,9 @@ docker push "$IMG"
 
 **Point the runners at the new tag** — a maintainer task outside this repository. Merging a
 TileOPs PR only changes the recipe; the live runners keep their image until this happens.
+
+`--provenance=false --sbom=false` keeps the tag one manifest; BuildKit's default attestations
+add two untagged versions per tag and nothing reads them.
 
 `--build-arg TILEOPS_RUNNER_IMAGE` bakes the tag in, so a run reports which image produced it —
 which the registry cannot answer later, since the host decides what it pulled and `latest` moves.
