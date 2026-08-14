@@ -25,6 +25,49 @@ _PREFILL_TOLERANCE = {
 }
 
 
+def _rope_tables(
+    max_position: int, rotary_dim: int, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor]:
+    inv_freq = 1.0 / (
+        10000.0 ** (torch.arange(0, rotary_dim, 2, device="cuda", dtype=torch.float32) / rotary_dim)
+    )
+    freqs = torch.outer(torch.arange(max_position, device="cuda", dtype=torch.float32), inv_freq)
+    return freqs.cos().to(dtype).contiguous(), freqs.sin().to(dtype).contiguous()
+
+
+def _apply_test_rope(
+    x: torch.Tensor,
+    position_ids: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    rotary_dim: int,
+    rope_layout: str,
+) -> torch.Tensor:
+    selected_cos = cos[position_ids]
+    selected_sin = sin[position_ids]
+    while selected_cos.ndim < x.ndim:
+        selected_cos = selected_cos.unsqueeze(-2)
+        selected_sin = selected_sin.unsqueeze(-2)
+    out = x.clone()
+    if rope_layout == "neox":
+        half = rotary_dim // 2
+        first = x[..., :half]
+        second = x[..., half:rotary_dim]
+        out[..., :half] = first * selected_cos - second * selected_sin
+        out[..., half:rotary_dim] = second * selected_cos + first * selected_sin
+    elif rope_layout == "interleaved":
+        even = x[..., :rotary_dim:2]
+        odd = x[..., 1:rotary_dim:2]
+        rotated = torch.stack(
+            (even * selected_cos - odd * selected_sin, odd * selected_cos + even * selected_sin),
+            dim=-1,
+        )
+        out[..., :rotary_dim] = rotated.flatten(-2)
+    else:
+        raise ValueError(f"unsupported test RoPE layout: {rope_layout}")
+    return out
+
+
 #: The shipped implementations of the Dense-prefill slot, by dispatch key.
 _SHIPPED_PREFILL_MAP = GroupedQueryAttentionPrefillDenseFwdOp.default_kernel_map.fget(
     object.__new__(GroupedQueryAttentionPrefillDenseFwdOp)
@@ -270,6 +313,85 @@ def test_gqa_fwd_output_matches_the_declared_shape() -> None:
     }
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("rope_layout", ["neox", "interleaved"])
+def test_gqa_prefill_dense_fused_rope(rope_layout: str) -> None:
+    batch, seq_len_q, seq_len_kv = 2, 48, 80
+    heads, heads_kv, dim, rotary_dim = 8, 2, 64, 32
+    dtype = torch.float16
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    cos, sin = _rope_tables(seq_len_kv, rotary_dim, dtype)
+    q_positions = torch.arange(
+        seq_len_kv - seq_len_q, seq_len_kv, device="cuda", dtype=torch.long
+    ).expand(batch, -1)
+    k_positions = torch.arange(seq_len_kv, device="cuda", dtype=torch.long).expand(batch, -1)
+    q_rot = _apply_test_rope(q, q_positions, cos, sin, rotary_dim, rope_layout)
+    k_rot = _apply_test_rope(k, k_positions, cos, sin, rotary_dim, rope_layout)
+    ref = _gqa_prefill_ref(q_rot, k_rot, v, heads=heads, heads_kv=heads_kv, is_causal=True)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_q,
+        dim,
+        True,
+        seq_len_kv=seq_len_kv,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
+    )
+    output = op(q, k, v, rope_cos=cos, rope_sin=sin)
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_native_fp8_fused_rope() -> None:
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("native FP8 prefill requires SM90 and float8_e4m3fn")
+    batch, seq_len_q, seq_len_kv = 1, 65, 97
+    heads, heads_kv, dim, rotary_dim = 8, 2, 128, 64
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda").clamp(-2, 2).to(fp8)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    cos, sin = _rope_tables(seq_len_kv, rotary_dim, torch.float16)
+    q_positions = torch.arange(
+        seq_len_kv - seq_len_q, seq_len_kv, device="cuda", dtype=torch.long
+    ).expand(batch, -1)
+    k_positions = torch.arange(seq_len_kv, device="cuda", dtype=torch.long).expand(batch, -1)
+    q_rot = (
+        _apply_test_rope(q.to(torch.float16), q_positions, cos, sin, rotary_dim, "interleaved")
+        .to(fp8)
+        .to(torch.float16)
+    )
+    k_rot = (
+        _apply_test_rope(k.to(torch.float16), k_positions, cos, sin, rotary_dim, "interleaved")
+        .to(fp8)
+        .to(torch.float16)
+    )
+    ref = _gqa_prefill_ref(
+        q_rot, k_rot, v.to(torch.float16), heads=heads, heads_kv=heads_kv, is_causal=True
+    )
+    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_q,
+        dim,
+        True,
+        seq_len_kv=seq_len_kv,
+        dtype=torch.float16,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        rope_layout="interleaved",
+    )
+    output = op(q, k, v, scale, scale, scale, cos, sin)
+    torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
+
+
 @pytest.mark.parametrize(
     "q_lens, kv_lens, heads, heads_kv, dim, causal, dtype",
     [
@@ -390,6 +512,181 @@ def test_gqa_prefill_varlen_fwd(
 
     atol, rtol = _PREFILL_TOLERANCE[dtype]
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("rope_layout", ["neox", "interleaved"])
+def test_gqa_prefill_varlen_fused_rope(rope_layout: str) -> None:
+    q_lens, kv_lens = [33, 48], [65, 80]
+    batch, heads, heads_kv, dim, rotary_dim = 2, 8, 2, 64, 32
+    dtype = torch.float16
+    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=dtype).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    v = torch.randn_like(k)
+    cu_q = torch.tensor(
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
+    )
+    cu_kv = torch.tensor(
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
+    )
+    cos, sin = _rope_tables(max(kv_lens), rotary_dim, dtype)
+    q_positions = torch.cat(
+        [
+            torch.arange(kv_len - q_len, kv_len, device="cuda", dtype=torch.long)
+            for q_len, kv_len in zip(q_lens, kv_lens, strict=True)
+        ]
+    )
+    k_positions = torch.cat(
+        [torch.arange(kv_len, device="cuda", dtype=torch.long) for kv_len in kv_lens]
+    )
+    q_rot = _apply_test_rope(q, q_positions, cos, sin, rotary_dim, rope_layout)
+    k_rot = _apply_test_rope(k, k_positions, cos, sin, rotary_dim, rope_layout)
+    ref = _gqa_prefill_varlen_ref(
+        q_rot, k_rot, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv, is_causal=True
+    )
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max(q_lens),
+        max_seqlen_kv=max(kv_lens),
+        is_causal=True,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
+    )
+    output = op(q, k, v, cu_q, cu_kv, rope_cos=cos, rope_sin=sin)
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_varlen_native_fp8_fused_rope() -> None:
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("native FP8 prefill requires SM90 and float8_e4m3fn")
+    q_lens, kv_lens = [33, 48], [65, 80]
+    batch, heads, heads_kv, dim, rotary_dim = 2, 8, 2, 128, 64
+    q = torch.randn(sum(q_lens), heads, dim, device="cuda").clamp(-2, 2).to(fp8)
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    v = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    cu_q = torch.tensor(
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
+    )
+    cu_kv = torch.tensor(
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
+    )
+    cos, sin = _rope_tables(max(kv_lens), rotary_dim, torch.float16)
+    q_positions = torch.cat(
+        [
+            torch.arange(kv_len - q_len, kv_len, device="cuda", dtype=torch.long)
+            for q_len, kv_len in zip(q_lens, kv_lens, strict=True)
+        ]
+    )
+    k_positions = torch.cat(
+        [torch.arange(kv_len, device="cuda", dtype=torch.long) for kv_len in kv_lens]
+    )
+    q_rot = (
+        _apply_test_rope(q.to(torch.float16), q_positions, cos, sin, rotary_dim, "neox")
+        .to(fp8)
+        .to(torch.float16)
+    )
+    k_rot = (
+        _apply_test_rope(k.to(torch.float16), k_positions, cos, sin, rotary_dim, "neox")
+        .to(fp8)
+        .to(torch.float16)
+    )
+    ref = _gqa_prefill_varlen_ref(
+        q_rot,
+        k_rot,
+        v.to(torch.float16),
+        cu_q,
+        cu_kv,
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=True,
+    )
+    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max(q_lens),
+        max_seqlen_kv=max(kv_lens),
+        is_causal=True,
+        dtype=torch.float16,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        rope_layout="neox",
+    )
+    output = op(q, k, v, cu_q, cu_kv, scale, scale, scale, cos, sin)
+    torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["dense", "varlen", "paged"])
+def test_gqa_prefill_rejects_unknown_rope_layout(op_kind: str) -> None:
+    common = dict(heads=8, heads_kv=2, dim=64, fuse_rope=True, rope_layout="unknown")
+    with pytest.raises(ValueError, match="rope_layout"):
+        if op_kind == "dense":
+            GroupedQueryAttentionPrefillDenseFwdOp(batch=1, seq_len=32, is_causal=True, **common)
+        elif op_kind == "varlen":
+            GroupedQueryAttentionPrefillVarlenFwdOp(
+                batch=1, max_seqlen_q=32, max_seqlen_kv=32, is_causal=True, **common
+            )
+        else:
+            from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
+
+            GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+                batch=1,
+                max_pages_per_req=2,
+                page_size=64,
+                max_seqlen_q=32,
+                is_causal=True,
+                **common,
+            )
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_rope_tables_are_required_exactly_when_enabled() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    fused = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch, heads, heads_kv, seq_len, dim, True, fuse_rope=True
+    )
+    with pytest.raises(ValueError, match="requires both"):
+        fused(q, k, v)
+    plain = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, True)
+    cos, sin = _rope_tables(seq_len, dim, torch.float16)
+    with pytest.raises(ValueError, match="require fuse_rope=True"):
+        plain(q, k, v, rope_cos=cos, rope_sin=sin)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    cos, sin = _rope_tables(seq_len, dim, torch.float16)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch, heads, heads_kv, seq_len, dim, True, fuse_rope=True, rope_layout="interleaved"
+    )
+    op(q, k, v, rope_cos=cos, rope_sin=sin)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = op(q, k, v, rope_cos=cos, rope_sin=sin)
+    first = captured.clone()
+    q.zero_()
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.isfinite(captured).all()
+    assert not torch.equal(captured, first)
 
 
 @pytest.mark.smoke

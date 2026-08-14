@@ -39,7 +39,12 @@ class _GQASlidingWindowVarlenFwdKernelBase(PackedPrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return uses_sliding_window(call) and not call.is_fp8 and not call.is_uniform
+        return (
+            uses_sliding_window(call)
+            and not call.is_fp8
+            and not call.is_uniform
+            and not call.fuse_rope
+        )
 
     def _build_program(self) -> None:
         # Specialized on the packed totals, which are known per call.
@@ -363,6 +368,8 @@ class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         output, _ = self._call_wrapped(
             _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel, q, k, v, cu_seqlens_q, cu_seqlens_kv

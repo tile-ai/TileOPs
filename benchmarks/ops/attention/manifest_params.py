@@ -42,7 +42,8 @@ def mha_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, bool]:
 
 def gqa_fwd_args(
     workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, int, bool, float | None, float | None, int, int]:
+) -> tuple[int, int, int, int, int, int, bool, float | None, float | None, int, int,
+           bool, int | None, str]:
     batch, seq_len, heads, dim = workload["q_shape"]
     _, kv_seq_len, heads_kv, _ = workload["kv_shape"]
     return (
@@ -57,6 +58,9 @@ def gqa_fwd_args(
         workload.get("softcap"),
         workload.get("window_size_left", -1),
         workload.get("window_size_right", -1),
+        workload.get("fuse_rope", False),
+        workload.get("rotary_dim"),
+        workload.get("rope_layout", "neox"),
     )
 
 
@@ -71,7 +75,7 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
 def gqa_prefill_varlen_args(
     workload: dict[str, Any],
 ) -> tuple[int, list[int], list[int], int, int, int, bool, float | None, float | None,
-           int, int, torch.dtype | None]:
+           int, int, bool, int | None, str, torch.dtype | None]:
     return (
         workload["batch"],
         list(workload["q_lens"]),
@@ -84,6 +88,9 @@ def gqa_prefill_varlen_args(
         workload.get("softcap"),
         workload.get("window_size_left", -1),
         workload.get("window_size_right", -1),
+        workload.get("fuse_rope", False),
+        workload.get("rotary_dim"),
+        workload.get("rope_layout", "neox"),
         torch_dtype(workload["output_dtype"]) if workload.get("output_dtype") else None,
     )
 
@@ -101,6 +108,7 @@ def gqa_prefill_paged_args(
     bool,
     bool,
     int | None,
+    str,
     float | None,
     float | None,
     int,
@@ -126,6 +134,7 @@ def gqa_prefill_paged_args(
         workload.get("is_causal", True),
         workload.get("fuse_rope", False),
         workload.get("rotary_dim"),
+        workload.get("rope_layout", "neox"),
         workload.get("sm_scale"),
         workload.get("softcap"),
         workload.get("window_size_left", -1),

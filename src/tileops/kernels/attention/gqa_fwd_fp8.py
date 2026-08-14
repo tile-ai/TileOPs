@@ -14,6 +14,7 @@ from tileops.kernels.online_softmax import (
 from .call_spec import ATTENTION_DTYPES
 from .fp8_prefill_core import make_native_fp8_prefill_tile_update
 from .packed_prefill import PackedPrefillKernel
+from .prefill_rope import make_prefill_rope_policy
 
 __all__ = ["GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel"]
 NUM_SMS = int(os.environ.get("V2P_NUM_SMS", "132"))
@@ -39,15 +40,23 @@ def _gqa_fwd_fp8_general_kernel(
     window_size_left: int,
     window_size_right: int,
     out_dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
 ) -> Callable:
     """Native-FP8 dense attention for semantic/tail regions outside BN224."""
     groups = heads // heads_kv
     offset = seq_len_kv - seq_len_q
     accum_dtype = "float"
     fp8 = "float8_e4m3fn"
+    if fuse_rope and (rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim):
+        raise ValueError("rotary_dim must be positive, even, and <= dim")
+    if rope_layout not in ("neox", "interleaved"):
+        raise ValueError("rope_layout must be 'neox' or 'interleaved'")
 
     @tilelang.jit(
-        out_idx=[6],
+        out_idx=[8],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=["-O3", "--use_fast_math", "-DENABLE_BF16"],
     )
@@ -56,6 +65,8 @@ def _gqa_fwd_fp8_general_kernel(
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         scale_shape = (batch, heads_kv)
         out_shape = (batch, seq_len_q, heads, dim)
+        rope_cols, paired_dim, rotate = make_prefill_rope_policy(fuse_rope, rotary_dim, rope_layout)
+        rope_shape = (max_position if fuse_rope else 1, rope_cols)
         fp8_tile_update = make_native_fp8_prefill_tile_update(
             is_causal=is_causal,
             softcap=softcap,
@@ -75,6 +86,8 @@ def _gqa_fwd_fp8_general_kernel(
             q_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
             k_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
             v_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
+            cos_table: T.Tensor(rope_shape, out_dtype),  # type: ignore
+            sin_table: T.Tensor(rope_shape, out_dtype),  # type: ignore
             output: T.Tensor(out_shape, out_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(T.ceildiv(seq_len_q, block_m), heads, batch, threads=threads) as (
@@ -98,8 +111,20 @@ def _gqa_fwd_fp8_general_kernel(
                 score_descale = q_scale[bz, kv_head] * k_scale[bz, kv_head]
                 value_descale = v_scale[bz, kv_head]
                 for i, d in T.Parallel(block_m, dim):
-                    if bx * block_m + i < seq_len_q:
-                        q_shared[i, d] = q[bz, bx * block_m + i, by, d]
+                    q_pos = bx * block_m + i
+                    if q_pos < seq_len_q:
+                        if fuse_rope:
+                            paired_d = paired_dim(d)
+                            q_shared[i, d] = rotate(
+                                q[bz, q_pos, by, d],
+                                q[bz, q_pos, by, paired_d],
+                                offset + q_pos,
+                                d,
+                                cos_table,
+                                sin_table,
+                            )
+                        else:
+                            q_shared[i, d] = q[bz, q_pos, by, d]
                     else:
                         q_shared[i, d] = T.cast(0, fp8)
                 T.clear(acc_o)
@@ -128,7 +153,18 @@ def _gqa_fwd_fp8_general_kernel(
                     for j, d in T.Parallel(block_n, dim):
                         kv_pos = k_idx * block_n + j
                         if kv_pos < seq_len_kv:
-                            k_shared[j, d] = k[bz, kv_pos, kv_head, d]
+                            if fuse_rope:
+                                paired_d = paired_dim(d)
+                                k_shared[j, d] = rotate(
+                                    k[bz, kv_pos, kv_head, d],
+                                    k[bz, kv_pos, kv_head, paired_d],
+                                    kv_pos,
+                                    d,
+                                    cos_table,
+                                    sin_table,
+                                )
+                            else:
+                                k_shared[j, d] = k[bz, kv_pos, kv_head, d]
                             v_shared[j, d] = v[bz, kv_pos, kv_head, d]
                         else:
                             k_shared[j, d] = T.cast(0, fp8)
@@ -179,6 +215,10 @@ def _gqa_fwd_fp8_general_wrapped_kernel(
     window_size_left: int,
     window_size_right: int,
     out_dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     block_m: int,
     block_n: int,
     num_stages: int,
@@ -189,6 +229,8 @@ def _gqa_fwd_fp8_general_wrapped_kernel(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
+    rope_cos: torch.Tensor,
+    rope_sin: torch.Tensor,
 ) -> torch.Tensor:
     return _gqa_fwd_fp8_general_kernel(
         batch,
@@ -203,7 +245,11 @@ def _gqa_fwd_fp8_general_wrapped_kernel(
         window_size_left,
         window_size_right,
         out_dtype,
-    )(block_m, block_n, num_stages, threads)(q, k, v, q_scale, k_scale, v_scale)
+        fuse_rope,
+        max_position,
+        rotary_dim,
+        rope_layout,
+    )(block_m, block_n, num_stages, threads)(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
 
 
 @_gqa_fwd_fp8_general_wrapped_kernel.register_fake
@@ -220,6 +266,10 @@ def _(
     window_size_left: int,
     window_size_right: int,
     out_dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     block_m: int,
     block_n: int,
     num_stages: int,
@@ -967,7 +1017,8 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
 
     def _uses_bn224_fast_schedule(self) -> bool:
         return (
-            not self.is_causal
+            not self.fuse_rope
+            and not self.is_causal
             and not (self.window_size_left != -1 or self.window_size_right != -1)
             and self.softcap == 0.0
             and self.max_seqlen_q == self.max_seqlen_kv
@@ -986,6 +1037,8 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         fp8 = getattr(torch, "float8_e4m3fn", None)
         if fp8 is None:
@@ -996,6 +1049,8 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
             )
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires q/k/v descales.")
+        if rope_cos is None or rope_sin is None:
+            raise ValueError("native FP8 prefill requires prepared RoPE or dummy tables")
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         if self._uses_bn224_fast_schedule():
             q_expanded, k_expanded, v_expanded = _expand_fa3_gqa_descales(
@@ -1029,6 +1084,10 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 self.window_size_left,
                 self.window_size_right,
                 self.dtype_str,
+                self.fuse_rope,
+                self.max_position or 1,
+                self.rotary_dim or 0,
+                self.rope_layout,
                 64,
                 64,
                 1,
@@ -1039,5 +1098,7 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 q_scale,
                 k_scale,
                 v_scale,
+                rope_cos,
+                rope_sin,
             )
         return output.reshape(q.shape)

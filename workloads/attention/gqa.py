@@ -350,6 +350,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         fuse_rope: bool = False,
         rotary_dim: int | None = None,
         sm_scale: float | None = None,
+        rope_layout: str = "neox",
         softcap: float | None = None,
         window_size_left: int = -1,
         window_size_right: int = -1,
@@ -368,6 +369,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         self.dtype = dtype
         self.fuse_rope = fuse_rope
         self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
         self.sm_scale = sm_scale
         self.softcap = softcap
         self.window_size_left = window_size_left
@@ -391,6 +393,26 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
     @property
     def max_pages_per_req(self) -> int:
         return (self.max_total_len + self.page_size - 1) // self.page_size
+
+    def rope_tables(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self.fuse_rope:
+            raise RuntimeError("rope_tables() requires fuse_rope=True")
+        rotary_dim = self.dim if self.rotary_dim is None else self.rotary_dim
+        inv_freq = 1.0 / (
+            10000.0
+            ** (torch.arange(0, rotary_dim, 2, device="cuda", dtype=torch.float32) / rotary_dim)
+        )
+        freqs = torch.outer(
+            torch.arange(self.max_total_len, device="cuda", dtype=torch.float32),
+            inv_freq,
+        )
+        table_dtype = (
+            self.output_dtype if self.dtype == getattr(torch, "float8_e4m3fn", None) else self.dtype
+        )
+        return (
+            freqs.cos().to(table_dtype).contiguous(),
+            freqs.sin().to(table_dtype).contiguous(),
+        )
 
     def gen_inputs(
         self,

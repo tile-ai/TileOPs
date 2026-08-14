@@ -111,6 +111,8 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       q_scale: {dtype: "float32"}
       k_scale: {dtype: "float32"}
       v_scale: {dtype: "float32"}
+      rope_cos: {dtype: "float16 | bfloat16"}
+      rope_sin: {dtype: "same_as(rope_cos)"}
     outputs:
       o: {dtype: "float16 | bfloat16"}
     params:
@@ -120,11 +122,14 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
       dtype: {type: torch.dtype, default: null}
+      fuse_rope: {type: bool, default: false}
+      rotary_dim: {type: "int | None", default: null}
+      rope_layout: {type: str, default: neox}
     dtype_combos:
-      - {q: float16, k: float16, v: float16, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
-      - {q: bfloat16, k: bfloat16, v: bfloat16, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
+      - {q: float16, k: float16, v: float16, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: bfloat16, k: bfloat16, v: bfloat16, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
     shape_rules:
       - "q.shape == (B, S_q, H, D)"
       - "k.shape == (B, S_kv, H_kv, D)"
@@ -132,6 +137,9 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       - "q_scale.shape == (B, H_kv)"
       - "k_scale.shape == (B, H_kv)"
       - "v_scale.shape == (B, H_kv)"
+      - "not fuse_rope or rope_cos.shape == rope_sin.shape"
+      - "not fuse_rope or (rope_cos.shape[0] > 0 and ((rotary_dim is None and rope_cos.shape[1] * 2 == D) or (rotary_dim is not None and rope_cos.shape[1] * 2 == rotary_dim)))"
+      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
       - "o.shape == (B, S_q, H, D)"
       - "H % H_kv == 0"
 
@@ -195,15 +203,17 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       cu_seqlens_q: {dtype: "int32"}
       cache_seqlens: {dtype: "int32"}
       block_table: {dtype: "int32"}
+      rope_cos: {dtype: "float16 | bfloat16"}
+      rope_sin: {dtype: "same_as(rope_cos)"}
     outputs:
       o: {dtype: "float16 | bfloat16"}
     dtype_combos:
-      - {q: float16, k_new: float16, v_new: float16, k_pages: float16, v_pages: float16, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: bfloat16, v_pages: bfloat16, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: float16, k_new: float16, v_new: float16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: float8_e4m3fn, k_new: float8_e4m3fn, v_new: float8_e4m3fn, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, o: float16}
-      - {q: float8_e4m3fn, k_new: float8_e4m3fn, v_new: float8_e4m3fn, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, o: bfloat16}
+      - {q: float16, k_new: float16, v_new: float16, k_pages: float16, v_pages: float16, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: bfloat16, v_pages: bfloat16, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
+      - {q: float16, k_new: float16, v_new: float16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
+      - {q: float8_e4m3fn, k_new: float8_e4m3fn, v_new: float8_e4m3fn, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: float8_e4m3fn, k_new: float8_e4m3fn, v_new: float8_e4m3fn, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, q_scale: float32, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
     params:
       max_pages_per_req: {type: int}
       page_size: {type: int}
@@ -219,9 +229,8 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       # Current fused-RoPE kernels require matching FP16/BF16 Q/new-KV/pages;
       # the manifest DSL cannot condition dtype_combos on a boolean parameter.
       fuse_rope: {type: bool, default: false}
-      rope_base: {type: float, default: 10000.0}
-      max_position: {type: "int | None", default: null}
       rotary_dim: {type: "int | None", default: null}
+      rope_layout: {type: str, default: neox}
     shape_rules:
       - "q.shape == (total_q, H, D)"
       - "k_new.shape == (total_q, H_kv, D)"
@@ -241,7 +250,9 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       - "max_seqlen_q > 0"
       - "physical_tokens % page_size == 0"
       - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "max_position is None or max_position > 0"
+      - "not fuse_rope or rope_cos.shape == rope_sin.shape"
+      - "not fuse_rope or (rope_cos.shape[0] > 0 and ((rotary_dim is None and rope_cos.shape[1] * 2 == D) or (rotary_dim is not None and rope_cos.shape[1] * 2 == rotary_dim)))"
+      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
 
   workloads:
     - {total_q: 8192, batch: 8, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64"}
@@ -532,13 +543,15 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
       q_scale: {dtype: "float32"}
       k_scale: {dtype: "float32"}
       v_scale: {dtype: "float32"}
+      rope_cos: {dtype: "float16 | bfloat16"}
+      rope_sin: {dtype: "same_as(rope_cos)"}
     outputs:
       o: {dtype: "float16 | bfloat16"}
     dtype_combos:
-      - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
-      - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
+      - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: float16, rope_sin: float16, o: float16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, rope_cos: bfloat16, rope_sin: bfloat16, o: bfloat16}
     params:
       is_causal: {type: bool, default: true}
       sm_scale: {type: float, default: null}
@@ -548,6 +561,9 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
       dtype: {type: "dtype | None", default: null}
       max_seqlen_q: {type: int}
       max_seqlen_kv: {type: int}
+      fuse_rope: {type: bool, default: false}
+      rotary_dim: {type: "int | None", default: null}
+      rope_layout: {type: str, default: neox}
     shape_rules:
       - "q.shape == (total_q, H, D)"
       - "k.shape == (total_k, H_kv, D)"
@@ -557,6 +573,9 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
       - "q_scale.shape == (B, H_kv)"
       - "k_scale.shape == (B, H_kv)"
       - "v_scale.shape == (B, H_kv)"
+      - "not fuse_rope or rope_cos.shape == rope_sin.shape"
+      - "not fuse_rope or (rope_cos.shape[0] > 0 and ((rotary_dim is None and rope_cos.shape[1] * 2 == D) or (rotary_dim is not None and rope_cos.shape[1] * 2 == rotary_dim)))"
+      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
       - "o.shape == (total_q, H, D)"
       - "H % H_kv == 0"
 

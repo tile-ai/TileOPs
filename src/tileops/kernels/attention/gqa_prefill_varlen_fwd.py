@@ -27,6 +27,7 @@ from tileops.kernels.online_softmax import (
 from .fp8_prefill_core import make_native_fp8_prefill_tile_update
 from .packed_prefill import PackedPrefillKernel
 from .prefill_mask import make_bottom_right_attention_mask
+from .prefill_rope import make_prefill_rope_policy
 
 __all__ = [
     "GQAPrefillVarlenFP8TensorCoreFwdKernel",
@@ -49,6 +50,10 @@ def _gqa_prefill_varlen_fwd_kernel(
     window_size_right: int = -1,
     input_dtype: str = "float16",
     output_dtype: str = "float16",
+    fuse_rope: bool = False,
+    max_position: int = 1,
+    rotary_dim: int = 0,
+    rope_layout: str = "neox",
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -56,11 +61,17 @@ def _gqa_prefill_varlen_fwd_kernel(
     softmax_scale = LOG2E if native_fp8 or use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
+    if fuse_rope and (
+        rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim
+    ):
+        raise ValueError("rotary_dim must be positive, even, and <= dim")
+    if rope_layout not in ("neox", "interleaved"):
+        raise ValueError("rope_layout must be 'neox' or 'interleaved'")
     groups = heads // heads_kv
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[10, 11],
+        out_idx=[12, 13],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -72,6 +83,9 @@ def _gqa_prefill_varlen_fwd_kernel(
         q_shape = (total_q, heads, dim)
         kv_shape = (total_kv, heads_kv, dim)
         scale_shape = (batch, heads_kv)
+        rope_cols, paired_dim, rotate = make_prefill_rope_policy(
+            fuse_rope, rotary_dim, rope_layout)
+        rope_shape = (max_position if fuse_rope else 1, rope_cols)
         online_softmax = make_online_softmax_with_mask_guard(
             softmax_scale, accum_dtype, block_m, block_n
         )
@@ -125,6 +139,8 @@ def _gqa_prefill_varlen_fwd_kernel(
             q_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
             k_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
             v_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
+            cos_table: T.Tensor(rope_shape, output_dtype),  # type: ignore
+            sin_table: T.Tensor(rope_shape, output_dtype),  # type: ignore
             max_seqlen_q: T.int32,  # type: ignore
             max_seqlen_kv: T.int32,  # type: ignore
             output: T.Tensor(q_shape, output_dtype),  # type: ignore
@@ -164,7 +180,19 @@ def _gqa_prefill_varlen_fwd_kernel(
                 score_descale = q_scale[bz, cur_kv_head] * k_scale[bz, cur_kv_head]
                 value_descale = v_scale[bz, cur_kv_head]
 
-                if (bx + 1) * block_m <= q_len:
+                if fuse_rope:
+                    for i, d in T.Parallel(block_m, dim):
+                        q_pos = bx * block_m + i
+                        if q_pos < q_len:
+                            paired_d = paired_dim(d)
+                            value = q[q_start + q_pos, by, d]
+                            paired_value = q[q_start + q_pos, by, paired_d]
+                            q_shared[i, d] = rotate(
+                                value, paired_value, causal_offset + q_pos, d,
+                                cos_table, sin_table)
+                        else:
+                            q_shared[i, d] = T.cast(0, input_dtype)
+                elif (bx + 1) * block_m <= q_len:
                     T.copy(
                         q[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
                         q_shared,
@@ -205,7 +233,21 @@ def _gqa_prefill_varlen_fwd_kernel(
                     k_idx = k_start + k_offset
                     tile_start = k_idx * block_n
                     tile_end = (k_idx + 1) * block_n
-                    if tile_end <= kv_len:
+                    if fuse_rope:
+                        for j, d in T.Parallel(block_n, dim):
+                            kv_pos = tile_start + j
+                            if kv_pos < kv_len:
+                                paired_d = paired_dim(d)
+                                value = k[kv_start + kv_pos, cur_kv_head, d]
+                                paired_value = k[kv_start + kv_pos, cur_kv_head, paired_d]
+                                k_shared[j, d] = rotate(
+                                    value, paired_value, kv_pos, d,
+                                    cos_table, sin_table)
+                                v_shared[j, d] = v[kv_start + kv_pos, cur_kv_head, d]
+                            else:
+                                k_shared[j, d] = T.cast(0, input_dtype)
+                                v_shared[j, d] = T.cast(0, input_dtype)
+                    elif tile_end <= kv_len:
                         T.copy(
                             k[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
                             k_shared,
@@ -333,6 +375,10 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
     window_size_right: int,
     input_dtype: str,
     output_dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     block_m: int,
     block_n: int,
     num_stages: int,
@@ -347,6 +393,8 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
+    rope_cos: torch.Tensor,
+    rope_sin: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _gqa_prefill_varlen_fwd_kernel(
         batch,
@@ -362,6 +410,10 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
         window_size_right,
         input_dtype,
         output_dtype,
+        fuse_rope,
+        max_position,
+        rotary_dim,
+        rope_layout,
     )(block_m, block_n, num_stages, threads)(
         q,
         k,
@@ -371,6 +423,8 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
         q_scale,
         k_scale,
         v_scale,
+        rope_cos,
+        rope_sin,
         max_seqlen_q,
         max_seqlen_kv,
     )
@@ -391,6 +445,10 @@ def _(
     window_size_right: int,
     input_dtype: str,
     output_dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     block_m: int,
     block_n: int,
     num_stages: int,
@@ -405,6 +463,8 @@ def _(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
+    rope_cos: torch.Tensor,
+    rope_sin: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     dtype = torch.float16 if output_dtype == "float16" else torch.bfloat16
     fake_o = torch.empty([total_q, heads, dim], dtype=dtype, device=q.device)
@@ -461,9 +521,13 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("packed prefill requires resolved q/k/v scale tensors")
+        if rope_cos is None or rope_sin is None:
+            raise ValueError("packed prefill requires prepared RoPE or dummy tables")
         total_q, total_kv = q.shape[0], k.shape[0]
         output, _ = _gqa_prefill_varlen_fwd_wrapped_kernel(
             self.batch,
@@ -479,6 +543,10 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
             self.window_size_right,
             self.input_dtype_str,
             self.dtype_str,
+            self.fuse_rope,
+            self.max_position or 1,
+            self.rotary_dim or 0,
+            self.rope_layout,
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
@@ -493,6 +561,8 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
             q_scale,
             k_scale,
             v_scale,
+            rope_cos,
+            rope_sin,
         )
         return output
 

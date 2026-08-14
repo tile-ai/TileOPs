@@ -316,6 +316,8 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(PackedPrefillKernel):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         output, _ = _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(

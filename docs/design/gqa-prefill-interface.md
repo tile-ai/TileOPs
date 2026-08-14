@@ -35,11 +35,12 @@ They do not create additional public Ops.
 
 ## Public interfaces
 
-Dense and Varlen accept Q/K in the representation attention should consume;
-RoPE, when required, is applied by their caller. Paged additionally supports
-fused RoPE because the Op owns KV-cache persistence and must define whether the
-stored K is rotated. This topology-specific transformation does not create a
-fourth Op or a separate manifest dispatch role.
+Dense, Varlen, and Paged all expose the same optional fused-RoPE semantics.
+Callers provide prepared cosine and sine tables so model-specific frequency
+scaling (Llama 3, YaRN, LongRoPE, and similar policies) stays outside the
+attention Op. Paged additionally owns KV-cache persistence and therefore
+defines whether the stored K is rotated. RoPE does not create a fourth Op or a
+separate manifest dispatch role.
 
 The common semantic parameters are:
 
@@ -50,6 +51,9 @@ softcap: float | None = None
 window_size_left: int = -1
 window_size_right: int = -1
 dtype: torch.dtype
+fuse_rope: bool = False
+rotary_dim: int | None = None
+rope_layout: str = "neox"
 ```
 
 The three forward interfaces are:
@@ -58,12 +62,14 @@ The three forward interfaces are:
 Dense.forward(
     q, k, v,                         # BSHD
     q_scale, k_scale, v_scale,
+    rope_cos=None, rope_sin=None,
 ) -> o
 
 Varlen.forward(
     q, k, v,                         # packed THD
     cu_seqlens_q, cu_seqlens_kv,
     q_scale, k_scale, v_scale,
+    rope_cos=None, rope_sin=None,
 ) -> o
 
 Paged.forward(
@@ -71,13 +77,18 @@ Paged.forward(
     k_pages, v_pages,
     q_scale, k_scale, v_scale,
     cu_seqlens_q, cache_seqlens, block_table,
+    rope_cos=None, rope_sin=None,
 ) -> o
 ```
 
 Dense derives K positions from `0..Skv-1` and bottom-right-aligns Q positions.
 Varlen applies the same rule independently within every packed request. Paged
-assumes existing cached K is already in the attention representation and uses
-`cache_seqlens[b] + local_position` for Q and `k_new`.
+assumes existing cached K is already rotated when fused RoPE is enabled and
+uses `cache_seqlens[b] + local_position` for Q and `k_new`.
+
+`rope_layout="neox"` pairs the first and second halves of the rotary channels;
+`rope_layout="interleaved"` pairs adjacent even/odd channels. The layout is an
+explicit semantic choice and part of kernel dispatch and caching.
 
 ## Common attention semantics
 
@@ -154,6 +165,8 @@ v        [B, Skv, Hkv, D]
 q_scale  [B, Hkv]
 k_scale  [B, Hkv]
 v_scale  [B, Hkv]
+rope_cos [max_position, rotary_dim / 2]
+rope_sin [max_position, rotary_dim / 2]
 ```
 
 ### Varlen prefill
@@ -167,6 +180,8 @@ cu_seqlens_kv     [B + 1]
 q_scale           [B, Hkv]
 k_scale           [B, Hkv]
 v_scale           [B, Hkv]
+rope_cos          [max_position, rotary_dim / 2]
+rope_sin          [max_position, rotary_dim / 2]
 ```
 
 ### Paged prefill
@@ -183,6 +198,8 @@ v_scale           [B, Hkv]
 cu_seqlens_q      [B + 1]
 cache_seqlens     [B]
 block_table       [B, max_pages_per_request]
+rope_cos          [max_position, rotary_dim / 2]
+rope_sin          [max_position, rotary_dim / 2]
 ```
 
 ## Paged state mutation and fused transformations
@@ -193,9 +210,8 @@ semantic parameter:
 ```text
 append_kv: bool = True
 fuse_rope: bool = False
-rope_base: float = 10000.0
-max_position: int | None = None
 rotary_dim: int | None = None
+rope_layout: str = "neox"
 ```
 
 `k_new` and `v_new` always participate as the current logical suffix of the

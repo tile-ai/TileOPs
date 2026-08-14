@@ -121,6 +121,7 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     [
         pytest.param({}, id="fp8-causal"),
         pytest.param({"is_causal": False, "window_size_left": 128}, id="fp8-window"),
+        pytest.param({"fuse_rope": True, "rotary_dim": 64}, id="fp8-rope"),
     ],
 )
 def test_dense_fp8_semantics_use_the_native_tensor_core_family(ctor: dict) -> None:
@@ -167,6 +168,33 @@ def test_varlen_window_falls_back_to_general_kernel_before_sm90() -> None:
     sm80 = type(call)(**{**call.__dict__, "arch": 80})
 
     assert op.select_kernel_key(VARLEN_PREFILL_KEYS, sm80) == ("gqa_prefill_varlen_fwd_kernel")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("dtype", "expected"),
+    [
+        pytest.param(torch.float16, "gqa_prefill_varlen_fwd_kernel", id="fp16-rope"),
+        pytest.param(
+            torch.float8_e4m3fn, "gqa_prefill_varlen_fp8_tensor_core_fwd_kernel", id="fp8-rope"
+        ),
+    ],
+)
+def test_varlen_rope_dispatch(dtype: torch.dtype, expected: str) -> None:
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch=2,
+        heads=8,
+        heads_kv=2,
+        dim=128,
+        max_seqlen_q=64,
+        max_seqlen_kv=128,
+        dtype=torch.float16 if dtype == torch.float8_e4m3fn else None,
+        fuse_rope=True,
+        rotary_dim=64,
+        rope_layout="interleaved",
+    )
+    call = op.attention_call(dtype, max_position=128)
+    assert op.select_kernel_key(VARLEN_PREFILL_KEYS, call) == expected
 
 
 @pytest.mark.smoke
@@ -226,9 +254,14 @@ def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expe
     [
         pytest.param({}, "gqa_prefill_paged_with_kv_cache_fwd_kernel", id="plain-cache"),
         pytest.param(
-            {"fuse_rope": True, "max_position": 4096},
+            {"fuse_rope": True},
             "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel",
-            id="fused-rope",
+            id="fused-rope-neox",
+        ),
+        pytest.param(
+            {"fuse_rope": True, "rope_layout": "interleaved"},
+            "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel",
+            id="fused-rope-interleaved",
         ),
     ],
 )
@@ -241,15 +274,20 @@ def test_paged_prefill_dispatch_is_unchanged(ctor: dict, expected: str) -> None:
         "max_pages_per_req": 8,
         "page_size": 256,
         "dim": 128,
+        "max_seqlen_q": 128,
     }
     kwargs.update(ctor)
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(**kwargs)
-    candidate = op.select_kernel_key(PAGED_PREFILL_KEYS, op.attention_call(torch.float16))
+    max_position = 4096 if op.fuse_rope else None
+    candidate = op.select_kernel_key(
+        PAGED_PREFILL_KEYS, op.attention_call(torch.float16, max_position)
+    )
     assert candidate == expected
 
 
 @pytest.mark.smoke
-def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
+@pytest.mark.parametrize("fuse_rope", [False, True], ids=["plain", "rope"])
+def test_paged_prefill_fp8_cache_dispatch_is_unchanged(fuse_rope: bool) -> None:
     """An FP8 KV cache still selects the FP8-cache kernel."""
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("this torch build has no float8_e4m3fn")
@@ -260,10 +298,36 @@ def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
         max_pages_per_req=8,
         page_size=256,
         dim=128,
+        max_seqlen_q=128,
+        fuse_rope=fuse_rope,
+        rotary_dim=64 if fuse_rope else None,
         cache_dtype=torch.float8_e4m3fn,
     )
-    candidate = op.select_kernel_key(PAGED_PREFILL_KEYS, op.attention_call(torch.float16))
+    candidate = op.select_kernel_key(
+        PAGED_PREFILL_KEYS, op.attention_call(torch.float16, 4096 if fuse_rope else None)
+    )
     assert candidate == "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel"
+
+
+@pytest.mark.smoke
+def test_paged_prefill_native_fp8_rope_dispatch() -> None:
+    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+        batch=2,
+        heads=32,
+        heads_kv=8,
+        max_pages_per_req=8,
+        page_size=256,
+        dim=128,
+        max_seqlen_q=128,
+        cache_dtype=torch.float8_e4m3fn,
+        dtype=torch.float16,
+        fuse_rope=True,
+        rotary_dim=64,
+    )
+    candidate = op.select_kernel_key(
+        PAGED_PREFILL_KEYS, op.attention_call(torch.float8_e4m3fn, 4096)
+    )
+    assert candidate == "gqa_prefill_paged_native_fp8_tensor_core_fwd_kernel"
 
 
 @pytest.mark.smoke
@@ -276,6 +340,7 @@ def test_paged_prefill_semantic_policies_reach_the_kernel_call() -> None:
         max_pages_per_req=8,
         page_size=256,
         dim=128,
+        max_seqlen_q=128,
         is_causal=False,
         window_size_left=64,
         window_size_right=8,

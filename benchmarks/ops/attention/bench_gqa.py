@@ -254,7 +254,7 @@ _GQA_FWD_BENCH_PARAMS = manifest_params(
 
 @pytest.mark.parametrize(
     "batch, seq_len, seq_len_kv, heads, heads_kv, dim, causal, sm_scale, softcap, "
-    "window_size_left, window_size_right, dtype, tune",
+    "window_size_left, window_size_right, fuse_rope, rotary_dim, rope_layout, dtype, tune",
     _GQA_FWD_BENCH_PARAMS,
 )
 def test_gqa_fwd_bench(
@@ -269,6 +269,9 @@ def test_gqa_fwd_bench(
     softcap: Optional[float],
     window_size_left: int,
     window_size_right: int,
+    fuse_rope: bool,
+    rotary_dim: Optional[int],
+    rope_layout: str,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -300,6 +303,9 @@ def test_gqa_fwd_bench(
         window_size_left,
         window_size_right,
         seq_len_kv=seq_len_kv,
+        fuse_rope=fuse_rope,
+        rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
         tune=tune,
     )
     bm = ManifestBenchmark(_GQA_FWD_OP, op, test)
@@ -366,7 +372,8 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = manifest_params(
 
 @pytest.mark.parametrize(
     "batch, q_lens, kv_lens, heads, heads_kv, dim, causal, sm_scale, softcap, "
-    "window_size_left, window_size_right, output_dtype, dtype, tune",
+    "window_size_left, window_size_right, fuse_rope, rotary_dim, rope_layout, "
+    "output_dtype, dtype, tune",
     _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS,
 )
 def test_gqa_prefill_varlen_fwd_bench(
@@ -381,6 +388,9 @@ def test_gqa_prefill_varlen_fwd_bench(
     softcap: Optional[float],
     window_size_left: int,
     window_size_right: int,
+    fuse_rope: bool,
+    rotary_dim: Optional[int],
+    rope_layout: str,
     output_dtype: Optional[torch.dtype],
     dtype: torch.dtype,
     tune: bool,
@@ -416,6 +426,9 @@ def test_gqa_prefill_varlen_fwd_bench(
         window_size_right,
         dtype=output_dtype,
         tune=tune,
+        fuse_rope=fuse_rope,
+        rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
     )
     bm = ManifestBenchmark("GroupedQueryAttentionPrefillVarlenFwdOp", op, test)
 
@@ -469,7 +482,6 @@ def _fp8_paged_cache_inputs(
         cu_seqlens_q,
         cache_seqlens,
         block_table,
-        max_seqlen_q,
     )
 
 
@@ -482,7 +494,7 @@ _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
 
 @pytest.mark.parametrize(
     "batch, q_lens, cache_lens, heads, heads_kv, page_size, dim, causal, fuse_rope, "
-    "rotary_dim, sm_scale, softcap, window_size_left, window_size_right, append_kv, "
+    "rotary_dim, rope_layout, sm_scale, softcap, window_size_left, window_size_right, append_kv, "
     "cache_dtype, output_dtype, dtype, tune",
     _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS,
 )
@@ -497,6 +509,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     causal: bool,
     fuse_rope: bool,
     rotary_dim: Optional[int],
+    rope_layout: str,
     sm_scale: Optional[float],
     softcap: Optional[float],
     window_size_left: int,
@@ -508,10 +521,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     tune: bool,
 ) -> None:
     fp8_dtype = getattr(torch, "float8_e4m3fn", None)
-    if cache_dtype == fp8_dtype and fp8_dtype is not None:
-        if fuse_rope or rotary_dim is not None:
-            pytest.skip("FP8 paged KV cache benchmark does not support fused RoPE")
-    elif cache_dtype is not None and fp8_dtype is None:
+    if cache_dtype is not None and fp8_dtype is None:
         pytest.skip("torch fp8 is unavailable")
     test = GQAPrefillPagedWithKVCacheFwdWorkload(
         batch,
@@ -525,6 +535,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         dtype,
         fuse_rope=fuse_rope,
         rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
         sm_scale=sm_scale,
         softcap=softcap,
         window_size_left=window_size_left,
@@ -563,8 +574,9 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max_seqlen_q,
         )
+    if fuse_rope:
+        inputs = (*inputs, *test.rope_tables())
 
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
@@ -573,6 +585,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         max_pages_per_req=test.max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=test.max_seqlen_q,
         is_causal=causal,
         cache_dtype=cache_dtype,
         sm_scale=sm_scale,
@@ -583,8 +596,8 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         dtype=output_dtype,
         tune=tune,
         fuse_rope=fuse_rope,
-        max_position=test.max_total_len if fuse_rope else None,
         rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
     )
     op.total_q = test.total_q
     op.q_lens = q_lens

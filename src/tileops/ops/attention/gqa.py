@@ -26,7 +26,6 @@ from tileops.kernels.attention import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ..rope import _base_freqs
 from .selection import (
     DECODE_KEYS,
     DENSE_PREFILL_KEYS,
@@ -36,6 +35,8 @@ from .selection import (
     AttentionCall,
     fp8_dtype,
 )
+
+_ROPE_LAYOUTS = frozenset(("neox", "interleaved"))
 
 __all__ = [
     "GroupedQueryAttentionBwdOp",
@@ -96,6 +97,80 @@ def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     if rotary_dim > dim:
         raise ValueError("rotary_dim must not exceed dim")
     return rotary_dim
+
+
+def _validate_rope_config(
+    dim: int,
+    fuse_rope: bool,
+    rotary_dim: Optional[int],
+    rope_layout: str,
+) -> Optional[int]:
+    """Validate static RoPE semantics shared by every prefill topology."""
+    if rope_layout not in _ROPE_LAYOUTS:
+        raise ValueError(f"rope_layout must be one of {sorted(_ROPE_LAYOUTS)}, got {rope_layout!r}")
+    if fuse_rope:
+        return _rope_rotary_dim(dim, rotary_dim)
+    if rotary_dim is not None:
+        raise ValueError("rotary_dim requires fuse_rope=True")
+    return None
+
+
+def _resolve_rope_tables(
+    dummy_cache: Dict[tuple[torch.device, torch.dtype], torch.Tensor],
+    reference: torch.Tensor,
+    *,
+    fuse_rope: bool,
+    rotary_dim: Optional[int],
+    table_dtype: Optional[torch.dtype] = None,
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor, Optional[int]]:
+    """Normalize the optional public RoPE operands to the fixed kernel ABI."""
+    table_dtype = reference.dtype if table_dtype is None else table_dtype
+    if not fuse_rope:
+        if rope_cos is not None or rope_sin is not None:
+            raise ValueError("rope_cos and rope_sin require fuse_rope=True")
+        key = (reference.device, table_dtype)
+        dummy = dummy_cache.get(key)
+        if dummy is None:
+            dummy = torch.empty((1, 1), device=reference.device, dtype=table_dtype)
+            dummy_cache[key] = dummy
+        return dummy, dummy, None
+
+    if rope_cos is None or rope_sin is None:
+        raise ValueError("fuse_rope=True requires both rope_cos and rope_sin")
+    assert rotary_dim is not None
+    if rope_cos.device != reference.device or rope_sin.device != reference.device:
+        raise ValueError("rope_cos and rope_sin must be on the same device as q")
+    if rope_cos.dtype != table_dtype or rope_sin.dtype != table_dtype:
+        raise ValueError(
+            f"rope_cos and rope_sin must have the attention output dtype ({table_dtype})"
+        )
+    if not rope_cos.is_contiguous() or not rope_sin.is_contiguous():
+        raise ValueError("rope_cos and rope_sin must be contiguous")
+    if rope_cos.ndim != 2 or rope_sin.ndim != 2:
+        raise ValueError("rope_cos and rope_sin must be rank-2 tensors")
+    if rope_cos.shape != rope_sin.shape:
+        raise ValueError("rope_cos and rope_sin must have the same shape")
+    expected_cols = rotary_dim // 2
+    if rope_cos.shape[0] <= 0 or rope_cos.shape[1] != expected_cols:
+        raise ValueError(
+            "rope_cos and rope_sin must have shape "
+            f"[max_position, {expected_cols}], got {tuple(rope_cos.shape)}"
+        )
+    return rope_cos, rope_sin, int(rope_cos.shape[0])
+
+
+def _rope_specialized_cache_key(
+    base_key: object,
+    call: AttentionCall,
+) -> object:
+    """Extend a kernel cache key only when RoPE changes generated code."""
+    if not call.fuse_rope:
+        return base_key
+    if isinstance(base_key, tuple):
+        return (*base_key, call.max_position, call.rotary_dim, call.rope_layout)
+    return (base_key, call.max_position, call.rotary_dim, call.rope_layout)
 
 
 def _resolve_group_scales(
@@ -161,6 +236,10 @@ def _build_packed_prefill_kernel(
         softcap=call.softcap,
         window_size_left=call.window_size_left,
         window_size_right=call.window_size_right,
+        fuse_rope=call.fuse_rope,
+        max_position=call.max_position,
+        rotary_dim=call.rotary_dim,
+        rope_layout=call.rope_layout,
         accum_dtype=call.accum_dtype,
         tune=call.tune,
     )
@@ -185,6 +264,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         seq_len_kv: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        fuse_rope: bool = False,
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
     ) -> None:
         # Nothing downstream validates these: this op builds its kernel itself,
         # so a zero heads_kv would surface as ZeroDivisionError inside a region.
@@ -208,6 +290,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
+        self.fuse_rope = fuse_rope
+        self.rotary_dim = _validate_rope_config(dim, fuse_rope, rotary_dim, rope_layout)
+        self.rope_layout = rope_layout
         if dtype is not None:
             _validate_attention_dtype(dtype)
         self.output_dtype = dtype
@@ -218,6 +303,7 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         # every other, and a fixed-shape request supplies its ranges.
         self._cu_seqlens: Dict[tuple[torch.device, int], torch.Tensor] = {}
         self._identity_scales: Dict[torch.device, torch.Tensor] = {}
+        self._rope_dummy_cache: Dict[tuple[torch.device, torch.dtype], torch.Tensor] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -229,7 +315,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
-    def attention_call(self, dtype: torch.dtype) -> AttentionCall:
+    def attention_call(
+        self, dtype: torch.dtype, max_position: Optional[int] = None
+    ) -> AttentionCall:
         """State what one fixed-shape call is: a uniform dense packed request."""
         is_fp8 = fp8_dtype() is not None and dtype == fp8_dtype()
         output_dtype = self.output_dtype
@@ -252,20 +340,28 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             window_size_right=self.window_size_right,
             is_fp8=is_fp8,
             is_uniform=True,
+            fuse_rope=self.fuse_rope,
+            max_position=max_position,
+            rotary_dim=self.rotary_dim,
+            rope_layout=self.rope_layout,
             tune=self.tune,
         )
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, dtype: torch.dtype, max_position: Optional[int] = None) -> Kernel:
         """The dense prefill implementation this wrapper's calls land on."""
         if dtype != fp8_dtype():
             _validate_attention_dtype(dtype)
-        call = self.attention_call(dtype)
+        call = self.attention_call(dtype, max_position)
         key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
 
         def build() -> Kernel:
             return _build_packed_prefill_kernel(self.kernel_map, key, call)
 
-        return self.get_or_build_kernel(key, key=(dtype, call.dtype), build=build)
+        cache_key = _rope_specialized_cache_key(
+            (dtype, call.dtype),
+            call,
+        )
+        return self.get_or_build_kernel(key, key=cache_key, build=build)
 
     def _uniform_cu_seqlens(self, device: torch.device, seq_len: int) -> torch.Tensor:
         cache_key = (device, seq_len)
@@ -301,6 +397,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         q_scale_shape: Optional[tuple[int, ...]] = None,
         k_scale_shape: Optional[tuple[int, ...]] = None,
         v_scale_shape: Optional[tuple[int, ...]] = None,
+        rope_cos_shape: Optional[tuple[int, ...]] = None,
+        rope_sin_shape: Optional[tuple[int, ...]] = None,
     ) -> Dict[str, tuple[int, ...]]:
         return {"o": tuple(q_shape)}
 
@@ -312,6 +410,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run fixed-shape GQA prefill."""
         expected_q = (self.batch, self.seq_len, self.heads, self.dim)
@@ -330,6 +430,15 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             if self.output_dtype is not None and self.output_dtype != q.dtype:
                 raise ValueError("16-bit prefill output dtype must match q/k/v dtype")
         q_scale, k_scale, v_scale = self._scales_or_identity(q, q_scale, k_scale, v_scale)
+        rope_cos, rope_sin, max_position = _resolve_rope_tables(
+            self._rope_dummy_cache,
+            q,
+            fuse_rope=self.fuse_rope,
+            rotary_dim=self.rotary_dim,
+            table_dtype=self.output_dtype or q.dtype,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
+        )
 
         q = q.contiguous()
         k = k.contiguous()
@@ -341,7 +450,7 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         # tensors to a kernel whose signature is packed.
         cu_seqlens_q = self._uniform_cu_seqlens(q.device, self.seq_len)
         cu_seqlens_kv = self._uniform_cu_seqlens(q.device, self.seq_len_kv)
-        output = self._get_kernel(q.dtype)(
+        output = self._get_kernel(q.dtype, max_position)(
             q.view(-1, self.heads, self.dim),
             k.view(-1, self.heads_kv, self.dim),
             v.view(-1, self.heads_kv, self.dim),
@@ -350,6 +459,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             q_scale,
             k_scale,
             v_scale,
+            rope_cos,
+            rope_sin,
         )
         return output.view(q.shape)
 
@@ -380,6 +491,9 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         validate_inputs: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        fuse_rope: bool = False,
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
@@ -398,17 +512,23 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
+        self.fuse_rope = fuse_rope
+        self.rotary_dim = _validate_rope_config(dim, fuse_rope, rotary_dim, rope_layout)
+        self.rope_layout = rope_layout
         if dtype is not None:
             _validate_attention_dtype(dtype)
         self.output_dtype = dtype
         self.validate_inputs = validate_inputs
         self._roofline_kwargs = None
         self._identity_scales: Dict[torch.device, torch.Tensor] = {}
+        self._rope_dummy_cache: Dict[tuple[torch.device, torch.dtype], torch.Tensor] = {}
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def attention_call(self, input_dtype: torch.dtype) -> AttentionCall:
+    def attention_call(
+        self, input_dtype: torch.dtype, max_position: Optional[int] = None
+    ) -> AttentionCall:
         """Describe a packed Varlen call without inspecting range values."""
         is_fp8 = fp8_dtype() is not None and input_dtype == fp8_dtype()
         output_dtype = self.output_dtype
@@ -431,19 +551,27 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             window_size_right=self.window_size_right,
             is_fp8=is_fp8,
             is_uniform=False,
+            fuse_rope=self.fuse_rope,
+            max_position=max_position,
+            rotary_dim=self.rotary_dim,
+            rope_layout=self.rope_layout,
             tune=self.tune,
         )
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, dtype: torch.dtype, max_position: Optional[int] = None) -> Kernel:
         if dtype != fp8_dtype():
             _validate_attention_dtype(dtype)
-        call = self.attention_call(dtype)
+        call = self.attention_call(dtype, max_position)
         key = self.select_kernel_key(VARLEN_PREFILL_KEYS, call)
 
         def build() -> Kernel:
             return _build_packed_prefill_kernel(self.kernel_map, key, call)
 
-        return self.get_or_build_kernel(key, key=(dtype, call.dtype), build=build)
+        cache_key = _rope_specialized_cache_key(
+            (dtype, call.dtype),
+            call,
+        )
+        return self.get_or_build_kernel(key, key=cache_key, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -572,6 +700,8 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
         q_scale, k_scale, v_scale = _resolve_group_scales(
@@ -584,9 +714,27 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             v_scale,
             required=q.dtype == fp8_dtype(),
         )
+        rope_cos, rope_sin, max_position = _resolve_rope_tables(
+            self._rope_dummy_cache,
+            q,
+            fuse_rope=self.fuse_rope,
+            rotary_dim=self.rotary_dim,
+            table_dtype=self.output_dtype or q.dtype,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
+        )
         self.dtype = q.dtype
-        output = self._get_kernel(q.dtype)(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
+        output = self._get_kernel(q.dtype, max_position)(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
         )
         self._roofline_kwargs = {
             "q_shape": tuple(q.shape),
@@ -633,6 +781,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         max_pages_per_req: int,
         page_size: int,
         dim: int,
+        max_seqlen_q: int,
         is_causal: bool = True,
         cache_dtype: Optional[torch.dtype] = None,
         dtype: Optional[torch.dtype] = None,
@@ -645,25 +794,20 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
         fuse_rope: bool = False,
-        rope_base: float = 10000.0,
-        max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        if fuse_rope:
-            rotary_dim = _rope_rotary_dim(dim, rotary_dim)
-            if max_position is None:
-                raise ValueError("max_position is required when fuse_rope=True")
-            _validate_positive(max_position=max_position)
-        elif rotary_dim is not None:
-            raise ValueError("rotary_dim requires fuse_rope=True")
-        _validate_positive(batch=batch, max_pages_per_req=max_pages_per_req, page_size=page_size)
+        rotary_dim = _validate_rope_config(dim, fuse_rope, rotary_dim, rope_layout)
+        _validate_positive(
+            batch=batch,
+            max_pages_per_req=max_pages_per_req,
+            page_size=page_size,
+            max_seqlen_q=max_seqlen_q,
+        )
         if page_size & (page_size - 1) != 0:
             raise ValueError("page_size must be a power of two")
         cache_dtype = _paged_cache_dtype(cache_dtype)
-        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
-        if fuse_rope and cache_dtype == fp8_dtype:
-            raise ValueError("fuse_rope is not supported with FP8 paged KV cache yet")
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -672,6 +816,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         self.page_size = page_size
         self.max_cache_len = max_pages_per_req * page_size
         self.dim = dim
+        self.max_seqlen_q = max_seqlen_q
         self.is_causal = is_causal
         # None means the cache holds whatever element type forward is given.
         self.cache_dtype = cache_dtype
@@ -691,12 +836,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         self.append_kv = append_kv
         self.validate_inputs = validate_inputs
         self.fuse_rope = fuse_rope
-        self.rope_base = rope_base
-        self.max_position = max_position
         self.rotary_dim = rotary_dim
-        self._rope_cos_cache: Dict[
-            tuple[torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]
-        ] = {}
+        self.rope_layout = rope_layout
         self._rope_dummy_cache: Dict[tuple[torch.device, torch.dtype], torch.Tensor] = {}
         self._identity_scales: Dict[torch.device, torch.Tensor] = {}
 
@@ -716,7 +857,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         """Cache element type for an attention element type of *dtype*."""
         return dtype if self.cache_dtype is None else self.cache_dtype
 
-    def attention_call(self, input_dtype: torch.dtype) -> AttentionCall:
+    def attention_call(
+        self, input_dtype: torch.dtype, max_position: Optional[int] = None
+    ) -> AttentionCall:
         """State what one paged prefill call is, for selection to filter against."""
         is_fp8 = fp8_dtype() is not None and input_dtype == fp8_dtype()
         output_dtype = self.output_dtype
@@ -730,6 +873,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             heads=self.heads,
             heads_kv=self.heads_kv,
             dim=self.dim,
+            max_seqlen_q=self.max_seqlen_q,
             max_pages_per_req=self.max_pages_per_req,
             page_size=self.page_size,
             is_causal=self.is_causal,
@@ -741,8 +885,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cache_dtype=self._resolved_cache_dtype(input_dtype),
             append_kv=self.append_kv,
             fuse_rope=self.fuse_rope,
-            max_position=self.max_position,
+            max_position=max_position,
             rotary_dim=self.rotary_dim,
+            rope_layout=self.rope_layout,
             tune=self.tune,
         )
 
@@ -768,23 +913,15 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
                 window_size_left=call.window_size_left,
                 window_size_right=call.window_size_right,
                 append_kv=call.append_kv,
+                fuse_rope=call.fuse_rope,
                 max_position=call.max_position,
                 rotary_dim=call.rotary_dim,
+                rope_layout=call.rope_layout,
                 tune=call.tune,
             )
 
-        return self.get_or_build_kernel(key, key=call.dtype, build=build)
-
-    def _rope_tables(self, device: torch.device, dtype: torch.dtype):
-        """Return real RoPE tables or one cached dummy table for the shared ABI."""
-        if self.fuse_rope:
-            return self._get_rope_cos_sin(device, dtype)
-        key = (device, dtype)
-        dummy = self._rope_dummy_cache.get(key)
-        if dummy is None:
-            dummy = torch.empty((1, 1), device=device, dtype=dtype)
-            self._rope_dummy_cache[key] = dummy
-        return dummy, dummy
+        cache_key = _rope_specialized_cache_key(call.dtype, call)
+        return self.get_or_build_kernel(key, key=cache_key, build=build)
 
     def _validate_forward_inputs(
         self,
@@ -799,7 +936,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         cu_seqlens_q: torch.Tensor,
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
-        max_seqlen_q: int,
+        max_position: Optional[int],
     ) -> None:
         tensors = {
             "q": q,
@@ -923,9 +1060,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         if total_q != q.shape[0]:
             raise ValueError(f"cu_seqlens_q[-1] ({total_q}) must equal q.shape[0] ({q.shape[0]})")
         actual_max_q = int(q_lens.max().item())
-        if max_seqlen_q < actual_max_q:
+        if self.max_seqlen_q < actual_max_q:
             raise ValueError(
-                f"max_seqlen_q ({max_seqlen_q}) must be >= actual max Q "
+                f"max_seqlen_q ({self.max_seqlen_q}) must be >= actual max Q "
                 f"sequence length ({actual_max_q})"
             )
 
@@ -938,10 +1075,10 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
                 "cache_seqlens + q_len exceeds paged KV capacity: "
                 f"max total length {max_total_len}, capacity {self.max_cache_len}"
             )
-        if self.fuse_rope and max_total_len > self.max_position:
+        if self.fuse_rope and max_position is not None and max_total_len > max_position:
             raise ValueError(
                 "cache_seqlens + q_len exceeds RoPE max_position: "
-                f"max total length {max_total_len}, max_position {self.max_position}"
+                f"max total length {max_total_len}, max_position {max_position}"
             )
 
         num_pages = k_pages.shape[0] // self.page_size
@@ -953,25 +1090,6 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             raise ValueError(
                 f"block_table references page {max_page}, but only {num_pages} pages exist"
             )
-
-    def _get_rope_cos_sin(
-        self,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.max_position is None:
-            raise ValueError("max_position is required when fuse_rope=True")
-        cached = self._rope_cos_cache.get((device, dtype))
-        if cached is None:
-            cached = _base_freqs(
-                self.rotary_dim,
-                self.max_position,
-                base=self.rope_base,
-                dtype=dtype,
-                device=device,
-            )
-            self._rope_cos_cache[(device, dtype)] = cached
-        return cached
 
     def forward(
         self,
@@ -986,7 +1104,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         cu_seqlens_q: torch.Tensor,
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
-        max_seqlen_q: int,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         cache_dtype = self._resolved_cache_dtype(q.dtype)
         q_scale, k_scale, v_scale = _resolve_group_scales(
@@ -998,6 +1117,15 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             k_scale,
             v_scale,
             required=q.dtype == fp8_dtype() or cache_dtype == fp8_dtype(),
+        )
+        rope_cos, rope_sin, max_position = _resolve_rope_tables(
+            self._rope_dummy_cache,
+            q,
+            fuse_rope=self.fuse_rope,
+            rotary_dim=self.rotary_dim,
+            table_dtype=self.output_dtype or q.dtype,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
         )
         self._validate_forward_inputs(
             q,
@@ -1011,12 +1139,11 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max_seqlen_q,
+            max_position,
         )
         self.dtype = q.dtype
-        call = self.attention_call(q.dtype)
+        call = self.attention_call(q.dtype, max_position)
         key = self.select_kernel_key(PAGED_PREFILL_KEYS, call)
-        cos_table, sin_table = self._rope_tables(q.device, q.dtype)
         return self._get_kernel(key, call)(
             q,
             k_new,
@@ -1029,9 +1156,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max_seqlen_q,
-            cos_table,
-            sin_table,
+            self.max_seqlen_q,
+            rope_cos,
+            rope_sin,
         )
 
     @property

@@ -73,6 +73,7 @@ class AttentionCall(CallSpec):
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
+    rope_layout: str = "neox"
     accum_dtype: torch.dtype = torch.float32
     tune: bool = False
 
@@ -89,7 +90,7 @@ def dense_prefill_region(call: AttentionCall) -> bool:
     serves a uniform request only. Native FP8 remains a separate region;
     causal and sliding-window masks are policies of the 16-bit dense family.
     """
-    return not call.is_fp8 and call.is_uniform
+    return not call.is_fp8 and call.is_uniform and not call.fuse_rope
 
 
 def dense_sliding_prefill_region(call: AttentionCall) -> bool:

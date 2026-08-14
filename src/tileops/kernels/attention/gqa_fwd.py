@@ -13,9 +13,9 @@ from tileops.kernels.online_softmax import (
 )
 
 from ._config import tile_stage_thread_configs
-from .call_spec import dense_prefill_region
 from .packed_prefill import PackedPrefillKernel
 from .prefill_mask import make_bottom_right_attention_mask
+from .prefill_rope import make_prefill_rope_policy
 
 __all__ = ["GQAPrefillFwdKernel"]
 
@@ -60,6 +60,10 @@ def _gqa_prefill_fwd_kernel(
     softcap: float = 0.0,
     window_size_left: int = -1,
     window_size_right: int = -1,
+    fuse_rope: bool = False,
+    max_position: int = 1,
+    rotary_dim: int = 0,
+    rope_layout: str = "neox",
     dtype: str = "float16",
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
@@ -69,12 +73,16 @@ def _gqa_prefill_fwd_kernel(
         raise ValueError("heads must be divisible by heads_kv")
     if is_causal and seq_len_q > seq_len_kv:
         raise ValueError("causal prefill requires seq_len_q <= seq_len_kv")
+    if fuse_rope and (rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim):
+        raise ValueError("rotary_dim must be positive, even, and <= dim")
+    if rope_layout not in ("neox", "interleaved"):
+        raise ValueError("rope_layout must be 'neox' or 'interleaved'")
     groups = heads // heads_kv
     causal_offset = seq_len_kv - seq_len_q
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[3, 4],
+        out_idx=[5, 6],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -86,6 +94,8 @@ def _gqa_prefill_fwd_kernel(
         q_shape = (batch, seq_len_q, heads, dim)
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         o_shape = (batch, seq_len_q, heads, dim)
+        rope_cols, paired_dim, rotate = make_prefill_rope_policy(fuse_rope, rotary_dim, rope_layout)
+        rope_shape = (max_position if fuse_rope else 1, rope_cols)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
         apply_softcap = (
             make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
@@ -107,6 +117,8 @@ def _gqa_prefill_fwd_kernel(
             q: T.Tensor(q_shape, dtype),  # type: ignore
             k: T.Tensor(kv_shape, dtype),  # type: ignore
             v: T.Tensor(kv_shape, dtype),  # type: ignore
+            cos_table: T.Tensor(rope_shape, dtype),  # type: ignore
+            sin_table: T.Tensor(rope_shape, dtype),  # type: ignore
             output: T.Tensor(o_shape, dtype),  # type: ignore
             lse: T.Tensor([batch, heads, seq_len_q], accum_dtype),  # type: ignore
         ) -> None:
@@ -127,7 +139,19 @@ def _gqa_prefill_fwd_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                if (bx + 1) * block_m <= seq_len_q:
+                if fuse_rope:
+                    for i, d in T.Parallel(block_m, dim):
+                        q_pos = bx * block_m + i
+                        if q_pos < seq_len_q:
+                            paired_d = paired_dim(d)
+                            value = q[bz, q_pos, by, d]
+                            paired_value = q[bz, q_pos, by, paired_d]
+                            q_shared[i, d] = rotate(
+                                value, paired_value, causal_offset + q_pos, d, cos_table, sin_table
+                            )
+                        else:
+                            q_shared[i, d] = T.cast(0, dtype)
+                elif (bx + 1) * block_m <= seq_len_q:
                     T.copy(
                         q[bz, bx * block_m : (bx + 1) * block_m, by, :], q_shared, disable_tma=True
                     )
@@ -166,7 +190,21 @@ def _gqa_prefill_fwd_kernel(
 
                 for k_offset in T.Pipelined(loop_range, num_stages=num_stages):
                     k_idx = k_start + k_offset
-                    if (k_idx + 1) * block_n <= seq_len_kv:
+                    if fuse_rope:
+                        for j, d in T.Parallel(block_n, dim):
+                            kv_pos = k_idx * block_n + j
+                            if kv_pos < seq_len_kv:
+                                paired_d = paired_dim(d)
+                                value = k[bz, kv_pos, by // groups, d]
+                                paired_value = k[bz, kv_pos, by // groups, paired_d]
+                                k_shared[j, d] = rotate(
+                                    value, paired_value, kv_pos, d, cos_table, sin_table
+                                )
+                                v_shared[j, d] = v[bz, kv_pos, by // groups, d]
+                            else:
+                                k_shared[j, d] = T.cast(0, dtype)
+                                v_shared[j, d] = T.cast(0, dtype)
+                    elif (k_idx + 1) * block_n <= seq_len_kv:
                         T.copy(
                             k[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :],
                             k_shared,
@@ -244,6 +282,10 @@ def _gqa_prefill_fwd_wrapped_kernel(
     softcap: float,
     window_size_left: int,
     window_size_right: int,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -252,6 +294,8 @@ def _gqa_prefill_fwd_wrapped_kernel(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    rope_cos: torch.Tensor,
+    rope_sin: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _gqa_prefill_fwd_kernel(
         batch,
@@ -265,8 +309,12 @@ def _gqa_prefill_fwd_wrapped_kernel(
         softcap,
         window_size_left,
         window_size_right,
+        fuse_rope,
+        max_position,
+        rotary_dim,
+        rope_layout,
         dtype,
-    )(block_m, block_n, num_stages, threads)(q, k, v)
+    )(block_m, block_n, num_stages, threads)(q, k, v, rope_cos, rope_sin)
 
 
 @_gqa_prefill_fwd_wrapped_kernel.register_fake
@@ -282,6 +330,10 @@ def _(
     softcap: float,
     window_size_left: int,
     window_size_right: int,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -307,7 +359,7 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return dense_prefill_region(call)
+        return not call.is_fp8 and call.is_uniform
 
     def _build_program(self) -> None:
         self.kernel = _gqa_prefill_fwd_kernel(
@@ -322,6 +374,10 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
             self.softcap,
             self.window_size_left,
             self.window_size_right,
+            self.fuse_rope,
+            self.max_position or 1,
+            self.rotary_dim or 0,
+            self.rope_layout,
             self.dtype_str,
         )
 
@@ -348,8 +404,12 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
+        if rope_cos is None or rope_sin is None:
+            raise ValueError("dense prefill requires prepared RoPE or dummy tables")
         output, _ = _gqa_prefill_fwd_wrapped_kernel(
             self.batch,
             self.heads,
@@ -362,6 +422,10 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
             self.softcap,
             self.window_size_left,
             self.window_size_right,
+            self.fuse_rope,
+            self.max_position or 1,
+            self.rotary_dim or 0,
+            self.rope_layout,
             self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],
@@ -370,5 +434,7 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
             q_bshd,
             k_bshd,
             v_bshd,
+            rope_cos,
+            rope_sin,
         )
         return output.reshape(q.shape)

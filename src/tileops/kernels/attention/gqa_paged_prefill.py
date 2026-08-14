@@ -27,6 +27,7 @@ from .call_spec import fp8_dtype
 from .fp8_prefill_core import make_native_fp8_prefill_tile_update
 from .paged_prefill import PagedPrefillKernel
 from .prefill_mask import make_bottom_right_attention_mask
+from .prefill_rope import make_prefill_rope_policy
 
 __all__ = [
     "GQAPrefillPagedNativeFP8TensorCoreFwdKernel",
@@ -71,6 +72,7 @@ def _gqa_paged_attention_kernel(
     fuse_rope: bool,
     max_position: int,
     rotary_dim: int,
+    rope_layout: str,
 ) -> Callable:
     """Build one paged-attention program with compile-time loader policies."""
     if heads % heads_kv != 0:
@@ -81,6 +83,8 @@ def _gqa_paged_attention_kernel(
         rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim
     ):
         raise ValueError("rotary_dim must be positive, even, and <= dim")
+    if rope_layout not in ("neox", "interleaved"):
+        raise ValueError("rope_layout must be 'neox' or 'interleaved'")
 
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -90,7 +94,6 @@ def _gqa_paged_attention_kernel(
     accum_dtype = "float"
     fp8_cache = cache_dtype == "float8_e4m3fn"
     rope_rows = max_position if fuse_rope else 1
-    rope_cols = rotary_dim // 2 if fuse_rope else 1
     page_size_log2 = page_size.bit_length() - 1
 
     @tilelang.jit(
@@ -106,6 +109,8 @@ def _gqa_paged_attention_kernel(
         kv_new_shape = (total_q, heads_kv, dim)
         kv_pages_shape = (physical_tokens, heads_kv, dim)
         block_table_shape = (batch, max_pages_per_req)
+        rope_cols, paired_dim, rotate = make_prefill_rope_policy(
+            fuse_rope, rotary_dim, rope_layout)
         rope_shape = (rope_rows, rope_cols)
         output_shape = (total_q, heads, dim)
 
@@ -166,18 +171,6 @@ def _gqa_paged_attention_kernel(
                 return T.Cast(input_dtype, T.Cast("float32", value) * scale_value)
             return T.Cast(input_dtype, value)
 
-        @T.macro
-        def rotate(value, paired_value, logical_pos, d, cos_table, sin_table):
-            if fuse_rope:
-                freq_idx = d % rope_cols
-                c = cos_table[logical_pos, freq_idx]
-                s = sin_table[logical_pos, freq_idx]
-                rotated = T.if_then_else(d < rope_cols, -paired_value, paired_value)
-                return T.if_then_else(
-                    d < rotary_dim, value * c + rotated * s, value
-                )
-            return value
-
         @T.prim_func
         def main(
             q: T.Tensor(q_shape, input_dtype),  # type: ignore
@@ -191,8 +184,8 @@ def _gqa_paged_attention_kernel(
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
             cache_seqlens: T.Tensor([batch], T.int32),  # type: ignore
             block_table: T.Tensor(block_table_shape, T.int32),  # type: ignore
-            cos_table: T.Tensor(rope_shape, input_dtype),  # type: ignore
-            sin_table: T.Tensor(rope_shape, input_dtype),  # type: ignore
+            cos_table: T.Tensor(rope_shape, output_dtype),  # type: ignore
+            sin_table: T.Tensor(rope_shape, output_dtype),  # type: ignore
             output: T.Tensor(output_shape, output_dtype),  # type: ignore
             max_seqlen_q: T.int32,  # type: ignore
         ) -> None:
@@ -229,11 +222,7 @@ def _gqa_paged_attention_kernel(
                         new_pos = bx * block_m + i
                         safe_new_pos = T.if_then_else(new_pos < q_len, new_pos, 0)
                         logical_pos = old_len + safe_new_pos
-                        paired_d = T.if_then_else(
-                            d < rope_cols,
-                            d + rope_cols,
-                            T.if_then_else(d < rotary_dim, d - rope_cols, d),
-                        )
+                        paired_d = paired_dim(d)
                         if new_pos < q_len:
                             value = q[q_start + new_pos, by, d]
                             paired_value = q[q_start + new_pos, by, paired_d]
@@ -378,11 +367,7 @@ def _gqa_paged_attention_kernel(
                             new_pos = new_start + j
                             if fuse_rope:
                                 logical_pos = tile_start + j
-                                paired_d = T.if_then_else(
-                                    d < rope_cols,
-                                    d + rope_cols,
-                                    T.if_then_else(d < rotary_dim, d - rope_cols, d),
-                                )
+                                paired_d = paired_dim(d)
                                 value = k_new[q_start + new_pos, cur_kv_head, d]
                                 paired_value = k_new[
                                     q_start + new_pos, cur_kv_head, paired_d
@@ -418,11 +403,7 @@ def _gqa_paged_attention_kernel(
                                 )
                             elif kv_pos < total_len:
                                 if fuse_rope:
-                                    paired_d = T.if_then_else(
-                                        d < rope_cols,
-                                        d + rope_cols,
-                                        T.if_then_else(d < rotary_dim, d - rope_cols, d),
-                                    )
+                                    paired_d = paired_dim(d)
                                     value = k_new[q_start + new_pos, cur_kv_head, d]
                                     paired_value = k_new[
                                         q_start + new_pos, cur_kv_head, paired_d
@@ -535,6 +516,7 @@ def _gqa_paged_attention_wrapped_kernel(
     fuse_rope: bool,
     max_position: int,
     rotary_dim: int,
+    rope_layout: str,
     block_m: int,
     block_n: int,
     num_stages: int,
@@ -559,6 +541,7 @@ def _gqa_paged_attention_wrapped_kernel(
         max_pages_per_req, page_size, dim, is_causal, sm_scale, softcap,
         window_size_left, window_size_right, append_kv,
         input_dtype, output_dtype, cache_dtype, fuse_rope, max_position, rotary_dim,
+        rope_layout,
     )(block_m, block_n, num_stages, threads)(
         q, k_new, v_new, k_pages, v_pages, q_scale, k_scale, v_scale,
         cu_seqlens_q, cache_seqlens, block_table, cos_table, sin_table,
@@ -588,6 +571,7 @@ def _(
     fuse_rope: bool,
     max_position: int,
     rotary_dim: int,
+    rope_layout: str,
     block_m: int,
     block_n: int,
     num_stages: int,
@@ -609,12 +593,18 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(batch: int,
                                                         dim: int,
                                                         max_position: int,
                                                         rotary_dim: int,
-                                                        dtype: str = 'float16') -> Callable:
+                                                        rope_layout: str,
+                                                        input_dtype: str = 'float16',
+                                                        cache_dtype: str = 'float16',
+                                                        rope_dtype: str = 'float16') -> Callable:
     if page_size <= 0 or page_size & (page_size - 1) != 0:
         raise ValueError("page_size must be a positive power of two")
     if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
         raise ValueError("rotary_dim must be positive, even, and <= dim")
+    if rope_layout not in ("neox", "interleaved"):
+        raise ValueError("rope_layout must be 'neox' or 'interleaved'")
     half = rotary_dim // 2
+    quantized_cache = cache_dtype == "float8_e4m3fn" and input_dtype != cache_dtype
     page_size_log2 = page_size.bit_length() - 1
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -625,18 +615,29 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(batch: int,
         kv_pages_shape = (physical_tokens, heads_kv, dim)
         block_table_shape = (batch, max_pages_per_req)
         rope_shape = (max_position, half)
+        _, paired_dim, rotate = make_prefill_rope_policy(
+            True, rotary_dim, rope_layout)
+
+        @T.macro
+        def store_value(value, scale_value):
+            if quantized_cache:
+                return T.clamp(
+                    T.Cast("float32", value) / scale_value, -448.0, 448.0)
+            return value
 
         @T.prim_func
         def _gqa_prefill_paged_with_kv_cache_rope_append_main(
-                k_new: T.Tensor(kv_new_shape, dtype),  # type: ignore
-                v_new: T.Tensor(kv_new_shape, dtype),  # type: ignore
-                k_pages: T.Tensor(kv_pages_shape, dtype),  # type: ignore
-                v_pages: T.Tensor(kv_pages_shape, dtype),  # type: ignore
+                k_new: T.Tensor(kv_new_shape, input_dtype),  # type: ignore
+                v_new: T.Tensor(kv_new_shape, input_dtype),  # type: ignore
+                k_pages: T.Tensor(kv_pages_shape, cache_dtype),  # type: ignore
+                v_pages: T.Tensor(kv_pages_shape, cache_dtype),  # type: ignore
                 cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
                 cache_seqlens: T.Tensor([batch], T.int32),  # type: ignore
                 block_table: T.Tensor(block_table_shape, T.int32),  # type: ignore
-                cos_table: T.Tensor(rope_shape, dtype),  # type: ignore
-                sin_table: T.Tensor(rope_shape, dtype),  # type: ignore
+                k_scale: T.Tensor([batch, heads_kv], T.float32),  # type: ignore
+                v_scale: T.Tensor([batch, heads_kv], T.float32),  # type: ignore
+                cos_table: T.Tensor(rope_shape, rope_dtype),  # type: ignore
+                sin_table: T.Tensor(rope_shape, rope_dtype),  # type: ignore
                 max_seqlen_q: T.int32,  # type: ignore
         ) -> None:
             with T.Kernel(
@@ -657,18 +658,14 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(batch: int,
                         for i, d in T.Parallel(block_m, dim):
                             new_pos = bx * block_m + i
                             logical_pos = old_len + new_pos
-                            freq_idx = d % half
-                            paired_d = T.if_then_else(
-                                d < half, d + half,
-                                T.if_then_else(d < rotary_dim, d - half, d))
-                            c = cos_table[logical_pos, freq_idx]
-                            s = sin_table[logical_pos, freq_idx]
+                            paired_d = paired_dim(d)
                             val = k_new[q_start + new_pos, by, d]
                             paired_val = k_new[q_start + new_pos, by, paired_d]
-                            rotated = T.if_then_else(d < half, -paired_val, paired_val)
-                            k_pages[physical_start + i, by, d] = T.if_then_else(
-                                d < rotary_dim, val * c + rotated * s, val)
-                            v_pages[physical_start + i, by, d] = v_new[q_start + new_pos, by, d]
+                            k_pages[physical_start + i, by, d] = store_value(
+                                rotate(val, paired_val, logical_pos, d, cos_table, sin_table),
+                                k_scale[bz, by])
+                            v_pages[physical_start + i, by, d] = store_value(
+                                v_new[q_start + new_pos, by, d], v_scale[bz, by])
                     else:
                         for i, d in T.Parallel(block_m, dim):
                             new_pos = bx * block_m + i
@@ -679,18 +676,14 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(batch: int,
                                 block_table[bz, append_page_idx] * page_size
                                 + append_page_offset
                             )
-                            freq_idx = d % half
-                            paired_d = T.if_then_else(
-                                d < half, d + half,
-                                T.if_then_else(d < rotary_dim, d - half, d))
-                            c = cos_table[logical_pos, freq_idx]
-                            s = sin_table[logical_pos, freq_idx]
+                            paired_d = paired_dim(d)
                             val = k_new[q_start + new_pos, by, d]
                             paired_val = k_new[q_start + new_pos, by, paired_d]
-                            rotated = T.if_then_else(d < half, -paired_val, paired_val)
-                            k_pages[physical_pos, by, d] = T.if_then_else(
-                                d < rotary_dim, val * c + rotated * s, val)
-                            v_pages[physical_pos, by, d] = v_new[q_start + new_pos, by, d]
+                            k_pages[physical_pos, by, d] = store_value(
+                                rotate(val, paired_val, logical_pos, d, cos_table, sin_table),
+                                k_scale[bz, by])
+                            v_pages[physical_pos, by, d] = store_value(
+                                v_new[q_start + new_pos, by, d], v_scale[bz, by])
                 else:
                     for i, d in T.Parallel(block_m, dim):
                         new_pos = bx * block_m + i
@@ -700,18 +693,14 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(batch: int,
                         page_offset = logical_pos - page_idx * page_size
                         if new_pos < q_len:
                             physical_pos = block_table[bz, page_idx] * page_size + page_offset
-                            freq_idx = d % half
-                            paired_d = T.if_then_else(
-                                d < half, d + half,
-                                T.if_then_else(d < rotary_dim, d - half, d))
-                            c = cos_table[logical_pos, freq_idx]
-                            s = sin_table[logical_pos, freq_idx]
+                            paired_d = paired_dim(d)
                             val = k_new[q_start + new_pos, by, d]
                             paired_val = k_new[q_start + new_pos, by, paired_d]
-                            rotated = T.if_then_else(d < half, -paired_val, paired_val)
-                            k_pages[physical_pos, by, d] = T.if_then_else(
-                                d < rotary_dim, val * c + rotated * s, val)
-                            v_pages[physical_pos, by, d] = v_new[q_start + new_pos, by, d]
+                            k_pages[physical_pos, by, d] = store_value(
+                                rotate(val, paired_val, logical_pos, d, cos_table, sin_table),
+                                k_scale[bz, by])
+                            v_pages[physical_pos, by, d] = store_value(
+                                v_new[q_start + new_pos, by, d], v_scale[bz, by])
 
         return _gqa_prefill_paged_with_kv_cache_rope_append_main
 
@@ -729,7 +718,10 @@ class _GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
                  dim: int,
                  max_position: int,
                  rotary_dim: int,
-                 dtype: torch.dtype,
+                 rope_layout: str,
+                 input_dtype: torch.dtype,
+                 cache_dtype: torch.dtype,
+                 rope_dtype: torch.dtype,
                  config: Optional[dict] = None,
                  tune: bool = False) -> None:
         super().__init__()
@@ -737,6 +729,8 @@ class _GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
             raise ValueError("page_size must be a positive power of two")
         if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
             raise ValueError("rotary_dim must be positive, even, and <= dim")
+        if rope_layout not in ("neox", "interleaved"):
+            raise ValueError("rope_layout must be 'neox' or 'interleaved'")
         self.batch = batch
         self.heads_kv = heads_kv
         self.max_pages_per_req = max_pages_per_req
@@ -744,7 +738,10 @@ class _GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
         self.dim = dim
         self.max_position = max_position
         self.rotary_dim = rotary_dim
-        self.dtype = dtype
+        self.rope_layout = rope_layout
+        self.dtype = input_dtype
+        self.cache_dtype = cache_dtype
+        self.rope_dtype = rope_dtype
         self.init_config(config, tune)
 
     @property
@@ -753,15 +750,17 @@ class _GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
 
     def forward(self, k_new: torch.Tensor, v_new: torch.Tensor, k_pages: torch.Tensor,
                 v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor, cache_seqlens: torch.Tensor,
-                block_table: torch.Tensor, max_seqlen_q: int, cos_table: torch.Tensor,
-                sin_table: torch.Tensor) -> None:
+                block_table: torch.Tensor, k_scale: torch.Tensor, v_scale: torch.Tensor,
+                max_seqlen_q: int, cos_table: torch.Tensor, sin_table: torch.Tensor) -> None:
         kernel = _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
             self.batch, self.heads_kv, k_new.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.max_position,
-            self.rotary_dim, self.dtype_str)
+            self.rotary_dim, self.rope_layout, self.dtype_str,
+            self.dtype_to_str(self.cache_dtype),
+            self.dtype_to_str(self.rope_dtype))
         kernel(self.config["block_m"], self.config["threads"])(
             k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table,
-            cos_table, sin_table, max_seqlen_q)
+            k_scale, v_scale, cos_table, sin_table, max_seqlen_q)
 
 
 
@@ -771,6 +770,31 @@ class _GQAPagedAttentionKernel(PagedPrefillKernel):
     fuse_rope: bool = False
     fp8_cache: bool = False
     native_fp8: bool = False
+
+    def _build_program(self) -> None:
+        self._append = None
+        if self.fuse_rope:
+            if self.rotary_dim is None or self.max_position is None:
+                raise ValueError(
+                    "fused-RoPE paged prefill requires max_position and rotary_dim"
+                )
+            input_dtype = fp8_dtype() if self.native_fp8 else self.dtype
+            cache_dtype = fp8_dtype() if self.fp8_cache else self.dtype
+            assert input_dtype is not None
+            assert cache_dtype is not None
+            self._append = _GQAPrefillPagedWithKVCacheRopeAppendKernel(
+                batch=self.batch,
+                heads_kv=self.heads_kv,
+                max_pages_per_req=self.max_pages_per_req,
+                page_size=self.page_size,
+                dim=self.dim,
+                max_position=self.max_position,
+                rotary_dim=self.rotary_dim,
+                rope_layout=self.rope_layout,
+                input_dtype=input_dtype,
+                cache_dtype=cache_dtype,
+                rope_dtype=self.dtype,
+            )
 
     @property
     def default_config(self) -> dict:
@@ -812,6 +836,21 @@ class _GQAPagedAttentionKernel(PagedPrefillKernel):
             raise ValueError("paged prefill requires q_scale, k_scale, and v_scale tensors")
         if cos_table is None or sin_table is None:
             raise ValueError("paged prefill requires prepared RoPE or dummy tables")
+        if self._append is not None and self.append_kv:
+            self._append(
+                k_new,
+                v_new,
+                k_pages,
+                v_pages,
+                cu_seqlens_q,
+                cache_seqlens,
+                block_table,
+                k_scale,
+                v_scale,
+                max_seqlen_q,
+                cos_table,
+                sin_table,
+            )
         return _gqa_paged_attention_wrapped_kernel(
             self.batch,
             self.heads,
@@ -833,6 +872,7 @@ class _GQAPagedAttentionKernel(PagedPrefillKernel):
             self.fuse_rope,
             self.max_position or 1,
             self.rotary_dim or 0,
+            self.rope_layout,
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
@@ -872,7 +912,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(_GQAPagedAttentionKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return not call.is_fp8 and not call.fuse_rope and call.cache_dtype == fp8_dtype()
+        return not call.is_fp8 and call.cache_dtype == fp8_dtype()
 
 
 class GQAPrefillPagedNativeFP8TensorCoreFwdKernel(_GQAPagedAttentionKernel):
@@ -886,7 +926,6 @@ class GQAPrefillPagedNativeFP8TensorCoreFwdKernel(_GQAPagedAttentionKernel):
     def applies(cls, call) -> bool:
         return (
             call.is_fp8
-            and not call.fuse_rope
             and call.cache_dtype == fp8_dtype()
             and call.dim == 128
         )
@@ -900,76 +939,14 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(_GQAPagedAttentionKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return not call.is_fp8 and bool(call.fuse_rope) and call.cache_dtype == call.dtype
-
-    def _build_program(self) -> None:
-        if self.rotary_dim is None or self.max_position is None:
-            raise ValueError(
-                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires "
-                "max_position and rotary_dim"
-            )
-        self._append = _GQAPrefillPagedWithKVCacheRopeAppendKernel(
-            batch=self.batch,
-            heads_kv=self.heads_kv,
-            max_pages_per_req=self.max_pages_per_req,
-            page_size=self.page_size,
-            dim=self.dim,
-            max_position=self.max_position,
-            rotary_dim=self.rotary_dim,
-            dtype=self.dtype,
+        return (
+            not call.is_fp8
+            and bool(call.fuse_rope)
+            and call.rope_layout in ("neox", "interleaved")
+            and call.cache_dtype == call.dtype
         )
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         super().autotune(warmup=warmup, rep=rep)
+        assert self._append is not None
         self._append.autotune(warmup=warmup, rep=rep)
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k_new: torch.Tensor,
-        v_new: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        q_scale: Optional[torch.Tensor],
-        k_scale: Optional[torch.Tensor],
-        v_scale: Optional[torch.Tensor],
-        cu_seqlens_q: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        block_table: torch.Tensor,
-        max_seqlen_q: int,
-        cos_table: Optional[torch.Tensor] = None,
-        sin_table: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if cos_table is None or sin_table is None:
-            raise ValueError(
-                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires rotary tables"
-            )
-        if self.append_kv:
-            self._append(
-                k_new,
-                v_new,
-                k_pages,
-                v_pages,
-                cu_seqlens_q,
-                cache_seqlens,
-                block_table,
-                max_seqlen_q,
-                cos_table,
-                sin_table,
-            )
-        return super().forward(
-            q,
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            q_scale,
-            k_scale,
-            v_scale,
-            cu_seqlens_q,
-            cache_seqlens,
-            block_table,
-            max_seqlen_q,
-            cos_table,
-            sin_table,
-        )
