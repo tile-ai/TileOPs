@@ -435,7 +435,9 @@ GroupedQueryAttentionDecodeWithKVCacheFwdOp:
       v: {dtype: "same_as(q)"}
     outputs:
       o: {dtype: "same_as(q)"}
-    params: {}
+    params:
+      sm_scale: {type: float, default: null}
+      softcap: {type: float, default: null}
     shape_rules:
       - "q.shape == (B, H, D)"
       - "k.shape == (B, N_kv, H_kv, D)"

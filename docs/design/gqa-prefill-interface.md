@@ -1,6 +1,6 @@
 # GQA Prefill Interface
 
-**Status:** Accepted interface decision  
+**Status:** Accepted interface decision
 **Date:** 2026-08-14
 
 ## Scope
@@ -438,6 +438,30 @@ Consolidation status and remaining targets are:
    contract and replace the shared-memory probability bridge behind that same
    semantic macro boundary.
 
+## Multi-backend dispatch boundary
+
+Each public Op exposes exactly one target-facing callable role. An external
+builder receives the tensors above in manifest order plus the normalized
+manifest parameters; it never receives an in-tree kernel key, `AttentionCall`,
+architecture flag, packed view, or launch-only scalar.
+
+The in-tree path adapts the same public ABI behind its returned callable:
+
+- Dense converts BSHD tensors to packed views and creates uniform cumulative
+  sequence lengths;
+- Paged supplies `max_seqlen_q` to the TileLang launch wrapper;
+- contiguous Decode performs its fixed-capacity padding and supplies the real
+  sequence length.
+
+These are NVIDIA implementation details, so an external target sees none of
+them. Its callable is memoized by device plus the complete manifest input
+signature. The memo is bounded; a backend that wants coarser or longer-lived
+reuse owns that cache behind its builder.
+
+`rope_layout` remains an explicit string enum (`"neox"` or
+`"interleaved"`) across every target. It is not inferred from model family or
+encoded as a boolean.
+
 ## Native-FP8 validation snapshot
 
 The three topology-specific general schedules were compiled and executed on an
@@ -448,16 +472,19 @@ Paged; none of the three paths materializes full FP16/BF16 Q/K/V tensors.
 Representative native-CUPTI measurements use one timed operator sequence and
 report the complete GPU activity envelope:
 
-| topology | representative semantics | TileOps latency | kernels | GPU gap |
-| --- | --- | ---: | ---: | ---: |
-| Dense | rectangular tail, causal, left window, custom scale, softcap | 0.0492 ms | 1 | 0 ms |
-| Varlen | ragged tails, causal, left window, softcap | 0.0629 ms | 1 | 0 ms |
-| Paged | ragged tails, causal, left window, softcap, raw-FP8 append | 0.1411 ms | 1 | 0 ms |
+| topology | representative semantics | TileOps latency | FA3 envelope | relative performance | kernels | GPU gap |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Dense | rectangular tail, causal, left window, custom scale, softcap | 0.0492 ms | 0.0497 ms | 101.0% | 1 | 0 ms |
+| Varlen | ragged tails, causal, left window, softcap | 0.0628 ms | 0.0517 ms | 82.3% | 1 | 0 ms |
+| Paged | ragged tails, causal, left window, softcap, raw-FP8 append | 0.0770 ms | 0.0718 ms | 93.2% | 1 | 0 ms |
 
 The Dense case uses `S_q=513` and `S_kv=769`, so it cannot enter the fixed
-square BN224 fast schedule. Its FA3 baseline has a 0.0497 ms two-kernel GPU
-envelope on the same run; this comparison is validation evidence rather than a
-claim that the general schedule has reached the performance ceiling.
+square BN224 fast schedule. The separate BN224 `S=896` fast-path check measures
+0.0333 ms versus FA3 at 0.0285 ms (85.6%). FA3's Varlen and Paged figures above
+are complete two-kernel envelopes, including their inter-kernel gap; comparing
+only device-busy sums would understate the baseline Op latency. These
+comparisons are validation evidence rather than a claim that every schedule
+has reached the performance ceiling.
 
 ## Deferred performance work
 

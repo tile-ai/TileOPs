@@ -1,18 +1,9 @@
 import dataclasses
 import warnings
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from types import MappingProxyType
-from typing import (
-    Callable,
-    ClassVar,
-    Hashable,
-    Iterator,
-    Mapping,
-    Optional,
-    Sequence,
-    TypeVar,
-    Union,
-)
+from typing import Callable, Hashable, Iterator, Mapping, Optional, Sequence, TypeVar, Union
 
 import torch
 
@@ -128,6 +119,10 @@ class Op(ABC):
     _kernel_roles: dict[str, dict[Hashable, object]]
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
+    # External signatures include open-ended dynamic shapes. Bound each role's
+    # memo while keeping a deliberately generous working set for continuous
+    # batching; a backend may keep a coarser cache behind its builder.
+    _external_cache_limit: int = 256
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = "cuda"
     input_shapes: Optional[list[tuple]] = None
@@ -179,24 +174,6 @@ class Op(ABC):
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
-
-    # FIXME(staged-rollout): compile_op_names defaults to empty instead of being required.
-    #
-    # Broken invariant: an op that declares ``torch_compile_fullgraph`` is not forced to
-    #     say which operators are its own, so nothing checks that the node in the graph
-    #     belongs to the op rather than to a kernel.
-    # Why: most ops still register their custom op in src/tileops/kernels/, where there
-    #     is no op-level name to declare.
-    # Cleanup: once every op that declares ``torch_compile_fullgraph`` names its
-    #     operators, have ``register_compile_contract`` reject an empty tuple, and delete
-    #     this marker.
-
-    #: Operators this op registers on the torch.compile boundary. Naming them is what lets
-    #: a test assert the traced graph holds nothing else, which is what keeps the graph the
-    #: same when another target serves the op. A tuple because a conditional in-place write
-    #: registers two; empty means no boundary yet. Registration happens once per class, so
-    #: this is class state.
-    compile_op_names: ClassVar[tuple[str, ...]] = ()
 
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
@@ -373,7 +350,7 @@ class Op(ABC):
                 An external target needs them; omitting them leaves this op in-tree only.
             key: What the *in-tree* kernel specializes on, typically
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
-                path keys on the input signature instead.
+                path keys on the device and input signature instead.
             build: How the *in-tree* kernel is constructed, called once per key. See
                 ``_entry_kernels`` for what it may return.
 
@@ -393,61 +370,43 @@ class Op(ABC):
             self._kernel_roles = roles
         entries = roles.get(name)
         if entries is None:
-            entries = {}
+            entries = OrderedDict()
             roles[name] = entries
 
-        settled_here = self._builder is _UNRESOLVED
-        if settled_here:
-            # ``__call__`` settled this already — unless it was traced. Dynamo defers a
-            # traced frame's attribute writes until after the graph has run, so a
-            # ``forward`` behind the compile boundary arrives here still ``_UNRESOLVED``
-            # and would take the in-tree path on the very call that chose a target.
-            #
-            # FIXME(staged-rollout): a call handing over no tensors probes no device.
-            #
-            # Broken invariant: a first compiled call takes the in-tree path when the
-            #     target would have come from device detection, where eager raises.
-            # Why: ``inputs`` is what carries a device down here, and most op classes
-            #     still call this without it.
-            # Cleanup: delete this marker once every op hands over ``inputs=``.
-            self._resolve_builder(tuple(inputs), {})
-
-        try:
-            builder = self._builder
-            if builder is None or builder is _UNRESOLVED:
-                # In-tree: the op knows what its own kernel specializes on, so it says.
-                if build is None:
-                    raise OpNotAvailableError(
-                        f"{type(self).__name__} has no in-tree implementation for {name!r}, "
-                        f"so it needs a target that registers one; known targets for this "
-                        f"op: {registered_targets(type(self).__name__)}"
-                    )
-                if key not in entries:
-                    entries[key] = build()
-                return entries[key]
-
-            # External: this layer cannot know what the target's kernel specializes on, so
-            # it keys on every cheap fact it has: the dtype and shape of each input.
-            if not inputs:
+        builder = self._builder
+        if builder is None or builder is _UNRESOLVED:
+            # In-tree: the op knows what its own kernel specializes on, so it says.
+            if build is None:
                 raise OpNotAvailableError(
-                    f"target {self._settled_target!r} serves {type(self).__name__}, but its "
-                    f"{name!r} call site does not hand over the tensors a builder is "
-                    f"described with; that op is not wired to external targets yet"
+                    f"{type(self).__name__} has no in-tree implementation for {name!r}, so "
+                    f"it needs a target that registers one; known targets for this op: "
+                    f"{registered_targets(type(self).__name__)}"
                 )
-            specs = tuple(TensorSpec.of(t) for t in inputs)
-            # The device is part of the key: a kernel built for one of a target's devices
-            # may hold resources allocated on it. The op layer has already checked that
-            # this call's tensors agree on a device, so the first one speaks for all.
-            signature = (specs[0].device,) + tuple((spec.dtype, spec.shape) for spec in specs)
-            if signature not in entries:
-                entries[signature] = self._build_external(builder, name, specs)
-            return entries[signature]
-        except Exception:
-            # Whoever settled it unsettles it. ``__call__``'s handler does not run when
-            # the failure comes out of a compiled graph, so this one has to.
-            if settled_here:
-                self._unsettle()
-            raise
+            if key not in entries:
+                entries[key] = build()
+            return entries[key]
+
+        # External: this layer cannot know what the target's kernel specializes on, so it
+        # keys on the device plus every input's dtype and shape. Different devices may
+        # require different architecture/product choices even when signatures match.
+        if not inputs:
+            raise OpNotAvailableError(
+                f"target {self._settled_target!r} serves {type(self).__name__}, but its "
+                f"{name!r} call site does not hand over the tensors a builder is described "
+                f"with; that op is not wired to external targets yet"
+            )
+        specs = tuple(TensorSpec.of(t) for t in inputs)
+        device = specs[0].device
+        if any(spec.device != device for spec in specs[1:]):
+            raise ValueError("all manifest inputs must be on the same device")
+        signature = (device, tuple((spec.dtype, spec.shape) for spec in specs))
+        if signature in entries:
+            entries.move_to_end(signature)
+        else:
+            entries[signature] = self._build_external(builder, name, specs)
+            if len(entries) > self._external_cache_limit:
+                entries.popitem(last=False)
+        return entries[signature]
 
     def _build_external(
         self,
@@ -568,8 +527,7 @@ class Op(ABC):
 
         Settles which set of kernels serves this instance, once, then delegates to
         ``forward`` — which is the same for every target. The only fork is inside
-        :meth:`get_or_build_kernel`, which settles it a second time when this settling
-        could not reach it; see there.
+        :meth:`get_or_build_kernel`.
 
         A call that fails settles nothing. Otherwise one invalid call would aim the instance
         for good: ``op(x_cpu, weight_cuda)`` picks a target from the first tensor, then
@@ -583,14 +541,11 @@ class Op(ABC):
         try:
             return self.forward(*args, **kwargs)
         except Exception:
-            self._unsettle()
+            # Also drop what was built: those kernels belong to the target just unpinned.
+            self._builder = _UNRESOLVED
+            self._settled_target = None
+            self._kernel_roles = {}
             raise
-
-    def _unsettle(self) -> None:
-        """Undo a settling whose call did not finish, dropping what it built."""
-        self._builder = _UNRESOLVED
-        self._settled_target = None
-        self._kernel_roles = {}
 
     def _resolve_builder(self, args: tuple, kwargs: dict) -> None:
         """Decide which target serves this instance and remember its builder.

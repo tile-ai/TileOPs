@@ -1,7 +1,7 @@
 """The seam between an op and a target's kernels.
 
 What a third-party backend gets, observed from the op side: its builder is called with the
-manifest's inputs and params, its kernel is memoized under the input signature, and
+manifest's inputs and params, its kernel is memoized by device and input signature, and
 everything the op layer does for every target — validation, contiguity, output shape — still
 happens. Uses a fake target, so no vendor hardware is involved.
 """
@@ -10,6 +10,13 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops.attention.gqa import (
+    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
+    GroupedQueryAttentionDecodeWithKVCacheFwdOp,
+    GroupedQueryAttentionPrefillDenseFwdOp,
+    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
+    GroupedQueryAttentionPrefillVarlenFwdOp,
+)
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 
 pytestmark = pytest.mark.smoke
@@ -159,6 +166,197 @@ def test_a_different_input_signature_asks_again(second, why):
     op(*_inputs(**second))
 
     assert len(recorder.calls) == 2, why
+
+
+def test_the_external_signature_includes_the_input_device():
+    recorder = _Recorder()
+    _register(recorder)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target="acme")
+
+    op(*_inputs())
+    op(
+        torch.empty(4, *NORMALIZED_SHAPE, dtype=DTYPE, device="meta"),
+        torch.empty(*NORMALIZED_SHAPE, dtype=DTYPE, device="meta"),
+    )
+
+    assert len(recorder.calls) == 2
+    assert recorder.calls[0][0][0].device.type == "cpu"
+    assert recorder.calls[1][0][0].device.type == "meta"
+
+
+def test_the_external_signature_memo_is_bounded_lru():
+    recorder = _Recorder()
+    _register(recorder)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target="acme")
+    op._external_cache_limit = 2
+
+    for rows in (2, 3, 4):
+        op(*_inputs(rows=rows))
+    assert len(recorder.calls) == 3
+    assert len(op.built_kernels("rms_norm")) == 2
+
+    op(*_inputs(rows=2))
+    assert len(recorder.calls) == 4, "the least-recently-used signature was evicted"
+
+
+class _GQARecorder:
+    def __init__(self):
+        self.builds = []
+        self.runs = []
+
+    def build_kernel(self, *specs, **params):
+        self.builds.append((specs, params))
+
+        def kernel(*inputs):
+            assert all(tensor.is_contiguous() for tensor in inputs)
+            self.runs.append(inputs)
+            output_dtype = params.get("dtype") or inputs[0].dtype
+            return torch.empty_like(inputs[0], dtype=output_dtype)
+
+        return kernel
+
+
+def _register_gqa(op, recorder):
+    registry.register_detector("gqa_fake", lambda device: True)
+    registry.register_kernel_builder(type(op).__name__, "gqa_fake", recorder.build_kernel)
+
+
+def _assert_gqa_seam(op, inputs, monkeypatch):
+    recorder = _GQARecorder()
+    _register_gqa(op, recorder)
+    monkeypatch.setattr(
+        op,
+        "_build_builtin",
+        lambda *args, **kwargs: pytest.fail("external target entered BUILTIN selection"),
+    )
+
+    output = op(*inputs)
+    assert output.shape == inputs[0].shape
+    assert len(recorder.builds) == 1
+    specs, params = recorder.builds[0]
+    assert specs == tuple(TensorSpec.of(tensor) for tensor in recorder.runs[0])
+    assert tuple(params) == op.__manifest_param_names__
+    assert len(recorder.runs[0]) == len(specs)
+
+    op(*inputs)
+    assert len(recorder.builds) == 1, "one device and signature reuse one callable"
+    return recorder
+
+
+def test_dense_gqa_target_gets_the_manifest_abi(monkeypatch):
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        seq_len=3,
+        dim=8,
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.randn(2, 3, 4, 8, dtype=torch.float16)
+    k = torch.randn(2, 3, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    recorder = _assert_gqa_seam(op, (q, k, v), monkeypatch)
+
+    assert len(recorder.runs[0]) == 8
+    assert recorder.runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
+    assert recorder.runs[0][3].shape == (2, 2), "identity scales are normalized"
+    assert recorder.runs[0][6].shape == (1, 1), "disabled RoPE uses fixed dummy inputs"
+
+
+def test_varlen_gqa_target_gets_the_manifest_abi(monkeypatch):
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        dim=8,
+        max_seqlen_q=3,
+        max_seqlen_kv=4,
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.randn(5, 4, 8, dtype=torch.float16)
+    k = torch.randn(7, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    cu_q = torch.tensor([0, 2, 5], dtype=torch.int32)
+    cu_kv = torch.tensor([0, 3, 7], dtype=torch.int32)
+    recorder = _assert_gqa_seam(op, (q, k, v, cu_q, cu_kv), monkeypatch)
+
+    assert len(recorder.runs[0]) == 10
+    assert recorder.runs[0][3] is cu_q
+    assert recorder.runs[0][5].shape == (2, 2)
+
+
+def test_paged_prefill_gqa_target_gets_the_manifest_abi(monkeypatch):
+    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        max_pages_per_req=4,
+        page_size=4,
+        dim=8,
+        max_seqlen_q=3,
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.randn(5, 4, 8, dtype=torch.float16)
+    k_new = torch.randn(5, 2, 8, dtype=torch.float16)
+    v_new = torch.randn_like(k_new)
+    k_pages = torch.randn(32, 2, 8, dtype=torch.float16)
+    v_pages = torch.randn_like(k_pages)
+    cu_q = torch.tensor([0, 2, 5], dtype=torch.int32)
+    cache_lens = torch.tensor([4, 8], dtype=torch.int32)
+    block_table = torch.arange(8, dtype=torch.int32).view(2, 4)
+    recorder = _assert_gqa_seam(
+        op,
+        (q, k_new, v_new, k_pages, v_pages, None, None, None,
+         cu_q, cache_lens, block_table),
+        monkeypatch,
+    )
+
+    assert len(recorder.runs[0]) == 13
+    assert recorder.runs[0][10] is block_table
+    assert all(scale.shape == (2, 2) for scale in recorder.runs[0][5:8])
+
+
+def test_contiguous_decode_target_does_not_get_builtin_padding(monkeypatch):
+    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        seqlen_kv=8,
+        dim=8,
+        target="gqa_fake",
+    )
+    q = torch.randn(2, 4, 8, dtype=torch.float16)
+    k = torch.randn(2, 3, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    recorder = _assert_gqa_seam(op, (q, k, v), monkeypatch)
+
+    assert len(recorder.runs[0]) == 3
+    assert recorder.runs[0][1].shape[1] == 3, "padding is a BUILTIN implementation detail"
+
+
+def test_paged_decode_gqa_target_gets_the_manifest_abi(monkeypatch):
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        seqlen_kv=32,
+        dim=8,
+        page_size=4,
+        target="gqa_fake",
+    )
+    q = torch.randn(2, 4, 8, dtype=torch.float16)
+    k = torch.randn(32, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    real_lens = torch.tensor([7, 11], dtype=torch.int32)
+    block_table = torch.arange(16, dtype=torch.int32).view(2, 8)
+    recorder = _assert_gqa_seam(
+        op, (q, k, v, real_lens, block_table), monkeypatch
+    )
+
+    assert len(recorder.runs[0]) == 5
 
 
 def test_the_target_is_settled_once_and_kept():

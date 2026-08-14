@@ -684,7 +684,7 @@ def test_gqa_prefill_paged_native_fp8_causal_window_softcap_tail(
         block_table,
     )
 
-    assert "gqa_prefill_paged_native_fp8_tensor_core_fwd_kernel" in op._kernel_roles
+    assert op._get_kernel(fp8).__class__.__name__ == ("GQAPrefillPagedNativeFP8TensorCoreFwdKernel")
     torch.testing.assert_close(output, ref, atol=0.12, rtol=0.10)
     for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
         q_start = int(cu_seqlens_q[b].item())
@@ -1271,7 +1271,7 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
         atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
         torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
-    assert set(op.built_kernels("gqa_prefill_paged_with_kv_cache_fwd_kernel")) == {
+    assert {key[1] for key in op.built_kernels("gqa_prefill_paged")} == {
         torch.float16,
         torch.bfloat16,
     }

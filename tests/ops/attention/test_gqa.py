@@ -761,7 +761,7 @@ def test_gqa_prefill_varlen_native_fp8_causal_window_softcap_tail() -> None:
 
     output = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
-    assert "gqa_prefill_varlen_fp8_tensor_core_fwd_kernel" in op._kernel_roles
+    assert op._get_kernel(fp8).__class__.__name__ == ("GQAPrefillVarlenFP8TensorCoreFwdKernel")
     torch.testing.assert_close(output, ref, atol=0.12, rtol=0.10)
 
 
@@ -1061,7 +1061,7 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> N
     assert op(q, k, v).shape == q.shape
     assert op(q, k, v).shape == q.shape
 
-    assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [(torch.float16, torch.float16)]
+    assert list(op.built_kernels("gqa_prefill_dense")) == [(q.device, torch.float16, None, None)]
     assert _op_valued_attrs(op) == []
 
 
