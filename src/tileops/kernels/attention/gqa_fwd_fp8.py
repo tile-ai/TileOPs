@@ -1113,6 +1113,7 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
     def _build_program(self) -> None:
         # Built inside the wrapped custom op; the schedule is fixed by contract.
         self.kernel = None
+        self._rope_dummy: dict[torch.device, torch.Tensor] = {}
 
     def _uses_bn224_fast_schedule(self) -> bool:
         return (
@@ -1150,7 +1151,14 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires q/k/v descales.")
         if rope_cos is None or rope_sin is None:
-            raise ValueError("native FP8 prefill requires prepared RoPE or dummy tables")
+            if self.fuse_rope:
+                raise ValueError("fused RoPE requires prepared cosine and sine tables")
+            dummy = self._rope_dummy.get(q.device)
+            if dummy is None:
+                dummy = torch.empty((1, 1), device=q.device, dtype=self.dtype)
+                self._rope_dummy[q.device] = dummy
+            rope_cos = dummy
+            rope_sin = dummy
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         if self._uses_bn224_fast_schedule():
             _validate_fa3_gqa_descales(
