@@ -1,7 +1,7 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/logo.png" width="360"/>
 
-<h3>Spec-driven GPU operators for LLMs — built by agents</h3>
+<h3>Spec-driven LLM operators across backends — built by agents</h3>
 
 <p>The spec is the source; kernels are derived from it and judged against it.</p>
 
