@@ -3,7 +3,7 @@ from typing import Any, Callable, Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.cublaslt_baseline import make_cublaslt_best
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
@@ -266,21 +266,22 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    bm.compare(
-        {"tileops": op, "torch-cublas": workload.torch_matmul}, a, b, record_as=op, params=locals()
-    )
-
     # Stronger baseline: cuBLASLt's fastest algorithm found by heuristic search
-    # (falling back to the default torch.matmul path when that is faster), timed
-    # by the same CUPTI harness. torch.matmul alone uses only cuBLAS's default
-    # top-1 heuristic, which is measurably slower than searchable algorithms on
-    # some shapes (small-M, tall-skinny, awkward-N) — comparing against it can
-    # credit a kernel with a win a cuBLASLt user would not concede. Conditional:
-    # skipped (leaving the torch-cublas baseline) when cuBLASLt is unavailable.
+    # (falling back to the plain torch.matmul path when that is faster).
+    # torch.matmul alone uses cuBLAS's default top-1 heuristic, measurably
+    # slower than searchable algorithms on some shapes (small-M, tall-skinny,
+    # awkward-N) — comparing against it can credit a kernel with a win a
+    # cuBLASLt user would not concede. It goes in the same plan as the other two
+    # so all three are timed in one forward-then-reversed pass: profiling it
+    # separately would time it in whatever thermal state the algorithm search
+    # left, against entries measured before that search ran. Absent from the
+    # plan when cuBLASLt cannot be loaded, leaving the torch-cublas baseline.
+    plan = {"tileops": op, "torch-cublas": workload.torch_matmul}
     best_fn = make_cublaslt_best(m, n, k, dtype, trans_a, trans_b)
     if best_fn is not None:
-        result_lt = bm.profile(best_fn, a, b)
-        BenchmarkReport.record(op, locals(), result_lt, tag="cublaslt-best")
+        plan["cublaslt-best"] = best_fn
+
+    bm.compare(plan, a, b, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())
