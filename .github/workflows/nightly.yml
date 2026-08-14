@@ -173,6 +173,15 @@ jobs:
           fi
         shell: bash
 
+      - name: Record the run environment
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          python3 scripts/ci/collect_env.py > env.json
+          cat env.json
+        shell: bash
+
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v4
         if: ${{ always() }}
@@ -181,6 +190,7 @@ jobs:
           path: |
             tileops_benchmarks.log
             bench_results.xml
+            env.json
             bench_stack_dumps/
           if-no-files-found: warn
           retention-days: 14
@@ -407,9 +417,14 @@ jobs:
             echo "::warning::test_results.xml missing; page will render without test status"
           fi
           if [ "$ok" -eq 1 ]; then
-            run_date="$(date -u +%Y-%m-%d)"
-            printf '{\n  "commit": "%s",\n  "date": "%s",\n  "gpu": "NVIDIA H200",\n  "run_id": "%s"\n}\n' \
-              "${GITHUB_SHA}" "${run_date}" "${GITHUB_RUN_ID}" > _publish/meta.json
+            # The environment the benchmark job read off its own machine.
+            python3 scripts/ci/publish_meta.py \
+              --env-json _bench/env.json \
+              --commit "${GITHUB_SHA}" \
+              --run-id "${GITHUB_RUN_ID}" \
+              --date "$(date -u +%Y-%m-%d)" \
+              --out _publish/meta.json
+            cat _publish/meta.json
           fi
           echo "ok=${ok}" >> "$GITHUB_OUTPUT"
         shell: bash

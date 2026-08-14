@@ -29,7 +29,8 @@ IMG=ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-<short-sha>
 
 # 1. Build. --target tilelang for the dev tag, otherwise the same command.
 DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target final \
-  --build-arg TILELANG_GIT_SHA=<commit> -t "$IMG" .
+  --build-arg TILELANG_GIT_SHA=<commit> \
+  --build-arg TILEOPS_RUNNER_IMAGE="$IMG" -t "$IMG" .
 
 # 2. Verify on GPU (the build already ran the GPU-free stack check).
 docker run --rm --gpus all -v "$PWD:/src" "$IMG" python /src/scripts/ci/verify_runner_image.py
@@ -44,6 +45,11 @@ docker push "$IMG"
 
 **Point the runners at the new tag** — a maintainer task outside this repository. Merging a
 TileOPs PR only changes the recipe; the live runners keep their image until this happens.
+
+`--build-arg TILEOPS_RUNNER_IMAGE` bakes the tag in, so a run reports which image produced it —
+which the registry cannot answer later, since the host decides what it pulled and `latest` moves.
+`-e TILEOPS_RUNNER_IMAGE=<tag>` overrides for an image built before this; with neither, the
+nightly reports the image as unknown.
 
 Build an earlier stage to debug: `--target runtime`, `--target fa2`, etc.
 

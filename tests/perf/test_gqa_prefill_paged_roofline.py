@@ -6,7 +6,7 @@ from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 pytestmark = pytest.mark.smoke
 
 _PAGED_PREFILL_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
-_MIXED_QWEN_LABEL = "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64-fp16"
+_MIXED_QWEN_LABEL = "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64"
 _BENCH_Q_LENS = [256, 512, 768, 1024, 384, 640, 896, 128]
 _BENCH_CACHE_LENS = [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048]
 

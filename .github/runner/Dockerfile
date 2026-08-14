@@ -149,6 +149,10 @@ COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 
 FROM tilelang AS final
+# The image names itself, so a run can report which image produced it. Asking
+# the registry which tag is newest answers a different question. -e overrides.
+ARG TILEOPS_RUNNER_IMAGE=""
+ENV TILEOPS_RUNNER_IMAGE=${TILEOPS_RUNNER_IMAGE}
 # The host bind-mounts /ci-cache; the dirs are pre-created for unmounted runs.
 ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TILELANG_CACHE_DIR=/ci-cache/tilelang \
