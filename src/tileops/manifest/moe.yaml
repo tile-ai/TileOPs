@@ -279,6 +279,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     kernel_map:
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       silu_and_mul: SiluAndMulFwdKernel
       gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
@@ -332,6 +333,7 @@ FusedMoeFwdOp:
       fused_topk_kernel: FusedTopKKernel
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       silu_and_mul: SiluAndMulFwdKernel
       gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
@@ -385,6 +387,7 @@ FusedMoeFwdCbFwdOp:
       fused_topk_kernel: FusedTopKKernel
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       silu_and_mul: SiluAndMulFwdKernel
       gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel

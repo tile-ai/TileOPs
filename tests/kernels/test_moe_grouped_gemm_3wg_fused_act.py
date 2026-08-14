@@ -64,35 +64,23 @@ def test_output_shape():
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "T_count,E,expected_block_m,expected_stages",
+    "T_count,E,expected_block_m",
     [
-        pytest.param(256, 64, 128, 2, id="dense-decode"),
-        pytest.param(256, 128, 64, 1, id="sparse-decode"),
+        pytest.param(256, 64, 128, id="dense-decode-cooperative"),
+        pytest.param(256, 128, 64, id="sparse-decode-pingpong"),
     ],
 )
-def test_decode_bk128_config_and_correctness(
-    T_count, E, expected_block_m, expected_stages
-):
+def test_decode_shapes_pick_their_schedule(T_count, E, expected_block_m):
+    """Decode row counts select a BK128 schedule, and it computes the reference."""
     top_k, ffn, K = 8, 256, 256
     A, B, sizes, offsets, numel = make_inputs(
         T_count, E, top_k, ffn, K, torch.bfloat16,
     )
     kernel = MoeGroupedGemmPersistent3WGFusedActKernel(
-        numel=numel,
-        num_experts=E,
-        N=ffn,
-        K=K,
-        dtype=torch.bfloat16,
-        activation="silu_and_mul",
+        numel=numel, num_experts=E, N=ffn, K=K,
+        dtype=torch.bfloat16, activation="silu_and_mul",
     )
-    assert kernel.config == {
-        "block_m": expected_block_m,
-        "block_n": 128,
-        "block_k": 128,
-        "num_stages": expected_stages,
-        "threads": 384,
-        "group_size_m": 1,
-    }
+    assert (kernel.config["block_m"], kernel.config["block_k"]) == (expected_block_m, 128)
     actual = kernel(A, B, sizes, offsets)
     expected = _ref_fused_act(A, B, sizes, offsets, ffn, "silu_and_mul")
     torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)

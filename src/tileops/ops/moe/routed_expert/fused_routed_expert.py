@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from functools import partial
 from typing import Dict, Optional
 
 from torch import Tensor
@@ -16,12 +15,11 @@ from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
-
-# Imported unconditionally: the eligibility check reads its block_n even when
-# use_fused_activation ends up False. The wrapper class itself is deferred to
-# the fused branch (imported lazily in __init__).
 from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
     _DEFAULT_CONFIG as _FUSED_ACT_DEFAULT_CONFIG,
+)
+from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
+    DECODE_MAX_ROWS_PER_EXPERT,
 )
 from tileops.ops.moe._activation import build_activation_op
 
@@ -41,8 +39,9 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-_DECODE_MAX_ROUTED_ROWS_PER_EXPERT = 32
-_MIN_DECODE_CTA_TILES = 264
+# Two full waves on the architectures the 3WG kernels are built for (SM90, 132
+# SMs). Below this the decode schedules trade occupancy for a tail.
+_MIN_DECODE_CTA_TILES = 2 * 132
 _DECODE_DOWN_CONFIG = {
     "block_m": 64,
     "block_n": 256,
@@ -171,6 +170,8 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         # non-3WG override would produce a fused 3WG gate_up next to an
         # overridden down GEMM. That combination is refused below.
         gemm_override = (kernel_map or {}).get("moe_grouped_gemm_kernel")
+        # Eligibility is read from the fused kernel's own threshold and block
+        # sizes; the wrapper class is imported lazily in the fused branch below.
         routed_rows_per_expert = numel / max(1, num_experts_local)
         fused_block_n = _FUSED_ACT_DEFAULT_CONFIG["block_n"]
         fused_block_m = _FUSED_ACT_DEFAULT_CONFIG["block_m"]
@@ -184,7 +185,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             and gemm_override is None
             and kernel_cls is GroupedGemmPersistent3WGKernel
             and activation in ("silu_and_mul", "gelu_and_mul")
-            and routed_rows_per_expert <= _DECODE_MAX_ROUTED_ROWS_PER_EXPERT
+            and routed_rows_per_expert <= DECODE_MAX_ROWS_PER_EXPERT
             and ffn_size % fused_block_n == 0
             and hidden_size % fused_block_k == 0
             and fused_cta_tiles >= _MIN_DECODE_CTA_TILES
@@ -251,25 +252,21 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             _DECODE_DOWN_CONFIG["block_n"],
         )
         self._down_kernel_config = None
-        down_kernel_cls = kernel_cls
         if (
             gemm_kernel is None
             and gemm_override is None
             and kernel_cls is GroupedGemmPersistent3WGKernel
-            and routed_rows_per_expert <= _DECODE_MAX_ROUTED_ROWS_PER_EXPERT
+            and routed_rows_per_expert <= DECODE_MAX_ROWS_PER_EXPERT
             and hidden_size % _DECODE_DOWN_CONFIG["block_n"] == 0
             and ffn_size % _DECODE_DOWN_CONFIG["block_k"] == 0
             and down_cta_tiles >= _MIN_DECODE_CTA_TILES
         ):
             self._down_kernel_config = dict(_DECODE_DOWN_CONFIG)
-            down_kernel_cls = partial(
-                GroupedGemmPersistent3WGKernel,
-                config=self._down_kernel_config,
-            )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size,
-            kernel_map={"moe_grouped_gemm_kernel": down_kernel_cls, **(kernel_map or {})},
+            config=self._down_kernel_config,
+            kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens, top_k=top_k,

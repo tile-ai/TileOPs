@@ -17,7 +17,13 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["MoeGroupedGemmPersistent3WGFusedActKernel"]
+__all__ = ["DECODE_MAX_ROWS_PER_EXPERT", "MoeGroupedGemmPersistent3WGFusedActKernel"]
+
+#: Routed rows per local expert at or below which a batch is decode-shaped, and
+#: the fused epilogue plus the BK128 schedules below are the faster pipeline.
+DECODE_MAX_ROWS_PER_EXPERT = 32
+#: Below this the tile is too thin for the cooperative split; use pingpong.
+_DECODE_SPARSE_ROWS_PER_EXPERT = 16
 
 _DEFAULT_CONFIG = {
     "block_m": 128, "block_n": 128, "block_k": 64,
@@ -79,9 +85,11 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
     @property
     def default_config(self) -> dict:
         rows_per_expert = self.numel / self.num_experts
-        if self.K % 128 == 0 and rows_per_expert <= 16:
+        if self.K % 128 != 0:
+            return dict(_DEFAULT_CONFIG)
+        if rows_per_expert <= _DECODE_SPARSE_ROWS_PER_EXPERT:
             return dict(_DECODE_SPARSE_CONFIG)
-        if self.K % 128 == 0 and rows_per_expert <= 32:
+        if rows_per_expert <= DECODE_MAX_ROWS_PER_EXPERT:
             return dict(_DECODE_DENSE_CONFIG)
         return dict(_DEFAULT_CONFIG)
 

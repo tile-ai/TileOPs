@@ -27,6 +27,7 @@ class MoeGroupedGemmNopadFwdOp(Op):
         n: Output feature dimension N (e.g. 2*ffn_size or hidden_size).
         k: Input feature dimension K (hidden_size or ffn_size).
         kernel_map: Optional kernel override dict.
+        config: Optional kernel config; ``None`` leaves the kernel its own default.
         tune: Whether to autotune.
 
     Example:
@@ -42,12 +43,14 @@ class MoeGroupedGemmNopadFwdOp(Op):
         n: int,
         k: int,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
         self.numel = numel
         self.num_experts = num_experts
         self.n = n
         self.k = k
+        self.kernel_config = config
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -58,7 +61,7 @@ class MoeGroupedGemmNopadFwdOp(Op):
             key=dtype,
             build=lambda: self.kernel_map["moe_grouped_gemm_kernel"](
                 self.numel, self.num_experts, self.n, self.k,
-                dtype=dtype, tune=self.tune,
+                dtype=dtype, config=self.kernel_config, tune=self.tune,
             ),
         )
 
