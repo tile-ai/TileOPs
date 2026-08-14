@@ -11,7 +11,8 @@ from tileops.kernels.online_softmax import (
     make_online_softmax_with_score_scale,
 )
 
-from .call_spec import ATTENTION_DTYPES, uses_sliding_window
+from .call_spec import ATTENTION_DTYPES
+from .fp8_prefill_core import make_native_fp8_prefill_tile_update
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel"]
@@ -22,6 +23,211 @@ TMA_SWIZZLE_128B = 3
 TMA_L2_PROMOTION_128B = 2
 TMA_OOB_FILL_NONE = 0
 _FP8_GQA_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_fp8_gqa_helper.h"))
+
+
+@functools.lru_cache(maxsize=32)
+def _gqa_fwd_fp8_general_kernel(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    dim: int,
+    is_causal: bool,
+    sm_scale: float,
+    softcap: float,
+    window_size_left: int,
+    window_size_right: int,
+    out_dtype: str,
+) -> Callable:
+    """Native-FP8 dense attention for semantic/tail regions outside BN224."""
+    groups = heads // heads_kv
+    offset = seq_len_kv - seq_len_q
+    accum_dtype = "float"
+    fp8 = "float8_e4m3fn"
+
+    @tilelang.jit(
+        out_idx=[6],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "--use_fast_math", "-DENABLE_BF16"],
+    )
+    def build(block_m: int, block_n: int, num_stages: int, threads: int) -> Callable:
+        q_shape = (batch, seq_len_q, heads, dim)
+        kv_shape = (batch, seq_len_kv, heads_kv, dim)
+        scale_shape = (batch, heads_kv)
+        out_shape = (batch, seq_len_q, heads, dim)
+        fp8_tile_update = make_native_fp8_prefill_tile_update(
+            is_causal=is_causal,
+            softcap=softcap,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
+            accum_dtype=accum_dtype,
+            block_m=block_m,
+            block_n=block_n,
+            dim=dim,
+        )
+
+        @T.prim_func
+        def main(
+            q: T.Tensor(q_shape, fp8),  # type: ignore
+            k: T.Tensor(kv_shape, fp8),  # type: ignore
+            v: T.Tensor(kv_shape, fp8),  # type: ignore
+            q_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
+            k_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
+            v_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
+            output: T.Tensor(out_shape, out_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(T.ceildiv(seq_len_q, block_m), heads, batch, threads=threads) as (
+                bx,
+                by,
+                bz,
+            ):
+                q_shared = T.alloc_shared([block_m, dim], fp8)
+                k_shared = T.alloc_shared([block_n, dim], fp8)
+                v_shared = T.alloc_shared([block_n, dim], fp8)
+                acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
+                prob_fp8 = T.alloc_shared([block_m, block_n], fp8)
+                acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
+                scores_max = T.alloc_fragment([block_m], accum_dtype)
+                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                scores_sum = T.alloc_fragment([block_m], accum_dtype)
+                logsum = T.alloc_fragment([block_m], accum_dtype)
+
+                kv_head = by // groups
+                score_descale = q_scale[bz, kv_head] * k_scale[bz, kv_head]
+                value_descale = v_scale[bz, kv_head]
+                for i, d in T.Parallel(block_m, dim):
+                    if bx * block_m + i < seq_len_q:
+                        q_shared[i, d] = q[bz, bx * block_m + i, by, d]
+                    else:
+                        q_shared[i, d] = T.cast(0, fp8)
+                T.clear(acc_o)
+                T.clear(logsum)
+                T.fill(scores_max, -T.infinity(accum_dtype))
+
+                if is_causal:
+                    k_end = T.ceildiv(T.min(seq_len_kv, (bx + 1) * block_m + offset), block_n)
+                elif window_size_right >= 0:
+                    k_end = T.ceildiv(
+                        T.min(
+                            seq_len_kv,
+                            (bx + 1) * block_m + offset + window_size_right,
+                        ),
+                        block_n,
+                    )
+                else:
+                    k_end = T.ceildiv(seq_len_kv, block_n)
+                if window_size_left >= 0:
+                    k_start = T.max(0, bx * block_m + offset - window_size_left) // block_n
+                else:
+                    k_start = 0
+
+                for k_offset in T.Pipelined(T.max(k_end - k_start, 0), num_stages=num_stages):
+                    k_idx = k_start + k_offset
+                    for j, d in T.Parallel(block_n, dim):
+                        kv_pos = k_idx * block_n + j
+                        if kv_pos < seq_len_kv:
+                            k_shared[j, d] = k[bz, kv_pos, kv_head, d]
+                            v_shared[j, d] = v[bz, kv_pos, kv_head, d]
+                        else:
+                            k_shared[j, d] = T.cast(0, fp8)
+                            v_shared[j, d] = T.cast(0, fp8)
+
+                    fp8_tile_update(
+                        q_shared,
+                        k_shared,
+                        v_shared,
+                        acc_s,
+                        prob_fp8,
+                        acc_o,
+                        scores_max,
+                        scores_max_prev,
+                        scores_scale,
+                        scores_sum,
+                        logsum,
+                        k_idx,
+                        bx,
+                        seq_len_q,
+                        seq_len_kv,
+                        offset,
+                        score_descale * sm_scale,
+                    )
+
+                for i, d in T.Parallel(block_m, dim):
+                    if bx * block_m + i < seq_len_q:
+                        output[bz, bx * block_m + i, by, d] = (
+                            acc_o[i, d] * value_descale / logsum[i]
+                        )
+
+        return main
+
+    return build
+
+
+@torch.library.custom_op("top::gqa_fwd_fp8_general_wrapped_kernel", mutates_args=())
+def _gqa_fwd_fp8_general_wrapped_kernel(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    dim: int,
+    is_causal: bool,
+    sm_scale: float,
+    softcap: float,
+    window_size_left: int,
+    window_size_right: int,
+    out_dtype: str,
+    block_m: int,
+    block_n: int,
+    num_stages: int,
+    threads: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    q_scale: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+) -> torch.Tensor:
+    return _gqa_fwd_fp8_general_kernel(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_q,
+        seq_len_kv,
+        dim,
+        is_causal,
+        sm_scale,
+        softcap,
+        window_size_left,
+        window_size_right,
+        out_dtype,
+    )(block_m, block_n, num_stages, threads)(q, k, v, q_scale, k_scale, v_scale)
+
+
+@_gqa_fwd_fp8_general_wrapped_kernel.register_fake
+def _(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    dim: int,
+    is_causal: bool,
+    sm_scale: float,
+    softcap: float,
+    window_size_left: int,
+    window_size_right: int,
+    out_dtype: str,
+    block_m: int,
+    block_n: int,
+    num_stages: int,
+    threads: int,
+    *inputs: Tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    dtype = torch.float16 if out_dtype == "float16" else torch.bfloat16
+    return torch.empty((batch, seq_len_q, heads, dim), dtype=dtype, device=inputs[0].device)
 
 
 @functools.lru_cache(maxsize=32)
@@ -709,7 +915,7 @@ def _expand_fa3_gqa_descales(
 
 
 class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
-    """BN224 WS FP8 GQA kernel with FA3-compatible 2D descales and TMA-V layout.
+    """Native-FP8 dense GQA family with a BN224 fast schedule.
 
     Query, key and value are always ``torch.float8_e4m3fn``; the only free dtype
     is the one the kernel writes, so ``dtype`` names the output element type.
@@ -719,17 +925,19 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
     ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
     config with a warning from ``Kernel.init_config``.
 
-    It serves square non-causal packed prefill only, and says so in ``applies``
-    rather than leaving the op to know it.
+    The BN224 producer/consumer schedule remains the fast region. Causal,
+    windowed, softcap, rectangular, and tail shapes stay in this native-FP8
+    family and use its general Tensor Core schedule; they never dequantize the
+    full inputs into a 16-bit attention fallback.
 
     Args:
         batch: Batch size.
         heads: Number of query heads.
         heads_kv: Number of key/value heads.
-        max_seqlen_q: Sequence length, a multiple of both 224 and 128.
-        max_seqlen_kv: Must equal ``max_seqlen_q``.
+        max_seqlen_q: Query sequence length.
+        max_seqlen_kv: Key/value sequence length.
         dim: Head dimension, which must be 128.
-        is_causal: Must be ``False``.
+        is_causal: Whether to apply bottom-right causal masking.
         dtype: Output dtype, ``torch.float16`` or ``torch.bfloat16``.
         config: Optional config dict. This kernel exposes no tunable knobs.
         tune: Whether to autotune. No-op for this kernel; see above.
@@ -739,39 +947,15 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return (
-            call.is_fp8
-            and call.backend in ("auto", "fp8")
-            and not call.is_causal
-            and not uses_sliding_window(call)
-            and call.is_uniform
-            and call.max_seqlen_q == call.max_seqlen_kv
-        )
+        return call.is_fp8 and call.is_uniform and call.dim == 128
 
     def _validate_spec(self) -> None:
         if self.dim != 128:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires dim == 128."
             )
-        if self.is_causal:
-            raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel supports non-causal prefill only."
-            )
-        if self.max_seqlen_q != self.max_seqlen_kv:
-            raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires "
-                "max_seqlen_q == max_seqlen_kv."
-            )
-        if self.max_seqlen_q % 224 != 0:
-            raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires "
-                "max_seqlen_q % 224 == 0."
-            )
-        if self.max_seqlen_q % 128 != 0:
-            raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires "
-                "max_seqlen_q % 128 == 0."
-            )
+        if self.is_causal and self.max_seqlen_q > self.max_seqlen_kv:
+            raise ValueError("causal FP8 prefill requires max_seqlen_q <= max_seqlen_kv")
         if self.dtype not in ATTENTION_DTYPES:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel outputs float16 or bfloat16."
@@ -780,6 +964,17 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
     def _build_program(self) -> None:
         # Built inside the wrapped custom op; the schedule is fixed by contract.
         self.kernel = None
+
+    def _uses_bn224_fast_schedule(self) -> bool:
+        return (
+            not self.is_causal
+            and not (self.window_size_left != -1 or self.window_size_right != -1)
+            and self.softcap == 0.0
+            and self.max_seqlen_q == self.max_seqlen_kv
+            and self.max_seqlen_q % 224 == 0
+            and self.max_seqlen_q % 128 == 0
+            and self.sm_scale == self.dim**-0.5
+        )
 
     def forward(
         self,
@@ -802,21 +997,47 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires q/k/v descales.")
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
-        q_expanded, k_expanded, v_expanded = _expand_fa3_gqa_descales(
-            q_scale, k_scale, v_scale, self.batch, self.heads, self.heads_kv, self.max_seqlen_q
-        )
-        output, _ = _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            self.max_seqlen_q,
-            self.dim,
-            self.dtype_str,
-            q_bshd,
-            k_bshd,
-            v_bshd,
-            q_expanded,
-            k_expanded,
-            v_expanded,
-        )
+        if self._uses_bn224_fast_schedule():
+            q_expanded, k_expanded, v_expanded = _expand_fa3_gqa_descales(
+                q_scale, k_scale, v_scale, self.batch, self.heads, self.heads_kv, self.max_seqlen_q
+            )
+            output, _ = _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
+                self.batch,
+                self.heads,
+                self.heads_kv,
+                self.max_seqlen_q,
+                self.dim,
+                self.dtype_str,
+                q_bshd,
+                k_bshd,
+                v_bshd,
+                q_expanded,
+                k_expanded,
+                v_expanded,
+            )
+        else:
+            output = _gqa_fwd_fp8_general_wrapped_kernel(
+                self.batch,
+                self.heads,
+                self.heads_kv,
+                self.max_seqlen_q,
+                self.max_seqlen_kv,
+                self.dim,
+                self.is_causal,
+                self.sm_scale,
+                self.softcap,
+                self.window_size_left,
+                self.window_size_right,
+                self.dtype_str,
+                64,
+                64,
+                1,
+                128,
+                q_bshd,
+                k_bshd,
+                v_bshd,
+                q_scale,
+                k_scale,
+                v_scale,
+            )
         return output.reshape(q.shape)

@@ -53,7 +53,6 @@ __all__ = [
     "gqa_fwd_roofline",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
-    "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "grouped_gemm_roofline",
     "gt_fwd_roofline",
@@ -116,9 +115,18 @@ def mha_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     is_causal = bool(data.get("is_causal", True))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    flops = 4 * batch * heads * seq_len * seq_len * dim
-    if is_causal:
-        flops //= 2
+    window_size_left = int(data.get("window_size_left", -1))
+    window_size_right = int(data.get("window_size_right", -1))
+    visible = 0
+    for q_idx in range(seq_len):
+        lo = max(0, q_idx - window_size_left) if window_size_left >= 0 else 0
+        hi = seq_len - 1
+        if is_causal:
+            hi = q_idx
+        elif window_size_right >= 0:
+            hi = min(hi, q_idx + window_size_right)
+        visible += max(hi - lo + 1, 0)
+    flops = 4 * batch * heads * visible * dim
     q_elems = batch * seq_len * heads * dim
     kv_elems = q_elems
     return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
@@ -153,25 +161,41 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for grouped-query attention forward (prefill)."""
     data = _shape_or_attrs(op, kwargs)
     if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-        _, _, heads_kv, _ = data["kv_shape"]
+        batch, seq_len_q, heads, dim = data["q_shape"]
+        _, seq_len_kv, heads_kv, _ = data["kv_shape"]
     else:
-        batch, seq_len, heads, heads_kv, dim = (
+        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = (
             data["batch"],
             data["seq_len"],
+            data.get("seq_len_kv", data["seq_len"]),
             data["heads"],
             data["heads_kv"],
             data["dim"],
         )
     is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    window_size_left = int(data.get("window_size_left", -1))
+    window_size_right = int(data.get("window_size_right", -1))
+    input_dtype = data.get(
+        "dtype", data.get("input_dtype", data.get("dtypes", "float16"))
+    )
+    output_dtype = data.get("output_dtype") or data.get("dtypes") or input_dtype
+    input_bytes = _dtype_itemsize(input_dtype)
+    output_bytes = _dtype_itemsize(output_dtype)
 
-    flops = 4 * batch * heads * seq_len * seq_len * dim
-    if is_causal:
-        flops //= 2
-    q_elems = batch * seq_len * heads * dim
-    kv_elems = batch * seq_len * heads_kv * dim
-    return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
+    visible = _prefill_visible_scores(
+        seq_len_q,
+        seq_len_kv,
+        is_causal=is_causal,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+    )
+    flops = 4 * batch * heads * visible * dim
+    q_elems = batch * seq_len_q * heads * dim
+    kv_elems = batch * seq_len_kv * heads_kv * dim
+    nbytes = (q_elems + 2 * kv_elems) * input_bytes + q_elems * output_bytes
+    if "float8" in str(input_dtype):
+        nbytes += 3 * batch * heads_kv * 4
+    return int(flops), int(nbytes)
 
 
 def _dtype_itemsize(dtype: Any) -> int:
@@ -188,7 +212,12 @@ def _dtype_itemsize(dtype: Any) -> int:
         return 4
     if "float64" in dtype_name or "int64" in dtype_name:
         return 8
-    if "bool" in dtype_name or "int8" in dtype_name or "uint8" in dtype_name:
+    if (
+        "bool" in dtype_name
+        or "int8" in dtype_name
+        or "uint8" in dtype_name
+        or "float8" in dtype_name
+    ):
         return 1
     return 2
 
@@ -250,6 +279,35 @@ def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[i
         2 * batch * heads * num_chunks * chunk_size * chunk_size * (chunk_size + dim_k)
     )
     return int(prefill_flops + blocksolve_flops), int(prefill_bytes + extra)
+
+
+def _prefill_visible_scores(
+    seq_len_q: int,
+    seq_len_kv: int,
+    *,
+    is_causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+) -> int:
+    """Count bottom-right-aligned visible QK pairs exactly.
+
+    This is a benchmark cost model, evaluated once per case, so the explicit
+    row loop is preferable to several fragile piecewise closed forms.
+    """
+    offset = seq_len_kv - seq_len_q
+    visible = 0
+    for q_pos in range(seq_len_q):
+        center = q_pos + offset
+        lower = 0
+        upper = seq_len_kv - 1
+        if window_size_left >= 0:
+            lower = max(lower, center - window_size_left)
+        if is_causal:
+            upper = min(upper, center)
+        elif window_size_right >= 0:
+            upper = min(upper, center + window_size_right)
+        visible += max(upper - lower + 1, 0)
+    return visible
 
 
 def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -378,7 +436,12 @@ def gqa_prefill_varlen_fwd_roofline(
     max_seqlen_q = int(data["max_seqlen_q"])
     max_seqlen_kv = int(data["max_seqlen_kv"])
     is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    window_size_left = int(data.get("window_size_left", -1))
+    window_size_right = int(data.get("window_size_right", -1))
+    input_dtype = data.get("dtype", data.get("dtypes", "float16"))
+    output_dtype = data.get("output_dtype") or input_dtype
+    input_bytes = _dtype_itemsize(input_dtype)
+    output_bytes = _dtype_itemsize(output_dtype)
 
     q_lens = data.get("q_lens")
     kv_lens = data.get("kv_lens")
@@ -395,10 +458,12 @@ def gqa_prefill_varlen_fwd_roofline(
 
     visible = 0
     for q_len, kv_len in zip(q_lens, kv_lens, strict=True):
-        visible += (
-            _causal_prefill_visible_scores(int(q_len), int(kv_len))
-            if is_causal
-            else int(q_len) * int(kv_len)
+        visible += _prefill_visible_scores(
+            int(q_len),
+            int(kv_len),
+            is_causal=is_causal,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
         )
     flops = 4 * heads * visible * dim
 
@@ -406,7 +471,13 @@ def gqa_prefill_varlen_fwd_roofline(
     kv_elems = total_kv * heads_kv * dim
     o_elems = q_elems
     cu_bytes = 2 * (batch + 1) * 4
-    nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes + cu_bytes
+    scale_bytes = 3 * batch * heads_kv * 4
+    nbytes = (
+        (q_elems + 2 * kv_elems) * input_bytes
+        + o_elems * output_bytes
+        + cu_bytes
+        + scale_bytes
+    )
     return int(flops), int(nbytes)
 
 
@@ -430,7 +501,15 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(
     page_size = int(data["page_size"])
     max_seqlen_q = int(data.get("max_seqlen_q", max_pages_per_req * page_size))
     is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    window_size_left = int(data.get("window_size_left", -1))
+    window_size_right = int(data.get("window_size_right", -1))
+    input_dtype = data.get("dtype", data.get("dtypes", "float16"))
+    cache_dtype = data.get("cache_dtype") or input_dtype
+    output_dtype = data.get("output_dtype") or input_dtype
+    input_bytes = _dtype_itemsize(input_dtype)
+    cache_bytes = _dtype_itemsize(cache_dtype)
+    output_bytes = _dtype_itemsize(output_dtype)
+    append_kv = bool(data.get("append_kv", True))
 
     q_lens = data.get("q_lens")
     if total_q is None and q_lens is not None:
@@ -451,20 +530,29 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(
         q_len = int(q_len)
         old_len = int(old_len)
         old_kv_tokens += old_len
-        visible += (
-            q_len * old_len + q_len * (q_len + 1) // 2 if is_causal else q_len * (old_len + q_len)
+        visible += _prefill_visible_scores(
+            q_len,
+            old_len + q_len,
+            is_causal=is_causal,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
         )
     flops = 4 * heads * visible * dim
 
     q_elems = total_q * heads * dim
     old_kv_elems = 2 * old_kv_tokens * heads_kv * dim
     new_kv_elems = 2 * total_q * heads_kv * dim
-    append_kv_elems = new_kv_elems
+    append_kv_elems = new_kv_elems if append_kv else 0
     o_elems = q_elems
     metadata_bytes = (batch + 1) * 4 + batch * 4 + batch * max_pages_per_req * 4
+    scale_bytes = 3 * batch * heads_kv * 4
     nbytes = (
-        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
-    ) * elem_bytes + metadata_bytes
+        (q_elems + new_kv_elems) * input_bytes
+        + (old_kv_elems + append_kv_elems) * cache_bytes
+        + o_elems * output_bytes
+        + metadata_bytes
+        + scale_bytes
+    )
     return int(flops), int(nbytes)
 
 
@@ -589,38 +677,6 @@ def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
     page_size = int(data["page_size"])
     metadata_bytes = batch * 4 + batch * max(1, (seqlen_kv + page_size - 1) // page_size) * 4
     nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
-    return int(flops), int(nbytes)
-
-
-# Sliding window attention
-
-
-def gqa_sliding_window_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for GQA sliding window forward."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-        _, _, heads_kv, _ = data["kv_shape"]
-    else:
-        batch, seq_len, heads, heads_kv, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    wl = int(data.get("window_size_left", -1))
-    wr = int(data.get("window_size_right", -1))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    total_attended = 0
-    for q_idx in range(seq_len):
-        hi = q_idx if is_causal else (min(seq_len - 1, q_idx + wr) if wr >= 0 else seq_len - 1)
-        lo = max(0, q_idx - wl) if wl >= 0 else 0
-        total_attended += hi - lo + 1
-    flops = 4 * batch * heads * total_attended * dim
-    nbytes = 2 * batch * seq_len * (heads + heads_kv) * dim * elem_bytes
     return int(flops), int(nbytes)
 
 
