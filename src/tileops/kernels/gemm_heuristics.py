@@ -28,7 +28,14 @@ shapes). Within these four structures, pinned shapes measure within ~2% of
 their ``GemmKernel._TUNED_CONFIGS`` entry; the ``simple``-structure pins
 (short-mainloop decode-down family) sit outside the candidate space and
 hold a 3-7% edge the selector cannot reproduce. Re-calibrate when kernel
-structures change materially.
+structures change materially — or when the target does. They describe one
+device class, and an SM90 part whose compute is capped elsewhere ranks wrong
+against them: ``perf/profiles/h20_3e.yaml`` is such a part, at ~15% of H200's
+tensor-core peak, and it clears ``supported_archs`` all the same. Reading them
+off that profile instead needs fields it does not carry (L2 and SMEM bandwidth,
+launch and issue latency) and a re-anchor, because the profile's peak times a
+calibration ratio is a different quantity from a per-structure achieved rate —
+substituting one for the other reopens every pinned config.
 
 Resource model mirrors ``tileops/kernels/gemm.py``:
 
