@@ -219,6 +219,42 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
     return fn
 
 
+def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):
+    """Return an ABI-compatible FA3 varlen baseline when available.
+
+    FA3's Hopper FP8 path returns BF16, so an FP8 workload requesting FP16
+    output is intentionally not compared against it.
+    """
+    if test.dtype == getattr(torch, "float8_e4m3fn", None) and test.output_dtype != torch.bfloat16:
+        return None
+    try:
+        from flash_attn_interface import flash_attn_varlen_func
+    except ImportError:
+        return None
+
+    def fn(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale):
+        fp8 = q.dtype == getattr(torch, "float8_e4m3fn", None)
+        out = flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            test.max_seqlen_q,
+            test.max_seqlen_kv,
+            softmax_scale=test.sm_scale,
+            causal=test.is_causal,
+            q_descale=q_scale if fp8 else None,
+            k_descale=k_scale if fp8 else None,
+            v_descale=v_scale if fp8 else None,
+            window_size=(test.window_size_left, test.window_size_right),
+            softcap=test.softcap or 0.0,
+        )
+        return out[0] if isinstance(out, tuple) else out
+
+    return fn
+
+
 def _tileops_gqa_variant(op: GroupedQueryAttentionPrefillDenseFwdOp, dtype: torch.dtype) -> str:
     kernel = op._get_kernel(dtype)
     if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
@@ -432,12 +468,13 @@ def test_gqa_prefill_varlen_fwd_bench(
     )
     bm = ManifestBenchmark("GroupedQueryAttentionPrefillVarlenFwdOp", op, test)
 
-    bm.compare(
-        {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)},
-        *inputs,
-        record_as=op,
-        params=locals(),
-    )
+    functors = {"tileops": op}
+    fa3_fn = None if fuse_rope else _fa3_gqa_prefill_varlen(test)
+    if fa3_fn is not None:
+        functors["fa3"] = fa3_fn
+    else:
+        functors["torch-ref"] = _torch_gqa_prefill_varlen_ref(test)
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 def _fp8_paged_cache_inputs(
@@ -483,6 +520,64 @@ def _fp8_paged_cache_inputs(
         cache_seqlens,
         block_table,
     )
+
+
+def _fa3_gqa_prefill_paged(test: GQAPrefillPagedWithKVCacheFwdWorkload):
+    """Return an exact FA3 baseline for native-FP8 paged append prefill."""
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if (
+        fp8 is None
+        or test.dtype != fp8
+        or test.cache_dtype != fp8
+        or test.output_dtype != torch.bfloat16
+        or not test.append_kv
+    ):
+        return None
+    try:
+        from flash_attn_interface import flash_attn_with_kvcache
+    except ImportError:
+        return None
+
+    def fn(
+        q,
+        k_new,
+        v_new,
+        k_pages,
+        v_pages,
+        q_scale,
+        k_scale,
+        v_scale,
+        cu_seqlens_q,
+        cache_seqlens,
+        block_table,
+        *rope_tables,
+    ):
+        rope_cos, rope_sin = rope_tables if test.fuse_rope else (None, None)
+        out = flash_attn_with_kvcache(
+            q,
+            k_pages.view(-1, test.page_size, test.heads_kv, test.dim),
+            v_pages.view(-1, test.page_size, test.heads_kv, test.dim),
+            k=k_new,
+            v=v_new,
+            rotary_cos=rope_cos,
+            rotary_sin=rope_sin,
+            cache_seqlens=cache_seqlens,
+            page_table=block_table,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k_new=cu_seqlens_q,
+            max_seqlen_q=test.max_seqlen_q,
+            q_descale=q_scale,
+            k_descale=k_scale,
+            v_descale=v_scale,
+            softmax_scale=test.sm_scale,
+            causal=test.is_causal,
+            window_size=(test.window_size_left, test.window_size_right),
+            softcap=test.softcap,
+            rotary_interleaved=test.rope_layout == "interleaved",
+        )
+        return out[0] if isinstance(out, tuple) else out
+
+    return fn
 
 
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
@@ -604,5 +699,9 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     op.cache_lens = cache_lens
     op.max_seqlen_q = test.max_seqlen_q
     bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    fa3_fn = _fa3_gqa_prefill_paged(test)
+    if fa3_fn is not None:
+        bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs, record_as=op, params=locals())
+    else:
+        result = bm.profile(op, *inputs)
+        BenchmarkReport.record(op, locals(), result, tag="tileops")

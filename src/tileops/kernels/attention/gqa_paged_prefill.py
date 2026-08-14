@@ -306,13 +306,31 @@ def _gqa_paged_attention_kernel(
                 T.clear(acc_o)
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
-                loop_range = (
-                    T.ceildiv(old_len + (bx + 1) * block_m, block_n)
-                    if is_causal
-                    else T.ceildiv(total_len, block_n)
-                )
+                if is_causal:
+                    k_end = T.ceildiv(
+                        T.min(total_len, old_len + (bx + 1) * block_m), block_n
+                    )
+                elif window_size_right >= 0:
+                    k_end = T.ceildiv(
+                        T.min(
+                            total_len,
+                            old_len + (bx + 1) * block_m + window_size_right,
+                        ),
+                        block_n,
+                    )
+                else:
+                    k_end = T.ceildiv(total_len, block_n)
 
-                for k_idx in T.Pipelined(loop_range, num_stages=num_stages):
+                if window_size_left >= 0:
+                    k_start = T.max(
+                        0, old_len + bx * block_m - window_size_left
+                    ) // block_n
+                else:
+                    k_start = 0
+                loop_range = T.max(k_end - k_start, 0)
+
+                for k_offset in T.Pipelined(loop_range, num_stages=num_stages):
+                    k_idx = k_start + k_offset
                     tile_start = k_idx * block_n
                     tile_end = tile_start + block_n
                     if tile_end <= old_len:

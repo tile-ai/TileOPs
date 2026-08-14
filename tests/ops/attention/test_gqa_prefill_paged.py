@@ -560,9 +560,17 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("append_kv", [True, False], ids=["append", "no-append"])
+@pytest.mark.parametrize(
+    ("append_kv", "output_dtype"),
+    [
+        pytest.param(True, torch.float16, id="append-fp16"),
+        pytest.param(False, torch.float16, id="no-append-fp16"),
+        pytest.param(True, torch.bfloat16, id="append-bf16"),
+    ],
+)
 def test_gqa_prefill_paged_native_fp8_causal_window_softcap_tail(
     append_kv: bool,
+    output_dtype: torch.dtype,
 ) -> None:
     fp8 = getattr(torch, "float8_e4m3fn", None)
     if fp8 is None:
@@ -571,10 +579,13 @@ def test_gqa_prefill_paged_native_fp8_causal_window_softcap_tail(
     if major != 9:
         pytest.skip("native FP8 paged prefill requires SM90")
 
-    q_lens, old_lens = [33, 47], [67, 80]
+    # The long prefix leaves complete leading K tiles outside the window. The
+    # kernel must begin at the first possibly-visible tile so online softmax
+    # never consumes an all-masked tile.
+    q_lens, old_lens = [33, 47], [195, 272]
     batch, heads, heads_kv, dim = 2, 8, 2, 128
     groups = heads // heads_kv
-    page_size, max_pages_per_req = 64, 4
+    page_size, max_pages_per_req = 64, 6
     num_pages = batch * max_pages_per_req
     block_table = _make_block_table(batch, max_pages_per_req)
     cu_seqlens_q = _make_cu_seqlens(q_lens)
@@ -642,7 +653,7 @@ def test_gqa_prefill_paged_native_fp8_causal_window_softcap_tail(
         is_causal=True,
         softcap=softcap,
         window_size_left=window_size_left,
-    )
+    ).to(output_dtype)
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
         heads=heads,
@@ -653,7 +664,7 @@ def test_gqa_prefill_paged_native_fp8_causal_window_softcap_tail(
         max_seqlen_q=max(q_lens),
         is_causal=True,
         cache_dtype=fp8,
-        dtype=torch.float16,
+        dtype=output_dtype,
         softcap=softcap,
         window_size_left=window_size_left,
         append_kv=append_kv,

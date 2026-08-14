@@ -267,6 +267,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     - {total_q: 2048, batch: 4, heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "gqa-prefill-paged-fp8-cache-softcap50-b4-prefix4k-chunk512-p64-fp16"}
     # Native FP8 Q/K/V + FP8 pages, including causal/window/softcap/tail semantics.
     - {total_q: 512, batch: 2, q_lens: [193, 319], cache_lens: [385, 511], heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 13, max_seqlen_q: 319, physical_tokens: 1664, is_causal: true, window_size_left: 256, softcap: 2.0, dtypes: [float8_e4m3fn], cache_dtype: float8_e4m3fn, output_dtype: float16, label: "llama31-8b-prefill-paged-native-fp8-causal-w256-softcap2-tail"}
+    - {total_q: 512, batch: 2, q_lens: [193, 319], cache_lens: [385, 511], heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 13, max_seqlen_q: 319, physical_tokens: 1664, is_causal: true, window_size_left: 256, softcap: 2.0, dtypes: [float8_e4m3fn], cache_dtype: float8_e4m3fn, output_dtype: bfloat16, label: "llama31-8b-prefill-paged-native-fp8-bf16out-causal-w256-softcap2-tail"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
@@ -588,6 +589,8 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
     - {total_q: 8192, total_kv: 8192, batch: 4, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, max_seqlen_kv: 2048, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long-w1024"}
     # Native FP8 Q/K/V, deliberately ragged and non-tile-aligned.
     - {total_q: 512, total_kv: 896, batch: 2, q_lens: [193, 319], kv_lens: [385, 511], heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, softcap: 2.0, max_seqlen_q: 319, max_seqlen_kv: 511, dtypes: [float8_e4m3fn], output_dtype: float16, label: "llama-3.1-8b-varlen-native-fp8-causal-w256-softcap2-tail"}
+    # Same operator shape with FA3's native FP8 output ABI for a direct performance baseline.
+    - {total_q: 512, total_kv: 896, batch: 2, q_lens: [193, 319], kv_lens: [385, 511], heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, softcap: 2.0, max_seqlen_q: 319, max_seqlen_kv: 511, dtypes: [float8_e4m3fn], output_dtype: bfloat16, label: "llama-3.1-8b-varlen-native-fp8-bf16out-causal-w256-softcap2-tail"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
