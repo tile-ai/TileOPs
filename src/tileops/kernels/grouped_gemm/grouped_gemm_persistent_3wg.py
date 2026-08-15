@@ -42,17 +42,6 @@ from ._config import launches_enough_ctas, rows_per_group_regime
 
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
-#: For shapes whose experts hold fewer rows than a default tile: shorter block, shorter
-#: pipeline. When it applies: ``_config``.
-_DECODE_CONFIG = {
-    "block_m": 64,
-    "block_n": 256,
-    "block_k": 64,
-    "num_stages": 2,
-    "threads": 384,
-    "group_size_m": 1,
-}
-
 _DEFAULT_CONFIG = {
     "block_m": 128,        # cooperative template (split-A, shared-B)
     "block_n": 256,
@@ -63,6 +52,17 @@ _DEFAULT_CONFIG = {
     # CTAs in a wave share B[e] columns in L2. 8 is the robust Triton-standard
     # default (~5% over 1 on compute-bound MoE shapes); autotune sweeps it.
     "group_size_m": 8,
+}
+
+#: For shapes whose groups hold fewer rows than a default tile: shorter block, shorter
+#: pipeline. ``_config.rows_per_group_regime`` says which shapes those are.
+_DECODE_CONFIG = {
+    "block_m": 64,
+    "block_n": 256,
+    "block_k": 64,
+    "num_stages": 2,
+    "threads": 384,
+    "group_size_m": 1,
 }
 
 

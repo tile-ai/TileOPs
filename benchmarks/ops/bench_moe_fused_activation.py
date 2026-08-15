@@ -3,17 +3,8 @@
 Measures the two pipelines the op chooses between, so the evidence behind
 MoeGroupedGemmPersistent3WGFusedActKernel.wants_fused_epilogue can be re-taken on
 another device or dtype. The op picks the fused pipeline by shape; this benchmark
-forces each one in turn across two representative regimes:
-
-  Regime    num_tokens  Description
-  --------  ----------  -----------------------------------------------
-  prefill       4096    LLaMA/Mistral-scale prefill (large token batch)
-  decode         128    Decode-phase (small live batch, latency-bound)
-
-Shape (fused-eligible: ffn_size % 128 == 0):
-
-  H=2048, F=768, E=8, K=2, dtype=bfloat16, activation=silu_and_mul
-  Model reference: Qwen2.5/Mistral-scale MoE configuration.
+forces each one in turn, at every shape the manifest lists for the op — both the
+decode rows, where the op fuses, and the prefill rows, where it does not.
 
 Timing covers the full experts forward() (permute → gate_up GEMM → activation
 → down GEMM → unpermute/weighted reduce). permute and unpermute are identical
@@ -47,18 +38,14 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
     MoeGroupedGemmPersistent3WGFusedActKernel,
 )
+from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
 from workloads.moe import MoeFusedActivationWorkload
 
-# Shape constants
-# Model reference: the Qwen3-235B rows of the manifest workload list
+_OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
 
-HIDDEN_SIZE = 7168   # H — model hidden dimension
-FFN_SIZE    = 2048   # F — per-expert FFN intermediate dim
-NUM_EXPERTS = 128    # E — total expert count
-TOP_K       = 8      # K — experts per token
-DTYPE       = torch.bfloat16
-ACTIVATION  = "silu_and_mul"
+# The torch reference below computes silu_and_mul, so the op must too.
+ACTIVATION = "silu_and_mul"
 
 
 # Workload
@@ -143,14 +130,27 @@ def _build(kwargs: dict, fused: bool) -> FusedMoEExpertsNopadPersistent3WGFwdOp:
 # Benchmark test
 
 
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        label = w.get("label", "unlabeled")
+        for dtype_str in w["dtypes"]:
+            params.append(pytest.param(
+                label, w["num_tokens"], w["num_experts"], w["top_k"],
+                w["hidden_size"], w["ffn_size"], getattr(torch, dtype_str),
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
+
+
 @pytest.mark.parametrize(
-    "regime, num_tokens",
-    [
-        pytest.param("prefill", 4096, id="qwen3-235b-prefill"),
-        pytest.param("decode",  512,  id="qwen3-235b-decode"),
-    ],
+    "label, num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
+    _manifest_params(),
 )
-def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
+def test_moe_fused_activation_bench(
+    label: str, num_tokens: int, num_experts: int, top_k: int,
+    hidden_size: int, ffn_size: int, dtype: torch.dtype,
+) -> None:
     if not torch.cuda.is_available():
         pytest.skip("No CUDA device found.")
     cap = torch.cuda.get_device_capability()
@@ -161,17 +161,17 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
         )
 
     workload = MoeFusedActivationWorkload(
-        num_tokens, HIDDEN_SIZE, FFN_SIZE, NUM_EXPERTS, TOP_K, DTYPE
+        num_tokens, hidden_size, ffn_size, num_experts, top_k, dtype
     )
     inputs   = workload.gen_inputs()
     hidden, w_gate_up, w_down, topk_weights, topk_ids = inputs
 
-    ws1 = torch.empty(0, dtype=DTYPE, device="cuda")
-    ws2 = torch.empty(0, dtype=DTYPE, device="cuda")
+    ws1 = torch.empty(0, dtype=dtype, device="cuda")
+    ws2 = torch.empty(0, dtype=dtype, device="cuda")
 
     kwargs = dict(
-        num_tokens=num_tokens, num_experts=NUM_EXPERTS, top_k=TOP_K,
-        hidden_size=HIDDEN_SIZE, ffn_size=FFN_SIZE,
+        num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
+        hidden_size=hidden_size, ffn_size=ffn_size,
         activation=ACTIVATION,
     )
 
@@ -179,16 +179,15 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
     op_fused   = _build(kwargs, fused=True)
     assert op_fused._fuses_activation, "the fused pipeline was not selected"
 
-
     bm = MoEFusedActBenchmark(workload)
-    out_unfused = torch.empty(num_tokens, HIDDEN_SIZE, dtype=DTYPE, device="cuda")
-    out_fused   = torch.empty(num_tokens, HIDDEN_SIZE, dtype=DTYPE, device="cuda")
+    out_unfused = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    out_fused   = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
 
     def _run_unfused(hidden, w_gate_up, w_down, topk_weights, topk_ids):
         out_unfused.zero_()
         op_unfused.forward(
             out_unfused, hidden, w_gate_up, w_down, topk_weights, topk_ids,
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=NUM_EXPERTS,
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=num_experts,
         )
         return out_unfused
 
@@ -196,7 +195,7 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
         out_fused.zero_()
         op_fused.forward(
             out_fused, hidden, w_gate_up, w_down, topk_weights, topk_ids,
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=NUM_EXPERTS,
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=num_experts,
         )
         return out_fused
 
@@ -214,7 +213,7 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
         torch.testing.assert_close(fused_result, ref, rtol=3e-2, atol=3e-2)
     except AssertionError as e:
         raise AssertionError(
-            f"[{regime}] Fused and unfused outputs disagree — "
+            f"[{label}] Fused and unfused outputs disagree — "
             "do not trust speedup numbers.\n" + str(e)
         ) from e
 
@@ -244,11 +243,11 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
     ms_unfused = result_unfused["latency_ms"]
     ms_fused = result_fused["latency_ms"]
 
-    # ---- Console summary for this regime ------------------------------------
+    # ---- Console summary for this workload ----------------------------------
     speedup = ms_unfused / ms_fused if ms_fused > 0 else float("nan")
     note = "  <- fused slower" if speedup < 1.0 else ""
     print(
-        f"\n[{regime}] num_tokens={num_tokens}"
+        f"\n[{label}] num_tokens={num_tokens}"
         f"  torch-ref={ms_torch:.4f}ms"
         f"  unfused={ms_unfused:.4f}ms  fused={ms_fused:.4f}ms"
         f"  speedup(fused/unfused)={speedup:.3f}x{note}"

@@ -33,15 +33,15 @@ _DECODE_DENSE_CONFIG = {
     "num_stages": 2, "threads": 384, "group_size_m": 1,
 }
 
-#: Multiprocessors assumed when the caller has no device to ask, as the op layer does
-#: not: the count on the parts these schedules were tuned on. A smaller part misses the
-#: decode schedule, which costs performance, not correctness.
-_ASSUMED_SM_COUNT = 132
-
 _DECODE_SPARSE_CONFIG = {
     "block_m": 64, "block_n": 128, "block_k": 128,
     "num_stages": 1, "threads": 384, "group_size_m": 1,
 }
+
+#: Multiprocessors assumed when the caller has no device to ask — the count on the
+#: parts these schedules were tuned on. A smaller part misses the decode schedule,
+#: which costs performance, not correctness.
+_ASSUMED_SM_COUNT = 132
 
 
 def _schedule_for(numel: int, num_experts: int, k: int) -> dict:

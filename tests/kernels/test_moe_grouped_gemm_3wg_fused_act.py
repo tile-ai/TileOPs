@@ -64,20 +64,20 @@ def test_output_shape():
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "numel,num_experts,expected_block_m",
+    "numel,num_experts,expected_block_m,expected_block_k",
     [
-        pytest.param(2048, 64, 128, id="dense-decode-cooperative"),
-        pytest.param(2048, 128, 64, id="sparse-decode-pingpong"),
-        pytest.param(2048, 8, 128, id="prefill-keeps-the-default"),
+        pytest.param(2048, 64, 128, 128, id="dense-decode-cooperative"),
+        pytest.param(2048, 128, 64, 128, id="sparse-decode-pingpong"),
+        pytest.param(2048, 8, 128, 64, id="prefill-keeps-the-default"),
     ],
 )
-def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m):
+def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m,
+                                        expected_block_k):
     """Rows per expert pick the schedule; the decode ones are the BK128 pair."""
     kernel = MoeGroupedGemmPersistent3WGFusedActKernel(
         numel=numel, num_experts=num_experts, N=256, K=256,
         dtype=torch.bfloat16, activation="silu_and_mul",
     )
-    expected_block_k = 128 if num_experts > 8 else 64
     assert kernel.config["block_m"] == expected_block_m
     assert kernel.config["block_k"] == expected_block_k
 

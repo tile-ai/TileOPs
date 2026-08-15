@@ -8,15 +8,12 @@ shape is in, and whether the schedule they would pick still fills the device:
     if regime and launches_enough_ctas(numel, n, block_m, block_n, sm_count):
         ...
 
-The boundaries are measured, not derived, and are not to be raised: a short-group
-schedule applied to shapes above them costs 34-39%, while inside them it gains 4-7%
-(H200, bf16).
+The boundaries are measured, not derived: on H200 with bf16, a short-group schedule
+gains 4-7% inside them and costs 34-39% above them.
 """
 
 __all__ = ["launches_enough_ctas", "rows_per_group_regime"]
 
-# Where the schedules cross over. Not exported: a caller that wants the number rather
-# than the answer is deciding something this module should decide.
 _SHORT_MAX_ROWS_PER_GROUP = 32     # above this, groups fill tiles and the default wins
 _THIN_MAX_ROWS_PER_GROUP = 16      # at or below, a group cannot fill a cooperative split
 

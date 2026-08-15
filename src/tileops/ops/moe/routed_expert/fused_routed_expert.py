@@ -33,13 +33,14 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
+
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
 
     Internal pipeline: MoePermuteNopadFwdOp → gate_up GEMM (3WG; activation
-    fused into the epilogue where few rows are routed to each expert, else a separate
-    silu_and_mul/gelu_and_mul step) → shape-selected down GEMM (3WG) →
-    MoeUnpermuteFwdOp (weighted reduction included).
+    fused into the epilogue where few rows are routed to each expert, else a
+    separate silu_and_mul/gelu_and_mul step) → down GEMM (3WG) → MoeUnpermuteFwdOp
+    (weighted reduction included).
 
     forward() output shape is (T, H): reduction is done internally by
     MoeUnpermuteFwdOp, so make_weighted_reduce() returns WeightedReduceNoOp.
@@ -67,6 +68,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         kernel_map: Optional kernel overrides forwarded to the inner Ops.
         activation: Gated activation applied to gate_up: 'silu_and_mul' or
             'gelu_and_mul'.
+
     Example (decode-optimized opt-out):
         from tileops.kernels.moe.moe_grouped_gemm_nopad import (
             MoeGroupedGemmNopadKernel,
