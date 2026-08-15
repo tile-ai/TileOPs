@@ -152,6 +152,60 @@ def _try_float(v):
         return v
 
 
+def parse_coverage_xml(path: str) -> dict | None:
+    """Aggregate a coverage.py XML report by top-level ``src/tileops`` subpackage.
+
+    Returns ``{"packages": {name: counts}, "total": counts, "files": [...]}``
+    where ``counts`` carries covered/total statements and branches. Files are
+    sorted by uncovered statement count, worst first.
+    """
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+
+    packages: dict[str, dict] = {}
+    files: list[dict] = []
+    for cls in root.iter("class"):
+        filename = cls.get("filename") or ""
+        marker = "src/tileops/"
+        if marker not in filename:
+            continue
+        tail = filename.split(marker, 1)[1]
+        # Files directly under src/tileops/ have no subpackage of their own.
+        name = tail.split("/")[0] if "/" in tail else "(top level)"
+
+        stmts = covered = branches = branches_hit = 0
+        for line in cls.iter("line"):
+            stmts += 1
+            covered += int(line.get("hits") or 0) > 0
+            condition = line.get("condition-coverage") or ""
+            if line.get("branch") == "true" and "(" in condition:
+                hit, total = condition.split("(", 1)[1].rstrip(")").split("/")
+                branches += int(total)
+                branches_hit += int(hit)
+        if not stmts:
+            continue
+
+        bucket = packages.setdefault(
+            name, {"stmts": 0, "covered": 0, "branches": 0, "branches_hit": 0})
+        bucket["stmts"] += stmts
+        bucket["covered"] += covered
+        bucket["branches"] += branches
+        bucket["branches_hit"] += branches_hit
+        files.append({"path": tail, "stmts": stmts, "covered": covered})
+
+    if not packages:
+        return None
+
+    total = {"stmts": 0, "covered": 0, "branches": 0, "branches_hit": 0}
+    for bucket in packages.values():
+        for key in total:
+            total[key] += bucket[key]
+    files.sort(key=lambda f: f["covered"] - f["stmts"])
+    return {"packages": packages, "total": total, "files": files}
+
+
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
@@ -466,6 +520,7 @@ def generate_report(
     regressions: list[dict],
     improvements: list[dict],
     baseline_alerts: list[dict],
+    coverage: dict | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -661,7 +716,53 @@ def generate_report(
         lines.append("</details>")
         lines.append("")
 
+    # ── Coverage ──────────────────────────────────────────────────────────
+    if coverage:
+        lines.extend(_coverage_section(coverage))
+
     return "\n".join(lines)
+
+
+def _pct(hit: int, total: int) -> str:
+    return f"{100 * hit / total:.1f}%" if total else "-"
+
+
+def _coverage_section(coverage: dict, worst_n: int = 15) -> list[str]:
+    """Per-subpackage coverage table plus the least-covered files."""
+    lines = ["## Coverage", ""]
+    lines.append("| Package | Statements | Line | Branch |")
+    lines.append("| --- | --- | --- | --- |")
+    for name, c in sorted(coverage["packages"].items(), key=lambda kv: -kv[1]["stmts"]):
+        lines.append(
+            f"| `{name}` | {c['covered']}/{c['stmts']} "
+            f"| {_pct(c['covered'], c['stmts'])} "
+            f"| {_pct(c['branches_hit'], c['branches'])} |")
+    total = coverage["total"]
+    lines.append(
+        f"| **total** | {total['covered']}/{total['stmts']} "
+        f"| {_pct(total['covered'], total['stmts'])} "
+        f"| {_pct(total['branches_hit'], total['branches'])} |")
+    lines.append("")
+    lines.append("A `kernels` line counts as covered once the kernel is traced into IR, "
+                 "which says the kernel was built, not that its generated code was "
+                 "exercised. Read a low number there as a signal; a high one is not one.")
+    lines.append("")
+    lines.append("Smoke-only cases run in `gpu-smoke.yml`, so code reached solely by "
+                 "them reads as untested here.")
+    lines.append("")
+
+    lines.append("<details>")
+    lines.append(f"<summary>Least-covered files (top {worst_n})</summary>")
+    lines.append("")
+    lines.append("| File | Covered | Line |")
+    lines.append("| --- | --- | --- |")
+    for f in coverage["files"][:worst_n]:
+        lines.append(f"| `{f['path']}` | {f['covered']}/{f['stmts']} "
+                     f"| {_pct(f['covered'], f['stmts'])} |")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +777,7 @@ def main():
     parser.add_argument("--history", help="Path to perf_history.json (input)")
     parser.add_argument("--output", required=True, help="Output markdown report path")
     parser.add_argument("--history-out", help="Path to write updated perf_history.json")
+    parser.add_argument("--coverage-xml", help="Path to coverage.py XML report")
     args = parser.parse_args()
 
     # Parse results
@@ -697,9 +799,13 @@ def main():
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
 
+    coverage = None
+    if args.coverage_xml and Path(args.coverage_xml).exists():
+        coverage = parse_coverage_xml(args.coverage_xml)
+
     # Generate report
     report = generate_report(test_ops, bench_ops, bench_failures,
-                             regressions, improvements, baseline_alerts)
+                             regressions, improvements, baseline_alerts, coverage)
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 
