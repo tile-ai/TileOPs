@@ -153,7 +153,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             and gemm_override is None
             and kernel_cls is GroupedGemmPersistent3WGKernel
             and activation in ("silu_and_mul", "gelu_and_mul")
-            and MoeGroupedGemmPersistent3WGFusedActKernel.serves_decode(
+            and MoeGroupedGemmPersistent3WGFusedActKernel.uses_decode_schedule(
                 numel, num_experts_local, ffn_size, hidden_size,
             )
         )
@@ -166,10 +166,9 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             # its own, because "not eligible" over six conjuncts says nothing
             # about which one to fix.
             #
-            # Whether the device can run the fused kernel is not asked here.
-            # MoeGroupedGemmPersistent3WGFusedActKernel states the architectures
-            # it is built for, and refuses when it is built — construction reads
-            # no device property.
+            # Whether the device can run the fused kernel is not asked here: the
+            # kernel states the architectures it is built for and refuses when it
+            # is built.
             if kernel_cls is not GroupedGemmPersistent3WGKernel:
                 raise ValueError(
                     "use_fused_activation=True requires the 3WG persistent gate_up GEMM, "

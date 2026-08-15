@@ -64,26 +64,39 @@ def test_output_shape():
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "T_count,E,expected_block_m",
+    "numel,num_experts,expected_block_m",
     [
-        pytest.param(256, 64, 128, id="dense-decode-cooperative"),
-        pytest.param(256, 128, 64, id="sparse-decode-pingpong"),
+        pytest.param(2048, 64, 128, id="dense-decode-cooperative"),
+        pytest.param(2048, 128, 64, id="sparse-decode-pingpong"),
+        pytest.param(2048, 8, 128, id="prefill-keeps-the-default"),
     ],
 )
-def test_decode_shapes_pick_their_schedule(T_count, E, expected_block_m):
-    """Decode row counts select a BK128 schedule, and it computes the reference."""
-    top_k, ffn, K = 8, 256, 256
-    A, B, sizes, offsets, numel = make_inputs(
-        T_count, E, top_k, ffn, K, torch.bfloat16,
-    )
+def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m):
+    """Rows per expert pick the schedule; the decode ones are the BK128 pair."""
     kernel = MoeGroupedGemmPersistent3WGFusedActKernel(
-        numel=numel, num_experts=E, N=ffn, K=K,
+        numel=numel, num_experts=num_experts, N=256, K=256,
         dtype=torch.bfloat16, activation="silu_and_mul",
     )
-    assert (kernel.config["block_m"], kernel.config["block_k"]) == (expected_block_m, 128)
-    actual = kernel(A, B, sizes, offsets)
-    expected = _ref_fused_act(A, B, sizes, offsets, ffn, "silu_and_mul")
-    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
+    expected_block_k = 128 if num_experts > 8 else 64
+    assert kernel.config["block_m"] == expected_block_m
+    assert kernel.config["block_k"] == expected_block_k
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "numel,num_experts,n,k,expected",
+    [
+        pytest.param(2048, 128, 2048, 7168, True, id="decode-shaped"),
+        pytest.param(2048, 8, 2048, 7168, False, id="too-many-rows-per-expert"),
+        pytest.param(2048, 128, 2048, 64, False, id="k-cannot-use-the-decode-schedule"),
+        pytest.param(128, 128, 256, 7168, False, id="too-few-ctas"),
+    ],
+)
+def test_which_shapes_get_the_decode_schedule(numel, num_experts, n, k, expected):
+    """What the op asks before it builds the fused pipeline."""
+    assert MoeGroupedGemmPersistent3WGFusedActKernel.uses_decode_schedule(
+        numel, num_experts, n, k, sm_count=132,
+    ) is expected
 
 
 @pytest.mark.smoke

@@ -164,18 +164,16 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
     @pytest.mark.smoke
     @pytest.mark.parametrize(
-        "num_tokens,num_experts,top_k,fused",
+        "num_tokens,fused",
         [
-            pytest.param(512, 128, 8, True, id="decode-fuses"),
-            pytest.param(4096, 128, 8, False, id="prefill-stays-unfused"),
-            pytest.param(8, 128, 8, False, id="too-few-ctas-stays-unfused"),
+            pytest.param(512, True, id="decode-fuses"),
+            pytest.param(4096, False, id="prefill-stays-unfused"),
         ],
     )
-    def test_routing_shape_selects_the_pipeline(
-        self, num_tokens, num_experts, top_k, fused,
-    ):
+    def test_routing_shape_selects_the_pipeline(self, num_tokens, fused):
+        """The kernel's answer reaches the pipeline: fused drops the activation op."""
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
+            num_tokens=num_tokens, num_experts=128, top_k=8,
             hidden_size=7168, ffn_size=2048,
         )
         assert experts.use_fused_activation is fused

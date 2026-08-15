@@ -25,11 +25,19 @@ what was measured, while keeping the win at the boundary itself.
 """
 
 __all__ = [
+    "ASSUMED_SM_COUNT",
     "DECODE_MAX_ROWS_PER_EXPERT",
     "DECODE_SPARSE_MAX_ROWS_PER_EXPERT",
     "decode_regime",
     "launches_enough_ctas",
 ]
+
+#: Multiprocessors assumed when no device has been probed — the count on the SM90
+#: parts these schedules were tuned on. An op is constructed wherever it is
+#: imported, so a caller deciding at construction time has no device to ask; a
+#: smaller part than this simply misses the decode schedule, which costs
+#: performance rather than correctness.
+ASSUMED_SM_COUNT = 132
 
 #: Largest rows-per-expert measured faster under a decode schedule.
 DECODE_MAX_ROWS_PER_EXPERT = 32

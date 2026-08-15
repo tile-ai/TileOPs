@@ -15,7 +15,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_gemm._config import decode_regime, launches_enough_ctas
+from tileops.kernels.grouped_gemm._config import (
+    ASSUMED_SM_COUNT,
+    decode_regime,
+    launches_enough_ctas,
+)
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeGroupedGemmPersistent3WGFusedActKernel"]
@@ -111,30 +115,31 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         return None
 
     @classmethod
-    def serves_decode(cls, numel: int, num_experts: int, n: int, k: int,
-                      sm_count: int | None = None) -> bool:
-        """Whether this kernel is the faster gate_up pipeline for this shape.
+    def uses_decode_schedule(cls, numel: int, num_experts: int, n: int, k: int,
+                             sm_count: int | None = None) -> bool:
+        """Whether this shape gets a decode schedule, and fills the device with it.
 
-        The op layer asks before building the fused pipeline, so the thresholds
-        and the block sizes they require stay here.
+        The op layer asks before building the fused pipeline. Answering here keeps
+        the thresholds, the block sizes they require and the launch geometry in one
+        place, so the op cannot believe it gets a decode schedule while the kernel
+        falls back to the default one.
 
         Args:
             numel: Routed rows in total.
             num_experts: Local experts the rows are spread over.
             n: ffn width, the output width before the gate/up split.
             k: hidden size.
-            sm_count: Multiprocessors to fill; read from the current device when
-                omitted.
+            sm_count: Multiprocessors to fill; :data:`ASSUMED_SM_COUNT` when
+                omitted, so the answer costs no device query.
         """
-        if (decode_regime(numel, num_experts) is None
-                or cls.unsupported_reason(numel, num_experts, n, k)):
-            return False
         config = _schedule_for(numel, num_experts, k)
-        if sm_count is None:
-            sm_count = torch.cuda.get_device_properties(
-                torch.cuda.current_device()).multi_processor_count
+        if config is _DEFAULT_CONFIG:
+            return False
+        if cls.unsupported_reason(numel, num_experts, n, k):
+            return False
         return launches_enough_ctas(
-            numel, n, config["block_m"], config["block_n"], sm_count,
+            numel, n, config["block_m"], config["block_n"],
+            ASSUMED_SM_COUNT if sm_count is None else sm_count,
         )
 
     @property
