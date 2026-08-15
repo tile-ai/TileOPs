@@ -19,8 +19,7 @@ torch.compile support:
 - All 5 concrete ops are registered via @torch.library.custom_op at module
   load time.  A factory function (_register_rope_custom_op) registers every
   op; instances are looked up at runtime through the shared registry in
-  tileops.ops.compile_boundary, keyed by
-  id(instance).
+  tileops.ops.compile_boundary, keyed by the instance's string key.
 """
 
 import math
