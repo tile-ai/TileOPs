@@ -21,23 +21,19 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
 
 __all__ = ["FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 # Fused Add + LayerNorm kernel
 
 @functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     pad_count = N_padded - N
 
     @tilelang.jit(out_idx=[4, 5])
@@ -142,7 +138,7 @@ def _fused_add_layer_norm_wrapped(
 
 @_fused_add_layer_norm_wrapped.register_fake
 def _(M, N, eps, dtype_str, block_m, threads, x, residual, weight, bias):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     y = torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
     residual_out = torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
     return [y, residual_out]
@@ -175,7 +171,7 @@ class FusedAddLayerNormKernel(Kernel):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         self.kernel = _fused_add_layer_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
         self.init_config(config, tune)
 
@@ -233,7 +229,7 @@ class FusedAddLayerNormKernel(Kernel):
 
 @functools.lru_cache(maxsize=32)
 def _fused_add_rms_norm_kernel(M, N, eps, dtype):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
 
     @tilelang.jit(out_idx=[3, 4])
     def _func(block_m, threads):
@@ -323,7 +319,7 @@ def _fused_add_rms_norm_wrapped(
 
 @_fused_add_rms_norm_wrapped.register_fake
 def _(M, N, eps, dtype_str, block_m, threads, x, residual, weight):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     y = torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
     residual_out = torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
     return [y, residual_out]
@@ -356,7 +352,7 @@ class FusedAddRMSNormKernel(Kernel):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         self.kernel = _fused_add_rms_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
         self.init_config(config, tune)
 

@@ -16,21 +16,16 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
 
 __all__ = ["RMSNormKernel"]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
-
 
 @functools.lru_cache(maxsize=32)
 def _rms_norm_kernel(M, N, eps, dtype):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
@@ -80,26 +75,6 @@ def _rms_norm_kernel(M, N, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("top::rms_norm_fwd", mutates_args=())
-def _rms_norm_wrapped(
-    M: int,
-    N: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-) -> torch.Tensor:
-    return _rms_norm_kernel(M, N, eps, dtype_str)(block_m, threads)(x, weight)
-
-
-@_rms_norm_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, x, weight):
-    N_padded = _align_up(N, ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
-
-
 class RMSNormKernel(Kernel):
     """RMS Norm kernel.
 
@@ -127,7 +102,7 @@ class RMSNormKernel(Kernel):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
@@ -142,6 +117,9 @@ class RMSNormKernel(Kernel):
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 
+        Flattening to 2-D rows and a flat weight happens here, as does the alignment
+        padding the prim_func requires.
+
         Args:
             x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
             weight: Affine scale holding ``N`` elements, contiguous, on the same device.
@@ -151,9 +129,6 @@ class RMSNormKernel(Kernel):
 
         Raises:
             ValueError: Either input is not on a CUDA device.
-
-        Flattening to 2-D rows and a flat weight happens here, as does the alignment padding
-        the prim_func requires.
         """
         if not (x.is_cuda and weight.is_cuda):
             raise ValueError(
@@ -175,16 +150,7 @@ class RMSNormKernel(Kernel):
         if pad:
             rows = F.pad(rows, (0, pad))
             weight = F.pad(weight, (0, pad))
-        y = _rms_norm_wrapped(
-            m,
-            self.N,
-            self.eps,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            rows,
-            weight,
-        )
+        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight)
         if pad:
             y = y[:, : self.N]
         return y.reshape(original_shape)

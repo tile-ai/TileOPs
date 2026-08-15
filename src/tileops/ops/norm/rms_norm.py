@@ -1,5 +1,4 @@
-import math
-from typing import Dict, Optional, Sequence, Tuple
+from typing import ClassVar, Dict, Optional, Sequence, Tuple
 
 import torch
 
@@ -7,11 +6,11 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import RMSNormKernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
+from .norm_base import normalized_shape_to_n
 
 __all__ = ["RMSNormFwdOp"]
-
-_DEFAULT_EPS = 1e-6
 
 
 class RMSNormFwdOp(Op):
@@ -27,8 +26,8 @@ class RMSNormFwdOp(Op):
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
             reduction runs (manifest ``params.normalized_shape``).
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-            ``None`` selects the documented default ``1e-6``. Normalized here, so a
+        eps: Epsilon for numerical stability (manifest ``params.eps``). ``None``
+            selects the same default the signature carries. Normalized here, so a
             backend is handed the number rather than ``None``.
         target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
             in-tree kernels, or ``None`` to decide from the input device.
@@ -42,36 +41,50 @@ class RMSNormFwdOp(Op):
         >>> y = op(x, w)  # shape: (1024, 4096)
     """
 
+    #: Manifest ``params.eps.default``. The signature default and the ``None``
+    #: normalization both read it, so the two cannot drift apart.
+    DEFAULT_EPS = 1.0e-6
+
     def __init__(
         self,
         normalized_shape: Sequence[int],
-        eps: Optional[float] = None,
+        eps: Optional[float] = DEFAULT_EPS,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
-        if len(self.normalized_shape) == 0:
-            raise ValueError("normalized_shape must be non-empty")
-        self.N = math.prod(self.normalized_shape)
-        self.eps = _DEFAULT_EPS if eps is None else float(eps)
+        # The manifest type is ``float | None``: an explicit None means the same default,
+        # so a backend is handed a number either way.
+        self.eps = self.DEFAULT_EPS if eps is None else float(eps)
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_mn: Optional[Tuple[int, int]] = None
+        self._last_m: Optional[int] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
 
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
+
+    def _infer_output_shapes(
+        self,
+        x_shape: Tuple[int, ...],
+        weight_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
+        return {"output": tuple(x_shape)}
+
     def eval_roofline(self) -> Tuple[int, int]:
-        if self._last_roofline_mn is None or self.dtype is None:
+        if self._last_m is None or self.dtype is None:
             raise RuntimeError(
                 "RMSNormFwdOp.eval_roofline() requires a prior forward() "
                 "call to bind the leading-dims product and the dtype."
             )
-        m, n = self._last_roofline_mn
+        m, n = self._last_m, self.N
         elem_bytes = self.dtype.itemsize
         return (4 * m * n, (2 * m * n + n) * elem_bytes)
 
@@ -89,6 +102,10 @@ class RMSNormFwdOp(Op):
             ValueError: Dtypes or devices disagree, or shapes are incompatible with the
                 configured ``normalized_shape``.
         """
+        return _rms_norm_fwd(x, weight, self._instance_key)
+
+    def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        """Validate, normalize, resolve the kernel and launch — all untraced."""
         ns = self.normalized_shape
         k = len(ns)
         self._validate_dtypes(x, weight)
@@ -120,5 +137,31 @@ class RMSNormFwdOp(Op):
                 self.N, self.eps, x.dtype, tune=self.tune,
             ),
         )
-        self._last_roofline_mn = (x.numel() // self.N, self.N)
+        self._last_m = x.numel() // self.N
         return kernel(x, weight)
+
+
+# torch.compile dispatch boundary. Three constraints make this a pair of module-level
+# functions rather than methods: registration happens at import time and once per
+# qualified name; the schema is read off the annotations, so ``self`` cannot appear in
+# either signature; the instance is recovered from a string key. Why the key is a string
+# and why it is never reused: src/tileops/ops/compile_boundary.py.
+
+
+@torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())
+def _rms_norm_fwd(
+    x: torch.Tensor, weight: torch.Tensor, instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(x, weight)
+
+
+@_rms_norm_fwd.register_fake
+def _rms_norm_fwd_fake(
+    x: torch.Tensor, weight: torch.Tensor, instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake. Dtype is the
+    # manifest's ``same_as(x)``.
+    return x.new_empty(shapes["output"])

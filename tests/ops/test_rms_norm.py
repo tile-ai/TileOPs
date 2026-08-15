@@ -1,9 +1,12 @@
 import pytest
 import torch
 
+from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.normalization import RMSNormWorkload
+
+register_compile_contract(RMSNormFwdOp)
 
 
 class RMSNormTest(RMSNormWorkload, TestBase):
@@ -159,6 +162,43 @@ def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
     torch.cuda.synchronize()
 
     assert torch.allclose(static_out, expected, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
+    """Cold is the whole contract: a warm op has nothing left for dynamo to trace into."""
+    op = RMSNormFwdOp(normalized_shape=(4096,))
+    x = torch.randn(64, 4096, dtype=torch.float16, device="cuda")
+    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+
+    torch.testing.assert_close(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_the_traced_graph_holds_only_this_ops_operator() -> None:
+    """The node is the op's, so replacing the kernel cannot change the graph."""
+    op = RMSNormFwdOp(normalized_shape=(256,))
+    x = torch.randn(8, 256, dtype=torch.float16, device="cuda")
+    weight = torch.randn(256, dtype=torch.float16, device="cuda")
+
+    assert_op_owns_graph_nodes(op, x, weight)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> None:
+    """The fake speaks before the body normalizes contiguity, so it promises contiguous."""
+    op = RMSNormFwdOp(normalized_shape=(256,))
+    x = torch.randn(8, 512, dtype=torch.float16, device="cuda")[:, ::2]
+    weight = torch.randn(256, dtype=torch.float16, device="cuda")
+    assert not x.is_contiguous()
+
+    output = torch.compile(op, fullgraph=True)(x, weight)
+
+    assert output.is_contiguous()
+    torch.testing.assert_close(output, op(x, weight))
 
 
 if __name__ == "__main__":

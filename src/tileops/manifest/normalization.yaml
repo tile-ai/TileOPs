@@ -8,6 +8,7 @@ RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -17,7 +18,7 @@ RMSNormFwdOp:
       output: {dtype: "same_as(x)"}
     params:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
-      eps: {type: "float | None", default: null}
+      eps: {type: "float | None", default: 1.0e-6}
     shape_rules:
       - "len(normalized_shape) > 0"
       - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"

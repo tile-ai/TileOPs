@@ -46,14 +46,10 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramDecodeKernel"]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 @functools.lru_cache(maxsize=32)
@@ -70,7 +66,7 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
         dtype: data type string.
     """
     accum_dtype = "float"
-    d_padded = _align_up(d, ALIGNMENT)
+    d_padded = align_up(d, ALIGNMENT)
     w = conv_kernel_size
 
     @tilelang.jit(
@@ -266,7 +262,7 @@ def _engram_decode_wrapped(
 def _(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation,
       eps, dtype_str, threads,
       e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
-    d_padded = _align_up(d, ALIGNMENT)
+    d_padded = align_up(d, ALIGNMENT)
     device = e_t.device
     dt = e_t.dtype
     return [
@@ -316,7 +312,7 @@ class EngramDecodeKernel(Kernel):
         self.dilation = dilation
         self.eps = eps
         self.dtype = dtype
-        self.d_padded = _align_up(d, ALIGNMENT)
+        self.d_padded = align_up(d, ALIGNMENT)
 
         min_cache = dilation * (conv_kernel_size - 1)
         if max_conv_len < min_cache:
