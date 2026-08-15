@@ -54,6 +54,17 @@ def _register(recorder, target="acme", op="RMSNormFwdOp", claims=True):
     registry.register_kernel_builder(op, target, recorder.build_kernel)
 
 
+def _stub_op(**kwargs):
+    """An op of the kind that still takes a kernel without handing over its tensors."""
+
+    class StubOp(RMSNormFwdOp):
+        def forward(self, x, weight):
+            return self.get_or_build_kernel("stub", key=x.dtype, build=lambda: None)
+
+    StubOp.__name__ = "StubOp"
+    return StubOp(normalized_shape=NORMALIZED_SHAPE, **kwargs)
+
+
 def _inputs(rows=4, shape=NORMALIZED_SHAPE, dtype=DTYPE, device="cpu"):
     x = torch.randn(rows, *shape, dtype=dtype, device=device)
     weight = torch.randn(*shape, dtype=dtype, device=device)
@@ -74,7 +85,7 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
 
     (inputs, params), = recorder.calls
     assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
-    # eps defaults to null in the manifest; the op settles it, so a backend gets a number.
+    # eps is optional; whether it was passed or defaulted, a backend gets the number.
     assert params == {"normalized_shape": NORMALIZED_SHAPE, "eps": 1e-6}
     assert torch.equal(out, torch.full_like(x, 7)), "the target's kernel produced the result"
 
@@ -131,6 +142,8 @@ def test_the_same_input_signature_is_built_once():
     [
         (dict(rows=8), "a different shape may need a different kernel"),
         (dict(dtype=torch.bfloat16), "a different dtype certainly does"),
+        # A second real device, not meta: meta inputs dispatch to the op's fake, which
+        # returns before a kernel is ever asked for.
         (dict(device="cuda"), "a kernel may hold resources allocated on one device"),
     ],
     ids=["shape", "dtype", "device"],
@@ -180,15 +193,8 @@ def test_an_op_that_has_not_handed_over_its_tensors_says_so():
     recorder = _Recorder()
     _register(recorder, op="StubOp")
 
-    class StubOp(RMSNormFwdOp):
-        """Stands in for the ops that still call get_or_build_kernel without inputs."""
-
-        def forward(self, x, weight):
-            return self.get_or_build_kernel("stub", key=x.dtype, build=lambda: None)
-
-    StubOp.__name__ = "StubOp"
     with pytest.raises(OpNotAvailableError, match="not wired to external targets yet"):
-        StubOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
+        _stub_op()(*_inputs())
 
 
 def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device():
@@ -279,13 +285,7 @@ def test_a_call_that_fails_validation_pins_nothing():
 
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_the_first_compiled_call_obeys_the_target_it_picked():
-    """A traced ``__call__`` cannot be the only place the target is settled.
-
-    Dynamo defers the attribute writes a traced frame makes until after the graph has
-    run, so the dispatch custom op — which runs inside the graph — would read the
-    instance as unsettled and take the in-tree path. That is wrong numbers, silently,
-    on the first compiled call only, which is why it needs a test rather than a comment.
-    """
+    """Settling only in a traced ``__call__`` gives the in-tree kernel's numbers, once."""
     recorder = _Recorder()
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
@@ -294,47 +294,35 @@ def test_the_first_compiled_call_obeys_the_target_it_picked():
     output = torch.compile(op, fullgraph=True)(x, weight)
 
     assert torch.equal(output, torch.full_like(x, 7)), "the in-tree kernel ran instead"
-    assert op._settled_target == "acme"
     assert len(recorder.calls) == 1
 
 
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_a_compiled_call_whose_build_fails_pins_nothing():
-    """The settling and its undo have to sit together.
+    """``__call__``'s handler does not run when the failure comes out of a compiled graph."""
+    attempts = []
 
-    ``__call__``'s handler does not run when the failure surfaces out of a compiled
-    graph, so a first compiled call that settled a target and then failed to build for
-    it would leave the instance pinned to a target that never produced a kernel.
-    """
-    recorder = _Recorder()
-    recorder.build_kernel = lambda *inputs, **params: "not a kernel"
-    _register(recorder)
+    def build_kernel(*inputs, **params):
+        attempts.append(1)
+        return "not a kernel" if len(attempts) == 1 else (lambda x, w: torch.full_like(x, 7))
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     with pytest.raises(OpNotAvailableError, match="not callable"):
         torch.compile(op, fullgraph=True)(*_inputs())
 
-    assert op._settled_target is None and not op.built_kernels("rms_norm")
+    x, weight = _inputs()
+    assert torch.equal(op(x, weight), torch.full_like(x, 7)), "asking again tries again"
 
 
 def test_a_call_without_tensors_still_honours_an_explicit_target():
-    """An op the target does not serve raises, whether or not ``__call__`` ran first.
-
-    A named target needs no device to be resolved, so the call site handing over no
-    tensors is no reason to fall back to the in-tree kernels.
-    """
+    """A named target needs no device, so handing over no tensors is no reason to fall back."""
     _register(_Recorder(), op="StubOp")
 
-    class StubOp(RMSNormFwdOp):
-        """Stands in for the ops that still call get_or_build_kernel without inputs."""
-
-        def forward(self, x, weight):
-            return self.get_or_build_kernel("stub", key=x.dtype, build=lambda: None)
-
-    StubOp.__name__ = "StubOp"
-    op = StubOp(normalized_shape=NORMALIZED_SHAPE, target="acme")
     with pytest.raises(OpNotAvailableError, match="not wired to external targets yet"):
-        op.forward(*_inputs())
+        _stub_op(target="acme").forward(*_inputs())
 
 
 def test_a_settled_instance_is_bound_to_that_target_s_devices():

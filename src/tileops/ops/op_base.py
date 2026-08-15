@@ -2,7 +2,17 @@ import dataclasses
 import warnings
 from abc import ABC, abstractmethod
 from types import MappingProxyType
-from typing import Callable, Hashable, Iterator, Mapping, Optional, Sequence, TypeVar, Union
+from typing import (
+    Callable,
+    ClassVar,
+    Hashable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+)
 
 import torch
 
@@ -167,27 +177,23 @@ class Op(ABC):
     def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    # FIXME(staged-rollout): compile_op_names returns () instead of being abstract.
+    # FIXME(staged-rollout): compile_op_names defaults to empty instead of being required.
     #
     # Broken invariant: an op that declares ``torch_compile_fullgraph`` is not forced to
     #     say which operators are its own, so nothing checks that the node in the graph
     #     belongs to the op rather than to a kernel.
     # Why: most ops still register their custom op in src/tileops/kernels/, where there
     #     is no op-level name to declare.
-    # Cleanup: make this @abstractmethod once every op that declares
-    #     ``torch_compile_fullgraph`` overrides it, and delete this marker.
+    # Cleanup: once every op that declares ``torch_compile_fullgraph`` names its
+    #     operators, have ``register_compile_contract`` reject an empty tuple, and delete
+    #     this marker.
 
-    @property
-    def compile_op_names(self) -> tuple[str, ...]:
-        """Operators this op registers on the torch.compile boundary.
-
-        An op that owns its boundary names what it registered, so a test can assert that
-        every node in the traced graph is one of these — that is what keeps the graph the
-        same when another target serves the op. A tuple rather than one name: a
-        conditional in-place write registers two operators. Empty means this op does not
-        own a boundary yet.
-        """
-        return ()
+    #: Operators this op registers on the torch.compile boundary. Naming them is what lets
+    #: a test assert the traced graph holds nothing else, which is what keeps the graph the
+    #: same when another target serves the op. A tuple because a conditional in-place write
+    #: registers two; empty means no boundary yet. Registration happens once per class, so
+    #: this is class state.
+    compile_op_names: ClassVar[tuple[str, ...]] = ()
 
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
@@ -378,15 +384,10 @@ class Op(ABC):
 
         settled_here = self._builder is _UNRESOLVED
         if settled_here:
-            # ``__call__`` settled this already — unless it was traced. Dynamo defers the
-            # attribute writes a traced frame makes until after the graph has run, so a
-            # ``forward`` behind the compile dispatch boundary arrives here still holding
-            # ``_UNRESOLVED`` and would take the in-tree path on the very call that chose
-            # a target. Settling again here, untraced, is what makes that first compiled
-            # call obey it.
-            #
-            # A named target and a process default need no device, so those settle here
-            # too. Detection is the one that cannot.
+            # ``__call__`` settled this already — unless it was traced. Dynamo defers a
+            # traced frame's attribute writes until after the graph has run, so a
+            # ``forward`` behind the compile boundary arrives here still ``_UNRESOLVED``
+            # and would take the in-tree path on the very call that chose a target.
             #
             # FIXME(staged-rollout): a call handing over no tensors probes no device.
             #
@@ -565,10 +566,7 @@ class Op(ABC):
             raise
 
     def _unsettle(self) -> None:
-        """Undo a settling whose call did not finish.
-
-        What that call built goes too: those kernels belong to the target just unpinned.
-        """
+        """Undo a settling whose call did not finish, dropping what it built."""
         self._builder = _UNRESOLVED
         self._settled_target = None
         self._kernel_roles = {}

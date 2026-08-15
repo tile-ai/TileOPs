@@ -36,29 +36,26 @@ def register_compile_contract(op_cls: type) -> None:
     _registered.add(op_cls.__name__)
 
 
+def _overload(name: str):
+    """``"top::foo"`` as the overload object a graph node carries."""
+    namespace, _, opname = name.partition("::")
+    return getattr(getattr(torch.ops, namespace), opname).default
+
+
 def assert_op_owns_graph_nodes(op, *inputs) -> None:
     """Compile *op* once and assert the graph holds nothing but its own operators.
 
-    What the graph contains is what has to stay the same when another target serves this
-    op. The op says which operators are its own through ``compile_op_names``; anything
-    else in the graph — a kernel's own registration, or a tensor op left outside the
-    boundary — means the node identity is not the op's alone.
-
-    Args:
-        op: The op instance, already constructed.
-        *inputs: Arguments to call it with.
-
-    Raises:
-        AssertionError: The op names no operators, or the graph holds a node that is not
-            one of them.
+    A kernel's own registration, or a tensor op left outside the boundary, would show up
+    here — either means the node identity is not the op's alone, so another target could
+    change the graph.
     """
-    declared = {name.replace("::", ".") + ".default" for name in op.compile_op_names}
+    declared = {_overload(name) for name in type(op).compile_op_names}
     assert declared, f"{type(op).__name__} declares no compile_op_names"
 
-    traced: list[list[str]] = []
+    traced: list[list[object]] = []
 
     def capture(gm, example_inputs):
-        traced.append([str(node.target) for node in gm.graph.nodes
+        traced.append([node.target for node in gm.graph.nodes
                        if node.op == "call_function"])
         return gm.forward
 
@@ -67,8 +64,9 @@ def assert_op_owns_graph_nodes(op, *inputs) -> None:
     (calls,) = traced
     assert calls, "the traced graph called nothing"
     assert set(calls) <= declared, (
-        f"graph holds nodes this op does not own: {sorted(set(calls) - declared)}; "
-        f"declared: {sorted(declared)}")
+        f"graph holds nodes this op does not own: "
+        f"{sorted(str(c) for c in set(calls) - declared)}; "
+        f"declared: {sorted(str(d) for d in declared)}")
 
 
 def compile_contract_ops() -> frozenset[str]:

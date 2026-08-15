@@ -7,18 +7,7 @@ __all__ = ["normalized_shape_to_n"]
 
 
 def normalized_shape_to_n(normalized_shape: Sequence[int]) -> int:
-    """Return the product of ``normalized_shape``.
-
-    Args:
-        normalized_shape: Manifest-style trailing-axis shape; must be
-            non-empty.
-
-    Returns:
-        Product of every entry in ``normalized_shape``.
-
-    Raises:
-        ValueError: If ``normalized_shape`` is empty.
-    """
+    """Return the product of ``normalized_shape``, which must be non-empty."""
     shape = tuple(int(d) for d in normalized_shape)
     if len(shape) == 0:
         raise ValueError("normalized_shape must be non-empty")

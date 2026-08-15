@@ -167,19 +167,12 @@ def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
-    """The kernel is built inside the dispatch custom op, so a cold trace must hold.
-
-    Cold is the whole contract: a warm op has nothing left to build, so tracing it
-    would pass even with the boundary in the wrong place.
-    """
+    """Cold is the whole contract: a warm op has nothing left for dynamo to trace into."""
     op = RMSNormFwdOp(normalized_shape=(4096,))
     x = torch.randn(64, 4096, dtype=torch.float16, device="cuda")
     weight = torch.randn(4096, dtype=torch.float16, device="cuda")
 
-    output = torch.compile(op, fullgraph=True)(x, weight)
-
-    assert output.shape == x.shape
-    torch.testing.assert_close(output, op(x, weight))
+    torch.testing.assert_close(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
 
 
 @pytest.mark.smoke
@@ -196,11 +189,7 @@ def test_the_traced_graph_holds_only_this_ops_operator() -> None:
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> None:
-    """Contiguity is normalized inside the opaque body, after the fake has spoken.
-
-    So the fake describes the public input's shape with contiguous strides; taking
-    the input's strides instead would make the compiled graph assert.
-    """
+    """The fake speaks before the body normalizes contiguity, so it promises contiguous."""
     op = RMSNormFwdOp(normalized_shape=(256,))
     x = torch.randn(8, 512, dtype=torch.float16, device="cuda")[:, ::2]
     weight = torch.randn(256, dtype=torch.float16, device="cuda")
@@ -208,7 +197,7 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
     output = torch.compile(op, fullgraph=True)(x, weight)
 
-    assert output.shape == x.shape and output.is_contiguous()
+    assert output.is_contiguous()
     torch.testing.assert_close(output, op(x, weight))
 
 

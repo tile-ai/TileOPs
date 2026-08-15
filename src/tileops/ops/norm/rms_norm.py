@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Sequence, Tuple
+from typing import ClassVar, Dict, Optional, Sequence, Tuple
 
 import torch
 
@@ -26,8 +26,8 @@ class RMSNormFwdOp(Op):
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
             reduction runs (manifest ``params.normalized_shape``).
-        eps: Epsilon for numerical stability (manifest ``params.eps``), default
-            ``1e-6``. ``None`` selects that same default. Normalized here, so a
+        eps: Epsilon for numerical stability (manifest ``params.eps``). ``None``
+            selects the same default the signature carries. Normalized here, so a
             backend is handed the number rather than ``None``.
         target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
             in-tree kernels, or ``None`` to decide from the input device.
@@ -41,10 +41,14 @@ class RMSNormFwdOp(Op):
         >>> y = op(x, w)  # shape: (1024, 4096)
     """
 
+    #: Manifest ``params.eps.default``. The signature default and the ``None``
+    #: normalization both read it, so the two cannot drift apart.
+    DEFAULT_EPS = 1.0e-6
+
     def __init__(
         self,
         normalized_shape: Sequence[int],
-        eps: Optional[float] = 1e-6,
+        eps: Optional[float] = DEFAULT_EPS,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -52,9 +56,9 @@ class RMSNormFwdOp(Op):
     ) -> None:
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
-        # Manifest declares ``eps: float | None``; None picks the same 1e-6 the
-        # signature defaults to, so a backend is handed a number either way.
-        self.eps = 1e-6 if eps is None else float(eps)
+        # The manifest type is ``float | None``: an explicit None means the same default,
+        # so a backend is handed a number either way.
+        self.eps = self.DEFAULT_EPS if eps is None else float(eps)
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -64,9 +68,7 @@ class RMSNormFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
 
-    @property
-    def compile_op_names(self) -> Tuple[str, ...]:
-        return ("top::norm_rms_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
 
     def _infer_output_shapes(
         self,

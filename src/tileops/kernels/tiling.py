@@ -8,18 +8,7 @@ ALIGNMENT = 256
 
 
 def align_up(n: int, alignment: int) -> int:
-    """Round *n* up to the nearest multiple of *alignment*.
-
-    Args:
-        n: Value to align.
-        alignment: Alignment boundary (must be positive).
-
-    Returns:
-        Smallest multiple of *alignment* that is >= *n*.
-
-    Raises:
-        ValueError: If *alignment* is not positive.
-    """
+    """Round *n* up to the nearest multiple of *alignment*, which must be positive."""
     if alignment <= 0:
         raise ValueError(f"alignment must be positive, got {alignment}")
     return ((n + alignment - 1) // alignment) * alignment
