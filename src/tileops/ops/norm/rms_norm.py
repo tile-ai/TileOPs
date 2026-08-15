@@ -4,15 +4,15 @@ An op that wants ``torch.compile(op, fullgraph=True)`` writes these five:
 
 1. ``forward`` — one call to the module-level operator, nothing else. This is as far as
    dynamo traces.
-2. ``_eager_forward`` — what ``forward`` used to hold. It runs inside the operator, so
-   validation, kernel construction and the launch are never traced.
+2. ``_eager_forward`` — validation, kernel construction and the launch. It runs inside the
+   operator, so none of it is traced.
 3. ``_rms_norm_fwd`` — the operator, registered once at import time.
 4. ``_rms_norm_fwd_fake`` — what the compiler is told about the output while tracing.
 5. ``compile_op_names`` — the operator's name, which lets a test assert that the traced
    graph holds nothing else.
 
-The sixth part comes from the base class: ``dispatch_kernel`` assigns the
-``_instance_key`` that piece 1 passes across the boundary.
+``_instance_key`` comes from the base class: ``dispatch_kernel`` assigns it during
+``__init__``.
 """
 
 from typing import ClassVar, Dict, Optional, Sequence, Tuple
@@ -62,8 +62,7 @@ class RMSNormFwdOp(Op):
     #: normalization both read it, so the two cannot drift apart.
     DEFAULT_EPS = 1.0e-6
 
-    #: The operator this op registers on the compile boundary. Tests assert the traced
-    #: graph holds nothing but this.
+    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
 
     def __init__(
@@ -82,8 +81,6 @@ class RMSNormFwdOp(Op):
         self.eps = self.DEFAULT_EPS if eps is None else float(eps)
         self.target = target
         self.tune = tune
-        # Installs the kernel map, and assigns the ``_instance_key`` that ``forward``
-        # passes across the boundary.
         self.dispatch_kernel(kernel_map)
         self._last_m: Optional[int] = None
 
@@ -127,10 +124,9 @@ class RMSNormFwdOp(Op):
         return _rms_norm_fwd(x, weight, self._instance_key)
 
     def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch.
+        """Validate, normalize, resolve the kernel and launch, inside the operator.
 
-        Runs inside the operator, never under dynamo: kernel construction enters a
-        TileLang builder, which is not traceable.
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
         ns = self.normalized_shape
         k = len(ns)
