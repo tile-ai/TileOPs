@@ -102,6 +102,7 @@ GroupedQueryAttentionPrefillDenseFwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
@@ -19,6 +20,14 @@ pytestmark = pytest.mark.smoke
 
 DTYPE = torch.float16
 NORMALIZED_SHAPE = (256,)
+
+
+def test_attention_call_non_cuda_device_never_falls_back_to_current_cuda():
+    """Kernel-side platform discovery follows the manifest input device exactly."""
+    call = AttentionCall.from_device(torch.device("cpu"), dtype=torch.float16)
+
+    assert call.arch == 0
+    assert call.h200 is False
 
 
 @pytest.fixture(autouse=True)
@@ -100,19 +109,33 @@ def test_dense_gqa_target_gets_the_normalized_manifest_abi():
         dtype=torch.float16,
         target="gqa_fake",
     )
-    q = torch.randn(2, 3, 4, 8, dtype=torch.float16)
+    q = torch.randn(2, 3, 4, 16, dtype=torch.float16)[..., ::2]
     k = torch.randn(2, 3, 2, 8, dtype=torch.float16)
     v = torch.randn_like(k)
+    assert not q.is_contiguous(), "the test must exercise boundary normalization"
 
     output = op(q, k, v)
-    op(q, k, v)
+    op(-q, k + 1, v - 1)
 
     assert output.shape == q.shape
     assert len(builds) == 1, "one input signature builds one external callable"
     specs, params = builds[0]
     assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
+    assert params == {
+        "is_causal": True,
+        "sm_scale": 8**-0.5,
+        "softcap": 0.0,
+        "window_size_left": -1,
+        "window_size_right": -1,
+        "dtype": torch.float16,
+        "fuse_rope": False,
+        "rotary_dim": None,
+        "rope_layout": "neox",
+    }
     assert tuple(params) == op.__manifest_param_names__
     assert len(runs[0]) == 8
+    assert len(runs) == 2, "one callable serves different contents of one signature"
+    assert not torch.equal(runs[0][0], runs[1][0])
     assert runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
     assert runs[0][3].shape == (2, 2), "identity scales are normalized"
     assert runs[0][6].shape == (1, 1), "disabled RoPE uses dummy tables"

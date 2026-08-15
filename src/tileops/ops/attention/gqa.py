@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -27,6 +27,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from ..rope import base_freqs
 from .selection import (
@@ -90,17 +91,6 @@ def _validate_same_device(reference: torch.Tensor, **tensors: torch.Tensor) -> N
             raise ValueError(
                 f"{name} must be on the same device as q ({reference.device}), got {tensor.device}"
             )
-
-
-def _attention_device_facts(device: torch.device) -> tuple[int, bool]:
-    """Read NVIDIA facts only inside a BUILTIN construction path."""
-    if device.type != "cuda":
-        # Selection can still reach a test/override general implementation on
-        # CPU. A shipped CUDA kernel rejects the device when it is invoked.
-        return -1, False
-    from tileops.utils import get_sm_version, is_h200
-
-    return get_sm_version(device.index), is_h200(device.index)
 
 
 def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
@@ -312,6 +302,8 @@ class _DensePrefillBuiltin:
 class GroupedQueryAttentionPrefillDenseFwdOp(Op):
     """Fixed-shape GQA prefill. Public layout: BSHD."""
 
+    compile_op_names: ClassVar[tuple[str, ...]] = ("top::gqa_prefill_dense_fwd",)
+
     def __init__(
         self,
         batch: int,
@@ -396,18 +388,13 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         device: Optional[torch.device] = None,
     ) -> AttentionCall:
         """State what one fixed-shape call is: a uniform dense packed request."""
-        arch, h200 = (-1, False)
-        if device is not None:
-            arch, h200 = _attention_device_facts(device)
         is_fp8 = fp8_dtype() is not None and dtype == fp8_dtype()
         output_dtype = self.output_dtype
         if output_dtype is None:
             if is_fp8:
                 raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
             output_dtype = dtype
-        return AttentionCall(
-            arch=arch,
-            h200=h200,
+        facts = dict(
             dtype=output_dtype,
             prefill_topology="dense",
             batch=self.batch,
@@ -429,6 +416,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             rope_layout=self.rope_layout,
             tune=self.tune,
         )
+        if device is None:
+            return AttentionCall(**facts)
+        return AttentionCall.from_device(device, **facts)
 
     def _build_builtin(
         self,
@@ -456,10 +446,10 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         self,
         dtype: torch.dtype,
         max_position: Optional[int] = None,
-        device: Optional[torch.device] = None,
+        *,
+        device: torch.device,
     ) -> Kernel:
-        """Compatibility introspection for the selected in-tree kernel."""
-        device = device or torch.device("cuda", torch.cuda.current_device())
+        """Compatibility introspection with an explicit input-device fact."""
         return self._get_entry((), dtype, max_position, device).kernel
 
     def _get_entry(
@@ -508,6 +498,30 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         return {"o": tuple(q_shape)}
 
     def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run fixed-shape GQA prefill behind the target-independent graph node."""
+        return _gqa_prefill_dense_fwd(
+            q,
+            k,
+            v,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+            self._instance_key,
+        )
+
+    def _eager_forward(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -576,6 +590,56 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         from tileops.perf.formulas import gqa_fwd_roofline
 
         return gqa_fwd_roofline(self)
+
+
+@torch.library.custom_op("top::gqa_prefill_dense_fwd", mutates_args=())
+def _gqa_prefill_dense_fwd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    q_scale: Optional[torch.Tensor],
+    k_scale: Optional[torch.Tensor],
+    v_scale: Optional[torch.Tensor],
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    """Opaque Op-owned compile boundary; implementation dispatch stays untraced."""
+    return get_instance(instance_key)._eager_forward(
+        q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin
+    )
+
+
+@_gqa_prefill_dense_fwd.register_fake
+def _gqa_prefill_dense_fwd_fake(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    q_scale: Optional[torch.Tensor],
+    k_scale: Optional[torch.Tensor],
+    v_scale: Optional[torch.Tensor],
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    """Manifest-derived output metadata for the target-independent graph node."""
+    op = get_instance(instance_key)
+    output_dtype = op.output_dtype
+    if output_dtype is None:
+        if fp8_dtype() is not None and q.dtype == fp8_dtype():
+            raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
+        output_dtype = q.dtype
+    shapes = op._infer_output_shapes(
+        tuple(q.shape),
+        tuple(k.shape),
+        tuple(v.shape),
+        None if q_scale is None else tuple(q_scale.shape),
+        None if k_scale is None else tuple(k_scale.shape),
+        None if v_scale is None else tuple(v_scale.shape),
+        None if rope_cos is None else tuple(rope_cos.shape),
+        None if rope_sin is None else tuple(rope_sin.shape),
+    )
+    return q.new_empty(shapes["o"], dtype=output_dtype)
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):

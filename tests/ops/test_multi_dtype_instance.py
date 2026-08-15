@@ -104,7 +104,7 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
         v = torch.randn_like(k)
         output = op(q, k, v)
         assert output.dtype == dtype
-        kernel = op._get_kernel(dtype)
+        kernel = op._get_kernel(dtype, device=q.device)
         assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
         assert kernel.dtype == dtype
     _assert_two_entries(op)
@@ -123,7 +123,10 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         v = torch.randn_like(q)
         output = op(q, k, v)
         assert output.dtype == dtype
-        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillDenseFwdKernel"
+        assert (
+            op._get_kernel(dtype, device=q.device).__class__.__name__
+            == "GQAPrefillDenseFwdKernel"
+        )
     _assert_two_entries(op._gqa_op)
 
     # MHA builds no kernel of its own, so autotune has to reach the delegate's

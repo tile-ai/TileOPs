@@ -181,7 +181,9 @@ def test_mha_fwd(
 @pytest.mark.smoke
 def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
     op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False)
-    assert op._get_kernel(torch.float16).__class__.__name__.startswith("GQA")
+    assert op._get_kernel(
+        torch.float16, device=torch.device("cuda")
+    ).__class__.__name__.startswith("GQA")
 
 
 @pytest.mark.smoke

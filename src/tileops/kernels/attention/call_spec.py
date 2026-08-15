@@ -78,6 +78,26 @@ class AttentionCall(CallSpec):
     accum_dtype: torch.dtype = torch.float32
     tune: bool = False
 
+    @classmethod
+    def from_device(cls, device: torch.device, **facts: object) -> "AttentionCall":
+        """Build a call record from the device handed to the builtin factory.
+
+        Platform discovery belongs to the kernel side of the Op/kernel boundary.  In
+        particular, never fall back to CUDA's current device: it need not be the device
+        carrying the manifest inputs.  ``arch=0`` is the explicit non-CUDA sentinel; unlike
+        the legacy ``-1`` value it does not trigger :class:`CallSpec`'s current-device probe.
+        """
+        if device.type != "cuda":
+            return cls(arch=0, h200=False, **facts)
+
+        from tileops.utils import get_sm_version, is_h200
+
+        return cls(
+            arch=get_sm_version(device.index),
+            h200=is_h200(device.index),
+            **facts,
+        )
+
 
 def uses_sliding_window(call: AttentionCall) -> bool:
     """Whether either window bound is set, which restricts what may serve the call."""

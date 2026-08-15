@@ -92,16 +92,19 @@ _SHIPPED_DENSE_PREFILL_MAP = GroupedQueryAttentionPrefillDenseFwdOp.default_kern
 )
 
 
-def _stand_in(real: type) -> type:
+def _stand_in(real: type, *, allow_cpu: bool = False) -> type:
     """A replacement for *real* that answers selection but compiles nothing.
 
     ``refusal`` / ``general`` / ``supported_archs`` come from the class it
-    stands in for, so selection reaches the same key it would have; only the
-    instance is cheap, returning the semantic output shape a prefill kernel
-    returns.
+    stands in for, so selection reaches the same key it would have.  CPU may be
+    admitted explicitly for wrapper-only tests that never launch the real CUDA
+    implementation.  The instance itself is cheap and only returns the semantic
+    output shape a prefill kernel returns.
     """
 
     class StandIn(real):
+        supported_archs = [*real.supported_archs, 0] if allow_cpu else real.supported_archs
+
         def __init__(self, *args: object, **kwargs: object) -> None:
             self.args = args
             self.kwargs = kwargs
@@ -119,7 +122,7 @@ def _stand_in_prefill_map() -> dict:
 
 def _stand_in_dense_prefill_map() -> dict:
     """Replace every Dense-prefill implementation with a non-compiling stand-in."""
-    return {key: _stand_in(cls) for key, cls in _SHIPPED_DENSE_PREFILL_MAP.items()}
+    return {key: _stand_in(cls, allow_cpu=True) for key, cls in _SHIPPED_DENSE_PREFILL_MAP.items()}
 
 
 class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
@@ -1537,7 +1540,9 @@ def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
     would land on the general dense implementation. Both entry points into the
     dense-prefill build must refuse it instead."""
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
-        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 2, 128, 128, True)._get_kernel(torch.float32)
+        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 2, 128, 128, True)._get_kernel(
+            torch.float32, device=torch.device("cuda")
+        )
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
         GroupedQueryAttentionPrefillFwdOp(
             batch=1,
