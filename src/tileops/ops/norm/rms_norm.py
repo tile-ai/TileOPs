@@ -1,3 +1,20 @@
+"""RMS norm, and the shape an op takes once its compile boundary is in the op layer.
+
+An op that wants ``torch.compile(op, fullgraph=True)`` writes these five:
+
+1. ``forward`` — one call to the module-level operator, nothing else. This is as far as
+   dynamo traces.
+2. ``_eager_forward`` — validation, kernel construction and the launch. It runs inside the
+   operator, so none of it is traced.
+3. ``_rms_norm_fwd`` — the operator, registered once at import time.
+4. ``_rms_norm_fwd_fake`` — what the compiler is told about the output while tracing.
+5. ``compile_op_names`` — the operator's name, which lets a test assert that the traced
+   graph holds nothing else.
+
+``_instance_key`` comes from the base class: ``dispatch_kernel`` assigns it during
+``__init__``.
+"""
+
 from typing import ClassVar, Dict, Optional, Sequence, Tuple
 
 import torch
@@ -45,6 +62,9 @@ class RMSNormFwdOp(Op):
     #: normalization both read it, so the two cannot drift apart.
     DEFAULT_EPS = 1.0e-6
 
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
+
     def __init__(
         self,
         normalized_shape: Sequence[int],
@@ -67,8 +87,6 @@ class RMSNormFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
-
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
 
     def _infer_output_shapes(
         self,
@@ -100,12 +118,16 @@ class RMSNormFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or devices disagree, or shapes are incompatible with the
-                configured ``normalized_shape``.
+                configured ``normalized_shape``. Raised from inside the operator, by
+                :meth:`_eager_forward`.
         """
         return _rms_norm_fwd(x, weight, self._instance_key)
 
     def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch — all untraced."""
+        """Validate, normalize, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
+        """
         ns = self.normalized_shape
         k = len(ns)
         self._validate_dtypes(x, weight)
@@ -132,7 +154,7 @@ class RMSNormFwdOp(Op):
         kernel = self.get_or_build_kernel(
             "rms_norm",
             (x, weight),
-            key=x.dtype,
+            key=x.dtype,                      # this instance's in-tree cache key
             build=lambda: self.kernel_map["rms_norm"](
                 self.N, self.eps, x.dtype, tune=self.tune,
             ),
@@ -141,11 +163,11 @@ class RMSNormFwdOp(Op):
         return kernel(x, weight)
 
 
-# torch.compile dispatch boundary. Three constraints make this a pair of module-level
-# functions rather than methods: registration happens at import time and once per
-# qualified name; the schema is read off the annotations, so ``self`` cannot appear in
-# either signature; the instance is recovered from a string key. Why the key is a string
-# and why it is never reused: src/tileops/ops/compile_boundary.py.
+# Both are module-level functions rather than methods, for three reasons: registration
+# happens at import time and once per qualified name; the schema is read off the
+# annotations, so ``self`` cannot appear in either signature; the instance is therefore
+# recovered from a string key. Why that key is a string and why it is never reused:
+# src/tileops/ops/compile_boundary.py.
 
 
 @torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())

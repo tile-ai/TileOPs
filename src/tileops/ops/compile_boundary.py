@@ -1,19 +1,28 @@
-"""Opaque dispatch boundary for torch.compile.
+"""Lets a torch.compile dispatch boundary find the op instance behind it.
 
-Invariant: a dynamo-traced ``Op.forward`` must not construct kernels or
-enter a TileLang builder. Lazy-dispatch ops route ``forward`` through a
-``torch.library.custom_op`` whose eager body resolves the instance here
-and runs the untraced path (cache lookup, kernel construction, launch).
+An operator's schema has no type for an op object, so ``self`` cannot cross the boundary.
+The op passes its key instead, and the operator body trades the key back for the instance:
 
-``Op.dispatch_kernel`` registers every conforming op at ``__init__``
-time; weak references keep the registry from extending lifetimes. Keys
-are strings because dynamo treats string custom-op arguments as static
-constants — an ``int`` key is generalized to an unhashable ``SymInt``
-once a second instance compiles through the same frame.
+    class FooOp(Op):
+        def forward(self, x):
+            return _foo(x, self._instance_key)
 
-Being a constant is also why keys must never repeat: inductor bakes the
-fake's output shape into the artifact, so an op reaching a used key
-inherits the first one's shapes. ``id()`` is an address and gets reissued.
+    @torch.library.custom_op("top::foo", mutates_args=())
+    def _foo(x: torch.Tensor, instance_key: str) -> torch.Tensor:
+        return get_instance(instance_key)._eager_forward(x)
+
+``Op.dispatch_kernel`` assigns ``self._instance_key`` during ``__init__``, so an op gets a
+key without writing any registration code. Keys read as ``RMSNormFwdOp#3``, so a key in a
+graph dump or traceback says whose it is.
+
+The invariant this exists to keep: a dynamo-traced ``forward`` must not construct kernels or
+enter a TileLang builder. Everything past the operator body is untraced, so cache lookup,
+kernel construction and launch belong there.
+
+Two properties are load-bearing. The key is a ``str`` because dynamo treats string operator
+arguments as compile-time constants, while an ``int`` is generalized to an unhashable
+``SymInt``. A key is never reused, not even after its op is collected, because inductor bakes
+the fake's output shape into the artifact.
 """
 
 import itertools
@@ -25,7 +34,8 @@ _KEY_COUNTER = itertools.count()
 
 def register_instance(op: object) -> str:
     """Register ``op`` and return the key its dispatch custom op passes back."""
-    key = f"op{next(_KEY_COUNTER)}"
+    # ``#`` cannot appear in a class name, so no two classes can produce the same key.
+    key = f"{type(op).__name__}#{next(_KEY_COUNTER)}"
     _OP_REGISTRY[key] = op
     return key
 
