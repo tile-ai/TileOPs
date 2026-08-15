@@ -38,12 +38,12 @@ import torch
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
-from ._config import decode_regime, launches_enough_ctas
+from ._config import launches_enough_ctas, rows_per_group_regime
 
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
-#: The decode schedule: fewer rows per expert fill fewer tiles, so the block
-#: shrinks and the pipeline shortens. Measurements: ``_config``.
+#: For shapes whose experts hold fewer rows than a default tile: shorter block, shorter
+#: pipeline. When it applies: ``_config``.
 _DECODE_CONFIG = {
     "block_m": 64,
     "block_n": 256,
@@ -92,8 +92,8 @@ class GroupedGemmPersistent3WGKernel(Kernel):
     @property
     def default_config(self) -> dict:
         """The schedule this shape asks for; see :mod:`._config`."""
-        if (decode_regime(self.numel, self.num_experts) is not None
-                and not self.unsupported_reason(self.numel, self.num_experts, self.N, self.K)
+        if (rows_per_group_regime(self.numel, self.num_experts) is not None
+                and self.takes_shape(self.N, self.K)
                 and launches_enough_ctas(
                     self.numel, self.N, _DECODE_CONFIG["block_m"],
                     _DECODE_CONFIG["block_n"], self.sm_count)):
@@ -101,18 +101,14 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         return dict(_DEFAULT_CONFIG)
 
     @classmethod
-    def unsupported_reason(cls, numel: int, num_experts: int, n: int, k: int) -> str | None:
-        """Why this kernel cannot serve the shape, or ``None`` when it can.
+    def takes_shape(cls, n: int, k: int) -> bool:
+        """Whether this kernel can be built for an ``N x K`` output.
 
-        Shape only. Architecture is the base class's :meth:`refusal`, answered
-        against a call. Both schedules of this kernel share ``block_n`` and
-        ``block_k``, so the answer does not depend on which one the shape gets.
+        Shape only; whether the device can run it is the base class's
+        :meth:`refusal`. Both schedules share ``block_n`` and ``block_k``, so the
+        answer does not depend on which one the shape gets.
         """
-        if n % _DEFAULT_CONFIG["block_n"]:
-            return f"N must be a multiple of {_DEFAULT_CONFIG['block_n']}, got {n}"
-        if k % _DEFAULT_CONFIG["block_k"]:
-            return f"K must be a multiple of {_DEFAULT_CONFIG['block_k']}, got {k}"
-        return None
+        return n % _DEFAULT_CONFIG["block_n"] == 0 and k % _DEFAULT_CONFIG["block_k"] == 0
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override base autotune: the JIT factory already accepts config

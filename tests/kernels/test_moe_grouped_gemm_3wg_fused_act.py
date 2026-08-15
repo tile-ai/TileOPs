@@ -92,9 +92,9 @@ def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m):
         pytest.param(128, 128, 256, 7168, False, id="too-few-ctas"),
     ],
 )
-def test_which_shapes_get_the_decode_schedule(numel, num_experts, n, k, expected):
+def test_which_shapes_want_the_fused_epilogue(numel, num_experts, n, k, expected):
     """What the op asks before it builds the fused pipeline."""
-    assert MoeGroupedGemmPersistent3WGFusedActKernel.uses_decode_schedule(
+    assert MoeGroupedGemmPersistent3WGFusedActKernel.wants_fused_epilogue(
         numel, num_experts, n, k, sm_count=132,
     ) is expected
 

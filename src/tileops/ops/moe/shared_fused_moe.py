@@ -86,7 +86,6 @@ class SharedFusedMoE(FusedMoe):
         tp_rank: int = 0,
         *,
         activation: str = "silu_and_mul",
-        use_fused_activation: bool = False,
     ):
         # SharedExpertMLPKernel hardcodes silu_and_mul internally. Allowing a
         # non-default activation alongside an enabled shared expert would
@@ -113,7 +112,6 @@ class SharedFusedMoE(FusedMoe):
             routed_scaling_factor=routed_scaling_factor,
             expert_map=expert_map,
             activation=activation,
-            use_fused_activation=use_fused_activation,
         )
 
         if tp_size < 1:

@@ -176,8 +176,58 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             num_tokens=num_tokens, num_experts=128, top_k=8,
             hidden_size=7168, ffn_size=2048,
         )
-        assert experts.use_fused_activation is fused
+        assert experts._fuses_activation is fused
         assert (experts._activation_op is None) is fused
+
+    @pytest.mark.smoke
+    def test_the_automatically_fused_pipeline_matches_the_reference(self):
+        """The fused branch is what production decode runs, so it needs its own check.
+
+        Kernel-level tests cover the fused GEMM against a reference expression; this
+        covers the op around it — permute, weights, the down GEMM and unpermute.
+        """
+        T_count, E, top_k, H, F_dim = 1024, 128, 2, 256, 1152
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T_count, num_experts=E, top_k=top_k,
+            hidden_size=H, ffn_size=F_dim,
+        )
+        assert experts._fuses_activation, "shape no longer selects the fused pipeline"
+
+        torch.manual_seed(0)
+        dtype = torch.bfloat16
+        hidden = torch.randn(T_count, H, dtype=dtype, device="cuda") * 0.1
+        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(
+            torch.randn(T_count, top_k, dtype=torch.float32, device="cuda"), dim=-1)
+        ids = torch.randint(0, E, (T_count, top_k), dtype=torch.int32, device="cuda")
+        out = torch.empty(T_count, H, dtype=dtype, device="cuda")
+        ws = torch.empty(0, dtype=dtype, device="cuda")
+
+        experts.forward(out, hidden, w1, w2, weights, ids, None, ws, ws, E)
+
+        expected = _torch_ref_moe(hidden, w1, w2, weights, ids)
+        torch.testing.assert_close(out.float(), expected.float(), rtol=3e-2, atol=3e-2)
+
+    @pytest.mark.smoke
+    @pytest.mark.parametrize("wants", [True, False])
+    def test_a_replaced_fused_kernel_answers_for_itself(self, wants):
+        """The question goes to the class that will be built, not to the stock one."""
+        from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
+            MoeGroupedGemmPersistent3WGFusedActKernel,
+        )
+
+        class Replacement(MoeGroupedGemmPersistent3WGFusedActKernel):
+            @classmethod
+            def wants_fused_epilogue(cls, *args, **kwargs):
+                return wants
+
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=512, num_experts=128, top_k=8,
+            hidden_size=7168, ffn_size=2048,
+            kernel_map={"moe_grouped_gemm_fused_act_kernel": Replacement},
+        )
+        assert experts._fuses_activation is wants
 
     @pytest.mark.smoke
     def test_explicit_gemm_override_keeps_the_unfused_pipeline(self):
@@ -188,7 +238,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             hidden_size=7168, ffn_size=2048,
             gemm_kernel=GroupedGemmPersistent3WGKernel,
         )
-        assert experts.use_fused_activation is False
+        assert experts._fuses_activation is False
 
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
@@ -341,88 +391,6 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
         )
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
-
-
-@pytest.mark.parametrize(
-    "activation",
-    [
-        pytest.param("silu_and_mul", marks=pytest.mark.smoke),
-        pytest.param("gelu_and_mul", marks=pytest.mark.nightly),
-    ],
-)
-def test_use_fused_activation_parity(activation):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
-        pytest.skip("Requires SM90")
-    torch.manual_seed(0)
-    T_count, E, top_k, H, Fdim = 256, 8, 2, 256, 768
-    hidden = torch.randn(T_count, H, dtype=torch.bfloat16, device="cuda") * 0.02
-    w_gate_up = torch.randn(E, 2 * Fdim, H, dtype=torch.bfloat16, device="cuda") * 0.02
-    w_down = torch.randn(E, H, Fdim, dtype=torch.bfloat16, device="cuda") * 0.02
-    topk_w = torch.rand(T_count, top_k, dtype=torch.float32, device="cuda")
-    topk_ids = torch.randint(0, E, (T_count, top_k), dtype=torch.int32, device="cuda")
-
-    def run(use_fused):
-        op = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=T_count, num_experts=E, top_k=top_k, hidden_size=H,
-            ffn_size=Fdim, activation=activation,
-            use_fused_activation=use_fused)
-        out = torch.empty(T_count, H, dtype=torch.bfloat16, device="cuda")
-        ws = torch.empty(0, dtype=torch.bfloat16, device="cuda")
-        op.forward(out, hidden, w_gate_up, w_down, topk_w, topk_ids, None, ws, ws, E)
-        return out
-
-    fused_out = run(True)
-    assert fused_out.shape == (T_count, H)
-    # bf16 fused-vs-unfused accumulation differs slightly; tolerance covers the
-    # fused-epilogue vs separate-activation-kernel rounding gap.
-    torch.testing.assert_close(fused_out, run(False), rtol=3e-2, atol=3e-2)
-
-
-@pytest.mark.smoke
-def test_use_fused_activation_refuses_a_conflicting_gemm_override():
-    """A request this op cannot honour is refused, not quietly downgraded.
-
-    The fused gate_up wrapper keys off moe_grouped_gemm_fused_act_kernel, so a
-    moe_grouped_gemm_kernel override would reach the down GEMM alone and leave
-    the pipeline inconsistent. Falling back silently would report the unfused
-    result as the fused one the caller asked for.
-    """
-    from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
-    with pytest.raises(ValueError, match="cannot honour a moe_grouped_gemm_kernel override"):
-        FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
-            activation="silu_and_mul", use_fused_activation=True,
-            kernel_map={"moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel},
-        )
-
-
-@pytest.mark.smoke
-def test_top_level_api_forwards_use_fused_activation():
-    """FusedMoe and its subclasses thread use_fused_activation to the default experts."""
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
-        pytest.skip("Requires SM90")
-    from tileops.ops.moe.fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
-    from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
-    common = dict(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
-                  ffn_size=768)
-    for cls in (FusedMoe, FusedMoeFwdOp, FusedMoeFwdCbFwdOp, SharedFusedMoE):
-        assert cls(**common, use_fused_activation=True)._experts.use_fused_activation is True
-        assert cls(**common)._experts.use_fused_activation is False
-
-
-@pytest.mark.smoke
-def test_use_fused_activation_rejected_with_injected_experts():
-    """The flag only configures the default experts; combining it with an
-    injected experts= instance must raise rather than silently no-op."""
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
-        pytest.skip("Requires SM90")
-    from tileops.ops.moe.fused_moe import FusedMoeFwdOp
-    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768)
-    with pytest.raises(ValueError, match="use_fused_activation"):
-        FusedMoeFwdOp(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
-                      ffn_size=768, experts=experts,
-                      use_fused_activation=True)
 
 
 class TestBuildActivationOp:

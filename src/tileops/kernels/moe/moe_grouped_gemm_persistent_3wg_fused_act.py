@@ -16,9 +16,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.grouped_gemm._config import (
-    ASSUMED_SM_COUNT,
-    decode_regime,
     launches_enough_ctas,
+    rows_per_group_regime,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -34,6 +33,11 @@ _DECODE_DENSE_CONFIG = {
     "num_stages": 2, "threads": 384, "group_size_m": 1,
 }
 
+#: Multiprocessors assumed when the caller has no device to ask, as the op layer does
+#: not: the count on the parts these schedules were tuned on. A smaller part misses the
+#: decode schedule, which costs performance, not correctness.
+_ASSUMED_SM_COUNT = 132
+
 _DECODE_SPARSE_CONFIG = {
     "block_m": 64, "block_n": 128, "block_k": 128,
     "num_stages": 1, "threads": 384, "group_size_m": 1,
@@ -42,10 +46,10 @@ _DECODE_SPARSE_CONFIG = {
 
 def _schedule_for(numel: int, num_experts: int, k: int) -> dict:
     """The schedule this shape gets: decode when the regime says so and K allows."""
-    regime = decode_regime(numel, num_experts)
+    regime = rows_per_group_regime(numel, num_experts)
     if regime is None or k % 128 != 0:
         return _DEFAULT_CONFIG
-    return _DECODE_SPARSE_CONFIG if regime == "sparse" else _DECODE_DENSE_CONFIG
+    return _DECODE_SPARSE_CONFIG if regime == "thin" else _DECODE_DENSE_CONFIG
 
 
 def _fused_act_expr(name):
@@ -95,51 +99,32 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         return dict(_schedule_for(self.numel, self.num_experts, self.K))
 
     @classmethod
-    def unsupported_reason(cls, numel: int, num_experts: int, n: int, k: int) -> str | None:
-        """Why this kernel cannot serve the shape, or ``None`` when it can.
-
-        Shape only. Architecture is the base class's :meth:`refusal`, answered
-        against a call.
-
-        Args:
-            numel: Routed rows in total.
-            num_experts: Local experts the rows are spread over.
-            n: ffn width, the output width before the gate/up split.
-            k: hidden size.
-        """
-        config = _schedule_for(numel, num_experts, k)
-        if n % config["block_n"]:
-            return f"ffn_size must be a multiple of {config['block_n']}, got {n}"
-        if k % config["block_k"]:
-            return f"hidden_size must be a multiple of {config['block_k']}, got {k}"
-        return None
-
-    @classmethod
-    def uses_decode_schedule(cls, numel: int, num_experts: int, n: int, k: int,
+    def wants_fused_epilogue(cls, numel: int, num_experts: int, n: int, k: int,
                              sm_count: int | None = None) -> bool:
-        """Whether this shape gets a decode schedule, and fills the device with it.
+        """Whether fusing the activation into this GEMM is the faster pipeline here.
 
-        The op layer asks before building the fused pipeline. Answering here keeps
-        the thresholds, the block sizes they require and the launch geometry in one
-        place, so the op cannot believe it gets a decode schedule while the kernel
-        falls back to the default one.
+        True when the shape gets one of the short-group schedules and that schedule
+        fills the device. Measured on H200 with bf16 at production MoE shapes, where
+        fusing wins about 5% inside this regime and loses 6-10% outside it; the answer
+        is extrapolated to other SM90 parts, dtypes and dimensions that classify the
+        same way.
 
         Args:
             numel: Routed rows in total.
             num_experts: Local experts the rows are spread over.
             n: ffn width, the output width before the gate/up split.
             k: hidden size.
-            sm_count: Multiprocessors to fill; :data:`ASSUMED_SM_COUNT` when
-                omitted, so the answer costs no device query.
+            sm_count: Multiprocessors to fill; assumed when omitted, so the answer
+                costs no device query.
         """
         config = _schedule_for(numel, num_experts, k)
         if config is _DEFAULT_CONFIG:
             return False
-        if cls.unsupported_reason(numel, num_experts, n, k):
+        if n % config["block_n"] or k % config["block_k"]:
             return False
         return launches_enough_ctas(
             numel, n, config["block_m"], config["block_n"],
-            ASSUMED_SM_COUNT if sm_count is None else sm_count,
+            _ASSUMED_SM_COUNT if sm_count is None else sm_count,
         )
 
     @property
