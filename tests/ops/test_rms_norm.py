@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.compile_contract import register_compile_contract
+from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.normalization import RMSNormWorkload
@@ -184,27 +184,13 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-def test_the_traced_graph_holds_one_opaque_node() -> None:
-    """One node, and none of the kernel's own machinery.
-
-    What the graph contains is what stays the same when another target serves this
-    op: the node is the op's, so replacing the kernel cannot change the graph.
-    """
+def test_the_traced_graph_holds_only_this_ops_operator() -> None:
+    """The node is the op's, so replacing the kernel cannot change the graph."""
     op = RMSNormFwdOp(normalized_shape=(256,))
     x = torch.randn(8, 256, dtype=torch.float16, device="cuda")
     weight = torch.randn(256, dtype=torch.float16, device="cuda")
 
-    traced = []
-
-    def capture(gm, example_inputs):
-        traced.append([str(node.target) for node in gm.graph.nodes
-                       if node.op == "call_function"])
-        return gm.forward
-
-    torch.compile(op, backend=capture, fullgraph=True)(x, weight)
-
-    (calls,) = traced
-    assert calls == ["top.norm_rms_norm_fwd.default"], calls
+    assert_op_owns_graph_nodes(op, x, weight)
 
 
 @pytest.mark.smoke

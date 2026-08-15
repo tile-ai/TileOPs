@@ -64,6 +64,10 @@ class RMSNormFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
 
+    @property
+    def compile_op_names(self) -> Tuple[str, ...]:
+        return ("top::norm_rms_norm_fwd",)
+
     def _infer_output_shapes(
         self,
         x_shape: Tuple[int, ...],
