@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from tileops.ops import GroupedQueryAttentionFwdOp
+from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
 from workloads.workload_base import WorkloadBase
 
 
@@ -82,7 +82,7 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device="cuda"
         )
 
-        fwd_op = GroupedQueryAttentionFwdOp(
+        fwd_op = GroupedQueryAttentionPrefillDenseFwdOp(
             self.batch, self.heads, self.heads_kv, self.seq_len, self.dim, self.is_causal
         )
         with torch.no_grad():
@@ -109,24 +109,34 @@ class GroupedQueryAttentionFwdWorkload(WorkloadBase):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        seq_len_kv: int | None = None,
     ) -> None:
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
         self.seq_len = seq_len
+        self.seq_len_kv = seq_len if seq_len_kv is None else seq_len_kv
         self.dim = dim
         self.is_causal = is_causal
         self.dtype = dtype
+        self.sm_scale = sm_scale
+        self.softcap = softcap
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
         ).contiguous()
         k = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
         ).contiguous()
         v = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
         ).contiguous()
         return q, k, v
 
@@ -410,49 +420,6 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
             block_table,
             self.max_seqlen_q,
         )
-
-
-class GroupedQueryAttentionSlidingWindowFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        seq: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        wl: int,
-        wr: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.seq = seq
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.wl = wl
-        self.wr = wr
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q = (
-            torch.randn(self.batch, self.seq, self.heads, self.dim, dtype=self.dtype, device="cuda")
-            * 0.1
-        )
-        k = (
-            torch.randn(
-                self.batch, self.seq, self.heads_kv, self.dim, dtype=self.dtype, device="cuda"
-            )
-            * 0.1
-        )
-        v = (
-            torch.randn(
-                self.batch, self.seq, self.heads_kv, self.dim, dtype=self.dtype, device="cuda"
-            )
-            * 0.1
-        )
-        return q, k, v
 
 
 class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):

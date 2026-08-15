@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool import MaxPool2dFwdOp
@@ -71,6 +72,81 @@ def _inputs(rows=4, shape=NORMALIZED_SHAPE, dtype=DTYPE, device="cpu"):
     x = torch.randn(rows, *shape, dtype=dtype, device=device)
     weight = torch.randn(*shape, dtype=dtype, device=device)
     return x, weight
+
+
+def test_dense_gqa_target_gets_the_normalized_manifest_abi():
+    builds = []
+    runs = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(*inputs):
+            assert all(tensor.is_contiguous() for tensor in inputs)
+            runs.append(inputs)
+            return torch.empty_like(inputs[0], dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=2,
+        heads=4,
+        heads_kv=2,
+        seq_len=3,
+        dim=8,
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.randn(2, 3, 4, 8, dtype=torch.float16)
+    k = torch.randn(2, 3, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+
+    output = op(q, k, v)
+    op(q, k, v)
+
+    assert output.shape == q.shape
+    assert len(builds) == 1, "one input signature builds one external callable"
+    specs, params = builds[0]
+    assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
+    assert tuple(params) == op.__manifest_param_names__
+    assert len(runs[0]) == 8
+    assert runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
+    assert runs[0][3].shape == (2, 2), "identity scales are normalized"
+    assert runs[0][6].shape == (1, 1), "disabled RoPE uses dummy tables"
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable"
+)
+def test_dense_gqa_rejects_fp8_without_output_dtype_before_external_builder():
+    builds = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+        raise AssertionError("an invalid public call must not reach the target")
+
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=1,
+        heads=8,
+        heads_kv=2,
+        seq_len=3,
+        dim=128,
+        target="gqa_fake",
+    )
+    q = torch.empty((1, 3, 8, 128), dtype=torch.float8_e4m3fn)
+    k = torch.empty((1, 3, 2, 128), dtype=torch.float8_e4m3fn)
+    v = torch.empty_like(k)
+
+    with pytest.raises(ValueError, match="dtype must select a float16 or bfloat16"):
+        op(q, k, v)
+
+    assert builds == []
 
 
 # --------------------------------------------------------------------------------------

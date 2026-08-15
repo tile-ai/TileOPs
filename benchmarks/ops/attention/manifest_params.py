@@ -40,6 +40,43 @@ def mha_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, bool]:
     return batch, seq_len, heads, dim, workload.get("is_causal", True)
 
 
+def gqa_fwd_args(
+    workload: dict[str, Any],
+) -> tuple[
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    bool,
+    float | None,
+    float | None,
+    int,
+    int,
+]:
+    # Fused RoPE needs a full-envelope baseline that rotates Q/K inside the
+    # measured callable. Do not silently benchmark the non-fused operator when
+    # such a workload is added; the current Dense manifest has no RoPE case.
+    if workload.get("fuse_rope", False):
+        raise ValueError("Dense fused-RoPE benchmark adapter is not implemented")
+    batch, seq_len_q, heads, dim = workload["q_shape"]
+    _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
+    return (
+        batch,
+        seq_len_q,
+        seq_len_kv,
+        heads,
+        heads_kv,
+        dim,
+        workload.get("is_causal", True),
+        workload.get("sm_scale"),
+        workload.get("softcap"),
+        workload.get("window_size_left", -1),
+        workload.get("window_size_right", -1),
+    )
+
+
 def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, bool]:
     batch, seq_len, heads, dim = workload["q_shape"]
     _, kv_seq_len, heads_kv, _ = workload["kv_shape"]
@@ -181,23 +218,6 @@ def gqa_decode_paged_args(
         workload["page_size"],
         workload.get("sm_scale"),
         workload.get("softcap"),
-    )
-
-
-def gqa_sliding_window_args(
-    workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, bool, int, int]:
-    batch, seq_len, heads, dim = workload["q_shape"]
-    _, _, heads_kv, _ = workload["kv_shape"]
-    return (
-        batch,
-        seq_len,
-        heads,
-        heads_kv,
-        dim,
-        workload.get("is_causal", True),
-        workload.get("window_size_left", -1),
-        workload.get("window_size_right", -1),
     )
 
 

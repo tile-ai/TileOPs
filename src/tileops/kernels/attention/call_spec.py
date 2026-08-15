@@ -20,6 +20,7 @@ __all__ = [
     "causal_ws_prefill_region",
     "decode_bs1_region",
     "dense_prefill_region",
+    "dense_sliding_prefill_region",
     "fp8_dtype",
     "paged_decode_ws_region",
     "square_ws_prefill_region",
@@ -51,6 +52,7 @@ class AttentionCall(CallSpec):
     """
 
     dtype: Optional[torch.dtype] = None
+    prefill_topology: str = ""
     batch: int = 0
     heads: int = 0
     heads_kv: int = 0
@@ -72,6 +74,7 @@ class AttentionCall(CallSpec):
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
+    rope_layout: str = "neox"
     accum_dtype: torch.dtype = torch.float32
     tune: bool = False
 
@@ -85,15 +88,32 @@ def dense_prefill_region(call: AttentionCall) -> bool:
     """What every dense packed-prefill implementation requires of a call.
 
     A dense implementation computes on a BSHD view of the packed tensors, so it
-    serves a uniform request only. FP8 and sliding-window calls are regions of
-    their own with their own implementations, and an explicit ``backend`` naming
-    one of those asks for it by name.
+    serves a uniform request only. Native FP8 and fused RoPE remain separate
+    regions; causal and sliding-window masks are policies of the 16-bit family.
     """
     return (
         not call.is_fp8
-        and not uses_sliding_window(call)
+        and call.prefill_topology in ("", "dense")
         and call.is_uniform
+        and not call.fuse_rope
         and call.backend in ("auto", "dense")
+    )
+
+
+def dense_sliding_prefill_region(call: AttentionCall) -> bool:
+    """The SM90 fixed-shape sliding-window specialization's region.
+
+    Its Q/K/V loads and output stores are full 128-token tiles, so tail
+    requests belong to the guarded general Dense implementation.
+    """
+    return (
+        dense_prefill_region(call)
+        and uses_sliding_window(call)
+        and call.max_seqlen_q == call.max_seqlen_kv
+        and call.max_seqlen_q % _WS_BLOCK_M == 0
+        and call.dim in (64, 128)
+        and call.dtype in ATTENTION_DTYPES
+        and (call.prefill_topology != "dense" or call.sm_scale > 0)
     )
 
 
@@ -103,9 +123,11 @@ def square_ws_prefill_region(call: AttentionCall) -> bool:
     Owned by ``GQAFwdWsPersistentCausalKernel``; the warp-specialized causal
     kernel behind it excludes exactly this region so the two never both apply.
     """
-    if not dense_prefill_region(call):
+    if not dense_prefill_region(call) or uses_sliding_window(call):
         return False
     if call.dtype not in ATTENTION_DTYPES:
+        return False
+    if call.prefill_topology == "dense" and call.sm_scale <= 0:
         return False
     if not call.h200 or call.dim != 128:
         return False
@@ -132,9 +154,11 @@ def causal_ws_prefill_region(call: AttentionCall) -> bool:
     """
     return (
         dense_prefill_region(call)
+        and not uses_sliding_window(call)
         and call.is_causal
         and call.dim == 128
         and call.dtype in ATTENTION_DTYPES
+        and (call.prefill_topology != "dense" or call.sm_scale > 0)
     )
 
 

@@ -9,6 +9,7 @@ from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype, uses_s
 
 __all__ = [
     "DECODE_KEYS",
+    "DENSE_PREFILL_KEYS",
     "PACKED_PREFILL_KEYS",
     "PAGED_DECODE_KEYS",
     "PAGED_PREFILL_KEYS",
@@ -29,9 +30,11 @@ PACKED_PREFILL_KEYS = (
 
 #: The subset serving a uniform dense request, for the fixed-shape wrapper.
 DENSE_PREFILL_KEYS = (
+    "gqa_prefill_fp8_tensor_core_fwd_kernel",
+    "gqa_prefill_dense_sliding_fwd_kernel",
     "gqa_prefill_square_fwd_kernel",
     "gqa_prefill_causal_fwd_kernel",
-    "gqa_prefill_fwd_kernel",
+    "gqa_prefill_dense_fwd_kernel",
 )
 
 #: Implementations of paged GQA prefill.

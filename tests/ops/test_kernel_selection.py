@@ -3,7 +3,7 @@
 The tables here are the record that moving the choice out of per-op predicates
 changed no dispatch on SM90: one row per capability region the attention ops
 used to encode by hand. Selection is asserted through
-``select_kernel_key``, which resolves the key without compiling it — the tables would otherwise cost
+``select_kernel_key``, which resolves the key without compiling it; the tables would otherwise cost
 one kernel compile per row.
 """
 
@@ -14,7 +14,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDecodeWithKVCacheFwdOp,
-    GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionPrefillDenseFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
 )
@@ -83,7 +83,8 @@ _PREFILL_DISPATCH = [
         {},
         "gqa_prefill_causal_fwd_kernel",
     ),
-    # backend='auto' on a plain request — uniform, not FP8, no window. The rows
+    ("zero-scale-packed-unchanged", {"sm_scale": 0.0}, {}, "gqa_prefill_square_fwd_kernel"),
+    # backend='auto' on a plain request: uniform, not FP8, no window. The rows
     # below state what 'auto' does when a variant claims it; these two state
     # what it does when none does, which is the request most callers make.
     ("auto-uniform-square", {"backend": "auto"}, {}, "gqa_prefill_square_fwd_kernel"),
@@ -122,9 +123,60 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     """The BSHD wrapper reaches the same dense candidate the packed op does."""
     if not is_h200():
         pytest.skip("the recorded dispatch table is the H200 one")
-    op = GroupedQueryAttentionFwdOp(4, 32, 8, 512, 128, True)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(4, 32, 8, 512, 128, True)
     call = op.attention_call(torch.float16)
     assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("ctor", "expected"),
+    [
+        pytest.param(
+            {
+                "batch": 1,
+                "heads": 8,
+                "heads_kv": 2,
+                "seq_len": 97,
+                "seq_len_kv": 193,
+                "dim": 128,
+                "is_causal": True,
+            },
+            "gqa_prefill_causal_fwd_kernel",
+            id="causal-ws-tail",
+        ),
+        pytest.param(
+            {
+                "batch": 1,
+                "heads": 8,
+                "heads_kv": 2,
+                "seq_len": 191,
+                "dim": 128,
+                "is_causal": True,
+                "window_size_left": 96,
+            },
+            "gqa_prefill_dense_fwd_kernel",
+            id="sliding-tail",
+        ),
+        pytest.param(
+            {
+                "batch": 4,
+                "heads": 32,
+                "heads_kv": 8,
+                "seq_len": 512,
+                "dim": 128,
+                "is_causal": True,
+                "sm_scale": 0.0,
+            },
+            "gqa_prefill_dense_fwd_kernel",
+            id="zero-scale-uses-general",
+        ),
+    ],
+)
+def test_bshd_tail_requests_respect_specialization_safety(ctor: dict, expected: str) -> None:
+    op = GroupedQueryAttentionPrefillDenseFwdOp(**ctor)
+    call = op.attention_call(torch.float16)
+    assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == expected
 
 
 @pytest.mark.smoke
@@ -253,8 +305,8 @@ def test_a_call_on_an_older_arch_lands_on_the_candidate_that_supports_it() -> No
     """A Hopper-only candidate is skipped, not fatal, when an older arch asks.
 
     Every warp-specialized packed-prefill candidate is SM90-only while
-    ``GQAPrefillFwdKernel`` covers SM80. The op constructs either way — it never
-    probed the device — and the SM80 call lands on the candidate that applies.
+    ``GQAPrefillFwdKernel`` covers SM80. The op constructs either way; it never
+    probed the device, and the SM80 call lands on the candidate that applies.
     """
     op = _prefill_op()
     call = op.attention_call(is_fp8=False, is_uniform=True)
@@ -366,7 +418,7 @@ def test_one_replacement_winning_while_another_is_refused_is_the_callers_own_doi
 
     The only guard on the second half of that rule. The test above pins that a
     refused replacement is not stood in for; this one pins that the refusal is
-    about *standing in*, not about the refusal itself — weakening the rule to
+    about *standing in*, not about the refusal itself; weakening the rule to
     "any refused replacement is an error" passes every other test in the repo
     and fails only here.
     """

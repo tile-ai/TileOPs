@@ -10,11 +10,12 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
     GQAFwdWsPersistentCausalKernel,
+    GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
 )
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionPrefillDenseFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
@@ -33,6 +34,49 @@ _PREFILL_TOLERANCE = {
 }
 
 
+def _rope_tables(
+    max_position: int, rotary_dim: int, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor]:
+    inv_freq = 1.0 / (
+        10000.0 ** (torch.arange(0, rotary_dim, 2, device="cuda", dtype=torch.float32) / rotary_dim)
+    )
+    freqs = torch.outer(torch.arange(max_position, device="cuda", dtype=torch.float32), inv_freq)
+    return freqs.cos().to(dtype).contiguous(), freqs.sin().to(dtype).contiguous()
+
+
+def _apply_test_rope(
+    x: torch.Tensor,
+    position_ids: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    rotary_dim: int,
+    rope_layout: str,
+) -> torch.Tensor:
+    selected_cos = cos[position_ids]
+    selected_sin = sin[position_ids]
+    while selected_cos.ndim < x.ndim:
+        selected_cos = selected_cos.unsqueeze(-2)
+        selected_sin = selected_sin.unsqueeze(-2)
+    out = x.clone()
+    if rope_layout == "neox":
+        half = rotary_dim // 2
+        first = x[..., :half]
+        second = x[..., half:rotary_dim]
+        out[..., :half] = first * selected_cos - second * selected_sin
+        out[..., half:rotary_dim] = second * selected_cos + first * selected_sin
+    elif rope_layout == "interleaved":
+        even = x[..., :rotary_dim:2]
+        odd = x[..., 1:rotary_dim:2]
+        rotated = torch.stack(
+            (even * selected_cos - odd * selected_sin, odd * selected_cos + even * selected_sin),
+            dim=-1,
+        )
+        out[..., :rotary_dim] = rotated.flatten(-2)
+    else:
+        raise ValueError(f"unsupported test RoPE layout: {rope_layout}")
+    return out
+
+
 def _selected_prefill_kernel_cls(op: GroupedQueryAttentionPrefillFwdOp) -> type:
     """Kernel class selection picks for a uniform, non-FP8 packed prefill call."""
     call = op.attention_call(is_fp8=False, is_uniform=True)
@@ -42,6 +86,9 @@ def _selected_prefill_kernel_cls(op: GroupedQueryAttentionPrefillFwdOp) -> type:
 #: The shipped implementations of the packed-prefill slot, by dispatch key.
 _SHIPPED_PREFILL_MAP = GroupedQueryAttentionPrefillFwdOp.default_kernel_map.fget(
     object.__new__(GroupedQueryAttentionPrefillFwdOp)
+)
+_SHIPPED_DENSE_PREFILL_MAP = GroupedQueryAttentionPrefillDenseFwdOp.default_kernel_map.fget(
+    object.__new__(GroupedQueryAttentionPrefillDenseFwdOp)
 )
 
 
@@ -68,6 +115,11 @@ def _stand_in(real: type) -> type:
 def _stand_in_prefill_map() -> dict:
     """A ``kernel_map=`` replacing every packed-prefill key with a stand-in."""
     return {key: _stand_in(cls) for key, cls in _SHIPPED_PREFILL_MAP.items()}
+
+
+def _stand_in_dense_prefill_map() -> dict:
+    """Replace every Dense-prefill implementation with a non-compiling stand-in."""
+    return {key: _stand_in(cls) for key, cls in _SHIPPED_DENSE_PREFILL_MAP.items()}
 
 
 class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
@@ -116,6 +168,8 @@ def _gqa_prefill_ref(
     is_causal: bool,
     sm_scale: Optional[float] = None,
     softcap: Optional[float] = None,
+    window_size_left: int = -1,
+    window_size_right: int = -1,
 ) -> torch.Tensor:
     batch, seq_len_q, _, dim = q.shape
     seq_len_kv = k.shape[1]
@@ -127,13 +181,18 @@ def _gqa_prefill_ref(
     scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
     if softcap is not None and softcap > 0:
         scores = softcap * torch.tanh(scores / softcap)
+    offset = seq_len_kv - seq_len_q
+    q_pos = torch.arange(seq_len_q, device=q.device)[:, None] + offset
+    k_pos = torch.arange(seq_len_kv, device=q.device)[None, :]
+    visible = torch.ones((seq_len_q, seq_len_kv), device=q.device, dtype=torch.bool)
     if is_causal:
-        offset = seq_len_kv - seq_len_q
-        q_pos = torch.arange(seq_len_q, device=q.device)[:, None] + offset
-        k_pos = torch.arange(seq_len_kv, device=q.device)[None, :]
-        mask = k_pos <= q_pos
-        scores = scores.masked_fill(~mask.view(1, 1, seq_len_q, seq_len_kv), float("-inf"))
-    probs = torch.softmax(scores, dim=-1)
+        visible &= k_pos <= q_pos
+    if window_size_left >= 0:
+        visible &= k_pos >= q_pos - window_size_left
+    if window_size_right >= 0:
+        visible &= k_pos <= q_pos + window_size_right
+    scores = scores.masked_fill(~visible.view(1, 1, seq_len_q, seq_len_kv), float("-inf"))
+    probs = torch.nan_to_num(torch.softmax(scores, dim=-1), nan=0.0)
     output = torch.matmul(probs, v_bhsd)
     assert output.shape == (batch, heads, seq_len_q, dim)
     return output.transpose(1, 2).to(q.dtype).contiguous()
@@ -253,7 +312,9 @@ def test_gqa_fwd(
     tune: bool,
 ) -> None:
     test = GroupedQueryAttentionFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch, heads, heads_kv, seq_len, dim, causal, tune=tune
+    )
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
@@ -261,7 +322,7 @@ def test_gqa_fwd(
 def test_gqa_fwd_output_matches_the_declared_shape() -> None:
     """``H % H_kv`` keeps the validator's mocks away, so assert parity here."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, False)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, False)
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
@@ -273,6 +334,328 @@ def test_gqa_fwd_output_matches_the_declared_shape() -> None:
     assert op._infer_output_shapes(tuple(q.shape), tuple(k.shape), tuple(v.shape)) == {
         "o": (batch, seq_len, heads, dim),
     }
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("rope_layout", ["neox", "interleaved"])
+def test_gqa_prefill_dense_fused_rope(rope_layout: str) -> None:
+    batch, seq_len_q, seq_len_kv = 2, 48, 80
+    heads, heads_kv, dim, rotary_dim = 8, 2, 64, 32
+    dtype = torch.float16
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    cos, sin = _rope_tables(seq_len_kv, rotary_dim, dtype)
+    q_positions = torch.arange(
+        seq_len_kv - seq_len_q, seq_len_kv, device="cuda", dtype=torch.long
+    ).expand(batch, -1)
+    k_positions = torch.arange(seq_len_kv, device="cuda", dtype=torch.long).expand(batch, -1)
+    q_rot = _apply_test_rope(q, q_positions, cos, sin, rotary_dim, rope_layout)
+    k_rot = _apply_test_rope(k, k_positions, cos, sin, rotary_dim, rope_layout)
+    ref = _gqa_prefill_ref(q_rot, k_rot, v, heads=heads, heads_kv=heads_kv, is_causal=True)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_q,
+        dim,
+        True,
+        seq_len_kv=seq_len_kv,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
+    )
+
+    output = op(q, k, v, rope_cos=cos, rope_sin=sin)
+
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_native_fp8_fused_rope() -> None:
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("native FP8 prefill requires SM90 and float8_e4m3fn")
+    batch, seq_len_q, seq_len_kv = 1, 65, 97
+    heads, heads_kv, dim, rotary_dim = 8, 2, 128, 64
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda").clamp(-2, 2).to(fp8)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    cos, sin = _rope_tables(seq_len_kv, rotary_dim, torch.float16)
+    q_positions = torch.arange(
+        seq_len_kv - seq_len_q, seq_len_kv, device="cuda", dtype=torch.long
+    ).expand(batch, -1)
+    k_positions = torch.arange(seq_len_kv, device="cuda", dtype=torch.long).expand(batch, -1)
+    q_rot = (
+        _apply_test_rope(q.to(torch.float16), q_positions, cos, sin, rotary_dim, "interleaved")
+        .to(fp8)
+        .to(torch.float16)
+    )
+    k_rot = (
+        _apply_test_rope(k.to(torch.float16), k_positions, cos, sin, rotary_dim, "interleaved")
+        .to(fp8)
+        .to(torch.float16)
+    )
+    ref = _gqa_prefill_ref(
+        q_rot,
+        k_rot,
+        v.to(torch.float16),
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=True,
+    )
+    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_q,
+        dim,
+        True,
+        seq_len_kv=seq_len_kv,
+        dtype=torch.float16,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        rope_layout="interleaved",
+    )
+
+    output = op(q, k, v, scale, scale, scale, cos, sin)
+
+    torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_rope_tables_cover_all_kv_positions() -> None:
+    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 32, 80, 8, 2, 64
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    cos, sin = _rope_tables(seq_len_kv - 1, dim, torch.float16)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_q,
+        dim,
+        True,
+        seq_len_kv=seq_len_kv,
+        fuse_rope=True,
+    )
+
+    with pytest.raises(ValueError, match="at least 80 rows"):
+        op(q, k, v, rope_cos=cos, rope_sin=sin)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_rope_inputs_match_fuse_rope() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    cos, sin = _rope_tables(seq_len, dim, torch.float16)
+
+    fused = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch, heads, heads_kv, seq_len, dim, True, fuse_rope=True
+    )
+    with pytest.raises(ValueError, match="requires both"):
+        fused(q, k, v)
+
+    plain = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, True)
+    with pytest.raises(ValueError, match="require fuse_rope=True"):
+        plain(q, k, v, rope_cos=cos, rope_sin=sin)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_fused_rope_rejects_negative_q_positions() -> None:
+    with pytest.raises(ValueError, match="requires seq_len <= seq_len_kv"):
+        GroupedQueryAttentionPrefillDenseFwdOp(
+            batch=1,
+            heads=8,
+            heads_kv=2,
+            seq_len=80,
+            seq_len_kv=48,
+            dim=64,
+            is_causal=False,
+            fuse_rope=True,
+        )
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    cos, sin = _rope_tables(seq_len, dim, torch.float16)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len,
+        dim,
+        True,
+        fuse_rope=True,
+        rope_layout="interleaved",
+    )
+    op(q, k, v, rope_cos=cos, rope_sin=sin)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = op(q, k, v, rope_cos=cos, rope_sin=sin)
+    first = captured.clone()
+    q.zero_()
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.isfinite(captured).all()
+    assert not torch.equal(captured, first)
+
+
+@pytest.mark.parametrize(
+    (
+        "seq_len_q",
+        "seq_len_kv",
+        "is_causal",
+        "window_size_left",
+        "window_size_right",
+        "sm_scale",
+        "softcap",
+        "dim",
+        "dtype",
+    ),
+    [
+        pytest.param(
+            97, 193, True, -1, -1, None, None, 64, torch.float16, id="rectangular-causal-tail"
+        ),
+        pytest.param(
+            129,
+            257,
+            True,
+            96,
+            -1,
+            0.11,
+            2.0,
+            64,
+            torch.float16,
+            id="rectangular-causal-left-window-softcap",
+        ),
+        pytest.param(
+            127,
+            191,
+            False,
+            48,
+            16,
+            0.125,
+            50.0,
+            64,
+            torch.float16,
+            id="bidirectional-window-softcap",
+        ),
+        pytest.param(
+            96, 160, False, -1, 32, None, None, 64, torch.bfloat16, id="right-window-bf16"
+        ),
+        pytest.param(
+            97,
+            193,
+            True,
+            -1,
+            -1,
+            None,
+            None,
+            128,
+            torch.float16,
+            id="rectangular-causal-dim128-tail",
+        ),
+        pytest.param(
+            191, 191, True, 96, -1, None, None, 128, torch.float16, id="sliding-dim128-tail"
+        ),
+    ],
+)
+@pytest.mark.smoke
+def test_gqa_prefill_dense_semantic_matrix(
+    seq_len_q: int,
+    seq_len_kv: int,
+    is_causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    sm_scale: Optional[float],
+    softcap: Optional[float],
+    dim: int,
+    dtype: torch.dtype,
+) -> None:
+    batch, heads, heads_kv = 1, 8, 2
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    ref = _gqa_prefill_ref(
+        q,
+        k,
+        v,
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=is_causal,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        seq_len=seq_len_q,
+        seq_len_kv=seq_len_kv,
+        dim=dim,
+        is_causal=is_causal,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+    )
+
+    output = op(q, k, v)
+
+    atol, rtol = _PREFILL_TOLERANCE[dtype]
+    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("sm_scale", [0.0, -0.125])
+@pytest.mark.smoke
+def test_gqa_prefill_dense_empty_window_rows_are_zero(sm_scale: float) -> None:
+    batch, seq_len_q, seq_len_kv = 1, 65, 1
+    heads, heads_kv, dim = 8, 2, 64
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        seq_len=seq_len_q,
+        seq_len_kv=seq_len_kv,
+        dim=dim,
+        is_causal=False,
+        window_size_right=0,
+        sm_scale=sm_scale,
+    )
+
+    output = op(q, k, v)
+
+    assert torch.equal(output[:, :-1], torch.zeros_like(output[:, :-1]))
+    torch.testing.assert_close(output[:, -1], v[:, 0].repeat_interleave(4, dim=1))
+
+
+@pytest.mark.parametrize("sm_scale", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.smoke
+def test_gqa_prefill_dense_rejects_non_finite_scale(sm_scale: float) -> None:
+    with pytest.raises(ValueError, match="sm_scale must be finite"):
+        GroupedQueryAttentionPrefillDenseFwdOp(
+            batch=1,
+            heads=8,
+            heads_kv=2,
+            seq_len=64,
+            dim=64,
+            sm_scale=sm_scale,
+        )
 
 
 @pytest.mark.parametrize(
@@ -675,7 +1058,7 @@ def test_gqa_prefill_fwd_auto_backend_serves_uniform_input_dense() -> None:
 
     assert out.shape == q.shape
     # Uniform ranges put an automatic request on a dense implementation, not on
-    # the ragged one — the outcome the range reading exists to produce.
+    # the ragged one; this is the outcome the range reading exists to produce.
     assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [torch.float16]
     assert not op.built_kernels("gqa_prefill_varlen_fwd_kernel")
 
@@ -1141,11 +1524,11 @@ def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
     """Nothing downstream validates; a zero ``heads_kv`` would surface as
     ``ZeroDivisionError`` at ``heads % heads_kv``."""
     with pytest.raises(ValueError, match="heads_kv must be positive"):
-        GroupedQueryAttentionFwdOp(1, 8, 0, 64, 64, True)
+        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 0, 64, 64, True)
     with pytest.raises(ValueError, match="batch must be positive"):
-        GroupedQueryAttentionFwdOp(0, 8, 2, 64, 64, True)
+        GroupedQueryAttentionPrefillDenseFwdOp(0, 8, 2, 64, 64, True)
     with pytest.raises(ValueError, match="seq_len must be positive"):
-        GroupedQueryAttentionFwdOp(1, 8, 2, 0, 64, True)
+        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 2, 0, 64, True)
 
 
 @pytest.mark.smoke
@@ -1154,7 +1537,7 @@ def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
     would land on the general dense implementation. Both entry points into the
     dense-prefill build must refuse it instead."""
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
-        GroupedQueryAttentionFwdOp(1, 8, 2, 128, 128, True)._get_kernel(torch.float32)
+        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 2, 128, 128, True)._get_kernel(torch.float32)
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
         GroupedQueryAttentionPrefillFwdOp(
             batch=1,
@@ -1180,14 +1563,22 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> N
     q = torch.empty(batch, seq_len, heads, dim, dtype=torch.float16)
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float16)
     v = torch.empty_like(k)
-    op = GroupedQueryAttentionFwdOp(
-        batch, heads, heads_kv, seq_len, dim, True, kernel_map=_stand_in_prefill_map()
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len,
+        dim,
+        True,
+        kernel_map=_stand_in_dense_prefill_map(),
     )
 
     assert op(q, k, v).shape == q.shape
     assert op(q, k, v).shape == q.shape
 
-    assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [torch.float16]
+    entries = op.built_kernels("gqa_prefill_dense")
+    assert len(entries) == 1
+    assert isinstance(next(iter(entries.values())).kernel, GQAPrefillDenseFwdKernel)
     assert _op_valued_attrs(op) == []
 
 
@@ -1195,11 +1586,11 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> N
 def test_gqa_fwd_bshd_wrapper_selects_what_the_packed_op_selects() -> None:
     """Both reach the same key for the same call, so the wrapper adds no policy.
 
-    Which key each geometry reaches — square, warp-specialized causal, general
-    dense — is the dispatch table's subject; this pins only that the two agree.
+    Which key each geometry reaches (square, warp-specialized causal, or general
+    dense) is the dispatch table's subject; this pins only that the two agree.
     """
     batch, seq_len, heads, heads_kv, dim = 4, 512, 32, 8, 128
-    wrapper = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True)
+    wrapper = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, True)
     packed = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,

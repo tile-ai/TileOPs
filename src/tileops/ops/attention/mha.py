@@ -7,7 +7,7 @@ from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
-    GQAPrefillFwdKernel,
+    GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
@@ -17,7 +17,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
-from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionPrefillDenseFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 
 __all__ = [
@@ -52,7 +52,7 @@ class MultiHeadAttentionFwdOp(Op):
         self.is_causal = is_causal
 
         self.dispatch_kernel(kernel_map)
-        self._gqa_op = GroupedQueryAttentionFwdOp(
+        self._gqa_op = GroupedQueryAttentionPrefillDenseFwdOp(
             batch=batch,
             heads=heads,
             heads_kv=heads,
@@ -66,7 +66,7 @@ class MultiHeadAttentionFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
+            "gqa_prefill_dense_fwd_kernel": GQAPrefillDenseFwdKernel,
             "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
@@ -74,7 +74,7 @@ class MultiHeadAttentionFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self._gqa_op._get_kernel(dtype)
 
-    def kernel_delegates(self) -> tuple[GroupedQueryAttentionFwdOp, ...]:
+    def kernel_delegates(self) -> tuple[GroupedQueryAttentionPrefillDenseFwdOp, ...]:
         """Every kernel this op runs is built by the GQA prefill dispatcher."""
         return (self._gqa_op,)
 

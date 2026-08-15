@@ -94,10 +94,10 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
 
     Causal dim-128 takes the warp-specialized dense slot.
     """
-    from tileops.ops.attention.gqa import GroupedQueryAttentionFwdOp
+    from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillDenseFwdOp
 
     batch, heads, heads_kv, seq_len, dim = 1, 8, 2, 256, 128
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, is_causal=True)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, is_causal=True)
     for dtype in _DTYPES:
         q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
         k = torch.randn(batch, seq_len, heads_kv, dim, dtype=dtype, device="cuda")
@@ -123,11 +123,11 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         v = torch.randn_like(q)
         output = op(q, k, v)
         assert output.dtype == dtype
-        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
+        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillDenseFwdKernel"
     _assert_two_entries(op._gqa_op)
 
     # MHA builds no kernel of its own, so autotune has to reach the delegate's
-    # kernels — one per dtype — through ``kernel_delegates``.
+    # kernels, one per dtype, through ``kernel_delegates``.
     tuned = []
     for kernel in list(op._gqa_op.iter_kernels()):
         kernel.autotune = lambda *_args, _k=kernel: tuned.append(id(_k))
@@ -266,8 +266,8 @@ _SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
 def test_single_tensor_op_records_its_dtype(name):
     """No op may reach a result without recording the element type it used.
 
-    An op answering on its own path — an integer identity, a predicate fallback
-    — records for itself, so every declared dtype is driven, not just float32.
+    An op answering on its own path, such as an integer identity or predicate
+    fallback, records for itself, so every declared dtype is driven, not just float32.
     """
     op = _SINGLE_TENSOR_OPS[name]()
     declared = load_manifest()[name]["signature"]["inputs"]
