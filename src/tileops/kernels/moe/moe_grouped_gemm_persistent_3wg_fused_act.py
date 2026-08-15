@@ -15,15 +15,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.grouped_gemm._config import decode_regime, launches_enough_ctas
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["DECODE_MAX_ROWS_PER_EXPERT", "MoeGroupedGemmPersistent3WGFusedActKernel"]
-
-#: Routed rows per local expert at or below which a batch is decode-shaped, and
-#: the fused epilogue plus the BK128 schedules below are the faster pipeline.
-DECODE_MAX_ROWS_PER_EXPERT = 32
-#: Below this the tile is too thin for the cooperative split; use pingpong.
-_DECODE_SPARSE_ROWS_PER_EXPERT = 16
+__all__ = ["MoeGroupedGemmPersistent3WGFusedActKernel"]
 
 _DEFAULT_CONFIG = {
     "block_m": 128, "block_n": 128, "block_k": 64,
@@ -39,6 +34,14 @@ _DECODE_SPARSE_CONFIG = {
     "block_m": 64, "block_n": 128, "block_k": 128,
     "num_stages": 1, "threads": 384, "group_size_m": 1,
 }
+
+
+def _schedule_for(numel: int, num_experts: int, k: int) -> dict:
+    """The schedule this shape gets: decode when the regime says so and K allows."""
+    regime = decode_regime(numel, num_experts)
+    if regime is None or k % 128 != 0:
+        return _DEFAULT_CONFIG
+    return _DECODE_SPARSE_CONFIG if regime == "sparse" else _DECODE_DENSE_CONFIG
 
 
 def _fused_act_expr(name):
@@ -84,14 +87,55 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        rows_per_expert = self.numel / self.num_experts
-        if self.K % 128 != 0:
-            return dict(_DEFAULT_CONFIG)
-        if rows_per_expert <= _DECODE_SPARSE_ROWS_PER_EXPERT:
-            return dict(_DECODE_SPARSE_CONFIG)
-        if rows_per_expert <= DECODE_MAX_ROWS_PER_EXPERT:
-            return dict(_DECODE_DENSE_CONFIG)
-        return dict(_DEFAULT_CONFIG)
+        """The schedule this shape asks for; see :mod:`..grouped_gemm._config`."""
+        return dict(_schedule_for(self.numel, self.num_experts, self.K))
+
+    @classmethod
+    def unsupported_reason(cls, numel: int, num_experts: int, n: int, k: int) -> str | None:
+        """Why this kernel cannot serve the shape, or ``None`` when it can.
+
+        Shape only. Architecture is the base class's :meth:`refusal`, answered
+        against a call.
+
+        Args:
+            numel: Routed rows in total.
+            num_experts: Local experts the rows are spread over.
+            n: ffn width, the output width before the gate/up split.
+            k: hidden size.
+        """
+        config = _schedule_for(numel, num_experts, k)
+        if n % config["block_n"]:
+            return f"ffn_size must be a multiple of {config['block_n']}, got {n}"
+        if k % config["block_k"]:
+            return f"hidden_size must be a multiple of {config['block_k']}, got {k}"
+        return None
+
+    @classmethod
+    def serves_decode(cls, numel: int, num_experts: int, n: int, k: int,
+                      sm_count: int | None = None) -> bool:
+        """Whether this kernel is the faster gate_up pipeline for this shape.
+
+        The op layer asks before building the fused pipeline, so the thresholds
+        and the block sizes they require stay here.
+
+        Args:
+            numel: Routed rows in total.
+            num_experts: Local experts the rows are spread over.
+            n: ffn width, the output width before the gate/up split.
+            k: hidden size.
+            sm_count: Multiprocessors to fill; read from the current device when
+                omitted.
+        """
+        if (decode_regime(numel, num_experts) is None
+                or cls.unsupported_reason(numel, num_experts, n, k)):
+            return False
+        config = _schedule_for(numel, num_experts, k)
+        if sm_count is None:
+            sm_count = torch.cuda.get_device_properties(
+                torch.cuda.current_device()).multi_processor_count
+        return launches_enough_ctas(
+            numel, n, config["block_m"], config["block_n"], sm_count,
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:

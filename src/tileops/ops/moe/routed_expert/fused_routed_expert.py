@@ -10,16 +10,10 @@ from torch import Tensor
 from tileops.kernels.grouped_gemm import (
     GroupedGemmPersistent3WGKernel,
 )
-from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
-    _DEFAULT_CONFIG as _3WG_DEFAULT_CONFIG,
-)
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
-    _DEFAULT_CONFIG as _FUSED_ACT_DEFAULT_CONFIG,
-)
-from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
-    DECODE_MAX_ROWS_PER_EXPERT,
+    MoeGroupedGemmPersistent3WGFusedActKernel,
 )
 from tileops.ops.moe._activation import build_activation_op
 
@@ -38,24 +32,6 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
-
-# Two full waves on the architectures the 3WG kernels are built for (SM90, 132
-# SMs). Below this the decode schedules trade occupancy for a tail.
-_MIN_DECODE_CTA_TILES = 2 * 132
-_DECODE_DOWN_CONFIG = {
-    "block_m": 64,
-    "block_n": 256,
-    "block_k": 64,
-    "num_stages": 2,
-    "threads": 384,
-    "group_size_m": 1,
-}
-
-
-def _minimum_cta_tiles(numel: int, n: int, block_m: int, block_n: int) -> int:
-    """CTA lower bound when all routed rows land on one local expert."""
-    return ((numel + block_m - 1) // block_m) * ((n + block_n - 1) // block_n)
-
 
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
@@ -144,21 +120,20 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
         kernel_cls = gemm_kernel or GroupedGemmPersistent3WGKernel
 
-        # 3WG requires N and K aligned to its default block dimensions.
-        # Fall back to tile scheduler kernel for small/unaligned dimensions.
-        _3wg_block_n = _3WG_DEFAULT_CONFIG["block_n"]
-        _3wg_block_k = _3WG_DEFAULT_CONFIG["block_k"]
+        # The 3WG kernel serves only aligned shapes, and says which ones; both
+        # GEMMs must be served or neither pipeline half can use it.
         gate_up_n = ffn_size * 2
         if kernel_cls is GroupedGemmPersistent3WGKernel:
-            gate_up_ok = (gate_up_n % _3wg_block_n == 0) and (hidden_size % _3wg_block_k == 0)
-            down_ok = (hidden_size % _3wg_block_n == 0) and (ffn_size % _3wg_block_k == 0)
-            if not (gate_up_ok and down_ok):
+            reason = (
+                GroupedGemmPersistent3WGKernel.unsupported_reason(
+                    numel, num_experts_local, gate_up_n, hidden_size)
+                or GroupedGemmPersistent3WGKernel.unsupported_reason(
+                    numel, num_experts_local, hidden_size, ffn_size)
+            )
+            if reason is not None:
                 _logger.warning(
-                    "FusedMoEExpertsNopadPersistent3WGFwdOp: dims not aligned "
-                    "to 3WG block (gate_up_n=%d, hidden_size=%d, ffn_size=%d; "
-                    "block_n=%d, block_k=%d) — falling back to "
-                    "MoeGroupedGemmNopadKernel.",
-                    gate_up_n, hidden_size, ffn_size, _3wg_block_n, _3wg_block_k,
+                    "FusedMoEExpertsNopadPersistent3WGFwdOp: %s — falling back to "
+                    "MoeGroupedGemmNopadKernel.", reason,
                 )
                 kernel_cls = MoeGroupedGemmNopadKernel
 
@@ -170,25 +145,17 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         # non-3WG override would produce a fused 3WG gate_up next to an
         # overridden down GEMM. That combination is refused below.
         gemm_override = (kernel_map or {}).get("moe_grouped_gemm_kernel")
-        # Eligibility is read from the fused kernel's own threshold and block
-        # sizes; the wrapper class is imported lazily in the fused branch below.
-        routed_rows_per_expert = numel / max(1, num_experts_local)
-        fused_block_n = _FUSED_ACT_DEFAULT_CONFIG["block_n"]
-        fused_block_m = _FUSED_ACT_DEFAULT_CONFIG["block_m"]
-        fused_block_k = _FUSED_ACT_DEFAULT_CONFIG["block_k"]
-        fused_cta_tiles = _minimum_cta_tiles(
-            numel, ffn_size, fused_block_m, fused_block_n,
-        )
+        # Whether the fused kernel is the faster gate_up pipeline for this shape
+        # is the kernel's own answer: it owns the thresholds and the block sizes.
         auto_fuse = (
             not use_fused_activation
             and gemm_kernel is None
             and gemm_override is None
             and kernel_cls is GroupedGemmPersistent3WGKernel
             and activation in ("silu_and_mul", "gelu_and_mul")
-            and routed_rows_per_expert <= DECODE_MAX_ROWS_PER_EXPERT
-            and ffn_size % fused_block_n == 0
-            and hidden_size % fused_block_k == 0
-            and fused_cta_tiles >= _MIN_DECODE_CTA_TILES
+            and MoeGroupedGemmPersistent3WGFusedActKernel.serves_decode(
+                numel, num_experts_local, ffn_size, hidden_size,
+            )
         )
         self.use_fused_activation = use_fused_activation or auto_fuse
         if use_fused_activation:
@@ -217,10 +184,11 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 raise ValueError(
                     "use_fused_activation=True supports activation in "
                     f"{{silu_and_mul, gelu_and_mul}}, got {activation!r}")
-            if ffn_size % fused_block_n != 0:
-                raise ValueError(
-                    f"use_fused_activation=True requires ffn_size % {fused_block_n} == 0, "
-                    f"got ffn_size={ffn_size}")
+            reason = MoeGroupedGemmPersistent3WGFusedActKernel.unsupported_reason(
+                numel, num_experts_local, ffn_size, hidden_size,
+            )
+            if reason is not None:
+                raise ValueError(f"use_fused_activation=True: {reason}")
 
         self._permute = MoePermuteNopadFwdOp(
             num_experts=num_experts, expert_map=expert_map,
@@ -246,26 +214,9 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             self._activation_op = build_activation_op(
                 activation, M=numel, N=ffn_size, kernel_map=kernel_map,
             )
-        down_cta_tiles = _minimum_cta_tiles(
-            numel, hidden_size,
-            _DECODE_DOWN_CONFIG["block_m"],
-            _DECODE_DOWN_CONFIG["block_n"],
-        )
-        self._down_kernel_config = None
-        if (
-            gemm_kernel is None
-            and gemm_override is None
-            and kernel_cls is GroupedGemmPersistent3WGKernel
-            and routed_rows_per_expert <= DECODE_MAX_ROWS_PER_EXPERT
-            and hidden_size % _DECODE_DOWN_CONFIG["block_n"] == 0
-            and ffn_size % _DECODE_DOWN_CONFIG["block_k"] == 0
-            and down_cta_tiles >= _MIN_DECODE_CTA_TILES
-        ):
-            self._down_kernel_config = dict(_DECODE_DOWN_CONFIG)
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size,
-            config=self._down_kernel_config,
             kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
         )
         self._unpermute = MoeUnpermuteFwdOp(

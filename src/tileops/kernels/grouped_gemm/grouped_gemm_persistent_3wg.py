@@ -38,7 +38,20 @@ import torch
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
+from ._config import decode_regime, launches_enough_ctas
+
 __all__ = ["GroupedGemmPersistent3WGKernel"]
+
+#: The decode schedule: fewer rows per expert fill fewer tiles, so the block
+#: shrinks and the pipeline shortens. Measurements: ``_config``.
+_DECODE_CONFIG = {
+    "block_m": 64,
+    "block_n": 256,
+    "block_k": 64,
+    "num_stages": 2,
+    "threads": 384,
+    "group_size_m": 1,
+}
 
 _DEFAULT_CONFIG = {
     "block_m": 128,        # cooperative template (split-A, shared-B)
@@ -78,7 +91,28 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        """The schedule this shape asks for; see :mod:`._config`."""
+        if (decode_regime(self.numel, self.num_experts) is not None
+                and not self.unsupported_reason(self.numel, self.num_experts, self.N, self.K)
+                and launches_enough_ctas(
+                    self.numel, self.N, _DECODE_CONFIG["block_m"],
+                    _DECODE_CONFIG["block_n"], self.sm_count)):
+            return dict(_DECODE_CONFIG)
         return dict(_DEFAULT_CONFIG)
+
+    @classmethod
+    def unsupported_reason(cls, numel: int, num_experts: int, n: int, k: int) -> str | None:
+        """Why this kernel cannot serve the shape, or ``None`` when it can.
+
+        Shape only. Architecture is the base class's :meth:`refusal`, answered
+        against a call. Both schedules of this kernel share ``block_n`` and
+        ``block_k``, so the answer does not depend on which one the shape gets.
+        """
+        if n % _DEFAULT_CONFIG["block_n"]:
+            return f"N must be a multiple of {_DEFAULT_CONFIG['block_n']}, got {n}"
+        if k % _DEFAULT_CONFIG["block_k"]:
+            return f"K must be a multiple of {_DEFAULT_CONFIG['block_k']}, got {k}"
+        return None
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override base autotune: the JIT factory already accepts config
