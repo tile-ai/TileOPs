@@ -83,3 +83,9 @@ docs/superpowers/
 profile_run.log
 bench_stack_dumps/
 bench_results.xml
+
+# Coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

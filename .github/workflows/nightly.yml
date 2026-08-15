@@ -241,8 +241,10 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python3 -m pip install -q -c constraints.txt pytest-timeout
-          python3 -m pytest tests/ -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml | tee tileops_op_test.log
+          python3 -m pip install -q -c constraints.txt pytest-timeout pytest-cov
+          # Coverage reflects the full/nightly tiers only. Smoke-only cases run in
+          # gpu-smoke.yml and their code reads as untested here.
+          python3 -m pytest tests/ -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml --cov=tileops --cov-branch --cov-report=html:htmlcov | tee tileops_op_test.log
         shell: bash
 
       - name: Download benchmark artifacts
@@ -350,6 +352,7 @@ jobs:
             test_results.xml
             tileops_op_test.log
             nightly_report.md
+            htmlcov/
           if-no-files-found: warn
           retention-days: 14
 
