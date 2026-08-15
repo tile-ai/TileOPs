@@ -23,21 +23,17 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramGateConvBwdKernel"]
 
-ALIGNMENT = 256
 CONV_KERNEL_SIZE = 4
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 @functools.lru_cache(maxsize=32)
 def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     accum_dtype = "float"
-    d_padded = _align_up(d, ALIGNMENT)
+    d_padded = align_up(d, ALIGNMENT)
     KS = CONV_KERNEL_SIZE
 
     @tilelang.jit(
@@ -379,7 +375,7 @@ def _engram_gate_conv_bwd_wrapped(
 def _(M, seq_len, d, eps, dtype_str, threads,
       dY, H, k, v, rms_w_h, rms_w_v, conv_w,
       vhat, alpha, rrms_h, rrms_k, rrms_v):
-    d_padded = _align_up(d, ALIGNMENT)
+    d_padded = align_up(d, ALIGNMENT)
     device = dY.device
     dt = dY.dtype
     return [
@@ -422,7 +418,7 @@ class EngramGateConvBwdKernel(Kernel):
         self.d = d
         self.eps = eps
         self.dtype = dtype
-        self.d_padded = _align_up(d, ALIGNMENT)
+        self.d_padded = align_up(d, ALIGNMENT)
         self.kernel = _engram_gate_conv_bwd_kernel(
             M, seq_len, d, eps, self.dtype_str,
         )

@@ -32,16 +32,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
@@ -123,7 +119,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
         channels_per_group: C / G. Row ``m`` covers channels
             ``(m % G) * channels_per_group`` onwards.
     """
-    D_padded = _align_up(D, ALIGNMENT)
+    D_padded = align_up(D, ALIGNMENT)
     spatial_size = D // channels_per_group
     C = num_groups * channels_per_group
 
@@ -270,7 +266,7 @@ class GroupNormKernel(Kernel):
         self.dtype = dtype
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
-        self.D_padded = _align_up(D, ALIGNMENT)
+        self.D_padded = align_up(D, ALIGNMENT)
         self.kernel = _group_norm_kernel(
             self.M, self.D, self.eps, self.dtype_str,
             self.num_groups, self.channels_per_group,
@@ -331,7 +327,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
     """
-    D_padded = _align_up(D, ALIGNMENT)
+    D_padded = align_up(D, ALIGNMENT)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
@@ -444,7 +440,7 @@ class GroupNormNoAffineKernel(Kernel):
         self.D = D
         self.eps = eps
         self.dtype = dtype
-        self.D_padded = _align_up(D, ALIGNMENT)
+        self.D_padded = align_up(D, ALIGNMENT)
         self.kernel = _group_norm_no_affine_kernel(
             self.M, self.D, self.eps, self.dtype_str,
         )

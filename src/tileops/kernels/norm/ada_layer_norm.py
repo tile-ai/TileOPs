@@ -27,16 +27,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
 
 __all__ = ["AdaLayerNormKernel"]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 def _should_use_cp_async(
@@ -45,7 +41,7 @@ def _should_use_cp_async(
     has_gate: bool = False,
 ) -> bool:
     """Select async prefetch when lowering and shared-memory limits allow it."""
-    n_padded = _align_up(n, ALIGNMENT)
+    n_padded = align_up(n, ALIGNMENT)
     row_bytes = n * dtype.itemsize
     num_buffers = 4 if has_gate else 3
     shared_bytes = num_buffers * n_padded * dtype.itemsize
@@ -54,7 +50,7 @@ def _should_use_cp_async(
 
 @functools.lru_cache(maxsize=32)
 def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
     pad_count = N_padded - N  # number of zero-padded elements per row
     # The async policy guarantees that each source row is a whole number of
@@ -336,7 +332,7 @@ class AdaLayerNormKernel(Kernel):
         self.eps = eps
         self.dtype = dtype
         self.has_gate = has_gate
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         # Shape policy is benchmarked independently from block/thread tuning.
         self.use_cp_async = _should_use_cp_async(N, dtype, has_gate)
         self.kernel = _ada_layer_norm_kernel(

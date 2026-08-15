@@ -1,4 +1,3 @@
-import math
 from typing import Dict, Optional, Sequence, Tuple
 
 import torch
@@ -9,10 +8,9 @@ from tileops.kernels.norm import RMSNormKernel
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
+from .norm_base import normalized_shape_to_n
 
 __all__ = ["RMSNormFwdOp"]
-
-_DEFAULT_EPS = 1e-6
 
 
 class RMSNormFwdOp(Op):
@@ -28,8 +26,8 @@ class RMSNormFwdOp(Op):
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
             reduction runs (manifest ``params.normalized_shape``).
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-            ``None`` selects the documented default ``1e-6``. Normalized here, so a
+        eps: Epsilon for numerical stability (manifest ``params.eps``), default
+            ``1e-6``. ``None`` selects that same default. Normalized here, so a
             backend is handed the number rather than ``None``.
         target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
             in-tree kernels, or ``None`` to decide from the input device.
@@ -46,21 +44,21 @@ class RMSNormFwdOp(Op):
     def __init__(
         self,
         normalized_shape: Sequence[int],
-        eps: Optional[float] = None,
+        eps: Optional[float] = 1e-6,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
-        if len(self.normalized_shape) == 0:
-            raise ValueError("normalized_shape must be non-empty")
-        self.N = math.prod(self.normalized_shape)
-        self.eps = _DEFAULT_EPS if eps is None else float(eps)
+        # Manifest declares ``eps: float | None``; None picks the same 1e-6 the
+        # signature defaults to, so a backend is handed a number either way.
+        self.eps = 1e-6 if eps is None else float(eps)
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_mn: Optional[Tuple[int, int]] = None
+        self._last_m: Optional[int] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -75,12 +73,12 @@ class RMSNormFwdOp(Op):
         return {"output": tuple(x_shape)}
 
     def eval_roofline(self) -> Tuple[int, int]:
-        if self._last_roofline_mn is None or self.dtype is None:
+        if self._last_m is None or self.dtype is None:
             raise RuntimeError(
                 "RMSNormFwdOp.eval_roofline() requires a prior forward() "
                 "call to bind the leading-dims product and the dtype."
             )
-        m, n = self._last_roofline_mn
+        m, n = self._last_m, self.N
         elem_bytes = self.dtype.itemsize
         return (4 * m * n, (2 * m * n + n) * elem_bytes)
 
@@ -133,11 +131,15 @@ class RMSNormFwdOp(Op):
                 self.N, self.eps, x.dtype, tune=self.tune,
             ),
         )
-        self._last_roofline_mn = (x.numel() // self.N, self.N)
+        self._last_m = x.numel() // self.N
         return kernel(x, weight)
 
 
-# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
+# torch.compile dispatch boundary. Three constraints make this a pair of module-level
+# functions rather than methods: registration happens at import time and once per
+# qualified name; the schema is read off the annotations, so ``self`` cannot appear in
+# either signature; the instance is recovered from a string key. Why the key is a string
+# and why it is never reused: src/tileops/ops/compile_boundary.py.
 
 
 @torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())

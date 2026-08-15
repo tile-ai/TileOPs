@@ -13,6 +13,8 @@ import itertools
 import tilelang.language as T
 import torch
 
+from tileops.kernels.tiling import align_up
+
 __all__ = [
     "AUTOTUNE_THREADS",
     "DEFAULT_ALIGNMENT",
@@ -330,24 +332,6 @@ def device_smem_budget(device_index: int | None = None) -> int:
         if explicit:
             raise
         return SHARED_MEMORY_BUDGET_BYTES
-
-
-def align_up(n: int, alignment: int) -> int:
-    """Round *n* up to the nearest multiple of *alignment*.
-
-    Args:
-        n: Value to align.
-        alignment: Alignment boundary (must be positive).
-
-    Returns:
-        Smallest multiple of *alignment* that is >= *n*.
-
-    Raises:
-        ValueError: If *alignment* is not positive.
-    """
-    if alignment <= 0:
-        raise ValueError(f"alignment must be positive, got {alignment}")
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 def compute_tile_n(

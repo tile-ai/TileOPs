@@ -18,21 +18,17 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
 
 __all__ = ["LayerNormKernel"]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 @functools.lru_cache(maxsize=32)
 def _layer_norm_kernel(M, N, eps, dtype):
-    N_padded = _align_up(N, ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
     pad_count = N_padded - N  # number of zero-padded elements per row
 
@@ -165,7 +161,7 @@ class LayerNormKernel(Kernel):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         self.kernel = _layer_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
         self.init_config(config, tune)
 
