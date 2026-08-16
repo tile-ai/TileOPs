@@ -152,28 +152,25 @@ def _try_float(v):
         return v
 
 
-def parse_coverage_xml(path: str) -> dict | None:
-    """Aggregate a coverage.py XML report by top-level ``src/tileops`` subpackage.
+def parse_coverage_xml(path: str) -> list[dict] | None:
+    """Read a coverage.py XML report into one record per ``src/tileops`` file.
 
-    Returns ``{"packages": {name: counts}, "total": counts, "files": [...]}``
-    where ``counts`` carries covered/total statements and branches. Files are
-    sorted by uncovered statement count, worst first.
+    Each record carries the path relative to ``src/tileops/`` plus covered and
+    total counts for statements and branches. Interpretation is left to
+    ``_coverage_section`` — the raw per-file numbers mean different things
+    inside and outside ``kernels/``.
     """
     try:
         root = ET.parse(path).getroot()
     except (OSError, ET.ParseError):
         return None
 
-    packages: dict[str, dict] = {}
     files: list[dict] = []
     for cls in root.iter("class"):
         filename = cls.get("filename") or ""
         marker = "src/tileops/"
         if marker not in filename:
             continue
-        tail = filename.split(marker, 1)[1]
-        # Files directly under src/tileops/ have no subpackage of their own.
-        name = tail.split("/")[0] if "/" in tail else "(top level)"
 
         stmts = covered = branches = branches_hit = 0
         for line in cls.iter("line"):
@@ -184,26 +181,16 @@ def parse_coverage_xml(path: str) -> dict | None:
                 hit, total = condition.split("(", 1)[1].rstrip(")").split("/")
                 branches += int(total)
                 branches_hit += int(hit)
-        if not stmts:
-            continue
+        if stmts:
+            files.append({
+                "path": filename.split(marker, 1)[1],
+                "stmts": stmts,
+                "covered": covered,
+                "branches": branches,
+                "branches_hit": branches_hit,
+            })
 
-        bucket = packages.setdefault(
-            name, {"stmts": 0, "covered": 0, "branches": 0, "branches_hit": 0})
-        bucket["stmts"] += stmts
-        bucket["covered"] += covered
-        bucket["branches"] += branches
-        bucket["branches_hit"] += branches_hit
-        files.append({"path": tail, "stmts": stmts, "covered": covered})
-
-    if not packages:
-        return None
-
-    total = {"stmts": 0, "covered": 0, "branches": 0, "branches_hit": 0}
-    for bucket in packages.values():
-        for key in total:
-            total[key] += bucket[key]
-    files.sort(key=lambda f: f["covered"] - f["stmts"])
-    return {"packages": packages, "total": total, "files": files}
+    return files or None
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +507,7 @@ def generate_report(
     regressions: list[dict],
     improvements: list[dict],
     baseline_alerts: list[dict],
-    coverage: dict | None = None,
+    coverage: list[dict] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -727,40 +714,84 @@ def _pct(hit: int, total: int) -> str:
     return f"{100 * hit / total:.1f}%" if total else "-"
 
 
-def _coverage_section(coverage: dict, worst_n: int = 15) -> list[str]:
-    """Per-subpackage coverage table plus the least-covered files."""
+# A kernel file below this share of executed lines was never constructed by any
+# test. Measured distribution: the lowest genuinely-built kernel file sits at
+# 36.9%, so the threshold has room before it starts catching built kernels.
+KERNEL_BUILT_PCT = 25
+# Files this small swing wildly on one statement; they carry no signal.
+MIN_STMTS = 20
+
+
+def _coverage_signals(files: list[dict]) -> dict:
+    """Reduce per-file coverage to the three numbers worth acting on.
+
+    A ``kernels/`` line counts as covered once the kernel is traced into IR, so
+    its percentage says the kernel was built, not that its generated code ran.
+    Only the never-built case carries information, and it is reported as a file
+    count. Everywhere else the ordinary reading holds.
+    """
+    kernels = [f for f in files if f["path"].startswith("kernels/")]
+    pure = [f for f in files if not f["path"].startswith("kernels/")]
+
+    never_built = sorted(
+        (f for f in kernels
+         if f["stmts"] >= MIN_STMTS and 100 * f["covered"] / f["stmts"] < KERNEL_BUILT_PCT),
+        key=lambda f: f["covered"] / f["stmts"])
+    untested = sorted(
+        (f for f in pure if f["stmts"] - f["covered"] > 0),
+        key=lambda f: f["covered"] - f["stmts"])
+
+    ops = [f for f in files if f["path"].startswith("ops/")]
+    return {
+        "never_built": never_built,
+        "untested": untested,
+        "untested_lines": sum(f["stmts"] - f["covered"] for f in pure),
+        "op_branches_hit": sum(f["branches_hit"] for f in ops),
+        "op_branches": sum(f["branches"] for f in ops),
+    }
+
+
+def _coverage_section(files: list[dict], worst_n: int = 15) -> list[str]:
+    """Three explicit signals, each with what it means and what to do about it."""
+    s = _coverage_signals(files)
     lines = ["## Coverage", ""]
-    lines.append("| Package | Statements | Line | Branch |")
-    lines.append("| --- | --- | --- | --- |")
-    for name, c in sorted(coverage["packages"].items(), key=lambda kv: -kv[1]["stmts"]):
-        lines.append(
-            f"| `{name}` | {c['covered']}/{c['stmts']} "
-            f"| {_pct(c['covered'], c['stmts'])} "
-            f"| {_pct(c['branches_hit'], c['branches'])} |")
-    total = coverage["total"]
-    lines.append(
-        f"| **total** | {total['covered']}/{total['stmts']} "
-        f"| {_pct(total['covered'], total['stmts'])} "
-        f"| {_pct(total['branches_hit'], total['branches'])} |")
+    lines.append("| Signal | Value | What it means |")
+    lines.append("| --- | --- | --- |")
+    lines.append(f"| Never-built kernels | {len(s['never_built'])} files "
+                 "| no test constructs these kernels, so nothing catches a break in them |")
+    lines.append(f"| Untested pure Python | {s['untested_lines']} lines "
+                 "| statements outside `kernels/` that never executed |")
+    lines.append(f"| Op branch coverage | {_pct(s['op_branches_hit'], s['op_branches'])} "
+                 "| share of validation and dispatch branches taken in `ops/` |")
     lines.append("")
-    lines.append("A `kernels` line counts as covered once the kernel is traced into IR, "
-                 "which says the kernel was built, not that its generated code was "
-                 "exercised. Read a low number there as a signal; a high one is not one.")
-    lines.append("")
-    lines.append("Smoke-only cases run in `gpu-smoke.yml`, so code reached solely by "
-                 "them reads as untested here.")
+    lines.append("Track the direction, not the absolute value. Smoke-only cases run in "
+                 "`gpu-smoke.yml`, so code reached solely by them counts as untested here.")
     lines.append("")
 
-    lines.append("<details>")
-    lines.append(f"<summary>Least-covered files (top {worst_n})</summary>")
-    lines.append("")
-    lines.append("| File | Covered | Line |")
-    lines.append("| --- | --- | --- |")
-    for f in coverage["files"][:worst_n]:
-        lines.append(f"| `{f['path']}` | {f['covered']}/{f['stmts']} "
-                     f"| {_pct(f['covered'], f['stmts'])} |")
-    lines.append("")
-    lines.append("</details>")
+    if s["never_built"]:
+        lines.append("### Never-built kernels")
+        lines.append("")
+        lines.append("| File | Executed |")
+        lines.append("| --- | --- |")
+        for f in s["never_built"]:
+            lines.append(f"| `{f['path']}` | {_pct(f['covered'], f['stmts'])} |")
+        lines.append("")
+
+    if s["untested"]:
+        lines.append("<details>")
+        lines.append(f"<summary>Untested pure Python, worst {worst_n} files</summary>")
+        lines.append("")
+        lines.append("| File | Uncovered | Executed |")
+        lines.append("| --- | --- | --- |")
+        for f in s["untested"][:worst_n]:
+            lines.append(f"| `{f['path']}` | {f['stmts'] - f['covered']} "
+                         f"| {_pct(f['covered'], f['stmts'])} |")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    lines.append("Per-line detail is in the `htmlcov/` directory of this run's "
+                 "`tileops_op_test` artifact.")
     lines.append("")
     return lines
 
