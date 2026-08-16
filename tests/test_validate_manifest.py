@@ -143,15 +143,18 @@ def _make_bare_op(name="BareOp"):
     })
 
 
-def _infer_parity(validator, infer_fn, sig, *, name="FakeOp"):
+def _infer_parity(validator, infer_fn, sig, *, name="FakeOp", workloads=None):
     """Drive ``check_l2_infer_parity`` with a synthetic op class.
 
     Returns ``(errors, warnings)``.
     """
     cls = _make_op_cls_with_infer(infer_fn, name=name)
     warnings: list[str] = []
+    entry = {"signature": sig}
+    if workloads is not None:
+        entry["workloads"] = workloads
     errors = validator.check_l2_infer_parity(
-        name, {"signature": sig}, cls, warnings=warnings,
+        name, entry, cls, warnings=warnings,
     )
     return errors, warnings
 
@@ -896,6 +899,66 @@ class TestOptionalInputs:
         entry["workloads"] = [{"x_shape": [1, 4096], "dtypes": ["float16"]}]
         errors = validator.check_l0("Op", entry)
         assert not any("workload row" in e for e in errors), errors
+
+    @staticmethod
+    def _sig_with_optional():
+        return _sig(
+            {
+                "x": {"dtype": "float16", "shape": "[M]"},
+                "mask": {"dtype": "int32", "optional": True},
+            },
+            {"y": {"dtype": "same_as(x)"}},
+            params={"n": {"type": "int"}},
+            shape_rules=["mask.shape == (n,)", "y.shape == (n,)"],
+        )
+
+    def test_each_probe_uses_a_row_with_its_presence_pattern(self, validator):
+        """The supplying probe runs under the params of a row that supplies it.
+
+        Both probes drawing from the first row would hide any param whose value
+        only differs on the rows that pass the optional input.
+        """
+        seen: list[int] = []
+
+        def infer(self, x_shape, mask_shape=None):
+            seen.append(self.n)
+            return {"y": (self.n,)}
+
+        errors, _ = _infer_parity(
+            validator, infer, self._sig_with_optional(), name="OptRowOp",
+            workloads=[
+                {"n": 3, "dtypes": ["float16"]},
+                {"n": 7, "dtypes": ["float16"], "mask_shape": [7]},
+            ],
+        )
+        assert errors == [], errors
+        assert seen == [7, 3], seen
+
+    def test_both_presence_cases_are_probed(self, validator):
+        """The absent probe passes ``None`` and skips rules naming the input."""
+        seen: list[object] = []
+
+        def infer(self, x_shape, mask_shape=None):
+            seen.append(mask_shape)
+            return {"y": (self.n,)}
+
+        errors, _ = _infer_parity(
+            validator, infer, self._sig_with_optional(), name="OptProbeOp",
+            workloads=[{"n": 7, "dtypes": ["float16"]}],
+        )
+        assert errors == [], errors
+        assert seen == [(7,), None], seen
+
+    def test_an_absent_probe_failure_names_the_withheld_input(self, validator):
+        """An op that only works with the map supplied must not pass silently."""
+        def infer(self, x_shape, mask_shape=None):
+            return {"y": (mask_shape[0],)}
+
+        errors, _ = _infer_parity(
+            validator, infer, self._sig_with_optional(), name="OptBrokenOp",
+            workloads=[{"n": 7, "dtypes": ["float16"]}],
+        )
+        assert any("mask absent" in e for e in errors), errors
 
 
 # signature: Op.forward() consistency
@@ -2177,6 +2240,78 @@ class TestParamDefaultOutputShapePin:
             validator, good_infer, sig, name="ParamDefaultGoodOp",
         )
         assert errors == [], errors
+
+
+class TestRequiredParamWitness:
+    """A param with no default is probed at a schema-valid witness value."""
+
+    def test_output_sized_by_a_required_param_is_probed_at_the_workload_value(
+        self, validator,
+    ):
+        """``self.<required param>`` must resolve, and to the pinned value."""
+        sig = _sig(
+            {"x": {"dtype": "float16", "shape": "[M]"}},
+            {"y": {"dtype": "same_as(x)"}},
+            params={"n": {"type": "int"}},
+            shape_rules=["y.shape == (n,)"],
+        )
+
+        def infer(self, x_shape):
+            return {"y": (self.n,)}
+
+        errors, warnings = _infer_parity(
+            validator, infer, sig, name="RequiredParamOp",
+            workloads=[{"n": 7, "dtypes": ["float16"]}],
+        )
+        assert errors == [], errors
+        assert not any("AttributeError" in w for w in warnings), warnings
+
+    def test_witness_falls_back_to_a_type_valid_positive_scalar(self, validator):
+        """No workload pins the param, so the probe still supplies a value."""
+        sig = _sig(
+            {"x": {"dtype": "float16", "shape": "[M]"}},
+            {"y": {"dtype": "same_as(x)"}},
+            params={"n": {"type": "int"}},
+            shape_rules=["y.shape == (n,)"],
+        )
+
+        def infer(self, x_shape):
+            return {"y": (self.n,)}
+
+        errors, _ = _infer_parity(validator, infer, sig, name="NoWorkloadOp")
+        assert errors == [], errors
+
+    def test_a_wrong_extent_is_still_a_parity_error(self, validator):
+        """The witness makes the probe run; it must not make it pass."""
+        sig = _sig(
+            {"x": {"dtype": "float16", "shape": "[M]"}},
+            {"y": {"dtype": "same_as(x)"}},
+            params={"n": {"type": "int"}},
+            shape_rules=["y.shape == (n,)"],
+        )
+
+        def infer(self, x_shape):
+            return {"y": (self.n + 1,)}
+
+        errors, _ = _infer_parity(
+            validator, infer, sig, name="WrongExtentOp",
+            workloads=[{"n": 7, "dtypes": ["float16"]}],
+        )
+        assert any("violates shape_rules" in e for e in errors), errors
+
+    def test_mock_input_shapes_take_the_param_value(self, validator):
+        """A dim name that is also a param carries one value throughout."""
+        sig = _sig(
+            {"m": {"dtype": "int32"}},
+            {"y": {"dtype": "int32"}},
+            params={"n": {"type": "int"}},
+            shape_rules=["m.shape == (n,)"],
+        )
+        _, dim_sizes = validator._mock_input_shapes(
+            sig, validator._param_env(sig, [{"n": 7, "dtypes": ["int32"]}]),
+        )
+        assert dim_sizes["n"] == 7
+
 
 
 # Bench checks

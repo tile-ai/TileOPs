@@ -1844,8 +1844,73 @@ def _input_bound_symbols(sig: dict) -> set[str]:
     return bound
 
 
+def _optional_inputs(sig: dict) -> set[str]:
+    """Input names declared ``optional: true`` (R18)."""
+    inputs = sig.get("inputs")
+    if not isinstance(inputs, dict):
+        return set()
+    return {
+        name for name, attrs in inputs.items()
+        if isinstance(name, str)
+        and isinstance(attrs, dict)
+        and attrs.get("optional") is True
+    }
+
+
+# Witness values for a required param the workloads do not pin. Positive and
+# type-valid, so a shape sized by the param stays a legal extent.
+_REQUIRED_PARAM_WITNESS: dict[str, object] = {
+    "int": _MOCK_DIM_SIZE,
+    "float": 1.0,
+    "bool": True,
+}
+
+
+def _param_env(sig: dict, workloads: object, absent: Collection[str] = ()) -> dict:
+    """Parameter values every probe of a generated method runs under.
+
+    A param carrying a ``default`` contributes it. A param that omits one is
+    required — the op cannot be constructed without it — so it contributes a
+    deterministic witness instead: the value the first workload pins, else a
+    type-valid positive scalar. Probing without it would leave
+    ``self.<param>`` unset and turn a parameter-sized output into an
+    AttributeError, which says nothing about the manifest.
+
+    *absent* names the optional inputs this probe withholds. Only rows whose
+    presence pattern matches are pinned from, so a probe that supplies an
+    optional input runs under the params of a call that actually supplies it —
+    otherwise every probe would use the first row, and a param that only
+    differs on those rows would never reach the generated method.
+    """
+    params = sig.get("params")
+    if not isinstance(params, dict):
+        return {}
+    env = _param_defaults(params)
+    rows = [w for w in workloads if isinstance(w, dict)] if isinstance(workloads, list) else []
+    optional = _optional_inputs(sig)
+    if optional:
+        matching = [
+            w for w in rows
+            if all((f"{name}_shape" in w) == (name not in absent) for name in optional)
+        ]
+        rows = matching or rows
+    for pname, pattrs in params.items():
+        if not isinstance(pname, str) or not isinstance(pattrs, dict):
+            continue
+        if pname in env:
+            continue
+        pinned = next((w[pname] for w in rows if pname in w), None)
+        if pinned is not None:
+            env[pname] = pinned
+            continue
+        witness = _REQUIRED_PARAM_WITNESS.get(pattrs.get("type"))
+        if witness is not None:
+            env[pname] = witness
+    return env
+
+
 def _mock_input_shapes(
-    sig: dict,
+    sig: dict, param_env: dict | None = None,
 ) -> tuple[dict[str, _MockShape], dict[str, int]] | None:
     """Derive concrete mock input shapes for every declared input.
 
@@ -1856,6 +1921,10 @@ def _mock_input_shapes(
     name to the integer size used in the mock shapes, so callers can bind
     those names into a shape_rules evaluation context. Returns None only
     if ``signature.inputs`` is malformed.
+
+    A dim name that is also a param in *param_env* takes that param's
+    integer value rather than a synthetic size, so the mock inputs and the
+    parameters the probe runs under describe one consistent op.
     """
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict) or not inputs:
@@ -1879,18 +1948,33 @@ def _mock_input_shapes(
     # get distinct sizes (first-seen order) so cross-tensor equality
     # rules do not spuriously pass on colliding mock sizes.
     dim_sizes: dict[str, int] = {}
+    pinned = {
+        name: int(val) for name, val in (param_env or {}).items()
+        if isinstance(val, int) and not isinstance(val, bool) and val > 0
+    }
+    next_synthetic = _MOCK_DIM_SIZE
+
+    def _bind_dim(p: str) -> None:
+        nonlocal next_synthetic
+        if p in dim_sizes:
+            return
+        if p in pinned:
+            dim_sizes[p] = pinned[p]
+            return
+        dim_sizes[p] = next_synthetic
+        next_synthetic += 1
+
     for _tname, parts in rule_literals:
         for p in parts:
-            if _IDENT_RE.fullmatch(p) and p not in dim_sizes:
-                dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
+            if _IDENT_RE.fullmatch(p):
+                _bind_dim(p)
 
     # Also bind symbolic dims from input shape declarations, then from
     # declared output shapes, so downstream rule / shape-decl checks
     # resolve them against the same mock sizes.
     for parts in shape_decls.values():
         for p in parts:
-            if p not in dim_sizes:
-                dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
+            _bind_dim(p)
     outputs_map = sig.get("outputs") or {}
     if isinstance(outputs_map, dict):
         for attrs in outputs_map.values():
@@ -1900,8 +1984,7 @@ def _mock_input_shapes(
             if out_parts is None:
                 continue
             for p in out_parts:
-                if p not in dim_sizes:
-                    dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
+                _bind_dim(p)
 
     for name in inputs:
         if name in ranks:
@@ -2208,7 +2291,6 @@ def check_l2_infer_parity(
     errors: list[str] = []
     if cls is None:
         return errors
-    err = _emit_to(errors, "shape", op_name)
     warn = _emit_to(warnings, "shape", op_name)
 
     sig = entry.get("signature", {})
@@ -2241,20 +2323,72 @@ def check_l2_infer_parity(
     if infer_fn is None:
         return errors
 
-    mock = _mock_input_shapes(sig)
-    if mock is None:
-        return errors
-    mock_shapes, dim_sizes = mock
+    # Presence of an optional input is the declared dispatch fact (R18), so the
+    # probe runs once with every optional input supplied and once with none.
+    optional = _optional_inputs(sig)
+    variants: list[frozenset[str]] = [frozenset()]
+    if optional:
+        variants.append(frozenset(optional))
+    for absent in variants:
+        param_env = _param_env(sig, entry.get("workloads"), absent)
+        mock = _mock_input_shapes(sig, param_env)
+        if mock is None:
+            return errors
+        errors.extend(_probe_infer_parity(
+            op_name, sig, cls, infer_fn, mock, param_env, absent,
+            declared_output_shapes, rules, warnings=warnings,
+        ))
+    return errors
 
-    params = sig.get("params") or {}
-    param_defaults = _param_defaults(params)
+
+def _probe_infer_parity(
+    op_name: str,
+    sig: dict,
+    cls: type,
+    infer_fn,
+    mock: tuple[dict[str, _MockShape], dict[str, int]],
+    param_env: dict,
+    absent: frozenset[str],
+    declared_output_shapes: dict[str, list[str]],
+    rules: list,
+    *,
+    warnings: list[str] | None,
+) -> list[str]:
+    """One parity probe of ``_infer_output_shapes`` over the mock inputs.
+
+    *absent* names the optional inputs this probe withholds; their
+    ``<name>_shape`` argument is passed as ``None`` and every shape rule
+    mentioning one of them is skipped, since such a rule constrains the
+    argument only when it is supplied.
+    """
+    errors: list[str] = []
+    suffix = (
+        f" (probed with {', '.join(sorted(absent))} absent)" if absent else ""
+    )
+
+    def err(msg: str) -> None:
+        errors.append(f"[shape] {op_name}: {msg}{suffix}")
+
+    def warn(msg: str) -> None:
+        if warnings is not None:
+            warnings.append(f"[shape] {op_name}: {msg}{suffix}")
+
+    all_mock_shapes, dim_sizes = mock
+    mock_shapes = {
+        name: shape for name, shape in all_mock_shapes.items()
+        if name not in absent
+    }
 
     # Resolve static_dims against the mock inputs so implementations reading
     # ``self.<dim>`` do not AttributeError and silently skip the check.
-    extra_attrs = _static_dim_values(sig, mock_shapes, param_defaults)
-    mock_self = _build_mock_self(cls, param_defaults, extra_attrs)
+    extra_attrs = _static_dim_values(sig, mock_shapes, param_env)
+    mock_self = _build_mock_self(cls, param_env, extra_attrs)
 
-    shape_kwargs = {f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()}
+    shape_kwargs: dict[str, object] = {
+        f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()
+    }
+    for name in absent:
+        shape_kwargs[f"{name}_shape"] = None
     # Bind before calling: only a TypeError from ``bind`` is a signature
     # mismatch. TypeErrors from the body must not be reported as one.
     try:
@@ -2307,7 +2441,7 @@ def check_l2_infer_parity(
     # later in the dict take precedence on any accidental collision.
     ctx: dict = {}
     ctx.update(dim_sizes)
-    ctx.update(param_defaults)
+    ctx.update(param_env)
     for name, shape in mock_shapes.items():
         ctx[name] = _MockShape(shape)
     # Rebind output-only symbols from the inferred ``result`` so their rules
@@ -2357,6 +2491,10 @@ def check_l2_infer_parity(
     for i, rule in enumerate(rules):
         if not isinstance(rule, str):
             continue
+        if any(
+            re.search(rf"\b{re.escape(name)}\b", rule) for name in absent
+        ):
+            continue
         ok, reason = _eval_shape_rule(rule, ctx)
         if reason is not None:
             # Could not evaluate this rule under the mock context; do not
@@ -2398,15 +2536,15 @@ def check_l2_infer_parity(
         name: int(val) for name, val in extra_attrs.items()
         if isinstance(val, int) and not isinstance(val, bool)
     }
-    # An int ``default`` is compile-time known, so it pins a dim with the same
-    # authority as ``static_dims``. No default or non-int → cannot pin.
-    for pname, pdefault in param_defaults.items():
+    # An int param value is compile-time known, so it pins a dim with the same
+    # authority as ``static_dims``. Non-int → cannot pin.
+    for pname, pvalue in param_env.items():
         if pname in static_expected:
             continue  # static_dims wins — it is the declared source of truth.
-        if isinstance(pdefault, bool):
+        if isinstance(pvalue, bool):
             continue
-        if isinstance(pdefault, int):
-            static_expected[pname] = int(pdefault)
+        if isinstance(pvalue, int):
+            static_expected[pname] = int(pvalue)
     output_only_seen: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         if out_name not in result:
@@ -2614,7 +2752,7 @@ def _make_mock_tensor(dtype_name: str):
 
 def _combo_accepted(
     cls: type, forward_inputs: list[str], combo: dict[str, str],
-    param_defaults: dict, sig: dict | None = None,
+    param_env: dict, sig: dict | None = None,
     self_dtype_name: str | None = None,
 ) -> tuple[bool, str | None]:
     """Invoke ``cls._validate_dtypes`` on a mock-self with *combo*.
@@ -2653,11 +2791,11 @@ def _combo_accepted(
     # (beyond manifest params) do not falsely raise AttributeError.
     extra_attrs: dict = {}
     if sig is not None:
-        mock = _mock_input_shapes(sig)
+        mock = _mock_input_shapes(sig, param_env)
         if mock is not None:
             mock_shapes, _ = mock
             extra_attrs.update(
-                _static_dim_values(sig, mock_shapes, param_defaults)
+                _static_dim_values(sig, mock_shapes, param_env)
             )
         # self.dtype tracks the candidate's primary dtype (first non-same_as
         # input, or ``self_dtype_name``) so a derived _validate_dtypes comparing
@@ -2671,7 +2809,7 @@ def _combo_accepted(
             primary = _primary_dtype_input(sig, forward_inputs)
             if primary is not None and primary in tensors:
                 extra_attrs["dtype"] = tensors[primary].dtype
-    mock_self = _build_mock_self(cls, param_defaults, extra_attrs)
+    mock_self = _build_mock_self(cls, param_env, extra_attrs)
     # Pre-bind the callable signature so only genuine signature mismatches
     # surface as ``TypeError: ...``. TypeError raised from inside the body
     # (e.g. comparing incompatible torch dtypes) is a legitimate rejection
@@ -2746,7 +2884,7 @@ def _probe_out_of_union(
     forward_inputs: list[str],
     baseline: dict[str, str],
     dtype_options: dict[str, list[str]],
-    param_defaults: dict,
+    param_env: dict,
     errors: list[str],
     warnings: list[str] | None,
 ) -> None:
@@ -2794,7 +2932,7 @@ def _probe_out_of_union(
                 if ref == target and tname in candidate:
                     candidate[tname] = bad_dtype
             accepted, reason = _combo_accepted(
-                cls, forward_inputs, candidate, param_defaults,
+                cls, forward_inputs, candidate, param_env,
                 sig=sig, self_dtype_name=baseline_self_dtype,
             )
             if _probe_reason_kind(reason) == "unexpected":
@@ -2858,8 +2996,7 @@ def check_l3_validate_dtypes_parity(
     # demanded one for it could never be satisfied.
     optional_inputs = set(_optional_input_names(sig))
     forward_inputs = [n for n in inputs if n not in optional_inputs]
-    params = sig.get("params") or {}
-    param_defaults = _param_defaults(params)
+    param_env = _param_env(sig, entry.get("workloads"))
 
     dtype_options = _resolve_tensor_dtype_options(sig)
     if dtype_options is None:
@@ -2902,7 +3039,7 @@ def check_l3_validate_dtypes_parity(
             if not isinstance(combo, dict):
                 continue
             accepted, reason = _combo_accepted(
-                cls, forward_inputs, combo, param_defaults, sig=sig,
+                cls, forward_inputs, combo, param_env, sig=sig,
             )
             kind = _probe_reason_kind(reason)
             if kind == "signature":
@@ -2950,7 +3087,7 @@ def check_l3_validate_dtypes_parity(
                         continue
                     accepted, reason = _combo_accepted(
                         cls, forward_inputs + [name],
-                        {**combo, name: dtype_name}, param_defaults, sig=sig,
+                        {**combo, name: dtype_name}, param_env, sig=sig,
                     )
                     if reason is None and not accepted:
                         err(
@@ -2990,7 +3127,7 @@ def check_l3_validate_dtypes_parity(
             candidate = dict(zip(forward_inputs, tup, strict=True))
             checked_any = True
             accepted, reason = _combo_accepted(
-                cls, forward_inputs, candidate, param_defaults, sig=sig,
+                cls, forward_inputs, candidate, param_env, sig=sig,
             )
             kind = _probe_reason_kind(reason)
             if kind in ("introspect", "signature"):
@@ -3023,7 +3160,7 @@ def check_l3_validate_dtypes_parity(
         if baseline_combo is not None:
             _probe_out_of_union(
                 op_name, cls, sig, forward_inputs, baseline_combo,
-                dtype_options, param_defaults, errors, warnings,
+                dtype_options, param_env, errors, warnings,
             )
 
         if not errors:
@@ -3067,7 +3204,7 @@ def check_l3_validate_dtypes_parity(
             if not _honours_same_as(sig, candidate):
                 continue
             accepted, reason = _combo_accepted(
-                cls, forward_inputs, candidate, param_defaults, sig=sig,
+                cls, forward_inputs, candidate, param_env, sig=sig,
             )
             kind = _probe_reason_kind(reason)
             if kind == "signature":
@@ -3111,7 +3248,7 @@ def check_l3_validate_dtypes_parity(
         if baseline is not None:
             _probe_out_of_union(
                 op_name, cls, sig, forward_inputs, baseline,
-                dtype_options, param_defaults, errors, warnings,
+                dtype_options, param_env, errors, warnings,
             )
 
         # same_as identity negative probe (R3 rejection side): each
@@ -3140,7 +3277,7 @@ def check_l3_validate_dtypes_parity(
                     candidate = dict(baseline)
                     candidate[tname] = alt
                     accepted, reason = _combo_accepted(
-                        cls, forward_inputs, candidate, param_defaults, sig=sig,
+                        cls, forward_inputs, candidate, param_env, sig=sig,
                     )
                     kind = _probe_reason_kind(reason)
                     if kind in ("introspect", "signature"):

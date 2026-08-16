@@ -48,9 +48,9 @@ def _validate_fused_moe_experts_dtypes(
 ) -> None:
     """Shared dtype validator for FusedMoEExperts subclasses.
 
-    Covers the inputs every implementation takes. An expert-parallel identity
-    adds its own check for ``expert_map`` on top; keeping the common body here
-    avoids drift between implementations.
+    Covers the inputs every implementation takes; an implementation checks its
+    optional inputs on top. Keeping the common body here avoids drift between
+    implementations.
     """
     allowed = (torch.float16, torch.bfloat16)
     if op_dtype not in allowed:
@@ -198,21 +198,23 @@ class FusedMoEExperts(Op, ABC):
     @abstractmethod
     def forward(
         self,
-        output: Tensor,           # pre-allocated, shape == output_shape()
-        hidden_states: Tensor,    # [T', H] from PrepareResult.hidden_q
-        w_gate_up: Tensor,        # [E, 2F, H]
-        w_down: Tensor,           # [E, H, F]
-        topk_weights: Tensor,     # [T', K] float32
-        topk_ids: Tensor,         # [T', K] int32
+        output: Tensor,             # pre-allocated, shape == output_shape()
+        hidden_states: Tensor,      # [T', H] from PrepareResult.hidden_q
+        w_gate_up: Tensor,          # [E_local, 2F, H]
+        w_down: Tensor,             # [E_local, H, F]
+        topk_weights: Tensor,       # [T', K] float32
+        topk_ids: Tensor,           # [T', K] int32
+        expert_map: Tensor | None,  # [E] int32 global-to-local ids; None if all local
         workspace1: Tensor,
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
         """Write expert computation result to output in-place.
 
-        An expert-parallel implementation takes the number of experts this rank
-        owns at construction — it sizes the kernels — and adds ``expert_map``
-        to this signature as the tensor carrying the global-to-local ids.
+        The number of experts this rank owns is fixed at construction — it sizes
+        the kernels. ``expert_map`` carries the global-to-local ids the kernels
+        read at launch, and its presence is what selects the expert-parallel
+        path.
         """
 
 

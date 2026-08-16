@@ -95,7 +95,7 @@ Lookup is **class-based**, not filename-based — many TileOPs ops share a file 
 
 Names match the reference verbatim. Include every reference param even if the kernel ignores it. Exclude `float64` and `complex32/64/128` (TileOPs is GPU-only).
 
-For references with `Optional[Tensor]` inputs, the caller has decided which slice corresponds to `op_name` (primary = required only; variant = primary + chosen optional). The skill emits inputs accordingly.
+A reference input the op may be called without is emitted with `optional: true` (R18) on the single entry, after the required inputs.
 
 ### 5. DRAFT_ENTRY
 

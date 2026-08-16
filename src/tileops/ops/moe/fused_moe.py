@@ -21,10 +21,7 @@ from tileops.ops.moe.abc import (
 )
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from tileops.ops.moe.routed_expert import (
-    FusedMoEExpertsNopadPersistent3WGEpFwdOp,
-    FusedMoEExpertsNopadPersistent3WGFwdOp,
-)
+from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 
 from ..op_base import Op
 
@@ -147,21 +144,16 @@ class FusedMoe(Op):
             self._experts: FusedMoEExpertsModular = experts
         else:
             self.activation = activation
-            common = dict(
+            self._experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
+                num_experts_local=self.num_experts_local,
                 top_k=top_k,
                 hidden_size=hidden_size,
                 ffn_size=ffn_size,
                 routed_scaling_factor=routed_scaling_factor,
                 kernel_map=kernel_map,
                 activation=activation,
-            )
-            self._experts = (
-                FusedMoEExpertsNopadPersistent3WGFwdOp(**common)
-                if expert_map is None
-                else FusedMoEExpertsNopadPersistent3WGEpFwdOp(
-                    num_experts_local=num_experts_local, **common)
             )
 
     @property
@@ -200,23 +192,13 @@ class FusedMoe(Op):
         output = hidden_states.new_empty(hidden_states.shape)
         expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
         expert_out = output if expert_out_shape == tuple(hidden_states.shape) else hidden_states.new_empty(expert_out_shape)
-        # Which experts identity was built is fixed at construction, so which arm
-        # runs is a constant.
-        if self.expert_map is None:
-            self._experts.forward(
-                expert_out, r.hidden_q, w_gate_up, w_down,
-                r.topk_weights, r.topk_ids,
-                workspace1=ws1, workspace2=ws2,
-                num_experts=self.num_experts,
-            )
-        else:
-            self._experts.forward(
-                expert_out, r.hidden_q, w_gate_up, w_down,
-                r.topk_weights, r.topk_ids,
-                expert_map=self.expert_map,
-                workspace1=ws1, workspace2=ws2,
-                num_experts=self.num_experts,
-            )
+        self._experts.forward(
+            expert_out, r.hidden_q, w_gate_up, w_down,
+            r.topk_weights, r.topk_ids,
+            expert_map=self.expert_map,
+            workspace1=ws1, workspace2=ws2,
+            num_experts=self.num_experts,
+        )
 
         self._prepare.finalize(
             output, expert_out,

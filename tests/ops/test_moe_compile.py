@@ -11,11 +11,10 @@ Two assertions per op, both from a cold instance:
    reproducible. This is the evidence behind the manifest's
    ``torch_compile_fullgraph``.
 
-A composite registers no operator of its own (RFC D7), so the last test asserts
-the other half of that decision: the graph of
-``FusedMoEExpertsNopadPersistent3WGFwdOp`` holds its leaves' operators and
-nothing else. ``FusedMoeFwdOp`` and ``FusedMoeFwdCbFwdOp`` are absent because
-the routing op they build has no boundary yet.
+A composite registers no operator of its own, so the last test asserts the other
+half: the graph of ``FusedMoEExpertsNopadPersistent3WGFwdOp`` holds its leaves'
+operators and nothing else. ``FusedMoeFwdOp`` is absent because the routing op it
+builds has no boundary yet.
 """
 
 import pytest
@@ -31,10 +30,7 @@ from tileops.ops.moe import MoePermuteAlignFwdOp
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
 from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
-from tileops.ops.moe.routed_expert.permute_nopad import (
-    MoePermuteNopadEpFwdOp,
-    MoePermuteNopadFwdOp,
-)
+from tileops.ops.moe.routed_expert.permute_nopad import MoePermuteNopadFwdOp
 from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
 
 _NUM_EXPERTS = 4
@@ -56,16 +52,6 @@ def _assert_same_layout(compiled: tuple, eager: tuple) -> None:
         assert got.dtype == want.dtype, f"{got.dtype} != {want.dtype}"
 
 
-def _assert_compiles_to_eager(op_factory, *inputs) -> None:
-    """A cold ``fullgraph=True`` compile returns what a cold eager call returns."""
-    compiled = _compile_cold(op_factory(), *inputs)
-    eager = op_factory()(*inputs)
-    eager = eager if isinstance(eager, tuple) else (eager,)
-    _assert_same_layout(compiled, eager)
-    for got, want in zip(compiled, eager, strict=True):
-        torch.testing.assert_close(got, want)
-
-
 def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
     """Tight rows split evenly across experts, plus the two index arrays."""
     a = torch.randn(numel, k, dtype=torch.bfloat16, device="cuda")
@@ -76,75 +62,81 @@ def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
     return a, b, sizes, offsets
 
 
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
-def test_permute_align_owns_its_graph_nodes() -> None:
+def _permute_align_case():
     def make():
         return MoePermuteAlignFwdOp(_TOKENS, _TOP_K, _NUM_EXPERTS, block_size=4)
 
     topk_ids = torch.randint(
         0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
-
-    assert_op_owns_graph_nodes(make(), topk_ids)
-
-    compiled = _compile_cold(make(), topk_ids)
-    eager = tuple(make()(topk_ids))
-    _assert_same_layout(compiled, eager)
     # Only the padded token count is reproducible: a slot inside an expert is claimed
     # by ``atomic_add``, so two runs order the same tokens differently.
-    torch.testing.assert_close(compiled[2], eager[2])
+    return make, (topk_ids,), (2,)
 
 
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
-def test_permute_nopad_owns_its_graph_nodes() -> None:
+def _permute_nopad_case(local: int = _NUM_EXPERTS, with_map: bool = False):
     def make():
-        return MoePermuteNopadFwdOp(num_experts=_NUM_EXPERTS)
-
-    hidden_states = torch.randn(
-        _TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
-
-    assert_op_owns_graph_nodes(make(), hidden_states, topk_ids)
-
-    compiled = _compile_cold(make(), hidden_states, topk_ids)
-    eager = tuple(make()(hidden_states, topk_ids))
-    _assert_same_layout(compiled, eager)
-    # The per-expert offsets, sizes and prefix sum are counts. The gathered rows and
-    # the forward map are not: a slot inside an expert is claimed by ``atomic_add``.
-    for i in (1, 2, 3):
-        torch.testing.assert_close(compiled[i], eager[i])
-
-
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
-def test_permute_nopad_ep_owns_its_graph_nodes() -> None:
-    """The expert-parallel identity registers its own operator.
-
-    Its fake sizes the four per-expert outputs from ``num_experts_local``, a
-    constructor parameter, so the map's contents never reach a traced region.
-    """
-    local = _NUM_EXPERTS // 2
-
-    def make():
-        return MoePermuteNopadEpFwdOp(
+        return MoePermuteNopadFwdOp(
             num_experts=_NUM_EXPERTS, num_experts_local=local)
 
     hidden_states = torch.randn(
         _TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
     topk_ids = torch.randint(
         0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
-    expert_map = torch.full((_NUM_EXPERTS,), -1, dtype=torch.int32, device="cuda")
-    expert_map[:local] = torch.arange(local, dtype=torch.int32, device="cuda")
+    inputs = (hidden_states, topk_ids)
+    if with_map:
+        expert_map = torch.full((_NUM_EXPERTS,), -1, dtype=torch.int32, device="cuda")
+        expert_map[:local] = torch.arange(local, dtype=torch.int32, device="cuda")
+        inputs += (expert_map,)
+    # The per-expert offsets, sizes and prefix sum are counts. The gathered rows and
+    # the forward map are not: a slot inside an expert is claimed by ``atomic_add``.
+    return make, inputs, (1, 2, 3)
 
-    assert_op_owns_graph_nodes(make(), hidden_states, topk_ids, expert_map)
 
-    compiled = _compile_cold(make(), hidden_states, topk_ids, expert_map)
-    eager = tuple(make()(hidden_states, topk_ids, expert_map))
+def _gate_up_case():
+    numel, ffn, k = 64, 128, 128
+
+    def make():
+        return MoeGateUpFwdOp(numel, _NUM_EXPERTS, ffn, k)
+
+    return make, _grouped_gemm_inputs(numel, _NUM_EXPERTS, 2 * ffn, k), "all"
+
+
+def _grouped_gemm_nopad_case():
+    numel, n, k = 64, 128, 128
+
+    def make():
+        return MoeGroupedGemmNopadFwdOp(numel, _NUM_EXPERTS, n, k)
+
+    return make, _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k), "all"
+
+
+_LEAF_CASES = {
+    "permute_align": _permute_align_case,
+    "permute_nopad": _permute_nopad_case,
+    # Supplying the map keeps the graph inside the same operator: the fake sizes the
+    # four per-expert outputs from ``num_experts_local``, a constructor parameter, so
+    # the map's contents never reach a traced region.
+    "permute_nopad_with_a_map": lambda: _permute_nopad_case(
+        local=_NUM_EXPERTS // 2, with_map=True),
+    "gate_up": _gate_up_case,
+    "grouped_gemm_nopad": _grouped_gemm_nopad_case,
+}
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+@pytest.mark.parametrize("case", _LEAF_CASES.values(), ids=_LEAF_CASES)
+def test_leaf_op_owns_its_graph_nodes(case) -> None:
+    make, inputs, reproducible = case()
+
+    assert_op_owns_graph_nodes(make(), *inputs)
+
+    compiled = _compile_cold(make(), *inputs)
+    eager = make()(*inputs)
+    eager = tuple(eager) if isinstance(eager, tuple) else (eager,)
     _assert_same_layout(compiled, eager)
-    # As above: the counts are reproducible, the slot a token lands in is not.
-    for i in (1, 2, 3):
+    indices = range(len(compiled)) if reproducible == "all" else reproducible
+    for i in indices:
         torch.testing.assert_close(compiled[i], eager[i])
 
 
@@ -163,7 +155,10 @@ def test_unpermute_owns_its_graph_nodes() -> None:
 
     assert_op_owns_graph_nodes(make(), mm2_pad, fwd_idx, topk_weights)
     assert_op_owns_graph_nodes(make(), mm2_pad, fwd_idx, topk_weights, out)
-    _assert_compiles_to_eager(make, mm2_pad, fwd_idx, topk_weights)
+    compiled = _compile_cold(make(), mm2_pad, fwd_idx, topk_weights)
+    eager = (make()(mm2_pad, fwd_idx, topk_weights),)
+    _assert_same_layout(compiled, eager)
+    torch.testing.assert_close(compiled[0], eager[0])
 
     out.zero_()
     torch.compile(make(), fullgraph=True)(mm2_pad, fwd_idx, topk_weights, out)
@@ -174,42 +169,16 @@ def test_unpermute_owns_its_graph_nodes() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-def test_gate_up_owns_its_graph_nodes() -> None:
-    numel, ffn, k = 64, 128, 128
-
-    def make():
-        return MoeGateUpFwdOp(numel, _NUM_EXPERTS, ffn, k)
-
-    inputs = _grouped_gemm_inputs(numel, _NUM_EXPERTS, 2 * ffn, k)
-    assert_op_owns_graph_nodes(make(), *inputs)
-    _assert_compiles_to_eager(make, *inputs)
-
-
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
-def test_grouped_gemm_nopad_owns_its_graph_nodes() -> None:
-    numel, n, k = 64, 128, 128
-
-    def make():
-        return MoeGroupedGemmNopadFwdOp(numel, _NUM_EXPERTS, n, k)
-
-    inputs = _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k)
-    assert_op_owns_graph_nodes(make(), *inputs)
-    _assert_compiles_to_eager(make, *inputs)
-
-
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
 def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
-    """RFC D7: a composite is not the unit of replacement, so it registers nothing.
+    """A composite is not the unit of replacement, so it registers nothing.
 
     Its graph is the leaves' operators, which is what makes the leaf the thing a
     target replaces.
     """
     num_experts, top_k, tokens, hidden, ffn = 4, 2, 4, 128, 128
     experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-        num_tokens=tokens, num_experts=num_experts, top_k=top_k,
-        hidden_size=hidden, ffn_size=ffn,
+        num_tokens=tokens, num_experts=num_experts, num_experts_local=num_experts,
+        top_k=top_k, hidden_size=hidden, ffn_size=ffn,
     )
     assert experts.compile_op_names == ()
 
@@ -223,8 +192,8 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
         torch.randint(0, num_experts, (tokens, top_k), dtype=torch.int32, device="cuda"),
         hidden_states.new_empty(0),
         hidden_states.new_empty(0),
-        num_experts,
     )
+    kwargs = {"num_experts": num_experts}
     owned_by_leaves = {
         operator_overload(name)
         for leaf in (experts._permute, experts._gate_up, experts._gemm_down,
@@ -232,7 +201,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
         for name in type(leaf).compile_op_names
     }
 
-    calls = traced_call_targets(experts, *args)
+    calls = traced_call_targets(experts, *args, **kwargs)
 
     assert calls, "the traced graph called nothing"
     assert calls <= owned_by_leaves, (
@@ -243,7 +212,6 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 for _op_cls in (
     MoePermuteAlignFwdOp,
     MoePermuteNopadFwdOp,
-    MoePermuteNopadEpFwdOp,
     MoeUnpermuteFwdOp,
     MoeGateUpFwdOp,
     MoeGroupedGemmNopadFwdOp,

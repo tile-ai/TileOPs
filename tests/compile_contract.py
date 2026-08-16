@@ -44,7 +44,7 @@ def operator_overload(name: str):
     return getattr(getattr(torch.ops, namespace), opname).default
 
 
-def traced_call_targets(op, *inputs) -> set:
+def traced_call_targets(op, *inputs, **kwargs) -> set:
     """Compile *op* with ``fullgraph=True`` and return the operators its graph calls.
 
     ``operator.getitem`` is left out: it is how a multi-output operator's results are
@@ -58,13 +58,13 @@ def traced_call_targets(op, *inputs) -> set:
                        and node.target is not operator.getitem])
         return gm.forward
 
-    torch.compile(op, backend=capture, fullgraph=True)(*inputs)
+    torch.compile(op, backend=capture, fullgraph=True)(*inputs, **kwargs)
 
     (calls,) = traced
     return set(calls)
 
 
-def assert_op_owns_graph_nodes(op, *inputs) -> None:
+def assert_op_owns_graph_nodes(op, *inputs, **kwargs) -> None:
     """Compile *op* once and assert the graph holds nothing but its own operators.
 
     A kernel's own registration, or a tensor op left outside the boundary, would show up
@@ -74,7 +74,7 @@ def assert_op_owns_graph_nodes(op, *inputs) -> None:
     declared = {operator_overload(name) for name in type(op).compile_op_names}
     assert declared, f"{type(op).__name__} declares no compile_op_names"
 
-    calls = traced_call_targets(op, *inputs)
+    calls = traced_call_targets(op, *inputs, **kwargs)
     assert calls, "the traced graph called nothing"
     assert calls <= declared, (
         f"graph holds nodes this op does not own: "
