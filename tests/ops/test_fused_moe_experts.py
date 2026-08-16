@@ -1,11 +1,9 @@
 """Tests for FusedMoEExpertsNopadPersistent3WGFwdOp and supporting ABCs."""
-import logging
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.ops.moe._activation import build_activation_op
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.abc import (
@@ -15,8 +13,8 @@ from tileops.ops.moe.routed_expert.abc import (
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
-from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad_fused_act import (
-    MoeGroupedGemmNopad3WGFusedActFwdOp,
+from tileops.ops.moe.routed_expert.gate_up import (
+    MoeGateUpFwdOp,
 )
 
 
@@ -164,22 +162,6 @@ def moe_tensors(request):
 class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
     @pytest.mark.smoke
-    @pytest.mark.parametrize(
-        "num_tokens,fused",
-        [
-            pytest.param(512, True, id="decode-fuses"),
-            pytest.param(4096, False, id="prefill-stays-unfused"),
-        ],
-    )
-    def test_routing_shape_selects_the_pipeline(self, num_tokens, fused):
-        """The kernel's answer reaches the pipeline: fused drops the activation op."""
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=num_tokens, num_experts=128, top_k=8,
-            hidden_size=7168, ffn_size=2048,
-        )
-        assert experts._fuses_activation is fused
-        assert (experts._activation_op is None) is fused
-
     @pytest.mark.smoke
     def test_the_automatically_fused_pipeline_matches_the_reference(self):
         """The fused branch is what production decode runs, so it needs its own check.
@@ -192,7 +174,6 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             num_tokens=T_count, num_experts=E, top_k=top_k,
             hidden_size=H, ffn_size=F_dim,
         )
-        assert experts._fuses_activation, "shape no longer selects the fused pipeline"
 
         torch.manual_seed(0)
         dtype = torch.bfloat16
@@ -211,61 +192,6 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         torch.testing.assert_close(out.float(), expected.float(), rtol=3e-2, atol=3e-2)
 
     @pytest.mark.smoke
-    @pytest.mark.parametrize("wants", [True, False])
-    def test_a_replaced_fused_kernel_answers_for_itself(self, wants):
-        """The question goes to the class that will be built, not to the stock one."""
-        from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
-            MoeGroupedGemmPersistent3WGFusedActKernel,
-        )
-
-        class Replacement(MoeGroupedGemmPersistent3WGFusedActKernel):
-            @classmethod
-            def wants_fused_epilogue(cls, *args, **kwargs):
-                return wants
-
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=512, num_experts=128, top_k=8,
-            hidden_size=7168, ffn_size=2048,
-            kernel_map={"moe_grouped_gemm_fused_act_kernel": Replacement},
-        )
-        assert experts._fuses_activation is wants
-
-    @pytest.mark.smoke
-    def test_explicit_gemm_override_keeps_the_unfused_pipeline(self):
-        from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
-
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=512, num_experts=128, top_k=8,
-            hidden_size=7168, ffn_size=2048,
-            gemm_kernel=GroupedGemmPersistent3WGKernel,
-        )
-        assert experts._fuses_activation is False
-
-    @pytest.mark.smoke
-    @pytest.mark.parametrize("gemm_kernel", [None, MoeGroupedGemmNopadKernel])
-    def test_a_pinned_gemm_kernel_that_cannot_take_the_shape_is_an_error(self, gemm_kernel):
-        """A named kernel is never stood in for; the class checked is the class built."""
-        from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
-
-        # 3WG cannot take a gate_up GEMM of N=640: 640 % 256 != 0.
-        with pytest.raises(ValueError, match="cannot take the gate_up GEMM"):
-            FusedMoEExpertsNopadPersistent3WGFwdOp(
-                num_tokens=64, num_experts=8, top_k=2,
-                hidden_size=256, ffn_size=320,
-                gemm_kernel=gemm_kernel,
-                kernel_map={"moe_grouped_gemm_kernel": GroupedGemmPersistent3WGKernel},
-            )
-
-    @pytest.mark.smoke
-    def test_an_unsteered_unusable_shape_falls_back(self):
-        """With nobody naming a kernel, there is no caller intent to betray."""
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=64, num_experts=8, top_k=2,
-            hidden_size=256, ffn_size=320,
-        )
-        built = experts._gemm_gate_up.kernel_map["moe_grouped_gemm_kernel"]
-        assert built is MoeGroupedGemmNopadKernel
-
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
@@ -316,13 +242,12 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
     @pytest.mark.smoke
-    def test_forward_fallback_path_unaligned_dims(self, caplog):
+    def test_forward_fallback_path_unaligned_dims(self):
         """Unaligned dims must trigger the MoeGroupedGemmNopadKernel fallback
         and still produce correct output.
 
         H=128, F=96: gate_up_n=192 is not divisible by 3WG block_n=256, so the
-        op selects MoeGroupedGemmNopadKernel instead of the 3WG persistent
-        kernel.
+        persistent kernel does not apply and the general one serves the call.
         """
         T, H, F_dim, E, K = 64, 128, 96, 4, 2
         dtype = torch.bfloat16
@@ -332,17 +257,10 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
         ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
 
-        with caplog.at_level(
-            logging.WARNING, logger="tileops.ops.moe.routed_expert.fused_routed_expert"
-        ):
-            experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-                num_tokens=T, num_experts=E, top_k=K,
-                hidden_size=H, ffn_size=F_dim,
-            )
-        assert any(
-            "falling back to MoeGroupedGemmNopadKernel" in rec.message
-            for rec in caplog.records
-        ), f"expected fallback warning, got: {[rec.message for rec in caplog.records]}"
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T, num_experts=E, top_k=K,
+            hidden_size=H, ffn_size=F_dim,
+        )
 
         ref_out = _torch_ref_moe(hidden, w1, w2, weights, ids)
         output = torch.empty(T, H, dtype=dtype, device="cuda")
@@ -595,7 +513,7 @@ def test_fused_act_fwd_op_shape_and_values():
     offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
     B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    op = MoeGroupedGemmNopad3WGFusedActFwdOp(
+    op = MoeGateUpFwdOp(
         numel=numel, num_experts=E, ffn=ffn, k=K,
         activation="silu_and_mul")
     out = op(A, B, sizes, offsets)

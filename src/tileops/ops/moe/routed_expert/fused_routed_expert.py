@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Dict, Optional
 
 from torch import Tensor
 
-from tileops.kernels.grouped_gemm import (
-    GroupedGemmPersistent3WGKernel,
-)
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
-from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
-    MoeGroupedGemmPersistent3WGFusedActKernel,
-)
-from tileops.ops.moe._activation import build_activation_op
 
 from .abc import (
     FusedMoEExpertsModular,
@@ -23,6 +14,7 @@ from .abc import (
     WeightedReduceNoOp,
     _validate_fused_moe_experts_dtypes,
 )
+from .gate_up import MoeGateUpFwdOp
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from .permute_nopad import MoePermuteNopadFwdOp
 from .unpermute import MoeUnpermuteFwdOp
@@ -31,25 +23,17 @@ __all__ = [
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
 ]
 
-_logger = logging.getLogger(__name__)
-
 
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
 
-    Internal pipeline: MoePermuteNopadFwdOp → gate_up GEMM (3WG; activation
-    fused into the epilogue where few rows are routed to each expert, else a
-    separate silu_and_mul/gelu_and_mul step) → down GEMM (3WG) → MoeUnpermuteFwdOp
-    (weighted reduction included).
+    Internal pipeline: MoePermuteNopadFwdOp → MoeGateUpFwdOp → down GEMM →
+    MoeUnpermuteFwdOp (weighted reduction included). Each stage picks its own
+    implementation when it is called, from the shapes it was built for and the
+    dtype and device of the call.
 
     forward() output shape is (T, H): reduction is done internally by
     MoeUnpermuteFwdOp, so make_weighted_reduce() returns WeightedReduceNoOp.
-
-    Performance note: the 3WG persistent kernel is throughput-tuned for
-    prefill-scale workloads; small-batch decode (num_tokens ≲ 512) may run
-    a few percent behind tile-scheduler kernels. Decode-heavy deployments
-    can pass ``gemm_kernel=MoeGroupedGemmNopadKernel`` to bypass 3WG and
-    use the lighter tile-scheduler path explicitly.
 
     Args:
         num_tokens: Number of input tokens T (rows of hidden_states).
@@ -62,22 +46,15 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             Defaults to 1.0 (no scaling).
         expert_map: Optional global→local expert id map for expert parallelism
             (EP). Entries < 0 mark experts not owned by this rank.
-        gemm_kernel: Optional override for the grouped-GEMM kernel class.
-            Defaults to GroupedGemmPersistent3WGKernel; pass
-            MoeGroupedGemmNopadKernel to force the tile-scheduler path.
         kernel_map: Optional kernel overrides forwarded to the inner Ops.
         activation: Gated activation applied to gate_up: 'silu_and_mul' or
             'gelu_and_mul'.
 
-    Example (decode-optimized opt-out):
-        from tileops.kernels.moe.moe_grouped_gemm_nopad import (
-            MoeGroupedGemmNopadKernel,
-        )
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
-            gemm_kernel=MoeGroupedGemmNopadKernel,
-        )
+    Example:
+        >>> experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        ...     num_tokens=512, num_experts=128, top_k=8,
+        ...     hidden_size=7168, ffn_size=2048,
+        ... )
     """
 
     def __init__(
@@ -89,7 +66,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         ffn_size: int,
         routed_scaling_factor: float = 1.0,
         expert_map: Optional[Tensor] = None,
-        gemm_kernel: Optional[type] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
@@ -105,82 +81,20 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             int((expert_map >= 0).sum().item()) if expert_map is not None else num_experts
         )
 
-        # Two ways to name the grouped-GEMM kernel reach this op: gemm_kernel, and
-        # kernel_map under the key the sub-ops read. Resolve them to one class here,
-        # because everything below reasons about the class that will be built.
-        # kernel_map wins, since it is what the sub-ops would have seen.
-        steered = (kernel_map or {}).get("moe_grouped_gemm_kernel") or gemm_kernel
-        kernel_cls = steered or GroupedGemmPersistent3WGKernel
-
-        # This op runs two grouped GEMMs on one kernel class, so a shape that class
-        # cannot take sends both of them to the fallback kernel.
-        gemm_shapes = {
-            "gate_up": (2 * ffn_size, hidden_size),   # (N, K)
-            "down": (hidden_size, ffn_size),
-        }
-        if kernel_cls is GroupedGemmPersistent3WGKernel:
-            for gemm, (n, k) in gemm_shapes.items():
-                if kernel_cls.takes_shape(n, k):
-                    continue
-                if steered is not None:
-                    # The caller named this kernel so that it would run. Standing a
-                    # shipped one in for it would return a result they read as
-                    # theirs — the rule Op.select_kernel_key states for the same
-                    # situation at call time.
-                    raise ValueError(
-                        f"{kernel_cls.__name__} cannot take the {gemm} GEMM "
-                        f"(N={n}, K={k}) of this op; pass a kernel that can, or "
-                        f"drop the override and let the op choose")
-                _logger.warning(
-                    "FusedMoEExpertsNopadPersistent3WGFwdOp: %s cannot take the %s "
-                    "GEMM (N=%d, K=%d) — falling back to MoeGroupedGemmNopadKernel "
-                    "for both.", kernel_cls.__name__, gemm, n, k,
-                )
-                kernel_cls = MoeGroupedGemmNopadKernel
-                break
-
-        # Fusing the activation into the gate_up epilogue is faster where routed rows
-        # per expert are few and slower where they are many, so the kernel decides. The
-        # question goes to the class that would be built, which a caller can replace.
-        # A caller who named the gate_up GEMM gets that kernel, not a wrapper around it.
-        fused_cls = (kernel_map or {}).get(
-            "moe_grouped_gemm_fused_act_kernel", MoeGroupedGemmPersistent3WGFusedActKernel)
-        self._fuses_activation = (
-            steered is None
-            and kernel_cls is GroupedGemmPersistent3WGKernel
-            and activation in ("silu_and_mul", "gelu_and_mul")
-            and fused_cls.wants_fused_epilogue(
-                numel, num_experts_local, ffn_size, hidden_size)
-        )
-
+        self.activation = activation
         self._permute = MoePermuteNopadFwdOp(
             num_experts=num_experts, expert_map=expert_map,
             kernel_map=kernel_map,
         )
-        self.activation = activation
-        if self._fuses_activation:
-            from .moe_grouped_gemm_nopad_fused_act import (
-                MoeGroupedGemmNopad3WGFusedActFwdOp,
-            )
-            self._gemm_gate_up = MoeGroupedGemmNopad3WGFusedActFwdOp(
-                numel=numel, num_experts=num_experts_local,
-                ffn=ffn_size, k=hidden_size, activation=activation,
-                kernel_map=kernel_map,
-            )
-            self._activation_op = None
-        else:
-            self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
-                numel=numel, num_experts=num_experts_local,
-                n=ffn_size * 2, k=hidden_size,
-                kernel_map={**(kernel_map or {}), "moe_grouped_gemm_kernel": kernel_cls},
-            )
-            self._activation_op = build_activation_op(
-                activation, M=numel, N=ffn_size, kernel_map=kernel_map,
-            )
+        self._gate_up = MoeGateUpFwdOp(
+            numel=numel, num_experts=num_experts_local,
+            ffn=ffn_size, k=hidden_size, activation=activation,
+            kernel_map=kernel_map,
+        )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size,
-            kernel_map={**(kernel_map or {}), "moe_grouped_gemm_kernel": kernel_cls},
+            kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens, top_k=top_k,
@@ -254,8 +168,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             topk_weights, topk_ids, expert_map, workspace1, workspace2,
         )
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_states, topk_ids)
-        gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
-        act = gate_up if self._fuses_activation else self._activation_op(gate_up)
+        act = self._gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
         mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
         # Unpermute reduces into ``output`` directly and folds
         # ``routed_scaling_factor`` into its prim_func — no separate copy/scale.

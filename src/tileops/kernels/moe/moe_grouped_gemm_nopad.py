@@ -321,6 +321,8 @@ class MoeGroupedGemmNopadKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    general = True
+
     def __init__(
         self,
         numel: int,

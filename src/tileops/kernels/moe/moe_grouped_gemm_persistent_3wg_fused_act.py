@@ -76,8 +76,8 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         self.init_config(config, tune)
 
     @classmethod
-    def schedule_for(cls, numel: int, num_experts: int, k: int) -> dict:
-        """The schedule this shape gets: decode when the regime says so and K allows.
+    def schedule_for(cls, numel: int, num_experts: int, k: int) -> dict | None:
+        """The short-group schedule this shape asks for, or ``None`` for the default.
 
         See :mod:`..grouped_gemm._config` for the regimes. A subclass that changes
         which shapes it wants fused overrides this with it, so the two answers
@@ -85,38 +85,30 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         """
         regime = rows_per_group_regime(numel, num_experts)
         if regime is None or k % 128 != 0:
-            return _DEFAULT_CONFIG
-        return _DECODE_SPARSE_CONFIG if regime == "thin" else _DECODE_DENSE_CONFIG
+            return None
+        return dict(_DECODE_SPARSE_CONFIG if regime == "thin" else _DECODE_DENSE_CONFIG)
 
     @property
     def default_config(self) -> dict:
         """The schedule this shape asks for."""
-        return dict(self.schedule_for(self.numel, self.num_experts, self.K))
+        return self.schedule_for(self.numel, self.num_experts, self.K) or dict(_DEFAULT_CONFIG)
 
     @classmethod
-    def wants_fused_epilogue(cls, numel: int, num_experts: int, n: int, k: int) -> bool:
-        """Whether fusing the activation into this GEMM is the faster pipeline here.
+    def applies(cls, call) -> bool:
+        """Shapes where fusing the activation into this GEMM is the faster pipeline.
 
-        True when the shape gets one of the short-group schedules and the tiling
-        divides it. Measured on H200 with bf16: fusing wins 5% at production MoE
-        decode shapes and 35% at shapes small enough to leave the device partly
-        idle, and loses 6-10% outside the regime. The answer is extrapolated to
-        other SM90 parts, dtypes and dimensions that classify the same way.
+        The short-group schedules, where the tiling divides the shape. Measured on
+        H200 with bf16: fusing wins 5% at production MoE decode shapes and 35% at
+        shapes small enough to leave the device partly idle, and loses 6-10%
+        outside the regime. The answer is extrapolated to other SM90 parts, dtypes
+        and dimensions that classify the same way.
 
-        The op layer asks this before it has a device, so nothing here may depend
-        on one — see ``docs/design/ops-design.md``, construction reads no device
-        property.
-
-        Args:
-            numel: Routed rows in total.
-            num_experts: Local experts the rows are spread over.
-            n: ffn width, the output width before the gate/up split.
-            k: hidden size.
+        ``call.n`` is the ffn width, the output width after the gate/up split.
         """
-        config = cls.schedule_for(numel, num_experts, k)
-        if config is _DEFAULT_CONFIG:
+        config = cls.schedule_for(call.numel, call.num_experts, call.k)
+        if config is None:
             return False
-        return not (n % config["block_n"] or k % config["block_k"])
+        return not (call.n % config["block_n"] or call.k % config["block_k"])
 
     @property
     def autotune_configs(self) -> list[dict]:

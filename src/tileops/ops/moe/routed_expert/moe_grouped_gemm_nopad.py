@@ -4,12 +4,18 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
+from tileops.kernels.grouped_gemm_call import GroupedGemmCall
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 
 from ...op_base import Op
 
 __all__ = ["MoeGroupedGemmNopadFwdOp"]
+
+#: The implementations of this role. The persistent kernel states the shapes its
+#: tiling divides; the tile-scheduler kernel is the general one behind it.
+_GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
 class MoeGroupedGemmNopadFwdOp(Op):
@@ -52,19 +58,37 @@ class MoeGroupedGemmNopadFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: tuple, dtype: torch.dtype) -> Kernel:
+        call = GroupedGemmCall(
+            numel=self.numel, num_experts=self.num_experts,
+            n=self.n, k=self.k, dtype=dtype,
+        )
+        name = self.select_kernel_key(_GEMM_KEYS, call)
         return self.get_or_build_kernel(
-            "moe_grouped_gemm_kernel",
-            key=dtype,
-            build=lambda: self.kernel_map["moe_grouped_gemm_kernel"](
+            name, inputs,
+            key=(name, dtype),
+            build=lambda: self.kernel_map[name](
                 self.numel, self.num_experts, self.n, self.k,
                 dtype=dtype, tune=self.tune,
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple,
+        b_shape: tuple,
+        true_sizes_shape: tuple,
+        true_offsets_shape: tuple,
+    ) -> Dict[str, tuple]:
+        # b is [num_experts, N, K]; the tight output keeps a's row count.
+        return {"c": (a_shape[0], b_shape[1])}
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel}
+        return {
+            "moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel,
+            "moe_grouped_gemm_persistent_kernel": GroupedGemmPersistent3WGKernel,
+        }
 
     def forward(
         self,
@@ -86,4 +110,5 @@ class MoeGroupedGemmNopadFwdOp(Op):
         """
         self._validate_dtypes(a, b, true_sizes, true_offsets)
         self.dtype = a.dtype
-        return self._get_kernel(a.dtype)(a, b, true_sizes, true_offsets)
+        inputs = (a, b, true_sizes, true_offsets)
+        return self._get_kernel(inputs, a.dtype)(*inputs)

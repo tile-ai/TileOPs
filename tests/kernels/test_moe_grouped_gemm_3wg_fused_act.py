@@ -3,6 +3,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tileops.kernels.grouped_gemm_call import GroupedGemmCall
 from tileops.kernels.moe import MoeGroupedGemmPersistent3WGFusedActKernel
 
 pytestmark = pytest.mark.skipif(
@@ -93,10 +94,10 @@ def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m,
     ],
 )
 def test_which_shapes_want_the_fused_epilogue(numel, num_experts, n, k, expected):
-    """What the op asks before it builds the fused pipeline."""
-    assert MoeGroupedGemmPersistent3WGFusedActKernel.wants_fused_epilogue(
-        numel, num_experts, n, k,
-    ) is expected
+    """The region the gate_up stage asks about before it picks this pipeline."""
+    call = GroupedGemmCall(numel=numel, num_experts=num_experts, n=n, k=k,
+                           dtype=torch.bfloat16)
+    assert MoeGroupedGemmPersistent3WGFusedActKernel.applies(call) is expected
 
 
 @pytest.mark.smoke
