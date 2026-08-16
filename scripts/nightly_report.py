@@ -408,12 +408,17 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def build_history_entry(bench_ops: dict) -> dict:
-    """Build a history entry from current bench results."""
+def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> dict:
+    """Build a history entry from current bench results.
+
+    Coverage rides in a key of its own beside ``ops``. Regression detection
+    reads only ``ops`` and pruning reads only ``date``, so the benchmark side
+    neither sees this key nor needs it to be present in older entries.
+    """
     commit = _get_git_commit()
     gpu = _get_gpu_name()
     ops_data = {}
-    for op, data in bench_ops.items():
+    for op, data in (bench_ops or {}).items():
         cfg_data = {}
         for cfg in data["configs"]:
             entry = {}
@@ -455,12 +460,53 @@ def build_history_entry(bench_ops: dict) -> dict:
                 cfg_data[cfg["name"]] = entry
         if cfg_data:
             ops_data[op] = cfg_data
-    return {
+    entry = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "commit": commit,
         "gpu": gpu,
         "ops": ops_data,
     }
+    if coverage:
+        entry["coverage"] = coverage_snapshot(coverage)
+    return entry
+
+
+def coverage_snapshot(files: list[dict]) -> dict:
+    """The three tracked coverage quantities, as plain numbers for history."""
+    s = _coverage_signals(files)
+    return {
+        "never_built": len(s["never_built"]),
+        "roofline_untested": s["roofline_untested"],
+        "op_untested": s["op_untested"],
+        "op_branches_hit": s["op_branches_hit"],
+        "op_branches": s["op_branches"],
+    }
+
+
+def previous_coverage(runs: list[dict]) -> dict | None:
+    """The most recent recorded coverage snapshot, or None before any exists."""
+    for run in reversed(runs):
+        snapshot = run.get("coverage")
+        if snapshot:
+            return {**snapshot, "date": run.get("date", "")}
+    return None
+
+
+def _delta(current: int | float, previous: int | float | None, unit: str = "") -> str:
+    """A signed change against the previous run.
+
+    Empty when the value held or there is nothing to compare against — the
+    footnote under the table states which run the comparison ran against, so a
+    silent row reads as steady rather than as missing history.
+    """
+    if previous is None:
+        return ""
+    change = current - previous
+    if abs(change) < (0.05 if unit == "pp" else 1):
+        return ""
+    sign = "+" if change > 0 else "−"
+    magnitude = f"{abs(change):.1f}" if unit == "pp" else f"{abs(change):.0f}"
+    return f" **{sign}{magnitude}{unit}**"
 
 
 def _get_git_commit() -> str:
@@ -508,6 +554,7 @@ def generate_report(
     improvements: list[dict],
     baseline_alerts: list[dict],
     coverage: list[dict] | None = None,
+    coverage_prev: dict | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -558,21 +605,35 @@ def generate_report(
         # -line total would double-count ops/ against its own branch figure and
         # bury perf/, where a wrong number is the failure nothing else catches.
         sig = _coverage_signals(coverage)
+        prev = coverage_prev or {}
+        sep = " &ensp;·&ensp; "
         if sig["never_built"]:
             worst = sig["never_built"][0]
             lines.append(f"| **Never-built kernels** | {_WARN} "
-                         f"{len(sig['never_built'])} files &ensp; (`{worst['path']}` at "
-                         f"{_pct(worst['covered'], worst['stmts'])}) |")
+                         f"{len(sig['never_built'])} files"
+                         f"{_delta(len(sig['never_built']), prev.get('never_built'))}"
+                         f"{sep}`{worst['path']}` at "
+                         f"{_pct(worst['covered'], worst['stmts'])} |")
         else:
             lines.append(f"| **Never-built kernels** | {_PASS} None |")
         rl_worst = sig["roofline_worst"]
-        rl_hint = (f" &ensp; (`{rl_worst['path']}` at "
-                   f"{_pct(rl_worst['covered'], rl_worst['stmts'])})" if rl_worst else "")
-        lines.append(f"| **Untested roofline math** |"
-                     f" {sig['roofline_untested']} lines in `perf/`{rl_hint} |")
+        rl_hint = (f"{sep}`{rl_worst['path']}` at "
+                   f"{_pct(rl_worst['covered'], rl_worst['stmts'])}" if rl_worst else "")
+        lines.append(f"| **Untested roofline math** | {sig['roofline_untested']} lines"
+                     f" in `perf/`"
+                     f"{_delta(sig['roofline_untested'], prev.get('roofline_untested'))}"
+                     f"{rl_hint} |")
+        op_branch_pct = (100 * sig["op_branches_hit"] / sig["op_branches"]
+                         if sig["op_branches"] else 0.0)
+        prev_branch_pct = (100 * prev.get("op_branches_hit", 0) / prev["op_branches"]
+                           if prev.get("op_branches") else None)
         lines.append(f"| **Untested op logic** | {sig['op_untested']} lines in `ops/`"
-                     f" &ensp; ({_pct(sig['op_branches_hit'], sig['op_branches'])}"
-                     f" of branches taken) |")
+                     f"{_delta(sig['op_untested'], prev.get('op_untested'))}"
+                     f"{sep}{op_branch_pct:.1f}% of branches taken"
+                     f"{_delta(op_branch_pct, prev_branch_pct, 'pp')} |")
+        if prev.get("date"):
+            lines.append("| | <sub>coverage compared against the "
+                         f"{prev['date']} run; no figure means it held</sub> |")
     lines.append("")
 
     # ── Test Failures (only if any) ───────────────────────────────────────
@@ -867,16 +928,21 @@ def main():
     coverage = None
     if args.coverage_xml and Path(args.coverage_xml).exists():
         coverage = parse_coverage_xml(args.coverage_xml)
+    # Read before this run is appended, so the comparison is against a prior run.
+    coverage_prev = previous_coverage(history_runs)
 
     # Generate report
     report = generate_report(test_ops, bench_ops, bench_failures,
-                             regressions, improvements, baseline_alerts, coverage)
+                             regressions, improvements, baseline_alerts, coverage,
+                             coverage_prev)
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 
-    # Update history
-    if args.history_out and bench_ops:
-        entry = build_history_entry(bench_ops)
+    # Update history. Coverage is recorded even when the benchmark job produced
+    # nothing, so a night without benchmarks does not drop a coverage reading and
+    # leave the next run comparing against a stale one.
+    if args.history_out and (bench_ops or coverage):
+        entry = build_history_entry(bench_ops, coverage)
         history_runs.append(entry)
         history_runs = prune_history(history_runs)
         Path(args.history_out).write_text(json.dumps({"runs": history_runs}, indent=2))
