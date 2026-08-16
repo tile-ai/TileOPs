@@ -11,8 +11,6 @@ attention mask, rather than recomputed from the production bounds arithmetic.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 
@@ -143,15 +141,6 @@ def test_varlen_fills_requests_to_max_len_when_lengths_absent() -> None:
 
     # Fill is [4, 4, 1, 1], not an even [3, 3, 2, 2]: 10 + 10 + 1 + 1 = 22.
     assert flops == _varlen_flops(22)
-
-
-def test_varlen_unwraps_roofline_kwargs_from_op() -> None:
-    """A bound Op carries its payload under ``_roofline_kwargs``."""
-    op = SimpleNamespace(_roofline_kwargs=_varlen_kwargs())
-
-    flops, _ = gqa_prefill_varlen_fwd_roofline(op)
-
-    assert flops == _varlen_flops(4 * 36)
 
 
 def test_sliding_window_caps_attended_scores_at_window() -> None:

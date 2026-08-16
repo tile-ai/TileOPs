@@ -23,14 +23,11 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 
-# 10% latency change => regression or improvement. This is also the noise floor:
-# a separate 5% one used to sit alongside it, where it could never bind.
-REGRESSION_THRESHOLD = 0.10
+REGRESSION_THRESHOLD = 0.10  # 10% latency change => regression or improvement
 REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
 
 # Measurement properties carried from the benchmark XML through to the report.
-# Parsing and aggregation read the same set, so they share one definition —
-# a key added to only one of them used to vanish between the two steps.
+# Parsing and aggregation must read the same set.
 _PERF_KEYS = (
     "tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
@@ -41,7 +38,6 @@ _PERF_KEYS = (
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
-COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
 # ── Emoji constants ───────────────────────────────────────────────────────
 _PASS = "\u2705"          # ✅
@@ -403,9 +399,9 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
 def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> dict:
     """Build a history entry from current bench results.
 
-    Coverage rides in a key of its own beside ``ops``. Regression detection
-    reads only ``ops`` and pruning reads only ``date``, so the benchmark side
-    neither sees this key nor needs it to be present in older entries.
+    Coverage sits in a key of its own beside ``ops``, which regression
+    detection and pruning do not read, so entries written before it existed
+    stay readable.
     """
     commit = _get_git_commit()
     gpu = _get_gpu_name()
@@ -458,11 +454,11 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
         "ops": ops_data,
     }
     if coverage:
-        entry["coverage"] = coverage_snapshot(coverage)
+        entry["coverage"] = _coverage_snapshot(coverage)
     return entry
 
 
-def coverage_snapshot(files: list[dict]) -> dict:
+def _coverage_snapshot(files: list[dict]) -> dict:
     """The three tracked coverage quantities, as plain numbers for history."""
     s = _coverage_signals(files)
     return {
@@ -474,7 +470,7 @@ def coverage_snapshot(files: list[dict]) -> dict:
     }
 
 
-def previous_coverage(runs: list[dict]) -> dict | None:
+def _previous_coverage(runs: list[dict]) -> dict | None:
     """The most recent recorded coverage snapshot, or None before any exists."""
     for run in reversed(runs):
         snapshot = run.get("coverage")
@@ -484,11 +480,11 @@ def previous_coverage(runs: list[dict]) -> dict | None:
 
 
 def _delta(current: int | float, previous: int | float | None, unit: str = "") -> str:
-    """A signed change against the previous run.
+    """A signed change against the previous run, empty when it held.
 
-    Empty when the value held or there is nothing to compare against — the
-    footnote under the table states which run the comparison ran against, so a
-    silent row reads as steady rather than as missing history.
+    ``unit`` is ``"pp"`` for percentage points, otherwise a plain count. The
+    footnote under the table names the run compared against, so an empty
+    result reads as steady rather than as missing history.
     """
     if previous is None:
         return ""
@@ -590,11 +586,10 @@ def generate_report(
         lines.append(f"| **Improvements** (vs 14-day best) |"
                      f" {_PARTY} {len(improvements)} |")
     if coverage:
-        # In the summary rather than only in the Coverage section: that section
-        # sits below the benchmark tables, which run to hundreds of rows. Each
-        # row names one concern and the file to open first — a single untested
-        # -line total would double-count ops/ against its own branch figure and
-        # bury perf/, where a wrong number is the failure nothing else catches.
+        # Repeated here because the Coverage section sits below the benchmark
+        # tables, which run to hundreds of rows. One row per concern: a single
+        # untested-line total would double-count ops/ against its own branch
+        # figure and bury perf/, where a wrong number fails silently.
         sig = _coverage_signals(coverage)
         prev = coverage_prev or {}
         sep = " &ensp;·&ensp; "
@@ -788,11 +783,12 @@ def _pct(hit: int, total: int) -> str:
 
 
 # A kernel file below this share of executed lines was never constructed by any
-# test. Measured distribution: the lowest genuinely-built kernel file sits at
-# 36.9%, so the threshold has room before it starts catching built kernels.
-KERNEL_BUILT_PCT = 25
-# Files this small swing wildly on one statement; they carry no signal.
-MIN_STMTS = 20
+# test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
+# has room before it starts catching built kernels.
+_KERNEL_BUILT_PCT = 25
+# Below this, one statement swings the percentage too far to read.
+_COVERAGE_MIN_STMTS = 20
+_COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
 
 def _coverage_signals(files: list[dict]) -> dict:
@@ -800,15 +796,16 @@ def _coverage_signals(files: list[dict]) -> dict:
 
     A ``kernels/`` line counts as covered once the kernel is traced into IR, so
     its percentage says the kernel was built, not that its generated code ran.
-    Only the never-built case carries information, and it is reported as a file
-    count. Everywhere else the ordinary reading holds.
+    Only the never-built case carries information there, and it is returned as
+    a file list rather than a rate. Elsewhere the ordinary reading holds.
     """
     kernels = [f for f in files if f["path"].startswith("kernels/")]
     pure = [f for f in files if not f["path"].startswith("kernels/")]
 
     never_built = sorted(
         (f for f in kernels
-         if f["stmts"] >= MIN_STMTS and 100 * f["covered"] / f["stmts"] < KERNEL_BUILT_PCT),
+         if f["stmts"] >= _COVERAGE_MIN_STMTS
+         and 100 * f["covered"] / f["stmts"] < _KERNEL_BUILT_PCT),
         key=lambda f: f["covered"] / f["stmts"])
     untested = sorted(
         (f for f in pure if f["stmts"] - f["covered"] > 0),
@@ -822,7 +819,7 @@ def _coverage_signals(files: list[dict]) -> dict:
         "untested_lines": sum(f["stmts"] - f["covered"] for f in pure),
         "roofline_untested": sum(f["stmts"] - f["covered"] for f in roofline),
         "roofline_worst": min(
-            (f for f in roofline if f["stmts"] >= MIN_STMTS),
+            (f for f in roofline if f["stmts"] >= _COVERAGE_MIN_STMTS),
             key=lambda f: f["covered"] / f["stmts"], default=None),
         "op_untested": sum(f["stmts"] - f["covered"] for f in ops),
         "op_branches_hit": sum(f["branches_hit"] for f in ops),
@@ -830,7 +827,7 @@ def _coverage_signals(files: list[dict]) -> dict:
     }
 
 
-def _coverage_section(signals: dict, worst_n: int = COVERAGE_WORST_N) -> list[str]:
+def _coverage_section(signals: dict, worst_n: int = _COVERAGE_WORST_N) -> list[str]:
     """Three explicit signals, each with what it means and what to do about it."""
     s = signals
     lines = ["## Coverage", ""]
@@ -909,9 +906,9 @@ def main():
         bench_ops = aggregate_bench_results(bench_results)
         bench_failures = collect_bench_failures(bench_results)
 
-    # Load history and detect regressions. Pruning first keeps the verdicts inside
-    # the window their label claims; the carried-over artifact can be older when a
-    # run gap exceeds the retention period.
+    # Prune first: the carried-over artifact can hold entries older than the
+    # window when a run gap exceeds the retention period, and the verdicts below
+    # are labelled "vs 14-day best".
     history_runs = prune_history(load_history(args.history))
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
@@ -921,7 +918,7 @@ def main():
     if args.coverage_xml and Path(args.coverage_xml).exists():
         coverage = parse_coverage_xml(args.coverage_xml)
     # Read before this run is appended, so the comparison is against a prior run.
-    coverage_prev = previous_coverage(history_runs)
+    coverage_prev = _previous_coverage(history_runs)
 
     # Generate report
     report = generate_report(test_ops, bench_ops, bench_failures,
@@ -930,9 +927,8 @@ def main():
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 
-    # Update history. Coverage is recorded even when the benchmark job produced
-    # nothing, so a night without benchmarks does not drop a coverage reading and
-    # leave the next run comparing against a stale one.
+    # Recorded on coverage alone too, so a night the benchmark job produced
+    # nothing does not drop a reading and leave the next run comparing stale.
     if args.history_out and (bench_ops or coverage):
         entry = build_history_entry(bench_ops, coverage)
         history_runs.append(entry)
