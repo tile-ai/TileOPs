@@ -198,3 +198,36 @@ def test_shared_fused_moe_tp_rejects_local_shards():
     with pytest.raises(ValueError, match="full weights"):
         op(hidden, gating, w_gate_up, w_down,
            shared_w_gate_up=good_gate_up, shared_w_down=bad_w_down)
+
+
+@pytest.mark.smoke
+def test_a_replaced_shared_expert_kernel_is_the_one_built():
+    """The shared half is reachable through kernel_map, like the routed half."""
+    from tileops.kernels.moe import SharedExpertMLPKernel
+
+    built = []
+
+    class Replacement(SharedExpertMLPKernel):
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+            super().__init__(**kwargs)
+
+    T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
+    op = SharedFusedMoE(
+        num_tokens=T, num_experts=E, top_k=K,
+        hidden_size=H, ffn_size=F, shared_ffn_size=F_s,
+        kernel_map={"shared_expert_mlp": Replacement},
+    )
+    assert op.kernel_map["shared_expert_mlp"] is Replacement
+
+    dtype, dev = torch.bfloat16, "cuda"
+    torch.manual_seed(7)
+    op(
+        torch.randn(T, H, dtype=dtype, device=dev),
+        torch.randn(T, E, dtype=dtype, device=dev),
+        torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02,
+        torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02,
+        shared_w_gate_up=torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02,
+        shared_w_down=torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02,
+    )
+    assert built, "the replacement was never constructed"
