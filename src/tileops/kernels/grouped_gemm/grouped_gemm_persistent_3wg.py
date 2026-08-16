@@ -39,7 +39,7 @@ from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count
 
-from ._config import rows_per_group_regime
+from .regimes import rows_per_group_regime
 
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
@@ -98,7 +98,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """The schedule this shape asks for; see :mod:`._config`."""
+        """The schedule this shape asks for; see :mod:`.regimes`."""
         if (rows_per_group_regime(self.numel, self.num_experts) is not None
                 and _tiling_divides(self.N, self.K)):
             return dict(_DECODE_CONFIG)

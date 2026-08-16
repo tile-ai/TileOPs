@@ -3,8 +3,6 @@
 import torch
 
 from tileops.kernels.elementwise import GeluAndMulFwdKernel, SiluAndMulFwdKernel
-from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
-from tileops.kernels.grouped_gemm_call import GroupedGemmCall
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 
@@ -21,37 +19,40 @@ class MoeGroupedGemmSeparateActKernel(Kernel):
 
     Serves the same call as the fused-epilogue kernel and produces the same
     ``[numel, ffn]`` output, in two launches with the wide intermediate in global
-    memory. It is the general implementation of that role: the fused one states the
-    shapes where its epilogue is worth the narrower schedule, and this one runs
-    everywhere else.
+    memory. It is the general implementation of that role.
 
-    The grouped GEMM inside is the persistent kernel wherever its tiling divides the
-    shape, and the tile-scheduler kernel otherwise — the same regions those two
-    classes state for the down GEMM.
+    ``gemm_cls`` is the grouped GEMM to compose with: the op that builds this holds
+    the map those candidates come from, so the choice is made there rather than
+    here.
     """
 
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    #: Gated activations this kernel can launch after the GEMM.
+    SUPPORTED_ACTIVATIONS = tuple(sorted(_ACTIVATIONS))
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        """Any shape, with a gated activation it can launch."""
+        return call.activation in cls.SUPPORTED_ACTIVATIONS
+
     def __init__(self, numel, num_experts, N, K, dtype=torch.bfloat16,
-                 activation="silu_and_mul", config=None, tune=False):
+                 activation="silu_and_mul", gemm_cls=MoeGroupedGemmNopadKernel,
+                 config=None, tune=False):
         super().__init__()
-        if activation not in _ACTIVATIONS:
+        if activation not in self.SUPPORTED_ACTIVATIONS:
             raise ValueError(
-                f"activation must be one of {sorted(_ACTIVATIONS)}, got {activation!r}")
+                f"activation must be one of {list(self.SUPPORTED_ACTIVATIONS)}, "
+                f"got {activation!r}")
         self.numel = numel
         self.num_experts = num_experts
         self.N = N            # ffn (output width), NOT 2*ffn
         self.K = K
         self.dtype = dtype
         self.activation = activation
-        self.init_config(config, tune)
-
-        gemm_call = GroupedGemmCall(
-            numel=numel, num_experts=num_experts, n=2 * N, k=K, dtype=dtype)
-        gemm_cls = (GroupedGemmPersistent3WGKernel
-                    if GroupedGemmPersistent3WGKernel.refusal(gemm_call) is None
-                    else MoeGroupedGemmNopadKernel)
+        # Composing two launches, each of which carries its own schedule.
+        self.init_config(config, tune=False)
         self._gemm = gemm_cls(numel, num_experts, 2 * N, K, dtype=dtype, tune=tune)
         self._act = _ACTIVATIONS[activation](numel, N, dtype, tune=tune)
 

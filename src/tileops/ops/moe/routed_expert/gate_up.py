@@ -4,9 +4,10 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm_call import GroupedGemmCall
+from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmPersistent3WGKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
+    MoeGroupedGemmNopadKernel,
     MoeGroupedGemmPersistent3WGFusedActKernel,
     MoeGroupedGemmSeparateActKernel,
 )
@@ -15,10 +16,11 @@ from ...op_base import Op
 
 __all__ = ["MoeGateUpFwdOp"]
 
-#: The implementations of this role. The fused one states the shapes where carrying
-#: the activation in its epilogue is worth the narrower schedule; the two-launch one
-#: is the general implementation behind it.
+#: The implementations of this role; each states its own region.
 _GATE_UP_KEYS = ("moe_grouped_gemm_fused_act_kernel", "moe_grouped_gemm_act_kernel")
+
+#: The grouped GEMM the separate-activation implementation composes with.
+_GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
 class MoeGateUpFwdOp(Op):
@@ -60,18 +62,29 @@ class MoeGateUpFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: tuple, dtype: torch.dtype) -> Kernel:
-        call = GroupedGemmCall(
+    def _call(self, n: int, dtype: torch.dtype, activation: str) -> GroupedGemmCall:
+        return GroupedGemmCall(
             numel=self.numel, num_experts=self.num_experts,
-            n=self.ffn, k=self.k, dtype=dtype,
+            n=n, k=self.k, dtype=dtype, activation=activation,
         )
-        name = self.select_kernel_key(_GATE_UP_KEYS, call)
+
+    def _get_kernel(self, inputs: tuple, dtype: torch.dtype) -> Kernel:
+        name = self.select_kernel_key(
+            _GATE_UP_KEYS, self._call(self.ffn, dtype, self.activation))
+        gemm_key, extra = None, {}
+        if name == "moe_grouped_gemm_act_kernel":
+            # The GEMM it composes with is a role of its own, selected here because
+            # this is where the map holding those candidates lives. That role applies
+            # no activation, so its call describes none.
+            gemm_key = self.select_kernel_key(
+                _GEMM_KEYS, self._call(2 * self.ffn, dtype, ""))
+            extra["gemm_cls"] = self.kernel_map[gemm_key]
         return self.get_or_build_kernel(
             name, inputs,
-            key=(name, dtype),
+            key=(name, gemm_key, dtype),
             build=lambda: self.kernel_map[name](
                 self.numel, self.num_experts, self.ffn, self.k,
-                dtype=dtype, activation=self.activation, tune=self.tune,
+                dtype=dtype, activation=self.activation, tune=self.tune, **extra,
             ),
         )
 
@@ -90,6 +103,8 @@ class MoeGateUpFwdOp(Op):
         return {
             "moe_grouped_gemm_fused_act_kernel": MoeGroupedGemmPersistent3WGFusedActKernel,
             "moe_grouped_gemm_act_kernel": MoeGroupedGemmSeparateActKernel,
+            "moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel,
+            "moe_grouped_gemm_persistent_kernel": GroupedGemmPersistent3WGKernel,
         }
 
     def forward(
@@ -111,6 +126,12 @@ class MoeGateUpFwdOp(Op):
             [numel, ffn] activated output.
         """
         self._validate_dtypes(a, b, true_sizes, true_offsets)
+        for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
+            if t.device != a.device:
+                raise ValueError(
+                    f"{name} must be on {a.device}, got {t.device}")
         self.dtype = a.dtype
-        inputs = (a, b, true_sizes, true_offsets)
+        # The op hands over what the manifest declares; how a kernel wants it laid
+        # out is its own business.
+        inputs = tuple(t.contiguous() for t in (a, b, true_sizes, true_offsets))
         return self._get_kernel(inputs, a.dtype)(*inputs)

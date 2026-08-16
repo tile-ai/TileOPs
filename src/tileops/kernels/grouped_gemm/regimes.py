@@ -1,4 +1,4 @@
-"""The rows-per-group regimes shared by the persistent 3WG grouped-GEMM kernels.
+"""The rows-per-group regimes the persistent 3WG grouped-GEMM kernels select on.
 
 A grouped GEMM whose groups are shorter than a tile leaves most of that tile idle,
 and a schedule with a shorter block wins. Kernels of this family ask which regime

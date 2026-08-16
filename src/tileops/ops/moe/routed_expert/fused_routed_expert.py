@@ -8,7 +8,7 @@ from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
 
-from .abc import (
+from ..abc import (
     FusedMoEExpertsModular,
     WeightedReduce,
     WeightedReduceNoOp,

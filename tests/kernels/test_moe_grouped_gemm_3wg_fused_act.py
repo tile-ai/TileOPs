@@ -3,7 +3,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.grouped_gemm_call import GroupedGemmCall
+from tileops.kernels.grouped_gemm import GroupedGemmCall
 from tileops.kernels.moe import MoeGroupedGemmPersistent3WGFusedActKernel
 
 pytestmark = pytest.mark.skipif(
@@ -96,8 +96,16 @@ def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m,
 def test_which_shapes_want_the_fused_epilogue(numel, num_experts, n, k, expected):
     """The region the gate_up stage asks about before it picks this pipeline."""
     call = GroupedGemmCall(numel=numel, num_experts=num_experts, n=n, k=k,
-                           dtype=torch.bfloat16)
+                           dtype=torch.bfloat16, activation="silu_and_mul")
     assert MoeGroupedGemmPersistent3WGFusedActKernel.applies(call) is expected
+
+
+@pytest.mark.smoke
+def test_an_activation_it_cannot_carry_is_outside_the_region():
+    """The activation is part of the call, so the region covers it too."""
+    call = GroupedGemmCall(numel=2048, num_experts=128, n=2048, k=7168,
+                           dtype=torch.bfloat16, activation="unknown_act")
+    assert MoeGroupedGemmPersistent3WGFusedActKernel.applies(call) is False
 
 
 @pytest.mark.smoke

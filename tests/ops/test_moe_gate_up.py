@@ -11,9 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase
-from tileops.ops.moe.routed_expert.gate_up import (
-    MoeGateUpFwdOp,
-)
+from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
 from workloads.moe import MoeGroupedGemmNopadWorkload
 
 
@@ -60,6 +58,20 @@ def test_moe_gate_up_op(numel, num_experts, ffn, k, distribution):
         c.float(), _ref_fused_gate_up(a, b, true_sizes, true_offsets, ffn).float(),
         atol=2e-2, rtol=2e-2,
     )
+
+
+@pytest.mark.smoke
+def test_no_implementation_serves_an_activation_none_of_them_carry():
+    """The activation is a fact of the call, so the candidates refuse it themselves."""
+    numel, num_experts, ffn, k = 64, 4, 128, 128
+    a = torch.randn(numel, k, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(num_experts, 2 * ffn, k, dtype=torch.bfloat16, device="cuda")
+    sizes = torch.full((num_experts,), numel // num_experts, dtype=torch.int32, device="cuda")
+    offsets = torch.arange(num_experts, dtype=torch.int32, device="cuda") * (numel // num_experts)
+
+    op = MoeGateUpFwdOp(numel, num_experts, ffn, k, activation="unknown_act")
+    with pytest.raises(ValueError, match="no implementation serves this call"):
+        op(a, b, sizes, offsets)
 
 
 @pytest.mark.smoke

@@ -4,8 +4,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
-from tileops.kernels.grouped_gemm_call import GroupedGemmCall
+from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmPersistent3WGKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 
@@ -13,8 +12,7 @@ from ...op_base import Op
 
 __all__ = ["MoeGroupedGemmNopadFwdOp"]
 
-#: The implementations of this role. The persistent kernel states the shapes its
-#: tiling divides; the tile-scheduler kernel is the general one behind it.
+#: The implementations of this role; each states its own region.
 _GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
@@ -109,6 +107,12 @@ class MoeGroupedGemmNopadFwdOp(Op):
             C: [numel, N] GEMM output.
         """
         self._validate_dtypes(a, b, true_sizes, true_offsets)
+        for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
+            if t.device != a.device:
+                raise ValueError(
+                    f"{name} must be on {a.device}, got {t.device}")
         self.dtype = a.dtype
-        inputs = (a, b, true_sizes, true_offsets)
+        # The op hands over what the manifest declares; how a kernel wants it laid
+        # out is its own business.
+        inputs = tuple(t.contiguous() for t in (a, b, true_sizes, true_offsets))
         return self._get_kernel(inputs, a.dtype)(*inputs)

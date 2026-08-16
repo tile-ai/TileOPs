@@ -15,7 +15,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_gemm._config import rows_per_group_regime
+from tileops.kernels.grouped_gemm import rows_per_group_regime
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count
 
@@ -57,12 +57,16 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
+    #: Gated activations this kernel can carry in its epilogue.
+    SUPPORTED_ACTIVATIONS = ("gelu_and_mul", "silu_and_mul")
+
     def __init__(self, numel, num_experts, N, K, dtype=torch.bfloat16,
                  activation="silu_and_mul", sm_count=None, config=None, tune=False):
         super().__init__()
-        if activation not in ("silu_and_mul", "gelu_and_mul"):
+        if activation not in self.SUPPORTED_ACTIVATIONS:
             raise ValueError(
-                f"activation must be 'silu_and_mul' or 'gelu_and_mul', got {activation!r}")
+                f"activation must be one of {list(self.SUPPORTED_ACTIVATIONS)}, "
+                f"got {activation!r}")
         self.numel = numel
         self.num_experts = num_experts
         self.N = N            # ffn (output width), NOT 2*ffn
@@ -79,7 +83,7 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
     def schedule_for(cls, numel: int, num_experts: int, k: int) -> dict | None:
         """The short-group schedule this shape asks for, or ``None`` for the default.
 
-        See :mod:`..grouped_gemm._config` for the regimes. A subclass that changes
+        See :mod:`..grouped_gemm.regimes` for the regimes. A subclass that changes
         which shapes it wants fused overrides this with it, so the two answers
         cannot disagree.
         """
@@ -97,14 +101,13 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
     def applies(cls, call) -> bool:
         """Shapes where fusing the activation into this GEMM is the faster pipeline.
 
-        The short-group schedules, where the tiling divides the shape. Measured on
-        H200 with bf16: fusing wins 5% at production MoE decode shapes and 35% at
-        shapes small enough to leave the device partly idle, and loses 6-10%
-        outside the regime. The answer is extrapolated to other SM90 parts, dtypes
-        and dimensions that classify the same way.
-
-        ``call.n`` is the ffn width, the output width after the gate/up split.
+        The short-group schedules, where the tiling divides the shape; ``call.n`` is
+        the ffn width. Measured on H200 with bf16, fusing wins 5-35% inside this
+        region and loses 6-10% outside it, and the answer is extrapolated to the
+        other SM90 parts and dtypes that classify the same way.
         """
+        if call.activation not in cls.SUPPORTED_ACTIVATIONS:
+            return False
         config = cls.schedule_for(call.numel, call.num_experts, call.k)
         if config is None:
             return False

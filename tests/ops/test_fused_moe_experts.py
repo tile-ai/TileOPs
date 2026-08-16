@@ -4,12 +4,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tileops.ops.moe._activation import build_activation_op
-from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from tileops.ops.moe.routed_expert.abc import (
+from tileops.ops.moe.abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
+from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
@@ -337,26 +336,6 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
 
-class TestBuildActivationOp:
-
-    @pytest.mark.smoke
-    def test_silu_and_mul_returns_correct_type(self):
-        from tileops.ops.elementwise import SiluAndMulFwdOp
-        op = build_activation_op("silu_and_mul", M=16, N=32)
-        assert isinstance(op, SiluAndMulFwdOp)
-
-    @pytest.mark.smoke
-    def test_gelu_and_mul_returns_correct_type(self):
-        from tileops.ops.elementwise import GeluAndMulFwdOp
-        op = build_activation_op("gelu_and_mul", M=16, N=32)
-        assert isinstance(op, GeluAndMulFwdOp)
-
-    @pytest.mark.smoke
-    def test_invalid_activation_raises(self):
-        with pytest.raises(ValueError, match="activation must be one of"):
-            build_activation_op("unknown_act", M=16, N=32)
-
-
 class TestFusedMoeActivationInjection:
 
     def _make_experts(self, activation="silu_and_mul"):
@@ -422,8 +401,8 @@ class TestFusedMoeActivationInjection:
         guard would default to comparing against 'silu_and_mul' and could
         silently accept a non-matching activation argument.
         """
+        from tileops.ops.moe.abc import FusedMoEExpertsModular
         from tileops.ops.moe.fused_moe import FusedMoe
-        from tileops.ops.moe.routed_expert.abc import FusedMoEExpertsModular
 
         class ExpertsWithoutActivation(FusedMoEExpertsModular):
             """Stand-in for a third-party experts impl that forgot .activation."""
@@ -447,7 +426,7 @@ class TestFusedMoeActivationInjection:
                 pass
 
             def make_weighted_reduce(self):
-                from tileops.ops.moe.routed_expert.abc import WeightedReduceNoOp
+                from tileops.ops.moe.abc import WeightedReduceNoOp
                 return WeightedReduceNoOp()
 
         with pytest.raises(ValueError, match="missing the required `.activation`"):

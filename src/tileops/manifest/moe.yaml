@@ -256,6 +256,8 @@ MoeGateUpFwdOp:
     kernel_map:
       moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       moe_grouped_gemm_act_kernel: MoeGroupedGemmSeparateActKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
 
 FusedMoEExpertsNopadPersistent3WGFwdOp:
   ref_api: "none"

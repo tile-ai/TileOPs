@@ -1,19 +1,14 @@
-"""Benchmark for MoeGateUpFwdOp (gate/up GEMM + fused activation).
+"""Benchmark for MoeGateUpFwdOp (gate/up GEMM and its gated activation).
 
 Baselines:
-  - `tileops-fused-act` and `tileops-separate-act`: the two implementations of this
-    role, each built directly. Their ratio is the evidence behind the region
-    `MoeGroupedGemmPersistent3WGFusedActKernel.applies` states, so it can be re-taken
-    on another device or dtype; `tileops` is whichever of them the op selects.
+  - `tileops-fused-act` and `tileops-separate-act`: both implementations of this
+    role, built directly, so the region between them can be re-taken on another
+    device or dtype. `tileops` is whichever of them the op selects.
   - `torch-ref`: per-expert NT matmul loop, then silu_and_mul.
 
 Workload shapes come from the manifest entry's `workloads` (via `load_workloads`);
 the benchmark reports TileOPs latency alongside the manifest-derived roofline
 (`op.eval_roofline()`).
-
-The `b` operand holds gate and up stacked, so the GEMM is `2 * ffn` wide and the
-epilogue halves it: this op is timed against a baseline that pays for the same
-intermediate in global memory, which is what fusing the epilogue removes.
 """
 
 import pytest
