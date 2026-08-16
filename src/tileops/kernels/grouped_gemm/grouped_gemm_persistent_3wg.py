@@ -37,8 +37,9 @@ import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
 
-from ._config import launches_enough_ctas, rows_per_group_regime
+from ._config import rows_per_group_regime
 
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
@@ -66,6 +67,18 @@ _DECODE_CONFIG = {
 }
 
 
+def _launches_enough_ctas(
+    numel: int, n: int, block_m: int, block_n: int, sm_count: int,
+) -> bool:
+    """Whether this schedule fills the device even when grouping is worst-case.
+
+    Worst case is every row landing in one group, the fewest CTA tiles the shape can
+    produce. This kernel is persistent, so it needs two full waves.
+    """
+    cta_tiles = ((numel + block_m - 1) // block_m) * ((n + block_n - 1) // block_n)
+    return cta_tiles >= 2 * sm_count
+
+
 class GroupedGemmPersistent3WGKernel(Kernel):
     """V2 persistent grouped-GEMM kernel (K-aligned only)."""
 
@@ -80,10 +93,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         self.N = N
         self.K = K
         self.dtype = dtype
-        if sm_count is None:
-            sm_count = torch.cuda.get_device_properties(
-                torch.cuda.current_device()).multi_processor_count
-        self.sm_count = sm_count
+        self.sm_count = get_sm_count() if sm_count is None else sm_count
         self.kernel = lambda: _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, _DEFAULT_CONFIG["block_k"])
@@ -94,7 +104,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         """The schedule this shape asks for; see :mod:`._config`."""
         if (rows_per_group_regime(self.numel, self.num_experts) is not None
                 and self.takes_shape(self.N, self.K)
-                and launches_enough_ctas(
+                and _launches_enough_ctas(
                     self.numel, self.N, _DECODE_CONFIG["block_m"],
                     _DECODE_CONFIG["block_n"], self.sm_count)):
             return dict(_DECODE_CONFIG)

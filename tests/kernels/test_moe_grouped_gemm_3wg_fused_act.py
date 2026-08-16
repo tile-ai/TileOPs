@@ -89,13 +89,13 @@ def test_row_count_selects_the_schedule(numel, num_experts, expected_block_m,
         pytest.param(2048, 128, 2048, 7168, True, id="decode-shaped"),
         pytest.param(2048, 8, 2048, 7168, False, id="too-many-rows-per-expert"),
         pytest.param(2048, 128, 2048, 64, False, id="k-cannot-use-the-decode-schedule"),
-        pytest.param(128, 128, 256, 7168, False, id="too-few-ctas"),
+        pytest.param(128, 128, 256, 7168, True, id="too-small-to-fill-the-device"),
     ],
 )
 def test_which_shapes_want_the_fused_epilogue(numel, num_experts, n, k, expected):
     """What the op asks before it builds the fused pipeline."""
     assert MoeGroupedGemmPersistent3WGFusedActKernel.wants_fused_epilogue(
-        numel, num_experts, n, k, sm_count=132,
+        numel, num_experts, n, k,
     ) is expected
 
 

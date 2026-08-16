@@ -15,11 +15,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_gemm._config import (
-    launches_enough_ctas,
-    rows_per_group_regime,
-)
+from tileops.kernels.grouped_gemm._config import rows_per_group_regime
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
 
 __all__ = ["MoeGroupedGemmPersistent3WGFusedActKernel"]
 
@@ -37,19 +35,6 @@ _DECODE_SPARSE_CONFIG = {
     "block_m": 64, "block_n": 128, "block_k": 128,
     "num_stages": 1, "threads": 384, "group_size_m": 1,
 }
-
-#: Multiprocessors assumed when the caller has no device to ask — the count on the
-#: parts these schedules were tuned on. A smaller part misses the decode schedule,
-#: which costs performance, not correctness.
-_ASSUMED_SM_COUNT = 132
-
-
-def _schedule_for(numel: int, num_experts: int, k: int) -> dict:
-    """The schedule this shape gets: decode when the regime says so and K allows."""
-    regime = rows_per_group_regime(numel, num_experts)
-    if regime is None or k % 128 != 0:
-        return _DEFAULT_CONFIG
-    return _DECODE_SPARSE_CONFIG if regime == "thin" else _DECODE_DENSE_CONFIG
 
 
 def _fused_act_expr(name):
@@ -84,48 +69,54 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         self.K = K
         self.dtype = dtype
         self.activation = activation
-        if sm_count is None:
-            sm_count = torch.cuda.get_device_properties(
-                torch.cuda.current_device()).multi_processor_count
-        self.sm_count = sm_count
+        self.sm_count = get_sm_count() if sm_count is None else sm_count
         self.kernel = lambda: _fused_act_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.activation, self.sm_count, _DEFAULT_CONFIG["block_k"])
         self.init_config(config, tune)
 
+    @classmethod
+    def schedule_for(cls, numel: int, num_experts: int, k: int) -> dict:
+        """The schedule this shape gets: decode when the regime says so and K allows.
+
+        See :mod:`..grouped_gemm._config` for the regimes. A subclass that changes
+        which shapes it wants fused overrides this with it, so the two answers
+        cannot disagree.
+        """
+        regime = rows_per_group_regime(numel, num_experts)
+        if regime is None or k % 128 != 0:
+            return _DEFAULT_CONFIG
+        return _DECODE_SPARSE_CONFIG if regime == "thin" else _DECODE_DENSE_CONFIG
+
     @property
     def default_config(self) -> dict:
-        """The schedule this shape asks for; see :mod:`..grouped_gemm._config`."""
-        return dict(_schedule_for(self.numel, self.num_experts, self.K))
+        """The schedule this shape asks for."""
+        return dict(self.schedule_for(self.numel, self.num_experts, self.K))
 
     @classmethod
-    def wants_fused_epilogue(cls, numel: int, num_experts: int, n: int, k: int,
-                             sm_count: int | None = None) -> bool:
+    def wants_fused_epilogue(cls, numel: int, num_experts: int, n: int, k: int) -> bool:
         """Whether fusing the activation into this GEMM is the faster pipeline here.
 
-        True when the shape gets one of the short-group schedules and that schedule
-        fills the device. Measured on H200 with bf16 at production MoE shapes, where
-        fusing wins about 5% inside this regime and loses 6-10% outside it; the answer
-        is extrapolated to other SM90 parts, dtypes and dimensions that classify the
-        same way.
+        True when the shape gets one of the short-group schedules and the tiling
+        divides it. Measured on H200 with bf16: fusing wins 5% at production MoE
+        decode shapes and 35% at shapes small enough to leave the device partly
+        idle, and loses 6-10% outside the regime. The answer is extrapolated to
+        other SM90 parts, dtypes and dimensions that classify the same way.
+
+        The op layer asks this before it has a device, so nothing here may depend
+        on one — see ``docs/design/ops-design.md``, construction reads no device
+        property.
 
         Args:
             numel: Routed rows in total.
             num_experts: Local experts the rows are spread over.
             n: ffn width, the output width before the gate/up split.
             k: hidden size.
-            sm_count: Multiprocessors to fill; assumed when omitted, so the answer
-                costs no device query.
         """
-        config = _schedule_for(numel, num_experts, k)
+        config = cls.schedule_for(numel, num_experts, k)
         if config is _DEFAULT_CONFIG:
             return False
-        if n % config["block_n"] or k % config["block_k"]:
-            return False
-        return launches_enough_ctas(
-            numel, n, config["block_m"], config["block_n"],
-            _ASSUMED_SM_COUNT if sm_count is None else sm_count,
-        )
+        return not (n % config["block_n"] or k % config["block_k"])
 
     @property
     def autotune_configs(self) -> list[dict]:
