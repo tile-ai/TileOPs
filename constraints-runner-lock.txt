@@ -20,6 +20,7 @@ click==8.4.2
 cloudpickle==3.1.2
 cmake==4.4.2
 compressed-tensors==0.17.0
+coverage==7.15.4
 cryptography==50.0.0
 cuda-bindings==13.3.1
 cuda-core==1.0.1
@@ -156,6 +157,7 @@ pygments==2.20.0
 pyjwt==2.13.0
 pynvvideocodec==2.0.4
 pytest==9.0.2
+pytest-cov==7.1.0
 pytest-timeout==2.3.1
 pytest-xdist==3.8.0
 python-dotenv==1.2.2

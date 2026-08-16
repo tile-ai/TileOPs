@@ -37,4 +37,4 @@ pytest-cov
 py-spy
 flash-linear-attention
 vllm
-cupti-python==13.2.0
+cupti-python

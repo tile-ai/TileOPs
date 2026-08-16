@@ -144,7 +144,7 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         exit 1; \
     fi
 # --no-deps: it must not re-resolve a CUDA wheel under torch.
-RUN uv pip install --no-deps "cupti-python==13.2.0"
+RUN uv pip install --no-deps cupti-python
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 

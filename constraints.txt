@@ -28,10 +28,16 @@ pytest-xdist==3.8.0
 ruff==0.14.13
 pytest-timeout==2.3.1
 pytest-cov==7.1.0
+# pytest-cov pulls it. The nightly step installs against this file, not the
+# runner lock, so an unpinned coverage would drift between nights and make
+# the readings it produces incomparable.
+coverage==7.15.4
 # Bench baselines. The runner image installs these; the lock compile and the
 # `.[bench]` install both read the version from here.
 flash-linear-attention==0.5.2
 vllm==0.27.1
+# Tracks the image CUDA version; bump with it.
+cupti-python==13.2.0
 # Stack dump of a hung benchmark child before the runner kills it.
 py-spy==0.4.2
 # The installer. It cannot come from the lock it produces, and the same version must compile the
