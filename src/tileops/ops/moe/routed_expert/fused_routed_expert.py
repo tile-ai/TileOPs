@@ -8,6 +8,7 @@ from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
 
+from ...op_base import Op
 from ..abc import (
     FusedMoEExpertsModular,
     WeightedReduce,
@@ -45,7 +46,8 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         routed_scaling_factor: Scalar applied to the final reduced output.
             Defaults to 1.0 (no scaling).
         expert_map: Optional global→local expert id map for expert parallelism
-            (EP). Entries < 0 mark experts not owned by this rank.
+            (EP). Entries < 0 mark experts not owned by this rank. This is the
+            map the op is built for; ``forward`` must be handed the same tensor.
         kernel_map: Optional kernel overrides forwarded to the inner Ops.
         activation: Gated activation applied to gate_up: 'silu_and_mul' or
             'gelu_and_mul'.
@@ -76,26 +78,20 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
+        self.expert_map = expert_map
         numel = num_tokens * top_k
-        num_experts_local = (
-            int((expert_map >= 0).sum().item()) if expert_map is not None else num_experts
-        )
+        self._numel = numel
+        self._kernel_map = kernel_map
 
         self.activation = activation
         self._permute = MoePermuteNopadFwdOp(
             num_experts=num_experts, expert_map=expert_map,
             kernel_map=kernel_map,
         )
-        self._gate_up = MoeGateUpFwdOp(
-            numel=numel, num_experts=num_experts_local,
-            ffn=ffn_size, k=hidden_size, activation=activation,
-            kernel_map=kernel_map,
-        )
-        self._gemm_down = MoeGroupedGemmNopadFwdOp(
-            numel=numel, num_experts=num_experts_local,
-            n=hidden_size, k=ffn_size,
-            kernel_map=kernel_map,
-        )
+        # The two grouped GEMMs are compiled for the number of experts this rank
+        # owns. That count is read from the permute output at forward time, so
+        # construction reads nothing off the device.
+        self._gemm_stages: Dict[int, tuple[MoeGateUpFwdOp, MoeGroupedGemmNopadFwdOp]] = {}
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens, top_k=top_k,
             hidden_size=hidden_size, padded_batch_sum=numel,
@@ -103,6 +99,38 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             routed_scaling_factor=routed_scaling_factor,
         )
         self._routed_scaling_factor = routed_scaling_factor
+
+    def _gemm_stage_ops(
+        self, num_experts_local: int,
+    ) -> tuple[MoeGateUpFwdOp, MoeGroupedGemmNopadFwdOp]:
+        """Return the gate/up and down GEMM ops for a local expert count.
+
+        ``self.tune`` is read here rather than at construction so a stage first
+        built after ``autotune()`` is tuned like the rest of the pipeline.
+        """
+        stages = self._gemm_stages.get(num_experts_local)
+        if stages is None:
+            stages = (
+                MoeGateUpFwdOp(
+                    numel=self._numel, num_experts=num_experts_local,
+                    ffn=self.ffn_size, k=self.hidden_size, activation=self.activation,
+                    kernel_map=self._kernel_map, tune=self.tune,
+                ),
+                MoeGroupedGemmNopadFwdOp(
+                    numel=self._numel, num_experts=num_experts_local,
+                    n=self.hidden_size, k=self.ffn_size,
+                    kernel_map=self._kernel_map, tune=self.tune,
+                ),
+            )
+            self._gemm_stages[num_experts_local] = stages
+        return stages
+
+    def kernel_delegates(self) -> tuple[Op, ...]:
+        return (
+            self._permute,
+            self._unpermute,
+            *(op for stages in self._gemm_stages.values() for op in stages),
+        )
 
     def _validate_dtypes(
         self,
@@ -163,13 +191,22 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
+        if expert_map is not self.expert_map:
+            raise ValueError(
+                "expert_map must be the tensor this op was constructed with: the "
+                "number of experts it marks local is compiled into the permute "
+                "kernel and both grouped GEMMs. Construct a second op for a "
+                f"second map (built for {'no map' if self.expert_map is None else 'a map'}, "
+                f"called with {'no map' if expert_map is None else 'a different map'})."
+            )
         self._validate_dtypes(
             output, hidden_states, w_gate_up, w_down,
             topk_weights, topk_ids, expert_map, workspace1, workspace2,
         )
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_states, topk_ids)
-        act = self._gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
-        mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
+        gate_up, gemm_down = self._gemm_stage_ops(true_sizes.shape[0])
+        act = gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
+        mm2 = gemm_down(act, w_down, true_sizes, true_offsets)
         # Unpermute reduces into ``output`` directly and folds
         # ``routed_scaling_factor`` into its prim_func — no separate copy/scale.
         self._unpermute(mm2, fwd_idx, topk_weights, out=output)

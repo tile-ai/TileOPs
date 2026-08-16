@@ -213,7 +213,13 @@ class FusedMoEExperts(Op, ABC):
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
-        """Write expert computation result to output in-place."""
+        """Write expert computation result to output in-place.
+
+        An implementation that compiles kernels against the EP layout takes
+        ``expert_map`` at construction as well. It must then reject a
+        ``forward`` call handed a different map rather than ignore the
+        argument.
+        """
 
 
 class FusedMoEExpertsModular(FusedMoEExperts, ABC):

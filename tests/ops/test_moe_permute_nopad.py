@@ -98,6 +98,23 @@ def test_moe_permute_nopad_explicit_shape_mismatch_raises() -> None:
 
 
 @pytest.mark.smoke
+def test_moe_permute_nopad_expert_map_count_change_rebuilds_kernel() -> None:
+    """Editing expert_map so a different number of experts is local must not
+    reuse the kernel built for the old count — that count sizes its buffers."""
+    E, T, K, H = 4, 8, 2, 64
+    expert_map = torch.full((E,), -1, dtype=torch.int32, device="cuda")
+    expert_map[:2] = torch.arange(2, dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadFwdOp(num_experts=E, expert_map=expert_map)
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+    assert op(hidden_states, topk_ids)[2].shape[0] == 2
+
+    expert_map[2] = 2
+    assert op(hidden_states, topk_ids)[2].shape[0] == 3
+
+
+@pytest.mark.smoke
 def test_moe_permute_nopad_cpu_input_raises() -> None:
     hidden_states = torch.randn(4, 16, dtype=torch.float16)
     topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32)

@@ -313,6 +313,29 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.isfinite(output.float()).all()
 
     @pytest.mark.smoke
+    def test_forward_rejects_a_foreign_expert_map(self, moe_tensors):
+        """forward() must reject a map the op was not built for.
+
+        The local expert count is compiled into the permute kernel and both
+        grouped GEMMs, so a map other than the constructed one cannot be
+        honoured — and must not be silently ignored.
+        """
+        d = moe_tensors
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"],
+        )
+        foreign_map = torch.arange(d["E"], dtype=torch.int32, device="cuda")
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws = torch.empty(0, dtype=d["dtype"], device="cuda")
+        with pytest.raises(ValueError, match="expert_map must be the tensor"):
+            experts.forward(
+                output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+                expert_map=foreign_map, workspace1=ws, workspace2=ws,
+                num_experts=d["E"],
+            )
+
+    @pytest.mark.smoke
     @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
     def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
         """forward() output matches PyTorch reference for each activation."""

@@ -30,6 +30,9 @@ class MoePermuteNopadFwdOp(Op):
         expert_map: Optional [E_global] int32 tensor mapping global expert ids
             to local ids (-1 = not on this rank).  When provided, only local
             token-expert pairs are counted; non-local positions get fwd_idx = -1.
+            The map is handed to the kernel at every call, so editing its values
+            in place takes effect on the next call; editing how many entries are
+            local rebuilds the kernel, because that count sizes its buffers.
         kernel_map: Optional kernel override dict.
 
     Example:
@@ -56,6 +59,27 @@ class MoePermuteNopadFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.expert_map = expert_map
+        # (storage, in-place version) of the map the cached count was read from.
+        self._expert_map_stamp: Optional[tuple[int, int]] = None
+        self._num_experts_local = num_experts
+
+    def _local_expert_count(self) -> Optional[int]:
+        """Number of experts this rank owns, or None when EP is off.
+
+        The count is baked into the kernel — it sizes the scan and its output
+        buffers — so it belongs in the kernel cache key. Reading it costs a
+        device sync, so it is cached against the map's storage address and
+        in-place version counter and re-read only when the map is replaced or
+        edited in place.
+        """
+        expert_map = self.expert_map
+        if expert_map is None:
+            return None
+        stamp = (expert_map.data_ptr(), expert_map._version)
+        if stamp != self._expert_map_stamp:
+            self._num_experts_local = int((expert_map >= 0).sum().item())
+            self._expert_map_stamp = stamp
+        return self._num_experts_local
 
     def eval_roofline(self) -> tuple[int, int]:
         if (
@@ -86,19 +110,25 @@ class MoePermuteNopadFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: Tuple[torch.Tensor, ...],
         total_tokens: int,
         top_k: int,
         num_experts: int,
         hidden_size: int,
         dtype: torch.dtype,
         device_index: int | None,
+        num_experts_local: Optional[int],
     ) -> Kernel:
-        key = (total_tokens, top_k, num_experts, hidden_size, dtype, device_index)
+        key = (
+            total_tokens, top_k, num_experts, hidden_size, dtype, device_index,
+            num_experts_local,
+        )
         return self.get_or_build_kernel(
-            "permute_nopad_kernel",
+            "permute_nopad_kernel", inputs,
             key=key,
             build=lambda: self.kernel_map["permute_nopad_kernel"](
-                total_tokens, top_k, num_experts, hidden_size, dtype, self.expert_map
+                total_tokens, top_k, num_experts, hidden_size, dtype,
+                num_experts_local=num_experts_local,
             ),
         )
 
@@ -177,7 +207,8 @@ class MoePermuteNopadFwdOp(Op):
         self.hidden_states_shape = tuple(hidden_states.shape)
         self.topk_ids_shape = tuple(topk_ids.shape)
         kernel = self._get_kernel(
+            (hidden_states, topk_ids),
             total_tokens, top_k, self.num_experts, hidden_size, dtype,
-            hidden_states.device.index,
+            hidden_states.device.index, self._local_expert_count(),
         )
-        return kernel(hidden_states, topk_ids)
+        return kernel(hidden_states, topk_ids, self.expert_map)
