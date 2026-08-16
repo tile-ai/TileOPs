@@ -31,7 +31,10 @@ from tileops.ops.moe import MoePermuteAlignFwdOp
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
 from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
-from tileops.ops.moe.routed_expert.permute_nopad import MoePermuteNopadFwdOp
+from tileops.ops.moe.routed_expert.permute_nopad import (
+    MoePermuteNopadEpFwdOp,
+    MoePermuteNopadFwdOp,
+)
 from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
 
 _NUM_EXPERTS = 4
@@ -116,6 +119,37 @@ def test_permute_nopad_owns_its_graph_nodes() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
+def test_permute_nopad_ep_owns_its_graph_nodes() -> None:
+    """The expert-parallel identity registers its own operator.
+
+    Its fake sizes the four per-expert outputs from ``num_experts_local``, a
+    constructor parameter, so the map's contents never reach a traced region.
+    """
+    local = _NUM_EXPERTS // 2
+
+    def make():
+        return MoePermuteNopadEpFwdOp(
+            num_experts=_NUM_EXPERTS, num_experts_local=local)
+
+    hidden_states = torch.randn(
+        _TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(
+        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
+    expert_map = torch.full((_NUM_EXPERTS,), -1, dtype=torch.int32, device="cuda")
+    expert_map[:local] = torch.arange(local, dtype=torch.int32, device="cuda")
+
+    assert_op_owns_graph_nodes(make(), hidden_states, topk_ids, expert_map)
+
+    compiled = _compile_cold(make(), hidden_states, topk_ids, expert_map)
+    eager = tuple(make()(hidden_states, topk_ids, expert_map))
+    _assert_same_layout(compiled, eager)
+    # As above: the counts are reproducible, the slot a token lands in is not.
+    for i in (1, 2, 3):
+        torch.testing.assert_close(compiled[i], eager[i])
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
 def test_unpermute_owns_its_graph_nodes() -> None:
     """Both registrations, because ``out`` picks between them at call time."""
     numel = _TOKENS * _TOP_K
@@ -187,7 +221,6 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
         torch.randn(num_experts, hidden, ffn, dtype=torch.bfloat16, device="cuda"),
         torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
         torch.randint(0, num_experts, (tokens, top_k), dtype=torch.int32, device="cuda"),
-        None,
         hidden_states.new_empty(0),
         hidden_states.new_empty(0),
         num_experts,
@@ -210,6 +243,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 for _op_cls in (
     MoePermuteAlignFwdOp,
     MoePermuteNopadFwdOp,
+    MoePermuteNopadEpFwdOp,
     MoeUnpermuteFwdOp,
     MoeGateUpFwdOp,
     MoeGroupedGemmNopadFwdOp,

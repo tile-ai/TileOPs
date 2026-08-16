@@ -62,6 +62,8 @@ class SharedFusedMoE(FusedMoe):
             before TP sharding). If None, no shared expert is computed.
         tp_size: Tensor parallel world size. Default 1 (no TP).
         tp_rank: This rank's index in the TP group. Default 0.
+        num_experts_local: Number of experts this rank owns; required with
+            expert_map. See FusedMoe.
         prepare_finalize: Override the PrepareAndFinalize implementation.
         experts: Override the Experts implementation.
         kernel_map: Override the dispatched kernel map.
@@ -84,6 +86,7 @@ class SharedFusedMoE(FusedMoe):
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
         expert_map: Optional[torch.Tensor] = None,
+        num_experts_local: Optional[int] = None,
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
@@ -116,6 +119,7 @@ class SharedFusedMoE(FusedMoe):
             renormalize=renormalize,
             routed_scaling_factor=routed_scaling_factor,
             expert_map=expert_map,
+            num_experts_local=num_experts_local,
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,

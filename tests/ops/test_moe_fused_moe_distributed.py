@@ -138,6 +138,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
         scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
+        num_experts_local=E_local,
     )
     out_local = op_local(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
 
@@ -212,6 +213,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
+        num_experts_local=E_local,
         shared_ffn_size=shared_F,
     )
     shared_out, routed_out_local = op_local(
@@ -303,6 +305,7 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
         scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
+        num_experts_local=E_local,
     )
     out_tileops = op_tileops(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
     dist.all_reduce(out_tileops, op=dist.ReduceOp.SUM)
@@ -377,6 +380,7 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
         scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
+        num_experts_local=E_local,
     )
     out_tileops = op_tileops(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
 

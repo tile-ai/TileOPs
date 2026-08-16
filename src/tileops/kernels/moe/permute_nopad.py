@@ -159,7 +159,11 @@ def _make_scan_kernel_nopad_ep(
                     if idx < numel:
                         global_eid = flat_ids[idx]
                         local_eid = expert_map[global_eid]
-                        if local_eid >= T.int32(0):
+                        # ``s_counts`` holds num_experts_local entries. The map is a
+                        # device tensor the kernel does not own, so the upper bound is
+                        # checked here too: an id past the end would otherwise write
+                        # past the shared buffer into ``s_offset``.
+                        if local_eid >= T.int32(0) and local_eid < T.int32(num_experts_local):
                             T.atomic_add(s_counts[local_eid], 1)
                 T.sync_threads()
 
@@ -189,15 +193,17 @@ def _make_scan_kernel_nopad_ep(
                     if idx < numel:
                         global_eid = flat_ids[idx]
                         local_eid = expert_map[global_eid]
-                        if local_eid < T.int32(0):
-                            fwd_idx[idx] = T.int32(-1)
-                        else:
+                        # Same bound as step 2, so a pair counted there is the pair
+                        # scattered here.
+                        if local_eid >= T.int32(0) and local_eid < T.int32(num_experts_local):
                             # Keep the returned slot in a local buffer: TileLang may otherwise
                             # duplicate the atomic while lowering bounds checks for the stores.
                             slot_buf[0] = T.atomic_add(write_offsets[local_eid], T.int32(1), return_prev=True)
                             slot = slot_buf[0]
                             permuted_idx[slot] = idx // T.int32(top_k)
                             fwd_idx[idx] = slot
+                        else:
+                            fwd_idx[idx] = T.int32(-1)
 
         return _scan_ep_main
 

@@ -22,6 +22,7 @@ from tileops.ops.moe.abc import (
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import (
+    FusedMoEExpertsNopadPersistent3WGEpFwdOp,
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
 
@@ -46,6 +47,10 @@ class FusedMoe(Op):
         renormalize: Renormalize top-k weights to sum to 1.
         routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
         expert_map: [E_global] int32 for Expert Parallel local filtering.
+        num_experts_local: Number of experts this rank owns. Required with
+            `expert_map` and rejected without it: it sizes the expert
+            pipeline's kernels, which are built here, and reading it off the
+            map would mean a device read at construction.
         prepare_finalize: Override the PrepareAndFinalize implementation.
         experts: Override the Experts implementation.
         kernel_map: Override the dispatched kernel map.
@@ -62,12 +67,22 @@ class FusedMoe(Op):
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
         expert_map: Optional[torch.Tensor] = None,
+        num_experts_local: Optional[int] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
     ):
+        if (expert_map is None) != (num_experts_local is None):
+            raise ValueError(
+                "expert_map and num_experts_local go together: the map carries the "
+                "global-to-local ids read at launch, the count sizes the kernels "
+                "built here. Got "
+                f"expert_map={'a map' if expert_map is not None else None}, "
+                f"num_experts_local={num_experts_local}."
+            )
+
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
@@ -77,6 +92,9 @@ class FusedMoe(Op):
         self.renormalize = renormalize
         self.routed_scaling_factor = routed_scaling_factor
         self.expert_map = expert_map
+        self.num_experts_local = (
+            num_experts if num_experts_local is None else num_experts_local
+        )
 
         self.dispatch_kernel(kernel_map)
 
@@ -129,16 +147,21 @@ class FusedMoe(Op):
             self._experts: FusedMoEExpertsModular = experts
         else:
             self.activation = activation
-            self._experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            common = dict(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
                 top_k=top_k,
                 hidden_size=hidden_size,
                 ffn_size=ffn_size,
-                activation=activation,
                 routed_scaling_factor=routed_scaling_factor,
-                expert_map=expert_map,
                 kernel_map=kernel_map,
+                activation=activation,
+            )
+            self._experts = (
+                FusedMoEExpertsNopadPersistent3WGFwdOp(**common)
+                if expert_map is None
+                else FusedMoEExpertsNopadPersistent3WGEpFwdOp(
+                    num_experts_local=num_experts_local, **common)
             )
 
     @property
@@ -177,13 +200,23 @@ class FusedMoe(Op):
         output = hidden_states.new_empty(hidden_states.shape)
         expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
         expert_out = output if expert_out_shape == tuple(hidden_states.shape) else hidden_states.new_empty(expert_out_shape)
-        self._experts.forward(
-            expert_out, r.hidden_q, w_gate_up, w_down,
-            r.topk_weights, r.topk_ids,
-            expert_map=self.expert_map,
-            workspace1=ws1, workspace2=ws2,
-            num_experts=self.num_experts,
-        )
+        # Which experts identity was built is fixed at construction, so which arm
+        # runs is a constant.
+        if self.expert_map is None:
+            self._experts.forward(
+                expert_out, r.hidden_q, w_gate_up, w_down,
+                r.topk_weights, r.topk_ids,
+                workspace1=ws1, workspace2=ws2,
+                num_experts=self.num_experts,
+            )
+        else:
+            self._experts.forward(
+                expert_out, r.hidden_q, w_gate_up, w_down,
+                r.topk_weights, r.topk_ids,
+                expert_map=self.expert_map,
+                workspace1=ws1, workspace2=ws2,
+                num_experts=self.num_experts,
+            )
 
         self._prepare.finalize(
             output, expert_out,
@@ -214,6 +247,7 @@ class FusedMoeFwdOp(FusedMoe):
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
         expert_map: Optional[torch.Tensor] = None,
+        num_experts_local: Optional[int] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -230,6 +264,7 @@ class FusedMoeFwdOp(FusedMoe):
             renormalize=renormalize,
             routed_scaling_factor=routed_scaling_factor,
             expert_map=expert_map,
+            num_experts_local=num_experts_local,
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,

@@ -43,16 +43,14 @@ def _validate_fused_moe_experts_dtypes(
     w_down: Tensor,
     topk_weights: Tensor,
     topk_ids: Tensor,
-    expert_map: Tensor | None,
     workspace1: Tensor,
     workspace2: Tensor,
 ) -> None:
     """Shared dtype validator for FusedMoEExperts subclasses.
 
-    Concrete subclasses route through this helper because the manifest-driven
-    ``_validate_dtypes`` codegen path does not handle ``Optional[Tensor]``
-    inputs (``expert_map`` is None for single-GPU); having one shared body
-    avoids drift between the nopad and padded implementations.
+    Covers the inputs every implementation takes. An expert-parallel identity
+    adds its own check for ``expert_map`` on top; keeping the common body here
+    avoids drift between implementations.
     """
     allowed = (torch.float16, torch.bfloat16)
     if op_dtype not in allowed:
@@ -73,8 +71,6 @@ def _validate_fused_moe_experts_dtypes(
         raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
     if topk_ids.dtype != torch.int32:
         raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
-    if expert_map is not None and expert_map.dtype != torch.int32:
-        raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
     for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
         if t.dtype not in allowed:
             raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
@@ -208,17 +204,15 @@ class FusedMoEExperts(Op, ABC):
         w_down: Tensor,           # [E, H, F]
         topk_weights: Tensor,     # [T', K] float32
         topk_ids: Tensor,         # [T', K] int32
-        expert_map: Tensor | None,
         workspace1: Tensor,
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
         """Write expert computation result to output in-place.
 
-        An implementation that compiles kernels against the EP layout takes
-        ``expert_map`` at construction as well. It must then reject a
-        ``forward`` call handed a different map rather than ignore the
-        argument.
+        An expert-parallel implementation takes the number of experts this rank
+        owns at construction — it sizes the kernels — and adds ``expert_map``
+        to this signature as the tensor carrying the global-to-local ids.
         """
 
 

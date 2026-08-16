@@ -10,6 +10,7 @@ from tileops.ops.moe.abc import (
 )
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
+    FusedMoEExpertsNopadPersistent3WGEpFwdOp,
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
 from tileops.ops.moe.routed_expert.gate_up import (
@@ -185,7 +186,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         out = torch.empty(T_count, H, dtype=dtype, device="cuda")
         ws = torch.empty(0, dtype=dtype, device="cuda")
 
-        experts.forward(out, hidden, w1, w2, weights, ids, None, ws, ws, E)
+        experts.forward(out, hidden, w1, w2, weights, ids, ws, ws, E)
 
         expected = _torch_ref_moe(hidden, w1, w2, weights, ids)
         torch.testing.assert_close(out.float(), expected.float(), rtol=3e-2, atol=3e-2)
@@ -235,7 +236,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+            workspace1=ws1, workspace2=ws2, num_experts=d["E"],
         )
 
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
@@ -267,19 +268,17 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ws2 = torch.empty(0, dtype=dtype, device="cuda")
         experts.forward(
             output, hidden, w1, w2, weights, ids,
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=E,
+            workspace1=ws1, workspace2=ws2, num_experts=E,
         )
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
     @pytest.mark.smoke
-    def test_forward_with_expert_map_runs(self):
-        """expert_map (EP mode) must construct + forward without raising.
+    def test_ep_forward_runs(self):
+        """The EP identity must construct + forward without raising.
 
-        This is a smoke check that the EP path is wired up — the Nopad+3WG
-        implementation supports expert_map. The
-        per-expert numerical correctness check under expert_map filtering is
-        non-trivial to write a torch reference for and is left to a follow-up
-        end-to-end test against vLLM.
+        This is a smoke check that the EP path is wired up. The per-expert
+        numerical correctness check under expert_map filtering is non-trivial to
+        write a torch reference for and is left to an end-to-end test against vLLM.
         """
         T, H, F_dim, E_global, E_local, K = 64, 128, 64, 8, 4, 2
         dtype = torch.bfloat16
@@ -288,18 +287,17 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
 
         hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
-        # Weights sized to local experts only, since nopad's _gemm_gate_up
-        # is constructed with num_experts_local.
+        # Weights sized to local experts only: the grouped GEMMs are built for
+        # num_experts_local.
         w1 = torch.randn(E_local, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
         w2 = torch.randn(E_local, H, F_dim, dtype=dtype, device="cuda") * 0.02
         weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
         # Mix local + non-local expert ids to exercise the -1 fwd_idx path.
         ids = torch.randint(0, E_global, (T, K), dtype=torch.int32, device="cuda")
 
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=T, num_experts=E_global, top_k=K,
-            hidden_size=H, ffn_size=F_dim,
-            expert_map=expert_map,
+        experts = FusedMoEExpertsNopadPersistent3WGEpFwdOp(
+            num_tokens=T, num_experts=E_global, num_experts_local=E_local,
+            top_k=K, hidden_size=H, ffn_size=F_dim,
         )
         output = torch.empty(T, H, dtype=dtype, device="cuda")
         ws1 = torch.empty(0, dtype=dtype, device="cuda")
@@ -313,27 +311,55 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.isfinite(output.float()).all()
 
     @pytest.mark.smoke
-    def test_forward_rejects_a_foreign_expert_map(self, moe_tensors):
-        """forward() must reject a map the op was not built for.
+    def test_ep_forward_rejects_a_map_of_another_size(self):
+        """A map marking a different number of experts local must be refused.
 
-        The local expert count is compiled into the permute kernel and both
-        grouped GEMMs, so a map other than the constructed one cannot be
-        honoured — and must not be silently ignored.
+        The count is compiled into the permute kernel and both grouped GEMMs, so a
+        map covering more local ids than the op was built for cannot be honoured.
+        """
+        T, H, F_dim, E_global, E_local, K = 64, 128, 64, 8, 4, 2
+        dtype = torch.bfloat16
+        experts = FusedMoEExpertsNopadPersistent3WGEpFwdOp(
+            num_tokens=T, num_experts=E_global, num_experts_local=E_local,
+            top_k=K, hidden_size=H, ffn_size=F_dim,
+        )
+        wider_map = torch.arange(E_global, dtype=torch.int32, device="cuda")
+        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+        w1 = torch.randn(E_local, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E_local, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
+        ids = torch.randint(0, E_global, (T, K), dtype=torch.int32, device="cuda")
+        output = torch.empty(T, H, dtype=dtype, device="cuda")
+        ws = torch.empty(0, dtype=dtype, device="cuda")
+        with pytest.raises(ValueError, match="exactly once each"):
+            experts.forward(
+                output, hidden, w1, w2, weights, ids,
+                expert_map=wider_map, workspace1=ws, workspace2=ws,
+                num_experts=E_global,
+            )
+
+    @pytest.mark.smoke
+    def test_kernel_delegates_are_the_same_before_and_after_a_call(self, moe_tensors):
+        """Enumeration must not depend on execution history.
+
+        Every stage is built at construction, so the delegate set a caller sees
+        before the first forward is the one it sees after.
         """
         d = moe_tensors
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"],
         )
-        foreign_map = torch.arange(d["E"], dtype=torch.int32, device="cuda")
+        before = {id(op) for op in experts.kernel_delegates()}
+
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
         ws = torch.empty(0, dtype=d["dtype"], device="cuda")
-        with pytest.raises(ValueError, match="expert_map must be the tensor"):
-            experts.forward(
-                output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-                expert_map=foreign_map, workspace1=ws, workspace2=ws,
-                num_experts=d["E"],
-            )
+        experts.forward(
+            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+            workspace1=ws, workspace2=ws, num_experts=d["E"],
+        )
+
+        assert {id(op) for op in experts.kernel_delegates()} == before
 
     @pytest.mark.smoke
     @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
@@ -354,7 +380,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+            workspace1=ws1, workspace2=ws2, num_experts=d["E"],
         )
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
@@ -444,8 +470,8 @@ class TestFusedMoeActivationInjection:
                 return (T_prime, H)
 
             def forward(self, output, hidden_states, w_gate_up, w_down,
-                        topk_weights, topk_ids, expert_map, workspace1,
-                        workspace2, num_experts):
+                        topk_weights, topk_ids, workspace1, workspace2,
+                        num_experts):
                 pass
 
             def make_weighted_reduce(self):

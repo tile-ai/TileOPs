@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.moe import MoePermuteNopadFwdOp
+from tileops.ops.moe import MoePermuteNopadEpFwdOp, MoePermuteNopadFwdOp
 from workloads.moe import MoePermuteWorkload
 
 
@@ -98,20 +98,60 @@ def test_moe_permute_nopad_explicit_shape_mismatch_raises() -> None:
 
 
 @pytest.mark.smoke
-def test_moe_permute_nopad_expert_map_count_change_rebuilds_kernel() -> None:
-    """Editing expert_map so a different number of experts is local must not
-    reuse the kernel built for the old count — that count sizes its buffers."""
-    E, T, K, H = 4, 8, 2, 64
+def test_moe_permute_nopad_ep_counts_only_local_experts() -> None:
+    """The EP identity lays out num_experts_local slots and drops the rest.
+
+    Every token routed to a local expert reaches a slot; a token routed elsewhere
+    gets fwd_idx == -1.
+    """
+    E, E_local, T, K, H = 4, 2, 8, 2, 64
     expert_map = torch.full((E,), -1, dtype=torch.int32, device="cuda")
-    expert_map[:2] = torch.arange(2, dtype=torch.int32, device="cuda")
-    op = MoePermuteNopadFwdOp(num_experts=E, expert_map=expert_map)
+    expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadEpFwdOp(num_experts=E, num_experts_local=E_local)
     hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
     topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
 
-    assert op(hidden_states, topk_ids)[2].shape[0] == 2
+    _, _, true_sizes, _, fwd_idx = op(hidden_states, topk_ids, expert_map)
+
+    assert true_sizes.shape[0] == E_local
+    local_pairs = int((topk_ids.flatten() < E_local).sum())
+    assert int(true_sizes.sum()) == local_pairs
+    assert int((fwd_idx >= 0).sum()) == local_pairs
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_ep_rejects_a_non_dense_map() -> None:
+    """A map whose local ids are not 0..E_local-1 must raise, not miscount.
+
+    ``[-1, 0, 2, -1]`` marks two experts local while naming id 2, which the
+    kernel's two counters cannot hold: the tokens routed there used to be
+    dropped silently.
+    """
+    E, E_local, T, K, H = 4, 2, 8, 2, 64
+    expert_map = torch.tensor([-1, 0, 2, -1], dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadEpFwdOp(num_experts=E, num_experts_local=E_local)
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+    with pytest.raises(ValueError, match="exactly once each"):
+        op(hidden_states, topk_ids, expert_map)
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_ep_rechecks_an_edited_map() -> None:
+    """Editing a valid map into an invalid one must be caught on the next call."""
+    E, E_local, T, K, H = 4, 2, 8, 2, 64
+    expert_map = torch.full((E,), -1, dtype=torch.int32, device="cuda")
+    expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadEpFwdOp(num_experts=E, num_experts_local=E_local)
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+    op(hidden_states, topk_ids, expert_map)
 
     expert_map[2] = 2
-    assert op(hidden_states, topk_ids)[2].shape[0] == 3
+    with pytest.raises(ValueError, match="exactly once each"):
+        op(hidden_states, topk_ids, expert_map)
 
 
 @pytest.mark.smoke

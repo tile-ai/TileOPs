@@ -56,11 +56,13 @@ except ImportError:
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import (
+    FusedMoEExpertsNopadPersistent3WGEpFwdOp,
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
 from workloads.moe import MoeExpertsWorkload
 
 _OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
+_OP_NAME_EP = "FusedMoEExpertsNopadPersistent3WGEpFwdOp"
 
 
 # Workload
@@ -173,3 +175,71 @@ def test_moe_experts_nopad_bench(
         functors["torch-ref"] = _torch_fn
 
     bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids, record_as=nopad, params=locals())
+
+
+def _manifest_params_ep():
+    params = []
+    for w in load_workloads(_OP_NAME_EP):
+        label = w.get("label", "unlabeled")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(
+                w["num_tokens"], w["num_experts"], w["num_experts_local"],
+                w["top_k"], w["hidden_size"], w["ffn_size"], dtype,
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
+
+
+@pytest.mark.parametrize(
+    "num_tokens, num_experts, num_experts_local, top_k, hidden_size, ffn_size, dtype",
+    _manifest_params_ep(),
+)
+def test_moe_experts_nopad_ep_bench(
+    num_tokens: int, num_experts: int, num_experts_local: int, top_k: int,
+    hidden_size: int, ffn_size: int, dtype: torch.dtype,
+) -> None:
+    """The same pipeline over the expert slice one rank owns.
+
+    Routing still draws from all ``num_experts`` global ids; the weights and the
+    grouped GEMMs are sized by ``num_experts_local``. No vLLM column: its
+    ``fused_experts`` takes the full weight table, so the two would not measure
+    the same work.
+    """
+    # The workload draws routing ids over the global expert table; the weights it
+    # generates are the global set, so the local slice is taken below.
+    test = MoeExpertsWorkload(
+        num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
+    hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
+    w1, w2 = w1[:num_experts_local].contiguous(), w2[:num_experts_local].contiguous()
+
+    expert_map = torch.full((num_experts,), -1, dtype=torch.int32, device=hidden.device)
+    expert_map[:num_experts_local] = torch.arange(
+        num_experts_local, dtype=torch.int32, device=hidden.device)
+
+    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    ws1 = torch.empty(0, dtype=dtype, device="cuda")
+    ws2 = torch.empty(0, dtype=dtype, device="cuda")
+
+    ep = FusedMoEExpertsNopadPersistent3WGEpFwdOp(
+        num_tokens=num_tokens, num_experts=num_experts,
+        num_experts_local=num_experts_local, top_k=top_k,
+        hidden_size=hidden_size, ffn_size=ffn_size,
+    )
+    bm = ManifestBenchmark(_OP_NAME_EP, ep, test)
+
+    def _ep_fn(hidden, w1, w2, topk_weights, topk_ids):
+        ep.forward(
+            output, hidden, w1, w2, topk_weights, topk_ids,
+            expert_map=expert_map, workspace1=ws1, workspace2=ws2,
+            num_experts=num_experts,
+        )
+        return output
+
+    _ep_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup / JIT compile
+    torch.cuda.synchronize()
+
+    bm.compare(
+        {"tileops-nopad-3wg-ep": _ep_fn}, hidden, w1, w2, topk_weights, topk_ids,
+        record_as=ep, params=locals(),
+    )
