@@ -103,10 +103,11 @@ def parse_bench_xml(path: str) -> list[dict]:
     for tc in tree.iter("testcase"):
         props = _get_properties(tc)
         failure = tc.find("failure")
+        error = tc.find("error")
         skipped = tc.find("skipped")
         if skipped is not None:
             outcome = "skipped"
-        elif failure is not None:
+        elif failure is not None or error is not None:
             outcome = "failed"
         else:
             outcome = "passed"
@@ -118,6 +119,7 @@ def parse_bench_xml(path: str) -> list[dict]:
             "op": props.get("op"),
             "op_module": props.get("op_module"),
             "failure_message": (failure.attrib.get("message", "") if failure is not None
+                                else error.attrib.get("message", "") if error is not None
                                 else None),
         }
         # Perf data
@@ -440,10 +442,9 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
                 if btag == cfg.get("baseline_tag"):
                     continue  # already recorded above
                 bl_entry = {}
-                if bl.get("latency_ms") is not None:
-                    bl_entry["latency_ms"] = bl["latency_ms"]
-                if bl.get("tflops") is not None:
-                    bl_entry["tflops"] = bl["tflops"]
+                for bl_key in ("latency_ms", _CONCLUSION_KEY, "tflops"):
+                    if bl.get(bl_key) is not None:
+                        bl_entry[bl_key] = bl[bl_key]
                 if bl_entry:
                     entry[btag] = bl_entry
             if entry:
@@ -908,8 +909,10 @@ def main():
         bench_ops = aggregate_bench_results(bench_results)
         bench_failures = collect_bench_failures(bench_results)
 
-    # Load history and detect regressions
-    history_runs = load_history(args.history)
+    # Load history and detect regressions. Pruning first keeps the verdicts inside
+    # the window their label claims; the carried-over artifact can be older when a
+    # run gap exceeds the retention period.
+    history_runs = prune_history(load_history(args.history))
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
@@ -933,7 +936,6 @@ def main():
     if args.history_out and (bench_ops or coverage):
         entry = build_history_entry(bench_ops, coverage)
         history_runs.append(entry)
-        history_runs = prune_history(history_runs)
         Path(args.history_out).write_text(json.dumps({"runs": history_runs}, indent=2))
         print(f"History updated: {args.history_out}")
 
