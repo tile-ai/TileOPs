@@ -509,6 +509,11 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                             # warpgroups that never arrive and deadlock.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0, C[m_start_0, n_start_0])
                         else:
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
@@ -583,6 +588,11 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                             # C_shared refill — see WG0 epilogue rationale.
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1, C[m_start_1, n_start_1])
                         else:
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
@@ -856,6 +866,11 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                             # warpgroups that never arrive and deadlock.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0, C[m_start, n_start])
                         else:
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
@@ -933,6 +948,11 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                             # C_shared refill — see WG0 epilogue rationale.
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1, C[m_start + half_m, n_start])
                         elif arows1 > T.int32(0):
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
