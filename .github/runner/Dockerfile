@@ -52,7 +52,7 @@ ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0 \
     CUDA_HOME=/usr/local/cuda PATH=/usr/local/cuda/bin:${PATH}
 
 FROM runtime AS post-fa3
-RUN uv pip install pytest pytest-xdist ruff pytest-timeout py-spy
+RUN uv pip install pytest pytest-xdist ruff pytest-timeout pytest-cov py-spy
 # Hopper FA3 has no wheel. A commit, not the v2.8.3 tag: releases through 2.8.3.post1 swap in a
 # downloaded CUDA 12.6 nvcc unless the system CUDA is exactly 12.8, and that toolchain ships no
 # CCCL, so every translation unit fails on `cuda/std/utility`. Only main takes the CUDA 13 path.
@@ -76,11 +76,11 @@ RUN uv pip install --no-build-isolation "flash-attn==2.8.3.post1" \
     || echo "WARNING: flash-attn (FA2) install failed (non-fatal)"
 
 # This vllm and no other: its apache-tvm-ffi pin (0.1.11) is the one the tilelang commit needs.
-# sgl-kernel is not installed.
+# Versions come from constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
 FROM fa2 AS fullstack
 RUN for pkg in \
-        "flash-linear-attention==0.5.2" \
-        "vllm==0.27.1"; do \
+        "flash-linear-attention" \
+        "vllm"; do \
         uv pip install --no-build-isolation "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
@@ -144,7 +144,7 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         exit 1; \
     fi
 # --no-deps: it must not re-resolve a CUDA wheel under torch.
-RUN uv pip install --no-deps "cupti-python==13.2.0"
+RUN uv pip install --no-deps cupti-python
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 

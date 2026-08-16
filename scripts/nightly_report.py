@@ -23,9 +23,19 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 
-REGRESSION_THRESHOLD = 0.10  # 10% latency increase => regression
+REGRESSION_THRESHOLD = 0.10  # 10% latency change => regression or improvement
 REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
-NOISE_FLOOR = 0.05  # ignore <=5% fluctuations (measurement noise)
+
+# Measurement properties carried from the benchmark XML through to the report.
+# Parsing and aggregation must read the same set.
+_PERF_KEYS = (
+    "tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
+    "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
+    "tileops_variant", "tileops_timing",
+    "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
+    "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
+    "baseline_latency_ms", "baseline_tflops", "baseline_ratio",
+)
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
 
@@ -89,10 +99,11 @@ def parse_bench_xml(path: str) -> list[dict]:
     for tc in tree.iter("testcase"):
         props = _get_properties(tc)
         failure = tc.find("failure")
+        error = tc.find("error")
         skipped = tc.find("skipped")
         if skipped is not None:
             outcome = "skipped"
-        elif failure is not None:
+        elif failure is not None or error is not None:
             outcome = "failed"
         else:
             outcome = "passed"
@@ -104,15 +115,11 @@ def parse_bench_xml(path: str) -> list[dict]:
             "op": props.get("op"),
             "op_module": props.get("op_module"),
             "failure_message": (failure.attrib.get("message", "") if failure is not None
+                                else error.attrib.get("message", "") if error is not None
                                 else None),
         }
         # Perf data
-        for key in ("tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
-                     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
-                     "tileops_variant", "tileops_timing",
-                     "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
-                     "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
-                     "baseline_latency_ms", "baseline_tflops", "baseline_ratio"):
+        for key in _PERF_KEYS:
             if key in props:
                 try:
                     entry[key] = float(props[key])
@@ -150,6 +157,47 @@ def _try_float(v):
         return float(v)
     except (ValueError, TypeError):
         return v
+
+
+def parse_coverage_xml(path: str) -> list[dict] | None:
+    """Read a coverage.py XML report into one record per ``src/tileops`` file.
+
+    Each record carries the path relative to ``src/tileops/`` plus covered and
+    total counts for statements and branches. Interpretation is left to
+    ``_coverage_section`` — the raw per-file numbers mean different things
+    inside and outside ``kernels/``.
+    """
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+
+    files: list[dict] = []
+    for cls in root.iter("class"):
+        filename = cls.get("filename") or ""
+        marker = "src/tileops/"
+        if marker not in filename:
+            continue
+
+        stmts = covered = branches = branches_hit = 0
+        for line in cls.iter("line"):
+            stmts += 1
+            covered += int(line.get("hits") or 0) > 0
+            condition = line.get("condition-coverage") or ""
+            if line.get("branch") == "true" and "(" in condition:
+                hit, total = condition.split("(", 1)[1].rstrip(")").split("/")
+                branches += int(total)
+                branches_hit += int(hit)
+        if stmts:
+            files.append({
+                "path": filename.split(marker, 1)[1],
+                "stmts": stmts,
+                "covered": covered,
+                "branches": branches,
+                "branches_hit": branches_hit,
+            })
+
+    return files or None
 
 
 # ---------------------------------------------------------------------------
@@ -191,13 +239,7 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         if not d["module"]:
             d["module"] = r.get("op_module")
         config_entry = {"name": r["name"]}
-        for key in ("tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
-                     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
-                     "tileops_variant", "tileops_timing",
-                     "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
-                     "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
-                     "baseline_latency_ms", "baseline_tflops",
-                     "baseline_ratio", "baselines"):
+        for key in (*_PERF_KEYS, "baselines"):
             if key in r:
                 config_entry[key] = r[key]
         d["configs"].append(config_entry)
@@ -208,9 +250,7 @@ def collect_bench_failures(results: list[dict]) -> list[dict]:
     """Collect failed benchmark results for reporting."""
     return [
         {
-            "nodeid": r["nodeid"],
             "name": r["name"],
-            "op": r.get("op"),
             "failure_message": r.get("failure_message"),
         }
         for r in results
@@ -227,8 +267,7 @@ def load_history(path: str | None) -> list[dict]:
     """Load perf history JSON, returning list of runs."""
     if not path or not Path(path).exists():
         return []
-    with open(path) as f:
-        data = json.load(f)
+    data = json.loads(Path(path).read_text())
     return data.get("runs", [])
 
 
@@ -276,9 +315,11 @@ def find_best_latency(
     return best
 
 
-def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance regressions vs 14-day best."""
-    regressions = []
+def _history_deltas(bench_ops: dict, history_runs: list[dict]):
+    """Yield ``(record, delta)`` per config with both a reading and a history best.
+
+    ``delta`` is the fractional change against that best: positive is slower.
+    """
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
@@ -287,43 +328,31 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
             best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
-            delta = (lat - best) / best
-            if (delta > REGRESSION_THRESHOLD
-                    and delta > NOISE_FLOOR
-                    and (lat - best) > REGRESSION_ABS_MIN):
-                regressions.append({
-                    "op": op,
-                    "config": cfg["name"],
-                    "best_ms": best,
-                    "curr_ms": lat,
-                    "delta_pct": delta * 100,
-                    "tflops": cfg.get("tileops_tflops"),
-                })
-    return regressions
+            yield {
+                "op": op,
+                "config": cfg["name"],
+                "best_ms": best,
+                "curr_ms": lat,
+                "delta_pct": (lat - best) / best * 100,
+                "tflops": cfg.get("tileops_tflops"),
+            }, (lat - best) / best
+
+
+def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
+    """Detect performance regressions vs 14-day best."""
+    return [
+        record for record, delta in _history_deltas(bench_ops, history_runs)
+        if delta > REGRESSION_THRESHOLD
+        and (record["curr_ms"] - record["best_ms"]) > REGRESSION_ABS_MIN
+    ]
 
 
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     """Detect performance improvements vs 14-day best."""
-    improvements = []
-    for op, data in bench_ops.items():
-        for cfg in data["configs"]:
-            lat, key = _conclusion(cfg)
-            if lat is None:
-                continue
-            best = find_best_latency(history_runs, op, cfg["name"], key)
-            if best is None:
-                continue
-            delta = (lat - best) / best
-            if delta < -REGRESSION_THRESHOLD and abs(delta) > NOISE_FLOOR:
-                improvements.append({
-                    "op": op,
-                    "config": cfg["name"],
-                    "best_ms": best,
-                    "curr_ms": lat,
-                    "delta_pct": delta * 100,
-                    "tflops": cfg.get("tileops_tflops"),
-                })
-    return improvements
+    return [
+        record for record, delta in _history_deltas(bench_ops, history_runs)
+        if delta < -REGRESSION_THRESHOLD
+    ]
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -367,12 +396,17 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def build_history_entry(bench_ops: dict) -> dict:
-    """Build a history entry from current bench results."""
+def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> dict:
+    """Build a history entry from current bench results.
+
+    Coverage sits in a key of its own beside ``ops``, which regression
+    detection and pruning do not read, so entries written before it existed
+    stay readable.
+    """
     commit = _get_git_commit()
     gpu = _get_gpu_name()
     ops_data = {}
-    for op, data in bench_ops.items():
+    for op, data in (bench_ops or {}).items():
         cfg_data = {}
         for cfg in data["configs"]:
             entry = {}
@@ -404,22 +438,62 @@ def build_history_entry(bench_ops: dict) -> dict:
                 if btag == cfg.get("baseline_tag"):
                     continue  # already recorded above
                 bl_entry = {}
-                if bl.get("latency_ms") is not None:
-                    bl_entry["latency_ms"] = bl["latency_ms"]
-                if bl.get("tflops") is not None:
-                    bl_entry["tflops"] = bl["tflops"]
+                for bl_key in ("latency_ms", _CONCLUSION_KEY, "tflops"):
+                    if bl.get(bl_key) is not None:
+                        bl_entry[bl_key] = bl[bl_key]
                 if bl_entry:
                     entry[btag] = bl_entry
             if entry:
                 cfg_data[cfg["name"]] = entry
         if cfg_data:
             ops_data[op] = cfg_data
-    return {
+    entry = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "commit": commit,
         "gpu": gpu,
         "ops": ops_data,
     }
+    if coverage:
+        entry["coverage"] = _coverage_snapshot(coverage)
+    return entry
+
+
+def _coverage_snapshot(files: list[dict]) -> dict:
+    """The three tracked coverage quantities, as plain numbers for history."""
+    s = _coverage_signals(files)
+    return {
+        "never_built": len(s["never_built"]),
+        "roofline_untested": s["roofline_untested"],
+        "op_untested": s["op_untested"],
+        "op_branches_hit": s["op_branches_hit"],
+        "op_branches": s["op_branches"],
+    }
+
+
+def _previous_coverage(runs: list[dict]) -> dict | None:
+    """The most recent recorded coverage snapshot, or None before any exists."""
+    for run in reversed(runs):
+        snapshot = run.get("coverage")
+        if snapshot:
+            return {**snapshot, "date": run.get("date", "")}
+    return None
+
+
+def _delta(current: int | float, previous: int | float | None, unit: str = "") -> str:
+    """A signed change against the previous run, empty when it held.
+
+    ``unit`` is ``"pp"`` for percentage points, otherwise a plain count. The
+    footnote under the table names the run compared against, so an empty
+    result reads as steady rather than as missing history.
+    """
+    if previous is None:
+        return ""
+    change = current - previous
+    if abs(change) < (0.05 if unit == "pp" else 1):
+        return ""
+    sign = "+" if change > 0 else "−"
+    magnitude = f"{abs(change):.1f}" if unit == "pp" else f"{abs(change):.0f}"
+    return f" **{sign}{magnitude}{unit}**"
 
 
 def _get_git_commit() -> str:
@@ -466,6 +540,8 @@ def generate_report(
     regressions: list[dict],
     improvements: list[dict],
     baseline_alerts: list[dict],
+    coverage: list[dict] | None = None,
+    coverage_prev: dict | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -509,24 +585,58 @@ def generate_report(
     if improvements:
         lines.append(f"| **Improvements** (vs 14-day best) |"
                      f" {_PARTY} {len(improvements)} |")
+    if coverage:
+        # Repeated here because the Coverage section sits below the benchmark
+        # tables, which run to hundreds of rows. One row per concern: a single
+        # untested-line total would double-count ops/ against its own branch
+        # figure and bury perf/, where a wrong number fails silently.
+        sig = _coverage_signals(coverage)
+        prev = coverage_prev or {}
+        sep = " &ensp;·&ensp; "
+        if sig["never_built"]:
+            worst = sig["never_built"][0]
+            lines.append(f"| **Never-built kernels** | {_WARN} "
+                         f"{len(sig['never_built'])} files"
+                         f"{_delta(len(sig['never_built']), prev.get('never_built'))}"
+                         f"{sep}`{worst['path']}` at "
+                         f"{_pct(worst['covered'], worst['stmts'])} |")
+        else:
+            lines.append(f"| **Never-built kernels** | {_PASS} None |")
+        rl_worst = sig["roofline_worst"]
+        rl_hint = (f"{sep}`{rl_worst['path']}` at "
+                   f"{_pct(rl_worst['covered'], rl_worst['stmts'])}" if rl_worst else "")
+        lines.append(f"| **Untested roofline math** | {sig['roofline_untested']} lines"
+                     f" in `perf/`"
+                     f"{_delta(sig['roofline_untested'], prev.get('roofline_untested'))}"
+                     f"{rl_hint} |")
+        op_branch_pct = (100 * sig["op_branches_hit"] / sig["op_branches"]
+                         if sig["op_branches"] else 0.0)
+        prev_branch_pct = (100 * prev.get("op_branches_hit", 0) / prev["op_branches"]
+                           if prev.get("op_branches") else None)
+        lines.append(f"| **Untested op logic** | {sig['op_untested']} lines in `ops/`"
+                     f"{_delta(sig['op_untested'], prev.get('op_untested'))}"
+                     f"{sep}{op_branch_pct:.1f}% of branches taken"
+                     f"{_delta(op_branch_pct, prev_branch_pct, 'pp')} |")
+        if prev.get("date"):
+            lines.append("| | <sub>coverage compared against the "
+                         f"{prev['date']} run; no figure means it held</sub> |")
     lines.append("")
 
     # ── Test Failures (only if any) ───────────────────────────────────────
-    if test_ops:
-        failed_ops = {op: d for op, d in test_ops.items() if d["failed"] > 0}
-        if failed_ops:
-            lines.append(f"## {_FAIL} Test Failures")
-            lines.append("")
-            lines.append("| Op | Module | Failed / Total | Failing Tests |")
-            lines.append("|:---|:-------|:--------------:|:--------------|")
-            for op, d in sorted(failed_ops.items()):
-                total = d["passed"] + d["failed"] + d["skipped"]
-                tests_str = ", ".join(d["failing_tests"][:3])
-                if len(d["failing_tests"]) > 3:
-                    tests_str += f", ... (+{len(d['failing_tests']) - 3})"
-                lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
-                             f"| {d['failed']}/{total} | {tests_str} |")
-            lines.append("")
+    failed_ops = {op: d for op, d in (test_ops or {}).items() if d["failed"] > 0}
+    if failed_ops:
+        lines.append(f"## {_FAIL} Test Failures")
+        lines.append("")
+        lines.append("| Op | Module | Failed / Total | Failing Tests |")
+        lines.append("|:---|:-------|:--------------:|:--------------|")
+        for op, d in sorted(failed_ops.items()):
+            total = d["passed"] + d["failed"] + d["skipped"]
+            tests_str = ", ".join(d["failing_tests"][:3])
+            if len(d["failing_tests"]) > 3:
+                tests_str += f", ... (+{len(d['failing_tests']) - 3})"
+            lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
+                         f"| {d['failed']}/{total} | {tests_str} |")
+        lines.append("")
 
     # ── Benchmark Failures (only if any) ─────────────────────────────────
     if bench_failures:
@@ -661,7 +771,111 @@ def generate_report(
         lines.append("</details>")
         lines.append("")
 
+    # ── Coverage ──────────────────────────────────────────────────────────
+    if coverage:
+        lines.extend(_coverage_section(sig))
+
     return "\n".join(lines)
+
+
+def _pct(hit: int, total: int) -> str:
+    return f"{100 * hit / total:.1f}%" if total else "-"
+
+
+# A kernel file below this share of executed lines was never constructed by any
+# test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
+# has room before it starts catching built kernels.
+_KERNEL_BUILT_PCT = 25
+# Below this, one statement swings the percentage too far to read.
+_COVERAGE_MIN_STMTS = 20
+_COVERAGE_WORST_N = 15  # rows in the least-covered file list
+
+
+def _coverage_signals(files: list[dict]) -> dict:
+    """Reduce per-file coverage to the three numbers worth acting on.
+
+    A ``kernels/`` line counts as covered once the kernel is traced into IR, so
+    its percentage says the kernel was built, not that its generated code ran.
+    Only the never-built case carries information there, and it is returned as
+    a file list rather than a rate. Elsewhere the ordinary reading holds.
+    """
+    kernels = [f for f in files if f["path"].startswith("kernels/")]
+    pure = [f for f in files if not f["path"].startswith("kernels/")]
+
+    never_built = sorted(
+        (f for f in kernels
+         if f["stmts"] >= _COVERAGE_MIN_STMTS
+         and 100 * f["covered"] / f["stmts"] < _KERNEL_BUILT_PCT),
+        key=lambda f: f["covered"] / f["stmts"])
+    untested = sorted(
+        (f for f in pure if f["stmts"] - f["covered"] > 0),
+        key=lambda f: f["covered"] - f["stmts"])
+
+    ops = [f for f in files if f["path"].startswith("ops/")]
+    roofline = [f for f in pure if f["path"].startswith("perf/")]
+    return {
+        "never_built": never_built,
+        "untested": untested,
+        "untested_lines": sum(f["stmts"] - f["covered"] for f in pure),
+        "roofline_untested": sum(f["stmts"] - f["covered"] for f in roofline),
+        "roofline_worst": min(
+            (f for f in roofline if f["stmts"] >= _COVERAGE_MIN_STMTS),
+            key=lambda f: f["covered"] / f["stmts"], default=None),
+        "op_untested": sum(f["stmts"] - f["covered"] for f in ops),
+        "op_branches_hit": sum(f["branches_hit"] for f in ops),
+        "op_branches": sum(f["branches"] for f in ops),
+    }
+
+
+def _coverage_section(signals: dict, worst_n: int = _COVERAGE_WORST_N) -> list[str]:
+    """Three explicit signals, each with what it means and what to do about it."""
+    s = signals
+    lines = ["## Coverage", ""]
+    lines.append("| Signal | Value | What it means | What a bad number costs |")
+    lines.append("| --- | --- | --- | --- |")
+    lines.append(f"| Never-built kernels | {len(s['never_built'])} files "
+                 "| no test constructs these kernels "
+                 "| the kernel stops compiling and nothing says so until someone runs it |")
+    lines.append(f"| Untested roofline math | {s['roofline_untested']} lines in `perf/` "
+                 "| cost-model statements that never executed "
+                 "| benchmarks report wrong TFLOPS while every correctness test passes |")
+    lines.append(f"| Untested op logic | {s['op_untested']} lines in `ops/`, "
+                 f"{_pct(s['op_branches_hit'], s['op_branches'])} of branches "
+                 "| validation and dispatch paths not taken "
+                 "| a reversed shape or dtype check returns a wrong result instead of raising |")
+    lines.append("")
+    lines.append(f"Everything outside `kernels/` accounts for {s['untested_lines']} untested "
+                 "lines; the two rows above carry the ones with an owner. Track the "
+                 "direction, not the absolute value. Smoke-only cases run in "
+                 "`gpu-smoke.yml`, so code reached solely by them counts as untested here.")
+    lines.append("")
+
+    if s["never_built"]:
+        lines.append("### Never-built kernels")
+        lines.append("")
+        lines.append("| File | Executed |")
+        lines.append("| --- | --- |")
+        for f in s["never_built"]:
+            lines.append(f"| `{f['path']}` | {_pct(f['covered'], f['stmts'])} |")
+        lines.append("")
+
+    if s["untested"]:
+        lines.append("<details>")
+        lines.append(f"<summary>Untested pure Python, worst {worst_n} files</summary>")
+        lines.append("")
+        lines.append("| File | Uncovered | Executed |")
+        lines.append("| --- | --- | --- |")
+        for f in s["untested"][:worst_n]:
+            lines.append(f"| `{f['path']}` | {f['stmts'] - f['covered']} "
+                         f"| {_pct(f['covered'], f['stmts'])} |")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    lines.append("Per-line detail is in the `htmlcov/` directory of this run's "
+                 "`tileops_op_test` artifact.")
+    lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +890,7 @@ def main():
     parser.add_argument("--history", help="Path to perf_history.json (input)")
     parser.add_argument("--output", required=True, help="Output markdown report path")
     parser.add_argument("--history-out", help="Path to write updated perf_history.json")
+    parser.add_argument("--coverage-xml", help="Path to coverage.py XML report")
     args = parser.parse_args()
 
     # Parse results
@@ -691,23 +906,32 @@ def main():
         bench_ops = aggregate_bench_results(bench_results)
         bench_failures = collect_bench_failures(bench_results)
 
-    # Load history and detect regressions
-    history_runs = load_history(args.history)
+    # Prune first: the carried-over artifact can hold entries older than the
+    # window when a run gap exceeds the retention period, and the verdicts below
+    # are labelled "vs 14-day best".
+    history_runs = prune_history(load_history(args.history))
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
 
+    coverage = None
+    if args.coverage_xml and Path(args.coverage_xml).exists():
+        coverage = parse_coverage_xml(args.coverage_xml)
+    # Read before this run is appended, so the comparison is against a prior run.
+    coverage_prev = _previous_coverage(history_runs)
+
     # Generate report
     report = generate_report(test_ops, bench_ops, bench_failures,
-                             regressions, improvements, baseline_alerts)
+                             regressions, improvements, baseline_alerts, coverage,
+                             coverage_prev)
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 
-    # Update history
-    if args.history_out and bench_ops:
-        entry = build_history_entry(bench_ops)
+    # Recorded on coverage alone too, so a night the benchmark job produced
+    # nothing does not drop a reading and leave the next run comparing stale.
+    if args.history_out and (bench_ops or coverage):
+        entry = build_history_entry(bench_ops, coverage)
         history_runs.append(entry)
-        history_runs = prune_history(history_runs)
         Path(args.history_out).write_text(json.dumps({"runs": history_runs}, indent=2))
         print(f"History updated: {args.history_out}")
 

@@ -33,7 +33,8 @@ pytest
 pytest-xdist
 ruff
 pytest-timeout
+pytest-cov
 py-spy
-flash-linear-attention==0.5.2
-vllm==0.27.1
-cupti-python==13.2.0
+flash-linear-attention
+vllm
+cupti-python

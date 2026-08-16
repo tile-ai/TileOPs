@@ -41,15 +41,16 @@ dev = [
     "ruff==0.14.13",
     "codespell==2.4.1",
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "pytest-xdist>=3.0",
     "pyyaml>=6.0",
 ]
 bench = [
     "flash-attn==2.8.3",
     "flash-attn-interface>=2.8.3",
-    "flash-linear-attention==0.4.2",
+    "flash-linear-attention==0.5.2",
     "flashinfer>=0.6.6",
-    "vllm==0.18.0",
+    "vllm==0.27.1",
     "sgl-kernel==0.3.21",
 ]
 

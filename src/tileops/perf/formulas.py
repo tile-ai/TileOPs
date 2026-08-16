@@ -200,7 +200,10 @@ def _dtype_itemsize(dtype: Any) -> int:
 
 
 def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
-    return seq_len_q * seq_len_kv - seq_len_q * (seq_len_q - 1) // 2
+    # Bottom-right alignment: when the query run is longer than the key run, its
+    # leading queries see no keys at all, so only the last seq_len_kv rows count.
+    rows = min(seq_len_q, seq_len_kv)
+    return rows * seq_len_kv - rows * (rows - 1) // 2
 
 
 def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
