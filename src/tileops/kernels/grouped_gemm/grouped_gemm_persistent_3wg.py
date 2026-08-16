@@ -67,16 +67,13 @@ _DECODE_CONFIG = {
 }
 
 
-def _launches_enough_ctas(
-    numel: int, n: int, block_m: int, block_n: int, sm_count: int,
-) -> bool:
-    """Whether this schedule fills the device even when grouping is worst-case.
+def _tiling_divides(n: int, k: int) -> bool:
+    """Whether this kernel's tiling divides an ``N x K`` output.
 
-    Worst case is every row landing in one group, the fewest CTA tiles the shape can
-    produce. This kernel is persistent, so it needs two full waves.
+    Both schedules share ``block_n`` and ``block_k``, so the answer does not depend
+    on which one the shape gets.
     """
-    cta_tiles = ((numel + block_m - 1) // block_m) * ((n + block_n - 1) // block_n)
-    return cta_tiles >= 2 * sm_count
+    return n % _DEFAULT_CONFIG["block_n"] == 0 and k % _DEFAULT_CONFIG["block_k"] == 0
 
 
 class GroupedGemmPersistent3WGKernel(Kernel):
@@ -103,22 +100,14 @@ class GroupedGemmPersistent3WGKernel(Kernel):
     def default_config(self) -> dict:
         """The schedule this shape asks for; see :mod:`._config`."""
         if (rows_per_group_regime(self.numel, self.num_experts) is not None
-                and self.takes_shape(self.N, self.K)
-                and _launches_enough_ctas(
-                    self.numel, self.N, _DECODE_CONFIG["block_m"],
-                    _DECODE_CONFIG["block_n"], self.sm_count)):
+                and _tiling_divides(self.N, self.K)):
             return dict(_DECODE_CONFIG)
         return dict(_DEFAULT_CONFIG)
 
     @classmethod
-    def takes_shape(cls, n: int, k: int) -> bool:
-        """Whether this kernel can be built for an ``N x K`` output.
-
-        Shape only; whether the device can run it is the base class's
-        :meth:`refusal`. Both schedules share ``block_n`` and ``block_k``, so the
-        answer does not depend on which one the shape gets.
-        """
-        return n % _DEFAULT_CONFIG["block_n"] == 0 and k % _DEFAULT_CONFIG["block_k"] == 0
+    def applies(cls, call) -> bool:
+        """Shapes this kernel's tiling divides."""
+        return _tiling_divides(call.n, call.k)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override base autotune: the JIT factory already accepts config
