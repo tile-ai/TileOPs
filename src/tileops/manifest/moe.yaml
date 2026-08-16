@@ -2,6 +2,7 @@ MoePermuteAlignFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -54,6 +55,7 @@ MoePermuteNopadFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -122,6 +124,7 @@ MoeUnpermuteFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -172,6 +175,7 @@ MoeGroupedGemmNopadFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -213,6 +217,7 @@ MoeGateUpFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

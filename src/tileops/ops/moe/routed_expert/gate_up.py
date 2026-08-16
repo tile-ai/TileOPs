@@ -1,6 +1,6 @@
 """The gate/up stage of the MoE expert pipeline, activation included."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -12,6 +12,7 @@ from tileops.kernels.moe import (
     MoeGroupedGemmSeparateActKernel,
 )
 
+from ...compile_boundary import get_instance
 from ...op_base import Op
 
 __all__ = ["MoeGateUpFwdOp"]
@@ -42,6 +43,9 @@ class MoeGateUpFwdOp(Op):
         >>> op = MoeGateUpFwdOp(numel=4096, num_experts=128, ffn=2048, k=7168)
         >>> act = op(a, b, true_sizes, true_offsets)  # [4096, 2048]
     """
+
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_gate_up_fwd",)
 
     def __init__(
         self,
@@ -125,6 +129,20 @@ class MoeGateUpFwdOp(Op):
         Returns:
             [numel, ffn] activated output.
         """
+        return _moe_gate_up_fwd(a, b, true_sizes, true_offsets, self._instance_key)
+
+    def _eager_forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        true_sizes: torch.Tensor,
+        true_offsets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, normalize, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo
+        cannot follow.
+        """
         self._validate_dtypes(a, b, true_sizes, true_offsets)
         for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
             if t.device != a.device:
@@ -135,3 +153,32 @@ class MoeGateUpFwdOp(Op):
         # out is its own business.
         inputs = tuple(t.contiguous() for t in (a, b, true_sizes, true_offsets))
         return self._get_kernel(inputs, a.dtype)(*inputs)
+
+
+@torch.library.custom_op("top::moe_gate_up_fwd", mutates_args=())
+def _moe_gate_up_fwd(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    true_sizes: torch.Tensor,
+    true_offsets: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(a, b, true_sizes, true_offsets)
+
+
+@_moe_gate_up_fwd.register_fake
+def _moe_gate_up_fwd_fake(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    true_sizes: torch.Tensor,
+    true_offsets: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape),
+        tuple(true_offsets.shape))
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake. Dtype is the
+    # manifest's ``same_as(a)``.
+    return a.new_empty(shapes["c"])

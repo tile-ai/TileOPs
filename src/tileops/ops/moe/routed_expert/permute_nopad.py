@@ -1,12 +1,13 @@
 """MoE permute op (no-pad variant): counting sort + tight gather without block_m padding."""
 
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.permute_nopad import MoePermuteNopadKernel
 
+from ...compile_boundary import get_instance
 from ...op_base import Op
 
 __all__ = ["MoePermuteNopadFwdOp"]
@@ -40,6 +41,9 @@ class MoePermuteNopadFwdOp(Op):
         >>> perm_h, offsets, sizes, expert_offset, fwd_idx = op(hidden_states, topk_ids)
     """
 
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_permute_nopad_fwd",)
+
     def __init__(
         self,
         num_experts: int,
@@ -67,10 +71,10 @@ class MoePermuteNopadFwdOp(Op):
         """Number of experts this rank owns, or None when EP is off.
 
         The count is baked into the kernel — it sizes the scan and its output
-        buffers — so it belongs in the kernel cache key. Reading it costs a
-        device sync, so it is cached against the map's storage address and
-        in-place version counter and re-read only when the map is replaced or
-        edited in place.
+        buffers — so it belongs in the kernel cache key, and the fake needs it to
+        size the same outputs. Reading it costs a device sync, so it is cached
+        against the map's storage address and in-place version counter and
+        re-read only when the map is replaced or edited in place.
         """
         expert_map = self.expert_map
         if expert_map is None:
@@ -80,6 +84,28 @@ class MoePermuteNopadFwdOp(Op):
             self._num_experts_local = int((expert_map >= 0).sum().item())
             self._expert_map_stamp = stamp
         return self._num_experts_local
+
+    def _infer_output_shapes(
+        self,
+        hidden_states_shape: Tuple[int, ...],
+        topk_ids_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules`` for the five outputs.
+
+        The per-expert outputs are sized by the experts this rank owns. The manifest
+        writes that count as ``num_experts`` because it does not model ``expert_map``;
+        with a map installed the owned count is what the manifest name stands for.
+        """
+        numel = hidden_states_shape[0] * topk_ids_shape[1]
+        owned = self._local_expert_count()
+        e = self.num_experts if owned is None else owned
+        return {
+            "perm_h": (numel, hidden_states_shape[1]),
+            "true_offsets": (e,),
+            "true_sizes": (e,),
+            "expert_first_token_offset": (e + 1,),
+            "fwd_idx": (numel,),
+        }
 
     def eval_roofline(self) -> tuple[int, int]:
         if (
@@ -151,6 +177,18 @@ class MoePermuteNopadFwdOp(Op):
             fwd_idx:                   [T*K] int32 forward mapping: flat_idx → tight slot
                                        (-1 for non-local pairs when expert_map is set)
         """
+        return _moe_permute_nopad_fwd(hidden_states, topk_ids, self._instance_key)
+
+    def _eager_forward(
+        self,
+        hidden_states: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo
+        cannot follow.
+        """
         if not hidden_states.is_cuda:
             raise ValueError("hidden_states must be a CUDA tensor")
         if not topk_ids.is_cuda:
@@ -212,3 +250,28 @@ class MoePermuteNopadFwdOp(Op):
             hidden_states.device.index, self._local_expert_count(),
         )
         return kernel(hidden_states, topk_ids, self.expert_map)
+
+
+@torch.library.custom_op("top::moe_permute_nopad_fwd", mutates_args=())
+def _moe_permute_nopad_fwd(
+    hidden_states: torch.Tensor, topk_ids: torch.Tensor, instance_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    return get_instance(instance_key)._eager_forward(hidden_states, topk_ids)
+
+
+@_moe_permute_nopad_fwd.register_fake
+def _moe_permute_nopad_fwd_fake(
+    hidden_states: torch.Tensor, topk_ids: torch.Tensor, instance_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(hidden_states.shape), tuple(topk_ids.shape))
+    device = hidden_states.device
+    # Dtypes are the manifest's: ``same_as(hidden_states)`` for the gathered rows,
+    # int32 for the index arrays, int64 for the prefix sum.
+    return (
+        hidden_states.new_empty(shapes["perm_h"]),
+        torch.empty(shapes["true_offsets"], dtype=torch.int32, device=device),
+        torch.empty(shapes["true_sizes"], dtype=torch.int32, device=device),
+        torch.empty(shapes["expert_first_token_offset"], dtype=torch.int64, device=device),
+        torch.empty(shapes["fwd_idx"], dtype=torch.int32, device=device),
+    )
