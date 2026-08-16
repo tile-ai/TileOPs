@@ -551,6 +551,28 @@ def generate_report(
     if improvements:
         lines.append(f"| **Improvements** (vs 14-day best) |"
                      f" {_PARTY} {len(improvements)} |")
+    if coverage:
+        # In the summary rather than only in the Coverage section: that section
+        # sits below the benchmark tables, which run to hundreds of rows. Each
+        # row names one concern and the file to open first — a single untested
+        # -line total would double-count ops/ against its own branch figure and
+        # bury perf/, where a wrong number is the failure nothing else catches.
+        sig = _coverage_signals(coverage)
+        if sig["never_built"]:
+            worst = sig["never_built"][0]
+            lines.append(f"| **Never-built kernels** | {_WARN} "
+                         f"{len(sig['never_built'])} files &ensp; (`{worst['path']}` at "
+                         f"{_pct(worst['covered'], worst['stmts'])}) |")
+        else:
+            lines.append(f"| **Never-built kernels** | {_PASS} None |")
+        rl_worst = sig["roofline_worst"]
+        rl_hint = (f" &ensp; (`{rl_worst['path']}` at "
+                   f"{_pct(rl_worst['covered'], rl_worst['stmts'])})" if rl_worst else "")
+        lines.append(f"| **Untested roofline math** |"
+                     f" {sig['roofline_untested']} lines in `perf/`{rl_hint} |")
+        lines.append(f"| **Untested op logic** | {sig['op_untested']} lines in `ops/`"
+                     f" &ensp; ({_pct(sig['op_branches_hit'], sig['op_branches'])}"
+                     f" of branches taken) |")
     lines.append("")
 
     # ── Test Failures (only if any) ───────────────────────────────────────
@@ -742,10 +764,16 @@ def _coverage_signals(files: list[dict]) -> dict:
         key=lambda f: f["covered"] - f["stmts"])
 
     ops = [f for f in files if f["path"].startswith("ops/")]
+    roofline = [f for f in pure if f["path"].startswith("perf/")]
     return {
         "never_built": never_built,
         "untested": untested,
         "untested_lines": sum(f["stmts"] - f["covered"] for f in pure),
+        "roofline_untested": sum(f["stmts"] - f["covered"] for f in roofline),
+        "roofline_worst": min(
+            (f for f in roofline if f["stmts"] >= MIN_STMTS),
+            key=lambda f: f["covered"] / f["stmts"], default=None),
+        "op_untested": sum(f["stmts"] - f["covered"] for f in ops),
         "op_branches_hit": sum(f["branches_hit"] for f in ops),
         "op_branches": sum(f["branches"] for f in ops),
     }
@@ -755,16 +783,22 @@ def _coverage_section(files: list[dict], worst_n: int = 15) -> list[str]:
     """Three explicit signals, each with what it means and what to do about it."""
     s = _coverage_signals(files)
     lines = ["## Coverage", ""]
-    lines.append("| Signal | Value | What it means |")
-    lines.append("| --- | --- | --- |")
+    lines.append("| Signal | Value | What it means | What a bad number costs |")
+    lines.append("| --- | --- | --- | --- |")
     lines.append(f"| Never-built kernels | {len(s['never_built'])} files "
-                 "| no test constructs these kernels, so nothing catches a break in them |")
-    lines.append(f"| Untested pure Python | {s['untested_lines']} lines "
-                 "| statements outside `kernels/` that never executed |")
-    lines.append(f"| Op branch coverage | {_pct(s['op_branches_hit'], s['op_branches'])} "
-                 "| share of validation and dispatch branches taken in `ops/` |")
+                 "| no test constructs these kernels "
+                 "| the kernel stops compiling and nothing says so until someone runs it |")
+    lines.append(f"| Untested roofline math | {s['roofline_untested']} lines in `perf/` "
+                 "| cost-model statements that never executed "
+                 "| benchmarks report wrong TFLOPS while every correctness test passes |")
+    lines.append(f"| Untested op logic | {s['op_untested']} lines in `ops/`, "
+                 f"{_pct(s['op_branches_hit'], s['op_branches'])} of branches "
+                 "| validation and dispatch paths not taken "
+                 "| a reversed shape or dtype check returns a wrong result instead of raising |")
     lines.append("")
-    lines.append("Track the direction, not the absolute value. Smoke-only cases run in "
+    lines.append(f"Everything outside `kernels/` accounts for {s['untested_lines']} untested "
+                 "lines; the two rows above carry the ones with an owner. Track the "
+                 "direction, not the absolute value. Smoke-only cases run in "
                  "`gpu-smoke.yml`, so code reached solely by them counts as untested here.")
     lines.append("")
 
