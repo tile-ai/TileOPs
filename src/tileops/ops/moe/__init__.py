@@ -1,22 +1,24 @@
 """MoE operator package."""
 
+from .abc import (
+    FusedMoEExperts,
+    FusedMoEExpertsModular,
+    FusedMoEPrepareAndFinalize,
+    PrepareResult,
+    WeightedReduce,
+    WeightedReduceNoOp,
+)
 from .fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from .routed_expert import (
-    FusedMoEExperts,
-    FusedMoEExpertsModular,
     FusedMoEExpertsNopadPersistent3WGFwdOp,
-    MoeGroupedGemmNopad3WGFusedActFwdOp,
+    MoeGateUpFwdOp,
     MoeGroupedGemmNopadFwdOp,
     MoePermuteNopadFwdOp,
     MoeUnpermuteFwdOp,
-    PrepareResult,
-    WeightedReduce,
-    WeightedReduceNoOp,
 )
-from .routed_expert.abc import FusedMoEPrepareAndFinalize
 from .shared_fused_moe import SharedFusedMoE
 
 __all__ = [
@@ -29,7 +31,7 @@ __all__ = [
     "FusedMoeFwdOp",
     "FusedTopKOp",
     "MoEPrepareAndFinalizeNoDPEP",
-    "MoeGroupedGemmNopad3WGFusedActFwdOp",
+    "MoeGateUpFwdOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
     "MoePermuteNopadFwdOp",

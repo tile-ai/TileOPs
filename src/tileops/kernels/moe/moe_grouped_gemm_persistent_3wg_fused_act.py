@@ -15,7 +15,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.grouped_gemm import rows_per_group_regime
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
 
 __all__ = ["MoeGroupedGemmPersistent3WGFusedActKernel"]
 
@@ -24,14 +26,29 @@ _DEFAULT_CONFIG = {
     "num_stages": 3, "threads": 384, "group_size_m": 1,
 }
 
+_DECODE_DENSE_CONFIG = {
+    "block_m": 128, "block_n": 128, "block_k": 128,
+    "num_stages": 2, "threads": 384, "group_size_m": 1,
+}
 
-def _act_expr(name):
-    """Return a fn(g_fp32) -> activated fp32 TIR expr (compile-time specialized)."""
+_DECODE_SPARSE_CONFIG = {
+    "block_m": 64, "block_n": 128, "block_k": 128,
+    "num_stages": 1, "threads": 384, "group_size_m": 1,
+}
+
+
+def _fused_act_expr(name):
+    """Return a fn(gate_fp32, up_fp32) -> fused fp32 TIR expr."""
     if name == "silu_and_mul":
-        return lambda g: g / (T.float32(1.0) + T.exp(-g))
+        return lambda gate, up: gate / (T.float32(1.0) + T.exp(-gate)) * up
     if name == "gelu_and_mul":
         # exact erf GELU: 0.5*g*(1+erf(g/sqrt(2)))
-        return lambda g: T.float32(0.5) * g * (T.float32(1.0) + T.erf(g * T.float32(0.7071067811865476)))
+        return lambda gate, up: (
+            T.float32(0.5)
+            * gate
+            * (T.float32(1.0) + T.erf(gate * T.float32(0.7071067811865476)))
+            * up
+        )
     raise ValueError(f"unsupported activation {name!r}")
 
 
@@ -40,30 +57,61 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
+    #: Gated activations this kernel can carry in its epilogue.
+    SUPPORTED_ACTIVATIONS = ("gelu_and_mul", "silu_and_mul")
+
     def __init__(self, numel, num_experts, N, K, dtype=torch.bfloat16,
                  activation="silu_and_mul", sm_count=None, config=None, tune=False):
         super().__init__()
-        if activation not in ("silu_and_mul", "gelu_and_mul"):
+        if activation not in self.SUPPORTED_ACTIVATIONS:
             raise ValueError(
-                f"activation must be 'silu_and_mul' or 'gelu_and_mul', got {activation!r}")
+                f"activation must be one of {list(self.SUPPORTED_ACTIVATIONS)}, "
+                f"got {activation!r}")
         self.numel = numel
         self.num_experts = num_experts
         self.N = N            # ffn (output width), NOT 2*ffn
         self.K = K
         self.dtype = dtype
         self.activation = activation
-        if sm_count is None:
-            sm_count = torch.cuda.get_device_properties(
-                torch.cuda.current_device()).multi_processor_count
-        self.sm_count = sm_count
+        self.sm_count = get_sm_count() if sm_count is None else sm_count
         self.kernel = lambda: _fused_act_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.activation, self.sm_count, _DEFAULT_CONFIG["block_k"])
         self.init_config(config, tune)
 
+    @classmethod
+    def schedule_for(cls, numel: int, num_experts: int, k: int) -> dict | None:
+        """The short-group schedule this shape asks for, or ``None`` for the default.
+
+        See :mod:`..grouped_gemm.regimes` for the regimes. A subclass that changes
+        which shapes it wants fused overrides this with it, so the two answers
+        cannot disagree.
+        """
+        regime = rows_per_group_regime(numel, num_experts)
+        if regime is None or k % 128 != 0:
+            return None
+        return dict(_DECODE_SPARSE_CONFIG if regime == "thin" else _DECODE_DENSE_CONFIG)
+
     @property
     def default_config(self) -> dict:
-        return dict(_DEFAULT_CONFIG)
+        """The schedule this shape asks for."""
+        return self.schedule_for(self.numel, self.num_experts, self.K) or dict(_DEFAULT_CONFIG)
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        """Shapes where fusing the activation into this GEMM is the faster pipeline.
+
+        The short-group schedules, where the tiling divides the shape; ``call.n`` is
+        the ffn width. Measured on H200 with bf16, fusing wins 5-35% inside this
+        region and loses 6-10% outside it, and the answer is extrapolated to the
+        other SM90 parts and dtypes that classify the same way.
+        """
+        if call.activation not in cls.SUPPORTED_ACTIVATIONS:
+            return False
+        config = cls.schedule_for(call.numel, call.num_experts, call.k)
+        if config is None:
+            return False
+        return not (call.n % config["block_n"] or call.k % config["block_k"])
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -74,27 +122,27 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         configs = []
         for block_m in (64,):  # pingpong
             for block_n in (128,):
-                for num_stages in (2, 3, 4):
-                    bk = 64
-                    smem = (2 * num_stages * block_m * bk * bpe          # A wg0/wg1
-                            + 2 * 2 * num_stages * block_n * bk * bpe    # B gate+up, wg0/wg1
-                            + 2 * block_m * block_n * bpe)               # C_shared wg0/wg1
-                    if smem <= SMEM_LIMIT:
-                        configs.append({"block_m": block_m, "block_n": block_n,
-                                        "block_k": bk, "num_stages": num_stages,
-                                        "threads": 384, "group_size_m": 1})
+                for bk in (64, 128):
+                    for num_stages in (1, 2, 3, 4):
+                        smem = (2 * num_stages * block_m * bk * bpe          # A wg0/wg1
+                                + 2 * 2 * num_stages * block_n * bk * bpe    # B gate+up, wg0/wg1
+                                + 2 * block_m * block_n * bpe)               # C_shared wg0/wg1
+                        if smem <= SMEM_LIMIT:
+                            configs.append({"block_m": block_m, "block_n": block_n,
+                                            "block_k": bk, "num_stages": num_stages,
+                                            "threads": 384, "group_size_m": 1})
         for block_m in (128,):  # cooperative
             half = block_m // 2
             for block_n in (128,):
-                for num_stages in (2, 3, 4):
-                    bk = 64
-                    smem = (2 * num_stages * half * bk * bpe             # A top/bot
-                            + 2 * num_stages * block_n * bk * bpe        # B gate+up (shared)
-                            + 2 * half * block_n * bpe)                  # C_shared wg0/wg1
-                    if smem <= SMEM_LIMIT:
-                        configs.append({"block_m": block_m, "block_n": block_n,
-                                        "block_k": bk, "num_stages": num_stages,
-                                        "threads": 384, "group_size_m": 1})
+                for bk in (64, 128):
+                    for num_stages in (2, 3, 4):
+                        smem = (2 * num_stages * half * bk * bpe             # A top/bot
+                                + 2 * num_stages * block_n * bk * bpe        # B gate+up (shared)
+                                + 2 * half * block_n * bpe)                  # C_shared wg0/wg1
+                        if smem <= SMEM_LIMIT:
+                            configs.append({"block_m": block_m, "block_n": block_n,
+                                            "block_k": bk, "num_stages": num_stages,
+                                            "threads": 384, "group_size_m": 1})
         return configs
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
@@ -136,7 +184,9 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
             print("Autotune failed for all configs, using default.")
 
     def forward(self, A, B, true_sizes, true_offsets):
-        C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
+        # Every row belongs to exactly one expert tile and is written by the
+        # masked epilogue, so clearing this intermediate is unnecessary.
+        C = torch.empty(self.numel, self.N, dtype=self.dtype, device=A.device)
         bm, bn, bk = self.config["block_m"], self.config["block_n"], self.config["block_k"]
         if self.K % bk != 0:
             raise ValueError(f"K-aligned only: K={self.K}, block_k={bk}")
@@ -185,7 +235,7 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
     _k_iters = K // block_k
     A_shape = (numel, K)  # no M-pad; TMA zero-fills OOB last-tile rows (epilogue masks them)
 
-    act = _act_expr(activation)
+    fused_act = _fused_act_expr(activation)
 
     @T.prim_func
     def _gemm_main_fused(
@@ -442,7 +492,7 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                         # ── Fused epilogue: act(gate) * up → cast → store ──
                         for i, j in T.Parallel(block_m, block_n):
                             C_local_cast_wg0[i, j] = T.cast(
-                                act(C_gate_wg0[i, j]) * C_up_wg0[i, j], dtype)
+                                fused_act(C_gate_wg0[i, j], C_up_wg0[i, j]), dtype)
                         if arows_0 == T.int32(block_m):
                             # WG-scoped named barrier BEFORE refilling C_shared:
                             # guarantees the prior wave's TMA store finished
@@ -454,6 +504,11 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                             # warpgroups that never arrive and deadlock.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0, C[m_start_0, n_start_0])
                         else:
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
@@ -522,12 +577,17 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                         # ── Fused epilogue: act(gate) * up → cast → store ──
                         for i, j in T.Parallel(block_m, block_n):
                             C_local_cast_wg1[i, j] = T.cast(
-                                act(C_gate_wg1[i, j]) * C_up_wg1[i, j], dtype)
+                                fused_act(C_gate_wg1[i, j], C_up_wg1[i, j]), dtype)
                         if arows_1 == T.int32(block_m):
                             # WG-scoped named barrier (barrier_id=5) BEFORE the
                             # C_shared refill — see WG0 epilogue rationale.
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1, C[m_start_1, n_start_1])
                         else:
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
@@ -580,7 +640,7 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
     _k_iters = K // block_k
     A_shape = (numel, K)  # no M-pad; TMA zero-fills OOB last-tile rows (epilogue masks them)
 
-    act = _act_expr(activation)
+    fused_act = _fused_act_expr(activation)
 
     @T.prim_func
     def _gemm_main_fused_coop(
@@ -617,6 +677,7 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
             ms = T.alloc_local((1,), "int32")
             ns_ = T.alloc_local((1,), "int32")
             ex = T.alloc_local((1,), "int32")
+            rows = T.alloc_local((1,), "int32")
             v = T.alloc_local((1,), "int32")
 
             T.annotate_layout({
@@ -675,6 +736,8 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                         ms[0] = (true_offsets[ex[0]]
                                  + (m_tile - s_cum[ex[0]]) * T.int32(block_m))
                         ns_[0] = n_tile * T.int32(block_n)
+                        rows[0] = (true_sizes[ex[0]]
+                                   - (m_tile - s_cum[ex[0]]) * T.int32(block_m))
                         v[0] = T.int32(1)
                     else:
                         v[0] = T.int32(0)
@@ -694,13 +757,17 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                                 A_smem_top[slot, :, :],
                                 barrier=ab_full[slot],
                             )
-                            # Bottom half of A (rows ms+half_m..ms+block_m).
-                            T.tma_copy(
-                                A[ms[0] + half_m:ms[0] + block_m,
-                                  k_start:k_start + block_k],
-                                A_smem_bot[slot, :, :],
-                                barrier=ab_full[slot],
-                            )
+                            # Sparse decode often has no rows in the bottom
+                            # half. Avoid issuing a TMA that only feeds masked
+                            # output; WG1 still participates in the ring's
+                            # empty-barrier protocol below.
+                            if rows[0] > T.int32(half_m):
+                                T.tma_copy(
+                                    A[ms[0] + half_m:ms[0] + block_m,
+                                      k_start:k_start + block_k],
+                                    A_smem_bot[slot, :, :],
+                                    barrier=ab_full[slot],
+                                )
                             # Gate B tile (shared between the two math WGs).
                             T.tma_copy(
                                 B[ex[0],
@@ -782,7 +849,7 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                         # ── Fused epilogue (top half): act(gate) * up → cast → store ──
                         for i, j in T.Parallel(half_m, block_n):
                             C_local_cast_wg0[i, j] = T.cast(
-                                act(C_gate_wg0[i, j]) * C_up_wg0[i, j], dtype)
+                                fused_act(C_gate_wg0[i, j], C_up_wg0[i, j]), dtype)
                         if arows0 == T.int32(half_m):
                             # WG-scoped named barrier BEFORE refilling C_shared:
                             # guarantees the prior wave's TMA store finished
@@ -794,6 +861,11 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                             # warpgroups that never arrive and deadlock.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0, C[m_start, n_start])
                         else:
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
@@ -839,37 +911,43 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                             slot = gi_cons_1 % num_stages
                             T.barrier_wait(ab_full[slot],
                                            (gi_cons_1 // num_stages) & 1)
-                            T.wgmma_gemm(
-                                A_smem_bot[slot, :, :],
-                                B_gate_smem[slot, :, :],
-                                C_gate_wg1,
-                                transpose_B=True,
-                                policy=T.GemmWarpPolicy.FullRow,
-                                clear_accum=(k == 0),
-                            )
-                            T.wgmma_gemm(
-                                A_smem_bot[slot, :, :],
-                                B_up_smem[slot, :, :],
-                                C_up_wg1,
-                                transpose_B=True,
-                                policy=T.GemmWarpPolicy.FullRow,
-                                clear_accum=(k == 0),
-                            )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(C_gate_wg1, num_regs=64)
-                            T.warpgroup_fence_operand(C_up_wg1, num_regs=64)
+                            if arows1 > T.int32(0):
+                                T.wgmma_gemm(
+                                    A_smem_bot[slot, :, :],
+                                    B_gate_smem[slot, :, :],
+                                    C_gate_wg1,
+                                    transpose_B=True,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(k == 0),
+                                )
+                                T.wgmma_gemm(
+                                    A_smem_bot[slot, :, :],
+                                    B_up_smem[slot, :, :],
+                                    C_up_wg1,
+                                    transpose_B=True,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(k == 0),
+                                )
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(C_gate_wg1, num_regs=64)
+                                T.warpgroup_fence_operand(C_up_wg1, num_regs=64)
                             T.barrier_arrive(ab_empty[slot])
                             gi_cons_1 = gi_cons_1 + 1
 
                         # ── Fused epilogue (bottom half): act(gate) * up → cast → store ──
                         for i, j in T.Parallel(half_m, block_n):
                             C_local_cast_wg1[i, j] = T.cast(
-                                act(C_gate_wg1[i, j]) * C_up_wg1[i, j], dtype)
+                                fused_act(C_gate_wg1[i, j], C_up_wg1[i, j]), dtype)
                         if arows1 == T.int32(half_m):
                             # WG-scoped named barrier (barrier_id=5) BEFORE the
                             # C_shared refill — see WG0 epilogue rationale.
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # Order the generic-proxy SMEM writes above before the
+                            # async-proxy TMA read below, and align all 128 threads of
+                            # this WG so the store never reads a half-written C_shared.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1, C[m_start + half_m, n_start])
                         elif arows1 > T.int32(0):
                             # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.

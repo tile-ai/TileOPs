@@ -18,14 +18,14 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.moe.abc import (
+    FusedMoEExpertsModular,
+    FusedMoEPrepareAndFinalize,
+)
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
-)
-from tileops.ops.moe.routed_expert.abc import (
-    FusedMoEExpertsModular,
-    FusedMoEPrepareAndFinalize,
 )
 
 from ..op_base import Op
@@ -73,7 +73,6 @@ class FusedMoe(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
-        use_fused_activation: bool = False,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -108,17 +107,6 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
-            # use_fused_activation only configures the default experts
-            # implementation; an injected experts instance must be pre-configured
-            # by the caller. Reject the combination rather than silently ignoring
-            # the flag.
-            if use_fused_activation:
-                raise ValueError(
-                    "use_fused_activation=True cannot be combined with an injected "
-                    "experts= instance; the flag only configures the default experts "
-                    "implementation. Build the experts instance with "
-                    "use_fused_activation=True yourself instead."
-                )
             # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__.
             # We require it to be present rather than falling back silently —
             # a missing attribute on a third-party experts implementation would
@@ -159,7 +147,6 @@ class FusedMoe(Op):
                 routed_scaling_factor=routed_scaling_factor,
                 expert_map=expert_map,
                 kernel_map=kernel_map,
-                use_fused_activation=use_fused_activation,
             )
 
     @property
@@ -231,7 +218,6 @@ class FusedMoeFwdOp(FusedMoe):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
-        use_fused_activation: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -248,7 +234,6 @@ class FusedMoeFwdOp(FusedMoe):
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
-            use_fused_activation=use_fused_activation,
         )
 
     def forward(
@@ -285,7 +270,6 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
-        use_fused_activation: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -302,7 +286,6 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
-            use_fused_activation=use_fused_activation,
         )
 
     def forward(

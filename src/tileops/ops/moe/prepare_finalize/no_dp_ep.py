@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from torch import Tensor
 
-from tileops.ops.moe.routed_expert.abc import (
+from tileops.ops.moe.abc import (
     FusedMoEPrepareAndFinalize,
     PrepareResult,
     WeightedReduce,

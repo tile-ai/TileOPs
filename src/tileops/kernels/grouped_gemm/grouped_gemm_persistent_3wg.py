@@ -37,6 +37,9 @@ import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
+
+from .regimes import rows_per_group_regime
 
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
@@ -51,6 +54,26 @@ _DEFAULT_CONFIG = {
     # default (~5% over 1 on compute-bound MoE shapes); autotune sweeps it.
     "group_size_m": 8,
 }
+
+#: For shapes whose groups hold fewer rows than a default tile: shorter block, shorter
+#: pipeline. ``_config.rows_per_group_regime`` says which shapes those are.
+_DECODE_CONFIG = {
+    "block_m": 64,
+    "block_n": 256,
+    "block_k": 64,
+    "num_stages": 2,
+    "threads": 384,
+    "group_size_m": 1,
+}
+
+
+def _tiling_divides(n: int, k: int) -> bool:
+    """Whether this kernel's tiling divides an ``N x K`` output.
+
+    Both schedules share ``block_n`` and ``block_k``, so the answer does not depend
+    on which one the shape gets.
+    """
+    return n % _DEFAULT_CONFIG["block_n"] == 0 and k % _DEFAULT_CONFIG["block_k"] == 0
 
 
 class GroupedGemmPersistent3WGKernel(Kernel):
@@ -67,10 +90,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         self.N = N
         self.K = K
         self.dtype = dtype
-        if sm_count is None:
-            sm_count = torch.cuda.get_device_properties(
-                torch.cuda.current_device()).multi_processor_count
-        self.sm_count = sm_count
+        self.sm_count = get_sm_count() if sm_count is None else sm_count
         self.kernel = lambda: _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, _DEFAULT_CONFIG["block_k"])
@@ -78,7 +98,16 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        """The schedule this shape asks for; see :mod:`.regimes`."""
+        if (rows_per_group_regime(self.numel, self.num_experts) is not None
+                and _tiling_divides(self.N, self.K)):
+            return dict(_DECODE_CONFIG)
         return dict(_DEFAULT_CONFIG)
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        """Shapes this kernel's tiling divides."""
+        return _tiling_divides(call.n, call.k)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override base autotune: the JIT factory already accepts config
