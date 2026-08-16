@@ -5,6 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.ops.moe._activation import build_activation_op
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.abc import (
@@ -239,6 +240,31 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             gemm_kernel=GroupedGemmPersistent3WGKernel,
         )
         assert experts._fuses_activation is False
+
+    @pytest.mark.smoke
+    @pytest.mark.parametrize("gemm_kernel", [None, MoeGroupedGemmNopadKernel])
+    def test_a_pinned_gemm_kernel_that_cannot_take_the_shape_is_an_error(self, gemm_kernel):
+        """A named kernel is never stood in for; the class checked is the class built."""
+        from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
+
+        # 3WG cannot take a gate_up GEMM of N=640: 640 % 256 != 0.
+        with pytest.raises(ValueError, match="cannot take the gate_up GEMM"):
+            FusedMoEExpertsNopadPersistent3WGFwdOp(
+                num_tokens=64, num_experts=8, top_k=2,
+                hidden_size=256, ffn_size=320,
+                gemm_kernel=gemm_kernel,
+                kernel_map={"moe_grouped_gemm_kernel": GroupedGemmPersistent3WGKernel},
+            )
+
+    @pytest.mark.smoke
+    def test_an_unsteered_unusable_shape_falls_back(self):
+        """With nobody naming a kernel, there is no caller intent to betray."""
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=64, num_experts=8, top_k=2,
+            hidden_size=256, ffn_size=320,
+        )
+        built = experts._gemm_gate_up.kernel_map["moe_grouped_gemm_kernel"]
+        assert built is MoeGroupedGemmNopadKernel
 
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
