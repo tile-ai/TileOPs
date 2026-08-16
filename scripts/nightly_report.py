@@ -23,11 +23,25 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 
-REGRESSION_THRESHOLD = 0.10  # 10% latency increase => regression
+# 10% latency change => regression or improvement. This is also the noise floor:
+# a separate 5% one used to sit alongside it, where it could never bind.
+REGRESSION_THRESHOLD = 0.10
 REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
-NOISE_FLOOR = 0.05  # ignore <=5% fluctuations (measurement noise)
+
+# Measurement properties carried from the benchmark XML through to the report.
+# Parsing and aggregation read the same set, so they share one definition —
+# a key added to only one of them used to vanish between the two steps.
+_PERF_KEYS = (
+    "tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
+    "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
+    "tileops_variant", "tileops_timing",
+    "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
+    "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
+    "baseline_latency_ms", "baseline_tflops", "baseline_ratio",
+)
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
+COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
 # ── Emoji constants ───────────────────────────────────────────────────────
 _PASS = "\u2705"          # ✅
@@ -107,12 +121,7 @@ def parse_bench_xml(path: str) -> list[dict]:
                                 else None),
         }
         # Perf data
-        for key in ("tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
-                     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
-                     "tileops_variant", "tileops_timing",
-                     "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
-                     "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
-                     "baseline_latency_ms", "baseline_tflops", "baseline_ratio"):
+        for key in _PERF_KEYS:
             if key in props:
                 try:
                     entry[key] = float(props[key])
@@ -232,13 +241,7 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         if not d["module"]:
             d["module"] = r.get("op_module")
         config_entry = {"name": r["name"]}
-        for key in ("tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
-                     "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
-                     "tileops_variant", "tileops_timing",
-                     "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
-                     "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
-                     "baseline_latency_ms", "baseline_tflops",
-                     "baseline_ratio", "baselines"):
+        for key in (*_PERF_KEYS, "baselines"):
             if key in r:
                 config_entry[key] = r[key]
         d["configs"].append(config_entry)
@@ -249,9 +252,7 @@ def collect_bench_failures(results: list[dict]) -> list[dict]:
     """Collect failed benchmark results for reporting."""
     return [
         {
-            "nodeid": r["nodeid"],
             "name": r["name"],
-            "op": r.get("op"),
             "failure_message": r.get("failure_message"),
         }
         for r in results
@@ -268,8 +269,7 @@ def load_history(path: str | None) -> list[dict]:
     """Load perf history JSON, returning list of runs."""
     if not path or not Path(path).exists():
         return []
-    with open(path) as f:
-        data = json.load(f)
+    data = json.loads(Path(path).read_text())
     return data.get("runs", [])
 
 
@@ -317,9 +317,11 @@ def find_best_latency(
     return best
 
 
-def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance regressions vs 14-day best."""
-    regressions = []
+def _history_deltas(bench_ops: dict, history_runs: list[dict]):
+    """Yield ``(record, delta)`` per config with both a reading and a history best.
+
+    ``delta`` is the fractional change against that best: positive is slower.
+    """
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
@@ -328,43 +330,31 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
             best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
-            delta = (lat - best) / best
-            if (delta > REGRESSION_THRESHOLD
-                    and delta > NOISE_FLOOR
-                    and (lat - best) > REGRESSION_ABS_MIN):
-                regressions.append({
-                    "op": op,
-                    "config": cfg["name"],
-                    "best_ms": best,
-                    "curr_ms": lat,
-                    "delta_pct": delta * 100,
-                    "tflops": cfg.get("tileops_tflops"),
-                })
-    return regressions
+            yield {
+                "op": op,
+                "config": cfg["name"],
+                "best_ms": best,
+                "curr_ms": lat,
+                "delta_pct": (lat - best) / best * 100,
+                "tflops": cfg.get("tileops_tflops"),
+            }, (lat - best) / best
+
+
+def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
+    """Detect performance regressions vs 14-day best."""
+    return [
+        record for record, delta in _history_deltas(bench_ops, history_runs)
+        if delta > REGRESSION_THRESHOLD
+        and (record["curr_ms"] - record["best_ms"]) > REGRESSION_ABS_MIN
+    ]
 
 
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     """Detect performance improvements vs 14-day best."""
-    improvements = []
-    for op, data in bench_ops.items():
-        for cfg in data["configs"]:
-            lat, key = _conclusion(cfg)
-            if lat is None:
-                continue
-            best = find_best_latency(history_runs, op, cfg["name"], key)
-            if best is None:
-                continue
-            delta = (lat - best) / best
-            if delta < -REGRESSION_THRESHOLD and abs(delta) > NOISE_FLOOR:
-                improvements.append({
-                    "op": op,
-                    "config": cfg["name"],
-                    "best_ms": best,
-                    "curr_ms": lat,
-                    "delta_pct": delta * 100,
-                    "tflops": cfg.get("tileops_tflops"),
-                })
-    return improvements
+    return [
+        record for record, delta in _history_deltas(bench_ops, history_runs)
+        if delta < -REGRESSION_THRESHOLD
+    ]
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -637,21 +627,20 @@ def generate_report(
     lines.append("")
 
     # ── Test Failures (only if any) ───────────────────────────────────────
-    if test_ops:
-        failed_ops = {op: d for op, d in test_ops.items() if d["failed"] > 0}
-        if failed_ops:
-            lines.append(f"## {_FAIL} Test Failures")
-            lines.append("")
-            lines.append("| Op | Module | Failed / Total | Failing Tests |")
-            lines.append("|:---|:-------|:--------------:|:--------------|")
-            for op, d in sorted(failed_ops.items()):
-                total = d["passed"] + d["failed"] + d["skipped"]
-                tests_str = ", ".join(d["failing_tests"][:3])
-                if len(d["failing_tests"]) > 3:
-                    tests_str += f", ... (+{len(d['failing_tests']) - 3})"
-                lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
-                             f"| {d['failed']}/{total} | {tests_str} |")
-            lines.append("")
+    failed_ops = {op: d for op, d in (test_ops or {}).items() if d["failed"] > 0}
+    if failed_ops:
+        lines.append(f"## {_FAIL} Test Failures")
+        lines.append("")
+        lines.append("| Op | Module | Failed / Total | Failing Tests |")
+        lines.append("|:---|:-------|:--------------:|:--------------|")
+        for op, d in sorted(failed_ops.items()):
+            total = d["passed"] + d["failed"] + d["skipped"]
+            tests_str = ", ".join(d["failing_tests"][:3])
+            if len(d["failing_tests"]) > 3:
+                tests_str += f", ... (+{len(d['failing_tests']) - 3})"
+            lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
+                         f"| {d['failed']}/{total} | {tests_str} |")
+        lines.append("")
 
     # ── Benchmark Failures (only if any) ─────────────────────────────────
     if bench_failures:
@@ -788,7 +777,7 @@ def generate_report(
 
     # ── Coverage ──────────────────────────────────────────────────────────
     if coverage:
-        lines.extend(_coverage_section(coverage))
+        lines.extend(_coverage_section(sig))
 
     return "\n".join(lines)
 
@@ -840,9 +829,9 @@ def _coverage_signals(files: list[dict]) -> dict:
     }
 
 
-def _coverage_section(files: list[dict], worst_n: int = 15) -> list[str]:
+def _coverage_section(signals: dict, worst_n: int = COVERAGE_WORST_N) -> list[str]:
     """Three explicit signals, each with what it means and what to do about it."""
-    s = _coverage_signals(files)
+    s = signals
     lines = ["## Coverage", ""]
     lines.append("| Signal | Value | What it means | What a bad number costs |")
     lines.append("| --- | --- | --- | --- |")
