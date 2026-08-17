@@ -15,11 +15,8 @@ from tileops.kernels.convolution import (
     GroupConv3dKernel,
 )
 from tileops.ops import (
-    Conv1dBiasFwdOp,
     Conv1dFwdOp,
-    Conv2dBiasFwdOp,
     Conv2dFwdOp,
-    Conv3dBiasFwdOp,
     Conv3dFwdOp,
 )
 from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
@@ -116,7 +113,7 @@ def test_conv1d(
     tune: bool,
 ) -> None:
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv1dBiasFwdOp(
+    op = Conv1dFwdOp(
         stride=stride,
         padding=padding,
         dilation=dilation,
@@ -143,8 +140,8 @@ def test_conv1d_no_bias_matches_torch() -> None:
 
 
 @pytest.mark.smoke
-def test_conv1d_bias_requires_bias_tensor() -> None:
-    op = Conv1dBiasFwdOp(stride=2, padding=2)
+def test_conv1d_bias_matches_torch() -> None:
+    op = Conv1dFwdOp(stride=2, padding=2)
     x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
     bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
@@ -154,21 +151,19 @@ def test_conv1d_bias_requires_bias_tensor() -> None:
 
 
 @pytest.mark.parametrize(
-    "op_cls, dilation, use_bias",
+    "dilation, use_bias",
     [
-        pytest.param(Conv1dFwdOp, 2, False, marks=pytest.mark.smoke, id="no-bias"),
-        pytest.param(Conv1dBiasFwdOp, 2, True, marks=pytest.mark.full, id="bias"),
+        pytest.param(2, False, marks=pytest.mark.smoke, id="no-bias"),
+        pytest.param(2, True, marks=pytest.mark.full, id="bias"),
     ],
 )
-def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None:
+def test_conv1d_dilation_matches_torch(dilation, use_bias: bool) -> None:
     n, c_in, l_in, c_out, kernel_size = 1, 32, 128, 64, 3
     stride, padding = 1, 2
-    op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
-    op = op_cls(
+    op = Conv1dFwdOp(
         stride=stride,
         padding=padding,
         dilation=dilation,
-        **op_kwargs,
     )
     x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
@@ -191,19 +186,12 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, use_bias",
-    [
-        pytest.param(Conv1dFwdOp, False, id="no-bias"),
-        pytest.param(Conv1dBiasFwdOp, True, id="bias"),
-    ],
+    "use_bias",
+    [pytest.param(False, id="no-bias"), pytest.param(True, id="bias")],
 )
-def test_conv1d_same_padding_even_kernel_matches_torch(op_cls, use_bias: bool) -> None:
+def test_conv1d_same_padding_even_kernel_matches_torch(use_bias: bool) -> None:
     n, c_in, l_in, c_out, kernel_size = 1, 16, 129, 32, 2
-    op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
-    op = op_cls(
-        padding="same",
-        **op_kwargs,
-    )
+    op = Conv1dFwdOp(padding="same")
     x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
     bias = (
@@ -340,7 +328,7 @@ def test_conv2d(
     tune: bool,
 ) -> None:
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv2dBiasFwdOp(
+    op = Conv2dFwdOp(
         stride=stride,
         padding=padding,
         dilation=dilation,
@@ -501,7 +489,7 @@ def test_conv3d(
     tune: bool,
 ) -> None:
     test = Conv3dTest(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv3dBiasFwdOp(
+    op = Conv3dFwdOp(
         stride=stride,
         padding=padding,
         dilation=dilation,
@@ -552,7 +540,7 @@ def test_conv3d_no_bias_grouped_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_conv3d_accepts_zero_bias() -> None:
-    op = Conv3dBiasFwdOp(
+    op = Conv3dFwdOp(
         stride=2,
         padding=1,
     )

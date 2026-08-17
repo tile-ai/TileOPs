@@ -254,7 +254,6 @@ MaxPool1dIndicesFwdOp:
   family: pool
   status: implemented
   torch_compile_fullgraph: true
-  variant_of: MaxPool1dFwdOp
 
   signature:
     inputs:
@@ -383,7 +382,6 @@ MaxPool2dIndicesFwdOp:
   family: pool
   status: implemented
   torch_compile_fullgraph: true
-  variant_of: MaxPool2dFwdOp
 
   signature:
     inputs:
@@ -536,7 +534,6 @@ MaxPool3dIndicesFwdOp:
   family: pool
   status: implemented
   torch_compile_fullgraph: true
-  variant_of: MaxPool3dFwdOp
 
   signature:
     inputs:
@@ -736,7 +733,6 @@ AdaptiveMaxPool2dIndicesFwdOp:
   family: pool
   status: implemented
   torch_compile_fullgraph: true
-  variant_of: AdaptiveMaxPool2dFwdOp
 
   signature:
     inputs:
