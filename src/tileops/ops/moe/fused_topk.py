@@ -26,9 +26,9 @@ class FusedTopKOp(Op):
         top_k: Number of experts to select per token K.
         scoring_func: "softmax" (Qwen3/Qwen2) or "sigmoid" (DeepSeek-V3/GLM-4/Kimi K2).
         renormalize: If True, normalize top-k weights to sum to 1.
-        with_correction_bias: If True, forward() accepts a per-expert correction_bias
-            tensor.  Bias is added to sigmoid scores for selection only; output
-            weights remain the original sigmoid scores.  Requires scoring_func="sigmoid".
+        scoring_func: see above. Passing ``correction_bias`` to ``forward``
+            requires ``"sigmoid"``: the bias is added to sigmoid scores for
+            selection only, and the output weights stay the original scores.
         kernel_map: Optional kernel map override.
         config: Optional kernel config dict.
 
@@ -46,7 +46,6 @@ class FusedTopKOp(Op):
         top_k: Optional[int] = None,
         scoring_func: str = "softmax",
         renormalize: bool = False,
-        with_correction_bias: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         config: Optional[dict] = None,
     ):
@@ -57,9 +56,6 @@ class FusedTopKOp(Op):
         self._committed_num_experts = num_experts
         self.scoring_func = scoring_func
         self.renormalize = renormalize
-        self.with_correction_bias = with_correction_bias
-        if with_correction_bias and scoring_func != "sigmoid":
-            raise ValueError("with_correction_bias=True requires scoring_func='sigmoid'")
 
         self.dispatch_kernel(kernel_map)
         self.config = config
@@ -70,9 +66,9 @@ class FusedTopKOp(Op):
 
     def _get_kernel(
         self, num_tokens: int, num_experts: int, top_k: int,
-        device_index: int | None,
+        device_index: int | None, with_correction_bias: bool,
     ) -> Kernel:
-        key = (num_tokens, num_experts, top_k, device_index)
+        key = (num_tokens, num_experts, top_k, device_index, with_correction_bias)
         return self.get_or_build_kernel(
             "fused_topk_kernel",
             key=key,
@@ -82,7 +78,7 @@ class FusedTopKOp(Op):
                 top_k=top_k,
                 scoring_func=self.scoring_func,
                 renormalize=self.renormalize,
-                with_correction_bias=self.with_correction_bias,
+                with_correction_bias=with_correction_bias,
                 config=self.config,
             ),
         )
@@ -96,8 +92,8 @@ class FusedTopKOp(Op):
 
         Args:
             gating_output: [T, E] router logits (bf16, fp16, or float32).
-            correction_bias: [E] float32 per-expert bias.  Required when
-                with_correction_bias=True; must be None otherwise.
+            correction_bias: [E] float32 per-expert bias, or None. Passing it
+                requires scoring_func="sigmoid".
 
         Returns:
             topk_weights: [T, K] float32.
@@ -142,9 +138,12 @@ class FusedTopKOp(Op):
             raise ValueError(
                 f"top_k={self.top_k} cannot exceed num_experts={num_experts}"
             )
-        if self.with_correction_bias:
-            if correction_bias is None:
-                raise ValueError("correction_bias is required when with_correction_bias=True")
+        if correction_bias is not None:
+            if self.scoring_func != "sigmoid":
+                raise ValueError(
+                    "correction_bias requires scoring_func='sigmoid', got "
+                    f"{self.scoring_func!r}"
+                )
             if correction_bias.shape != (num_experts,):
                 raise ValueError(
                     f"Expected correction_bias shape {(num_experts,)}, "
@@ -154,13 +153,12 @@ class FusedTopKOp(Op):
                 raise ValueError(
                     f"Expected correction_bias.dtype torch.float32, got {correction_bias.dtype}"
                 )
-        elif correction_bias is not None:
-            raise ValueError("correction_bias must be None when with_correction_bias=False")
 
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.dtype = gating_output.dtype
         kernel = self._get_kernel(
             num_tokens, num_experts, self.top_k, gating_output.device.index,
+            correction_bias is not None,
         )
         return kernel(gating_output, correction_bias)

@@ -211,15 +211,16 @@ def synthesize_validate_dtypes(
     )
     # R6 guarantees every combo row enumerates every required declared input,
     # so the observed key spans them all, same_as-bound ones resolved. R18.1
-    # keeps optional inputs out of the rows: an absent input has no dtype.
+    # keeps optional inputs out of the rows: an absent input has no dtype, so
+    # the combo tuple spans the required inputs only.
+    optional_names = {
+        name for name, attrs in inputs.items()
+        if isinstance(attrs, dict) and attrs.get("optional") is True
+    }
+    required_names = [n for n in input_names if n not in optional_names]
     combo_keys: set[tuple] | None = None
     if combos is not None:
-        optional_names = {
-            name for name, attrs in (sig.get("inputs") or {}).items()
-            if isinstance(attrs, dict) and attrs.get("optional") is True
-        }
-        input_names = [n for n in input_names if n not in optional_names]
-        input_names_set = set(input_names)
+        input_names_set = set(required_names)
         for idx, row in enumerate(combos):
             row_keys = set(row.keys())
             if row_keys != input_names_set:
@@ -239,19 +240,23 @@ def synthesize_validate_dtypes(
                     f"declared input"
                 )
         combo_keys = {
-            tuple(row[n] for n in input_names) for row in combos
+            tuple(row[n] for n in required_names) for row in combos
         }
 
     # ``exec`` with explicit named params so ``inspect.signature`` reports the
     # manifest inputs natively. A ``**kwargs`` body would need a per-call
     # ``Signature.bind``, which is measurable on this ``forward()`` hot path.
     closure: dict[str, Any] = {
-        "input_names": input_names,
+        "input_names": required_names,
         "combo_keys": combo_keys,
         "ValueError": ValueError,
         "op_name": op_name,
     }
-    params_src = ", ".join(input_names)
+    # An optional input defaults to None: R18 lets the call omit it, and the
+    # parity probe binds by keyword against this signature.
+    params_src = ", ".join(
+        f"{n}=None" if n in optional_names else n for n in input_names
+    )
     # Unrolled per input rather than looping via `locals()`: dynamo cannot
     # trace `locals()`, and this body runs inside `forward()`.
     src_lines = [
@@ -262,16 +267,20 @@ def synthesize_validate_dtypes(
         concrete, refs, dtype_str = per_input[name]
         closure[f"_concrete_{name}"] = frozenset(concrete)
         closure[f"_dtype_str_{name}"] = dtype_str
-        src_lines.append(f"    _actual = {name}.dtype")
-        src_lines.append(f"    if _actual not in _concrete_{name}:")
+        pad = ""
+        if name in optional_names:
+            src_lines.append(f"    if {name} is not None:")
+            pad = "    "
+        src_lines.append(f"    {pad}_actual = {name}.dtype")
+        src_lines.append(f"    {pad}if _actual not in _concrete_{name}:")
         # Every `same_as(ref)` was checked above to name a sibling input, so
         # each ref is in scope as a parameter here.
         if refs:
             cond = " or ".join(f"_actual == {r}.dtype" for r in refs)
-            src_lines.append(f"        if not ({cond}):")
-            indent = "            "
+            src_lines.append(f"    {pad}    if not ({cond}):")
+            indent = f"    {pad}        "
         else:
-            indent = "        "
+            indent = f"    {pad}    "
         src_lines += [
             f"{indent}raise ValueError(",
             f'{indent}    f"{{op_name}}: input {name!r} has dtype {{_actual}}, "',
@@ -279,8 +288,8 @@ def synthesize_validate_dtypes(
             f"{indent})",
         ]
     if combo_keys is not None:
-        observed = ", ".join(f"{n}.dtype" for n in input_names)
-        trailing = "," if len(input_names) == 1 else ""
+        observed = ", ".join(f"{n}.dtype" for n in required_names)
+        trailing = "," if len(required_names) == 1 else ""
         src_lines += [
             f"    _observed = ({observed}{trailing})",
             "    if _observed not in combo_keys:",

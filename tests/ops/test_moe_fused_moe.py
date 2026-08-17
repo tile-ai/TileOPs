@@ -15,7 +15,6 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase
 from tileops.ops.moe import (
     FusedMoe,
-    FusedMoeFwdCbFwdOp,
     FusedMoeFwdOp,
     FusedTopKOp,
 )
@@ -289,7 +288,6 @@ def test_fused_moe_kimi(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
         hidden_size=hidden_size, ffn_size=ffn_size,
         scoring_func="sigmoid", renormalize=True,
-        with_correction_bias=with_correction_bias,
         routed_scaling_factor=routed_scaling_factor,
     )
 
@@ -299,10 +297,7 @@ def test_fused_moe_kimi(
     assert out_nopad.dtype == dtype
 
     # Reference using FusedTopKOp for consistent routing
-    fk = FusedTopKOp(
-        num_tokens, num_experts, top_k, "sigmoid", True,
-        with_correction_bias=with_correction_bias,
-    )
+    fk = FusedTopKOp(num_tokens, num_experts, top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
     ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
     if routed_scaling_factor != 1.0:
@@ -389,7 +384,7 @@ def test_correction_bias_routing_precision() -> None:
 
     op = FusedTopKOp(
         num_tokens=T, num_experts=E, top_k=K,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
     )
     tw, ti = op(logits, bias)
 
@@ -451,15 +446,13 @@ def test_fused_moe_vs_vllm(
         num_experts, hidden_size, ffn_size, dtype=dtype, device=dev
     ) * 0.02
 
-    fk = FusedTopKOp(
-        num_tokens, num_experts, top_k, "sigmoid", True, with_correction_bias=True,
-    )
+    fk = FusedTopKOp(num_tokens, num_experts, top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     op = FusedMoe(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
         hidden_size=hidden_size, ffn_size=ffn_size,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=routed_scaling_factor,
     )
     out_tileops = op(hidden, gating, w_gate_up, w_down, correction_bias)
@@ -509,8 +502,8 @@ def test_fused_moe_fwd_op_identity() -> None:
 
 
 @pytest.mark.smoke
-def test_fused_moe_fwd_cb_op_identity() -> None:
-    """`FusedMoeFwdCbFwdOp` (with correction bias) end-to-end smoke."""
+def test_fused_moe_fwd_correction_bias_identity() -> None:
+    """A call passing correction_bias, end-to-end smoke."""
     torch.manual_seed(7)
     dev = "cuda"
     T, E, K, H, F_ = 32, 8, 2, 64, 32
@@ -522,18 +515,18 @@ def test_fused_moe_fwd_cb_op_identity() -> None:
     w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoeFwdCbFwdOp(
+    op = FusedMoeFwdOp(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F_, renormalize=True,
+        hidden_size=H, ffn_size=F_, scoring_func="sigmoid", renormalize=True,
     )
-    out = op(hidden, gating, correction_bias, w_gate_up, w_down)
+    out = op(hidden, gating, w_gate_up, w_down, correction_bias)
     assert out.shape == (T, H)
     assert out.dtype == dtype
 
     ref_op = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F_,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
     )
     ref = ref_op(hidden, gating, w_gate_up, w_down, correction_bias)
     torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)

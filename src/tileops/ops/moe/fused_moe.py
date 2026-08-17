@@ -1,11 +1,8 @@
 """Routed Mixture-of-Experts (MoE) FFN operators.
 
-Two manifest identities share a single composite implementation:
-
-- ``FusedMoeFwdOp`` — routing + expert FFN without a routing correction bias
-  (Qwen3 / DeepSeek-V3 style).
-- ``FusedMoeFwdCbFwdOp`` — same flow but accepts a per-expert correction bias
-  applied during top-k selection (Kimi K2 style).
+``FusedMoeFwdOp`` is routing + expert FFN. Passing ``correction_bias`` adds the
+per-expert bias during top-k selection (Kimi K2 style); withholding it selects
+straight from the gating scores (Qwen3 / DeepSeek-V3 style).
 
 The shared core (`FusedMoe`) wires `FusedTopKOp` (routing),
 `FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
@@ -30,15 +27,14 @@ from tileops.ops.moe.routed_expert import (
 
 from ..op_base import Op
 
-__all__ = ["FusedMoe", "FusedMoeFwdCbFwdOp", "FusedMoeFwdOp"]
+__all__ = ["FusedMoe", "FusedMoeFwdOp"]
 
 
 class FusedMoe(Op):
     """Shared composite implementation for routed MoE FFN ops.
 
-    Concrete manifest identities (`FusedMoeFwdOp`, `FusedMoeFwdCbFwdOp`)
-    subclass this to pin the correction-bias variant; both share the
-    routing-and-expert pipeline below.
+    The concrete manifest identity (`FusedMoeFwdOp`) subclasses this; the
+    routing-and-expert pipeline below is shared with `SharedFusedMoE`.
 
     Args:
         num_tokens: T -- number of input tokens.
@@ -48,7 +44,6 @@ class FusedMoe(Op):
         ffn_size: F -- per-expert intermediate dimension.
         scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
         renormalize: Renormalize top-k weights to sum to 1.
-        with_correction_bias: Accept `correction_bias` during routing.
         routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
         expert_map: [E_global] int32 for Expert Parallel local filtering.
         prepare_finalize: Override the PrepareAndFinalize implementation.
@@ -65,7 +60,6 @@ class FusedMoe(Op):
         ffn_size: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
-        with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
@@ -81,7 +75,6 @@ class FusedMoe(Op):
         self.ffn_size = ffn_size
         self.scoring_func = scoring_func
         self.renormalize = renormalize
-        self.with_correction_bias = with_correction_bias
         self.routed_scaling_factor = routed_scaling_factor
         self.expert_map = expert_map
 
@@ -91,7 +84,6 @@ class FusedMoe(Op):
             top_k=top_k,
             scoring_func=scoring_func,
             renormalize=renormalize,
-            with_correction_bias=with_correction_bias,
             kernel_map=kernel_map,
         )
 
@@ -161,6 +153,8 @@ class FusedMoe(Op):
         w_down: torch.Tensor,                           # [E, H, F]
         correction_bias: Optional[torch.Tensor] = None, # [E] float32
     ) -> torch.Tensor:                                  # [T, H]
+        # The roofline reads this to count the bias bytes of the call that ran.
+        self.correction_bias = correction_bias
         topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
 
         r = self._prepare.prepare(
@@ -196,10 +190,13 @@ class FusedMoe(Op):
 
 
 class FusedMoeFwdOp(FusedMoe):
-    """Routed MoE FFN without a routing correction bias.
+    """Routed MoE FFN.
 
-    Covers Qwen3 (softmax) and DeepSeek-V3 (sigmoid) style configurations
-    where top-k is computed directly from the gating scores.
+    Covers Qwen3 (softmax) and DeepSeek-V3 (sigmoid) style configurations where
+    top-k comes straight from the gating scores, and Kimi K2 style ones where a
+    per-expert ``correction_bias`` is passed: top-k is then selected from
+    ``sigmoid(score) + correction_bias`` while the final weights use the
+    original (unbiased) scores, renormalized.
     """
 
     def __init__(
@@ -227,75 +224,10 @@ class FusedMoeFwdOp(FusedMoe):
             ffn_size=ffn_size,
             scoring_func=scoring_func,
             renormalize=renormalize,
-            with_correction_bias=False,
             routed_scaling_factor=routed_scaling_factor,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        gating_output: torch.Tensor,
-        w_gate_up: torch.Tensor,
-        w_down: torch.Tensor,
-    ) -> torch.Tensor:
-        return super().forward(hidden_states, gating_output, w_gate_up, w_down, None)
-
-
-class FusedMoeFwdCbFwdOp(FusedMoe):
-    """Routed MoE FFN with a per-expert routing correction bias.
-
-    Covers Kimi K2 style configurations: top-k is selected from
-    ``sigmoid(score) + correction_bias`` while the final weights use the
-    original (unbiased) sigmoid scores, renormalized.
-    """
-
-    def __init__(
-        self,
-        num_tokens: int,
-        num_experts: int,
-        top_k: int,
-        hidden_size: int,
-        ffn_size: int,
-        scoring_func: str = "sigmoid",
-        renormalize: bool = False,
-        routed_scaling_factor: float = 1.0,
-        expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
-        experts: Optional[FusedMoEExpertsModular] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        *,
-        activation: str = "silu_and_mul",
-    ):
-        super().__init__(
-            num_tokens=num_tokens,
-            num_experts=num_experts,
-            top_k=top_k,
-            hidden_size=hidden_size,
-            ffn_size=ffn_size,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
-            with_correction_bias=True,
-            routed_scaling_factor=routed_scaling_factor,
-            expert_map=expert_map,
-            prepare_finalize=prepare_finalize,
-            experts=experts,
-            kernel_map=kernel_map,
-            activation=activation,
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        gating_output: torch.Tensor,
-        correction_bias: torch.Tensor,
-        w_gate_up: torch.Tensor,
-        w_down: torch.Tensor,
-    ) -> torch.Tensor:
-        return super().forward(
-            hidden_states, gating_output, w_gate_up, w_down, correction_bias,
         )

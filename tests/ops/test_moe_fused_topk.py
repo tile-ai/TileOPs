@@ -157,15 +157,18 @@ def test_fused_topk_invalid_dtype_raises() -> None:
 
 @pytest.mark.smoke
 def test_fused_topk_correction_bias_requires_sigmoid() -> None:
+    op = FusedTopKOp(top_k=2, scoring_func="softmax")
+    gating = torch.randn(4, 8, dtype=torch.float32, device="cuda")
+    bias = torch.randn(8, dtype=torch.float32, device="cuda")
     with pytest.raises(ValueError, match="requires scoring_func='sigmoid'"):
-        FusedTopKOp(top_k=2, scoring_func="softmax", with_correction_bias=True)
+        op(gating, bias)
 
 
 @pytest.mark.smoke
 def test_fused_topk_correction_bias_device_check() -> None:
     gating = torch.randn(4, 8, dtype=torch.float32, device="cuda")
     correction_bias = torch.randn(8, dtype=torch.float32)
-    op = FusedTopKOp(top_k=2, scoring_func="sigmoid", with_correction_bias=True)
+    op = FusedTopKOp(top_k=2, scoring_func="sigmoid")
     with pytest.raises(ValueError, match="correction_bias must be a CUDA tensor"):
         op(gating, correction_bias)
 

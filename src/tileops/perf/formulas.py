@@ -866,11 +866,11 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
-    """Roofline for FusedMoeFwdOp / FusedMoeFwdCbFwdOp.
+    """Roofline for FusedMoeFwdOp.
 
-    Func-mode: byte traffic mixes float32 gating (and float32 correction bias
-    for the Cb variant) with hidden-states / weights at ``op.dtype``, so a
-    single ``elem_bytes`` cannot express the total.
+    Func-mode: byte traffic mixes float32 gating (and the float32 correction
+    bias, when the call passes one) with hidden-states / weights at
+    ``op.dtype``, so a single ``elem_bytes`` cannot express the total.
     """
     num_tokens = int(op.num_tokens)
     num_experts = int(op.num_experts)
@@ -883,7 +883,7 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     weight_bytes = num_experts * 3 * ffn_size * hidden_size * elem_bytes
     token_bytes = 2 * num_tokens * hidden_size * elem_bytes
     gating_bytes = num_tokens * num_experts * 4  # float32 logits
-    bias_bytes = num_experts * 4 if getattr(op, "with_correction_bias", False) else 0
+    bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
     return flops, weight_bytes + token_bytes + gating_bytes + bias_bytes
 
 

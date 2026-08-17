@@ -135,7 +135,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
     op_local = FusedMoe(
         num_tokens=T, num_experts=E_global, top_k=K,
         hidden_size=H, ffn_size=F,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
     )
@@ -149,7 +149,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
         op_full = FusedMoe(
             num_tokens=T, num_experts=E_global, top_k=K,
             hidden_size=H, ffn_size=F,
-            scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+            scoring_func="sigmoid", renormalize=True,
             routed_scaling_factor=2.827,
         )
         out_full = op_full(hidden, gating, w_gate_up_full, w_down_full, correction_bias)
@@ -209,7 +209,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
     op_local = SharedFusedMoE(
         num_tokens=T, num_experts=E_global, top_k=K,
         hidden_size=H, ffn_size=F,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
         shared_ffn_size=shared_F,
@@ -227,7 +227,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         op_full = SharedFusedMoE(
             num_tokens=T, num_experts=E_global, top_k=K,
             hidden_size=H, ffn_size=F,
-            scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+            scoring_func="sigmoid", renormalize=True,
             routed_scaling_factor=2.827,
             shared_ffn_size=shared_F,
         )
@@ -293,14 +293,14 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
 
     # Compute routing (same for both)
     from tileops.ops.moe import FusedTopKOp
-    fk = FusedTopKOp(T, E_global, K, "sigmoid", True, with_correction_bias=True)
+    fk = FusedTopKOp(T, E_global, K, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     # ========== TileOPs: expert_map local filtering ==========
     op_tileops = FusedMoe(
         num_tokens=T, num_experts=E_global, top_k=K,
         hidden_size=H, ffn_size=F,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
     )
@@ -367,14 +367,14 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
 
     # Compute routing
     from tileops.ops.moe import FusedTopKOp
-    fk = FusedTopKOp(T, E_global, K, "sigmoid", True, with_correction_bias=True)
+    fk = FusedTopKOp(T, E_global, K, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     # ========== TileOPs: expert_map local filtering ==========
     op_tileops = FusedMoe(
         num_tokens=T, num_experts=E_global, top_k=K,
         hidden_size=H, ffn_size=F,
-        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        scoring_func="sigmoid", renormalize=True,
         routed_scaling_factor=2.827,
         expert_map=expert_map,
     )
