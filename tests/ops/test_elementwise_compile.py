@@ -23,8 +23,6 @@ from tileops.ops.elementwise import (
     BitwiseXorFwdOp,
     CeilFwdOp,
     ClampFwdOp,
-    ClampMaxFwdOp,
-    ClampMinFwdOp,
     ClampScalarFwdOp,
     CosFwdOp,
     DivFwdOp,
@@ -734,18 +732,16 @@ def test_clamp_tensor_compile_broadcast():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-# --- Single-bound Tensor clamp variants ---
-
-register_compile_contract(ClampMinFwdOp)
+# --- One bound withheld ---
 
 
 @pytest.mark.full
-def test_clamp_min_compile_same_shape():
-    """Compile-smoke for ClampMinFwdOp at same shape."""
+def test_clamp_min_only_compile_same_shape():
+    """Compile-smoke for ClampFwdOp with max withheld, at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device="cuda")
     lo = torch.full(shape, -0.5, dtype=_DTYPE, device="cuda")
-    op = ClampMinFwdOp(input=shape, min=shape)
+    op = ClampFwdOp(input=shape, min=shape)
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, lo)
     ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
@@ -753,13 +749,13 @@ def test_clamp_min_compile_same_shape():
 
 
 @pytest.mark.full
-def test_clamp_min_compile_broadcast():
-    """Compile-smoke for ClampMinFwdOp with broadcasting min."""
+def test_clamp_min_only_compile_broadcast():
+    """Compile-smoke for ClampFwdOp with max withheld and broadcasting min."""
     input_shape = (4, 8)
     min_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
     lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device="cuda")
-    op = ClampMinFwdOp(input=input_shape, min=min_shape)
+    op = ClampFwdOp(input=input_shape, min=min_shape)
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, lo)
     ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
@@ -767,32 +763,29 @@ def test_clamp_min_compile_broadcast():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-register_compile_contract(ClampMaxFwdOp)
-
-
 @pytest.mark.full
-def test_clamp_max_compile_same_shape():
-    """Compile-smoke for ClampMaxFwdOp at same shape."""
+def test_clamp_max_only_compile_same_shape():
+    """Compile-smoke for ClampFwdOp with min withheld, at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device="cuda")
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device="cuda")
-    op = ClampMaxFwdOp(input=shape, max=shape)
+    op = ClampFwdOp(input=shape, max=shape)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, hi)
+    out = compiled_op(x, None, hi)
     ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.full
-def test_clamp_max_compile_broadcast():
-    """Compile-smoke for ClampMaxFwdOp with broadcasting max."""
+def test_clamp_max_only_compile_broadcast():
+    """Compile-smoke for ClampFwdOp with min withheld and broadcasting max."""
     input_shape = (4, 8)
     max_shape = (4, 1)
     x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device="cuda")
-    op = ClampMaxFwdOp(input=input_shape, max=max_shape)
+    op = ClampFwdOp(input=input_shape, max=max_shape)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, hi)
+    out = compiled_op(x, None, hi)
     ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
     assert out.shape == ref.shape == input_shape
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)

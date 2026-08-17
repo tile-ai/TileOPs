@@ -341,8 +341,6 @@ _BUILDER_SHAPES = [
     ("PreluFwdOp", {"shape": (4, 8), "num_channels": 8}, ["prelu"], ()),
     ("NanToNumFwdOp", {"N_total": 64}, ["nan_to_num"], ()),
     ("ClampFwdOp", {"input": (64,), "min": (64,), "max": (64,)}, ["clamp_tensor"], ()),
-    ("ClampMinFwdOp", {"input": (64,), "min": (64,)}, ["clamp_tensor"], ()),
-    ("ClampMaxFwdOp", {"input": (64,), "max": (64,)}, ["clamp_tensor"], ()),
     ("LerpFwdOp", {"a_shape": (64,), "b_shape": (64,), "weight": 0.5}, ["lerp"], ()),
     ("ClampScalarFwdOp", {"input": (64,), "min": 0.0}, ["clamp"], ()),
     ("MaskedFillScalarFwdOp", {"input": (64,), "mask": (64,), "value": 1.0}, ["masked_fill"], ()),

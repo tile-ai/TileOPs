@@ -25,8 +25,6 @@ __all__ = [
     "bitwise_xor_fwd_roofline",
     "cb_producer_roofline",
     "clamp_fwd_roofline",
-    "clamp_max_fwd_roofline",
-    "clamp_min_fwd_roofline",
     "da_cumsum_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
@@ -191,6 +189,17 @@ def _dtype_itemsize(dtype: Any) -> int:
     if "bool" in dtype_name or "int8" in dtype_name or "uint8" in dtype_name:
         return 1
     return 2
+
+
+def _supplied(op: Any, name: str) -> bool:
+    """Whether the call passed the ``optional: true`` input *name* (R18.1).
+
+    Mirrors the two bindings inline roofline synthesis accepts: the tensor on
+    ``self.<name>``, or its shape on ``self.<name>_shape``.
+    """
+    if getattr(op, name, None) is not None:
+        return True
+    return getattr(op, f"{name}_shape", None) is not None
 
 
 def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
@@ -705,56 +714,18 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampFwdOp`` (Tensor-bound double-sided clamp).
+    """Roofline for ``ClampFwdOp`` (Tensor-bound clamp).
 
-    ``torch.clamp(input, min: Tensor, max: Tensor)``, broadcasting across all
-    three operands. Per docs/design/roofline.md §1.3 two-sided clamp collapses
-    to one fused compare-and-select, so ``flops = N_total``; bytes read input,
-    min, max and write out → ``4 * N_total * elem_bytes``.
+    ``torch.clamp(input, min, max)`` with each bound a Tensor or absent,
+    broadcasting across the operands present. Per docs/design/roofline.md §1.3 a
+    two-sided clamp collapses to one fused compare-and-select, so
+    ``flops = N_total`` either way; bytes read input and each bound that was
+    passed, then write out.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    return n_total, 4 * n_total * elem_bytes
-
-
-def clamp_min_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampMinFwdOp`` (Tensor lower bound only).
-
-    Models ``torch.clamp_min(input, min: Tensor)`` with broadcasting.
-    Per output element: one ``max(input, min)``. Bytes: read input +
-    read min + write out, all post-broadcast.
-
-    Args:
-        op: bound ``ClampMinFwdOp`` instance exposing ``N_total`` and
-            ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints with ``flops == N_total`` and
-        ``bytes == 3 * N_total * elem_bytes``.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    return n_total, 3 * n_total * elem_bytes
-
-
-def clamp_max_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampMaxFwdOp`` (Tensor upper bound only).
-
-    Models ``torch.clamp_max(input, max: Tensor)`` with broadcasting.
-    Per output element: one ``min(input, max)``. Bytes: read input +
-    read max + write out, all post-broadcast.
-
-    Args:
-        op: bound ``ClampMaxFwdOp`` instance exposing ``N_total`` and
-            ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints with ``flops == N_total`` and
-        ``bytes == 3 * N_total * elem_bytes``.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    return n_total, 3 * n_total * elem_bytes
+    reads = 1 + _supplied(op, "min") + _supplied(op, "max")
+    return n_total, (reads + 1) * n_total * elem_bytes
 
 
 def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
@@ -1225,17 +1196,6 @@ def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 # Mamba-2 / State-Space Dual (SSD) family. All helpers are valid only after the
 # first ``forward()``.
-
-
-def _supplied(op: Any, name: str) -> bool:
-    """Whether the call passed the ``optional: true`` input *name* (R18.1).
-
-    Mirrors the two bindings inline roofline synthesis accepts: the tensor on
-    ``self.<name>``, or its shape on ``self.<name>_shape``.
-    """
-    if getattr(op, name, None) is not None:
-        return True
-    return getattr(op, f"{name}_shape", None) is not None
 
 
 def _da_cumsum_fwd_cost(batch: int, seq_len: int, n_heads: int,
