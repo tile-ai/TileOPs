@@ -23,6 +23,7 @@ def _gla_precompute_g_kernel(
     dim_k: int,
     chunk_size: int,
     dtype: str,
+    output_dtype: str = "float32",
 ) -> Callable:
     """Pre-compute intra-chunk cumulative sum of g.
 
@@ -47,7 +48,7 @@ def _gla_precompute_g_kernel(
         @T.prim_func
         def _main(
             g: T.Tensor(g_shape, dtype),
-            g_cumsum: T.Tensor(g_cumsum_shape, accum_dtype),
+            g_cumsum: T.Tensor(g_cumsum_shape, output_dtype),
         ):
             with T.Kernel(batch * heads * num_chunks, threads=threads) as bx:
                 i_b = bx // (heads * num_chunks)
@@ -230,6 +231,7 @@ def _gla_fwd_h_summary_kernel(
     chunk_size: int,
     partition_chunks: int,
     dtype: str,
+    gate_dtype: str,
     num_v_partitions: int = 4,
     num_k_partitions: int = 2,
 ) -> Callable:
@@ -264,7 +266,7 @@ def _gla_fwd_h_summary_kernel(
         def _main(
             k: T.Tensor(k_shape, dtype),
             v: T.Tensor(v_shape, dtype),
-            g_cumsum: T.Tensor(g_shape, accum_dtype),
+            g_cumsum: T.Tensor(g_shape, gate_dtype),
             summaries: T.Tensor(summary_shape, accum_dtype),
             log_decays: T.Tensor(decay_shape, accum_dtype),
         ):
@@ -283,7 +285,7 @@ def _gla_fwd_h_summary_kernel(
                 h_f = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
                 k_s = T.alloc_shared([chunk_size, dim_k_part], dtype)
                 v_s = T.alloc_shared([chunk_size, dim_v_part], dtype)
-                g_s = T.alloc_shared([chunk_size, dim_k_part], accum_dtype)
+                g_s = T.alloc_shared([chunk_size, dim_k_part], gate_dtype)
                 k_adj = T.alloc_fragment([chunk_size, dim_k_part], dtype)
                 log_decay = T.alloc_fragment([dim_k_part], accum_dtype)
 
@@ -324,13 +326,23 @@ def _gla_fwd_h_summary_kernel(
                     )
 
                     for i_k in T.Parallel(dim_k_part):
-                        log_decay[i_k] = log_decay[i_k] + g_s[chunk_size - 1, i_k]
+                        log_decay[i_k] = log_decay[i_k] + T.cast(
+                            g_s[chunk_size - 1, i_k], accum_dtype
+                        )
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        h_f[i_k, i_v] = h_f[i_k, i_v] * T.exp2(g_s[chunk_size - 1, i_k] * LOG2_E)
+                        h_f[i_k, i_v] = h_f[i_k, i_v] * T.exp2(
+                            T.cast(g_s[chunk_size - 1, i_k], accum_dtype) * LOG2_E
+                        )
                     for i_t, i_k in T.Parallel(chunk_size, dim_k_part):
                         k_adj[i_t, i_k] = T.cast(
                             T.cast(k_s[i_t, i_k], accum_dtype)
-                            * T.exp2((g_s[chunk_size - 1, i_k] - g_s[i_t, i_k]) * LOG2_E),
+                            * T.exp2(
+                                (
+                                    T.cast(g_s[chunk_size - 1, i_k], accum_dtype)
+                                    - T.cast(g_s[i_t, i_k], accum_dtype)
+                                )
+                                * LOG2_E
+                            ),
                             dtype,
                         )
                     T.gemm(
@@ -415,6 +427,7 @@ def _gla_prefill_fused_replay_kernel(
     partition_chunks: int,
     scale: float,
     dtype: str,
+    gate_dtype: str,
 ) -> Callable:
     """Replay independent partitions while producing output in the same CTA.
 
@@ -450,7 +463,7 @@ def _gla_prefill_fused_replay_kernel(
             q: T.Tensor(qk_shape, dtype),
             k: T.Tensor(qk_shape, dtype),
             v: T.Tensor(v_shape, dtype),
-            g_cumsum: T.Tensor(g_shape, accum_dtype),
+            g_cumsum: T.Tensor(g_shape, gate_dtype),
             initial_states: T.Tensor(initial_shape, accum_dtype),
             o: T.Tensor(o_shape, dtype),
             final_state: T.Tensor(final_shape, dtype),
@@ -459,7 +472,7 @@ def _gla_prefill_fused_replay_kernel(
                 q_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 k_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 v_s = T.alloc_shared([chunk_size, dim_v], dtype)
-                g_s = T.alloc_shared([chunk_size, dim_k], dtype)
+                g_s = T.alloc_shared([chunk_size, dim_k], gate_dtype)
                 q_intra_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 h_s = T.alloc_shared([dim_k, dim_v], dtype)
                 p_s = T.alloc_shared([chunk_size, chunk_size], dtype)
@@ -1108,7 +1121,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
     @property
     def default_config(self) -> dict:
         config = super().default_config
-        config["num_v_partitions"] = 2
+        config["num_v_partitions"] = 1
         config["num_k_partitions"] = 2
         config["partition_chunks"] = 32
         config["partition_min_chunks"] = 512
@@ -1131,6 +1144,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
             and self.chunk_size == 64
             and self.dim_k == 128
             and self.dim_v == 128
+            and self.dtype_name in ("float16", "bfloat16")
             and num_chunks >= config.get("partition_min_chunks", 512)
             and requested_partition_chunks > 0
             and num_chunks % requested_partition_chunks == 0
@@ -1144,6 +1158,11 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
         thr_par = config.get("threads_par", config.get("threads", 256))
         g_ns = config.get("g_num_stages", ns)
         g_threads = config.get("g_threads", thr_par)
+        # Accumulate each chunk in FP32, then keep low-precision prefixes in
+        # FP16.  FP16 has finer mantissa precision than BF16 at the gate ranges
+        # used here while halving the former FP32 HBM traffic.  FP32 stays on
+        # the generic path because this replay exceeds its shared-memory limit.
+        gate_dtype = "float16"
         self._g_fn = _gla_precompute_g_kernel(
             self.batch,
             self.seq_len,
@@ -1151,6 +1170,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
             self.dim_k,
             self.chunk_size,
             self.dtype_name,
+            gate_dtype,
         )(g_ns, g_threads)
 
         num_vp = config.get("num_v_partitions", 4)
@@ -1167,6 +1187,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
             self.chunk_size,
             self._partition_chunks,
             self.dtype_name,
+            gate_dtype,
             num_v_partitions=num_vp,
             num_k_partitions=num_kp,
         )(h_ns, h_threads)
@@ -1187,6 +1208,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
             self._partition_chunks,
             self.scale,
             self.dtype_name,
+            gate_dtype,
         )(512)
 
     def __init__(
