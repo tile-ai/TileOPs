@@ -379,13 +379,21 @@ class SSDChunkStateFwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # threads=128 (4 warps) reduces register pressure and improves occupancy over 256.
-        # block_n scales with d_state to cover the full state dimension in one tile where possible.
-        # block_l=32 keeps shared-memory pressure low across multi-chunk workloads.
-        block_n = min(128, self.d_state)
+        # A larger reduction tile wins on the primary Mamba geometry while its
+        # CTA grid remains small; larger grids retain the lower-pressure default.
+        grid_size = self.batch * self.num_chunks * self.n_heads
+        use_large_reduction_tile = (
+            self.chunk_len == 256
+            and self.d_head == 64
+            and self.d_state == 128
+            and grid_size <= 640
+        )
+        block_n = 64 if use_large_reduction_tile else min(128, self.d_state)
+        block_l = 128 if use_large_reduction_tile else 32
         return {
             "block_n": block_n,
             "block_p": 64,
-            "block_l": 32,
+            "block_l": block_l,
             "threads": 128,
         }
 

@@ -321,8 +321,14 @@ class SSDStatePassingFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Non-vectorized with threads=128 provides better latency hiding
-        # for small grids typical of state_passing workloads.
+        # Short scans over the flattened Mamba state have enough D-axis
+        # parallelism for vectorization; long scans benefit from extra warps.
+        if self.d_state == 8192 and self.num_chunks <= 8:
+            return {
+                "block_d": 256,
+                "threads": 128,
+                "vectorize": True,
+            }
         return {
             "block_d": 64,
             "threads": 128,
