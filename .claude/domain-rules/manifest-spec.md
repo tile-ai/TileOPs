@@ -35,7 +35,7 @@
 
 - A tensor input the op reads may declare `optional: true` under `signature.inputs`. "Not passed" means bound to `None`; presence is a fact kernel dispatch may read. Params express optionality with `default`. A caller-supplied `out=` buffer is not an optional input.
 
-- An optional input's name may appear only in its own `dtype` / `shape` declaration, in a bare `X is None` / `X is not None` test, or in a use guarded by `X is None` earlier in the same expression. `shape_rules` take `X is None or <condition>`; roofline expressions take a bare presence test only, and a formula needing the tensor's own shape uses `roofline: {func: ...}`. Symbols first bound in `X`'s `shape` may not appear in a required input's or output's `shape`. See [manifest.md](../../docs/design/manifest.md) R18.1.
+- An optional input's name may appear only in its own `dtype` / `shape` declaration, in a bare `X is None` / `X is not None` test, or in a use guarded by `X is None` earlier in the same expression. `shape_rules` take `X is None or <condition>`; a roofline presence test goes in a `vars` entry, which `flops` / `bytes` then read, and a formula needing the tensor's own shape uses `roofline: {func: ...}`. Symbols first bound in `X`'s `shape` may not appear in a required input's or output's `shape`. See [manifest.md](../../docs/design/manifest.md) R18.1.
 
 - Every optional input needs a workload row that passes it and one that omits it, counted per input rather than per combination. Param values and kernel shape ranges are out of scope. See R18.2.
 

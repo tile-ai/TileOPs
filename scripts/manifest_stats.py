@@ -57,7 +57,6 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
     kernel_map_ok = 0
     bench_manifest_ok = 0
     ref_api_ok = 0
-    variant_count = 0
 
     # Conformance flags: things expected for implemented ops but missing.
     missing_kernel_map: list[str] = []
@@ -86,8 +85,6 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
             bench_manifest_ok += 1
         if op.get("ref_api"):
             ref_api_ok += 1
-        if op.get("variant_of"):
-            variant_count += 1
 
         if status == "implemented":
             if not _has_kernel_map(op):
@@ -137,7 +134,6 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
             "roofline": roofline_ok,
             "kernel_map": kernel_map_ok,
             "bench_manifest_driven": bench_manifest_ok,
-            "variant_of": variant_count,
         },
         "conformance_gaps": {
             "implemented_without_kernel_map": sorted(missing_kernel_map),

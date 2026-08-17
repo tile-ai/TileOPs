@@ -702,8 +702,6 @@ class TestTorchCompileFullgraph:
         ), errors
 
 
-# variant_of: cross-entry consistency (R16)
-
 class TestOptionalInputs:
     """R18: optional tensor inputs, where the name may appear, coverage."""
 
@@ -808,7 +806,7 @@ class TestOptionalInputs:
         errors = validator.check_l0("Op", entry)
         assert any("other than a presence test" in e for e in errors), errors
 
-    def test_roofline_allows_presence_test(self, validator):
+    def test_roofline_allows_presence_test_in_vars(self, validator):
         entry = self._entry()
         entry["roofline"] = {
             "vars": {"affine": "w is not None"},
@@ -816,6 +814,15 @@ class TestOptionalInputs:
             "bytes": "2",
         }
         assert validator.check_l0("Op", entry) == []
+
+    def test_roofline_presence_test_in_flops_rejected(self, validator):
+        """The arithmetic layer cannot resolve a tensor name, presence or not."""
+        entry = self._entry()
+        entry["roofline"] = {
+            "flops": "(5 if w is not None else 3) * 2", "bytes": "2",
+        }
+        errors = validator.check_l0("Op", entry)
+        assert any("names optional input 'w'" in e for e in errors), errors
 
     def test_dtype_combos_column_rejected(self, validator):
         entry = self._entry()
@@ -878,56 +885,6 @@ class TestOptionalInputs:
         entry["workloads"] = [{"x_shape": [1, 4096], "dtypes": ["float16"]}]
         errors = validator.check_l0("Op", entry)
         assert not any("workload row" in e for e in errors), errors
-
-
-class TestVariantOf:
-    """variant_of checks cross-entry consistency."""
-
-    def test_valid_variant_passes(self, validator):
-        """Variant pointing to existing primary with shared source passes."""
-        ops = {
-            "moe_fused_moe": _make_entry(),
-            "moe_fused_moe_cb": {
-                **_make_entry(),
-                "variant_of": "moe_fused_moe",
-            },
-        }
-        assert validator.check_variant_of_consistency(ops) == []
-
-    def test_malformed_entry_does_not_crash(self, validator):
-        """Non-dict entry must not crash variant_of check."""
-        ops = {"bad": 123, "ok": _make_entry()}
-        assert validator.check_variant_of_consistency(ops) == []
-
-    def test_violations_rejected(self, validator):
-        """Case table: missing target, chaining, and shared-source
-        mismatches all fail (R16)."""
-        mismatched_op = _make_entry()
-        mismatched_op["source"]["op"] = "different_op.py"
-        mismatched_op["variant_of"] = "primary"
-        cases = [
-            ("variant target missing",
-             {"v": {**_make_entry(), "variant_of": "nonexistent"}},
-             ["nonexistent", "does not exist"]),
-            ("variant chaining (single-level rule)",
-             {"primary": _make_entry(),
-              "variant_a": {**_make_entry(), "variant_of": "primary"},
-              "variant_b": {**_make_entry(), "variant_of": "variant_a"}},
-             ["chaining"]),
-            ("mismatched source.kernel",
-             {"primary": _make_entry(source_kernel="shared.py"),
-              "variant": {**_make_entry(source_kernel="different.py"),
-                          "variant_of": "primary"}},
-             ["source.kernel", "R16"]),
-            ("mismatched source.op",
-             {"primary": _make_entry(), "variant": mismatched_op},
-             ["source.op", "R16"]),
-        ]
-        for desc, ops, substrings in cases:
-            errors = validator.check_variant_of_consistency(ops)
-            assert any(
-                all(s in e for s in substrings) for e in errors
-            ), f"{desc}: expected error with {substrings}, got: {errors}"
 
 
 # signature: Op.forward() consistency
@@ -2387,89 +2344,6 @@ class TestCheckOp:
         assert len(target_errors) > 0, (
             "target_op should have validation errors from forced L4 check"
         )
-
-    def test_check_op_ignores_unrelated_variant_of_errors(self, validator, tmp_path):
-        """--check-op scopes variant_of checks to the variant family;
-        unrelated ops with bad references must not fail the run."""
-        other_entry = _make_entry()
-        other_entry["variant_of"] = "nonexistent_primary"
-        manifest_file = _write_manifest(
-            tmp_path, {"target_op": _make_entry(), "other_op": other_entry},
-        )
-
-        errors, _ = validator.validate_manifest(
-            manifest_path=manifest_file,
-            repo_root=tmp_path,
-            check_op="target_op",
-        )
-        variant_errors = [e for e in errors if "variant_of" in e]
-        assert variant_errors == [], variant_errors
-
-        errors_all, _ = validator.validate_manifest(
-            manifest_path=manifest_file,
-            repo_root=tmp_path,
-            check_op=None,
-        )
-        variant_errors_all = [e for e in errors_all if "variant_of" in e]
-        assert len(variant_errors_all) > 0, (
-            "Without --check-op, invalid variant_of should be reported"
-        )
-
-    def test_check_op_validates_variant_family(self, validator, tmp_path):
-        """--check-op on a primary also validates its immediate variants,
-        so a variant edit breaking R16 cannot slip through."""
-        primary = _make_entry(source_kernel="shared_kernel.py")
-        valid_variant = _make_entry(source_kernel="shared_kernel.py")
-        valid_variant["variant_of"] = "primary_op"
-        # Broken variant: different source.kernel violates R16.
-        broken_variant = _make_entry(source_kernel="different_kernel.py")
-        broken_variant["variant_of"] = "primary_op"
-        manifest_file = _write_manifest(tmp_path, {
-            "primary_op": primary,
-            "good_variant": valid_variant,
-            "bad_variant": broken_variant,
-        })
-
-        errors, _ = validator.validate_manifest(
-            manifest_path=manifest_file,
-            repo_root=tmp_path,
-            check_op="primary_op",
-        )
-        r16_errors = [e for e in errors if "bad_variant" in e and "R16" in e]
-        assert len(r16_errors) > 0, errors
-
-        good_r16 = [e for e in errors if "good_variant" in e and "R16" in e]
-        assert good_r16 == [], good_r16
-
-    def test_check_op_variant_family_runs_schema_on_variants(self, validator, tmp_path):
-        """--check-op on primary runs per-op schema checks on variants too."""
-        primary = _make_entry(source_kernel="shared.py")
-        broken_variant = {
-            "family": "test",
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-            },
-            "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
-            "roofline": {"flops": "2 * M", "bytes": "M * 2"},
-            "source": {
-                "kernel": "shared.py",
-                # missing "op", "test", "bench" fields
-            },
-            "variant_of": "primary_op",
-        }
-        manifest_file = _write_manifest(tmp_path, {
-            "primary_op": primary,
-            "broken_var": broken_variant,
-        })
-
-        errors, _ = validator.validate_manifest(
-            manifest_path=manifest_file,
-            repo_root=tmp_path,
-            check_op="primary_op",
-        )
-        schema_errors = [e for e in errors if "broken_var" in e and "source" in e]
-        assert len(schema_errors) > 0, errors
 
     def test_check_op_cli_parsing(self, validator):
         """_parse_check_op extracts the op name from argv; a missing

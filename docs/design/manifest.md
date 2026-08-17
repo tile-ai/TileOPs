@@ -104,13 +104,14 @@ An output buffer the caller supplies (`out=`) is not covered: the op writes it, 
 
 Per position:
 
-| position                              | rule                                                                                                                                            |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shape_rules`                         | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or` |
-| `roofline` `vars` / `flops` / `bytes` | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                            |
-| `dtype_combos` row                    | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                            |
-| any `dtype` expression                | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                           |
-| required input's or output's `shape`  | may not use a symbol first bound in `X`'s `shape`                                                                                               |
+| position                             | rule                                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or` |
+| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                            |
+| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params and `elem_bytes`, so a presence test reaches it through a `vars` entry                |
+| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                            |
+| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                           |
+| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                               |
 
 `shape_rules` entries are conjuncts, so the guard is `X is None or <condition>`, never `X is not None and <condition>`: the second form reports a legal absent call as a violation. The guard must precede the use, not sit leftmost; `min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)` is well formed.
 
@@ -136,7 +137,7 @@ What runtime can never report — a contract position no workload row covers —
 
 **R18.5. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch — an extra tensor, a different name — is two entries, because the caller cannot unpack a return whose shape it does not know.
 
-**R18.6. No `variant_of`.** The field is gone. Entries that stay separate under R18.5 are ordinary independent entries; a reader sees their common origin from the `source.op` path they share.
+**R18.6. No `variant_of`.** There is no such field: an entry that stays separate under R18.5 is an ordinary independent entry, and a reader sees the common origin of two of them from the `source.op` path they share. Conditional inputs take `optional: true`; a signature difference `optional: true` cannot describe — a concept crossing `params` / `inputs`, a different output arity, a different algorithm — is two entries.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 

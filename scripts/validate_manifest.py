@@ -83,7 +83,7 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
-_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "variant_of", "torch_compile_fullgraph"}
+_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "torch_compile_fullgraph"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _VALID_SIGNATURE_KEYS = {
     "inputs", "outputs", "params", "shape_rules", "dtype_combos",
@@ -716,32 +716,49 @@ def _check_optional_in_shape_rules(
 def _check_optional_in_roofline(
     op_name: str, entry: dict, optional: Collection[str]
 ) -> list[str]:
-    """R18.1: roofline expressions take a bare presence test and nothing else."""
+    """R18.1: a roofline presence test lives in ``vars`` and nowhere else."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     roofline = entry.get("roofline")
     if not optional or not isinstance(roofline, dict):
         return errors
-    exprs: list[tuple[str, str]] = []
-    for field in ("flops", "bytes"):
-        if isinstance(roofline.get(field), str):
-            exprs.append((field, roofline[field]))
+
+    # vars: a bare presence test is the one permitted position.
     if isinstance(roofline.get("vars"), dict):
         for vname, vexpr in roofline["vars"].items():
-            if isinstance(vexpr, str):
-                exprs.append((f"vars.{vname}", vexpr))
-    for where, expr in exprs:
+            if not isinstance(vexpr, str):
+                continue
+            try:
+                tree = ast.parse(vexpr, mode="eval").body
+            except SyntaxError:
+                continue  # reported by the roofline codegen namespace check
+            for name in _unguarded_uses(tree, optional, ()):
+                err(
+                    f"roofline.vars.{vname} uses optional input '{name}' for "
+                    f"something other than a presence test: {vexpr!r}. R18.1 "
+                    f"allows only '{name} is None' / '{name} is not None' here; "
+                    f"a formula that needs the tensor's own shape uses "
+                    f"roofline.func instead"
+                )
+
+    # flops / bytes: the arithmetic layer reads vars, params and elem_bytes, so
+    # a tensor name never resolves there — not even in a presence test.
+    for field in ("flops", "bytes"):
+        expr = roofline.get(field)
+        if not isinstance(expr, str):
+            continue
         try:
             tree = ast.parse(expr, mode="eval").body
         except SyntaxError:
-            continue  # reported by the roofline codegen namespace check
-        for name in _unguarded_uses(tree, optional, ()):
-            err(
-                f"roofline.{where} uses optional input '{name}' for something "
-                f"other than a presence test: {expr!r}. R18.1 allows only "
-                f"'{name} is None' / '{name} is not None' here; a formula that "
-                f"needs the tensor's own shape uses roofline.func instead"
-            )
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in optional:
+                err(
+                    f"roofline.{field} names optional input '{node.id}': "
+                    f"{expr!r}. Put the presence test in a roofline.vars entry "
+                    f"and read that name here"
+                )
+                break
     return errors
 
 
@@ -930,10 +947,6 @@ def check_l0(
             f"valid keys are {sorted(_VALID_TOP_KEYS)}"
         )
 
-    # variant_of: must be a string if present (R16); cross-entry checks
-    # in check_variant_of_consistency().
-    if "variant_of" in entry and not isinstance(entry["variant_of"], str):
-        err("variant_of must be a string")
 
     # ref_api: required string — fully qualified PyTorch API equivalent
     # or "none".
@@ -1000,68 +1013,6 @@ def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
             errors.append(
                 f"[schema] {op_name}: source.{key} is not a file: {rel_path}"
             )
-    return errors
-
-
-# ---------------------------------------------------------------------------
-# variant_of: cross-entry consistency (R16)
-# ---------------------------------------------------------------------------
-
-def check_variant_of_consistency(
-    ops: dict, *, scope: set[str] | None = None
-) -> list[str]:
-    """Validate variant_of references across all entries.
-
-    Per R16: variant_of must reference an existing op; the primary must
-    not itself be a variant (no chaining); variant and primary must
-    share source.kernel and source.op. When *scope* is given, only ops
-    named in *scope* are checked; lookups still use the full dict so
-    reference resolution works.
-    """
-    errors: list[str] = []
-
-    for op_name, entry in ops.items():
-        if scope is not None and op_name not in scope:
-            continue
-        if not isinstance(entry, dict):
-            continue  # malformed entry — check_l0 will report it
-        primary_name = entry.get("variant_of")
-        if primary_name is None:
-            continue
-
-        # Target must exist
-        if primary_name not in ops:
-            errors.append(
-                f"[schema] {op_name}: variant_of '{primary_name}' "
-                f"does not exist in the manifest"
-            )
-            continue
-
-        primary = ops[primary_name]
-        if not isinstance(primary, dict):
-            continue  # malformed primary — check_l0 will report it
-
-        # Single-level: primary must not be a variant itself
-        if "variant_of" in primary:
-            errors.append(
-                f"[schema] {op_name}: variant_of '{primary_name}' is itself "
-                f"a variant (chaining not allowed per R16)"
-            )
-
-        # Shared source.kernel and source.op
-        src = entry.get("source", {})
-        pri_src = primary.get("source", {})
-        if src.get("kernel") != pri_src.get("kernel"):
-            errors.append(
-                f"[schema] {op_name}: source.kernel differs from primary "
-                f"'{primary_name}' (must match per R16)"
-            )
-        if src.get("op") != pri_src.get("op"):
-            errors.append(
-                f"[schema] {op_name}: source.op differs from primary "
-                f"'{primary_name}' (must match per R16)"
-            )
-
     return errors
 
 
@@ -3769,8 +3720,8 @@ def validate_manifest(
     are informational. ``manifest_path=None`` loads the merged manifest
     from the ``tileops.manifest`` package (tests pass a temp file for
     synthetic single-file manifests). ``levels=None`` enables all
-    checks. ``check_op`` forces all levels (L0-L4) on the named op and
-    its variants, ignoring ``status``; all other ops are skipped.
+    checks. ``check_op`` forces all levels (L0-L4) on the named op,
+    ignoring ``status``; all other ops are skipped.
     """
     if repo_root is None:
         repo_root = REPO_ROOT
@@ -3794,14 +3745,7 @@ def validate_manifest(
     if check_op is not None and check_op not in ops:
         return [f"--check-op: op '{check_op}' not found in manifest"], []
 
-    # --check-op scope: the named op plus its immediate variants, so a
-    # variant edit is caught when validating the primary.
-    variant_family: set[str] | None = None
-    if check_op is not None:
-        variant_family = {check_op} | {
-            name for name, ent in ops.items()
-            if isinstance(ent, dict) and ent.get("variant_of") == check_op
-        }
+    selected: set[str] | None = {check_op} if check_op is not None else None
 
     all_errors: list[str] = []
     all_warnings: list[str] = []
@@ -3810,17 +3754,9 @@ def validate_manifest(
     # warnings (advisory mode) once all per-op checks have run.
     strict_errors: list[str] = []
 
-    # Cross-entry checks (must run before per-entry checks), scoped to
-    # the variant family under --check-op so unrelated ops with invalid
-    # variant_of references don't fail the selected op.
-    if "schema" in levels:
-        all_errors.extend(
-            check_variant_of_consistency(ops, scope=variant_family)
-        )
-
     for op_name, entry in ops.items():
-        # --check-op scopes validation to the variant family; skip all others.
-        if variant_family is not None and op_name not in variant_family:
+        # --check-op scopes validation to that op; skip all others.
+        if selected is not None and op_name not in selected:
             continue
 
         if verbose:
