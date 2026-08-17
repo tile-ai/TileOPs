@@ -212,17 +212,24 @@ class InstanceNormWorkload(WorkloadBase):
         self.dtype = dtype
         self.eps = eps
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple:
+        """Inputs in ``torch.nn.functional.instance_norm`` order.
+
+        The running stats sit between ``x`` and the affine pair, and this
+        workload exercises the affine call, so they are ``None``.
+        """
         shape = (self.n, self.c, *self.spatial)
         x = torch.randn(shape, dtype=self.dtype, device="cuda")
         weight = torch.randn(self.c, dtype=self.dtype, device="cuda")
         bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
-        return x, weight, bias
+        return x, None, None, weight, bias
 
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
-                    bias: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor, running_mean, running_var,
+                    weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         return F.instance_norm(
             x.float(),
+            running_mean=running_mean,
+            running_var=running_var,
             weight=weight.float(),
             bias=bias.float(),
             eps=self.eps,
