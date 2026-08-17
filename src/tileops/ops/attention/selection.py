@@ -48,6 +48,9 @@ DECODE_KEYS = ("gqa_decode_bs1_kernel", "gqa_decode_kernel")
 #: Implementations of paged GQA decode.
 PAGED_DECODE_KEYS = ("gqa_decode_paged_bs1_kernel", "gqa_decode_paged_kernel")
 
+#: Implementations of paged MHA decode.
+MHA_PAGED_DECODE_KEYS = ("mha_decode_paged_ws_kernel", "mha_decode_paged_kernel")
+
 
 def check_packed_prefill_request(call: AttentionCall) -> None:
     """Reject a packed prefill request its ``backend`` knob cannot describe.
