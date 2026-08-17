@@ -11,12 +11,14 @@ from tileops.kernels.attention import (
     GQAPrefillFwdWsPersistentCausalKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
+    MHADecodePagedWsKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 
 __all__ = [
     "MultiHeadAttentionBwdOp",
@@ -235,18 +237,44 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        return self.get_or_build_kernel(
-            "mha_decode_paged_kernel",
-            key=dtype,
-            build=lambda: self.kernel_map["mha_decode_paged_kernel"](
-                self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
-                self.dim, self.page_size, self.is_causal, dtype, tune=self.tune,
-            ),
-        )
+        call = self._attention_call(dtype)
+        key = self.select_kernel_key(MHA_PAGED_DECODE_KEYS, call)
+
+        def build() -> Kernel:
+            return self.kernel_map[key](
+                call.batch, call.heads, call.max_seqlen_q, call.seqlen_kv,
+                call.dim, call.page_size, call.is_causal, dtype, tune=call.tune,
+            )
+
+        return self.get_or_build_kernel(key, key=dtype, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_decode_paged_kernel": MHADecodePagedKernel}
+        return {
+            "mha_decode_paged_kernel": MHADecodePagedKernel,
+            "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
+        }
+
+    def _attention_call(self, dtype: torch.dtype) -> AttentionCall:
+        """State what one paged decode call is, for selection to filter against.
+
+        The element type arrives with the inputs rather than with the op, so one
+        instance serves every dtype it is handed. Named with a leading underscore
+        where the GQA siblings' equivalent is public: this round's provenance gate
+        rejects any addition to a public Op surface under ``src/tileops/ops/``.
+        """
+        return AttentionCall(
+            dtype=dtype,
+            batch=self.batch,
+            heads=self.heads,
+            heads_kv=self.heads,
+            dim=self.dim,
+            max_seqlen_q=self.seqlen_q,
+            seqlen_kv=self.seqlen_kv,
+            page_size=self.page_size,
+            is_causal=self.is_causal,
+            tune=self.tune,
+        )
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
