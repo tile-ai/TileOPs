@@ -91,6 +91,35 @@ def test_dense_gqa_non_contiguous_cold_fullgraph_matches_eager():
 
 
 @pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
+    """The all-present Optional[Tensor] signature keeps the same Op-owned graph node."""
+    batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len,
+        dim,
+        is_causal=False,
+        fuse_rope=True,
+    )
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    scales = torch.ones(batch, heads_kv, device="cuda", dtype=torch.float32)
+    rope_cos = torch.ones(seq_len, dim // 2, device="cuda", dtype=torch.float16)
+    rope_sin = torch.zeros_like(rope_cos)
+    inputs = (q, k, v, scales, scales, scales, rope_cos, rope_sin)
+
+    output = torch.compile(op, fullgraph=True)(*inputs)
+
+    assert output.shape == q.shape
+    assert output.dtype == q.dtype
+    torch.testing.assert_close(output, op(*inputs), atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
 @pytest.mark.skipif(
     not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable"
 )

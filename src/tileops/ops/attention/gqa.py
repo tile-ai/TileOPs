@@ -381,6 +381,67 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Validate the manifest dtype union before target dispatch."""
+        fp8 = fp8_dtype()
+        allowed_inputs = {torch.float16, torch.bfloat16}
+        if fp8 is not None:
+            allowed_inputs.add(fp8)
+        if q.dtype not in allowed_inputs:
+            raise ValueError(f"q.dtype must be float16, bfloat16, or float8_e4m3fn, got {q.dtype}")
+        if k.dtype != q.dtype or v.dtype != q.dtype:
+            raise ValueError("q/k/v must have the same dtype")
+
+        is_fp8 = fp8 is not None and q.dtype == fp8
+        if is_fp8:
+            # A real instance owns ``output_dtype``. The CPU manifest parity
+            # probe deliberately bypasses ``__init__`` and therefore validates
+            # only the input side of each listed dtype combo here.
+            output_dtype = getattr(self, "output_dtype", None)
+            if hasattr(self, "output_dtype") and output_dtype not in (
+                torch.float16,
+                torch.bfloat16,
+            ):
+                raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
+        else:
+            output_dtype = getattr(self, "output_dtype", None)
+            if output_dtype is not None and output_dtype != q.dtype:
+                raise ValueError("16-bit prefill output dtype must match q/k/v dtype")
+            output_dtype = output_dtype or q.dtype
+
+        scales = (q_scale, k_scale, v_scale)
+        has_scales = tuple(scale is not None for scale in scales)
+        if any(has_scales) and not all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
+        if all(has_scales) and any(scale.dtype != torch.float32 for scale in scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be float32")
+
+        if is_fp8 and not all(has_scales):
+            raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
+
+        has_rope = (rope_cos is not None, rope_sin is not None)
+        if any(has_rope) and not all(has_rope):
+            raise ValueError("fused RoPE requires both rope_cos and rope_sin")
+        if all(has_rope):
+            if rope_cos.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError("rope_cos and rope_sin must be float16 or bfloat16")
+            if rope_sin.dtype != rope_cos.dtype:
+                raise ValueError("rope_cos and rope_sin must have the same dtype")
+            if output_dtype is not None and rope_cos.dtype != output_dtype:
+                raise ValueError(
+                    f"rope_cos and rope_sin must have the attention output dtype {output_dtype}"
+                )
+
     def attention_call(
         self,
         dtype: torch.dtype,
@@ -541,17 +602,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             raise ValueError(f"k must have shape {expected_kv}, got {tuple(k.shape)}")
         if tuple(v.shape) != expected_kv:
             raise ValueError(f"v must have shape {expected_kv}, got {tuple(v.shape)}")
-        if k.dtype != q.dtype or v.dtype != q.dtype:
-            raise ValueError("q/k/v must have the same dtype")
+        self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         _validate_same_device(q, k=k, v=v)
-        is_fp8 = fp8_dtype() is not None and q.dtype == fp8_dtype()
-        if is_fp8:
-            if self.output_dtype is None:
-                raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
-        else:
-            _validate_attention_dtype(q.dtype)
-            if self.output_dtype is not None and self.output_dtype != q.dtype:
-                raise ValueError("16-bit prefill output dtype must match q/k/v dtype")
         q_scale, k_scale, v_scale = self._scales_or_identity(q, q_scale, k_scale, v_scale)
         rope_cos, rope_sin, max_position = _resolve_rope_tables(
             self._rope_dummy_cache,
