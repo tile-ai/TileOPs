@@ -66,9 +66,7 @@ def _prefill_partition_metadata(
     seq_map_c2r = []
     seq_map_r2c = [0]
     split_tokens = max_local_chunks * chunk_size
-    for raw_idx, (raw_start, raw_end) in enumerate(
-        zip(raw_offsets, raw_offsets[1:], strict=False)
-    ):
+    for raw_idx, (raw_start, raw_end) in enumerate(zip(raw_offsets, raw_offsets[1:], strict=False)):
         start = raw_start
         while start < raw_end:
             cp_cu_seqlens.append(start)
@@ -825,6 +823,61 @@ def _prefill_blocksolve_A_bthd(
     return A
 
 
+def _gated_deltanet_production_bthd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    chunk_size: int,
+    *,
+    output_states: bool = False,
+    min_partition_chunks: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
+    """Run the production recurrence shared by BTHD prefill and forward."""
+    from .gdn_prefill import fused_gdr_fwd
+
+    batch, seq_len, head = q.shape[:3]
+    g_cum = _prefill_chunk_local_cumsum_bthd_tl(
+        batch, head, seq_len, chunk_size, str(q.dtype).split(".")[-1]
+    )(g)
+    inverse = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size, use_gate=False)
+    g = g_cum
+    if batch > 1:
+        q, k, v, g, beta, inverse = (
+            tensor.reshape(1, batch * seq_len, *tensor.shape[2:])
+            for tensor in (q, k, v, g, beta, inverse)
+        )
+    initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens = _prefill_partitioned_initial_state_bthd(
+        k,
+        v,
+        inverse,
+        g,
+        beta,
+        chunk_size,
+        raw_sequence_lengths=None if batch == 1 else (seq_len,) * batch,
+        min_partition_chunks=min_partition_chunks,
+    )
+    o, states, final_state = fused_gdr_fwd(
+        q,
+        k,
+        v,
+        inverse,
+        g,
+        beta,
+        scale=1.0,
+        initial_state=initial_state,
+        output_h=output_states,
+        cu_seqlens=cu_seqlens,
+        cp_seq_map=cp_seq_map,
+        raw_cu_seqlens=raw_cu_seqlens,
+        chunk_size=chunk_size,
+        state_head_first=output_states,
+        chunks_per_sequence=seq_len // chunk_size if output_states else 0,
+    )
+    return o.reshape(batch, seq_len, head, v.shape[-1]), states, final_state, g_cum
+
+
 @functools.lru_cache(maxsize=32)
 def _prefill_recompute_w_u_from_A_bthd_tl(
     batch: int,
@@ -1524,11 +1577,10 @@ def _gated_deltanet_prefill_wrapped_kernel(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     layout = _normalize_prefill_layout(layout)
     if layout == "bthd":
-        g_cum = _prefill_chunk_local_cumsum_bthd_tl(batch, head, seq_len, chunk_size, dtype)(g)
         use_blocksolve_prepare = (
             chunk_size == 64 and dim_k == 128 and dim_v == 128 and dtype in ("float16", "bfloat16")
         )
-        use_partitioned_prefill = (
+        use_production_pipeline = (
             os.environ.get(
                 "TILEOPS_GDN_PREFILL_PARTITIONED",
                 os.environ.get("TILEOPS_GDN_PREFILL_CP_SPLIT", "1"),
@@ -1537,38 +1589,18 @@ def _gated_deltanet_prefill_wrapped_kernel(
             and batch == 1
             and use_blocksolve_prepare
         )
-        if use_partitioned_prefill:
-            from tileops.kernels.gated_deltanet.gdn_prefill import fused_gdr_fwd
-
-            A = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size, use_gate=False)
-            initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens = (
-                _prefill_partitioned_initial_state_bthd(
-                    k=k,
-                    v=v,
-                    A=A,
-                    g=g_cum,
-                    beta=beta,
-                    chunk_size=chunk_size,
-                )
-            )
-            o, _h, final_state = fused_gdr_fwd(
-                q=q,
-                k=k,
-                v=v,
-                a=A,
-                g=g_cum,
-                b=beta,
-                scale=1.0,
-                initial_state=initial_state,
-                output_final_state=True,
-                output_h=False,
-                output_o=True,
-                cu_seqlens=cu_seqlens,
-                cp_seq_map=cp_seq_map,
-                raw_cu_seqlens=raw_cu_seqlens,
+        if use_production_pipeline:
+            o, _states, final_state, _g_cum = _gated_deltanet_production_bthd(
+                q,
+                k,
+                v,
+                g,
+                beta,
+                chunk_size,
             )
             return o, final_state.to(q.dtype)
 
+        g_cum = _prefill_chunk_local_cumsum_bthd_tl(batch, head, seq_len, chunk_size, dtype)(g)
         o_fn = _prefill_output_o_bthd_tl(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(
             o_threads
         )

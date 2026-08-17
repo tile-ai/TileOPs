@@ -415,63 +415,24 @@ def _gated_deltanet_fwd_production_wrapped_kernel(
     g: torch.Tensor,
     beta: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Run the partitioned production prefill pipeline with training artifacts."""
-    from .gated_deltanet_prefill import (
-        _prefill_blocksolve_A_bthd,
-        _prefill_chunk_local_cumsum_bthd_tl,
-        _prefill_partitioned_initial_state_bthd,
-    )
-    from .gdn_prefill import fused_gdr_fwd
+    from .gated_deltanet_prefill import _gated_deltanet_production_bthd, _prefill_blocksolve_A_bthd
 
-    dtype = str(q.dtype).split(".")[-1]
-    g_cum = _prefill_chunk_local_cumsum_bthd_tl(batch, head, seq_len, chunk_size, dtype)(g)
-
-    # The warp-specialized production kernel consumes the ungated inverse and
-    # applies the chunk-local gate itself.  Build the gated inverse separately
-    # for the legacy forward ABI's Aw/Au training artifacts.
-    A = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size, use_gate=False)
-
-    total_tokens = batch * seq_len
-    q_flat = q.reshape(1, total_tokens, head, dim_k)
-    k_flat = k.reshape(1, total_tokens, head, dim_k)
-    v_flat = v.reshape(1, total_tokens, head, dim_v)
-    g_flat = g_cum.reshape(1, total_tokens, head)
-    beta_flat = beta.reshape(1, total_tokens, head)
-    A_flat = A.reshape(1, total_tokens, head, chunk_size)
-    initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens = _prefill_partitioned_initial_state_bthd(
-        k_flat,
-        v_flat,
-        A_flat,
-        g_flat,
-        beta_flat,
+    o, states, _final_state, g_cum = _gated_deltanet_production_bthd(
+        q,
+        k,
+        v,
+        g,
+        beta,
         chunk_size,
-        raw_sequence_lengths=(seq_len,) * batch,
+        output_states=True,
         min_partition_chunks=512,
     )
-    o, h, _final_state = fused_gdr_fwd(
-        q=q_flat,
-        k=k_flat,
-        v=v_flat,
-        a=A_flat,
-        g=g_flat,
-        b=beta_flat,
-        scale=1.0,
-        initial_state=initial_state,
-        output_final_state=True,
-        output_h=True,
-        output_o=True,
-        cu_seqlens=cu_seqlens,
-        cp_seq_map=cp_seq_map,
-        raw_cu_seqlens=raw_cu_seqlens,
-        chunk_size=chunk_size,
-        state_head_first=True,
-        chunks_per_sequence=seq_len // chunk_size,
-    )
+    assert states is not None
 
-    o = o.reshape(batch, seq_len, head, dim_v)
+    # The legacy forward ABI also needs the gated Aw/Au training artifacts.
     Aw = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
     Au = Aw.clone()
-    return o, h, Aw, Au
+    return o, states, Aw, Au
 
 
 @_gated_deltanet_fwd_production_wrapped_kernel.register_fake
