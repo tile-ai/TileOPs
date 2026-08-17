@@ -51,7 +51,7 @@ def test_gla_prefill_partitioned_recurrence() -> None:
             "a_inter_threads": 64,
             "o_num_stages": 2,
             "o_threads": 256,
-            "num_v_partitions": 2,
+            "num_v_partitions": 1,
             "num_k_partitions": 2,
             "partition_chunks": 32,
             "partition_min_chunks": 0,
@@ -63,3 +63,18 @@ def test_gla_prefill_partitioned_recurrence() -> None:
 
     torch.testing.assert_close(o, ref_o, **_tolerances(dtype))
     torch.testing.assert_close(state, ref_state, **_tolerances(dtype))
+
+
+@pytest.mark.smoke
+def test_gla_prefill_partitioned_recurrence_falls_back_for_float32() -> None:
+    kernel = GLAPrefillFwdKernel(
+        1,
+        2048,
+        2,
+        128,
+        128,
+        chunk_size=64,
+        dtype=torch.float32,
+        config={"partition_chunks": 32, "partition_min_chunks": 0},
+    )
+    assert kernel._partition_chunks == 0
