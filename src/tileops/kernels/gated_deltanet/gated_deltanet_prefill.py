@@ -36,11 +36,55 @@ def _normalize_prefill_layout(layout: str) -> str:
 
 
 @functools.lru_cache(maxsize=32)
-def _prefill_single_batch_cu_seqlens(
-    num_tokens: int,
-    device_idx: int,
-) -> torch.Tensor:
-    return torch.tensor([0, num_tokens], dtype=torch.int32, device=f"cuda:{device_idx}")
+def _prefill_partition_metadata(
+    raw_sequence_lengths: tuple[int, ...],
+    num_heads: int,
+    chunk_size: int,
+    max_local_chunks: int,
+    use_partition: bool,
+    device_idx: int | None,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+]:
+    """Build shape-only partition metadata once per static workload."""
+    device = "cuda" if device_idx is None else f"cuda:{device_idx}"
+    raw_offsets = [0]
+    for length in raw_sequence_lengths:
+        raw_offsets.append(raw_offsets[-1] + length)
+    raw_cu_seqlens = torch.tensor(
+        raw_offsets, dtype=torch.int32, device=device, requires_grad=False
+    )
+    if not use_partition:
+        return raw_cu_seqlens, None, None, None, None
+
+    cp_cu_seqlens = []
+    ht_mask = []
+    seq_map_c2r = []
+    seq_map_r2c = [0]
+    split_tokens = max_local_chunks * chunk_size
+    for raw_idx, (raw_start, raw_end) in enumerate(
+        zip(raw_offsets, raw_offsets[1:], strict=False)
+    ):
+        start = raw_start
+        while start < raw_end:
+            cp_cu_seqlens.append(start)
+            ht_mask.append(False)
+            seq_map_c2r.append(raw_idx)
+            start += split_tokens
+        ht_mask[-1] = True
+        seq_map_r2c.append(len(cp_cu_seqlens))
+    cp_cu_seqlens.append(raw_offsets[-1])
+    return (
+        raw_cu_seqlens,
+        torch.tensor(cp_cu_seqlens, dtype=torch.int32, device=device),
+        torch.tensor(seq_map_c2r, dtype=torch.int32, device=device),
+        torch.tensor(seq_map_r2c, dtype=torch.int32, device=device),
+        torch.tensor(ht_mask, dtype=torch.bool, device=device),
+    )
 
 
 def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int) -> int:
@@ -52,9 +96,7 @@ def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int) -> int:
         max_local_chunks = int(env_max_local_chunks)
     else:
         sm_count = torch.cuda.get_device_properties().multi_processor_count
-        max_local_chunks = 2 ** round(
-            math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3)
-        )
+        max_local_chunks = 2 ** round(math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3))
         if num_heads >= 64 and num_chunks >= 512:
             max_local_chunks = max(max_local_chunks, 256)
     return max(max_local_chunks, 4)
@@ -67,6 +109,8 @@ def _prefill_partitioned_initial_state_bthd(
     g: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int,
+    raw_sequence_lengths: tuple[int, ...] | None = None,
+    min_partition_chunks: int = 0,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     from tileops.kernels.gated_deltanet.gdn_prefill import (
         correct_initial_states,
@@ -76,7 +120,12 @@ def _prefill_partitioned_initial_state_bthd(
 
     batch, num_tokens, num_heads, _ = k.shape
     assert batch == 1
-    raw_cu_seqlens = _prefill_single_batch_cu_seqlens(num_tokens, k.device.index)
+    if raw_sequence_lengths is None:
+        raw_sequence_lengths = (num_tokens,)
+    if any(length <= 0 or length % chunk_size != 0 for length in raw_sequence_lengths):
+        raise ValueError("raw sequence lengths must be positive multiples of chunk_size")
+    if sum(raw_sequence_lengths) != num_tokens:
+        raise ValueError("raw sequence lengths must sum to the flattened token count")
     num_chunks = tilelang.cdiv(num_tokens, chunk_size)
     max_local_chunks = _prefill_auto_cp_local_chunks(num_chunks, num_heads)
 
@@ -88,37 +137,34 @@ def _prefill_partitioned_initial_state_bthd(
         )
         == "1"
     )
-    use_partition = has_partition and (
-        force_partition or num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
+    partition_large_enough = (
+        force_partition or max(raw_sequence_lengths) // chunk_size >= min_partition_chunks
+    )
+    use_partition = (
+        has_partition
+        and partition_large_enough
+        and (force_partition or num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
+    )
+    (
+        raw_cu_seqlens,
+        cp_cu_seqlens_t,
+        seq_map_c2r_t,
+        seq_map_r2c_t,
+        ht_mask_t,
+    ) = _prefill_partition_metadata(
+        raw_sequence_lengths,
+        num_heads,
+        chunk_size,
+        max_local_chunks,
+        use_partition,
+        k.device.index,
     )
     if not use_partition:
-        return None, raw_cu_seqlens, None, None
-
-    cp_cu_seqlens = []
-    ht_mask = []
-    seq_map_c2r = []
-    seq_map_r2c = [0]
-    split_tokens = max_local_chunks * chunk_size
-    start = 0
-    while start < num_tokens:
-        cp_cu_seqlens.append(start)
-        ht_mask.append(False)
-        seq_map_c2r.append(0)
-        start += split_tokens
-    ht_mask[-1] = True
-    seq_map_r2c.append(len(cp_cu_seqlens))
-    cp_cu_seqlens.append(num_tokens)
-
-    cp_cu_seqlens_t = torch.tensor(
-        cp_cu_seqlens, dtype=torch.int32, device=k.device, requires_grad=False
-    )
-    seq_map_c2r_t = torch.tensor(seq_map_c2r, dtype=torch.int32, device=k.device)
-    seq_map_r2c_t = torch.tensor(
-        seq_map_r2c, dtype=torch.int32, device=k.device, requires_grad=False
-    )
-    ht_mask_t = torch.tensor(
-        ht_mask, dtype=torch.bool, device=k.device, requires_grad=False
-    )
+        return None, raw_cu_seqlens, None, raw_cu_seqlens
+    assert cp_cu_seqlens_t is not None
+    assert seq_map_c2r_t is not None
+    assert seq_map_r2c_t is not None
+    assert ht_mask_t is not None
 
     num_warmup_chunks, fallback_mask = get_warmup_chunks(
         g=g,
@@ -269,9 +315,7 @@ def _prefill_prepare_w_u_bhtd_tl(
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(
                         i > j,
-                        -gram_frag[i, j]
-                        * g_pos_shared[i]
-                        * g_neg_shared[j],
+                        -gram_frag[i, j] * g_pos_shared[i] * g_neg_shared[j],
                         T.float32(0.0),
                     )
                 T.clear(S_shared)
@@ -296,9 +340,7 @@ def _prefill_prepare_w_u_bhtd_tl(
                 )
 
                 for i, j in T.Parallel(block_C, dim_v):
-                    v_beta_shared[i, j] = (
-                        v[bid, hid, by * block_C + i, j] * beta_shared[i]
-                    )
+                    v_beta_shared[i, j] = v[bid, hid, by * block_C + i, j] * beta_shared[i]
                 T.clear(u_frag)
                 T.gemm(S_shared, v_beta_shared, u_frag)
                 T.copy(
@@ -343,9 +385,7 @@ def _prefill_chunk_local_cumsum_bthd_tl(
                     acc_s[hid] = T.float32(0.0)
                 for i in T.Serial(chunk_size):
                     for hid in T.Parallel(head):
-                        acc_s[hid] = acc_s[hid] + T.cast(
-                            g[bid, base + i, hid], "float32"
-                        )
+                        acc_s[hid] = acc_s[hid] + T.cast(g[bid, base + i, hid], "float32")
                         out[bid, base + i, hid] = T.cast(acc_s[hid], dtype)
 
         return chunk_cumsum_bthd_kernel
@@ -361,9 +401,10 @@ def _prefill_blocksolve_A_bthd_tl(
     chunk_size: int,
     dim_k: int,
     dtype: str,
+    use_gate: bool = True,
 ):
-    if chunk_size != 64 or dim_k != 128:
-        raise ValueError("TileLang blocksolve-A currently expects chunk64 and K=128")
+    if chunk_size != 64 or dim_k not in (64, 128):
+        raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
 
     block_t = 64
     block_c = 16
@@ -419,17 +460,20 @@ def _prefill_blocksolve_A_bthd_tl(
                 G33 = T.alloc_fragment([block_c, block_c], accum_dtype)
                 tmp = T.alloc_fragment([block_c, block_c], accum_dtype)
 
-                T.annotate_layout({
-                    k0: tilelang.layout.make_swizzled_layout(k0),
-                    k1: tilelang.layout.make_swizzled_layout(k1),
-                    k2: tilelang.layout.make_swizzled_layout(k2),
-                    k3: tilelang.layout.make_swizzled_layout(k3),
-                    a_s: tilelang.layout.make_swizzled_layout(a_s),
-                    i_s: tilelang.layout.make_swizzled_layout(i_s),
-                    work_s: tilelang.layout.make_swizzled_layout(work_s),
-                })
+                T.annotate_layout(
+                    {
+                        k0: tilelang.layout.make_swizzled_layout(k0),
+                        k1: tilelang.layout.make_swizzled_layout(k1),
+                        k2: tilelang.layout.make_swizzled_layout(k2),
+                        k3: tilelang.layout.make_swizzled_layout(k3),
+                        a_s: tilelang.layout.make_swizzled_layout(a_s),
+                        i_s: tilelang.layout.make_swizzled_layout(i_s),
+                        work_s: tilelang.layout.make_swizzled_layout(work_s),
+                    }
+                )
 
-                T.copy(g[bid, base : base + block_t, hid], g_s, disable_tma=True)
+                if use_gate:
+                    T.copy(g[bid, base : base + block_t, hid], g_s, disable_tma=True)
                 T.copy(
                     beta[bid, base : base + block_t, hid],
                     beta_s,
@@ -495,18 +539,39 @@ def _prefill_blocksolve_A_bthd_tl(
                     T.gemm(k3, k3, G33, transpose_B=True)
 
                 for t in T.Parallel(block_t):
-                    g_val = T.cast(g_s[t], accum_dtype)
+                    g_val = T.cast(g_s[t], accum_dtype) if use_gate else T.float32(0.0)
                     gate0_s[t] = T.exp2(
-                        (g_val - T.cast(g_s[0], accum_dtype)) * _LOG2E
+                        (g_val - (T.cast(g_s[0], accum_dtype) if use_gate else T.float32(0.0)))
+                        * _LOG2E
                     )
                     gate1_s[t] = T.exp2(
-                        (g_val - T.cast(g_s[block_c], accum_dtype)) * _LOG2E
+                        (
+                            g_val
+                            - (T.cast(g_s[block_c], accum_dtype) if use_gate else T.float32(0.0))
+                        )
+                        * _LOG2E
                     )
                     gate2_s[t] = T.exp2(
-                        (g_val - T.cast(g_s[2 * block_c], accum_dtype)) * _LOG2E
+                        (
+                            g_val
+                            - (
+                                T.cast(g_s[2 * block_c], accum_dtype)
+                                if use_gate
+                                else T.float32(0.0)
+                            )
+                        )
+                        * _LOG2E
                     )
                     gate3_s[t] = T.exp2(
-                        (g_val - T.cast(g_s[3 * block_c], accum_dtype)) * _LOG2E
+                        (
+                            g_val
+                            - (
+                                T.cast(g_s[3 * block_c], accum_dtype)
+                                if use_gate
+                                else T.float32(0.0)
+                            )
+                        )
+                        * _LOG2E
                     )
                     beta_f_s[t] = beta_s[t]
                 T.sync_threads()
@@ -711,15 +776,27 @@ def _prefill_blocksolve_A_bthd_tl(
 
                 for i, j in T.Parallel(block_c, block_c):
                     A[bid, base + i, hid, j] = T.cast(i_s[0, i, j], dtype)
+                    A[bid, base + i, hid, block_c + j] = T.cast(0, dtype)
+                    A[bid, base + i, hid, 2 * block_c + j] = T.cast(0, dtype)
+                    A[bid, base + i, hid, 3 * block_c + j] = T.cast(0, dtype)
                     A[bid, base + block_c + i, hid, j] = T.cast(a_s[1, i, j], dtype)
                     A[bid, base + block_c + i, hid, block_c + j] = T.cast(i_s[1, i, j], dtype)
+                    A[bid, base + block_c + i, hid, 2 * block_c + j] = T.cast(0, dtype)
+                    A[bid, base + block_c + i, hid, 3 * block_c + j] = T.cast(0, dtype)
                     A[bid, base + 2 * block_c + i, hid, j] = T.cast(a_s[3, i, j], dtype)
                     A[bid, base + 2 * block_c + i, hid, block_c + j] = T.cast(a_s[4, i, j], dtype)
-                    A[bid, base + 2 * block_c + i, hid, 2 * block_c + j] = T.cast(i_s[2, i, j], dtype)
+                    A[bid, base + 2 * block_c + i, hid, 2 * block_c + j] = T.cast(
+                        i_s[2, i, j], dtype
+                    )
+                    A[bid, base + 2 * block_c + i, hid, 3 * block_c + j] = T.cast(0, dtype)
                     A[bid, base + 3 * block_c + i, hid, j] = T.cast(a_s[6, i, j], dtype)
                     A[bid, base + 3 * block_c + i, hid, block_c + j] = T.cast(a_s[7, i, j], dtype)
-                    A[bid, base + 3 * block_c + i, hid, 2 * block_c + j] = T.cast(a_s[8, i, j], dtype)
-                    A[bid, base + 3 * block_c + i, hid, 3 * block_c + j] = T.cast(i_s[3, i, j], dtype)
+                    A[bid, base + 3 * block_c + i, hid, 2 * block_c + j] = T.cast(
+                        a_s[8, i, j], dtype
+                    )
+                    A[bid, base + 3 * block_c + i, hid, 3 * block_c + j] = T.cast(
+                        i_s[3, i, j], dtype
+                    )
 
         return prefill_blocksolve_A_bthd_tl
 
@@ -731,9 +808,10 @@ def _prefill_blocksolve_A_bthd(
     g: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int,
+    use_gate: bool = True,
 ) -> torch.Tensor:
     batch, seq_len, head, dim_k = k.shape
-    A = torch.zeros(batch, seq_len, head, chunk_size, dtype=k.dtype, device=k.device)
+    A = torch.empty(batch, seq_len, head, chunk_size, dtype=k.dtype, device=k.device)
     kernel = _prefill_blocksolve_A_bthd_tl(
         batch,
         head,
@@ -741,9 +819,11 @@ def _prefill_blocksolve_A_bthd(
         chunk_size,
         dim_k,
         str(k.dtype).split(".")[-1],
+        use_gate,
     )
     kernel(k, g, beta, A)
     return A
+
 
 @functools.lru_cache(maxsize=32)
 def _prefill_recompute_w_u_from_A_bthd_tl(
@@ -790,11 +870,13 @@ def _prefill_recompute_w_u_from_A_bthd_tl(
                 out_s = T.alloc_shared([block_c, block_d], dtype)
                 out_frag = T.alloc_fragment([block_c, block_d], accum_dtype)
 
-                T.annotate_layout({
-                    A_s: tilelang.layout.make_swizzled_layout(A_s),
-                    x_s: tilelang.layout.make_swizzled_layout(x_s),
-                    out_s: tilelang.layout.make_swizzled_layout(out_s),
-                })
+                T.annotate_layout(
+                    {
+                        A_s: tilelang.layout.make_swizzled_layout(A_s),
+                        x_s: tilelang.layout.make_swizzled_layout(x_s),
+                        out_s: tilelang.layout.make_swizzled_layout(out_s),
+                    }
+                )
 
                 T.async_copy(A[bid, base : base + block_c, hid, 0:block_c], A_s)
                 T.ptx_wait_group(0)
@@ -937,9 +1019,7 @@ def _prefill_prepare_w_u_bthd_tl(
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(
                         i > j,
-                        -gram_frag[i, j]
-                        * g_pos_shared[i]
-                        * g_neg_shared[j],
+                        -gram_frag[i, j] * g_pos_shared[i] * g_neg_shared[j],
                         T.float32(0.0),
                     )
                 T.clear(S_shared)
@@ -961,9 +1041,7 @@ def _prefill_prepare_w_u_bthd_tl(
                     w[bid, base + i, hid, d] = w_frag[i, d]
 
                 for i, d in T.Parallel(block_C, dim_v):
-                    v_beta_shared[i, d] = (
-                        v[bid, base + i, hid, d] * beta_shared[i]
-                    )
+                    v_beta_shared[i, d] = v[bid, base + i, hid, d] * beta_shared[i]
                 T.clear(u_frag)
                 T.gemm(S_shared, v_beta_shared, u_frag)
                 for i, d in T.Parallel(block_C, dim_v):
@@ -1051,13 +1129,9 @@ def _prefill_h_recurrence_bthd_tl(
                         v_new[bid, base + i, hid, v_offset + j] = v_new_c[i, j]
 
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_c[block_C - 1] - g_c[n]) * _LOG2E
-                        )
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
-                            g_c[block_C - 1] * _LOG2E
-                        )
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1239,13 +1313,9 @@ def _prefill_group_transition_summary_bthd_tl(
                         )
 
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_c[block_C - 1] - g_c[n]) * _LOG2E
-                        )
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
-                            g_c[block_C - 1] * _LOG2E
-                        )
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1411,13 +1481,9 @@ def _prefill_grouped_replay_bthd_tl(
                         v_new[bid, base + i, hid, v_offset + j] = v_new_c[i, j]
 
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_c[block_C - 1] - g_c[n]) * _LOG2E
-                        )
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
-                            g_c[block_C - 1] * _LOG2E
-                        )
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1458,14 +1524,9 @@ def _gated_deltanet_prefill_wrapped_kernel(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     layout = _normalize_prefill_layout(layout)
     if layout == "bthd":
-        g_cum = _prefill_chunk_local_cumsum_bthd_tl(
-            batch, head, seq_len, chunk_size, dtype
-        )(g)
+        g_cum = _prefill_chunk_local_cumsum_bthd_tl(batch, head, seq_len, chunk_size, dtype)(g)
         use_blocksolve_prepare = (
-            chunk_size == 64
-            and dim_k == 128
-            and dim_v == 128
-            and dtype in ("float16", "bfloat16")
+            chunk_size == 64 and dim_k == 128 and dim_v == 128 and dtype in ("float16", "bfloat16")
         )
         use_partitioned_prefill = (
             os.environ.get(
@@ -1479,8 +1540,7 @@ def _gated_deltanet_prefill_wrapped_kernel(
         if use_partitioned_prefill:
             from tileops.kernels.gated_deltanet.gdn_prefill import fused_gdr_fwd
 
-            g_zero = torch.zeros_like(g_cum)
-            A = _prefill_blocksolve_A_bthd(k, g_zero, beta, chunk_size)
+            A = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size, use_gate=False)
             initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens = (
                 _prefill_partitioned_initial_state_bthd(
                     k=k,
@@ -1509,9 +1569,9 @@ def _gated_deltanet_prefill_wrapped_kernel(
             )
             return o, final_state.to(q.dtype)
 
-        o_fn = _prefill_output_o_bthd_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, dtype
-        )(o_threads)
+        o_fn = _prefill_output_o_bthd_tl(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(
+            o_threads
+        )
         if use_blocksolve_prepare:
             A = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
             recompute_fn = _prefill_recompute_w_u_from_A_bthd_tl(
@@ -1590,9 +1650,7 @@ def _gated_deltanet_prefill_wrapped_kernel(
         return o, final_state
 
     if chunk_size == 64 and batch * head > 64:
-        g_cum = _prefill_chunk_local_cumsum_bhtd_tl(
-            batch, head, seq_len, chunk_size, dtype
-        )(g)
+        g_cum = _prefill_chunk_local_cumsum_bhtd_tl(batch, head, seq_len, chunk_size, dtype)(g)
     else:
         g_cum = _chunk_local_cumsum(g.float(), chunk_size).to(g.dtype)
     prepare_fn = _prefill_prepare_w_u_bhtd_tl(
@@ -1608,9 +1666,7 @@ def _gated_deltanet_prefill_wrapped_kernel(
         dtype,
         block_v=h_block_v,
     )(h_num_stages, h_threads)
-    o_fn = _output_o_tl(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(
-        o_threads
-    )
+    o_fn = _output_o_tl(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(o_threads)
     S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
     w, u = prepare_fn(k, v, g_cum, beta)
     states, v_new = h_fn(k, g_cum, w, u, S_0)

@@ -6,10 +6,10 @@ FLA is required, not optional: this file exists to compare against
 chunk_gated_delta_rule, and a torch reference is not a comparison worth recording.
 
 Layout convention:
-    TileOPs uses BHSD: q/k [B, H, S, DK], v [B, H, S, DV], g/beta [B, H, S].
-    FLA uses BTHK:     q/k [B, T, H, K],  v [B, T, H, V],  g/beta [B, T, H].
-    Tensors are permuted before calling FLA to ensure both implementations
-    compute the same function.
+    The forward benchmark uses the shared TileOps/FLA BTHD interface:
+    q/k [B, T, H, K], v [B, T, H, V], g/beta [B, T, H].
+    Backward still uses the legacy TileOps BHSD interface and permutes the
+    FLA inputs explicitly.
 """
 
 from typing import Optional
@@ -37,8 +37,8 @@ def _to_fla_layout(q, k, v, g, beta):
 
 # Forward benchmark
 
-class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
+class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
@@ -53,17 +53,20 @@ class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
 class GatedDeltaNetVsFlaFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            # chunk_size=32
-            (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
-            # chunk_size=64
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 32768, 4, 64, 64, 64, torch.float16, False),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                # chunk_size=32
+                (2, 4096, 4, 64, 64, 32, torch.float16, False),
+                (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+                # chunk_size=64
+                (2, 2048, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.float16, False),
+                (2, 8192, 4, 64, 64, 64, torch.float16, False),
+                (2, 16384, 4, 64, 64, 64, torch.float16, False),
+                (2, 32768, 4, 64, 64, 64, torch.float16, False),
+            ],
+        ),
     ]
 
 
@@ -82,27 +85,30 @@ def test_gated_deltanet_vs_fla_fwd(
     bm = GatedDeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, g, beta  (BHSD)
 
-    # --- TileOPs (BHSD) ---
-    op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
-    functors = {"tileops": op}
-
-    # --- FLA (BTHK) ---
+    # Use the same production BTHD layout for TileOps and FLA.  Layout
+    # conversion is deliberately outside the timed region.
     q, k, v, g, beta = inputs
-    scale = dim_k ** -0.5
-    q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
+    q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd = _to_fla_layout(q, k, v, g, beta)
+    if chunk_size == 64:
+        op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune, layout="bthd")
+        tileops_inputs = (q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
+    else:
+        op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune, layout="bhtd")
+        tileops_inputs = inputs
+    functors = {"tileops": (op, tileops_inputs)}
 
     def fla_fwd():
-        return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+        return chunk_gated_delta_rule(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd, scale=1.0)
 
     functors["fla"] = (fla_fwd, ())
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, record_as=op, params=locals())
 
 
 # Backward benchmark
 
-class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
+class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
@@ -117,16 +123,19 @@ class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
 class GatedDeltaNetVsFlaBwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            # chunk_size=32
-            (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
-            # chunk_size=64
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                # chunk_size=32
+                (2, 4096, 4, 64, 64, 32, torch.float16, False),
+                (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+                # chunk_size=64
+                (2, 2048, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.float16, False),
+                (2, 8192, 4, 64, 64, 64, torch.float16, False),
+                (2, 16384, 4, 64, 64, 64, torch.float16, False),
+            ],
+        ),
     ]
 
 
@@ -160,7 +169,7 @@ def test_gated_deltanet_vs_fla_bwd(
     functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---
-    scale = DK ** -0.5
+    scale = DK**-0.5
     q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
     do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
 
@@ -177,5 +186,4 @@ def test_gated_deltanet_vs_fla_bwd(
         return fla_backward(do_fla, None)
 
     functors["fla"] = (fla_bwd, ())
-    bm.compare(functors, do, q, k, v, g, beta, S_fwd,
-               record_as=bwd_op, params=locals())
+    bm.compare(functors, do, q, k, v, g, beta, S_fwd, record_as=bwd_op, params=locals())

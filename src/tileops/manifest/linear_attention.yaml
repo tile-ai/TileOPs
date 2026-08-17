@@ -251,12 +251,31 @@ GatedDeltaNetFwdOp:
       beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
     outputs:
       o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
-      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
-      Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
-      Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+      S: {dtype: "same_as(q)", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
+      Au: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
     params:
       chunk_size: {type: int, default: 64}
+      layout: {type: str, default: "bhtd"}
     shape_rules:
+    - "layout in ('bhtd', 'bthd')"
+    - "layout == 'bthd' or q.shape == (B, H, S, DK)"
+    - "layout == 'bthd' or k.shape == (B, H, S, DK)"
+    - "layout == 'bthd' or v.shape == (B, H, S, DV)"
+    - "layout == 'bthd' or g.shape == (B, H, S)"
+    - "layout == 'bthd' or beta.shape == (B, H, S)"
+    - "layout == 'bthd' or o.shape == (B, H, S, DV)"
+    - "layout == 'bthd' or Aw.shape == (B, H, S, chunk_size)"
+    - "layout == 'bthd' or Au.shape == (B, H, S, chunk_size)"
+    - "layout != 'bthd' or q.shape == (B, S, H, DK)"
+    - "layout != 'bthd' or k.shape == (B, S, H, DK)"
+    - "layout != 'bthd' or v.shape == (B, S, H, DV)"
+    - "layout != 'bthd' or g.shape == (B, S, H)"
+    - "layout != 'bthd' or beta.shape == (B, S, H)"
+    - "layout != 'bthd' or o.shape == (B, S, H, DV)"
+    - "layout != 'bthd' or Aw.shape == (B, S, H, chunk_size)"
+    - "layout != 'bthd' or Au.shape == (B, S, H, chunk_size)"
+    - "S.shape == (B, H, NC + 1, DK, DV)"
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
   workloads: []

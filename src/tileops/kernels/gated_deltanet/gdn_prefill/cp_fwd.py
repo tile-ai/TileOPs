@@ -95,9 +95,7 @@ def get_warmup_chunks(
     fallback_mask = torch.empty(
         [real_batch_size, num_heads], dtype=ht_mask.dtype, device=cu_seqlens.device
     )
-    tilelang_get_warmup_chunks_kernel(
-        g, ht_mask, cu_seqlens, num_warmup_chunks, fallback_mask
-    )
+    tilelang_get_warmup_chunks_kernel(g, ht_mask, cu_seqlens, num_warmup_chunks, fallback_mask)
 
     return num_warmup_chunks, fallback_mask
 
@@ -146,9 +144,7 @@ def tilelang_correct_h0(
             if fallback_mask[seq_start_idx + i_s, bh]:
                 T.copy(h_fragment, hd_shared)
             T.copy(
-                ht_buffer[
-                    seq_start_idx + i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV
-                ],
+                ht_buffer[seq_start_idx + i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
                 h_shared,
             )
             T.copy(h_shared, h_fragment)
@@ -176,9 +172,7 @@ def tilelang_correct_h0(
             seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
             cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
         ):
-            with T.Kernel(
-                T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128
-            ) as (bbhv,):
+            with T.Kernel(T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128) as (bbhv,):
                 bbh, bv = (
                     bbhv // T.ceildiv(DV, block_DV),
                     bbhv % T.ceildiv(DV, block_DV),
@@ -220,9 +214,7 @@ def tilelang_correct_h0(
             seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
             cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
         ):
-            with T.Kernel(
-                T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128
-            ) as (bbhv,):
+            with T.Kernel(T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128) as (bbhv,):
                 bbh, bv = (
                     bbhv // T.ceildiv(DV, block_DV),
                     bbhv % T.ceildiv(DV, block_DV),
@@ -254,41 +246,8 @@ def tilelang_correct_h0(
     return tilelang_correct_h0_kernel
 
 
-@tilelang.jit()
-def tilelang_zero_initial_cp_h0(
-    H,
-    DK,
-    DV,
-    res_dtype,
-    seqlen_dtype,
-    block_DV: int = 32,
-):
-    cp_batch_size = T.dynamic("cp_batch_size")
-    raw_batch_size = T.dynamic("raw_batch_size")
-
-    @T.prim_func
-    def tilelang_zero_initial_cp_h0_kernel(
-        seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
-        cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
-    ):
-        with T.Kernel(
-            T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128
-        ) as (bbhv,):
-            bbh, bv = (
-                bbhv // T.ceildiv(DV, block_DV),
-                bbhv % T.ceildiv(DV, block_DV),
-            )
-            bb, bh = bbh // H, bbh % H
-            seq_start_idx = seq_map_r2c[bb]
-            for j_k, j_v in T.Parallel(DK, block_DV):
-                cp_h0[seq_start_idx, bh, j_k, bv * block_DV + j_v] = 0.0
-
-    return tilelang_zero_initial_cp_h0_kernel
-
-
 def correct_initial_states(
-    raw_h0: torch.Tensor
-    | None,  # [raw_batch_size, num_v_heads, k_head_dim, v_head_dim]
+    raw_h0: torch.Tensor | None,  # [raw_batch_size, num_v_heads, k_head_dim, v_head_dim]
     ht_buffer: torch.Tensor,  # [cp_batch_size, num_v_heads, k_head_dim, v_head_dim]
     mt_buffer: torch.Tensor,  # [cp_batch_size, num_v_heads, k_head_dim, k_head_dim]
     fallback_mask: torch.Tensor,  # [cp_batch_size, num_v_heads]
@@ -296,7 +255,7 @@ def correct_initial_states(
 ):
     cp_batch_size = fallback_mask.shape[0]
     _, num_heads, k_head_dim, v_head_dim = ht_buffer.shape
-    assert k_head_dim == v_head_dim == 128
+    assert k_head_dim == v_head_dim and k_head_dim in (64, 128)
 
     if raw_h0 is None:
         res_dtype = torch.float32
@@ -321,14 +280,6 @@ def correct_initial_states(
         dtype=res_dtype,
         device=ht_buffer.device,
     )
-    tilelang_zero_initial_cp_h0_kernel = tilelang_zero_initial_cp_h0(
-        H=num_heads,
-        DK=k_head_dim,
-        DV=v_head_dim,
-        res_dtype=res_dtype,
-        seqlen_dtype=seq_map_r2c.dtype,
-    )
-    tilelang_zero_initial_cp_h0_kernel(seq_map_r2c, cp_h0)
     if use_raw_h0:
         tilelang_correct_h0_kernel(
             raw_h0,

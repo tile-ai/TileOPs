@@ -98,22 +98,14 @@ def tilelang_prepare_h(
             )
 
             calc_mt = T.alloc_var("bool")
-            calc_mt = is_cp and num_iters >= T.ceildiv(
-                seq_end_idx - seq_start_idx, block_S
-            )
-            seq_start_idx = (
-                seq_end_idx - num_iters * block_S if is_cp else seq_start_idx
-            )
+            calc_mt = is_cp and num_iters >= T.ceildiv(seq_end_idx - seq_start_idx, block_S)
+            seq_start_idx = seq_end_idx - num_iters * block_S if is_cp else seq_start_idx
 
             k_shared = T.alloc_shared((num_stages, block_S, DK), dtype=qkva_dtype)
             v_shared = T.alloc_shared((num_stages, block_S, DV), dtype=qkva_dtype)
             a_shared = T.alloc_shared((num_stages, block_S, block_S), dtype=qkva_dtype)
-            g_shared = T.alloc_shared(
-                (num_stages, block_S), dtype=accum_dtype, scope="shared"
-            )
-            b_shared = T.alloc_shared(
-                (num_stages, block_S), dtype=accum_dtype, scope="shared"
-            )
+            g_shared = T.alloc_shared((num_stages, block_S), dtype=accum_dtype, scope="shared")
+            b_shared = T.alloc_shared((num_stages, block_S), dtype=accum_dtype, scope="shared")
             h_shared = T.alloc_shared((DK, DV), dtype=qkva_dtype)
             x_shared = T.alloc_shared((block_S, DK), dtype=qkva_dtype)
             y_shared = T.alloc_shared((block_S, DV), dtype=qkva_dtype)
@@ -121,9 +113,7 @@ def tilelang_prepare_h(
             m_shared_R = T.alloc_shared((DK, DK // 2), dtype=qkva_dtype)
             z_shared_L = T.alloc_shared((block_S, DK // 2), dtype=qkva_dtype)
             z_shared_R = T.alloc_shared((block_S, DK // 2), dtype=qkva_dtype)
-            g_rev_exp_shared = T.alloc_shared(
-                (block_S), dtype=accum_dtype, scope="shared"
-            )
+            g_rev_exp_shared = T.alloc_shared((block_S), dtype=accum_dtype, scope="shared")
 
             h_fragment = T.alloc_fragment((DK, DV), dtype=accum_dtype)
             x_fragment = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
@@ -167,9 +157,7 @@ def tilelang_prepare_h(
                 # Main Loop
                 for i_s in T.serial(num_iters):
                     # [STAGE = i_s % num_stages]
-                    T.barrier_wait(
-                        data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2
-                    )
+                    T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
                     T.barrier_arrive(bar_0)
 
                     # [STAGE = i_s % num_stages] 0
@@ -181,9 +169,7 @@ def tilelang_prepare_h(
                     # [STAGE = i_s % num_stages] 1
                     T.barrier_wait(bar_1, i_s % 2)
                     # S = g_last * S
-                    g_last_local_S[0] = T.exp2(
-                        g_shared[i_s % num_stages, block_S - 1] * 1.442695
-                    )
+                    g_last_local_S[0] = T.exp2(g_shared[i_s % num_stages, block_S - 1] * 1.442695)
                     for j_k, j_v in T.Parallel(DK, DV):
                         h_fragment[j_k, j_v] *= g_last_local_S[0]
                     T.barrier_arrive(bar_2)
@@ -220,9 +206,7 @@ def tilelang_prepare_h(
                 # Main Loop
                 for i_s in T.serial(num_iters):
                     # [STAGE = i_s % num_stages]
-                    T.barrier_wait(
-                        data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2
-                    )
+                    T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
                     T.barrier_arrive(bar_0)
 
                     # [STAGE = i_s % num_stages] 0
@@ -292,9 +276,7 @@ def tilelang_prepare_h(
                 # Main Loop
                 for i_s in T.serial(num_iters):
                     # [STAGE = i_s % num_stages]
-                    T.barrier_wait(
-                        data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2
-                    )
+                    T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
                     T.barrier_arrive(bar_0)
 
                     # [STAGE = i_s % num_stages] 0
@@ -303,8 +285,7 @@ def tilelang_prepare_h(
                     g_last_local_Y[0] = g_shared[i_s % num_stages, block_S - 1]
                     for j_s in T.Parallel(block_S):
                         g_rev_exp_shared[j_s] = T.exp2(
-                            (g_last_local_Y[0] - g_shared[i_s % num_stages, j_s])
-                            * 1.442695
+                            (g_last_local_Y[0] - g_shared[i_s % num_stages, j_s]) * 1.442695
                         )
                     g_last_local_Y[0] = T.exp2(g_last_local_Y[0] * 1.442695)
                     T.barrier_arrive(bar_1)
@@ -368,9 +349,7 @@ def tilelang_prepare_h(
 
                 if tx < 384 + 32:
                     for i_s in T.serial(num_iters):
-                        T.barrier_wait(
-                            data_is_free[i_s % num_stages], (i_s // num_stages + 1) % 2
-                        )
+                        T.barrier_wait(data_is_free[i_s % num_stages], (i_s // num_stages + 1) % 2)
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
@@ -385,9 +364,7 @@ def tilelang_prepare_h(
 
                 elif tx < 384 + 64:
                     for i_s in T.serial(num_iters):
-                        T.barrier_wait(
-                            data_is_free[i_s % num_stages], (i_s // num_stages + 1) % 2
-                        )
+                        T.barrier_wait(data_is_free[i_s % num_stages], (i_s // num_stages + 1) % 2)
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
@@ -408,24 +385,18 @@ def tilelang_prepare_h(
 
                 elif tx < 384 + 96:
                     for i_s in T.serial(num_iters):
-                        T.barrier_wait(
-                            data_is_free[i_s % num_stages], (i_s // num_stages + 1) % 2
-                        )
+                        T.barrier_wait(data_is_free[i_s % num_stages], (i_s // num_stages + 1) % 2)
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
                         # Load gamma
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
-                                g_shared[i_s % num_stages, j_s] = g[
-                                    batch_idx, left + j_s, bh
-                                ]
+                                g_shared[i_s % num_stages, j_s] = g[batch_idx, left + j_s, bh]
                         else:
                             for j_s in T.Parallel(block_S):
                                 if left + j_s < seq_end_idx:
-                                    g_shared[i_s % num_stages, j_s] = g[
-                                        batch_idx, left + j_s, bh
-                                    ]
+                                    g_shared[i_s % num_stages, j_s] = g[batch_idx, left + j_s, bh]
                                 else:
                                     g_shared[i_s % num_stages, j_s] = g[
                                         batch_idx, seq_end_idx - 1, bh
@@ -433,15 +404,11 @@ def tilelang_prepare_h(
                         # Load beta
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
-                                b_shared[i_s % num_stages, j_s] = b[
-                                    batch_idx, left + j_s, bh
-                                ]
+                                b_shared[i_s % num_stages, j_s] = b[batch_idx, left + j_s, bh]
                         else:
                             for j_s in T.Parallel(block_S):
                                 if left + j_s < seq_end_idx:
-                                    b_shared[i_s % num_stages, j_s] = b[
-                                        batch_idx, left + j_s, bh
-                                    ]
+                                    b_shared[i_s % num_stages, j_s] = b[batch_idx, left + j_s, bh]
                                 else:
                                     b_shared[i_s % num_stages, j_s] = 0
 
@@ -478,7 +445,7 @@ def fused_gdr_h(
 ):
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
-    assert K == V == 128
+    assert K == V and K in (64, 128)
     assert chunk_size == 64
 
     if cu_seqlens is None:
@@ -486,9 +453,7 @@ def fused_gdr_h(
         real_batch_size = batch_size
         num_chunks = tilelang.cdiv(num_tokens, chunk_size) if output_h else 0
         cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        chunk_offsets = torch.empty(
-            (batch_size + 1), dtype=torch.int32, device=k.device
-        )
+        chunk_offsets = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
         is_varlen = False
         is_cp = False
     else:
@@ -512,12 +477,8 @@ def fused_gdr_h(
         )
     h = torch.empty((batch_size, num_chunks, H, K, V), dtype=k.dtype, device=k.device)
     ht_dtype = k.dtype if is_cp else torch.float32
-    final_state = torch.empty(
-        (real_batch_size, H, K, V), dtype=ht_dtype, device=k.device
-    )
-    final_correction = torch.empty(
-        (real_batch_size, H, K, K), dtype=ht_dtype, device=k.device
-    )
+    final_state = torch.empty((real_batch_size, H, K, V), dtype=ht_dtype, device=k.device)
+    final_correction = torch.empty((real_batch_size, H, K, K), dtype=ht_dtype, device=k.device)
 
     tilelang_prepare_h_kernel = tilelang_prepare_h(
         H,

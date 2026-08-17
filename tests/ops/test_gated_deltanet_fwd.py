@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -31,6 +30,7 @@ class GatedDeltaNetFwdTest(GatedDeltaNetFwdWorkload, TestBase):
 
 # Forward correctness tests
 
+
 def _get_tolerances(dtype: torch.dtype) -> dict:
     # Tolerances are looser than docs/design/testing.md defaults (fp16: 1e-3, bf16: 1.6e-2)
     # because Gated DeltaNet uses sequential chunk recurrence: each chunk's hidden
@@ -48,18 +48,31 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
 
 class GatedDeltaNetFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, True, marks=pytest.mark.full,
-                         id="full-bf16-tuned"),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(
+                    2,
+                    64,
+                    2,
+                    64,
+                    64,
+                    32,
+                    torch.bfloat16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-bf16-tuned",
+                ),
+            ],
+        ),
     ]
 
 
@@ -84,6 +97,42 @@ def test_gated_deltanet_fwd(
     torch.testing.assert_close(op_o, ref_o, **tols)
     if tune:
         assert op.kernel.config in op.kernel.autotune_configs
+
+
+@pytest.mark.parametrize(
+    "seq_len,dim,dtype",
+    [
+        pytest.param(128, 64, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(128, 64, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(128, 128, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(32768, 64, torch.float16, marks=pytest.mark.full),
+    ],
+)
+def test_gated_deltanet_fwd_bthd_production_matches_legacy(
+    seq_len: int, dim: int, dtype: torch.dtype
+) -> None:
+    if torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("the warp-specialized BTHD production kernel requires Hopper")
+
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(2, 4, seq_len, dim, dim, 64, dtype)
+    q, k, v, g, beta = test.gen_inputs()
+    legacy = GatedDeltaNetFwdOp(chunk_size=64, layout="bhtd")(q, k, v, g, beta)
+
+    q_bthd = q.permute(0, 2, 1, 3).contiguous()
+    k_bthd = k.permute(0, 2, 1, 3).contiguous()
+    v_bthd = v.permute(0, 2, 1, 3).contiguous()
+    g_bthd = g.permute(0, 2, 1).contiguous()
+    beta_bthd = beta.permute(0, 2, 1).contiguous()
+    production_op = GatedDeltaNetFwdOp(chunk_size=64, layout="bthd")
+    production = production_op(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
+
+    tols = _get_tolerances(dtype)
+    torch.testing.assert_close(production[0].permute(0, 2, 1, 3), legacy[0], **tols)
+    torch.testing.assert_close(production[1], legacy[1], **tols)
+    torch.testing.assert_close(production[2].permute(0, 2, 1, 3), legacy[2], **tols)
+    torch.testing.assert_close(production[3].permute(0, 2, 1, 3), legacy[3], **tols)
+    assert production_op.kernel.__class__.__name__ == "GatedDeltaNetFwdProductionKernel"
 
 
 if __name__ == "__main__":
