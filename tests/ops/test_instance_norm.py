@@ -208,7 +208,7 @@ def test_instance_norm_lazily_specializes_per_device() -> None:
     bias_other = torch.randn(
         (c,), dtype=dtype, device=torch.device("cuda", 1),
     )
-    y = op(x_other, weight_other, bias_other)
+    y = op(x_other, weight=weight_other, bias=bias_other)
     assert y.device == x_other.device
     assert len(list(op.iter_kernels())) == 1
 

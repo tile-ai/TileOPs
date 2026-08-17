@@ -163,7 +163,6 @@ def _run_bench(
         fk = FusedTopKOp(
             top_k=top_k,
             scoring_func=scoring_func, renormalize=renormalize,
-            with_correction_bias=with_correction_bias,
         )
         topk_weights, topk_ids = fk(gating, correction_bias)
         output_buf = torch.zeros(

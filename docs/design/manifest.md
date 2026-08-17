@@ -268,7 +268,7 @@ Each top-level entry is keyed by the **Python class name** of the Op — PascalC
 {PascalCaseName}[{Direction}]Op
 ```
 
-- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. Variant words are part of this name and always precede `{Direction}Op` (`GroupNormNoAffineFwdOp`, never `GroupNormFwdOpNoAffine`).
+- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. A qualifier is part of this name and always precedes `{Direction}Op` (`MaxPool2dIndicesFwdOp`, never `MaxPool2dFwdOpIndices`).
 - **Direction** — `Fwd` or `Bwd`. REQUIRED when the manifest carries both directions of the same op (a direction sibling exists); single-direction ops MAY omit it.
 - **Op** — literal suffix.
 
