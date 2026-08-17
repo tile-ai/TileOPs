@@ -49,7 +49,6 @@ def test_gla_prefill_partitioned_recurrence() -> None:
             "h_num_stages": 2,
             "h_threads": 128,
             "a_inter_threads": 64,
-            "a_intra_threads": 128,
             "o_num_stages": 2,
             "o_threads": 256,
             "num_v_partitions": 2,
