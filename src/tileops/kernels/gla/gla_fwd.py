@@ -88,6 +88,9 @@ def _gla_fwd_h_kernel(
     dim_v: int,
     chunk_size: int,
     dtype: str,
+    state_dtype: str = "float32",
+    initial_state_dtype: Optional[str] = None,
+    partition_chunks: int = 0,
     num_v_partitions: int = 1,
     num_k_partitions: int = 1,
 ) -> Callable:
@@ -103,6 +106,18 @@ def _gla_fwd_h_kernel(
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
+    if partition_chunks:
+        if num_chunks % partition_chunks != 0:
+            raise ValueError(
+                f"num_chunks ({num_chunks}) must be divisible by "
+                f"partition_chunks ({partition_chunks})"
+            )
+        num_partitions = num_chunks // partition_chunks
+        chunks_per_program = partition_chunks
+    else:
+        num_partitions = 1
+        chunks_per_program = num_chunks
+    initial_state_dtype = initial_state_dtype or state_dtype
     dim_v_part = dim_v // num_v_partitions
     if dim_v_part < GEMM_MIN_N:
         raise ValueError(
@@ -125,7 +140,10 @@ def _gla_fwd_h_kernel(
         k_shape = [batch, seq_len, heads, dim_k]
         v_shape = [batch, seq_len, heads, dim_v]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
-        init_state_shape = [batch, heads, dim_k, dim_v]
+        if partition_chunks:
+            init_state_shape = [batch, num_partitions, heads, dim_k, dim_v]
+        else:
+            init_state_shape = [batch, heads, dim_k, dim_v]
         h_out_shape = [batch, num_chunks + 1, heads, dim_k, dim_v]
 
         @T.prim_func
@@ -133,28 +151,33 @@ def _gla_fwd_h_kernel(
             k: T.Tensor(k_shape, dtype),
             v: T.Tensor(v_shape, dtype),
             g_cumsum: T.Tensor(g_cumsum_shape, accum_dtype),
-            initial_state: T.Tensor(init_state_shape, accum_dtype),
-            h_out: T.Tensor(h_out_shape, accum_dtype),
+            initial_state: T.Tensor(init_state_shape, initial_state_dtype),
+            h_out: T.Tensor(h_out_shape, state_dtype),
         ):
-            with T.Kernel(batch * heads * num_kv, threads=threads) as bx:
-                i_b = bx // (heads * num_kv)
-                i_h = (bx // num_kv) % heads
+            with T.Kernel(batch * heads * num_partitions * num_kv, threads=threads) as bx:
+                i_b = bx // (heads * num_partitions * num_kv)
+                i_h = (bx // (num_partitions * num_kv)) % heads
+                i_p = (bx // num_kv) % num_partitions
                 i_kv = bx % num_kv
                 i_kp = i_kv // num_v_partitions
                 i_vp = i_kv % num_v_partitions
                 k_offset = i_kp * dim_k_part
                 v_offset = i_vp * dim_v_part
 
-                h_s = T.alloc_shared([dim_k_part, dim_v_part], accum_dtype)
+                h_f = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
                 k_s = T.alloc_shared([chunk_size, dim_k_part], dtype)
                 v_s = T.alloc_shared([chunk_size, dim_v_part], dtype)
                 g_cumsum_s = T.alloc_shared([chunk_size, dim_k_part], accum_dtype)
 
                 # Load initial state KV-slice
                 for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                    h_s[i_k, i_v] = initial_state[i_b, i_h, k_offset + i_k, v_offset + i_v]
+                    if partition_chunks:
+                        h_f[i_k, i_v] = initial_state[i_b, i_p, i_h, k_offset + i_k, v_offset + i_v]
+                    else:
+                        h_f[i_k, i_v] = initial_state[i_b, i_h, k_offset + i_k, v_offset + i_v]
 
-                for i_c in T.Pipelined(num_chunks, num_stages=num_stages):
+                for i_local in T.Pipelined(chunks_per_program, num_stages=num_stages):
+                    i_c = i_p * chunks_per_program + i_local
                     T.copy(
                         k[
                             i_b,
@@ -188,7 +211,7 @@ def _gla_fwd_h_kernel(
 
                     # Save pre-decay h KV-slice
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        h_out[i_b, i_c, i_h, k_offset + i_k, v_offset + i_v] = h_s[i_k, i_v]
+                        h_out[i_b, i_c, i_h, k_offset + i_k, v_offset + i_v] = h_f[i_k, i_v]
 
                     # g_last from pre-computed cumsum
                     g_last = T.alloc_fragment([dim_k_part], accum_dtype)
@@ -197,7 +220,7 @@ def _gla_fwd_h_kernel(
 
                     # Decay h
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        h_s[i_k, i_v] = h_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2_E)
+                        h_f[i_k, i_v] = h_f[i_k, i_v] * T.exp2(g_last[i_k] * LOG2_E)
 
                     # k_adj in fragment (RS GEMM: A=register, B=shared)
                     k_adj_f = T.alloc_fragment([chunk_size, dim_k_part], dtype)
@@ -208,24 +231,468 @@ def _gla_fwd_h_kernel(
                             dtype,
                         )
 
-                    # h += k_adj^T @ v_slice (RS GEMM)
-                    delta_h = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
-                    T.fill(delta_h, 0.0)
-                    T.gemm(k_adj_f, v_s, delta_h, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
-                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        h_s[i_k, i_v] = h_s[i_k, i_v] + delta_h[i_k, i_v]
+                    # Accumulate the recurrence in registers across chunks.
+                    T.gemm(k_adj_f, v_s, h_f, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
 
-                # Save final state KV-slice
-                for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                    h_out[i_b, num_chunks, i_h, k_offset + i_k, v_offset + i_v] = h_s[i_k, i_v]
+                # Only the final partition owns the public final state slot.
+                if i_p == num_partitions - 1:
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        h_out[i_b, num_chunks, i_h, k_offset + i_k, v_offset + i_v] = h_f[i_k, i_v]
 
         return _main
 
     return _h_func
 
 
-# Pass 2: compute output per chunk (parallel, B*H*NC thread blocks)
-# Uses pre-computed g_cumsum — no T.Serial cumsum needed.
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_h_summary_kernel(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    dim_v: int,
+    chunk_size: int,
+    partition_chunks: int,
+    dtype: str,
+    num_v_partitions: int = 4,
+    num_k_partitions: int = 2,
+) -> Callable:
+    """Summarise independent chunk partitions from a zero initial state."""
+    accum_dtype = "float32"
+    num_chunks = seq_len // chunk_size
+    if num_chunks % partition_chunks != 0:
+        raise ValueError(
+            f"num_chunks ({num_chunks}) must be divisible by partition_chunks ({partition_chunks})"
+        )
+    num_partitions = num_chunks // partition_chunks
+    dim_v_part = dim_v // num_v_partitions
+    dim_k_part = dim_k // num_k_partitions
+    num_kv = num_k_partitions * num_v_partitions
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _summary_func(num_stages=2, threads=128):
+        k_shape = [batch, seq_len, heads, dim_k]
+        v_shape = [batch, seq_len, heads, dim_v]
+        g_shape = [batch, seq_len, heads, dim_k]
+        summary_shape = [batch, num_partitions, heads, dim_k, dim_v]
+        decay_shape = [batch, num_partitions, heads, dim_k]
+
+        @T.prim_func
+        def _main(
+            k: T.Tensor(k_shape, dtype),
+            v: T.Tensor(v_shape, dtype),
+            g_cumsum: T.Tensor(g_shape, accum_dtype),
+            summaries: T.Tensor(summary_shape, accum_dtype),
+            log_decays: T.Tensor(decay_shape, accum_dtype),
+        ):
+            with T.Kernel(num_partitions * num_kv, batch, heads, threads=threads) as (
+                i_pk,
+                i_b,
+                i_h,
+            ):
+                i_p = i_pk // num_kv
+                i_kv = i_pk % num_kv
+                i_kp = i_kv // num_v_partitions
+                i_vp = i_kv % num_v_partitions
+                k_offset = i_kp * dim_k_part
+                v_offset = i_vp * dim_v_part
+
+                h_f = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
+                k_s = T.alloc_shared([chunk_size, dim_k_part], dtype)
+                v_s = T.alloc_shared([chunk_size, dim_v_part], dtype)
+                g_s = T.alloc_shared([chunk_size, dim_k_part], accum_dtype)
+                k_adj = T.alloc_fragment([chunk_size, dim_k_part], dtype)
+                log_decay = T.alloc_fragment([dim_k_part], accum_dtype)
+
+                T.clear(h_f)
+                T.clear(log_decay)
+                for i_local in T.Pipelined(partition_chunks, num_stages=num_stages):
+                    i_c = i_p * partition_chunks + i_local
+                    chunk_start = i_c * chunk_size
+                    T.copy(
+                        k[
+                            i_b,
+                            chunk_start : chunk_start + chunk_size,
+                            i_h,
+                            k_offset : k_offset + dim_k_part,
+                        ],
+                        k_s,
+                        disable_tma=True,
+                    )
+                    T.copy(
+                        v[
+                            i_b,
+                            chunk_start : chunk_start + chunk_size,
+                            i_h,
+                            v_offset : v_offset + dim_v_part,
+                        ],
+                        v_s,
+                        disable_tma=True,
+                    )
+                    T.copy(
+                        g_cumsum[
+                            i_b,
+                            chunk_start : chunk_start + chunk_size,
+                            i_h,
+                            k_offset : k_offset + dim_k_part,
+                        ],
+                        g_s,
+                        disable_tma=True,
+                    )
+
+                    for i_k in T.Parallel(dim_k_part):
+                        log_decay[i_k] = log_decay[i_k] + g_s[chunk_size - 1, i_k]
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        h_f[i_k, i_v] = h_f[i_k, i_v] * T.exp2(g_s[chunk_size - 1, i_k] * LOG2_E)
+                    for i_t, i_k in T.Parallel(chunk_size, dim_k_part):
+                        k_adj[i_t, i_k] = T.cast(
+                            T.cast(k_s[i_t, i_k], accum_dtype)
+                            * T.exp2((g_s[chunk_size - 1, i_k] - g_s[i_t, i_k]) * LOG2_E),
+                            dtype,
+                        )
+                    T.gemm(
+                        k_adj,
+                        v_s,
+                        h_f,
+                        transpose_A=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+
+                for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                    summaries[i_b, i_p, i_h, k_offset + i_k, v_offset + i_v] = h_f[i_k, i_v]
+                if i_vp == 0:
+                    for i_k in T.Parallel(dim_k_part):
+                        log_decays[i_b, i_p, i_h, k_offset + i_k] = log_decay[i_k]
+
+        return _main
+
+    return _summary_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_h0_scan_kernel(
+    batch: int,
+    heads: int,
+    num_partitions: int,
+    dim_k: int,
+    dim_v: int,
+    block_v: int = 32,
+) -> Callable:
+    """Scan affine partition summaries into the true partition start states."""
+    accum_dtype = "float32"
+    num_v_tiles = dim_v // block_v
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+    )
+    def _scan_func(threads=128):
+        summary_shape = [batch, num_partitions, heads, dim_k, dim_v]
+        decay_shape = [batch, num_partitions, heads, dim_k]
+
+        @T.prim_func
+        def _main(
+            summaries: T.Tensor(summary_shape, accum_dtype),
+            log_decays: T.Tensor(decay_shape, accum_dtype),
+            initial_states: T.Tensor(summary_shape, accum_dtype),
+        ):
+            with T.Kernel(num_v_tiles, batch, heads, threads=threads) as (i_vt, i_b, i_h):
+                v_offset = i_vt * block_v
+                h_s = T.alloc_shared([dim_k, block_v], accum_dtype)
+                summary_s = T.alloc_shared([dim_k, block_v], accum_dtype)
+                T.clear(h_s)
+
+                for i_p in T.Pipelined(num_partitions, num_stages=2):
+                    for i_k, i_v in T.Parallel(dim_k, block_v):
+                        initial_states[i_b, i_p, i_h, i_k, v_offset + i_v] = h_s[i_k, i_v]
+                    T.copy(
+                        summaries[i_b, i_p, i_h, :, v_offset : v_offset + block_v],
+                        summary_s,
+                        disable_tma=True,
+                    )
+                    for i_k, i_v in T.Parallel(dim_k, block_v):
+                        h_s[i_k, i_v] = (
+                            h_s[i_k, i_v] * T.exp2(log_decays[i_b, i_p, i_h, i_k] * LOG2_E)
+                            + summary_s[i_k, i_v]
+                        )
+
+        return _main
+
+    return _scan_func
+
+
+# Pass 2a: compute the causal intra-chunk attention matrix.
+
+
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_a_inter_kernel(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    chunk_size: int,
+    scale: float,
+    dtype: str,
+) -> Callable:
+    """Compute strictly lower GLA attention sub-blocks with tensor cores.
+
+    A 16-token sub-block is used as the unit of parallelism.  q/k are
+    normalised around the first gate of the later block, which keeps both
+    exponential factors at most one.
+    """
+    accum_dtype = "float32"
+    block_t = 16
+    num_sub_blocks = chunk_size // block_t
+    num_inter_blocks = num_sub_blocks * (num_sub_blocks - 1) // 2
+    num_chunks = seq_len // chunk_size
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _a_func(threads=128):
+        qk_shape = [batch, seq_len, heads, dim_k]
+        a_shape = [batch, seq_len, heads, chunk_size]
+
+        @T.prim_func
+        def _main(
+            q: T.Tensor(qk_shape, dtype),
+            k: T.Tensor(qk_shape, dtype),
+            g_cumsum: T.Tensor(qk_shape, accum_dtype),
+            A: T.Tensor(a_shape, dtype),
+        ):
+            with T.Kernel(num_chunks, num_inter_blocks, batch * heads, threads=threads) as (
+                i_c,
+                i_pair,
+                i_bh,
+            ):
+                i_b = i_bh // heads
+                i_h = i_bh % heads
+                i_i = T.if_then_else(
+                    i_pair < 1,
+                    1,
+                    T.if_then_else(i_pair < 3, 2, 3),
+                )
+                i_j = i_pair - i_i * (i_i - 1) // 2
+                chunk_start = i_c * chunk_size
+                q_start = chunk_start + i_i * block_t
+                k_start = chunk_start + i_j * block_t
+
+                q_s = T.alloc_shared([block_t, dim_k], dtype)
+                k_s = T.alloc_shared([block_t, dim_k], dtype)
+                gq_s = T.alloc_shared([block_t, dim_k], accum_dtype)
+                gk_s = T.alloc_shared([block_t, dim_k], accum_dtype)
+                q_adj_s = T.alloc_shared([block_t, dim_k], dtype)
+                k_adj_s = T.alloc_shared([block_t, dim_k], dtype)
+                a_frag = T.alloc_fragment([block_t, block_t], accum_dtype)
+
+                T.copy(q[i_b, q_start : q_start + block_t, i_h, :], q_s, disable_tma=True)
+                T.copy(k[i_b, k_start : k_start + block_t, i_h, :], k_s, disable_tma=True)
+                T.copy(g_cumsum[i_b, q_start : q_start + block_t, i_h, :], gq_s, disable_tma=True)
+                T.copy(g_cumsum[i_b, k_start : k_start + block_t, i_h, :], gk_s, disable_tma=True)
+
+                for i_t, i_k in T.Parallel(block_t, dim_k):
+                    anchor = gq_s[0, i_k]
+                    q_adj_s[i_t, i_k] = T.cast(
+                        T.cast(q_s[i_t, i_k], accum_dtype)
+                        * T.exp2((gq_s[i_t, i_k] - anchor) * LOG2_E),
+                        dtype,
+                    )
+                    k_adj_s[i_t, i_k] = T.cast(
+                        T.cast(k_s[i_t, i_k], accum_dtype)
+                        * T.exp2((anchor - gk_s[i_t, i_k]) * LOG2_E),
+                        dtype,
+                    )
+                T.clear(a_frag)
+                T.gemm(q_adj_s, k_adj_s, a_frag, transpose_B=True)
+
+                for i_t, i_s in T.Parallel(block_t, block_t):
+                    A[i_b, q_start + i_t, i_h, i_j * block_t + i_s] = T.cast(
+                        a_frag[i_t, i_s] * scale,
+                        dtype,
+                    )
+
+        return _main
+
+    return _a_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_a_intra_kernel(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    chunk_size: int,
+    scale: float,
+    dtype: str,
+) -> Callable:
+    """Compute diagonal causal 16-token sub-blocks in stable fp32."""
+    accum_dtype = "float32"
+    block_t = 16
+    num_sub_blocks = chunk_size // block_t
+    num_chunks = seq_len // chunk_size
+
+    @tilelang.jit(
+        out_idx=[],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _a_func(threads=256):
+        qk_shape = [batch, seq_len, heads, dim_k]
+        a_shape = [batch, seq_len, heads, chunk_size]
+
+        @T.prim_func
+        def _main(
+            q: T.Tensor(qk_shape, dtype),
+            k: T.Tensor(qk_shape, dtype),
+            g_cumsum: T.Tensor(qk_shape, accum_dtype),
+            A: T.Tensor(a_shape, dtype),
+        ):
+            with T.Kernel(num_chunks, num_sub_blocks, batch * heads, threads=threads) as (
+                i_c,
+                i_i,
+                i_bh,
+            ):
+                i_b = i_bh // heads
+                i_h = i_bh % heads
+                block_start = i_c * chunk_size + i_i * block_t
+
+                q_s = T.alloc_shared([block_t, dim_k], dtype)
+                k_s = T.alloc_shared([block_t, dim_k], dtype)
+                g_s = T.alloc_shared([block_t, dim_k], accum_dtype)
+                products = T.alloc_fragment([block_t, dim_k], accum_dtype)
+                row_sums = T.alloc_fragment([block_t], accum_dtype)
+
+                T.copy(q[i_b, block_start : block_start + block_t, i_h, :], q_s, disable_tma=True)
+                T.copy(k[i_b, block_start : block_start + block_t, i_h, :], k_s, disable_tma=True)
+                T.copy(
+                    g_cumsum[i_b, block_start : block_start + block_t, i_h, :],
+                    g_s,
+                    disable_tma=True,
+                )
+
+                for i_s in T.Serial(block_t):
+                    for i_t, i_k in T.Parallel(block_t, dim_k):
+                        products[i_t, i_k] = T.if_then_else(
+                            i_t >= i_s,
+                            T.cast(q_s[i_t, i_k], accum_dtype)
+                            * T.cast(k_s[i_s, i_k], accum_dtype)
+                            * T.exp2((g_s[i_t, i_k] - g_s[i_s, i_k]) * LOG2_E),
+                            T.float32(0.0),
+                        )
+                    T.reduce_sum(products, row_sums, dim=1)
+                    for i_t in T.Parallel(block_t):
+                        A[
+                            i_b,
+                            block_start + i_t,
+                            i_h,
+                            i_i * block_t + i_s,
+                        ] = T.cast(row_sums[i_t] * scale, dtype)
+
+        return _main
+
+    return _a_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_a_intra_gemm_kernel(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    chunk_size: int,
+    scale: float,
+    dtype: str,
+) -> Callable:
+    """Compute diagonal 16-token blocks with one fp32/TF32 GEMM."""
+    accum_dtype = "float32"
+    block_t = 16
+    num_sub_blocks = chunk_size // block_t
+    num_chunks = seq_len // chunk_size
+
+    @tilelang.jit(
+        out_idx=[],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _a_func(threads=128):
+        qk_shape = [batch, seq_len, heads, dim_k]
+        a_shape = [batch, seq_len, heads, chunk_size]
+
+        @T.prim_func
+        def _main(
+            q: T.Tensor(qk_shape, dtype),
+            k: T.Tensor(qk_shape, dtype),
+            g_cumsum: T.Tensor(qk_shape, accum_dtype),
+            A: T.Tensor(a_shape, dtype),
+        ):
+            with T.Kernel(num_chunks, num_sub_blocks, batch * heads, threads=threads) as (
+                i_c,
+                i_i,
+                i_bh,
+            ):
+                i_b = i_bh // heads
+                i_h = i_bh % heads
+                block_start = i_c * chunk_size + i_i * block_t
+
+                q_s = T.alloc_shared([block_t, dim_k], dtype)
+                k_s = T.alloc_shared([block_t, dim_k], dtype)
+                g_s = T.alloc_shared([block_t, dim_k], accum_dtype)
+                q_adj = T.alloc_shared([block_t, dim_k], accum_dtype)
+                k_adj = T.alloc_shared([block_t, dim_k], accum_dtype)
+                a_frag = T.alloc_fragment([block_t, block_t], accum_dtype)
+
+                T.copy(q[i_b, block_start : block_start + block_t, i_h, :], q_s, disable_tma=True)
+                T.copy(k[i_b, block_start : block_start + block_t, i_h, :], k_s, disable_tma=True)
+                T.copy(
+                    g_cumsum[i_b, block_start : block_start + block_t, i_h, :],
+                    g_s,
+                    disable_tma=True,
+                )
+                for i_t, i_k in T.Parallel(block_t, dim_k):
+                    anchor = g_s[block_t - 1, i_k]
+                    q_adj[i_t, i_k] = T.cast(q_s[i_t, i_k], accum_dtype) * T.exp2(
+                        (g_s[i_t, i_k] - anchor) * LOG2_E
+                    )
+                    k_adj[i_t, i_k] = T.cast(k_s[i_t, i_k], accum_dtype) * T.exp2(
+                        (anchor - g_s[i_t, i_k]) * LOG2_E
+                    )
+                T.clear(a_frag)
+                T.gemm(q_adj, k_adj, a_frag, transpose_B=True)
+                for i_t, i_s in T.Parallel(block_t, block_t):
+                    if i_s <= i_t:
+                        A[
+                            i_b,
+                            block_start + i_t,
+                            i_h,
+                            i_i * block_t + i_s,
+                        ] = T.cast(a_frag[i_t, i_s] * scale, dtype)
+
+        return _main
+
+    return _a_func
+
+
+# Pass 2b: compute output per chunk (parallel, B*H*NC thread blocks).
+# A is prepared separately so both output terms are tensor-core GEMMs.
 
 
 @functools.lru_cache(maxsize=32)
@@ -238,6 +705,7 @@ def _gla_fwd_o_kernel(
     chunk_size: int,
     scale: float,
     dtype: str,
+    state_dtype: str = "float32",
 ) -> Callable:
     """Compute output o for each chunk independently.
 
@@ -257,7 +725,6 @@ def _gla_fwd_o_kernel(
     )
     def _o_func(num_stages, threads=128):
         q_shape = [batch, seq_len, heads, dim_k]
-        k_shape = [batch, seq_len, heads, dim_k]
         v_shape = [batch, seq_len, heads, dim_v]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
         h_shape = [batch, num_chunks + 1, heads, dim_k, dim_v]
@@ -266,10 +733,10 @@ def _gla_fwd_o_kernel(
         @T.prim_func
         def _main(
             q: T.Tensor(q_shape, dtype),
-            k: T.Tensor(k_shape, dtype),
             v: T.Tensor(v_shape, dtype),
             g_cumsum: T.Tensor(g_cumsum_shape, accum_dtype),
-            h: T.Tensor(h_shape, accum_dtype),
+            h: T.Tensor(h_shape, state_dtype),
+            A: T.Tensor([batch, seq_len, heads, chunk_size], dtype),
             o: T.Tensor(o_shape, dtype),
         ):
             with T.Kernel(batch * heads * num_chunks, threads=threads) as bx:
@@ -283,7 +750,6 @@ def _gla_fwd_o_kernel(
 
                 # Input buffers
                 q_s = T.alloc_shared([chunk_size, dim_k], dtype)
-                k_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 v_s = T.alloc_shared([chunk_size, dim_v], dtype)
                 g_cumsum_s = T.alloc_shared([chunk_size, dim_k], accum_dtype)
 
@@ -296,9 +762,6 @@ def _gla_fwd_o_kernel(
                     q[i_b, chunk_start : chunk_start + chunk_size, i_h, :], q_s, disable_tma=True
                 )
                 T.copy(
-                    k[i_b, chunk_start : chunk_start + chunk_size, i_h, :], k_s, disable_tma=True
-                )
-                T.copy(
                     v[i_b, chunk_start : chunk_start + chunk_size, i_h, :], v_s, disable_tma=True
                 )
                 T.copy(
@@ -306,6 +769,12 @@ def _gla_fwd_o_kernel(
                     g_cumsum_s,
                     disable_tma=True,
                 )
+                T.copy(
+                    A[i_b, chunk_start : chunk_start + chunk_size, i_h, :], A_s, disable_tma=True
+                )
+                for i_t, i_s in T.Parallel(chunk_size, chunk_size):
+                    if i_s > i_t:
+                        A_s[i_t, i_s] = T.cast(0.0, dtype)
 
                 # Load h[i_c] and cast to native dtype
                 for i_k, i_v in T.Parallel(dim_k, dim_v):
@@ -316,21 +785,6 @@ def _gla_fwd_o_kernel(
                     q_gated_s[i_t, i_k] = T.cast(
                         T.cast(q_s[i_t, i_k], accum_dtype) * T.exp2(g_cumsum_s[i_t, i_k] * LOG2_E),
                         dtype,
-                    )
-
-                # ---- A[i,j] = sum_k q[i,k]*k[j,k]*exp(g[i,k]-g[j,k]) ----
-                A_frag = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
-                T.fill(A_frag, 0.0)
-                for i_k in T.Serial(dim_k):
-                    for i_t, i_j in T.Parallel(chunk_size, chunk_size):
-                        A_frag[i_t, i_j] = A_frag[i_t, i_j] + (
-                            T.cast(q_s[i_t, i_k], accum_dtype)
-                            * T.cast(k_s[i_j, i_k], accum_dtype)
-                            * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2_E)
-                        )
-                for i_t, i_j in T.Parallel(chunk_size, chunk_size):
-                    A_s[i_t, i_j] = T.cast(
-                        T.if_then_else(i_j <= i_t, A_frag[i_t, i_j] * scale, 0.0), dtype
                     )
 
                 # ---- o = scale * q_gated @ h + A @ v ----
@@ -378,12 +832,20 @@ def _gla_fwd_wrapped_kernel(
     h_fn = _gla_fwd_h_kernel(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)(
         num_stages, threads
     )
+    a_inter_fn = _gla_fwd_a_inter_kernel(batch, seq_len, heads, dim_k, chunk_size, scale, dtype)(
+        threads
+    )
+    a_intra_fn = _gla_fwd_a_intra_kernel(batch, seq_len, heads, dim_k, chunk_size, scale, dtype)(
+        256
+    )
     o_fn = _gla_fwd_o_kernel(batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype)(
         num_stages, threads
     )
     g_cumsum = g_fn(g)
     h_fn(k, v, g_cumsum, initial_state, h_out)
-    return o_fn(q, k, v, g_cumsum, h_out)
+    A = a_inter_fn(q, k, g_cumsum)
+    a_intra_fn(q, k, g_cumsum, A)
+    return o_fn(q, v, g_cumsum, h_out, A)
 
 
 @_gla_fwd_wrapped_kernel.register_fake
@@ -437,6 +899,7 @@ class GLAFwdKernel(Kernel):
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
         tune: bool = False,
+        state_dtype: str = "float32",
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -448,6 +911,7 @@ class GLAFwdKernel(Kernel):
         self.scale = scale if scale > 0 else dim_k**-0.5
         self.output_final_state = output_final_state
         self.dtype_name = str(dtype).split(".")[-1]
+        self.state_dtype_name = state_dtype
         self.init_config(config, tune)
         if not tune:
             self._build_kernels(self.config)
@@ -455,8 +919,14 @@ class GLAFwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "num_stages": 3,
-            "threads": 64,
+            "g_num_stages": 2,
+            "g_threads": 128,
+            "h_num_stages": 2,
+            "h_threads": 128,
+            "a_inter_threads": 64,
+            "a_intra_threads": 128,
+            "o_num_stages": 2,
+            "o_threads": 256,
             "num_v_partitions": 4,
             "num_k_partitions": 2,
         }
@@ -485,6 +955,14 @@ class GLAFwdKernel(Kernel):
         ns = config.get("num_stages", 2)
         thr_seq = config.get("threads_seq", config.get("threads", 256))
         thr_par = config.get("threads_par", config.get("threads", 256))
+        g_ns = config.get("g_num_stages", ns)
+        g_threads = config.get("g_threads", thr_par)
+        h_ns = config.get("h_num_stages", ns)
+        h_threads = config.get("h_threads", thr_seq)
+        a_inter_threads = config.get("a_inter_threads", 64)
+        a_intra_threads = config.get("a_intra_threads", 256)
+        o_ns = config.get("o_num_stages", ns)
+        o_threads = config.get("o_threads", thr_par)
         num_vp = config.get("num_v_partitions", 4)
         num_kp = config.get("num_k_partitions", 1)
         self._g_fn = _gla_precompute_g_kernel(
@@ -494,7 +972,7 @@ class GLAFwdKernel(Kernel):
             self.dim_k,
             self.chunk_size,
             self.dtype_name,
-        )(ns, thr_par)
+        )(g_ns, g_threads)
         self._h_fn = _gla_fwd_h_kernel(
             self.batch,
             self.seq_len,
@@ -503,9 +981,28 @@ class GLAFwdKernel(Kernel):
             self.dim_v,
             self.chunk_size,
             self.dtype_name,
+            self.state_dtype_name,
             num_v_partitions=num_vp,
             num_k_partitions=num_kp,
-        )(ns, thr_seq)
+        )(h_ns, h_threads)
+        self._a_inter_fn = _gla_fwd_a_inter_kernel(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim_k,
+            self.chunk_size,
+            self.scale,
+            self.dtype_name,
+        )(a_inter_threads)
+        self._a_intra_fn = _gla_fwd_a_intra_kernel(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim_k,
+            self.chunk_size,
+            self.scale,
+            self.dtype_name,
+        )(a_intra_threads)
         self._o_fn = _gla_fwd_o_kernel(
             self.batch,
             self.seq_len,
@@ -515,7 +1012,8 @@ class GLAFwdKernel(Kernel):
             self.chunk_size,
             self.scale,
             self.dtype_name,
-        )(ns, thr_par)
+            self.state_dtype_name,
+        )(o_ns, o_threads)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Custom autotuning for multi-kernel forward pass."""
@@ -577,11 +1075,12 @@ class GLAFwdKernel(Kernel):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         B, H, K, V = self.batch, self.heads, self.dim_k, self.dim_v
         dtype_torch = getattr(torch, self.dtype_name)
+        state_dtype_torch = getattr(torch, self.state_dtype_name)
 
         if initial_state is None:
-            init_state = torch.zeros(B, H, K, V, dtype=torch.float32, device=q.device)
+            init_state = torch.zeros(B, H, K, V, dtype=state_dtype_torch, device=q.device)
         else:
-            init_state = initial_state.to(torch.float32)
+            init_state = initial_state.to(state_dtype_torch)
 
         # Pass 0: pre-compute g_cumsum (parallel, fast)
         g_cumsum = self._g_fn(g.to(dtype_torch))
@@ -594,13 +1093,26 @@ class GLAFwdKernel(Kernel):
             init_state,
         )
 
-        # Pass 2: parallel output computation
-        o = self._o_fn(
+        # Pass 2a: parallel causal intra-chunk attention computation
+        A = self._a_inter_fn(
             q.to(dtype_torch),
             k.to(dtype_torch),
+            g_cumsum,
+        )
+        self._a_intra_fn(
+            q.to(dtype_torch),
+            k.to(dtype_torch),
+            g_cumsum,
+            A,
+        )
+
+        # Pass 2b: parallel output computation
+        o = self._o_fn(
+            q.to(dtype_torch),
             v.to(dtype_torch),
             g_cumsum,
             h_out,
+            A,
         )
 
         # Store h_out for backward access
@@ -608,3 +1120,143 @@ class GLAFwdKernel(Kernel):
 
         final_state = h_out[:, -1] if self.output_final_state else None
         return o, final_state
+
+
+class GLAPrefillFwdKernel(GLAFwdKernel):
+    """Inference-only GLA prefill with a partitioned long-context scan."""
+
+    @property
+    def default_config(self) -> dict:
+        config = super().default_config
+        config["num_v_partitions"] = 2
+        config["num_k_partitions"] = 2
+        config["partition_chunks"] = 32
+        config["partition_min_chunks"] = 512
+        config["scan_threads"] = 128
+        return config
+
+    def _build_kernels(self, config: dict) -> None:
+        super()._build_kernels(config)
+        self._a_intra_fn = _gla_fwd_a_intra_gemm_kernel(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim_k,
+            self.chunk_size,
+            self.scale,
+            self.dtype_name,
+        )(32)
+        num_chunks = self.seq_len // self.chunk_size
+        requested_partition_chunks = config.get("partition_chunks", 64)
+        self._partition_chunks = 0
+        self._summary_fn = None
+        self._scan_fn = None
+
+        # This is the model-shaped Hopper path inherited from GDN prefill.
+        # Short and irregular workloads retain the ordinary recurrence.
+        if (
+            self.batch == 1
+            and self.heads <= 16
+            and self.chunk_size == 64
+            and self.dim_k == 128
+            and self.dim_v == 128
+            and num_chunks >= config.get("partition_min_chunks", 512)
+            and requested_partition_chunks > 0
+            and num_chunks % requested_partition_chunks == 0
+        ):
+            self._partition_chunks = requested_partition_chunks
+            num_vp = config.get("num_v_partitions", 4)
+            num_kp = config.get("num_k_partitions", 2)
+            h_ns = config.get("h_num_stages", 2)
+            h_threads = config.get("h_threads", 128)
+            scan_threads = config.get("scan_threads", 128)
+            self._summary_fn = _gla_fwd_h_summary_kernel(
+                self.batch,
+                self.seq_len,
+                self.heads,
+                self.dim_k,
+                self.dim_v,
+                self.chunk_size,
+                self._partition_chunks,
+                self.dtype_name,
+                num_v_partitions=num_vp,
+                num_k_partitions=num_kp,
+            )(h_ns, h_threads)
+            self._scan_fn = _gla_fwd_h0_scan_kernel(
+                self.batch,
+                self.heads,
+                num_chunks // self._partition_chunks,
+                self.dim_k,
+                self.dim_v,
+            )(scan_threads)
+            self._h_fn = _gla_fwd_h_kernel(
+                self.batch,
+                self.seq_len,
+                self.heads,
+                self.dim_k,
+                self.dim_v,
+                self.chunk_size,
+                self.dtype_name,
+                self.state_dtype_name,
+                initial_state_dtype="float32",
+                partition_chunks=self._partition_chunks,
+                num_v_partitions=num_vp,
+                num_k_partitions=num_kp,
+            )(h_ns, h_threads)
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        chunk_size: int = 64,
+        scale: float = -1.0,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=dim_v,
+            chunk_size=chunk_size,
+            scale=scale,
+            output_final_state=True,
+            dtype=dtype,
+            config=config,
+            tune=tune,
+            state_dtype=str(dtype).split(".")[-1],
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self._partition_chunks:
+            o, final_state = super().forward(q, k, v, g, initial_state=None)
+            assert final_state is not None
+            return o, final_state
+
+        dtype_torch = getattr(torch, self.dtype_name)
+        q = q.to(dtype_torch)
+        k = k.to(dtype_torch)
+        v = v.to(dtype_torch)
+        g_cumsum = self._g_fn(g.to(dtype_torch))
+
+        assert self._summary_fn is not None
+        assert self._scan_fn is not None
+        summaries, log_decays = self._summary_fn(k, v, g_cumsum)
+        partition_initial_states = self._scan_fn(summaries, log_decays)
+        h_out = self._h_fn(k, v, g_cumsum, partition_initial_states)
+
+        A = self._a_inter_fn(q, k, g_cumsum)
+        self._a_intra_fn(q, k, g_cumsum, A)
+        o = self._o_fn(q, v, g_cumsum, h_out, A)
+        return o, h_out[:, -1]

@@ -291,6 +291,47 @@ class GLAChunkwiseWorkload(WorkloadBase):
         return q, k, v, g
 
 
+class GLAPrefillFwdWorkload(GLAChunkwiseWorkload):
+    """Zero-state BTHD GLA prefill workload."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        B, T, H, K = q.shape
+        V = v.shape[-1]
+        C = self.chunk_size
+        scale = K**-0.5
+        state = torch.zeros(B, H, K, V, device=q.device, dtype=torch.float32)
+        o = torch.empty(B, T, H, V, device=q.device, dtype=torch.float32)
+
+        for chunk_start in range(0, T, C):
+            chunk_end = chunk_start + C
+            q_c = q[:, chunk_start:chunk_end].float()
+            k_c = k[:, chunk_start:chunk_end].float()
+            v_c = v[:, chunk_start:chunk_end].float()
+            g_c = g[:, chunk_start:chunk_end].float().cumsum(dim=1)
+
+            q_gated = q_c * torch.exp(g_c)
+            inter = torch.einsum("bthk,bhkv->bthv", q_gated, state) * scale
+            k_ungated = k_c * torch.exp(-g_c)
+            scores = torch.einsum("bthk,bshk->bhts", q_gated, k_ungated)
+            mask = torch.tril(torch.ones(C, C, device=q.device, dtype=torch.bool))
+            scores = scores.masked_fill(~mask, 0.0) * scale
+            intra = torch.einsum("bhts,bshv->bthv", scores, v_c)
+            o[:, chunk_start:chunk_end] = inter + intra
+
+            g_last = g_c[:, -1]
+            k_gated = k_c * torch.exp(g_last[:, None] - g_c)
+            state = state * torch.exp(g_last).unsqueeze(-1)
+            state = state + torch.einsum("bthk,bthv->bhkv", k_gated, v_c)
+
+        return o.to(self.dtype), state.to(self.dtype)
+
+
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
     B, H, S, DK = k.shape
     _, _, _, DV = v.shape
