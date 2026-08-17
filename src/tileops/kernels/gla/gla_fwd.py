@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import tilelang
 import torch
@@ -529,87 +529,6 @@ def _gla_fwd_a_inter_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gla_fwd_a_intra_kernel(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    chunk_size: int,
-    scale: float,
-    dtype: str,
-) -> Callable:
-    """Compute diagonal causal 16-token sub-blocks in stable fp32."""
-    accum_dtype = "float32"
-    block_t = 16
-    num_sub_blocks = chunk_size // block_t
-    num_chunks = seq_len // chunk_size
-
-    @tilelang.jit(
-        out_idx=[],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
-    )
-    def _a_func(threads=256):
-        qk_shape = [batch, seq_len, heads, dim_k]
-        a_shape = [batch, seq_len, heads, chunk_size]
-
-        @T.prim_func
-        def _main(
-            q: T.Tensor(qk_shape, dtype),
-            k: T.Tensor(qk_shape, dtype),
-            g_cumsum: T.Tensor(qk_shape, accum_dtype),
-            A: T.Tensor(a_shape, dtype),
-        ):
-            with T.Kernel(num_chunks, num_sub_blocks, batch * heads, threads=threads) as (
-                i_c,
-                i_i,
-                i_bh,
-            ):
-                i_b = i_bh // heads
-                i_h = i_bh % heads
-                block_start = i_c * chunk_size + i_i * block_t
-
-                q_s = T.alloc_shared([block_t, dim_k], dtype)
-                k_s = T.alloc_shared([block_t, dim_k], dtype)
-                g_s = T.alloc_shared([block_t, dim_k], accum_dtype)
-                products = T.alloc_fragment([block_t, dim_k], accum_dtype)
-                row_sums = T.alloc_fragment([block_t], accum_dtype)
-
-                T.copy(q[i_b, block_start : block_start + block_t, i_h, :], q_s, disable_tma=True)
-                T.copy(k[i_b, block_start : block_start + block_t, i_h, :], k_s, disable_tma=True)
-                T.copy(
-                    g_cumsum[i_b, block_start : block_start + block_t, i_h, :],
-                    g_s,
-                    disable_tma=True,
-                )
-
-                for i_s in T.Serial(block_t):
-                    for i_t, i_k in T.Parallel(block_t, dim_k):
-                        products[i_t, i_k] = T.if_then_else(
-                            i_t >= i_s,
-                            T.cast(q_s[i_t, i_k], accum_dtype)
-                            * T.cast(k_s[i_s, i_k], accum_dtype)
-                            * T.exp2((g_s[i_t, i_k] - g_s[i_s, i_k]) * LOG2_E),
-                            T.float32(0.0),
-                        )
-                    T.reduce_sum(products, row_sums, dim=1)
-                    for i_t in T.Parallel(block_t):
-                        A[
-                            i_b,
-                            block_start + i_t,
-                            i_h,
-                            i_i * block_t + i_s,
-                        ] = T.cast(row_sums[i_t] * scale, dtype)
-
-        return _main
-
-    return _a_func
-
-
-@functools.lru_cache(maxsize=32)
 def _gla_fwd_a_intra_gemm_kernel(
     batch: int,
     seq_len: int,
@@ -803,71 +722,6 @@ def _gla_fwd_o_kernel(
     return _o_func
 
 
-# Custom op wrappers (kept for torch.compile compatibility)
-
-
-@torch.library.custom_op("top::gla_fwd_wrapped_kernel", mutates_args=("h_out",))
-def _gla_fwd_wrapped_kernel(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    scale: float,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    initial_state: torch.Tensor,
-    h_out: torch.Tensor,
-) -> torch.Tensor:
-    # Three-pass: precompute g_cumsum, then h, then o
-    g_fn = _gla_precompute_g_kernel(batch, seq_len, heads, dim_k, chunk_size, dtype)(
-        num_stages, threads
-    )
-    h_fn = _gla_fwd_h_kernel(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)(
-        num_stages, threads
-    )
-    a_inter_fn = _gla_fwd_a_inter_kernel(batch, seq_len, heads, dim_k, chunk_size, scale, dtype)(
-        threads
-    )
-    a_intra_fn = _gla_fwd_a_intra_kernel(batch, seq_len, heads, dim_k, chunk_size, scale, dtype)(
-        256
-    )
-    o_fn = _gla_fwd_o_kernel(batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype)(
-        num_stages, threads
-    )
-    g_cumsum = g_fn(g)
-    h_fn(k, v, g_cumsum, initial_state, h_out)
-    A = a_inter_fn(q, k, g_cumsum)
-    a_intra_fn(q, k, g_cumsum, A)
-    return o_fn(q, v, g_cumsum, h_out, A)
-
-
-@_gla_fwd_wrapped_kernel.register_fake
-def _(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    scale: float,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    *inputs: tuple[Any],
-) -> torch.Tensor:
-    _ = (dim_k, chunk_size, scale, dtype, num_stages, threads)
-    return torch.empty(
-        [batch, seq_len, heads, dim_v], dtype=inputs[0].dtype, device=inputs[0].device
-    )
-
-
 class GLAFwdKernel(Kernel):
     """GLA (Gated Linear Attention) forward kernel — three-pass architecture.
 
@@ -924,7 +778,6 @@ class GLAFwdKernel(Kernel):
             "h_num_stages": 2,
             "h_threads": 128,
             "a_inter_threads": 64,
-            "a_intra_threads": 128,
             "o_num_stages": 2,
             "o_threads": 256,
             "num_v_partitions": 4,
@@ -960,7 +813,6 @@ class GLAFwdKernel(Kernel):
         h_ns = config.get("h_num_stages", ns)
         h_threads = config.get("h_threads", thr_seq)
         a_inter_threads = config.get("a_inter_threads", 64)
-        a_intra_threads = config.get("a_intra_threads", 256)
         o_ns = config.get("o_num_stages", ns)
         o_threads = config.get("o_threads", thr_par)
         num_vp = config.get("num_v_partitions", 4)
@@ -994,7 +846,7 @@ class GLAFwdKernel(Kernel):
             self.scale,
             self.dtype_name,
         )(a_inter_threads)
-        self._a_intra_fn = _gla_fwd_a_intra_kernel(
+        self._a_intra_fn = _gla_fwd_a_intra_gemm_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -1002,7 +854,7 @@ class GLAFwdKernel(Kernel):
             self.chunk_size,
             self.scale,
             self.dtype_name,
-        )(a_intra_threads)
+        )(32)
         self._o_fn = _gla_fwd_o_kernel(
             self.batch,
             self.seq_len,
@@ -1137,15 +989,6 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
 
     def _build_kernels(self, config: dict) -> None:
         super()._build_kernels(config)
-        self._a_intra_fn = _gla_fwd_a_intra_gemm_kernel(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim_k,
-            self.chunk_size,
-            self.scale,
-            self.dtype_name,
-        )(32)
         num_chunks = self.seq_len // self.chunk_size
         requested_partition_chunks = config.get("partition_chunks", 64)
         self._partition_chunks = 0
