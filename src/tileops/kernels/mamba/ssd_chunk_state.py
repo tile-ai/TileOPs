@@ -379,21 +379,26 @@ class SSDChunkStateFwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # threads=128 (4 warps) reduces register pressure and improves occupancy over 256.
-        # A larger reduction tile wins on the primary Mamba geometry while its
-        # CTA grid remains small; larger grids retain the lower-pressure default.
+        # The primary Mamba geometry benefits from fewer reduction-loop syncs.
+        # Small grids split N for more CTAs; saturated grids avoid reloading X.
         grid_size = self.batch * self.num_chunks * self.n_heads
-        use_large_reduction_tile = (
+        primary_mamba_geometry = (
             self.chunk_len == 256
             and self.d_head == 64
             and self.d_state == 128
-            and grid_size <= 640
         )
-        block_n = 64 if use_large_reduction_tile else min(128, self.d_state)
-        block_l = 128 if use_large_reduction_tile else 32
+        if primary_mamba_geometry:
+            small_grid = grid_size <= 640
+            return {
+                "block_n": 64 if small_grid else 128,
+                "block_p": 64,
+                "block_l": 128 if small_grid else 64,
+                "threads": 128,
+            }
         return {
-            "block_n": block_n,
+            "block_n": min(128, self.d_state),
             "block_p": 64,
-            "block_l": block_l,
+            "block_l": 32,
             "threads": 128,
         }
 
