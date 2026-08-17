@@ -88,6 +88,7 @@ def _ssd_chunk_state_fwd_kernel(
     n_groups: int,
     has_seq_idx: bool = False,
     dtype: str = "float16",
+    dt_dtype: str = "float32",
 ) -> Callable:
     accum_dtype = "float"
 
@@ -113,7 +114,7 @@ def _ssd_chunk_state_fwd_kernel(
         def main(
             x: T.Tensor((B, S, H, P), dtype),                # type: ignore
             Bmat: T.Tensor((B, S, G, N), dtype),              # type: ignore
-            dt: T.Tensor((B, H, C, Q), dtype),                # type: ignore  Accept dtype, cast on load
+            dt: T.Tensor((B, H, C, Q), dt_dtype),             # type: ignore
             dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),   # type: ignore
             seq_idx: T.Tensor((B, S), "int32"),               # type: ignore
             out: T.Tensor((B, C, H, P, N), accum_dtype),      # type: ignore
@@ -274,6 +275,7 @@ def _ssd_chunk_state_fwd_wrapped(
     n_groups: int,
     has_seq_idx: bool,
     dtype: str,
+    dt_dtype: str,
     block_n: int,
     block_p: int,
     block_l: int,
@@ -285,7 +287,9 @@ def _ssd_chunk_state_fwd_wrapped(
     seq_idx: torch.Tensor,
 ) -> torch.Tensor:
     return _ssd_chunk_state_fwd_kernel(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, has_seq_idx, dtype)(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups,
+        has_seq_idx, dtype, dt_dtype,
+    )(
         block_n, block_p, block_l, threads,
     )(x, Bmat, dt, dA_cumsum, seq_idx)
 
@@ -301,6 +305,7 @@ def _(
     n_groups: int,
     has_seq_idx: bool,
     dtype: str,
+    dt_dtype: str,
     block_n: int,
     block_p: int,
     block_l: int,
@@ -359,6 +364,7 @@ class SSDChunkStateFwdKernel(Kernel):
         has_seq_idx: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        dt_dtype: Optional[torch.dtype] = None,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -369,10 +375,11 @@ class SSDChunkStateFwdKernel(Kernel):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.dt_dtype = dt_dtype or dtype
         self.has_seq_idx = has_seq_idx
         self.kernel = _ssd_chunk_state_fwd_kernel(
             batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups,
-            has_seq_idx, self.dtype_str,
+            has_seq_idx, self.dtype_str, self.dtype_to_str(self.dt_dtype),
         )
         self.init_config(config, tune)
 
@@ -389,6 +396,21 @@ class SSDChunkStateFwdKernel(Kernel):
         )
         if primary_mamba_geometry:
             small_grid = grid_size <= 640
+            if small_grid and not self.has_seq_idx and self.dt_dtype == torch.float32:
+                if self.dtype == torch.float16 and grid_size == 512:
+                    return {
+                        "block_n": 128,
+                        "block_p": 64,
+                        "block_l": 128,
+                        "threads": 256,
+                    }
+                if self.dtype == torch.bfloat16 and grid_size == 640:
+                    return {
+                        "block_n": 64,
+                        "block_p": 64,
+                        "block_l": 64,
+                        "threads": 128,
+                    }
             return {
                 "block_n": 64 if small_grid else 128,
                 "block_p": 64,
@@ -438,21 +460,20 @@ class SSDChunkStateFwdKernel(Kernel):
         Args:
             x: (batch, seqlen, n_heads, d_head) dtype
             Bmat: (batch, seqlen, n_groups, d_state) dtype
-            dt: (batch, n_heads, num_chunks, chunk_len) dtype — will be cast to fp32 internally
+            dt: (batch, n_heads, num_chunks, chunk_len) float32 or dtype
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
             seq_idx: (batch, seqlen) int32
 
         Returns:
             out: (batch, num_chunks, n_heads, d_head, d_state) float32
 
-        Note: If dt.dtype != self.dtype, this method silently casts dt, which incurs an
-        extra kernel launch. For best performance, ensure dt is already in self.dtype.
+        The compiled kernel reads dt in its input dtype and converts values to
+        float32 during accumulation.
         """
-        if dt.dtype != self.dtype:
-            dt = dt.to(self.dtype)
         return _ssd_chunk_state_fwd_wrapped(
             self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.d_head,
             self.d_state, self.n_groups, self.has_seq_idx, self.dtype_str,
+            self.dtype_to_str(self.dt_dtype),
             self.config["block_n"], self.config["block_p"], self.config["block_l"],
             self.config["threads"],
             x, Bmat, dt, dA_cumsum, seq_idx,
