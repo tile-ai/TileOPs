@@ -2895,7 +2895,10 @@ def check_l3_validate_dtypes_parity(
         return errors
 
     # Only pass tensors corresponding to manifest inputs (forward args).
-    forward_inputs = list(inputs.keys())
+    # R18.1 keeps an optional input out of every dtype_combos row, so a probe
+    # that demanded a column for it could never be satisfied.
+    optional_inputs = set(_optional_input_names(sig))
+    forward_inputs = [n for n in inputs if n not in optional_inputs]
     params = sig.get("params") or {}
     param_defaults = _param_defaults(params)
 
