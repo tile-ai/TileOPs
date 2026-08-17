@@ -109,11 +109,11 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
       k: {dtype: "same_as(q)"}
       v: {dtype: "same_as(q)"}
-      q_scale: {dtype: "float32"}
-      k_scale: {dtype: "float32"}
-      v_scale: {dtype: "float32"}
-      rope_cos: {dtype: "float16 | bfloat16"}
-      rope_sin: {dtype: "same_as(rope_cos)"}
+      q_scale: {dtype: "float32", optional: true}
+      k_scale: {dtype: "float32", optional: true}
+      v_scale: {dtype: "float32", optional: true}
+      rope_cos: {dtype: "float16 | bfloat16", optional: true}
+      rope_sin: {dtype: "same_as(rope_cos)", optional: true}
     outputs:
       o: {dtype: "float16 | bfloat16"}
     params:
