@@ -704,6 +704,182 @@ class TestTorchCompileFullgraph:
 
 # variant_of: cross-entry consistency (R16)
 
+class TestOptionalInputs:
+    """R18: optional tensor inputs, where the name may appear, coverage."""
+
+    @staticmethod
+    def _entry(**over):
+        """Entry with one optional input ``w`` and both coverage rows."""
+        inputs = {
+            "x": {"dtype": "float16"},
+            "w": {"dtype": "same_as(x)", "optional": True},
+        }
+        entry = _make_entry(
+            inputs=inputs, status="implemented",
+            kernel_map={"k": "K"},
+        )
+        entry["signature"]["shape_rules"] = [
+            "y.shape == x.shape",
+            "w is None or w.shape == (x.shape[1],)",
+        ]
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["float16"]},
+            {"x_shape": [1, 4096], "dtypes": ["float16"], "w_shape": [4096]},
+        ]
+        entry.update(over)
+        return entry
+
+    def test_conforming_entry_passes(self, validator):
+        assert validator.check_l0("Op", self._entry()) == []
+
+    def test_optional_only_on_inputs(self, validator):
+        entry = self._entry()
+        entry["signature"]["outputs"]["y"]["optional"] = True
+        errors = validator.check_l0("Op", entry)
+        assert any("only on signature.inputs" in e for e in errors), errors
+
+    def test_optional_must_be_literal_true(self, validator):
+        entry = self._entry()
+        entry["signature"]["inputs"]["w"]["optional"] = "yes"
+        errors = validator.check_l0("Op", entry)
+        assert any("literal true" in e for e in errors), errors
+
+    def test_unguarded_use_in_shape_rules_rejected(self, validator):
+        entry = self._entry()
+        entry["signature"]["shape_rules"][1] = "w.shape == (x.shape[1],)"
+        errors = validator.check_l0("Op", entry)
+        assert any("without a preceding 'w is None'" in e for e in errors), errors
+
+    def test_is_not_none_and_form_rejected(self, validator):
+        """The ``and`` form fails a legal absent call, so it is not accepted."""
+        entry = self._entry()
+        entry["signature"]["shape_rules"][1] = (
+            "w is not None and w.shape == (x.shape[1],)"
+        )
+        errors = validator.check_l0("Op", entry)
+        assert any("without a preceding 'w is None'" in e for e in errors), errors
+
+    def test_guard_need_not_be_leftmost(self, validator):
+        """Several optionals each guard their own use, in any order."""
+        entry = self._entry()
+        entry["signature"]["inputs"]["v"] = {
+            "dtype": "same_as(x)", "optional": True,
+        }
+        entry["signature"]["shape_rules"][1] = (
+            "w is None or v is None or w.shape == v.shape"
+        )
+        entry["workloads"][1]["v_shape"] = [4096]
+        assert validator.check_l0("Op", entry) == []
+
+    def test_guard_need_not_be_the_first_disjunct(self, validator):
+        """`or` short-circuits per operand, so an unrelated leading test is fine."""
+        entry = self._entry()
+        entry["signature"]["shape_rules"][1] = (
+            "x.ndim == 3 or w is None or w.shape == (x.shape[1],)"
+        )
+        assert validator.check_l0("Op", entry) == []
+
+    def test_guard_after_the_use_rejected(self, validator):
+        entry = self._entry()
+        entry["signature"]["shape_rules"][1] = (
+            "w.shape == (x.shape[1],) or w is None"
+        )
+        errors = validator.check_l0("Op", entry)
+        assert any("without a preceding 'w is None'" in e for e in errors), errors
+
+    def test_optional_inside_a_call_argument_needs_a_guard(self, validator):
+        entry = self._entry()
+        entry["signature"]["shape_rules"][1] = (
+            "y.shape == broadcast_shapes(x.shape, w.shape)"
+        )
+        errors = validator.check_l0("Op", entry)
+        assert any("without a preceding 'w is None'" in e for e in errors), errors
+
+    def test_bare_presence_test_allowed(self, validator):
+        entry = self._entry()
+        entry["signature"]["shape_rules"].append("(w is None) == (w is None)")
+        assert validator.check_l0("Op", entry) == []
+
+    def test_roofline_rejects_attribute_access(self, validator):
+        entry = self._entry()
+        entry["roofline"] = {
+            "vars": {"C": "w.shape[0]"}, "flops": "2 * C", "bytes": "C",
+        }
+        errors = validator.check_l0("Op", entry)
+        assert any("other than a presence test" in e for e in errors), errors
+
+    def test_roofline_allows_presence_test(self, validator):
+        entry = self._entry()
+        entry["roofline"] = {
+            "vars": {"affine": "w is not None"},
+            "flops": "(5 if affine else 3) * 2",
+            "bytes": "2",
+        }
+        assert validator.check_l0("Op", entry) == []
+
+    def test_dtype_combos_column_rejected(self, validator):
+        entry = self._entry()
+        entry["signature"]["dtype_combos"] = [
+            {"x": "float16", "w": "float16", "y": "float16"},
+        ]
+        errors = validator.check_l0("Op", entry)
+        assert any("has a column for optional input" in e for e in errors), errors
+
+    def test_same_as_reference_rejected(self, validator):
+        entry = self._entry()
+        entry["signature"]["outputs"]["y"]["dtype"] = "same_as(w)"
+        errors = validator.check_l0("Op", entry)
+        assert any("through same_as()" in e for e in errors), errors
+
+    def test_optional_local_symbol_may_not_leak(self, validator):
+        entry = self._entry()
+        entry["signature"]["inputs"]["x"]["shape"] = "[B, C]"
+        entry["signature"]["inputs"]["w"]["shape"] = "[G]"
+        entry["signature"]["outputs"]["y"]["shape"] = "[B, G]"
+        errors = validator.check_l0("Op", entry)
+        assert any("bound only by optional input" in e for e in errors), errors
+
+    def test_optional_may_bind_its_own_symbol(self, validator):
+        entry = self._entry()
+        entry["signature"]["inputs"]["x"]["shape"] = "[B, C]"
+        entry["signature"]["inputs"]["w"]["shape"] = "[G]"
+        entry["signature"]["outputs"]["y"]["shape"] = "[B, C]"
+        assert validator.check_l0("Op", entry) == []
+
+    def test_coverage_needs_a_row_that_passes_it(self, validator):
+        entry = self._entry()
+        entry["workloads"] = [{"x_shape": [1, 4096], "dtypes": ["float16"]}]
+        errors = validator.check_l0("Op", entry)
+        assert any("no workload row passes" in e for e in errors), errors
+
+    def test_coverage_needs_a_row_that_omits_it(self, validator):
+        entry = self._entry()
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["float16"], "w_shape": [4096]},
+        ]
+        errors = validator.check_l0("Op", entry)
+        assert any("every workload row passes" in e for e in errors), errors
+
+    def test_coverage_counts_per_input_not_per_combination(self, validator):
+        """Two optionals need 2 rows, not 4 (R18.2)."""
+        entry = self._entry()
+        entry["signature"]["inputs"]["v"] = {
+            "dtype": "same_as(x)", "optional": True,
+        }
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["float16"]},
+            {"x_shape": [1, 4096], "dtypes": ["float16"],
+             "w_shape": [4096], "v_shape": [4096]},
+        ]
+        assert validator.check_l0("Op", entry) == []
+
+    def test_spec_only_entries_exempt_from_coverage(self, validator):
+        entry = self._entry(status="spec-only")
+        entry["workloads"] = [{"x_shape": [1, 4096], "dtypes": ["float16"]}]
+        errors = validator.check_l0("Op", entry)
+        assert not any("workload row" in e for e in errors), errors
+
+
 class TestVariantOf:
     """variant_of checks cross-entry consistency."""
 
