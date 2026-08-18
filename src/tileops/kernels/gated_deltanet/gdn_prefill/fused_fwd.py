@@ -22,7 +22,7 @@ TARGET_NUM_CTAS = int(MULTI_PROCESSOR_COUNT * 0.7)
     },
     compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
 )
-def tilelang_fused_chunk_gdr_fwd(
+def _build_fused_chunk_gdr_fwd_kernel(
     H,
     Hg,
     DK,
@@ -78,7 +78,7 @@ def tilelang_fused_chunk_gdr_fwd(
     ht_shape = (raw_batch_size, H, DK, DV)
 
     @T.prim_func
-    def tilelang_fused_chunk_gdr_fwd_kernel(
+    def fused_chunk_gdr_fwd_kernel(
         q: T.Tensor(q_shape, dtype=qkva_dtype),
         k: T.Tensor(k_shape, dtype=qkva_dtype),
         v: T.Tensor(v_shape, dtype=qkva_dtype),
@@ -557,7 +557,7 @@ def tilelang_fused_chunk_gdr_fwd(
                                         bv * block_DV + j_v,
                                     ] = o_shared[j_s, j_v]
 
-    return tilelang_fused_chunk_gdr_fwd_kernel
+    return fused_chunk_gdr_fwd_kernel
 
 
 def fused_gdr_fwd(
@@ -655,7 +655,7 @@ def fused_gdr_fwd(
     else:
         block_DV = min(32, V)
 
-    tilelang_fused_chunk_gdr_fwd_kernel = tilelang_fused_chunk_gdr_fwd(
+    fused_chunk_gdr_fwd_kernel = _build_fused_chunk_gdr_fwd_kernel(
         H,
         Hg,
         K,
@@ -681,7 +681,7 @@ def fused_gdr_fwd(
         state_head_first=state_head_first,
         chunks_per_sequence=chunks_per_sequence,
     )
-    tilelang_fused_chunk_gdr_fwd_kernel(
+    fused_chunk_gdr_fwd_kernel(
         q,
         k,
         v,

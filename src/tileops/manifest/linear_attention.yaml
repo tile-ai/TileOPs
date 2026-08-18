@@ -275,7 +275,6 @@ GatedDeltaNetFwdOp:
     - "layout != 'bthd' or o.shape == (B, S, H, DV)"
     - "layout != 'bthd' or Aw.shape == (B, S, H, chunk_size)"
     - "layout != 'bthd' or Au.shape == (B, S, H, chunk_size)"
-    - "S.shape == (B, H, NC + 1, DK, DV)"
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
   workloads: []

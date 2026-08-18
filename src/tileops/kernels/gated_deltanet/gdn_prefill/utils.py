@@ -86,7 +86,7 @@ def prepare_chunk_indices(
 
 
 @tilelang.jit()
-def tilelang_prepare_chunk_offsets(
+def _build_prepare_chunk_offsets_kernel(
     chunk_size,
     block_size,
     dtype,
@@ -95,7 +95,7 @@ def tilelang_prepare_chunk_offsets(
     num_threads = min(max(block_size, 32), 128)
 
     @T.prim_func
-    def tilelang_prepare_chunk_offsets_kernel(
+    def prepare_chunk_offsets_kernel(
         cu_seqlens: T.Tensor([batch_size_plus_1], dtype=dtype),
         chunk_offsets: T.Tensor([batch_size_plus_1], dtype=dtype),
     ):
@@ -122,7 +122,7 @@ def tilelang_prepare_chunk_offsets(
             chunk_offsets[0] = 0
             T.copy(chunk_offset_fragment, chunk_offsets[1:])
 
-    return tilelang_prepare_chunk_offsets_kernel
+    return prepare_chunk_offsets_kernel
 
 
 @tensor_cache
@@ -131,10 +131,10 @@ def prepare_chunk_offsets(
     chunk_size: int,
 ) -> torch.LongTensor:
     chunk_offsets = torch.empty_like(cu_seqlens)
-    tilelang_prepare_chunk_offsets_kernel = tilelang_prepare_chunk_offsets(
+    prepare_chunk_offsets_kernel = _build_prepare_chunk_offsets_kernel(
         chunk_size=chunk_size,
         block_size=tilelang.next_power_of_2(cu_seqlens.shape[0] - 1),
         dtype=cu_seqlens.dtype,
     )
-    tilelang_prepare_chunk_offsets_kernel(cu_seqlens, chunk_offsets)
+    prepare_chunk_offsets_kernel(cu_seqlens, chunk_offsets)
     return chunk_offsets, chunk_offsets[-1].item()
