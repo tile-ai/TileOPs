@@ -19,7 +19,7 @@
 # (780M: H=48, 1.3B: H=64, 2.7B: H=80; P=64, N=128, Q=256, G=1).
 #
 # Conditional tensor inputs (dt_bias, seq_idx, initial_states) declare
-# `optional: true` (R18); a workload row passes one by carrying its
+# `optional: true`; a workload row passes one by carrying its
 # `<input>_shape` key.
 
 DaCumsumFwdOp:

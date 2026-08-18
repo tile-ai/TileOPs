@@ -96,48 +96,9 @@ dtype_combos:
 
 **R17. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
 
-**R18. Optional tensor inputs.** A tensor input the op *reads* may declare `optional: true`. Whether it was passed is a fact kernel dispatch may read; the tensor's contents are not. "Not passed" means bound to `None`. `optional: true` appears only under `signature.inputs`; params express optionality with `default`.
+**R18. Optional tensor inputs.** A tensor input the op *reads* may declare `optional: true`, under `signature.inputs` only; params express optionality with `default`. "Not passed" means bound to `None`, and whether it was passed is a fact kernel dispatch may read — the tensor's contents are not. A caller-supplied output buffer (`out=`) is not this: the op writes it and the return aliases it, so the mutating and functional forms are two operators. Authoring rules: [Optional Inputs](#optional-inputs).
 
-An output buffer the caller supplies (`out=`) is not covered: the op writes it, the return value aliases it, and the mutating and functional forms are two operators. Do not spell it as an optional input.
-
-**R18.1. Where an optional name may appear.** The name of an optional input `X` may appear in exactly three places: `X`'s own `dtype` / `shape` declaration; a bare presence test `X is None` / `X is not None`; and a use already guarded by `X is None` earlier in the same expression. Every other position states something that must hold on every call, so the name is rejected there. Absence is not a value — it is the name having no referent — and an unconditional declaration that depends on it means nothing on the call where it is absent.
-
-Per position:
-
-| position                             | rule                                                                                                                                            |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or` |
-| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                            |
-| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params and `elem_bytes`, so a presence test reaches it through a `vars` entry                |
-| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                            |
-| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                           |
-| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                               |
-
-`shape_rules` entries are conjuncts, so the guard is `X is None or <condition>`, never `X is not None and <condition>`: the second form reports a legal absent call as a violation. The guard must precede the use, not sit leftmost; `min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)` is well formed.
-
-Roofline expressions take no guard because recognising one would mean resolving an indirection through `vars`, which the validator does not do. A formula that needs an optional tensor's own shape uses `roofline: {func: ...}` instead, where the function sees the actual call.
-
-Symbols first bound inside `X`'s `shape` are defined only when `X` is present, so they may not appear in any required input's or output's `shape`. A `workloads` row is sample call data rather than a contract expression: `<X>_shape` present means `X` is passed on that row, absent means it is not, and R18.1 does not reach it.
-
-**R18.2. Workload coverage of optional inputs.** For every optional input, at least one workload row must pass it and at least one must omit it. Counted per input, not per combination: n optional inputs are 2n states, not 2ⁿ. `status: spec-only` entries are exempt (R15 runs them at L0 only).
-
-The rule reaches optional inputs and nothing else. Which value a param takes is benchmark completeness, tracked on its own; which shape range picks which kernel is a branch only the kernel knows, and [testing.md](testing.md) already makes the op author cover it with the smallest shape that triggers each branch.
-
-**R18.3. What the validator does not check.** Five things, deliberately:
-
-- It does not solve `shape_rules` for the set of legal ways to call the op.
-- It does not sort rules into presence rules and shape rules; both kinds may reference shapes, params and whitelisted helpers.
-- It does not enumerate the 2ⁿ ways to pass n optional inputs.
-- It does not ask the manifest for a field declaring which optional inputs go together; `(weight is None) == (bias is None)` stays an ordinary `shape_rules` string.
-- It does not stop a call that passes half of a co-occurring group. The op's own check in `forward` does, the same way every other shape constraint is caught, and the error names which group was given in part.
-
-What runtime can never report — a contract position no workload row covers — is what R18.2 checks statically.
-
-**R18.4. Roofline counts the call that ran.** The cost of a call includes the optional inputs it actually passed and excludes the ones it did not; "everything passed" is not an upper bound to fall back on. Inline expressions branch on a presence test, `func` mode reads the call.
-
-**R18.5. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch — an extra tensor, a different name — is two entries, because the caller cannot unpack a return whose shape it does not know.
-
-**R18.6. No `variant_of`.** There is no such field: an entry that stays separate under R18.5 is an ordinary independent entry, and a reader sees the common origin of two of them from the `source.op` path they share. Conditional inputs take `optional: true`; a signature difference `optional: true` cannot describe — a concept crossing `params` / `inputs`, a different output arity, a different algorithm — is two entries.
+**R18.1. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch is two entries, because the caller cannot unpack a return whose shape it does not know.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 
@@ -353,7 +314,8 @@ Fixed rank, expressible with dimension names?
 
 #### Optional Inputs
 
-A tensor input the op reads may be optional (R18). One entry then covers passing it and omitting it.
+A tensor input the op reads may be optional (R18). One entry then covers passing it and
+omitting it.
 
 ```yaml
 signature:
@@ -371,16 +333,65 @@ workloads:
    dtypes: [float16], weight_shape: [128], bias_shape: [128]}
 ```
 
-Several optional inputs that share one switch state that relation in `shape_rules`; the
-rules are ordinary conjuncts, no new field and no separate list. Where the name may appear
-is R18.1, and the workload rows above are what R18.2 requires.
+Optional inputs that share one switch state that relation in `shape_rules`, as the first
+rule above does. The rules are ordinary conjuncts — no new field, no separate list.
 
-`optional: true` does not merge everything. Three shapes stay as separate entries: an op
-whose outputs change with a switch (R18.5), an op that puts the same concept in `params` in
-one form and in `inputs` in another (`LerpFwdOp` versus `LerpTensorFwdOp`), and one
-signature served by genuinely different algorithms (the `Rope*` family) unless the choice
-becomes a param. Each writes the same `source.op`, which is where a reader sees they come
-from one implementation.
+**Where the name may appear.** In three places: `X`'s own `dtype` / `shape` declaration; a
+bare presence test `X is None` / `X is not None`; and a use already guarded by `X is None`
+earlier in the same expression. Every other position states something that must hold on
+every call, and absence is not a value — it is the name having no referent — so an
+unconditional declaration that depends on it means nothing on the call that omits it.
+
+| position                             | rule                                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or` |
+| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                            |
+| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params and `elem_bytes`, so a presence test reaches it through a `vars` entry                |
+| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                            |
+| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                           |
+| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                               |
+
+The guard is `X is None or <condition>`, never `X is not None and <condition>`:
+`shape_rules` entries are conjuncts, so the second form reports a legal absent call as a
+violation. It must precede the use but need not sit leftmost —
+`min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)`
+is well formed. A formula that needs an optional tensor's own shape uses
+`roofline: {func: ...}`, where the function sees the actual call.
+
+**Workload coverage.** Every optional input needs at least one row that passes it and at
+least one that omits it, counted per input rather than per combination: n optional inputs
+are 2n states, not 2ⁿ. A row passes `X` by carrying `<X>_shape`, whatever else it writes —
+a row is sample call data, not a contract expression, so the position rules above do not
+reach it. `status: spec-only` entries are exempt (R15 runs them at L0 only).
+
+Coverage reaches optional inputs and nothing else. Which value a param takes is benchmark
+completeness, tracked on its own; which shape range picks which kernel is a branch only the
+kernel knows, and [testing.md](testing.md) already makes the op author cover it with the
+smallest shape that triggers each branch.
+
+**Roofline counts the call that ran.** Its cost includes the optional inputs the call
+passed and excludes the ones it did not; "everything passed" is not an upper bound to fall
+back on. Inline expressions branch on a presence test taken from `vars`, `func` mode reads
+the call.
+
+**What the validator does not check.** Five things, deliberately:
+
+- It does not solve `shape_rules` for the set of legal ways to call the op.
+- It does not sort rules into presence rules and shape rules; both kinds may reference shapes, params and whitelisted helpers.
+- It does not enumerate the 2ⁿ ways to pass n optional inputs.
+- It does not ask the manifest for a field declaring which optional inputs go together; `(weight is None) == (bias is None)` stays an ordinary `shape_rules` string.
+- It does not stop a call that passes half of a co-occurring group. The op's own check in `forward` does, the same way every other shape constraint is caught, and the error names which group was given in part.
+
+What runtime can never report — a contract position no workload row covers — is what the
+coverage rule checks statically.
+
+**What stays separate.** `optional: true` does not merge everything. Three shapes keep
+their own entries: an op whose outputs change with a switch (R18.1), an op that puts the
+same concept in `params` in one form and in `inputs` in another (`LerpFwdOp` versus
+`LerpTensorFwdOp`), and one signature served by genuinely different algorithms (the `Rope*`
+family), which produce different values from the same inputs and so carry a `ref_api` and a
+roofline each. There is no field linking them: each writes the same `source.op`, which is
+where a reader sees they come from one implementation.
 
 ### Workloads
 

@@ -153,9 +153,8 @@ class FusedMoe(Op):
         w_down: torch.Tensor,                           # [E, H, F]
         correction_bias: Optional[torch.Tensor] = None, # [E] float32
     ) -> torch.Tensor:                                  # [T, H]
-        # The roofline reads this to count the bias bytes of the call that ran.
-        # The shape, not the tensor: the op has no reason to keep the caller's
-        # memory alive until the next call.
+        # The roofline counts the bias bytes of the call that ran. Keep the
+        # shape, not the tensor: the op need not hold the caller's memory.
         self.correction_bias_shape = (
             None if correction_bias is None else tuple(correction_bias.shape)
         )

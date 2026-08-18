@@ -33,8 +33,8 @@ FP8LightningIndexerOp:
   workloads:
   - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [bfloat16], label: "lightning-indexer-bf16-s8k-h32-d64"}
   - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], label: "lightning-indexer-fp8-s8k-h32-d64"}
-  # index_k_scale is optional (R18.2 needs a row that passes it). index_k_scale_shape
-  # is the presence marker; this family otherwise parametrizes rows by scalar dims.
+  # A row passes index_k_scale by carrying index_k_scale_shape, whatever else
+  # it writes; the rows above give shapes as scalar dims.
   - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], index_k_scale_shape: [1, 8192, 1], label: "lightning-indexer-fp8-s8k-h32-d64-kscale"}
 
   roofline:

@@ -249,10 +249,9 @@ _register_prelu_custom_op(PreluFwdOp)
 
 # --- Tensor-bound clamp (multi-tensor inputs -> out) ---
 # ``top::elementwise_clamp_tensor`` takes Optional Tensor min/max, so one
-# registration covers both bounds, either bound alone included. Registered under
-# a namespace distinct from ClampScalarFwdOp's, and its register_fake is
-# broadcast-aware so torch.compile(fullgraph=True) traces both same-shape and
-# broadcasting inputs.
+# registration covers either bound alone and both together. Its namespace is
+# distinct from ClampScalarFwdOp's, and its register_fake is broadcast-aware so
+# torch.compile(fullgraph=True) traces broadcasting inputs too.
 _register_clamp_tensor_custom_op(ClampFwdOp)
 
 # --- MaskedFill variants (input, mask[, value] -> out) ---

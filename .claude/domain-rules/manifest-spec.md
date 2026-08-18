@@ -35,13 +35,13 @@
 
 - A tensor input the op reads may declare `optional: true` under `signature.inputs`. "Not passed" means bound to `None`; presence is a fact kernel dispatch may read. Params express optionality with `default`. A caller-supplied `out=` buffer is not an optional input.
 
-- An optional input's name may appear only in its own `dtype` / `shape` declaration, in a bare `X is None` / `X is not None` test, or in a use guarded by `X is None` earlier in the same expression. `shape_rules` take `X is None or <condition>`; a roofline presence test goes in a `vars` entry, which `flops` / `bytes` then read, and a formula needing the tensor's own shape uses `roofline: {func: ...}`. Symbols first bound in `X`'s `shape` may not appear in a required input's or output's `shape`. See [manifest.md](../../docs/design/manifest.md) R18.1.
+- An optional input's name may appear only in its own `dtype` / `shape` declaration, in a bare `X is None` / `X is not None` test, or in a use guarded by `X is None` earlier in the same expression. `shape_rules` take `X is None or <condition>`; a roofline presence test goes in a `vars` entry, which `flops` / `bytes` then read, and a formula needing the tensor's own shape uses `roofline: {func: ...}`. Symbols first bound in `X`'s `shape` may not appear in a required input's or output's `shape`. Per-position table: [manifest.md](../../docs/design/manifest.md#optional-inputs).
 
-- Every optional input needs a workload row that passes it and one that omits it, counted per input rather than per combination. Param values and kernel shape ranges are out of scope. See R18.2.
+- Every optional input needs a workload row that passes it and one that omits it, counted per input rather than per combination. Param values and kernel shape ranges are out of scope.
 
 - Merging a signature does not merge the performance account: workload rows stay split by presence, and roofline counts the optional inputs the call actually passed rather than assuming all of them.
 
-- Output names and count are fixed per entry; an op whose return changes with a switch is two entries. `variant_of` is gone — entries that stay separate are independent, sharing only their `source.op` path.
+- Output names and count are fixed per entry; an op whose return changes with a switch is two entries. Entries that stay separate are independent, sharing only their `source.op` path; no field links them.
 
 - The validator parses `shape_rules` and checks where names appear. It does not evaluate them, does not enumerate ways to call the op, and does not stop a call that passes half of a co-occurring group — the op's `forward` raises for that, naming the group.
 

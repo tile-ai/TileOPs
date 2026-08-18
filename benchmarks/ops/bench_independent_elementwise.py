@@ -101,8 +101,7 @@ def test_clamp_tensor_bench(
     test = TensorClampBenchCase(
         input_shape, dtype, min_shape=min_shape, max_shape=max_shape,
     )
-    # gen_inputs yields only the bounds this row passes; the op and the
-    # baseline both take them positionally, so widen to (x, min, max).
+    # gen_inputs yields only the bounds this row passes; widen to (x, min, max).
     x, *bounds = test.gen_inputs()
     t_min = bounds.pop(0) if min_shape is not None else None
     t_max = bounds.pop(0) if max_shape is not None else None

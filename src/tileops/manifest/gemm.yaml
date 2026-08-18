@@ -95,8 +95,8 @@ GemmFp8Op:
   - {m: 8, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "small-batch-down-m8-per-tensor"}
   - {m: 1, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "gemv-down-m1-per-tensor"}
   - {m: 1, n: 7168, k: 2048, scale_mode: block128, dtypes: [float8_e4m3fn], label: "gemv-down-m1-block128"}
-  # bias is optional (R18.2 needs a row that passes it). bias_shape is the
-  # presence marker; this family otherwise parametrizes rows by scalar dims.
+  # A row passes bias by carrying bias_shape, whatever else it writes; the
+  # rows above give shapes as scalar dims.
   - {m: 128, n: 2112, k: 7168, scale_mode: per_tensor, dtypes: [float8_e4m3fn], bias_shape: [2112], label: "ds-v3-decode-gate-up-per-tensor-bias"}
   roofline:
     func: "tileops.perf.formulas.gemm_fp8_fwd_roofline"

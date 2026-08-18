@@ -757,8 +757,8 @@ class TestOptionalInputs:
         errors = validator.check_l0("Op", entry)
         assert any("without a preceding 'w is None'" in e for e in errors), errors
 
-    def test_guard_need_not_be_leftmost(self, validator):
-        """Several optionals each guard their own use, in any order."""
+    def test_each_optional_guards_its_own_use(self, validator):
+        """A rule reading two optionals carries a guard for each."""
         entry = self._entry()
         entry["signature"]["inputs"]["v"] = {
             "dtype": "same_as(x)", "optional": True,
@@ -793,9 +793,14 @@ class TestOptionalInputs:
         errors = validator.check_l0("Op", entry)
         assert any("without a preceding 'w is None'" in e for e in errors), errors
 
-    def test_bare_presence_test_allowed(self, validator):
+    def test_co_occurrence_rule_allowed(self, validator):
+        """The authored form for a group: presence tested on both sides."""
         entry = self._entry()
-        entry["signature"]["shape_rules"].append("(w is None) == (w is None)")
+        entry["signature"]["inputs"]["v"] = {
+            "dtype": "same_as(x)", "optional": True,
+        }
+        entry["signature"]["shape_rules"].append("(w is None) == (v is None)")
+        entry["workloads"][1]["v_shape"] = [4096]
         assert validator.check_l0("Op", entry) == []
 
     def test_roofline_rejects_attribute_access(self, validator):

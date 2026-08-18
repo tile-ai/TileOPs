@@ -209,10 +209,9 @@ def synthesize_validate_dtypes(
     combos = _parse_dtype_combos(
         op_name, sig.get("dtype_combos"), input_names,
     )
-    # R6 guarantees every combo row enumerates every required declared input,
-    # so the observed key spans them all, same_as-bound ones resolved. R18.1
-    # keeps optional inputs out of the rows: an absent input has no dtype, so
-    # the combo tuple spans the required inputs only.
+    # Every combo row enumerates every required declared input, so the
+    # observed key spans them all, same_as-bound ones resolved. An optional
+    # input is never a row's column, so the tuple spans the required ones.
     optional_names = {
         name for name, attrs in inputs.items()
         if isinstance(attrs, dict) and attrs.get("optional") is True
@@ -252,8 +251,8 @@ def synthesize_validate_dtypes(
         "ValueError": ValueError,
         "op_name": op_name,
     }
-    # An optional input defaults to None: R18 lets the call omit it, and the
-    # parity probe binds by keyword against this signature.
+    # An optional input defaults to None so the call may omit it; the parity
+    # probe binds by keyword against this signature.
     params_src = ", ".join(
         f"{n}=None" if n in optional_names else n for n in input_names
     )

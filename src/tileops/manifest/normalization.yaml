@@ -413,7 +413,7 @@ GroupNormFwdOp:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
       # torch.nn.GroupNorm(affine=) toggles both together, so they are one
-      # switch; the first shape rule states that (R18.1).
+      # switch; the first shape rule states that.
       weight: {dtype: "same_as(x)", optional: true}
       bias: {dtype: "same_as(x)", optional: true}
     outputs:
@@ -429,8 +429,8 @@ GroupNormFwdOp:
       - "output.shape == x.shape"
 
   workloads:
-    # Typical CV shapes, each side of the affine switch (R18.2). The affine
-    # rows reuse the shapes above and only add the two keys.
+    # Typical CV shapes, each side of the affine switch. The affine rows
+    # reuse the shapes above and only add the two keys.
     - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
     - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
     - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}

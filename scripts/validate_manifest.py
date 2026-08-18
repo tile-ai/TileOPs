@@ -586,7 +586,7 @@ def _l0_kernel_map(
 # Genuinely custom rules (key format, scalar fields, kernel_map) stay as
 # dedicated small validators around the table loop in ``check_l0``.
 # ---------------------------------------------------------------------------
-# R18: optional tensor inputs
+# optional tensor inputs
 # ---------------------------------------------------------------------------
 
 
@@ -1637,9 +1637,9 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         # Combo-row completeness: every required signature.inputs tensor
         # must be assigned a dtype in every combo row; otherwise a row
         # omitting an input would pass L3 when no ``_validate_dtypes``
-        # override exists (``_combo_accepted`` never runs for it). Optional
-        # inputs are excluded by R18.1 — a row assigns a dtype on every call
-        # it covers, and an absent input has none.
+        # override exists (``_combo_accepted`` never runs for it). An
+        # optional input is never a column: a row assigns a dtype on every
+        # call it covers, and an absent input has none.
         for input_name in declared_input_names:
             if input_name not in combo:
                 err(
@@ -2846,8 +2846,8 @@ def check_l3_validate_dtypes_parity(
         return errors
 
     # Only pass tensors corresponding to manifest inputs (forward args).
-    # R18.1 keeps an optional input out of every dtype_combos row, so a probe
-    # that demanded a column for it could never be satisfied.
+    # An optional input is never a dtype_combos column, so a probe that
+    # demanded one for it could never be satisfied.
     optional_inputs = set(_optional_input_names(sig))
     forward_inputs = [n for n in inputs if n not in optional_inputs]
     params = sig.get("params") or {}

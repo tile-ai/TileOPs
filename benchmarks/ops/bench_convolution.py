@@ -83,7 +83,6 @@ def _conv_params(workloads: list[dict], kernel_keys: tuple[str, ...]) -> list:
         padding = _spatial(w.get("padding", 0))
         dilation = _spatial(w.get("dilation", 1))
         groups = w.get("groups", 1)
-        # A row passes bias exactly when it declares bias_shape (R18.1).
         with_bias = "bias_shape" in w
         for dtype_name in w["dtypes"]:
             params.append(pytest.param(

@@ -28,8 +28,6 @@ def _build_params(workloads):
     return params
 
 
-# One entry now covers both sides of the affine switch; a row carrying
-# weight_shape is an affine call, a row without it is not (R18.2).
 _WORKLOADS = load_workloads(_OP_NAME)
 _AFFINE_PARAMS = _build_params(
     [w for w in _WORKLOADS if "weight_shape" in w]

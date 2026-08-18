@@ -220,9 +220,7 @@ class _VarsExprValidator(ast.NodeVisitor):
     ) -> None:
         self.op_name = op_name
         self.var_name = var_name
-        # R18.1: an optional input may appear as a bare presence test.
-        # ``visit_Compare`` clears those operands before ``visit_Name``
-        # would reject them; every other position stays rejected.
+        # Cleared by ``visit_Compare`` when they carry a presence test.
         self._optional_names = set(optional_names or ())
         # Names referring to tensor inputs. They are bound (the
         # generated body receives them from the resolver) but may only
@@ -340,9 +338,8 @@ class _VarsExprValidator(ast.NodeVisitor):
             self.visit(kw.value)
 
     def visit_Compare(self, node: ast.Compare) -> None:
-        # ``X is None`` / ``X is not None`` on an optional input is the one
-        # place its bare name is legal (R18.1). Skip that operand and check
-        # the rest of the comparison normally.
+        # ``X is None`` / ``X is not None`` is the one place an optional
+        # input's bare name is legal; the rest is checked normally.
         skip = self._presence_operand(node)
         for child in ast.iter_child_nodes(node):
             if child is skip:

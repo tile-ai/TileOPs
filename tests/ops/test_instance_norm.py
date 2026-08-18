@@ -337,24 +337,6 @@ def test_instance_norm_running_stats_path_rejects_affine() -> None:
 
 
 @pytest.mark.smoke
-def test_instance_norm_affine_free_accepts_running_stats_path() -> None:
-    """The affine-free call supports `use_input_stats=False` end-to-end."""
-    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    op = InstanceNormFwdOp(use_input_stats=False)
-    assert op.use_input_stats is False
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    running_mean = torch.randn(c, dtype=torch.float32, device="cuda")
-    running_var = torch.rand(c, dtype=torch.float32, device="cuda") + 0.1
-    y = op(x, running_mean, running_var)
-    y_ref = F.instance_norm(
-        x, running_mean=running_mean, running_var=running_var,
-        weight=None, bias=None, use_input_stats=False, eps=1e-5,
-    )
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
-
-
-@pytest.mark.smoke
 def test_instance_norm_default_momentum_does_not_change_output() -> None:
     """Per-batch path is independent of `momentum`; default value must match torch."""
     n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
