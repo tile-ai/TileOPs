@@ -469,6 +469,21 @@ def test_gqa_prefill_dense_rope_inputs_match_fuse_rope() -> None:
 
 
 @pytest.mark.smoke
+def test_gqa_prefill_dense_rejects_scales_for_16_bit_input() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    scale = torch.ones(batch, heads_kv, device="cuda", dtype=torch.float32)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch, heads, heads_kv, seq_len, dim, is_causal=False
+    )
+
+    with pytest.raises(ValueError, match="only valid for FP8 input"):
+        op(q, k, v, scale, scale, scale)
+
+
+@pytest.mark.smoke
 def test_gqa_prefill_dense_fused_rope_rejects_negative_q_positions() -> None:
     with pytest.raises(ValueError, match="requires seq_len <= seq_len_kv"):
         GroupedQueryAttentionPrefillDenseFwdOp(

@@ -601,8 +601,13 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         has_scales = tuple(scale is not None for scale in (q_scale, k_scale, v_scale))
         if any(has_scales) and not all(has_scales):
             raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
-        if q.dtype == fp8_dtype() and not all(has_scales):
+        is_fp8 = q.dtype == fp8_dtype()
+        if is_fp8 and not all(has_scales):
             raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
+        if not is_fp8 and all(has_scales):
+            raise ValueError(
+                "q_scale, k_scale, and v_scale are only valid for FP8 input"
+            )
         has_rope = (rope_cos is not None, rope_sin is not None)
         if any(has_rope) and not all(has_rope):
             raise ValueError("fused RoPE requires both rope_cos and rope_sin")

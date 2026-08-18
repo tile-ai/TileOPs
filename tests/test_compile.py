@@ -94,7 +94,10 @@ def test_dense_gqa_non_contiguous_cold_fullgraph_matches_eager():
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
     """The all-present Optional[Tensor] signature keeps the same Op-owned graph node."""
-    batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("native FP8 prefill requires SM90 and float8_e4m3fn")
+    batch, seq_len, heads, heads_kv, dim = 1, 65, 8, 2, 128
     op = GroupedQueryAttentionPrefillDenseFwdOp(
         batch,
         heads,
@@ -102,11 +105,12 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
         seq_len,
         dim,
         is_causal=False,
+        dtype=torch.float16,
         fuse_rope=True,
     )
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.randn_like(k)
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda").clamp(-2, 2).to(fp8)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
     scales = torch.ones(batch, heads_kv, device="cuda", dtype=torch.float32)
     rope_cos = torch.ones(seq_len, dim // 2, device="cuda", dtype=torch.float16)
     rope_sin = torch.zeros_like(rope_cos)
@@ -115,8 +119,8 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
     output = torch.compile(op, fullgraph=True)(*inputs)
 
     assert output.shape == q.shape
-    assert output.dtype == q.dtype
-    torch.testing.assert_close(output, op(*inputs), atol=5e-3, rtol=1e-5)
+    assert output.dtype == torch.float16
+    torch.testing.assert_close(output, op(*inputs), atol=8e-2, rtol=2e-2)
 
 
 @pytest.mark.smoke
