@@ -383,10 +383,14 @@ class SSDDecodeKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         # threads = block_p * block_n.  block_n must be a power of 2.
+        # Keep blocks at or below 256 threads: half-warp N tiles and wider P
+        # tiles improve several production decode shapes, while the larger
+        # cross-products tend to hurt occupancy.
         return [
             {"block_p": bp, "block_n": bn, "threads": bp * bn}
-            for bn in [32, 64, 128]
-            for bp in [1, 2, 4]
+            for bn in [16, 32, 64, 128]
+            for bp in [1, 2, 4, 8]
+            if bp * bn <= 256
         ]
 
     def forward(
