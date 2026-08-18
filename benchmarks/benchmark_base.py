@@ -122,17 +122,8 @@ class BenchmarkBase(Generic[W], ABC):
         passes = 2
         samples: dict[str, list[Sample]] = {tag: [] for tag in tags}
         meta: dict[str, dict] = {}
-        pass_counts = {tag: 0 for tag in tags}
         for tag in order:
             functor, args = plan[tag]
-            pass_index = pass_counts[tag]
-            pass_counts[tag] += 1
-            trace_params = {
-                key: value for key, value in (params or {}).items()
-                if key not in ("test", "bm", "op", "inputs")
-                and not key.startswith("_")
-                and isinstance(value, (str, int, float, bool, tuple, torch.dtype))
-            }
             with torch.no_grad():
                 samples[tag].extend(bench_kernel(
                     functor, args=args,
@@ -140,9 +131,6 @@ class BenchmarkBase(Generic[W], ABC):
                     repeat_ms=REPEAT_MS / passes,
                     max_iters=_MAX_ITERS // passes,
                     min_iters=max(1, _MIN_ITERS // passes),
-                    trace_metadata={
-                        "tag": tag, "pass_index": pass_index, **trace_params,
-                    },
                 ))
             pass_meta = _capture_bench_meta()
             previous = meta.get(tag)

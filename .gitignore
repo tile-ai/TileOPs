@@ -83,7 +83,6 @@ docs/superpowers/
 profile_run.log
 bench_stack_dumps/
 bench_results.xml
-cupti_*.jsonl
 
 # Coverage output
 .coverage

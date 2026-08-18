@@ -14,7 +14,6 @@ it to another thread (``Tensor.backward`` hands it to autograd's engine thread;
 
 import contextlib
 import ctypes
-import json
 import logging
 import os
 import sys
@@ -271,29 +270,6 @@ class Trace(NamedTuple):
     """Records discarded for want of buffer space, or None if the count is unproven."""
 
 
-def _dump_cupti_trace(trace: Trace, metadata: Optional[dict] = None) -> None:
-    """Append attributed CUPTI kernel records when trace output is enabled."""
-    path = os.getenv("TILEOPS_CUPTI_TRACE_JSONL")
-    if not path:
-        return
-    with open(path, "a", encoding="utf-8") as output:
-        for kernel in trace.kernels:
-            iteration = trace.iteration_of.get(kernel["correlation_id"])
-            if iteration is None or iteration == _PREPARE_ID:
-                continue
-            row = {
-                **(metadata or {}),
-                "schema_version": 1,
-                "iteration": iteration,
-                "kernel_name": kernel["name"],
-                "correlation_id": int(kernel["correlation_id"]),
-                "start_ns": int(kernel["start_ns"]),
-                "end_ns": int(kernel["end_ns"]),
-                "dropped_records": trace.dropped,
-            }
-            output.write(json.dumps(row, sort_keys=True, default=str) + "\n")
-
-
 def collect_repeats(
     run_one: Callable[[int], None],
     n_repeat: int,
@@ -440,7 +416,6 @@ def _collect_attributed(
     run_one: Callable[[int], None],
     n_repeat: int,
     prepare_one: Callable[[int], None],
-    trace_metadata: Optional[dict] = None,
 ) -> list[Sample]:
     """Collect one fully attributed phase, re-measuring what CUPTI loses.
 
@@ -452,11 +427,9 @@ def _collect_attributed(
     for attempt in range(_ATTRIBUTION_ATTEMPTS):
         trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes)
         try:
-            samples = _attributed_samples(
+            return _attributed_samples(
                 trace.kernels, trace.iteration_of, n_repeat, trace.dropped,
             )
-            _dump_cupti_trace(trace, trace_metadata)
-            return samples
         except _CUPTIRecordsLostError as exc:
             _bench_meta.attribution_retries = attempt + 1
             if attempt == _ATTRIBUTION_ATTEMPTS - 1:
@@ -547,7 +520,6 @@ def bench_kernel(
     repeat_ms: float = REPEAT_MS,
     max_iters: int = _MAX_ITERS,
     min_iters: int = _MIN_ITERS,
-    trace_metadata: Optional[dict] = None,
 ) -> list[Sample]:
     """Time *fn* through CUPTI, one :class:`Sample` per iteration.
 
@@ -608,9 +580,7 @@ def bench_kernel(
 
     try:
         with _native_output_suppressor():
-            samples = _collect_attributed(
-                _run, n_repeat, _prepare_iteration, trace_metadata,
-            )
+            samples = _collect_attributed(_run, n_repeat, _prepare_iteration)
         _bench_meta.timing = "cupti"
     except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
