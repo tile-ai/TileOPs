@@ -601,6 +601,121 @@ def _optional_input_names(sig: dict) -> list[str]:
     ]
 
 
+def _type_parts(text: object) -> "set[str] | None":
+    """Members of a param ``type`` expression, or ``None`` when it does not parse.
+
+    ``Optional[X]``, ``Union[X, Y]`` and ``X | Y`` reduce to the same set, and a module
+    qualifier drops, so ``torch.dtype`` and ``dtype`` name one type.
+    """
+    if not isinstance(text, str):
+        return None
+    try:
+        tree = ast.parse(text.strip(), mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+
+    def walk(node) -> "set[str]":
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return walk(node.left) | walk(node.right)
+        if isinstance(node, ast.Subscript):
+            head = ast.unparse(node.value).rsplit(".", 1)[-1]
+            elts = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            if head == "Optional":
+                return walk(elts[0]) | {"None"}
+            if head == "Union":
+                return set().union(*(walk(e) for e in elts))
+        if isinstance(node, ast.Constant) and node.value is None:
+            return {"None"}
+        return {ast.unparse(node).rsplit(".", 1)[-1]}
+
+    return walk(tree.body)
+
+
+def _admits_none(text: object) -> "bool | None":
+    """Whether *text* admits ``None``; ``None`` when the expression does not parse."""
+    parts = _type_parts(text)
+    return None if parts is None else "None" in parts
+
+
+def _check_param_domain(op_name: str, sig: dict) -> list[str]:
+    """``type`` parses, and a type without ``None`` does not default to it.
+
+    The two together would state that the op both refuses and supplies the same
+    absent value.
+    """
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    params = sig.get("params")
+    if not isinstance(params, dict):
+        return errors
+    for pname, attrs in params.items():
+        if not isinstance(pname, str) or not isinstance(attrs, dict):
+            continue
+        declared = attrs.get("type")
+        admits_none = _admits_none(declared)
+        if admits_none is None:
+            err(f"params.{pname}.type {declared!r} is not a type expression")
+        elif "default" in attrs and attrs["default"] is None and not admits_none:
+            err(
+                f"params.{pname} defaults to null but its type {declared!r} does not "
+                f"admit None; write it as '{declared} | None'"
+            )
+    return errors
+
+
+def _check_param_optionality_parity(op_name: str, sig: dict, cls: type) -> list[str]:
+    """The manifest and the implementation agree on which params accept ``None``.
+
+    Only optionality is compared, not spelling: ``Number`` and ``bool | int | float``
+    describe one domain and an author may write either. A disagreement here is a real
+    one — the manifest promises a caller may withhold a value the op requires, or the
+    reverse.
+    """
+    errors: list[str] = []
+    err = _emit_to(errors, "signature", op_name)
+    params = sig.get("params")
+    if not isinstance(params, dict):
+        return errors
+    annotations: dict[str, object] = {}
+    for method in ("__init__", "forward"):
+        fn = getattr(cls, method, None)
+        try:
+            hints = getattr(fn, "__annotations__", {}) or {}
+        except Exception:
+            hints = {}
+        for pname, ann in hints.items():
+            annotations.setdefault(pname, ann)
+    for pname, attrs in params.items():
+        if not isinstance(attrs, dict) or pname not in annotations:
+            continue
+        declared = _admits_none(attrs.get("type"))
+        ann = annotations[pname]
+        actual = _admits_none(ann if isinstance(ann, str) else _annotation_text(ann))
+        if declared is None or actual is None or declared == actual:
+            continue
+        if declared:
+            err(
+                f"params.{pname}.type admits None but {cls.__name__} annotates it "
+                f"{_annotation_text(ann)}"
+            )
+        else:
+            err(
+                f"params.{pname}.type is {attrs.get('type')!r} but {cls.__name__} "
+                f"annotates it {_annotation_text(ann)}; write it as "
+                f"'{attrs.get('type')} | None'"
+            )
+    return errors
+
+
+def _annotation_text(ann: object) -> str:
+    """Source-shaped text for an annotation object or string."""
+    if isinstance(ann, str):
+        return ann
+    if isinstance(ann, type):
+        return ann.__name__
+    return str(ann).replace("typing.", "").replace("NoneType", "None")
+
+
 def _check_optional_flag(op_name: str, sig: dict) -> list[str]:
     """``optional`` is literal ``true``, and only on ``signature.inputs``."""
     errors: list[str] = []
@@ -896,6 +1011,7 @@ def _check_optional_workload_coverage(
 def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     """All optional-input checks for one entry."""
     errors = _check_optional_flag(op_name, sig)
+    errors.extend(_check_param_domain(op_name, sig))
     optional = _optional_input_names(sig)
     if not optional:
         return errors
@@ -1305,11 +1421,13 @@ def check_l1(
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
-    return check_l1_signature(
+    errors = check_l1_signature(
         op_name, manifest_inputs, manifest_params, forward_params,
         init_params=init_params,
         manifest_static_dims=manifest_static_dims,
     )
+    errors.extend(_check_param_optionality_parity(op_name, sig, result.cls))
+    return errors
 
 
 # ---------------------------------------------------------------------------

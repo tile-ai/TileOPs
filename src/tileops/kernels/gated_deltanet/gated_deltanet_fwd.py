@@ -10,6 +10,7 @@ Splitting kernel2 into h_recurrence + output_o increases SM utilisation:
   - h_recurrence grid: (batch, head) — must be sequential (state dependency)
   - output_o grid:     (num_chunks, batch, head) — fully parallel
 """
+
 import functools
 from typing import Optional, Tuple
 
@@ -27,7 +28,7 @@ from tileops.kernels.v_tile import resolve_block_v
 
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
-__all__ = ["GatedDeltaNetFwdKernel"]
+__all__ = ["GatedDeltaNetFwdKernel", "GatedDeltaNetFwdProductionKernel"]
 
 _LOG2E = 1.4426950408889634
 
@@ -145,6 +146,7 @@ def _h_recurrence_tl(
 
 
 # Split kernel: output_o  (fully parallel over chunks)
+
 
 @functools.lru_cache(maxsize=32)
 def _output_o_tl(
@@ -347,4 +349,128 @@ class GatedDeltaNetFwdKernel(Kernel):
             self.config.get("h_block_v", 0),
             self.config["o_threads"],
             q, k, v, g, beta,
+        )
+
+
+@torch.library.custom_op("tileops::gated_deltanet_fwd_production_kernel", mutates_args=())
+def _gated_deltanet_fwd_production_wrapped_kernel(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    from .gated_deltanet_prefill import _gated_deltanet_production_bthd, _prefill_blocksolve_A_bthd
+
+    o, states, _final_state, g_cum = _gated_deltanet_production_bthd(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        chunk_size,
+        output_states=True,
+        min_partition_chunks=512,
+    )
+    assert states is not None
+
+    # The legacy forward ABI also needs the gated Aw/Au training artifacts.
+    Aw = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
+    Au = Aw.clone()
+    return o, states, Aw, Au
+
+
+@_gated_deltanet_fwd_production_wrapped_kernel.register_fake
+def _gated_deltanet_fwd_production_wrapped_kernel_fake(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    del k, v, g, beta
+    num_chunks = seq_len // chunk_size
+    o = torch.empty(batch, seq_len, head, dim_v, dtype=q.dtype, device=q.device)
+    states = torch.empty(
+        batch,
+        head,
+        num_chunks + 1,
+        dim_k,
+        dim_v,
+        dtype=q.dtype,
+        device=q.device,
+    )
+    Aw = torch.empty(batch, seq_len, head, chunk_size, dtype=q.dtype, device=q.device)
+    Au = torch.empty_like(Aw)
+    return o, states, Aw, Au
+
+
+class GatedDeltaNetFwdProductionKernel(Kernel):
+    """Hopper forward over batch-token-head-dim (BTHD) inputs.
+
+    Runs the partitioned production prefill pipeline.
+    """
+
+    supported_archs: list[int] = [90]
+
+    def __init__(
+        self,
+        batch: int,
+        head: int,
+        seq_len: int,
+        chunk_size: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: str = "float16",
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        if tune:
+            raise ValueError("GatedDeltaNetFwdProductionKernel does not support tuning")
+        self.batch = batch
+        self.head = head
+        self.seq_len = seq_len
+        self.chunk_size = chunk_size
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.config = config or {}
+
+    @property
+    def default_config(self) -> dict:
+        return {}
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return _gated_deltanet_fwd_production_wrapped_kernel(
+            self.batch,
+            self.head,
+            self.seq_len,
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            q,
+            k,
+            v,
+            g,
+            beta,
         )

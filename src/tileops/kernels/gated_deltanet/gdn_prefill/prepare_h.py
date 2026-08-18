@@ -15,7 +15,7 @@ from .utils import prepare_chunk_offsets
     },
     compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
 )
-def tilelang_prepare_h(
+def _build_prepare_h_kernel(
     H,
     Hg,
     DK,
@@ -60,7 +60,7 @@ def tilelang_prepare_h(
     m_shape = (batch_size, H, DK, DK)
 
     @T.prim_func
-    def tilelang_prepare_h_kernel(
+    def prepare_h_kernel(
         k: T.Tensor(k_shape, dtype=qkva_dtype),
         v: T.Tensor(v_shape, dtype=qkva_dtype),
         a: T.Tensor(a_shape, dtype=qkva_dtype),
@@ -460,7 +460,7 @@ def tilelang_prepare_h(
                                 h[batch_idx, chunk_start_idx + i_s, bh, 0:DK, 0:DV],
                             )
 
-    return tilelang_prepare_h_kernel
+    return prepare_h_kernel
 
 
 def fused_gdr_h(
@@ -478,7 +478,7 @@ def fused_gdr_h(
 ):
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
-    assert K == V == 128
+    assert K == V and K in (64, 128)
     assert chunk_size == 64
 
     if cu_seqlens is None:
@@ -486,9 +486,7 @@ def fused_gdr_h(
         real_batch_size = batch_size
         num_chunks = tilelang.cdiv(num_tokens, chunk_size) if output_h else 0
         cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        chunk_offsets = torch.empty(
-            (batch_size + 1), dtype=torch.int32, device=k.device
-        )
+        chunk_offsets = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
         is_varlen = False
         is_cp = False
     else:
@@ -512,14 +510,10 @@ def fused_gdr_h(
         )
     h = torch.empty((batch_size, num_chunks, H, K, V), dtype=k.dtype, device=k.device)
     ht_dtype = k.dtype if is_cp else torch.float32
-    final_state = torch.empty(
-        (real_batch_size, H, K, V), dtype=ht_dtype, device=k.device
-    )
-    final_correction = torch.empty(
-        (real_batch_size, H, K, K), dtype=ht_dtype, device=k.device
-    )
+    final_state = torch.empty((real_batch_size, H, K, V), dtype=ht_dtype, device=k.device)
+    final_correction = torch.empty((real_batch_size, H, K, K), dtype=ht_dtype, device=k.device)
 
-    tilelang_prepare_h_kernel = tilelang_prepare_h(
+    prepare_h_kernel = _build_prepare_h_kernel(
         H,
         Hg,
         K,
@@ -539,7 +533,7 @@ def fused_gdr_h(
         is_varlen=is_varlen,
         is_cp=is_cp,
     )
-    tilelang_prepare_h_kernel(
+    prepare_h_kernel(
         k,
         v,
         a,

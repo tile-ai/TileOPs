@@ -33,6 +33,7 @@ from .fft import FFTC2COp
 from .fp8_lightning_indexer import FP8LightningIndexerOp
 from .fp8_quant import FP8QuantOp
 from .gated_deltanet import (
+    GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeOp,
     GatedDeltaNetFwdOp,
@@ -145,6 +146,7 @@ __all__ = [
     "DeltaNetDecodeOp",
     "DeltaNetFwdOp",
     "DeltaNetOp",
+    "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",

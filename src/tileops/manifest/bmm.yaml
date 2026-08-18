@@ -63,7 +63,7 @@ BmmFp8Op:
       d: {dtype: "bfloat16 | float16", shape: "[B, M, N]"}
     params:
       out_dtype: {type: dtype, default: bfloat16}
-      b_layout: {type: str, default: "kn", choices: ["kn", "nk"]}
+      b_layout: {type: str, default: "kn"}
     # Only fp8_e4m3fn inputs are supported (fp8_e5m2 is rejected at
     # forward-time by :meth:`BmmFp8Op._validate_dtypes`); output picks
     # a single dtype per compile.  ``dtype_combos`` pins the Cartesian

@@ -46,6 +46,7 @@ from .fp8_quant import FP8QuantKernel
 from .gated_deltanet import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
+    GatedDeltaNetFwdProductionKernel,
     GatedDeltaNetPrefillFwdKernel,
 )
 from .gated_deltanet_recurrence import (
@@ -152,6 +153,7 @@ __all__ = [
     "GatedDeltaNetDecodeKernel",
     "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
     "GatedDeltaNetFwdKernel",
+    "GatedDeltaNetFwdProductionKernel",
     "GatedDeltaNetPrefillFwdKernel",
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",

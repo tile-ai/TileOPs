@@ -1,9 +1,12 @@
-
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GatedDeltaNetFwdOp
+from tileops.ops import (
+    GatedDeltaNetBTHDFwdOp,
+    GatedDeltaNetFwdOp,
+    GatedDeltaNetPrefillFwdOp,
+)
 from workloads.linear_attention import (
     GatedDeltaNetFwdWorkload,
 )
@@ -30,6 +33,7 @@ class GatedDeltaNetFwdTest(GatedDeltaNetFwdWorkload, TestBase):
 
 
 # Forward correctness tests
+
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     # Tolerances are looser than docs/design/testing.md defaults (fp16: 1e-3, bf16: 1.6e-2)
@@ -84,6 +88,64 @@ def test_gated_deltanet_fwd(
     torch.testing.assert_close(op_o, ref_o, **tols)
     if tune:
         assert op.kernel.config in op.kernel.autotune_configs
+
+
+@pytest.mark.smoke
+def test_bthd_forward_refuses_a_dtype_it_cannot_serve() -> None:
+    """The dtype contract is checked before a kernel is chosen, and names the value."""
+    q = torch.randn(1, 64, 2, 64, dtype=torch.float32, device="cuda")
+    g = torch.randn(1, 64, 2, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="float16 or bfloat16, got torch.float32"):
+        GatedDeltaNetBTHDFwdOp(chunk_size=64)(q, q, q, g, g)
+
+
+@pytest.mark.smoke
+def test_bthd_forward_names_the_requirement_a_call_missed() -> None:
+    """A call the production pipeline has no kernel for is told which one it failed."""
+    q = torch.randn(1, 64, 2, 64, dtype=torch.float16, device="cuda")
+    g = torch.randn(1, 64, 2, dtype=torch.float16, device="cuda")
+    with pytest.raises(ValueError, match="chunk_size must be 64, got 32"):
+        GatedDeltaNetBTHDFwdOp(chunk_size=32)(q, q, q, g, g)
+
+
+@pytest.mark.parametrize(
+    "seq_len,dim,dtype",
+    [
+        pytest.param(128, 64, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(128, 64, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(128, 128, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(32768, 64, torch.float16, marks=pytest.mark.full),
+    ],
+)
+@pytest.mark.hopper
+def test_gated_deltanet_bthd_matches_the_head_major_op(
+    seq_len: int, dim: int, dtype: torch.dtype
+) -> None:
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(2, 4, seq_len, dim, dim, 64, dtype)
+    q, k, v, g, beta = test.gen_inputs()
+    legacy = GatedDeltaNetFwdOp(chunk_size=64)(q, k, v, g, beta)
+
+    q_bthd = q.permute(0, 2, 1, 3).contiguous()
+    k_bthd = k.permute(0, 2, 1, 3).contiguous()
+    v_bthd = v.permute(0, 2, 1, 3).contiguous()
+    g_bthd = g.permute(0, 2, 1).contiguous()
+    beta_bthd = beta.permute(0, 2, 1).contiguous()
+    production_op = GatedDeltaNetBTHDFwdOp(chunk_size=64)
+    production = production_op(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
+
+    tols = _get_tolerances(dtype)
+    torch.testing.assert_close(production[0].permute(0, 2, 1, 3), legacy[0], **tols)
+    torch.testing.assert_close(production[1], legacy[1], **tols)
+    torch.testing.assert_close(production[2].permute(0, 2, 1, 3), legacy[2], **tols)
+    torch.testing.assert_close(production[3].permute(0, 2, 1, 3), legacy[3], **tols)
+    assert production_op.kernel.__class__.__name__ == "GatedDeltaNetFwdProductionKernel"
+    if (seq_len, dim, dtype) == (128, 128, torch.float16):
+        prefill_o, final_state = GatedDeltaNetPrefillFwdOp(chunk_size=64, layout="bthd")(
+            q_bthd[:1], k_bthd[:1], v_bthd[:1], g_bthd[:1], beta_bthd[:1]
+        )
+        torch.testing.assert_close(prefill_o, production[0][:1], **tols)
+        torch.testing.assert_close(final_state, production[1][:1, :, -1], **tols)
 
 
 if __name__ == "__main__":
