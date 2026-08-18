@@ -602,9 +602,17 @@ def _optional_input_names(sig: dict) -> list[str]:
 
 
 def _check_optional_flag(op_name: str, sig: dict) -> list[str]:
-    """R18: ``optional`` is literal ``true`` and only on ``signature.inputs``."""
+    """``optional`` is literal ``true``, and only on ``signature.inputs``."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
+    params = sig.get("params")
+    if isinstance(params, dict):
+        for pname, attrs in params.items():
+            if isinstance(attrs, dict) and "optional" in attrs:
+                err(
+                    f"params.{pname} declares 'optional'; a param expresses "
+                    f"optionality with 'default'"
+                )
     for direction in ("inputs", "outputs"):
         tensors = sig.get(direction)
         if not isinstance(tensors, dict):
@@ -614,8 +622,8 @@ def _check_optional_flag(op_name: str, sig: dict) -> list[str]:
                 continue
             if direction != "inputs":
                 err(
-                    f"{direction}.{tname} declares 'optional'; R18 allows it "
-                    f"only on signature.inputs"
+                    f"{direction}.{tname} declares 'optional'; only a "
+                    f"signature.inputs tensor may be optional"
                 )
             elif attrs["optional"] is not True:
                 err(
@@ -687,7 +695,7 @@ def _unguarded_uses(
 def _check_optional_in_shape_rules(
     op_name: str, sig: dict, optional: Collection[str]
 ) -> list[str]:
-    """R18.1: in ``shape_rules``, a use needs an earlier ``X is None``."""
+    """In ``shape_rules``, a use needs an earlier ``X is None`` disjunct."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     rules = sig.get("shape_rules")
@@ -706,7 +714,7 @@ def _check_optional_in_shape_rules(
         for name in sorted(set(bad)):
             err(
                 f"shape_rules[{index}] uses optional input '{name}' without a "
-                f"preceding '{name} is None' disjunct: {rule!r}. R18.1 accepts "
+                f"preceding '{name} is None' disjunct: {rule!r}. Write "
                 f"'{name} is None or <condition>'; the 'is not None and' form "
                 f"reports a legal absent call as a violation"
             )
@@ -716,7 +724,7 @@ def _check_optional_in_shape_rules(
 def _check_optional_in_roofline(
     op_name: str, entry: dict, optional: Collection[str]
 ) -> list[str]:
-    """R18.1: a roofline presence test lives in ``vars`` and nowhere else."""
+    """A roofline presence test lives in ``vars`` and nowhere else."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     roofline = entry.get("roofline")
@@ -735,8 +743,8 @@ def _check_optional_in_roofline(
             for name in _unguarded_uses(tree, optional, ()):
                 err(
                     f"roofline.vars.{vname} uses optional input '{name}' for "
-                    f"something other than a presence test: {vexpr!r}. R18.1 "
-                    f"allows only '{name} is None' / '{name} is not None' here; "
+                    f"something other than a presence test: {vexpr!r}. Only "
+                    f"'{name} is None' / '{name} is not None' is allowed here; "
                     f"a formula that needs the tensor's own shape uses "
                     f"roofline.func instead"
                 )
@@ -765,7 +773,7 @@ def _check_optional_in_roofline(
 def _check_optional_in_dtype_positions(
     op_name: str, sig: dict, optional: Collection[str]
 ) -> list[str]:
-    """R18.1: no optional name as a ``dtype_combos`` key or a ``same_as`` ref."""
+    """No optional name as a ``dtype_combos`` key or a ``same_as`` ref."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     if not optional:
@@ -779,7 +787,7 @@ def _check_optional_in_dtype_positions(
                 err(
                     f"dtype_combos[{index}] has a column for optional input "
                     f"'{name}'; a row assigns a dtype on every call it covers "
-                    f"and an absent input has none (R18.1)"
+                    f"and an absent input has none"
                 )
     for direction in ("inputs", "outputs"):
         tensors = sig.get(direction)
@@ -792,11 +800,11 @@ def _check_optional_in_dtype_positions(
             if not isinstance(dtype, str):
                 continue
             for ref in _SAME_AS_RE.findall(dtype):
-                if ref in optional and ref != tname:
+                if ref in optional:
                     err(
                         f"{direction}.{tname}.dtype references optional input "
                         f"'{ref}' through same_as(); an absent input has no "
-                        f"dtype to resolve to (R18.1)"
+                        f"dtype to resolve to"
                     )
     return errors
 
@@ -817,7 +825,7 @@ def _shape_symbols(shape: object) -> set[str]:
 def _check_optional_shape_symbol_scope(
     op_name: str, sig: dict, optional: Collection[str]
 ) -> list[str]:
-    """R18.1: symbols first bound by an optional input stay in its scope."""
+    """Symbols first bound by an optional input stay in its scope."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     inputs = sig.get("inputs")
@@ -851,15 +859,15 @@ def _check_optional_shape_symbol_scope(
                 err(
                     f"{direction}.{tname}.shape uses '{sym}', which is bound "
                     f"only by optional input '{local_syms[sym]}'; that symbol "
-                    f"has no value on a call that omits it (R18.1)"
+                    f"has no value on a call that omits it"
                 )
     return errors
 
 
 def _check_optional_workload_coverage(
-    op_name: str, entry: dict, sig: dict, optional: Collection[str]
+    op_name: str, entry: dict, optional: Collection[str]
 ) -> list[str]:
-    """R18.2: each optional input needs a passed row and an omitted row."""
+    """Each optional input needs a passed row and an omitted row."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     workloads = entry.get("workloads")
@@ -875,18 +883,18 @@ def _check_optional_workload_coverage(
         if not passed:
             err(
                 f"no workload row passes optional input '{name}' — add a row "
-                f"carrying '{key}' (R18.2)"
+                f"carrying '{key}'"
             )
         if not omitted:
             err(
                 f"every workload row passes optional input '{name}' — add a "
-                f"row without '{key}' (R18.2)"
+                f"row without '{key}'"
             )
     return errors
 
 
 def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
-    """All R18 checks for one entry."""
+    """All optional-input checks for one entry."""
     errors = _check_optional_flag(op_name, sig)
     optional = _optional_input_names(sig)
     if not optional:
@@ -895,7 +903,7 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     errors.extend(_check_optional_in_roofline(op_name, entry, optional))
     errors.extend(_check_optional_in_dtype_positions(op_name, sig, optional))
     errors.extend(_check_optional_shape_symbol_scope(op_name, sig, optional))
-    errors.extend(_check_optional_workload_coverage(op_name, entry, sig, optional))
+    errors.extend(_check_optional_workload_coverage(op_name, entry, optional))
     return errors
 
 
@@ -2931,6 +2939,28 @@ def check_l3_validate_dtypes_parity(
                     f"_validate_dtypes rejects dtype_combos[{i}] "
                     f"{combo!r} listed in manifest"
                 )
+
+        # The optional inputs have no combo column, so the loop above never
+        # passes one. Probe the other side too: each listed combo, augmented
+        # with every optional at a declared dtype, must still be accepted.
+        for name in sorted(optional_inputs):
+            opts = dtype_options.get(name) or []
+            if not opts:
+                continue
+            for i, combo in enumerate(dtype_combos):
+                if not isinstance(combo, dict):
+                    continue
+                accepted, reason = _combo_accepted(
+                    cls, forward_inputs + [name], {**combo, name: opts[0]},
+                    param_defaults, sig=sig,
+                )
+                if reason is None and not accepted:
+                    err(
+                        f"_validate_dtypes rejects dtype_combos[{i}] "
+                        f"{combo!r} once optional input {name!r} is passed "
+                        f"as {opts[0]}"
+                    )
+                break
 
         # Every non-listed combo drawn from the inputs' union must be
         # rejected. Enumerate the full Cartesian product and report any

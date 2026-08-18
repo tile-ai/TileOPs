@@ -5,10 +5,12 @@ from itertools import accumulate
 import pytest
 import torch
 
+from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     RopeNeoxPositionIdsOp,
 )
+from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 
 _PREFILL_PAGED_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
@@ -626,3 +628,40 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
         torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
     assert set(op.built_kernels("gqa_prefill_paged_with_kv_cache_fwd_kernel")) == {torch.float16, torch.bfloat16}
+
+
+# ----------------------------------------------------------------------
+# Roofline contract
+# ----------------------------------------------------------------------
+
+
+_PAGED_PREFILL_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
+_MIXED_QWEN_LABEL = "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64"
+_BENCH_Q_LENS = [256, 512, 768, 1024, 384, 640, 896, 128]
+_BENCH_CACHE_LENS = [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048]
+
+
+def _workload_by_label(label: str) -> dict:
+    for workload in load_workloads(_PAGED_PREFILL_OP):
+        if workload.get("label") == label:
+            return workload
+    raise AssertionError(f"workload {label!r} not found")
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_mixed_manifest_matches_benchmark_lengths() -> None:
+    workload = _workload_by_label(_MIXED_QWEN_LABEL)
+
+    assert workload["q_lens"] == _BENCH_Q_LENS
+    assert workload["cache_lens"] == _BENCH_CACHE_LENS
+    assert sum(workload["q_lens"]) == workload["total_q"]
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_roofline_accepts_mixed_manifest_workload() -> None:
+    workload = _workload_by_label(_MIXED_QWEN_LABEL)
+
+    flops, nbytes = gqa_prefill_paged_with_kv_cache_fwd_roofline(**workload)
+
+    assert flops > 0
+    assert nbytes > 0

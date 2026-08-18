@@ -56,6 +56,25 @@ class TestRealOpSmoke:
         assert fn(FakeOp(torch.empty(8, dtype=torch.float16))) == (128, 144)
         assert fn(FakeOp(None)) == (64, 128)
 
+    def test_vars_may_not_read_an_optional_input(self):
+        """Only a presence test — its shape is unavailable on an absent call."""
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+
+        for expr in ("bias.shape[0]", "bias is None or bias.ndim", "bias[0]"):
+            with pytest.raises(ValueError, match="optional input"):
+                synthesize_eval_roofline(
+                    "FakeOp",
+                    roofline={
+                        "vars": {"n": expr}, "flops": "n", "bytes": "n",
+                    },
+                    signature={
+                        "inputs": {
+                            "x": {"dtype": "float16"},
+                            "bias": {"dtype": "float16", "optional": True},
+                        },
+                    },
+                )
+
     def test_optional_input_the_op_never_exposes_still_raises(self):
         """An unexposed binding must not read as "the call omitted it"."""
         import torch

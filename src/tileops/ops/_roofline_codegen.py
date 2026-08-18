@@ -293,6 +293,15 @@ class _VarsExprValidator(ast.NodeVisitor):
             )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        base = node.value
+        if isinstance(base, ast.Name) and base.id in self._optional_names:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] reads "
+                f"{base.id}.{node.attr} from an optional input; the call may "
+                f"omit it, so only '{base.id} is None' / "
+                f"'{base.id} is not None' is allowed here. A formula that "
+                f"needs its shape uses roofline.func"
+            )
         if node.attr not in _VARS_ATTR_WHITELIST:
             raise ValueError(
                 f"{self.op_name}: roofline.vars[{self.var_name!r}] "
@@ -336,6 +345,16 @@ class _VarsExprValidator(ast.NodeVisitor):
             self.visit(arg)
         for kw in node.keywords:
             self.visit(kw.value)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        base = node.value
+        if isinstance(base, ast.Name) and base.id in self._optional_names:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] subscripts "
+                f"optional input {base.id!r}; the call may omit it, so only "
+                f"'{base.id} is None' / '{base.id} is not None' is allowed here"
+            )
+        self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
         # ``X is None`` / ``X is not None`` is the one place an optional

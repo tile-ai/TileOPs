@@ -251,10 +251,13 @@ def synthesize_validate_dtypes(
         "ValueError": ValueError,
         "op_name": op_name,
     }
-    # An optional input defaults to None so the call may omit it; the parity
-    # probe binds by keyword against this signature.
+    # Optional inputs are keyword-only with a None default: the call may omit
+    # them, and their position among the required ones stays free. The parity
+    # probe binds by keyword either way.
+    required_src = [n for n in input_names if n not in optional_names]
+    optional_src = [f"{n}=None" for n in input_names if n in optional_names]
     params_src = ", ".join(
-        f"{n}=None" if n in optional_names else n for n in input_names
+        required_src + (["*"] + optional_src if optional_src else [])
     )
     # Unrolled per input rather than looping via `locals()`: dynamo cannot
     # trace `locals()`, and this body runs inside `forward()`.

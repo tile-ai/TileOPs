@@ -730,11 +730,17 @@ class TestOptionalInputs:
     def test_conforming_entry_passes(self, validator):
         assert validator.check_l0("Op", self._entry()) == []
 
-    def test_optional_only_on_inputs(self, validator):
+    @pytest.mark.parametrize("where", ["outputs", "params"])
+    def test_optional_only_on_inputs(self, validator, where):
         entry = self._entry()
-        entry["signature"]["outputs"]["y"]["optional"] = True
+        if where == "outputs":
+            entry["signature"]["outputs"]["y"]["optional"] = True
+            wanted = "may be optional"
+        else:
+            entry["signature"]["params"] = {"p": {"type": "int", "optional": True}}
+            wanted = "optionality with 'default'"
         errors = validator.check_l0("Op", entry)
-        assert any("only on signature.inputs" in e for e in errors), errors
+        assert any(wanted in e for e in errors), errors
 
     def test_optional_must_be_literal_true(self, validator):
         entry = self._entry()
