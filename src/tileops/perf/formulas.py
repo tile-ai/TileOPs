@@ -72,6 +72,7 @@ __all__ = [
     "mhc_post_roofline",
     "mhc_pre_roofline",
     "minimum_fwd_roofline",
+    "moe_permute_nopad_fwd_roofline",
     "mul_fwd_roofline",
     "ne_fwd_roofline",
     "pow_fwd_roofline",
@@ -863,6 +864,36 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 # MoE
+
+
+def moe_permute_nopad_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for ``MoePermuteNopadFwdOp``.
+
+    Func-mode: the expert-map plane is read only in calls that supply a map, so
+    the byte count turns on a presence fact rather than on a shape. The op is
+    input-inferred, so the dims are bound during ``forward()``.
+
+    Raises:
+        RuntimeError: If called before ``forward()`` has bound the dims.
+    """
+    if getattr(op, "hidden_states_shape", None) is None or op.dtype is None:
+        raise RuntimeError(
+            "MoePermuteNopadFwdOp.eval_roofline() is valid only after the first "
+            "forward(); T/K/H and dtype are inferred from the inputs."
+        )
+    total_tokens, hidden_size = op.hidden_states_shape
+    top_k = op.topk_ids_shape[1]
+    e_local = int(op.num_experts_local)
+    elem_bytes = _dtype_itemsize(op.dtype)
+
+    # hidden_states read [T, H] + perm_h write [T*K, H]
+    row_bytes = (total_tokens * hidden_size + total_tokens * top_k * hidden_size) * elem_bytes
+    # expert_first_token_offset [E_local+1] int64 + true_offsets / true_sizes int32
+    meta_bytes = (e_local + 1) * 8 + e_local * 8
+    # topk_ids read + fwd_idx write, both [T*K] int32
+    index_bytes = 2 * total_tokens * top_k * 4
+    map_bytes = int(op.num_experts) * 4 if op.used_expert_map else 0
+    return 0, row_bytes + meta_bytes + index_bytes + map_bytes
 
 
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:

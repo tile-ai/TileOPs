@@ -12,6 +12,7 @@ contract must not register here.
 """
 
 import importlib
+import operator
 
 import torch
 
@@ -19,6 +20,7 @@ import torch
 # gains contract-backing compile tests.
 _EVIDENCE_MODULES = (
     "tests.ops.test_elementwise_compile",
+    "tests.ops.test_moe_compile",
     "tests.ops.test_pool",
     "tests.ops.test_rms_norm",
     "tests.test_compile",
@@ -36,36 +38,47 @@ def register_compile_contract(op_cls: type) -> None:
     _registered.add(op_cls.__name__)
 
 
-def _overload(name: str):
+def operator_overload(name: str):
     """``"top::foo"`` as the overload object a graph node carries."""
     namespace, _, opname = name.partition("::")
     return getattr(getattr(torch.ops, namespace), opname).default
 
 
-def assert_op_owns_graph_nodes(op, *inputs) -> None:
+def traced_call_targets(op, *inputs, **kwargs) -> set:
+    """Compile *op* with ``fullgraph=True`` and return the operators its graph calls.
+
+    ``operator.getitem`` is left out: it is how a multi-output operator's results are
+    unpacked, carries no computation, and no target supplies it.
+    """
+    traced: list[list[object]] = []
+
+    def capture(gm, example_inputs):
+        traced.append([node.target for node in gm.graph.nodes
+                       if node.op == "call_function"
+                       and node.target is not operator.getitem])
+        return gm.forward
+
+    torch.compile(op, backend=capture, fullgraph=True)(*inputs, **kwargs)
+
+    (calls,) = traced
+    return set(calls)
+
+
+def assert_op_owns_graph_nodes(op, *inputs, **kwargs) -> None:
     """Compile *op* once and assert the graph holds nothing but its own operators.
 
     A kernel's own registration, or a tensor op left outside the boundary, would show up
     here — either means the node identity is not the op's alone, so another target could
     change the graph.
     """
-    declared = {_overload(name) for name in type(op).compile_op_names}
+    declared = {operator_overload(name) for name in type(op).compile_op_names}
     assert declared, f"{type(op).__name__} declares no compile_op_names"
 
-    traced: list[list[object]] = []
-
-    def capture(gm, example_inputs):
-        traced.append([node.target for node in gm.graph.nodes
-                       if node.op == "call_function"])
-        return gm.forward
-
-    torch.compile(op, backend=capture, fullgraph=True)(*inputs)
-
-    (calls,) = traced
+    calls = traced_call_targets(op, *inputs, **kwargs)
     assert calls, "the traced graph called nothing"
-    assert set(calls) <= declared, (
+    assert calls <= declared, (
         f"graph holds nodes this op does not own: "
-        f"{sorted(str(c) for c in set(calls) - declared)}; "
+        f"{sorted(str(c) for c in calls - declared)}; "
         f"declared: {sorted(str(d) for d in declared)}")
 
 

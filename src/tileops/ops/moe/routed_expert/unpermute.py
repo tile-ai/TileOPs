@@ -1,12 +1,13 @@
 """MoE unpermute op (cutlass path): scatter-add padded expert outputs back to token order."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import MoeUnpermuteKernel
 
+from ...compile_boundary import get_instance
 from ...op_base import Op
 
 __all__ = ["MoeUnpermuteFwdOp"]
@@ -33,6 +34,15 @@ class MoeUnpermuteFwdOp(Op):
         >>> op = MoeUnpermuteFwdOp(total_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
         >>> output = op(mm2_pad, fwd_idx, topk_weights)
     """
+
+    #: Two operators, because ``mutates_args`` is fixed at registration while ``out``
+    #: decides per call whether this op writes a caller buffer. Same split as aten's
+    #: ``relu`` / ``relu_``: ``forward`` picks one, and a test asserts the graph holds
+    #: nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = (
+        "top::moe_unpermute_fwd",
+        "top::moe_unpermute_fwd_inplace",
+    )
 
     def __init__(
         self,
@@ -66,6 +76,15 @@ class MoeUnpermuteFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"unpermute_kernel": MoeUnpermuteKernel}
 
+    def _infer_output_shapes(
+        self,
+        mm2_pad_shape: Tuple[int, ...],
+        fwd_idx_shape: Tuple[int, ...],
+        topk_weights_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == (total_tokens, hidden_size)``."""
+        return {"output": (self.total_tokens, self.hidden_size)}
+
     def forward(
         self,
         mm2_pad: torch.Tensor,
@@ -85,6 +104,66 @@ class MoeUnpermuteFwdOp(Op):
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).
         """
+        if out is None:
+            return _moe_unpermute_fwd(
+                mm2_pad, fwd_idx, topk_weights, self._instance_key)
+        _moe_unpermute_fwd_inplace(
+            mm2_pad, fwd_idx, topk_weights, out, self._instance_key)
+        # The in-place operator returns None so its result cannot alias an input; the
+        # buffer the caller handed over is what this op returns.
+        return out
+
+    def _eager_forward(
+        self,
+        mm2_pad: torch.Tensor,
+        fwd_idx: torch.Tensor,
+        topk_weights: torch.Tensor,
+        out: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo
+        cannot follow.
+        """
         self._validate_dtypes(mm2_pad, fwd_idx, topk_weights)
         self.dtype = mm2_pad.dtype
         return self._get_kernel(mm2_pad.dtype)(mm2_pad, fwd_idx, topk_weights, out=out)
+
+
+@torch.library.custom_op("top::moe_unpermute_fwd", mutates_args=())
+def _moe_unpermute_fwd(
+    mm2_pad: torch.Tensor,
+    fwd_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(mm2_pad, fwd_idx, topk_weights)
+
+
+@_moe_unpermute_fwd.register_fake
+def _moe_unpermute_fwd_fake(
+    mm2_pad: torch.Tensor,
+    fwd_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(mm2_pad.shape), tuple(fwd_idx.shape), tuple(topk_weights.shape))
+    # Manifest dtype: ``same_as(mm2_pad)``.
+    return mm2_pad.new_empty(shapes["output"])
+
+
+@torch.library.custom_op("top::moe_unpermute_fwd_inplace", mutates_args=("out",))
+def _moe_unpermute_fwd_inplace(
+    mm2_pad: torch.Tensor,
+    fwd_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    out: torch.Tensor,
+    instance_key: str,
+) -> None:
+    get_instance(instance_key)._eager_forward(mm2_pad, fwd_idx, topk_weights, out=out)
+
+
+# The in-place operator needs no fake body: it returns nothing, and the mutation it
+# declares is all the compiler has to know about ``out``.

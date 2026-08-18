@@ -71,7 +71,7 @@ class MoePermuteNopadFixture(FixtureBase):
 @MoePermuteNopadFixture
 def test_moe_permute_nopad_op(total_tokens, top_k, num_experts, hidden_size, dtype):
     test = MoePermuteNopadTest(total_tokens, top_k, num_experts, hidden_size, dtype)
-    op = MoePermuteNopadFwdOp(num_experts=num_experts)
+    op = MoePermuteNopadFwdOp(num_experts=num_experts, num_experts_local=num_experts)
     hidden_states, topk_ids = test.gen_inputs()
 
     outputs = op(hidden_states, topk_ids)
@@ -88,9 +88,10 @@ def test_moe_permute_nopad_explicit_shape_mismatch_raises() -> None:
     hidden_states = torch.randn(4, 16, dtype=torch.float16, device="cuda")
     topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32, device="cuda")
     op = MoePermuteNopadFwdOp(
+        num_experts=4,
+        num_experts_local=4,
         total_tokens=5,
         top_k=2,
-        num_experts=4,
         hidden_size=16,
     )
     with pytest.raises(ValueError, match="Expected total_tokens"):
@@ -98,10 +99,95 @@ def test_moe_permute_nopad_explicit_shape_mismatch_raises() -> None:
 
 
 @pytest.mark.smoke
+def test_moe_permute_nopad_without_a_map_builds_the_map_free_scan() -> None:
+    """No map means the map-free scan, whatever num_experts_local says.
+
+    The map-reading scan loads ``expert_map[global_eid]`` twice per token-expert
+    pair. Selecting it for a call that passed no map would pay that for nothing.
+    """
+    op = MoePermuteNopadFwdOp(num_experts=4, num_experts_local=4)
+    hidden_states = torch.randn(8, 64, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, 4, (8, 2), dtype=torch.int32, device="cuda")
+
+    op(hidden_states, topk_ids)
+
+    (kernel,) = op.iter_kernels()
+    assert not kernel.expert_parallel
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_partial_local_without_a_map_raises() -> None:
+    """Owning a slice of the table but naming no map is unsatisfiable."""
+    op = MoePermuteNopadFwdOp(num_experts=4, num_experts_local=2)
+    hidden_states = torch.randn(8, 64, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, 4, (8, 2), dtype=torch.int32, device="cuda")
+
+    with pytest.raises(ValueError, match="needs an expert_map"):
+        op(hidden_states, topk_ids)
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_ep_counts_only_local_experts() -> None:
+    """With a map, the op lays out num_experts_local slots and drops the rest.
+
+    Every token routed to a local expert reaches a slot; a token routed elsewhere
+    gets fwd_idx == -1.
+    """
+    E, E_local, T, K, H = 4, 2, 8, 2, 64
+    expert_map = torch.full((E,), -1, dtype=torch.int32, device="cuda")
+    expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadFwdOp(num_experts=E, num_experts_local=E_local)
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+    _, _, true_sizes, _, fwd_idx = op(hidden_states, topk_ids, expert_map)
+
+    assert true_sizes.shape[0] == E_local
+    local_pairs = int((topk_ids.flatten() < E_local).sum())
+    assert int(true_sizes.sum()) == local_pairs
+    assert int((fwd_idx >= 0).sum()) == local_pairs
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_ep_rejects_a_non_dense_map() -> None:
+    """A map whose local ids are not 0..E_local-1 must raise, not miscount.
+
+    ``[-1, 0, 2, -1]`` marks two experts local while naming id 2, which the
+    kernel's two counters cannot hold: the tokens routed there used to be
+    dropped silently.
+    """
+    E, E_local, T, K, H = 4, 2, 8, 2, 64
+    expert_map = torch.tensor([-1, 0, 2, -1], dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadFwdOp(num_experts=E, num_experts_local=E_local)
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+    with pytest.raises(ValueError, match="exactly once each"):
+        op(hidden_states, topk_ids, expert_map)
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_ep_rechecks_an_edited_map() -> None:
+    """Editing a valid map into an invalid one must be caught on the next call."""
+    E, E_local, T, K, H = 4, 2, 8, 2, 64
+    expert_map = torch.full((E,), -1, dtype=torch.int32, device="cuda")
+    expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadFwdOp(num_experts=E, num_experts_local=E_local)
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+    op(hidden_states, topk_ids, expert_map)
+
+    expert_map[2] = 2
+    with pytest.raises(ValueError, match="exactly once each"):
+        op(hidden_states, topk_ids, expert_map)
+
+
+@pytest.mark.smoke
 def test_moe_permute_nopad_cpu_input_raises() -> None:
     hidden_states = torch.randn(4, 16, dtype=torch.float16)
     topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32)
-    op = MoePermuteNopadFwdOp(num_experts=4)
+    op = MoePermuteNopadFwdOp(num_experts=4, num_experts_local=4)
     with pytest.raises(ValueError, match="hidden_states must be a CUDA tensor"):
         op(hidden_states, topk_ids)
 
@@ -110,7 +196,7 @@ def test_moe_permute_nopad_cpu_input_raises() -> None:
 def test_moe_permute_nopad_invalid_dtype_raises() -> None:
     hidden_states = torch.randn(4, 16, dtype=torch.float32, device="cuda")
     topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32, device="cuda")
-    op = MoePermuteNopadFwdOp(num_experts=4)
+    op = MoePermuteNopadFwdOp(num_experts=4, num_experts_local=4)
     with pytest.raises(ValueError, match="Expected hidden_states.dtype"):
         op(hidden_states, topk_ids)
 

@@ -159,7 +159,11 @@ def _make_scan_kernel_nopad_ep(
                     if idx < numel:
                         global_eid = flat_ids[idx]
                         local_eid = expert_map[global_eid]
-                        if local_eid >= T.int32(0):
+                        # ``s_counts`` holds num_experts_local entries. The map is a
+                        # device tensor the kernel does not own, so the upper bound is
+                        # checked here too: an id past the end would otherwise write
+                        # past the shared buffer into ``s_offset``.
+                        if local_eid >= T.int32(0) and local_eid < T.int32(num_experts_local):
                             T.atomic_add(s_counts[local_eid], 1)
                 T.sync_threads()
 
@@ -189,15 +193,17 @@ def _make_scan_kernel_nopad_ep(
                     if idx < numel:
                         global_eid = flat_ids[idx]
                         local_eid = expert_map[global_eid]
-                        if local_eid < T.int32(0):
-                            fwd_idx[idx] = T.int32(-1)
-                        else:
+                        # Same bound as step 2, so a pair counted there is the pair
+                        # scattered here.
+                        if local_eid >= T.int32(0) and local_eid < T.int32(num_experts_local):
                             # Keep the returned slot in a local buffer: TileLang may otherwise
                             # duplicate the atomic while lowering bounds checks for the stores.
                             slot_buf[0] = T.atomic_add(write_offsets[local_eid], T.int32(1), return_prev=True)
                             slot = slot_buf[0]
                             permuted_idx[slot] = idx // T.int32(top_k)
                             fwd_idx[idx] = slot
+                        else:
+                            fwd_idx[idx] = T.int32(-1)
 
         return _scan_ep_main
 
@@ -252,8 +258,14 @@ class MoePermuteNopadKernel(Kernel):
 
     Sorts tokens into tight expert-contiguous order (no inter-expert gaps).
     Output perm_h has exactly M_local rows, where M_local = T*K when
-    expert_map is None (all experts local), or M_local ≤ T*K when expert_map
-    filters out non-local experts.  Non-local positions get fwd_idx = -1.
+    ``num_experts_local`` is None (all experts local), or M_local ≤ T*K when an
+    expert map filters out non-local experts.  Non-local positions get
+    fwd_idx = -1.
+
+    Expert Parallel (EP) splits across the two lifetimes: the number of local
+    experts is compile-time — it sizes the scan kernel and its output buffers —
+    while the global→local map itself is read at launch and is a ``forward``
+    argument.
 
     Args:
         num_tokens: Number of input tokens T.
@@ -261,9 +273,8 @@ class MoePermuteNopadKernel(Kernel):
         num_experts: Total number of experts E (global count).
         hidden_size: Hidden dimension H.
         dtype: Data type of hidden_states.
-        expert_map: Optional [E_global] int32 tensor mapping global expert ids
-            to local ids (-1 = not on this rank).  When provided, only local
-            token-expert pairs are included in the permuted output.
+        num_experts_local: Number of experts owned by this rank under EP.
+            None selects the non-EP scan, which takes no expert map.
         config: Optional config dict with "threads".
         tune: Whether to autotune. The scan thread count is fixed by the
             single-block prefix-sum algorithm, so ``autotune_configs`` is
@@ -284,7 +295,7 @@ class MoePermuteNopadKernel(Kernel):
         num_experts: int,
         hidden_size: int,
         dtype: torch.dtype = torch.bfloat16,
-        expert_map: Optional[torch.Tensor] = None,
+        num_experts_local: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
@@ -295,13 +306,17 @@ class MoePermuteNopadKernel(Kernel):
         self.hidden_size = hidden_size
         self.dtype = dtype
         self.numel = num_tokens * top_k
-        self.expert_map = expert_map
+        self.expert_parallel = num_experts_local is not None
 
-        if expert_map is not None:
-            assert expert_map.dtype == torch.int32
-            self.num_experts_local = int((expert_map >= 0).sum().item())
+        if num_experts_local is not None:
+            if not 0 < num_experts_local <= num_experts:
+                raise ValueError(
+                    f"num_experts_local must be in (0, {num_experts}], "
+                    f"got {num_experts_local}"
+                )
+            self.num_experts_local = num_experts_local
             self._scan_fn = _make_scan_kernel_nopad_ep(
-                self.numel, num_experts, self.num_experts_local, top_k
+                self.numel, num_experts, num_experts_local, top_k
             )
         else:
             self.num_experts_local = num_experts
@@ -321,26 +336,51 @@ class MoePermuteNopadKernel(Kernel):
         self,
         hidden_states: torch.Tensor,
         topk_ids: torch.Tensor,
+        expert_map: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run moe_permute without padding.
 
         Args:
             hidden_states: [T, H] input activations.
             topk_ids: [T, K] int32 expert assignments (global ids).
+            expert_map: [E_global] int32 global→local expert ids (-1 = not on
+                this rank). Required when the kernel was built with
+                ``num_experts_local``, rejected otherwise.
 
         Returns:
-            perm_h:                    [T*K, H] tight hidden states.  When expert_map
-                                       is set, only rows 0..M_local-1 contain valid
-                                       data; rows M_local..T*K-1 are safe but unused.
+            perm_h:                    [T*K, H] tight hidden states.  Under EP, only
+                                       rows 0..M_local-1 contain valid data; rows
+                                       M_local..T*K-1 are safe but unused.
             true_offsets:              [E_local] int32 tight start per local expert
             true_sizes:                [E_local] int32 true token count per local expert
             expert_first_token_offset: [E_local+1] int64 non-padded exclusive prefix-sum
             fwd_idx:                   [T*K] int32 forward mapping: flat_idx → tight slot
-                                       (-1 for non-local token-expert pairs when expert_map set)
+                                       (-1 for non-local token-expert pairs under EP)
         """
         assert topk_ids.dtype == torch.int32
         assert hidden_states.is_cuda and topk_ids.is_cuda
         assert topk_ids.numel() == self.numel
+        if self.expert_parallel:
+            if expert_map is None:
+                raise ValueError(
+                    "this kernel was built for expert parallelism "
+                    f"(num_experts_local={self.num_experts_local}) and needs an "
+                    "expert_map at every call"
+                )
+            if expert_map.dtype != torch.int32:
+                raise ValueError(
+                    f"Expected expert_map.dtype torch.int32, got {expert_map.dtype}"
+                )
+            if expert_map.shape != (self.num_experts,):
+                raise ValueError(
+                    f"Expected expert_map.shape ({self.num_experts},), "
+                    f"got {tuple(expert_map.shape)}"
+                )
+        elif expert_map is not None:
+            raise ValueError(
+                "this kernel was built without expert parallelism, so it takes "
+                "no expert_map; rebuild it with num_experts_local"
+            )
 
         dev = hidden_states.device
         flat_ids = topk_ids.flatten().contiguous()
@@ -356,9 +396,9 @@ class MoePermuteNopadKernel(Kernel):
 
         threads = self.config["threads"]
         scan_fn = self._scan_fn(threads)
-        if self.expert_map is not None:
+        if self.expert_parallel:
             scan_fn(
-                flat_ids, self.expert_map,
+                flat_ids, expert_map,
                 expert_first_token_offset, true_offsets, true_sizes,
                 permuted_idx, fwd_idx, write_offsets,
             )

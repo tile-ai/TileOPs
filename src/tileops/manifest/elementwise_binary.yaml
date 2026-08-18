@@ -55,8 +55,8 @@ MaskedFillFwdOp:
   # mask=torch.zeros((2,3), dtype=torch.bool), value=1.0)`` returns shape
   # ``(2, 3)``). The in-place ``masked_fill_`` is unidirectional, but
   # the manifest models only the out-of-place form. The scalar (Number)
-  # value form lands as MaskedFillScalarFwdOp below per the
-  # "No Optional[Tensor]" manifest rule for variant splits.
+  # value form is its own entry, MaskedFillScalarFwdOp below: a Number is
+  # not a tensor, so it cannot be one entry's optional tensor input.
   family: elementwise
   status: implemented
   torch_compile_fullgraph: true

@@ -38,6 +38,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import SharedExpertMLPKernel
+from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoe
 
 __all__ = ["SharedFusedMoE"]
@@ -61,6 +62,11 @@ class SharedFusedMoE(FusedMoe):
             before TP sharding). If None, no shared expert is computed.
         tp_size: Tensor parallel world size. Default 1 (no TP).
         tp_rank: This rank's index in the TP group. Default 0.
+        num_experts_local: Number of experts this rank owns; required with
+            expert_map. See FusedMoe.
+        prepare_finalize: Override the PrepareAndFinalize implementation.
+        experts: Override the Experts implementation.
+        kernel_map: Override the dispatched kernel map.
         Other args: same as FusedMoe.
 
     Returns:
@@ -80,9 +86,13 @@ class SharedFusedMoE(FusedMoe):
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
         expert_map: Optional[torch.Tensor] = None,
+        num_experts_local: Optional[int] = None,
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
     ):
@@ -109,6 +119,10 @@ class SharedFusedMoE(FusedMoe):
             renormalize=renormalize,
             routed_scaling_factor=routed_scaling_factor,
             expert_map=expert_map,
+            num_experts_local=num_experts_local,
+            prepare_finalize=prepare_finalize,
+            experts=experts,
+            kernel_map=kernel_map,
             activation=activation,
         )
 
@@ -138,7 +152,7 @@ class SharedFusedMoE(FusedMoe):
         return self.get_or_build_kernel(
             "shared_expert_mlp",
             key=dtype,
-            build=lambda: SharedExpertMLPKernel(
+            build=lambda: self.kernel_map["shared_expert_mlp"](
                 num_tokens=self.num_tokens,
                 hidden_size=self.hidden_size,
                 ffn_size=self._shared_mlp_shard_ffn,
@@ -148,7 +162,9 @@ class SharedFusedMoE(FusedMoe):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
+        # The routed half's kernels belong to the sub-ops it builds; this one is the
+        # op's own, so it is declared here and a replacement reaches it.
+        return {"shared_expert_mlp": SharedExpertMLPKernel}
 
     def forward(
         self,

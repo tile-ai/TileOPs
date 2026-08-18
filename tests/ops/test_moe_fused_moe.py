@@ -345,7 +345,7 @@ def test_expert_map_local_filter() -> None:
     op_r0 = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
-        expert_map=expert_map_rank0,
+        expert_map=expert_map_rank0, num_experts_local=E // 2,
     )
     out_r0 = op_r0(hidden, gating, w_gate_up[:E // 2], w_down[:E // 2])
 
@@ -353,7 +353,7 @@ def test_expert_map_local_filter() -> None:
     op_r1 = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
-        expert_map=expert_map_rank1,
+        expert_map=expert_map_rank1, num_experts_local=E // 2,
     )
     out_r1 = op_r1(hidden, gating, w_gate_up[E // 2:], w_down[E // 2:])
 

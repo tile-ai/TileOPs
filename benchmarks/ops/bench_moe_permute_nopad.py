@@ -44,7 +44,8 @@ def _manifest_params():
         assert topk_tokens == total_tokens
         for dtype_str in w["dtypes"]:
             params.append(pytest.param(
-                total_tokens, top_k, w["num_experts"], hidden_size,
+                total_tokens, top_k, w["num_experts"], w["num_experts_local"],
+                hidden_size,
                 id=f"{label}-{dtype_str}",
             ))
     return params
@@ -54,24 +55,44 @@ def _manifest_params():
 
 
 @pytest.mark.parametrize(
-    "total_tokens, top_k, num_experts, hidden_size",
+    "total_tokens, top_k, num_experts, num_experts_local, hidden_size",
     _manifest_params(),
 )
 def test_moe_permute_nopad_bench(
-    total_tokens: int, top_k: int, num_experts: int, hidden_size: int
+    total_tokens: int, top_k: int, num_experts: int, num_experts_local: int,
+    hidden_size: int,
 ) -> None:
     dtype = torch.bfloat16
     workload = MoePermuteWorkload(total_tokens, top_k, num_experts, hidden_size, dtype)
     torch.manual_seed(42)
     hidden_states, topk_ids = workload.gen_inputs()
 
+    # Under expert parallelism this rank owns the first num_experts_local ids;
+    # the rest belong elsewhere.
+    expert_map = None
+    if num_experts_local < num_experts:
+        expert_map = torch.full(
+            (num_experts,), -1, dtype=torch.int32, device=hidden_states.device)
+        expert_map[:num_experts_local] = torch.arange(
+            num_experts_local, dtype=torch.int32, device=hidden_states.device)
+
     # TileOPs
-    op = MoePermuteNopadFwdOp(num_experts=num_experts)
+    op = MoePermuteNopadFwdOp(
+        num_experts=num_experts, num_experts_local=num_experts_local)
     bm = ManifestBenchmark(_OP_NAME, op, workload)
-    op(hidden_states, topk_ids)  # warmup / JIT compile
+    op(hidden_states, topk_ids, expert_map)  # warmup / JIT compile
     torch.cuda.synchronize()
 
     functors = {"tileops": op}
+
+    if expert_map is not None:
+        # No vLLM or torch column: their permute takes the whole expert table, so
+        # the two would not measure the same work.
+        bm.compare(
+            functors, hidden_states, topk_ids, expert_map,
+            record_as=op, params=locals(),
+        )
+        return
 
     # vLLM baseline (optional)
     if _VLLM_AVAILABLE:

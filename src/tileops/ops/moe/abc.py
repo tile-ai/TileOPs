@@ -43,16 +43,14 @@ def _validate_fused_moe_experts_dtypes(
     w_down: Tensor,
     topk_weights: Tensor,
     topk_ids: Tensor,
-    expert_map: Tensor | None,
     workspace1: Tensor,
     workspace2: Tensor,
 ) -> None:
     """Shared dtype validator for FusedMoEExperts subclasses.
 
-    Concrete subclasses route through this helper because the manifest-driven
-    ``_validate_dtypes`` codegen path does not handle ``Optional[Tensor]``
-    inputs (``expert_map`` is None for single-GPU); having one shared body
-    avoids drift between the nopad and padded implementations.
+    Covers the inputs every implementation takes; an implementation checks its
+    optional inputs on top. Keeping the common body here avoids drift between
+    implementations.
     """
     allowed = (torch.float16, torch.bfloat16)
     if op_dtype not in allowed:
@@ -73,8 +71,6 @@ def _validate_fused_moe_experts_dtypes(
         raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
     if topk_ids.dtype != torch.int32:
         raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
-    if expert_map is not None and expert_map.dtype != torch.int32:
-        raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
     for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
         if t.dtype not in allowed:
             raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
@@ -202,18 +198,24 @@ class FusedMoEExperts(Op, ABC):
     @abstractmethod
     def forward(
         self,
-        output: Tensor,           # pre-allocated, shape == output_shape()
-        hidden_states: Tensor,    # [T', H] from PrepareResult.hidden_q
-        w_gate_up: Tensor,        # [E, 2F, H]
-        w_down: Tensor,           # [E, H, F]
-        topk_weights: Tensor,     # [T', K] float32
-        topk_ids: Tensor,         # [T', K] int32
-        expert_map: Tensor | None,
+        output: Tensor,             # pre-allocated, shape == output_shape()
+        hidden_states: Tensor,      # [T', H] from PrepareResult.hidden_q
+        w_gate_up: Tensor,          # [E_local, 2F, H]
+        w_down: Tensor,             # [E_local, H, F]
+        topk_weights: Tensor,       # [T', K] float32
+        topk_ids: Tensor,           # [T', K] int32
+        expert_map: Tensor | None,  # [E] int32 global-to-local ids; None if all local
         workspace1: Tensor,
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
-        """Write expert computation result to output in-place."""
+        """Write expert computation result to output in-place.
+
+        The number of experts this rank owns is fixed at construction — it sizes
+        the kernels. ``expert_map`` carries the global-to-local ids the kernels
+        read at launch, and its presence is what selects the expert-parallel
+        path.
+        """
 
 
 class FusedMoEExpertsModular(FusedMoEExperts, ABC):

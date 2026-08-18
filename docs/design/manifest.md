@@ -293,6 +293,7 @@ signature:
 | `shape`       | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.                                                                                |
 | `constraints` | no       | Dimension restrictions (requires `shape`).                                                                                               |
 | `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
+| `optional`    | no       | `true` when the op may be called without this input (R18). Inputs only.                                                                  |
 
 **Param fields:** `type` (string: `int`, `float`, `bool`, `"list[int]"`) + optional `default`.
 A param that omits `default` MUST have no `__init__` default either: a
@@ -315,7 +316,8 @@ Fixed rank, expressible with dimension names?
 #### Optional Inputs
 
 A tensor input the op reads may be optional (R18). One entry then covers passing it and
-omitting it.
+omitting it. Optional inputs are the trailing inputs: `forward` takes each with a `None`
+default in the declared order, and a defaulted parameter cannot precede a required one.
 
 ```yaml
 signature:
@@ -335,6 +337,11 @@ workloads:
 
 Optional inputs that share one switch state that relation in `shape_rules`, as the first
 rule above does. The rules are ordinary conjuncts — no new field, no separate list.
+
+The op branches on whether an argument was supplied — which kernel it builds, which
+buffers it allocates. It does not branch on what the argument contains: that would be a
+device read at dispatch time, and the fact read is not in the signature. A fact that
+selects a kernel is a `params` entry.
 
 **Where the name may appear.** In three places: `X`'s own `dtype` / `shape` declaration; a
 bare presence test `X is None` / `X is not None`; and a use already guarded by `X is None`
@@ -369,10 +376,10 @@ completeness, tracked on its own; which shape range picks which kernel is a bran
 kernel knows, and [testing.md](testing.md) already makes the op author cover it with the
 smallest shape that triggers each branch.
 
-**Roofline counts the call that ran.** Its cost includes the optional inputs the call
-passed and excludes the ones it did not; "everything passed" is not an upper bound to fall
-back on. Inline expressions branch on a presence test taken from `vars`, `func` mode reads
-the call.
+**Roofline describes the call that ran.** A formula whose cost varies with an optional
+input reads that input's presence — inline through a `vars` presence test, or `func` mode,
+which sees the call. "Everything passed" is not an upper bound to fall back on. How much of
+a call's traffic a formula models at all is [roofline.md](roofline.md)'s matter.
 
 **What the validator does not check.** Five things, deliberately:
 

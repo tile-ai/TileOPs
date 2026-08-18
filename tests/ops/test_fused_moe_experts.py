@@ -170,7 +170,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         """
         T_count, E, top_k, H, F_dim = 1024, 128, 2, 256, 1152
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=T_count, num_experts=E, top_k=top_k,
+            num_tokens=T_count, num_experts=E, num_experts_local=E, top_k=top_k,
             hidden_size=H, ffn_size=F_dim,
         )
 
@@ -185,7 +185,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         out = torch.empty(T_count, H, dtype=dtype, device="cuda")
         ws = torch.empty(0, dtype=dtype, device="cuda")
 
-        experts.forward(out, hidden, w1, w2, weights, ids, None, ws, ws, E)
+        experts.forward(out, hidden, w1, w2, weights, ids, ws, ws, num_experts=E)
 
         expected = _torch_ref_moe(hidden, w1, w2, weights, ids)
         torch.testing.assert_close(out.float(), expected.float(), rtol=3e-2, atol=3e-2)
@@ -195,7 +195,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            num_tokens=d["T"], num_experts=d["E"], num_experts_local=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"],
         )
         ws1, ws2 = experts.workspace_shapes(d["T"], d["F"], d["H"], d["K"], d["E"])
@@ -205,7 +205,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_output_shape(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            num_tokens=d["T"], num_experts=d["E"], num_experts_local=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"],
         )
         assert experts.output_shape(d["T"], d["H"]) == (d["T"], d["H"])
@@ -214,7 +214,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_make_weighted_reduce_is_noop(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            num_tokens=d["T"], num_experts=d["E"], num_experts_local=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"],
         )
         assert isinstance(experts.make_weighted_reduce(), WeightedReduceNoOp)
@@ -224,7 +224,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         """forward() output must match a per-expert PyTorch reference."""
         d = moe_tensors
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            num_tokens=d["T"], num_experts=d["E"], num_experts_local=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"],
         )
 
@@ -257,7 +257,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
 
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=T, num_experts=E, top_k=K,
+            num_tokens=T, num_experts=E, num_experts_local=E, top_k=K,
             hidden_size=H, ffn_size=F_dim,
         )
 
@@ -272,14 +272,12 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
     @pytest.mark.smoke
-    def test_forward_with_expert_map_runs(self):
-        """expert_map (EP mode) must construct + forward without raising.
+    def test_ep_forward_runs(self):
+        """Supplying an expert map must construct + forward without raising.
 
-        This is a smoke check that the EP path is wired up — the Nopad+3WG
-        implementation supports expert_map. The
-        per-expert numerical correctness check under expert_map filtering is
-        non-trivial to write a torch reference for and is left to a follow-up
-        end-to-end test against vLLM.
+        This is a smoke check that the expert-parallel path is wired up. The per-expert
+        numerical correctness check under expert_map filtering is non-trivial to
+        write a torch reference for and is left to an end-to-end test against vLLM.
         """
         T, H, F_dim, E_global, E_local, K = 64, 128, 64, 8, 4, 2
         dtype = torch.bfloat16
@@ -288,8 +286,8 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
 
         hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
-        # Weights sized to local experts only, since nopad's _gemm_gate_up
-        # is constructed with num_experts_local.
+        # Weights sized to local experts only: the grouped GEMMs are built for
+        # num_experts_local.
         w1 = torch.randn(E_local, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
         w2 = torch.randn(E_local, H, F_dim, dtype=dtype, device="cuda") * 0.02
         weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
@@ -297,9 +295,8 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ids = torch.randint(0, E_global, (T, K), dtype=torch.int32, device="cuda")
 
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=T, num_experts=E_global, top_k=K,
-            hidden_size=H, ffn_size=F_dim,
-            expert_map=expert_map,
+            num_tokens=T, num_experts=E_global, num_experts_local=E_local,
+            top_k=K, hidden_size=H, ffn_size=F_dim,
         )
         output = torch.empty(T, H, dtype=dtype, device="cuda")
         ws1 = torch.empty(0, dtype=dtype, device="cuda")
@@ -313,12 +310,40 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.isfinite(output.float()).all()
 
     @pytest.mark.smoke
+    def test_ep_forward_rejects_a_map_of_another_size(self):
+        """A map marking a different number of experts local must be refused.
+
+        The count is compiled into the permute kernel and both grouped GEMMs, so a
+        map covering more local ids than the op was built for cannot be honoured.
+        """
+        T, H, F_dim, E_global, E_local, K = 64, 128, 64, 8, 4, 2
+        dtype = torch.bfloat16
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T, num_experts=E_global, num_experts_local=E_local,
+            top_k=K, hidden_size=H, ffn_size=F_dim,
+        )
+        wider_map = torch.arange(E_global, dtype=torch.int32, device="cuda")
+        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+        w1 = torch.randn(E_local, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E_local, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
+        ids = torch.randint(0, E_global, (T, K), dtype=torch.int32, device="cuda")
+        output = torch.empty(T, H, dtype=dtype, device="cuda")
+        ws = torch.empty(0, dtype=dtype, device="cuda")
+        with pytest.raises(ValueError, match="exactly once each"):
+            experts.forward(
+                output, hidden, w1, w2, weights, ids,
+                expert_map=wider_map, workspace1=ws, workspace2=ws,
+                num_experts=E_global,
+            )
+
+    @pytest.mark.smoke
     @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
     def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
         """forward() output matches PyTorch reference for each activation."""
         d = moe_tensors
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            num_tokens=d["T"], num_experts=d["E"], num_experts_local=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"],
             activation=activation,
         )
@@ -340,7 +365,7 @@ class TestFusedMoeActivationInjection:
 
     def _make_experts(self, activation="silu_and_mul"):
         return FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=128, num_experts=4, top_k=2,
+            num_tokens=128, num_experts=4, num_experts_local=4, top_k=2,
             hidden_size=256, ffn_size=128,
             activation=activation,
         )
