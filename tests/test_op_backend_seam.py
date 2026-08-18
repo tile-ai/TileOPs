@@ -83,7 +83,7 @@ def _inputs(rows=4, shape=NORMALIZED_SHAPE, dtype=DTYPE, device="cpu"):
     return x, weight
 
 
-def test_dense_gqa_target_gets_the_normalized_manifest_abi():
+def test_dense_gqa_target_preserves_omitted_optional_inputs():
     builds = []
     runs = []
 
@@ -128,17 +128,107 @@ def test_dense_gqa_target_gets_the_normalized_manifest_abi():
         "window_size_left": -1,
         "window_size_right": -1,
         "dtype": torch.float16,
-        "fuse_rope": False,
+        "pos_encoding_mode": "none",
         "rotary_dim": None,
         "rope_layout": "neox",
+        "rope_base": 10000.0,
     }
     assert tuple(params) == op.__manifest_param_names__
-    assert len(runs[0]) == 8
+    assert len(runs[0]) == 3
     assert len(runs) == 2, "one callable serves different contents of one signature"
     assert not torch.equal(runs[0][0], runs[1][0])
     assert runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
-    assert runs[0][3].shape == (2, 2), "identity scales are normalized"
-    assert runs[0][6].shape == (1, 1), "disabled RoPE uses dummy tables"
+
+
+def test_dense_gqa_target_gets_rope_as_constructor_configuration():
+    builds = []
+    runs = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(*inputs):
+            runs.append(inputs)
+            return torch.empty_like(inputs[0])
+
+        return kernel
+
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=1,
+        heads=4,
+        heads_kv=2,
+        seq_len=3,
+        dim=8,
+        pos_encoding_mode="rope",
+        rotary_dim=4,
+        rope_layout="interleaved",
+        rope_base=500000.0,
+        target="gqa_fake",
+    )
+    q = torch.randn(1, 3, 4, 8, dtype=torch.float16)
+    k = torch.randn(1, 3, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+
+    output = op(q, k, v)
+
+    assert output.shape == q.shape
+    assert len(builds) == 1
+    specs, params = builds[0]
+    assert len(specs) == 3, "RoPE tables and omitted scales are not runtime inputs"
+    assert len(runs[0]) == 3
+    assert params["pos_encoding_mode"] == "rope"
+    assert params["rotary_dim"] == 4
+    assert params["rope_layout"] == "interleaved"
+    assert params["rope_base"] == 500000.0
+    assert params["dtype"] is None
+    assert specs[0].dtype == torch.float16
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable"
+)
+def test_dense_gqa_target_preserves_present_optional_inputs():
+    builds = []
+    runs = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(*inputs):
+            runs.append(inputs)
+            return torch.empty_like(inputs[0], dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch=1,
+        heads=8,
+        heads_kv=2,
+        seq_len=3,
+        dim=128,
+        is_causal=False,
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.empty((1, 3, 8, 128), dtype=torch.float8_e4m3fn)
+    k = torch.empty((1, 3, 2, 128), dtype=torch.float8_e4m3fn)
+    v = torch.empty_like(k)
+    scales = torch.ones((1, 2), dtype=torch.float32)
+
+    output = op(q, k, v, scales, scales, scales)
+
+    assert output.dtype == torch.float16
+    assert len(builds) == 1
+    specs, _ = builds[0]
+    assert len(specs) == 6
+    assert len(runs[0]) == 6
+    assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
 
 
 @pytest.mark.skipif(

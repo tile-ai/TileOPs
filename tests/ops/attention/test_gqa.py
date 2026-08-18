@@ -35,10 +35,13 @@ _PREFILL_TOLERANCE = {
 
 
 def _rope_tables(
-    max_position: int, rotary_dim: int, dtype: torch.dtype
+    max_position: int,
+    rotary_dim: int,
+    dtype: torch.dtype,
+    base: float = 10000.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     inv_freq = 1.0 / (
-        10000.0 ** (torch.arange(0, rotary_dim, 2, device="cuda", dtype=torch.float32) / rotary_dim)
+        base ** (torch.arange(0, rotary_dim, 2, device="cuda", dtype=torch.float32) / rotary_dim)
     )
     freqs = torch.outer(torch.arange(max_position, device="cuda", dtype=torch.float32), inv_freq)
     return freqs.cos().to(dtype).contiguous(), freqs.sin().to(dtype).contiguous()
@@ -340,15 +343,18 @@ def test_gqa_fwd_output_matches_the_declared_shape() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("rope_layout", ["neox", "interleaved"])
-def test_gqa_prefill_dense_fused_rope(rope_layout: str) -> None:
+@pytest.mark.parametrize(
+    ("rope_layout", "rope_base"),
+    [("neox", 10000.0), ("interleaved", 500000.0)],
+)
+def test_gqa_prefill_dense_fused_rope(rope_layout: str, rope_base: float) -> None:
     batch, seq_len_q, seq_len_kv = 2, 48, 80
     heads, heads_kv, dim, rotary_dim = 8, 2, 64, 32
     dtype = torch.float16
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
     v = torch.randn_like(k)
-    cos, sin = _rope_tables(seq_len_kv, rotary_dim, dtype)
+    cos, sin = _rope_tables(seq_len_kv, rotary_dim, dtype, rope_base)
     q_positions = torch.arange(
         seq_len_kv - seq_len_q, seq_len_kv, device="cuda", dtype=torch.long
     ).expand(batch, -1)
@@ -364,12 +370,13 @@ def test_gqa_prefill_dense_fused_rope(rope_layout: str) -> None:
         dim,
         True,
         seq_len_kv=seq_len_kv,
-        fuse_rope=True,
+        pos_encoding_mode="rope",
         rotary_dim=rotary_dim,
         rope_layout=rope_layout,
+        rope_base=rope_base,
     )
 
-    output = op(q, k, v, rope_cos=cos, rope_sin=sin)
+    output = op(q, k, v)
 
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
 
@@ -417,23 +424,19 @@ def test_gqa_prefill_dense_native_fp8_fused_rope() -> None:
         True,
         seq_len_kv=seq_len_kv,
         dtype=torch.float16,
-        fuse_rope=True,
+        pos_encoding_mode="rope",
         rotary_dim=rotary_dim,
         rope_layout="interleaved",
     )
 
-    output = op(q, k, v, scale, scale, scale, cos, sin)
+    output = op(q, k, v, scale, scale, scale)
 
     torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_dense_rope_tables_cover_all_kv_positions() -> None:
+def test_gqa_prefill_dense_rope_tables_are_constructor_owned_and_cached() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 32, 80, 8, 2, 64
-    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.randn_like(k)
-    cos, sin = _rope_tables(seq_len_kv - 1, dim, torch.float16)
     op = GroupedQueryAttentionPrefillDenseFwdOp(
         batch,
         heads,
@@ -442,30 +445,26 @@ def test_gqa_prefill_dense_rope_tables_cover_all_kv_positions() -> None:
         dim,
         True,
         seq_len_kv=seq_len_kv,
-        fuse_rope=True,
+        pos_encoding_mode="rope",
     )
 
-    with pytest.raises(ValueError, match="at least 80 rows"):
-        op(q, k, v, rope_cos=cos, rope_sin=sin)
+    cos, sin = op._rope_tables(torch.device("cuda"), torch.float16)
+    cached_cos, cached_sin = op._rope_tables(torch.device("cuda"), torch.float16)
+
+    assert cos.shape == sin.shape == (seq_len_kv, dim // 2)
+    assert cached_cos is cos
+    assert cached_sin is sin
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_dense_rope_inputs_match_fuse_rope() -> None:
-    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.randn_like(k)
-    cos, sin = _rope_tables(seq_len, dim, torch.float16)
-
-    fused = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch, heads, heads_kv, seq_len, dim, True, fuse_rope=True
-    )
-    with pytest.raises(ValueError, match="requires both"):
-        fused(q, k, v)
-
-    plain = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, True)
-    with pytest.raises(ValueError, match="require fuse_rope=True"):
-        plain(q, k, v, rope_cos=cos, rope_sin=sin)
+def test_gqa_prefill_dense_validates_constructor_rope_mode() -> None:
+    common = dict(batch=1, heads=8, heads_kv=2, seq_len=32, dim=64)
+    with pytest.raises(ValueError, match="pos_encoding_mode must be one of"):
+        GroupedQueryAttentionPrefillDenseFwdOp(**common, pos_encoding_mode="alibi")
+    with pytest.raises(ValueError, match="requires pos_encoding_mode='rope'"):
+        GroupedQueryAttentionPrefillDenseFwdOp(**common, rotary_dim=32)
+    with pytest.raises(ValueError, match="rope_base must be finite and positive"):
+        GroupedQueryAttentionPrefillDenseFwdOp(**common, pos_encoding_mode="rope", rope_base=0.0)
 
 
 @pytest.mark.smoke
@@ -494,7 +493,7 @@ def test_gqa_prefill_dense_fused_rope_rejects_negative_q_positions() -> None:
             seq_len_kv=48,
             dim=64,
             is_causal=False,
-            fuse_rope=True,
+            pos_encoding_mode="rope",
         )
 
 
@@ -504,7 +503,6 @@ def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
-    cos, sin = _rope_tables(seq_len, dim, torch.float16)
     op = GroupedQueryAttentionPrefillDenseFwdOp(
         batch,
         heads,
@@ -512,14 +510,14 @@ def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
         seq_len,
         dim,
         True,
-        fuse_rope=True,
+        pos_encoding_mode="rope",
         rope_layout="interleaved",
     )
-    op(q, k, v, rope_cos=cos, rope_sin=sin)
+    op(q, k, v)
     torch.cuda.synchronize()
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        captured = op(q, k, v, rope_cos=cos, rope_sin=sin)
+        captured = op(q, k, v)
     first = captured.clone()
     q.zero_()
     graph.replay()

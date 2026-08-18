@@ -106,15 +106,13 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
         dim,
         is_causal=False,
         dtype=torch.float16,
-        fuse_rope=True,
+        pos_encoding_mode="rope",
     )
     q = torch.randn(batch, seq_len, heads, dim, device="cuda").clamp(-2, 2).to(fp8)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
     v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
     scales = torch.ones(batch, heads_kv, device="cuda", dtype=torch.float32)
-    rope_cos = torch.ones(seq_len, dim // 2, device="cuda", dtype=torch.float16)
-    rope_sin = torch.zeros_like(rope_cos)
-    inputs = (q, k, v, scales, scales, scales, rope_cos, rope_sin)
+    inputs = (q, k, v, scales, scales, scales)
 
     output = torch.compile(op, fullgraph=True)(*inputs)
 
@@ -144,7 +142,7 @@ def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     v = torch.empty_like(k)
 
     output = _gqa_prefill_dense_fwd_fake(
-        q, k, v, None, None, None, None, None, op._instance_key
+        q, k, v, None, None, None, op._instance_key
     )
 
     assert output.shape == q.shape

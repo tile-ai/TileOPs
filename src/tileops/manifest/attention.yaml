@@ -112,8 +112,6 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       q_scale: {dtype: "float32", optional: true}
       k_scale: {dtype: "float32", optional: true}
       v_scale: {dtype: "float32", optional: true}
-      rope_cos: {dtype: "float16 | bfloat16", optional: true}
-      rope_sin: {dtype: "float16 | bfloat16", optional: true}
     outputs:
       o: {dtype: "float16 | bfloat16"}
     params:
@@ -123,9 +121,10 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
       dtype: {type: torch.dtype, default: null}
-      fuse_rope: {type: bool, default: false}
+      pos_encoding_mode: {type: str, default: none}
       rotary_dim: {type: "int | None", default: null}
       rope_layout: {type: str, default: neox}
+      rope_base: {type: float, default: 10000.0}
     dtype_combos:
       - {q: float16, k: float16, v: float16, o: float16}
       - {q: bfloat16, k: bfloat16, v: bfloat16, o: bfloat16}
@@ -140,12 +139,11 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       - "q_scale is None or q_scale.shape == (B, H_kv)"
       - "k_scale is None or k_scale.shape == (B, H_kv)"
       - "v_scale is None or v_scale.shape == (B, H_kv)"
-      - "(rope_cos is None) == (rope_sin is None)"
-      - "fuse_rope or rope_cos is None"
-      - "not fuse_rope or rope_cos is not None"
-      - "rope_cos is None or rope_sin is None or rope_cos.shape == rope_sin.shape"
-      - "rope_cos is None or (rope_cos.shape[0] >= S_kv and ((rotary_dim is None and rope_cos.shape[1] * 2 == D) or (rotary_dim is not None and rope_cos.shape[1] * 2 == rotary_dim)))"
+      - "pos_encoding_mode == 'none' or pos_encoding_mode == 'rope'"
+      - "pos_encoding_mode == 'rope' or rotary_dim is None"
+      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
       - "rope_layout == 'neox' or rope_layout == 'interleaved'"
+      - "rope_base > 0"
       - "o.shape == (B, S_q, H, D)"
       - "H % H_kv == 0"
 
@@ -165,10 +163,10 @@ GroupedQueryAttentionPrefillDenseFwdOp:
     - {q_shape: [1, 512, 32, 128], kv_shape: [1, 512, 8, 128], is_causal: false, window_size_left: 256, window_size_right: 64, sm_scale: 0.125, softcap: 50.0, dtypes: [float16], label: "dense-bidirectional-window-softcap50"}
     - {q_shape: [2, 512, 32, 128], kv_shape: [2, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
     - {q_shape: [1, 512, 64, 128], kv_shape: [1, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
-    # Optional-input coverage for the fused-RoPE form. Correctness and compile
+    # Constructor-owned fused-RoPE coverage. Correctness and compile
     # coverage live in tests/ops/attention/test_gqa.py and tests/test_compile.py;
     # a full-envelope third-party performance baseline is not wired yet.
-    - {q_shape: [1, 257, 8, 64], kv_shape: [1, 321, 2, 64], rope_cos_shape: [321, 32], rope_sin_shape: [321, 32], is_causal: true, fuse_rope: true, rotary_dim: 64, rope_layout: interleaved, dtypes: [float16], bench_skip_reason: "Dense fused-RoPE full-envelope baseline is not implemented", label: "dense-fused-rope-interleaved-tail"}
+    - {q_shape: [1, 257, 8, 64], kv_shape: [1, 321, 2, 64], is_causal: true, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, dtypes: [float16], bench_skip_reason: "Dense fused-RoPE full-envelope baseline is not implemented", label: "dense-fused-rope-interleaved-tail"}
     # Native FP8 Tensor Core specializations; dtype selects the output type.
     - {q_shape: [1, 896, 32, 128], kv_shape: [1, 896, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], input_dtype: float8_e4m3fn, label: "llama-3.1-8b-prefill-fp8tc-bn224-s896"}
     - {q_shape: [1, 1792, 32, 128], kv_shape: [1, 1792, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: false, dtypes: [float16], input_dtype: float8_e4m3fn, label: "llama-3.1-8b-prefill-fp8tc-bn224-s1792"}
