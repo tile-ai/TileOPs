@@ -30,6 +30,8 @@
 
 - Filenames: all-lowercase with underscores. Multi-letter abbreviations stay lowercase (`rms_norm.py`, `ssd_decode.py`); never capitalize a single letter. Never contract norm names (`rms_norm`, not `rmsnorm`).
 
+- An `optional: true` input defaults to `None` in `forward`, and presence is read from the call, not settled at construction. Where the presence changes what the kernel build produces, it goes in that kernel's cache key.
+
 - Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may use a single-line summary. Never mix Sphinx (`:param:`) or NumPy headers in one file.
 
 - Expand domain abbreviations on first use in a docstring: `State Space Model (SSM)`, `State-Space Dual (SSD)`. Later uses may abbreviate.

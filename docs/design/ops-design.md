@@ -157,6 +157,8 @@ class ExampleCumsumFwdOp(Op):
 
 **Input.** Manifest `source.kernel_map`; `signature.inputs`; `static_dims` (for the forward-time commitment check); `shape_rules` (for `dim` range validation).
 
+**Optional inputs.** An `optional: true` input takes a `None` default in `forward`, and presence is read from the call rather than settled at construction, so one instance serves both ways of calling the op. A `shape_rules` entry naming it applies to the calls that supply it, and `forward` is what enforces that. Where the presence changes what gets built, it belongs in the kernel cache key alongside the shapes.
+
 **Output.**
 
 ```python
