@@ -1243,6 +1243,71 @@ def _conv2d_kernel(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+        ):
+            out_hw = out_h * out_w
+            with T.Kernel(
+                T.ceildiv(out_hw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        spatial_idx = bx * block_n + j
+                        ci = k_idx // (kernel_h * kernel_w)
+                        kernel_idx = k_idx % (kernel_h * kernel_w)
+                        kh = kernel_idx // kernel_w
+                        kw = kernel_idx % kernel_w
+                        oh = spatial_idx // out_w
+                        ow = spatial_idx % out_w
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
+                        in_bound = (
+                            (spatial_idx < out_hw)
+                            & (k_idx < k_total)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (ih < h)
+                            & (iw < w)
+                        )
+                        data_shared[i, j] = T.if_then_else(
+                            in_bound,
+                            x[bz, ci, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
+
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    spatial_idx = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (oc < c_out) & (spatial_idx < out_hw),
+                        T.cast(out_local[i, j], dtype),
+                        T.cast(0.0, dtype),
+                    )
+
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
+
+        @T.prim_func
+        def _conv2d_bias_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
             out_hw = out_h * out_w
@@ -1296,22 +1361,15 @@ def _conv2d_kernel(
                 for i, j in T.Parallel(block_m, block_n):
                     oc = by * block_m + i
                     spatial_idx = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (spatial_idx < out_hw),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (spatial_idx < out_hw),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                    out_shared[i, j] = T.if_then_else(
+                        (oc < c_out) & (spatial_idx < out_hw),
+                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                        T.cast(0.0, dtype),
+                    )
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
-        return _conv2d_main
+        return _conv2d_bias_main if has_bias else _conv2d_main
 
     return _conv2d_func
 
@@ -1360,6 +1418,87 @@ def _conv2d_group_kernel(
     ):
         @T.prim_func
         def _conv2d_group_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(out_hw, block_n),
+                T.ceildiv(c_out_g, block_m),
+                n * groups,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                batch_id = bz // groups
+                group_id = bz % groups
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    for i, k in T.Parallel(block_m, block_k):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        k_idx = k_iter * block_k + k
+                        ci_g = k_idx // (kernel_h * kernel_w)
+                        kernel_idx = k_idx % (kernel_h * kernel_w)
+                        kh = kernel_idx // kernel_w
+                        kw = kernel_idx % kernel_w
+                        weight_shared[i, k] = T.if_then_else(
+                            (oc_g < c_out_g) & (k_idx < k_total),
+                            weight[oc, ci_g, kh, kw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    for k, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + k
+                        spatial_idx = bx * block_n + j
+                        ci_g = k_idx // (kernel_h * kernel_w)
+                        ci = group_id * c_in_g + ci_g
+                        kernel_idx = k_idx % (kernel_h * kernel_w)
+                        kh = kernel_idx // kernel_w
+                        kw = kernel_idx % kernel_w
+                        oh = spatial_idx // out_w
+                        ow = spatial_idx % out_w
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
+                        data_shared[k, j] = T.if_then_else(
+                            (spatial_idx < out_hw)
+                            & (k_idx < k_total)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (ih < h)
+                            & (iw < w),
+                            x[batch_id, ci, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc_g = by * block_m + i
+                    spatial_idx = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (oc_g < c_out_g) & (spatial_idx < out_hw),
+                        T.cast(out_local[i, j], dtype),
+                        T.cast(0.0, dtype),
+                    )
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc_g = by * block_m + i
+                    oc = group_id * c_out_g + oc_g
+                    spatial_idx = bx * block_n + j
+                    oh = spatial_idx // out_w
+                    ow = spatial_idx % out_w
+                    if oc_g < c_out_g and spatial_idx < out_hw:
+                        out[batch_id, oc, oh, ow] = out_shared[i, j]
+
+        @T.prim_func
+        def _conv2d_group_bias_main(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
@@ -1426,18 +1565,11 @@ def _conv2d_group_kernel(
                     oc_g = by * block_m + i
                     oc = group_id * c_out_g + oc_g
                     spatial_idx = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc_g < c_out_g) & (spatial_idx < out_hw),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc_g < c_out_g) & (spatial_idx < out_hw),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                    out_shared[i, j] = T.if_then_else(
+                        (oc_g < c_out_g) & (spatial_idx < out_hw),
+                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                        T.cast(0.0, dtype),
+                    )
 
                 for i, j in T.Parallel(block_m, block_n):
                     oc_g = by * block_m + i
@@ -1448,7 +1580,7 @@ def _conv2d_group_kernel(
                     if oc_g < c_out_g and spatial_idx < out_hw:
                         out[batch_id, oc, oh, ow] = out_shared[i, j]
 
-        return _conv2d_group_main
+        return _conv2d_group_bias_main if has_bias else _conv2d_group_main
 
     return _conv2d_group_func
 
@@ -1474,7 +1606,7 @@ def _conv2d_symmetric_kernel(
     k_total = c_in * kernel_size * kernel_size
 
     @tilelang.jit(
-        out_idx=[6],
+        out_idx=[5],
         compile_flags=["-O3", "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
@@ -1542,12 +1674,10 @@ def _conv2d_symmetric_kernel(
                                 dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
 
         @T.macro
-        def conv_nhwc_implicit_gemm_bias(
+        def conv_nhwc_implicit_gemm(
             x_nhwc: T.Tensor((n, h, w, c_in), dtype),
             weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-            bias: T.Tensor((c_out,), dtype),
             out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
-            has_bias: bool,
         ):
             with T.Kernel(
                 T.ceildiv(c_out, block_n),
@@ -1573,18 +1703,50 @@ def _conv2d_symmetric_kernel(
                 for i, j in T.Parallel(block_m, block_n):
                     spatial_idx = by * block_m + i
                     oc = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (spatial_idx < n * out_hw) & (oc < c_out),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (spatial_idx < n * out_hw) & (oc < c_out),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                    out_shared[i, j] = T.if_then_else(
+                        (spatial_idx < n * out_hw) & (oc < c_out),
+                        T.cast(out_local[i, j], dtype),
+                        T.cast(0.0, dtype),
+                    )
+
+                T.copy(out_shared, out_flat[by * block_m, bx * block_n])
+
+        @T.macro
+        def conv_nhwc_implicit_gemm_bias(
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+            bias: T.Tensor((c_out,), dtype),
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(c_out, block_n),
+                T.ceildiv(n * out_h * out_w, block_m),
+                threads=threads,
+            ) as (bx, by):
+                data_shared = T.alloc_shared((block_m, block_k), dtype)
+                weight_shared = T.alloc_shared((block_n, block_k), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
+                out_flat = T.Tensor((n * out_h * out_w, c_out), dtype, out_nhwc.data)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    T.im2col(x_nhwc, data_shared, by, k_iter, kernel_size, stride, dilation, pad)
+                    T.copy(weight_flat[bx * block_n, k_iter * block_k], weight_shared)
+                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    spatial_idx = by * block_m + i
+                    oc = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (spatial_idx < n * out_hw) & (oc < c_out),
+                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                        T.cast(0.0, dtype),
+                    )
 
                 T.copy(out_shared, out_flat[by * block_m, bx * block_n])
 
@@ -1592,7 +1754,6 @@ def _conv2d_symmetric_kernel(
         def _conv2d_symmetric_main(
             x: T.Tensor((n, c_in, h, w), dtype),
             weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
-            bias: T.Tensor((c_out,), dtype),
             x_nhwc: T.Tensor((n, h, w, c_in), dtype),
             weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
             out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
@@ -1624,7 +1785,7 @@ def _conv2d_symmetric_kernel(
                 channel_fastest=True,
                 is_nchw_to_nhwc=True,
             )
-            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc, has_bias)
+            conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out_nhwc)
             transpose_spatial_channel(
                 out_nhwc,
                 out,
@@ -1639,7 +1800,58 @@ def _conv2d_symmetric_kernel(
                 is_nchw_to_nhwc=False,
             )
 
-        return _conv2d_symmetric_main
+        @T.prim_func
+        def _conv2d_symmetric_bias_main(
+            x: T.Tensor((n, c_in, h, w), dtype),
+            weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),
+            bias: T.Tensor((c_out,), dtype),
+        ):
+            transpose_spatial_channel(
+                x,
+                x_nhwc,
+                batch_size=n,
+                spatial_size=h * w,
+                channel_size=c_in,
+                width=w,
+                spatial_block=32,
+                channel_block=32,
+                channel_lanes=8,
+                channel_fastest=True,
+                is_nchw_to_nhwc=True,
+            )
+            transpose_spatial_channel(
+                weight,
+                weight_krsc,
+                batch_size=c_out,
+                spatial_size=kernel_size * kernel_size,
+                channel_size=c_in,
+                width=kernel_size,
+                spatial_block=16,
+                channel_block=32,
+                channel_lanes=16,
+                channel_fastest=True,
+                is_nchw_to_nhwc=True,
+            )
+            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc)
+            transpose_spatial_channel(
+                out_nhwc,
+                out,
+                batch_size=n,
+                spatial_size=out_h * out_w,
+                channel_size=c_out,
+                width=out_w,
+                spatial_block=128,
+                channel_block=2,
+                channel_lanes=2,
+                channel_fastest=False,
+                is_nchw_to_nhwc=False,
+            )
+
+        return _conv2d_symmetric_bias_main if has_bias else _conv2d_symmetric_main
 
     return _conv2d_symmetric_func
 
@@ -1712,16 +1924,17 @@ def _conv2d_symmetric_wrapped_kernel(
     enable_rasterization: bool,
     x: torch.Tensor,
     weight: torch.Tensor,
-    bias: torch.Tensor,
+    bias: Optional[torch.Tensor],
     x_nhwc: torch.Tensor,
     weight_krsc: torch.Tensor,
     out_nhwc: torch.Tensor,
 ) -> torch.Tensor:
-    return _conv2d_symmetric_kernel(
+    kernel = _conv2d_symmetric_kernel(
         n, c_in, h, w, c_out, kernel_size, stride, pad, dilation, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(
-        x, weight, bias, x_nhwc, weight_krsc, out_nhwc
-    )
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)
+    if bias is not None:
+        return kernel(x, weight, x_nhwc, weight_krsc, out_nhwc, bias)
+    return kernel(x, weight, x_nhwc, weight_krsc, out_nhwc)
 
 
 @_conv2d_symmetric_wrapped_kernel.register_fake
@@ -1776,9 +1989,9 @@ def _conv2d_wrapped_kernel(
     enable_rasterization: bool,
     x: torch.Tensor,
     weight: torch.Tensor,
-    bias: torch.Tensor,
+    bias: Optional[torch.Tensor],
 ) -> torch.Tensor:
-    return _conv2d_kernel(
+    kernel = _conv2d_kernel(
         n,
         c_in,
         h,
@@ -1794,7 +2007,10 @@ def _conv2d_wrapped_kernel(
         dilation_w,
         has_bias,
         dtype,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)
+    if bias is not None:
+        return kernel(x, weight, bias)
+    return kernel(x, weight)
 
 
 @torch.library.custom_op("top::conv2d_group_wrapped_kernel", mutates_args=())
@@ -1825,9 +2041,9 @@ def _conv2d_group_wrapped_kernel(
     enable_rasterization: bool,
     x: torch.Tensor,
     weight: torch.Tensor,
-    bias: torch.Tensor,
+    bias: Optional[torch.Tensor],
 ) -> torch.Tensor:
-    return _conv2d_group_kernel(
+    kernel = _conv2d_group_kernel(
         n,
         c_in,
         h,
@@ -1846,7 +2062,10 @@ def _conv2d_group_wrapped_kernel(
         groups,
         c_in_g,
         c_out_g,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)
+    if bias is not None:
+        return kernel(x, weight, bias)
+    return kernel(x, weight)
 
 
 @_conv2d_wrapped_kernel.register_fake
@@ -1990,8 +2209,6 @@ class Conv2dSymmetricKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         x_nhwc = torch.empty(
             (self.n, self.h, self.w, self.c_in),
             device=x.device,
@@ -2141,8 +2358,6 @@ class Conv2dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         return _conv2d_wrapped_kernel(
             self.n,
             self.c_in,
@@ -2284,8 +2499,6 @@ class GroupConv2dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         return _conv2d_group_wrapped_kernel(
             self.n,
             self.c_in,
