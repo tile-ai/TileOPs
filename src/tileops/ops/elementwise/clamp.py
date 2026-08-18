@@ -26,6 +26,12 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
     must be a Tensor. All Tensor operands broadcast together. A single bound
     is ``torch.clamp_min`` / ``torch.clamp_max``.
 
+    The bounds given here decide which call this instance serves: the
+    broadcast output shape is settled at construction, and it depends on
+    which bounds are present. ``forward`` rejects a call whose bounds differ
+    from them, so a different combination needs a different instance — the
+    same as a different input shape does.
+
     Args:
         input: Shape of the input tensor.
         min: Shape of the lower-bound tensor, or ``None`` for no lower bound.
