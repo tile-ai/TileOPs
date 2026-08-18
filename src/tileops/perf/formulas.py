@@ -41,6 +41,7 @@ __all__ = [
     "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
     "gated_deltanet_decode_roofline",
+    "gated_deltanet_fwd_roofline",
     "gated_deltanet_prefill_fwd_roofline",
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
@@ -208,6 +209,47 @@ def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
     # leading queries see no keys at all, so only the last seq_len_kv rows count.
     rows = min(seq_len_q, seq_len_kv)
     return rows * seq_len_kv - rows * (rows - 1) // 2
+
+
+def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the Gated DeltaNet training forward.
+
+    Same chunkwise matmul work as the prefill helper, over the same conservative
+    model. The byte count differs: this forward also materializes the per-chunk
+    state ``S`` and the ``Aw`` / ``Au`` training artifacts that backward reads.
+    """
+    prefill_flops, prefill_bytes = gated_deltanet_prefill_fwd_roofline(op, **kwargs)
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        q_shape, v_shape = data["q_shape"], data["v_shape"]
+        layout = str(data.get("layout", "bthd")).lower()
+        if layout == "bthd":
+            batch, seq_len, heads, dim_k = q_shape
+            dim_v = v_shape[3]
+        else:
+            batch, heads, seq_len, dim_k = q_shape
+            dim_v = v_shape[3]
+        chunk_size = data.get("chunk_size", 64) or 64
+    else:
+        batch, heads, seq_len = data["batch"], data["heads"], data["seq_len"]
+        dim_k, dim_v = data["dim_k"], data["dim_v"]
+        chunk_size = data["chunk_size"] or 64
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    num_chunks = seq_len // chunk_size
+    # S [B, H, NC + 1, DK, DV] plus Aw and Au, each [B, H, S, chunk_size].
+    state_elems = batch * heads * (num_chunks + 1) * dim_k * dim_v
+    wy_elems = 2 * batch * heads * seq_len * chunk_size
+    # The prefill model already counts one [B, H, DK, DV] final state.
+    prefill_state_elems = batch * heads * dim_k * dim_v
+    extra = (state_elems + wy_elems - prefill_state_elems) * elem_bytes
+
+    # Aw comes from a chunk-local block solve the prefill path does not run:
+    # one triangular inverse per chunk, then applying it across DK.
+    blocksolve_flops = 2 * batch * heads * num_chunks * chunk_size * chunk_size * (
+        chunk_size + dim_k
+    )
+    return int(prefill_flops + blocksolve_flops), int(prefill_bytes + extra)
 
 
 def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:

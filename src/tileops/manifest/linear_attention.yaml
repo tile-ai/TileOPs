@@ -239,6 +239,8 @@ GLADecodeOp:
 # release-facing wrapper before they should count as implemented manifest ops.
 
 GatedDeltaNetFwdOp:
+  # Training forward in head-major (BHTD) order. GatedDeltaNetBwdOp reads the S
+  # this returns, in this order; token-major callers want GatedDeltaNetBTHDFwdOp.
   ref_api: "none"
   family: linear_attention
   status: spec-only
@@ -256,35 +258,60 @@ GatedDeltaNetFwdOp:
       Au: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
     params:
       chunk_size: {type: int, default: 64}
-      layout: {type: str, default: "bhtd"}
     shape_rules:
-    - "layout in ('bhtd', 'bthd')"
-    - "layout == 'bthd' or q.shape == (B, H, S, DK)"
-    - "layout == 'bthd' or k.shape == (B, H, S, DK)"
-    - "layout == 'bthd' or v.shape == (B, H, S, DV)"
-    - "layout == 'bthd' or g.shape == (B, H, S)"
-    - "layout == 'bthd' or beta.shape == (B, H, S)"
-    - "layout == 'bthd' or o.shape == (B, H, S, DV)"
-    - "layout == 'bthd' or Aw.shape == (B, H, S, chunk_size)"
-    - "layout == 'bthd' or Au.shape == (B, H, S, chunk_size)"
-    - "layout != 'bthd' or q.shape == (B, S, H, DK)"
-    - "layout != 'bthd' or k.shape == (B, S, H, DK)"
-    - "layout != 'bthd' or v.shape == (B, S, H, DV)"
-    - "layout != 'bthd' or g.shape == (B, S, H)"
-    - "layout != 'bthd' or beta.shape == (B, S, H)"
-    - "layout != 'bthd' or o.shape == (B, S, H, DV)"
-    - "layout != 'bthd' or Aw.shape == (B, S, H, chunk_size)"
-    - "layout != 'bthd' or Au.shape == (B, S, H, chunk_size)"
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
   workloads: []
-  roofline: {flops: "0", bytes: "0"}
+  roofline: {func: tileops.perf.formulas.gated_deltanet_fwd_roofline}
   source:
     kernel: tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
     op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_fwd.py
     bench: benchmarks/ops/bench_gated_deltanet.py
     bench_manifest_driven: false
+
+GatedDeltaNetBTHDFwdOp:
+  # The same operator in token-major (BTHD) order, which is what the FLA
+  # reference uses. Memory order is part of the signature, so it is its own
+  # entry rather than a mode of GatedDeltaNetFwdOp. Runs the warp-specialized
+  # production pipeline, which serves Hopper only.
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16", shape: "[B, S, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, S, H]"}
+      beta: {dtype: "same_as(q)", shape: "[B, S, H]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      S: {dtype: "same_as(q)", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "same_as(q)", shape: "[B, S, H, chunk_size]"}
+      Au: {dtype: "same_as(q)", shape: "[B, S, H, chunk_size]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+    - "S % chunk_size == 0"
+    - "NC == S // chunk_size"
+    - "DK == DV"
+  workloads:
+  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4], beta_shape: [2, 2048, 4], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4], beta_shape: [2, 4096, 4], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b2-s4k-h4-d64"}
+  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4], beta_shape: [2, 8192, 4], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b2-s8k-h4-d64"}
+  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4], beta_shape: [2, 16384, 4], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b2-s16k-h4-d64"}
+  - {q_shape: [2, 32768, 4, 64], k_shape: [2, 32768, 4, 64], v_shape: [2, 32768, 4, 64], g_shape: [2, 32768, 4], beta_shape: [2, 32768, 4], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b2-s32k-h4-d64"}
+  - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b1-s4k-h16-d128"}
+  roofline: {func: tileops.perf.formulas.gated_deltanet_fwd_roofline}
+  source:
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
+    kernel_map:
+      GatedDeltaNetFwdProductionKernel: GatedDeltaNetFwdProductionKernel
+    op: tileops/ops/gated_deltanet.py
+    test: tests/ops/test_gated_deltanet_fwd.py
+    bench: benchmarks/ops/bench_gated_deltanet.py
+    bench_manifest_driven: true
 
 GatedDeltaNetBwdOp:
   ref_api: "none"
@@ -298,7 +325,7 @@ GatedDeltaNetBwdOp:
       v: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
       g: {dtype: "same_as(do)", shape: "[B, H, S]"}
       beta: {dtype: "same_as(do)", shape: "[B, H, S]"}
-      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      S: {dtype: "same_as(do)", shape: "[B, H, NC + 1, DK, DV]"}
     outputs:
       dq: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
       dk: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
@@ -331,7 +358,7 @@ DeltaNetFwdOp:
       beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
     outputs:
       o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
-      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      S: {dtype: "same_as(do)", shape: "[B, H, NC + 1, DK, DV]"}
       Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
       Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
       w: {dtype: "float32", shape: "[B, H, S, DK]"}
@@ -361,7 +388,7 @@ DeltaNetBwdOp:
       k: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
       v: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
       beta: {dtype: "same_as(do)", shape: "[B, H, S]"}
-      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      S: {dtype: "same_as(do)", shape: "[B, H, NC + 1, DK, DV]"}
       Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
       Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
       w: {dtype: "float32", shape: "[B, H, S, DK]"}

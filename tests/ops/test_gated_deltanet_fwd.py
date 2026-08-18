@@ -2,7 +2,11 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GatedDeltaNetFwdOp, GatedDeltaNetPrefillFwdOp
+from tileops.ops import (
+    GatedDeltaNetBTHDFwdOp,
+    GatedDeltaNetFwdOp,
+    GatedDeltaNetPrefillFwdOp,
+)
 from workloads.linear_attention import (
     GatedDeltaNetFwdWorkload,
 )
@@ -86,6 +90,24 @@ def test_gated_deltanet_fwd(
         assert op.kernel.config in op.kernel.autotune_configs
 
 
+@pytest.mark.smoke
+def test_bthd_forward_refuses_a_dtype_it_cannot_serve() -> None:
+    """The dtype contract is checked before a kernel is chosen, and names the value."""
+    q = torch.randn(1, 64, 2, 64, dtype=torch.float32, device="cuda")
+    g = torch.randn(1, 64, 2, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="float16 or bfloat16, got torch.float32"):
+        GatedDeltaNetBTHDFwdOp(chunk_size=64)(q, q, q, g, g)
+
+
+@pytest.mark.smoke
+def test_bthd_forward_names_the_requirement_a_call_missed() -> None:
+    """A call the production pipeline has no kernel for is told which one it failed."""
+    q = torch.randn(1, 64, 2, 64, dtype=torch.float16, device="cuda")
+    g = torch.randn(1, 64, 2, dtype=torch.float16, device="cuda")
+    with pytest.raises(ValueError, match="chunk_size must be 64, got 32"):
+        GatedDeltaNetBTHDFwdOp(chunk_size=32)(q, q, q, g, g)
+
+
 @pytest.mark.parametrize(
     "seq_len,dim,dtype",
     [
@@ -95,23 +117,21 @@ def test_gated_deltanet_fwd(
         pytest.param(32768, 64, torch.float16, marks=pytest.mark.full),
     ],
 )
-def test_gated_deltanet_fwd_bthd_production_matches_legacy(
+@pytest.mark.hopper
+def test_gated_deltanet_bthd_matches_the_head_major_op(
     seq_len: int, dim: int, dtype: torch.dtype
 ) -> None:
-    if torch.cuda.get_device_capability()[0] != 9:
-        pytest.skip("the warp-specialized BTHD production kernel requires Hopper")
-
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(2, 4, seq_len, dim, dim, 64, dtype)
     q, k, v, g, beta = test.gen_inputs()
-    legacy = GatedDeltaNetFwdOp(chunk_size=64, layout="bhtd")(q, k, v, g, beta)
+    legacy = GatedDeltaNetFwdOp(chunk_size=64)(q, k, v, g, beta)
 
     q_bthd = q.permute(0, 2, 1, 3).contiguous()
     k_bthd = k.permute(0, 2, 1, 3).contiguous()
     v_bthd = v.permute(0, 2, 1, 3).contiguous()
     g_bthd = g.permute(0, 2, 1).contiguous()
     beta_bthd = beta.permute(0, 2, 1).contiguous()
-    production_op = GatedDeltaNetFwdOp(chunk_size=64, layout="bthd")
+    production_op = GatedDeltaNetBTHDFwdOp(chunk_size=64)
     production = production_op(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
 
     tols = _get_tolerances(dtype)

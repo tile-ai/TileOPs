@@ -20,6 +20,7 @@ from tileops.kernels.kernel_base import Kernel
 from .op_base import Op
 
 __all__ = [
+    "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
@@ -156,15 +157,14 @@ class GatedDeltaNetFwdOp(Op):
 
     Pipeline: prepare_wy_repr(k, g, beta) -> (Aw, Au) -> gated_deltanet_fwd(q, k, v, g, beta, Aw, Au) -> o.
 
-    ``layout="bhtd"`` keeps the legacy TileOps head-major interface.
-    ``layout="bthd"`` selects the FLA-compatible token-major interface and,
-    on Hopper for supported shapes, the production forward pipeline.
+    Head-major (BHTD) inputs: ``q/k [B, H, S, DK]``, ``v [B, H, S, DV]``,
+    ``g/beta [B, H, S]``. ``GatedDeltaNetBwdOp`` consumes the ``S`` this returns,
+    in the same layout. Token-major callers want ``GatedDeltaNetBTHDFwdOp``.
 
     Args:
         chunk_size: Chunk size for chunked linear attention.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
-        layout: Input/output layout, either ``"bhtd"`` or ``"bthd"``.
     """
 
     def __init__(
@@ -172,9 +172,7 @@ class GatedDeltaNetFwdOp(Op):
         chunk_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        layout: str = "bhtd",
     ) -> None:
-        layout = _normalize_layout(layout)
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -183,17 +181,18 @@ class GatedDeltaNetFwdOp(Op):
         self.chunk_size = chunk_size
         self.dtype = None
         self.tune = tune
-        self.layout = layout
 
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "GatedDeltaNetFwdKernel": GatedDeltaNetFwdKernel,
-            "GatedDeltaNetFwdProductionKernel": GatedDeltaNetFwdProductionKernel,
-        }
+        return {"GatedDeltaNetFwdKernel": GatedDeltaNetFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        from tileops.perf.formulas import gated_deltanet_fwd_roofline
+
+        return gated_deltanet_fwd_roofline(self)
 
     def _get_kernel(
         self,
@@ -205,18 +204,8 @@ class GatedDeltaNetFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        production = self.layout == "bthd"
-        if production:
-            gaps = _bthd_production_gaps(
-                self.chunk_size, dim_k, dim_v, dtype, device_index)
-            if gaps:
-                raise ValueError(
-                    "BTHD GatedDeltaNet forward has no kernel for this call: "
-                    + "; ".join(gaps)
-                )
-        kernel_name = "GatedDeltaNetFwdProductionKernel" if production else "GatedDeltaNetFwdKernel"
+        kernel_name = "GatedDeltaNetFwdKernel"
         key = (
-            kernel_name,
             batch,
             heads,
             seq_len,
@@ -253,11 +242,11 @@ class GatedDeltaNetFwdOp(Op):
         """Run gated deltanet forward.
 
         Args:
-            q: Query tensor in the configured layout.
-            k: Key tensor in the configured layout.
-            v: Value tensor in the configured layout.
-            g: Gate tensor in the configured layout without the last dimension.
-            beta: Beta tensor with the same shape as ``g``.
+            q: Query tensor [B, H, S, DK].
+            k: Key tensor [B, H, S, DK].
+            v: Value tensor [B, H, S, DV].
+            g: Gate tensor [B, H, S].
+            beta: Beta tensor [B, H, S].
 
         Returns:
             Tuple of (o, S, Aw, Au).
@@ -267,14 +256,168 @@ class GatedDeltaNetFwdOp(Op):
         v = v.contiguous()
         g = g.contiguous()
         beta = beta.contiguous()
-        resolver = _resolve_gated_bthd if self.layout == "bthd" else _resolve_gated_bhsd
-        batch, heads, seq_len, dim_k, dim_v, dtype = resolver(q, k, v, g, beta, self.chunk_size)
+        batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
+            q, k, v, g, beta, self.chunk_size)
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
+        self.kernel = self._get_kernel(
+            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        o, S, Aw, Au = self.kernel(q, k, v, g, beta)
+        return o, S, Aw, Au
+
+
+class GatedDeltaNetBTHDFwdOp(Op):
+    """Gated DeltaNet forward over token-major (BTHD) inputs.
+
+    Same operator as ``GatedDeltaNetFwdOp`` and the same four outputs, over the
+    token-major memory order the FLA reference uses: ``q/k [B, S, H, DK]``,
+    ``v [B, S, H, DV]``, ``g/beta [B, S, H]``. A separate entry because the
+    memory order is part of the signature, not a mode of one signature.
+
+    It runs the warp-specialized production pipeline, so it serves Hopper with
+    ``chunk_size=64``, equal K/V dimensions in {64, 128}, and float16 or
+    bfloat16. Any other call is refused, naming what it failed.
+
+    Args:
+        chunk_size: Chunk size for chunked linear attention.
+        kernel_map: Optional kernel overrides.
+        tune: Whether to autotune kernels.
+    """
+
+    def __init__(
+        self,
+        chunk_size: int = 64,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        self.batch = None
+        self.heads = None
+        self.seq_len = None
+        self.dim_k = None
+        self.dim_v = None
+        self.chunk_size = chunk_size
+        self.dtype = None
+        self.tune = tune
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = None
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"GatedDeltaNetFwdProductionKernel": GatedDeltaNetFwdProductionKernel}
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> None:
+        """Manifest ``dtype``: every input carries q's dtype, which must be half."""
+        if q.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                f"Expected q.dtype float16 or bfloat16, got {q.dtype}")
+        for name, tensor in (("k", k), ("v", v), ("g", g), ("beta", beta)):
+            if tensor.dtype != q.dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
+        self.dtype = q.dtype
+
+    def _infer_output_shapes(
+        self,
+        q_shape: Tuple[int, ...],
+        k_shape: Tuple[int, ...],
+        v_shape: Tuple[int, ...],
+        g_shape: Tuple[int, ...],
+        beta_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules`` for the four outputs, in token-major order."""
+        batch, seq_len, heads, _ = q_shape
+        dim_k, dim_v = q_shape[3], v_shape[3]
+        num_chunks = seq_len // self.chunk_size
+        return {
+            "o": (batch, seq_len, heads, dim_v),
+            "S": (batch, heads, num_chunks + 1, dim_k, dim_v),
+            "Aw": (batch, seq_len, heads, self.chunk_size),
+            "Au": (batch, seq_len, heads, self.chunk_size),
+        }
+
+    def eval_roofline(self) -> tuple[int, int]:
+        from tileops.perf.formulas import gated_deltanet_fwd_roofline
+
+        return gated_deltanet_fwd_roofline(self)
+
+    def _get_kernel(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        gaps = _bthd_production_gaps(self.chunk_size, dim_k, dim_v, dtype, device_index)
+        if gaps:
+            raise ValueError(
+                "BTHD GatedDeltaNet forward has no kernel for this call: "
+                + "; ".join(gaps)
+            )
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype,
+               device_index, self.tune)
+        return self.get_or_build_kernel(
+            "GatedDeltaNetFwdProductionKernel",
+            key=key,
+            build=lambda: self.kernel_map["GatedDeltaNetFwdProductionKernel"](
+                batch,
+                heads,
+                seq_len,
+                self.chunk_size,
+                dim_k,
+                dim_v,
+                dtype=Kernel.dtype_to_str(dtype),
+                tune=self.tune,
+            ),
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the token-major forward.
+
+        Args:
+            q: Query tensor [B, S, H, DK].
+            k: Key tensor [B, S, H, DK].
+            v: Value tensor [B, S, H, DV].
+            g: Gate tensor [B, S, H].
+            beta: Beta tensor [B, S, H].
+
+        Returns:
+            Tuple of (o, S, Aw, Au).
+        """
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        g = g.contiguous()
+        beta = beta.contiguous()
+        batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bthd(
+            q, k, v, g, beta, self.chunk_size)
+        self._validate_dtypes(q, k, v, g, beta)
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_k = dim_k
+        self.dim_v = dim_v
         self.kernel = self._get_kernel(
             batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)

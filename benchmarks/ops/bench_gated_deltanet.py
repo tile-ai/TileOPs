@@ -18,8 +18,15 @@ import pytest
 import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, backward_of
-from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    ManifestBenchmark,
+    backward_of,
+)
+from benchmarks.ops.attention.manifest_params import manifest_params
+from tileops.manifest import load_workloads
+from tileops.ops import GatedDeltaNetBTHDFwdOp, GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
 
@@ -52,27 +59,24 @@ class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
         return B * H * S * (2 * DK + 2 * DV + 2) * elem
 
 
-class GatedDeltaNetVsFlaFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            # chunk_size=32
-            (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
-            # chunk_size=64
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 32768, 4, 64, 64, 64, torch.float16, False),
-        ]),
-    ]
+_FWD_OP_NAME = "GatedDeltaNetBTHDFwdOp"
 
 
-@GatedDeltaNetVsFlaFwdFixture
+def _gdn_bthd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
+    """Constructor arguments for one manifest workload row, token-major."""
+    batch, seq_len, heads, dim_k = workload["q_shape"]
+    dim_v = workload["v_shape"][3]
+    return batch, heads, seq_len, dim_k, dim_v, workload.get("chunk_size", 64)
+
+
+@pytest.mark.parametrize(
+    "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
+    manifest_params(load_workloads(_FWD_OP_NAME), _gdn_bthd_args, tune=False),
+)
 def test_gated_deltanet_vs_fla_fwd(
     batch: int,
-    seq_len: int,
     heads: int,
+    seq_len: int,
     dim_k: int,
     dim_v: int,
     chunk_size: int,
@@ -80,27 +84,18 @@ def test_gated_deltanet_vs_fla_fwd(
     tune: bool,
 ) -> None:
     test = GatedDeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    bm = GatedDeltaNetFwdBenchmark(test)
-    inputs = test.gen_inputs()  # q, k, v, g, beta  (BHSD)
+    q, k, v, g, beta = test.gen_inputs()  # BHSD
+    # Both sides take the token-major interface; the conversion is outside the
+    # timed region.
+    bthd = _to_fla_layout(q, k, v, g, beta)
 
-    # Use the same production BTHD layout for TileOps and FLA.  Layout
-    # conversion is deliberately outside the timed region.
-    q, k, v, g, beta = inputs
-    q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd = _to_fla_layout(q, k, v, g, beta)
-    if chunk_size == 64:
-        op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune, layout="bthd")
-        tileops_inputs = (q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
-    else:
-        op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune, layout="bhtd")
-        tileops_inputs = inputs
-    functors = {"tileops": (op, tileops_inputs)}
+    op = GatedDeltaNetBTHDFwdOp(chunk_size=chunk_size, tune=tune)
+    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
 
     def fla_fwd():
-        return chunk_gated_delta_rule(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd, scale=1.0)
+        return chunk_gated_delta_rule(*bthd, scale=1.0)
 
-    functors["fla"] = (fla_fwd, ())
-
-    bm.compare(functors, record_as=op, params=locals())
+    bm.compare({"tileops": (op, bthd), "fla": (fla_fwd, ())}, record_as=op, params=locals())
 
 
 # Backward benchmark
