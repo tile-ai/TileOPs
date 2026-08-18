@@ -42,7 +42,7 @@ _PREFILL_CTOR = {
     "max_seqlen_kv": 512,
     "is_causal": True,
     "dtype": torch.float16,
-    "backend": "dense",
+    "backend": "auto",
 }
 
 
@@ -57,51 +57,21 @@ def _prefill_op(**overrides: object) -> GroupedQueryAttentionPrefillFwdOp:
 
 
 def _prefill_key(op: GroupedQueryAttentionPrefillFwdOp, **call_facts: object) -> str:
-    facts = {"is_fp8": False, "is_uniform": True}
+    facts = {"is_fp8": False}
     facts.update(call_facts)
     return op.select_kernel_key(PACKED_PREFILL_KEYS, op.attention_call(**facts))
 
 
-# Region -> dispatch key the pre-refactor selectors landed on. One row per
-# capability region the attention ops used to encode: FP8, sliding window, the
-# H200 square causal fast path, warp-specialized causal dense, plain dense,
-# ragged varlen.
+# The deprecated packed surface owns only true THD implementations. Uniformity
+# is no longer a dispatch fact: both equal-length and ragged calls use Varlen.
 _PREFILL_DISPATCH = [
-    ("square-causal-h200", {}, {}, "gqa_prefill_square_fwd_kernel"),
-    ("square-causal-bf16", {"dtype": torch.bfloat16}, {}, "gqa_prefill_square_fwd_kernel"),
-    (
-        "causal-q-lt-kv",
-        {"batch": 2, "max_seqlen_q": 512, "max_seqlen_kv": 4096},
-        {},
-        "gqa_prefill_causal_fwd_kernel",
-    ),
-    ("causal-dim64", {"dim": 64}, {}, "gqa_prefill_fwd_kernel"),
-    ("noncausal-dim128", {"is_causal": False}, {}, "gqa_prefill_fwd_kernel"),
-    (
-        "small-causal-work",
-        {"batch": 1, "heads": 8, "heads_kv": 8, "max_seqlen_q": 128, "max_seqlen_kv": 128},
-        {},
-        "gqa_prefill_causal_fwd_kernel",
-    ),
-    ("zero-scale-packed-unchanged", {"sm_scale": 0.0}, {}, "gqa_prefill_square_fwd_kernel"),
-    # backend='auto' on a plain request: uniform, not FP8, no window. The rows
-    # below state what 'auto' does when a variant claims it; these two state
-    # what it does when none does, which is the request most callers make.
-    ("auto-uniform-square", {"backend": "auto"}, {}, "gqa_prefill_square_fwd_kernel"),
-    ("auto-uniform-dense", {"backend": "auto", "dim": 64}, {}, "gqa_prefill_fwd_kernel"),
-    ("auto-ragged", {"backend": "auto"}, {"is_uniform": False}, "gqa_prefill_varlen_fwd_kernel"),
+    ("auto-uniform", {"backend": "auto"}, {}, "gqa_prefill_varlen_fwd_kernel"),
     ("explicit-varlen", {"backend": "varlen"}, {}, "gqa_prefill_varlen_fwd_kernel"),
     (
         "sliding-window",
         {"backend": "auto", "window_size_left": 128},
         {},
         "gqa_sliding_window_varlen_fwd_kernel",
-    ),
-    (
-        "fp8-square-noncausal",
-        {"backend": "auto", "is_causal": False},
-        {"is_fp8": True},
-        "gqa_prefill_fp8_tensor_core_fwd_kernel",
     ),
 ]
 
@@ -111,8 +81,9 @@ _PREFILL_DISPATCH = [
     ("ctor", "call", "expected"),
     [pytest.param(c, f, e, id=name) for name, c, f, e in _PREFILL_DISPATCH],
 )
-def test_packed_prefill_dispatch_is_unchanged(ctor: dict, call: dict, expected: str) -> None:
-    """Every packed-prefill region still lands on the kernel it used to."""
+def test_packed_prefill_dispatch_owns_only_varlen_regions(
+    ctor: dict, call: dict, expected: str
+) -> None:
     if not is_h200():
         pytest.skip("the recorded dispatch table is the H200 one")
     assert _prefill_key(_prefill_op(**ctor), **call) == expected
@@ -183,20 +154,15 @@ def test_bshd_tail_requests_respect_specialization_safety(ctor: dict, expected: 
 @pytest.mark.parametrize(
     ("ctor", "call"),
     [
-        pytest.param({"backend": "dense"}, {"is_uniform": False}, id="dense-needs-uniform"),
-        pytest.param({"backend": "varlen"}, {"is_fp8": True}, id="fp8-needs-fp8-backend"),
+        pytest.param({"backend": "varlen"}, {"is_fp8": True}, id="fp8-moved-to-dense"),
         pytest.param(
-            {"backend": "auto", "is_causal": False},
-            {"is_fp8": True, "is_uniform": False},
-            id="fp8-needs-uniform",
+            {"backend": "auto", "is_causal": False}, {"is_fp8": True}, id="auto-fp8-moved-to-dense"
         ),
-        pytest.param({"backend": "auto"}, {"is_fp8": True}, id="fp8-rejects-causal"),
         pytest.param({"backend": "sliding_window"}, {}, id="sliding-window-needs-a-window"),
     ],
 )
 def test_packed_prefill_rejects_calls_no_candidate_serves(ctor: dict, call: dict) -> None:
-    """A call outside every candidate's region is refused, as it was before."""
-    with pytest.raises(ValueError, match="no implementation serves this call"):
+    with pytest.raises(ValueError):
         _prefill_key(_prefill_op(**ctor), **call)
 
 
@@ -304,22 +270,21 @@ def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
 def test_a_call_on_an_older_arch_lands_on_the_candidate_that_supports_it() -> None:
     """A Hopper-only candidate is skipped, not fatal, when an older arch asks.
 
-    Every warp-specialized packed-prefill candidate is SM90-only while
-    ``GQAPrefillFwdKernel`` covers SM80. The op constructs either way; it never
-    probed the device, and the SM80 call lands on the candidate that applies.
+    The packed Varlen implementation covers SM80. The op itself does not probe
+    the device; architecture remains one input to candidate selection.
     """
     op = _prefill_op()
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    call = op.attention_call(is_fp8=False)
     sm80 = type(call)(**{**call.__dict__, "arch": 80})
 
-    assert op.select_kernel_key(PACKED_PREFILL_KEYS, sm80) == ("gqa_prefill_fwd_kernel")
+    assert op.select_kernel_key(PACKED_PREFILL_KEYS, sm80) == ("gqa_prefill_varlen_fwd_kernel")
 
 
 @pytest.mark.smoke
 def test_a_call_no_candidate_supports_on_this_arch_is_refused() -> None:
     """When the whole table misses the architecture the call is refused, not silently run."""
     op = _prefill_op()
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    call = op.attention_call(is_fp8=False)
     ancient = type(call)(**{**call.__dict__, "arch": 70})
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
@@ -361,8 +326,8 @@ class _NeverApplies(Kernel):
 # specialised slot, _GENERAL for the one behind it. An implementation supplied
 # through ``kernel_map=`` counts as a replacement the caller owns; one an op
 # declares itself does not.
-_SPECIAL = "gqa_prefill_causal_fwd_kernel"
-_GENERAL = "gqa_prefill_fwd_kernel"
+_SPECIAL = "gqa_sliding_window_varlen_fwd_kernel"
+_GENERAL = "gqa_prefill_varlen_fwd_kernel"
 _RULE_KEYS = (_GENERAL, _SPECIAL)
 
 
@@ -381,7 +346,7 @@ def _op_declaring(**declared: type) -> GroupedQueryAttentionPrefillFwdOp:
 def test_two_implementations_claiming_one_call_is_an_error() -> None:
     """Overlap is reported, never resolved by the order the keys are written in."""
     op = _op_declaring(**{_SPECIAL: _Everything, _GENERAL: _Everything})
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    call = op.attention_call(is_fp8=False)
 
     with pytest.raises(ValueError, match="dispatch is ambiguous"):
         op.select_kernel_key(_RULE_KEYS, call)
@@ -391,7 +356,7 @@ def test_two_implementations_claiming_one_call_is_an_error() -> None:
 def test_a_general_implementation_yields_to_a_specialised_one() -> None:
     """The general implementation runs only where no specialised one serves."""
     serving = _op_declaring(**{_SPECIAL: _Everything, _GENERAL: _General})
-    call = serving.attention_call(is_fp8=False, is_uniform=True)
+    call = serving.attention_call(is_fp8=False)
     assert serving.select_kernel_key(_RULE_KEYS, call) == _SPECIAL
 
     declining = _op_declaring(**{_SPECIAL: _NeverApplies, _GENERAL: _General})
@@ -406,7 +371,7 @@ def test_a_replacement_is_never_silently_stood_in_for() -> None:
     op's own and would otherwise stand in.
     """
     op = _prefill_op(kernel_map={_SPECIAL: _NeverApplies})
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    call = op.attention_call(is_fp8=False)
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
         op.select_kernel_key(_RULE_KEYS, call)
@@ -423,6 +388,6 @@ def test_one_replacement_winning_while_another_is_refused_is_the_callers_own_doi
     and fails only here.
     """
     op = _prefill_op(kernel_map={_SPECIAL: _NeverApplies, _GENERAL: _Everything})
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    call = op.attention_call(is_fp8=False)
 
     assert op.select_kernel_key(_RULE_KEYS, call) == _GENERAL

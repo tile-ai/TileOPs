@@ -90,7 +90,7 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
 
 def gqa_prefill_args(
     workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, int, bool, str, bool, float | None, float | None]:
+) -> tuple[int, int, int, int, int, int, bool, str, float | None, float | None]:
     if "q_shape" in workload:
         batch, seq_len_q, heads, dim = workload["q_shape"]
         _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
@@ -103,7 +103,6 @@ def gqa_prefill_args(
             dim,
             workload.get("is_causal", True),
             workload.get("backend", "auto"),
-            workload.get("validate_uniform_cu_seqlens", True),
             workload.get("sm_scale"),
             workload.get("softcap"),
         )
@@ -127,7 +126,6 @@ def gqa_prefill_args(
         dim,
         workload.get("is_causal", True),
         workload.get("backend", "auto"),
-        workload.get("validate_uniform_cu_seqlens", True),
         workload.get("sm_scale"),
         workload.get("softcap"),
     )

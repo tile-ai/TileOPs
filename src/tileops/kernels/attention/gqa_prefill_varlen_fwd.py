@@ -300,9 +300,7 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
     def applies(cls, call) -> bool:
         if call.is_fp8 or uses_sliding_window(call):
             return False
-        if call.backend == "varlen":
-            return True
-        return call.backend == "auto" and not call.is_uniform
+        return call.backend in ("auto", "varlen")
 
     def _build_program(self) -> None:
         # The program is specialized on the packed totals, which are known per

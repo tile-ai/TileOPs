@@ -13,7 +13,6 @@ from .gqa_decode_bs1_paged import GQADecodePagedBs1Kernel
 from .gqa_decode_paged import GQADecodePagedKernel
 from .gqa_dense_prefill import GQAPrefillDenseFwdKernel
 from .gqa_fwd import (
-    GQAPrefillFwdKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeAppendKernel,
@@ -43,7 +42,6 @@ __all__ = [
     "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel",
     "GQAFwdWsPersistentCausalKernel",
     "GQAPrefillDenseFwdKernel",
-    "GQAPrefillFwdKernel",
     "GQAPrefillFwdWsPersistentCausalKernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",

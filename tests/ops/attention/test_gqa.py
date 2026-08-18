@@ -9,11 +9,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import (
-    GQAFwdWsPersistentCausalKernel,
-    GQAPrefillDenseFwdKernel,
-    GQAPrefillFwdWsPersistentCausalKernel,
-)
+from tileops.kernels.attention import GQAPrefillDenseFwdKernel, GQAPrefillVarlenFwdKernel
 from tileops.kernels.attention.prefill import DensePrefillKernel, PackedPrefillKernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
@@ -21,9 +17,8 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
-from tileops.ops.attention.selection import DENSE_PREFILL_KEYS, PACKED_PREFILL_KEYS
+from tileops.ops.attention.selection import PACKED_PREFILL_KEYS
 from tileops.ops.op_base import Op
-from tileops.utils import is_h200
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdWorkload,
     GroupedQueryAttentionFwdWorkload,
@@ -84,7 +79,7 @@ def _apply_test_rope(
 
 def _selected_prefill_kernel_cls(op: GroupedQueryAttentionPrefillFwdOp) -> type:
     """Kernel class selection picks for a uniform, non-FP8 packed prefill call."""
-    call = op.attention_call(is_fp8=False, is_uniform=True)
+    call = op.attention_call(is_fp8=False)
     return op.kernel_map[op.select_kernel_key(PACKED_PREFILL_KEYS, call)]
 
 
@@ -786,7 +781,7 @@ def test_gqa_prefill_fwd(
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_fwd_dense_backend_matches_reference() -> None:
+def test_gqa_prefill_fwd_auto_uses_varlen_for_uniform_input() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 8, 2, 64
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16).contiguous()
     k = torch.randn(
@@ -807,7 +802,7 @@ def test_gqa_prefill_fwd_dense_backend_matches_reference() -> None:
         max_seqlen_kv=seq_len_kv,
         is_causal=True,
         dtype=torch.float16,
-        backend="dense",
+        backend="auto",
     )
     output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
@@ -844,10 +839,7 @@ def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.smoke
-def test_gqa_prefill_fwd_square_uses_square_fast_path(dtype: torch.dtype) -> None:
-    if not is_h200():
-        pytest.skip("square fast path requires H200")
-
+def test_gqa_prefill_fwd_uniform_uses_varlen(dtype: torch.dtype) -> None:
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=4,
         heads=32,
@@ -857,10 +849,10 @@ def test_gqa_prefill_fwd_square_uses_square_fast_path(dtype: torch.dtype) -> Non
         max_seqlen_kv=512,
         is_causal=True,
         dtype=dtype,
-        backend="dense",
+        backend="auto",
     )
 
-    assert _selected_prefill_kernel_cls(op) is GQAFwdWsPersistentCausalKernel
+    assert _selected_prefill_kernel_cls(op) is GQAPrefillVarlenFwdKernel
 
 
 @pytest.mark.parametrize(
@@ -871,13 +863,10 @@ def test_gqa_prefill_fwd_square_uses_square_fast_path(dtype: torch.dtype) -> Non
     ],
 )
 @pytest.mark.smoke
-def test_gqa_prefill_fwd_square_feature_variants_use_square_fast_path(
+def test_gqa_prefill_fwd_uniform_feature_variants_use_varlen(
     sm_scale: Optional[float],
     softcap: Optional[float],
 ) -> None:
-    if not is_h200():
-        pytest.skip("square fast path requires H200")
-
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=4,
         heads=32,
@@ -889,10 +878,10 @@ def test_gqa_prefill_fwd_square_feature_variants_use_square_fast_path(
         dtype=torch.float16,
         sm_scale=sm_scale,
         softcap=softcap,
-        backend="dense",
+        backend="auto",
     )
 
-    assert _selected_prefill_kernel_cls(op) is GQAFwdWsPersistentCausalKernel
+    assert _selected_prefill_kernel_cls(op) is GQAPrefillVarlenFwdKernel
 
 
 @pytest.mark.parametrize(
@@ -902,15 +891,12 @@ def test_gqa_prefill_fwd_square_feature_variants_use_square_fast_path(
     ],
 )
 @pytest.mark.smoke
-def test_gqa_prefill_fwd_q_lt_kv_uses_prefill_ws_kernel(
+def test_gqa_prefill_fwd_q_lt_kv_uses_varlen_kernel(
     seq_len_q: int,
     seq_len_kv: int,
     sm_scale: Optional[float],
     softcap: Optional[float],
 ) -> None:
-    if not is_h200():
-        pytest.skip("warp-specialized dense prefill dispatch is validated on H200")
-
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=2,
         heads=32,
@@ -922,10 +908,10 @@ def test_gqa_prefill_fwd_q_lt_kv_uses_prefill_ws_kernel(
         dtype=torch.float16,
         sm_scale=sm_scale,
         softcap=softcap,
-        backend="dense",
+        backend="auto",
     )
 
-    assert _selected_prefill_kernel_cls(op) is GQAPrefillFwdWsPersistentCausalKernel
+    assert _selected_prefill_kernel_cls(op) is GQAPrefillVarlenFwdKernel
 
 
 @pytest.mark.smoke
@@ -996,62 +982,16 @@ def test_gqa_prefill_fwd_explicit_dense_backends_refuse_ragged_input(
     # refused in its own words, so the FP8 case cannot pass by landing on the
     # dense message.
     expected = (
-        "FP8 prefill requires uniform packed cu_seqlens."
+        "Packed FP8 prefill moved to GroupedQueryAttentionPrefillDenseFwdOp"
         if backend == "fp8"
-        else "backend='dense' requires uniform packed cu_seqlens."
+        else "backend='dense' moved to GroupedQueryAttentionPrefillDenseFwdOp"
     )
     with pytest.raises(ValueError, match=re.escape(expected)):
         op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_fwd_explicit_dense_can_skip_uniform_validation() -> None:
-    """Opting out of the range check still serves a uniform dense request."""
-    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
-    q = torch.randn(batch * seq_len, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch * seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.randn_like(k)
-    cu = torch.arange(batch + 1, device="cuda", dtype=torch.int32) * seq_len
-    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
-    op = GroupedQueryAttentionPrefillFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        max_seqlen_kv=seq_len,
-        is_causal=True,
-        dtype=torch.float16,
-        backend="dense",
-        validate_uniform_cu_seqlens=False,
-        kernel_map=_stand_in_prefill_map(),
-    )
-
-    out = op(q, k, v, cu, cu, q_scale, k_scale, v_scale)
-    assert out.shape == q.shape
-
-
-@pytest.mark.smoke
-def test_gqa_prefill_fwd_auto_backend_requires_uniform_validation() -> None:
-    with pytest.raises(
-        ValueError, match="backend='auto' requires validate_uniform_cu_seqlens=True"
-    ):
-        GroupedQueryAttentionPrefillFwdOp(
-            batch=2,
-            heads=8,
-            heads_kv=2,
-            dim=64,
-            max_seqlen_q=64,
-            max_seqlen_kv=64,
-            dtype=torch.float16,
-            backend="auto",
-            validate_uniform_cu_seqlens=False,
-        )
-
-
-@pytest.mark.smoke
-def test_gqa_prefill_fwd_auto_backend_serves_uniform_input_dense() -> None:
-    """``backend='auto'`` reads the ranges and lands on the dense key for uniform ones."""
+def test_gqa_prefill_fwd_auto_backend_serves_uniform_input_with_varlen() -> None:
     batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
     q = torch.randn(batch * seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch * seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
@@ -1075,10 +1015,7 @@ def test_gqa_prefill_fwd_auto_backend_serves_uniform_input_dense() -> None:
     out = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
     assert out.shape == q.shape
-    # Uniform ranges put an automatic request on a dense implementation, not on
-    # the ragged one; this is the outcome the range reading exists to produce.
-    assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [torch.float16]
-    assert not op.built_kernels("gqa_prefill_varlen_fwd_kernel")
+    assert list(op.built_kernels("gqa_prefill_varlen_fwd_kernel")) == [torch.float16]
 
 
 @pytest.mark.smoke
@@ -1152,16 +1089,13 @@ def test_gqa_prefill_fwd_respects_softcap() -> None:
         pytest.param(torch.float16, None, 2.0, 5e-3, 1e-5, id="fp16-softcap"),
     ],
 )
-def test_gqa_prefill_fwd_ws_path_matches_reference(
+def test_gqa_prefill_fwd_uniform_varlen_matches_reference(
     dtype: torch.dtype,
     sm_scale: Optional[float],
     softcap: Optional[float],
     atol: float,
     rtol: float,
 ) -> None:
-    if torch.cuda.get_device_capability()[0] < 9:
-        pytest.skip("warp-specialized prefill path requires Hopper")
-
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 8, 2, 128
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype).contiguous()
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
@@ -1190,7 +1124,7 @@ def test_gqa_prefill_fwd_ws_path_matches_reference(
         sm_scale=sm_scale,
         softcap=softcap,
     )
-    assert _selected_prefill_kernel_cls(op) is GQAPrefillFwdWsPersistentCausalKernel
+    assert _selected_prefill_kernel_cls(op) is GQAPrefillVarlenFwdKernel
     output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
@@ -1610,10 +1544,6 @@ def test_dense_and_packed_prefill_have_distinct_runtime_abis() -> None:
         issubclass(kernel_cls, DensePrefillKernel)
         for kernel_cls in _SHIPPED_DENSE_PREFILL_MAP.values()
     )
-    dense_kernel_classes = {
-        *_SHIPPED_DENSE_PREFILL_MAP.values(),
-        _SHIPPED_PREFILL_MAP["gqa_prefill_fwd_kernel"],
-    }
     dense_abi = {
         "q",
         "k",
@@ -1624,75 +1554,10 @@ def test_dense_and_packed_prefill_have_distinct_runtime_abis() -> None:
         "rope_cos",
         "rope_sin",
     }
-    for kernel_cls in dense_kernel_classes:
+    for kernel_cls in _SHIPPED_DENSE_PREFILL_MAP.values():
         assert dense_abi <= set(inspect.signature(kernel_cls.forward).parameters)
-    for key, kernel_cls in _SHIPPED_PREFILL_MAP.items():
-        expected_base = (
-            PackedPrefillKernel
-            if key
-            in (
-                "gqa_prefill_varlen_fwd_kernel",
-                "gqa_sliding_window_varlen_fwd_kernel",
-            )
-            else DensePrefillKernel
-        )
-        assert issubclass(kernel_cls, expected_base)
-
-
-@pytest.mark.smoke
-def test_legacy_packed_op_owns_the_dense_layout_adapter() -> None:
-    """Deprecated THD calls may adapt to Dense without polluting the Dense ABI."""
-    batch, seq_len, heads, heads_kv, dim = 2, 8, 8, 2, 64
-    op = GroupedQueryAttentionPrefillFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        max_seqlen_kv=seq_len,
-        is_causal=False,
-        dtype=torch.float16,
-        backend="dense",
-        kernel_map=_stand_in_prefill_map(),
-    )
-    call = op.attention_call(is_fp8=False, is_uniform=True)
-    entry = op._kernel_for("gqa_prefill_fwd_kernel", call)
-    assert isinstance(entry.kernel, DensePrefillKernel)
-
-    q = torch.empty(batch * seq_len, heads, dim, dtype=torch.float16)
-    k = torch.empty(batch * seq_len, heads_kv, dim, dtype=torch.float16)
-    v = torch.empty_like(k)
-    cu = torch.arange(batch + 1, dtype=torch.int32) * seq_len
-    scale = torch.ones(batch, heads_kv, dtype=torch.float32)
-    assert entry(q, k, v, cu, cu, scale, scale, scale).shape == q.shape
-
-
-@pytest.mark.smoke
-def test_gqa_fwd_bshd_wrapper_selects_what_the_packed_op_selects() -> None:
-    """Both reach the same key for the same call, so the wrapper adds no policy.
-
-    Which key each geometry reaches (square, warp-specialized causal, or general
-    dense) is the dispatch table's subject; this pins only that the two agree.
-    """
-    batch, seq_len, heads, heads_kv, dim = 4, 512, 32, 8, 128
-    wrapper = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, True)
-    packed = GroupedQueryAttentionPrefillFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        max_seqlen_kv=seq_len,
-        is_causal=True,
-        dtype=torch.float16,
-        backend="dense",
-    )
-    # The record states the device, so the pair is compared on one machine's
-    # answer rather than on whichever machine runs the test.
-    stated = dataclasses.replace(wrapper.attention_call(torch.float16), arch=90, h200=True)
-
-    assert wrapper.select_kernel_key(DENSE_PREFILL_KEYS, stated) == packed.select_kernel_key(
-        PACKED_PREFILL_KEYS, stated
+    assert all(
+        issubclass(kernel_cls, PackedPrefillKernel) for kernel_cls in _SHIPPED_PREFILL_MAP.values()
     )
 
 

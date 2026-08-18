@@ -16,7 +16,6 @@ from tileops.kernels.attention import (
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAPrefillDenseFwdKernel,
-    GQAPrefillFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
@@ -230,58 +229,6 @@ class _DensePrefillBuiltin:
             rope_cos=self.rope_cos,
             rope_sin=self.rope_sin,
         )
-
-
-@dataclass(frozen=True)
-class _LegacyPackedDenseAdapter:
-    """Keep the deprecated packed Op compatible with native Dense kernels."""
-
-    # TODO(#1917): Delete this adapter together with
-    # GroupedQueryAttentionPrefillFwdOp after its remaining packed/ragged
-    # behavior moves to GroupedQueryAttentionPrefillVarlenFwdOp.
-
-    kernel: DensePrefillKernel
-    batch: int
-    heads: int
-    heads_kv: int
-    max_seqlen_q: int
-    max_seqlen_kv: int
-    dim: int
-
-    def __call__(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        del cu_seqlens_q, cu_seqlens_kv
-        q_bshd = q.view(
-            self.batch,
-            self.max_seqlen_q,
-            self.heads,
-            self.dim,
-        )
-        k_bshd = k.view(
-            self.batch,
-            self.max_seqlen_kv,
-            self.heads_kv,
-            self.dim,
-        )
-        v_bshd = v.view_as(k_bshd)
-        output = self.kernel(
-            q_bshd,
-            k_bshd,
-            v_bshd,
-            q_scale,
-            k_scale,
-            v_scale,
-        )
-        return output.view_as(q)
 
 
 class GroupedQueryAttentionPrefillDenseFwdOp(Op):
@@ -636,17 +583,13 @@ def _gqa_prefill_dense_fwd_fake(
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):
-    """Canonical packed GQA prefill. Layout: THD.
+    """Deprecated packed GQA prefill compatibility surface. Layout: THD.
 
-    Dense and square prefill are represented with uniform ``cu_seqlens``. Ragged
-    prefill uses the same fixed public tensor list. Scale tensors are required
-    for manifest stability; non-FP8 kernels ignore them.
-
-    Args:
-        dtype: Element type of ``o``. The inputs do not determine it: identical
-            float8_e4m3fn q/k/v admit either a float16 or a bfloat16 output, so
-            the caller chooses here. For float16 / bfloat16 inputs it must equal
-            their element type.
+    Both uniform and ragged inputs execute a packed Varlen kernel. Fixed-shape
+    BSHD, fixed sliding-window, and native-FP8 calls belong to
+    :class:`GroupedQueryAttentionPrefillDenseFwdOp`. This compatibility Op is
+    removed when its remaining public ABI moves to the canonical Varlen Op in
+    #1917.
     """
 
     def __init__(
@@ -664,7 +607,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         window_size_left: int = -1,
         window_size_right: int = -1,
         backend: str = "auto",
-        validate_uniform_cu_seqlens: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -684,8 +626,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             raise ValueError(
                 "backend must be one of 'auto', 'dense', 'varlen', 'fp8', or 'sliding_window'"
             )
-        if backend == "auto" and not validate_uniform_cu_seqlens:
-            raise ValueError("backend='auto' requires validate_uniform_cu_seqlens=True.")
         _validate_attention_dtype(dtype)
 
         self.batch = batch
@@ -701,30 +641,23 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.backend = backend
-        self.validate_uniform_cu_seqlens = validate_uniform_cu_seqlens
         self.tune = tune
         self._roofline_kwargs = None
-        self._uniform_cu_cache: dict[tuple[int, torch.device, torch.dtype], torch.Tensor] = {}
 
         self.dispatch_kernel(kernel_map)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
-            "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
-            "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
             "gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel,
             "gqa_sliding_window_varlen_fwd_kernel": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
-            "gqa_prefill_fp8_tensor_core_fwd_kernel": GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
         }
 
-    def attention_call(self, *, is_fp8: bool, is_uniform: bool) -> AttentionCall:
+    def attention_call(self, *, is_fp8: bool) -> AttentionCall:
         """State what one prefill call is, for selection to filter candidates against.
 
         Args:
             is_fp8: Whether the inputs carry ``torch.float8_e4m3fn`` elements.
-            is_uniform: Whether both ``cu_seqlens`` describe equal-length requests.
         """
         return AttentionCall(
             dtype=self.dtype,
@@ -741,28 +674,18 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             window_size_right=self.window_size_right,
             backend=self.backend,
             is_fp8=is_fp8,
-            is_uniform=is_uniform,
+            is_uniform=False,
             tune=self.tune,
         )
 
     def _kernel_for(self, key: str, call: AttentionCall) -> Kernel:
         """The implementation *key* names, built once for this element type."""
 
-        def build() -> Kernel:
-            kernel = _build_prefill_kernel(self.kernel_map, key, call)
-            if isinstance(kernel, DensePrefillKernel):
-                return _LegacyPackedDenseAdapter(
-                    kernel,
-                    call.batch,
-                    call.heads,
-                    call.heads_kv,
-                    call.max_seqlen_q,
-                    call.max_seqlen_kv,
-                    call.dim,
-                )
-            return kernel
-
-        return self.get_or_build_kernel(key, key=call.dtype, build=build)
+        return self.get_or_build_kernel(
+            key,
+            key=call.dtype,
+            build=lambda: _build_prefill_kernel(self.kernel_map, key, call),
+        )
 
     def _infer_output_shapes(
         self,
@@ -791,8 +714,10 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         fp8_dtype = getattr(torch, "float8_e4m3fn", None)
         is_fp8 = fp8_dtype is not None and q.dtype == fp8_dtype
         if is_fp8:
-            if k.dtype != fp8_dtype or v.dtype != fp8_dtype:
-                raise ValueError("FP8 prefill requires q/k/v to all be torch.float8_e4m3fn.")
+            raise ValueError(
+                "Packed FP8 prefill moved to GroupedQueryAttentionPrefillDenseFwdOp; "
+                "Varlen FP8 support is tracked by #1917."
+            )
         else:
             if q.dtype != self.dtype or k.dtype != self.dtype or v.dtype != self.dtype:
                 raise ValueError(f"q/k/v dtype must match op dtype {self.dtype}.")
@@ -860,24 +785,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
                     f"{name} must have shape {expected_scale_shape}, got {tuple(tensor.shape)}"
                 )
 
-    def _uniform_cu_seqlens(self, cu_seqlens: torch.Tensor, seq_len: int) -> bool:
-        cache_key = (seq_len, cu_seqlens.device, cu_seqlens.dtype)
-        expected = self._uniform_cu_cache.get(cache_key)
-        if expected is None:
-            expected = (
-                torch.arange(
-                    self.batch + 1,
-                    device=cu_seqlens.device,
-                    dtype=cu_seqlens.dtype,
-                )
-                * seq_len
-            )
-            self._uniform_cu_cache[cache_key] = expected
-        return bool(torch.equal(cu_seqlens, expected))
-
-    def _is_fp8_tensor(self, tensor: torch.Tensor) -> bool:
-        return fp8_dtype() is not None and tensor.dtype == fp8_dtype()
-
     def _record_roofline(
         self,
         q: torch.Tensor,
@@ -912,16 +819,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self._validate_common_shapes(
             q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
         )
-        if self.backend == "auto" or (
-            self.backend in ("dense", "fp8") and self.validate_uniform_cu_seqlens
-        ):
-            q_uniform = self._uniform_cu_seqlens(cu_seqlens_q, self.max_seqlen_q)
-            kv_uniform = self._uniform_cu_seqlens(cu_seqlens_kv, self.max_seqlen_kv)
-            is_uniform = q_uniform and kv_uniform
-        else:
-            is_uniform = True
-
-        call = self.attention_call(is_fp8=self._is_fp8_tensor(q), is_uniform=is_uniform)
+        call = self.attention_call(is_fp8=False)
         check_packed_prefill_request(call)
         key = self.select_kernel_key(PACKED_PREFILL_KEYS, call)
         output = self._kernel_for(key, call)(

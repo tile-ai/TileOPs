@@ -20,11 +20,7 @@ __all__ = [
 
 #: Implementations of packed GQA prefill, as ``kernel_map`` keys.
 PACKED_PREFILL_KEYS = (
-    "gqa_prefill_fp8_tensor_core_fwd_kernel",
     "gqa_sliding_window_varlen_fwd_kernel",
-    "gqa_prefill_square_fwd_kernel",
-    "gqa_prefill_causal_fwd_kernel",
-    "gqa_prefill_fwd_kernel",
     "gqa_prefill_varlen_fwd_kernel",
 )
 
@@ -65,19 +61,14 @@ def check_packed_prefill_request(call: AttentionCall) -> None:
         ValueError: When ``backend`` contradicts the request.
     """
     if call.is_fp8:
-        if call.backend not in ("auto", "fp8"):
-            raise ValueError("FP8 prefill requires backend='auto' or backend='fp8'.")
-        if call.is_causal:
-            raise ValueError("FP8 prefill currently supports non-causal prefill only.")
-        if uses_sliding_window(call):
-            raise ValueError("FP8 prefill does not support sliding-window dispatch.")
-        if call.max_seqlen_q != call.max_seqlen_kv:
-            raise ValueError("FP8 prefill requires max_seqlen_q == max_seqlen_kv.")
-        if not call.is_uniform:
-            raise ValueError("FP8 prefill requires uniform packed cu_seqlens.")
-        return
+        raise ValueError(
+            "Packed FP8 prefill moved to GroupedQueryAttentionPrefillDenseFwdOp; "
+            "Varlen FP8 support is tracked by #1917."
+        )
     if call.backend == "fp8":
-        raise ValueError("backend='fp8' requires float8_e4m3fn q/k/v.")
+        raise ValueError("backend='fp8' moved to GroupedQueryAttentionPrefillDenseFwdOp.")
+    if call.backend == "dense":
+        raise ValueError("backend='dense' moved to GroupedQueryAttentionPrefillDenseFwdOp.")
     if uses_sliding_window(call):
         if call.backend not in ("auto", "sliding_window"):
             raise ValueError(
@@ -86,5 +77,3 @@ def check_packed_prefill_request(call: AttentionCall) -> None:
         return
     if call.backend == "sliding_window":
         raise ValueError("backend='sliding_window' requires window_size_left or window_size_right.")
-    if call.backend == "dense" and not call.is_uniform:
-        raise ValueError("backend='dense' requires uniform packed cu_seqlens.")

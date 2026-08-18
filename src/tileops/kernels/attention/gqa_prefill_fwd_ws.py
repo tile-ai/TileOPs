@@ -438,8 +438,9 @@ class GQAPrefillFwdWsPersistentCausalKernel(DensePrefillKernel):
 
     Warp-specialized 2-warpgroup ping-pong port matching FlashInfer's
     ``single_prefill_sm90``. Selected by the prefill op on Hopper for the
-    fp16/bf16 causal dim-128 path; other cases fall back to ``GQAPrefillFwdKernel``. Causal
-    uses bottom-right alignment (``co = seq_len_kv - seq_len_q``).
+    fp16/bf16 causal dim-128 path; other cases fall back to
+    ``GQAPrefillDenseFwdKernel``. Causal uses bottom-right alignment
+    (``co = seq_len_kv - seq_len_q``).
 
     Note: like FlashInfer's forward inference kernel, this emits output only. A
     backward pass that needs log-sum-exp must compute it separately.
