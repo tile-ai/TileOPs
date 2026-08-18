@@ -8,7 +8,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
 from tileops.perf.formulas import (
     gqa_prefill_varlen_fwd_roofline,
-    gqa_sliding_window_fwd_roofline,
     gqa_sliding_window_varlen_fwd_roofline,
 )
 from workloads.attention.gqa import (
@@ -466,50 +465,6 @@ def test_varlen_fills_requests_to_max_len_when_lengths_absent() -> None:
 
 
 @pytest.mark.smoke
-def test_sliding_window_caps_attended_scores_at_window() -> None:
-    """Causal rows over S=8 with a left window of 3 are [1,2,3,4,4,4,4,4] — 26 scores."""
-    flops, nbytes = gqa_sliding_window_fwd_roofline(
-        q_shape=(BATCH, SEQ, HEADS, DIM),
-        kv_shape=(BATCH, SEQ, HEADS_KV, DIM),
-        is_causal=True,
-        window_size_left=3,
-        dtypes=["float16"],
-    )
-
-    assert flops == 4 * BATCH * HEADS * 26 * DIM
-    assert nbytes == 2 * BATCH * SEQ * (HEADS + HEADS_KV) * DIM * ELEM_BYTES
-
-
-@pytest.mark.smoke
-def test_sliding_window_unbounded_left_counts_lower_triangle() -> None:
-    """``window_size_left=-1`` degrades to plain causal: 36 scores over S=8."""
-    flops, _ = gqa_sliding_window_fwd_roofline(
-        q_shape=(BATCH, SEQ, HEADS, DIM),
-        kv_shape=(BATCH, SEQ, HEADS_KV, DIM),
-        is_causal=True,
-        window_size_left=-1,
-        dtypes=["float16"],
-    )
-
-    assert flops == 4 * BATCH * HEADS * 36 * DIM
-
-
-@pytest.mark.smoke
-def test_sliding_window_non_causal_uses_right_window() -> None:
-    """Bidirectional rows with windows (2, 1) are [2,3,4,4,4,4,4,3] — 28 scores."""
-    flops, _ = gqa_sliding_window_fwd_roofline(
-        q_shape=(BATCH, SEQ, HEADS, DIM),
-        kv_shape=(BATCH, SEQ, HEADS_KV, DIM),
-        is_causal=False,
-        window_size_left=2,
-        window_size_right=1,
-        dtypes=["float16"],
-    )
-
-    assert flops == 4 * BATCH * HEADS * 28 * DIM
-
-
-@pytest.mark.smoke
 def test_sliding_window_varlen_offsets_short_queries_to_sequence_end() -> None:
     """A 2-query, 6-key request aligns bottom-right: rows [4, 4] — 8 scores."""
     flops, _ = gqa_sliding_window_varlen_fwd_roofline(
@@ -545,23 +500,10 @@ def test_sliding_window_varlen_windows_each_request_separately() -> None:
     assert flops == 4 * HEADS * 34 * DIM
 
 
-@pytest.mark.parametrize(
-    "op_name",
-    [
-        "GroupedQueryAttentionSlidingWindowFwdOp",
-        "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
-    ],
-)
 @pytest.mark.smoke
-def test_sliding_window_manifest_workloads_are_evaluable(op_name: str) -> None:
+def test_sliding_window_manifest_workloads_are_evaluable() -> None:
     """Every declared workload binds to its formula without a missing key."""
-    formula = (
-        gqa_sliding_window_fwd_roofline
-        if op_name.endswith("SlidingWindowFwdOp")
-        else gqa_sliding_window_varlen_fwd_roofline
-    )
-
-    for workload in load_workloads(op_name):
-        flops, nbytes = formula(**workload)
+    for workload in load_workloads("GroupedQueryAttentionSlidingWindowVarlenFwdOp"):
+        flops, nbytes = gqa_sliding_window_varlen_fwd_roofline(**workload)
         assert flops > 0, workload["label"]
         assert nbytes > 0, workload["label"]

@@ -15,8 +15,8 @@ from tileops.kernels.online_softmax import (
 
 from ._config import tile_stage_thread_configs
 from .call_spec import dense_prefill_region, fp8_dtype
-from .packed_prefill import PackedPrefillKernel
 from .paged_prefill import PagedPrefillKernel
+from .prefill import DensePrefillKernel
 
 __all__ = [
     "GQAPrefillFwdKernel",
@@ -264,8 +264,8 @@ def _(
     return fake_o, fake_lse
 
 
-class GQAPrefillFwdKernel(PackedPrefillKernel):
-    """General dense packed prefill: any head dim, causal or not, fp16/bf16.
+class GQAPrefillFwdKernel(DensePrefillKernel):
+    """Legacy general dense prefill: any head dim, causal or not, fp16/bf16.
 
     Serves the whole dense region, and is marked ``general`` so that where a
     specialised implementation of this key also applies, that one runs instead.
@@ -311,13 +311,12 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         output, _ = _gqa_prefill_fwd_wrapped_kernel(
             self.batch,
             self.heads,
@@ -333,11 +332,11 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            q_bshd,
-            k_bshd,
-            v_bshd,
+            q,
+            k,
+            v,
         )
-        return output.reshape(q.shape)
+        return output
 
 
 # GQA packed prefill with paged KV cache. Current chunk is packed THD and

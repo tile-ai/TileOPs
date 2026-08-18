@@ -13,7 +13,7 @@ from tileops.kernels.online_softmax import (
 )
 
 from ._config import tile_stage_thread_configs
-from .packed_prefill import PackedPrefillKernel
+from .prefill import DensePrefillKernel
 from .prefill_mask import make_bottom_right_attention_mask
 from .prefill_rope import make_prefill_rope_policy
 
@@ -307,7 +307,7 @@ def _(batch: int, heads: int,
     return fake_o, fake_lse
 
 
-class GQAPrefillDenseFwdKernel(PackedPrefillKernel):
+class GQAPrefillDenseFwdKernel(DensePrefillKernel):
     """General dense prefill: any head dim, causal or not, fp16/bf16.
 
     Serves the whole dense region, and is marked ``general`` so that where a
@@ -345,13 +345,11 @@ class GQAPrefillDenseFwdKernel(PackedPrefillKernel):
         return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                cu_seqlens_q: torch.Tensor, cu_seqlens_kv: torch.Tensor,
                 q_scale: Optional[torch.Tensor] = None,
                 k_scale: Optional[torch.Tensor] = None,
                 v_scale: Optional[torch.Tensor] = None,
                 rope_cos: Optional[torch.Tensor] = None,
                 rope_sin: Optional[torch.Tensor] = None) -> torch.Tensor:
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         if rope_cos is None or rope_sin is None:
             raise ValueError("dense prefill requires prepared RoPE or dummy tables")
         output, _ = _gqa_prefill_dense_fwd_wrapped_kernel(
@@ -360,5 +358,5 @@ class GQAPrefillDenseFwdKernel(PackedPrefillKernel):
             self.window_size_left, self.window_size_right, self.fuse_rope,
             self.max_position or 1, self.rotary_dim or 0, self.rope_layout, self.dtype_str,
             self.config["block_m"], self.config["block_n"], self.config["num_stages"],
-            self.config["threads"], q_bshd, k_bshd, v_bshd, rope_cos, rope_sin)
-        return output.reshape(q.shape)
+            self.config["threads"], q, k, v, rope_cos, rope_sin)
+        return output

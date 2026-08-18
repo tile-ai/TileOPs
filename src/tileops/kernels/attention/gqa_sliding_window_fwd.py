@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.online_softmax import LOG2E, make_apply_softcap
 
 from .call_spec import dense_sliding_prefill_region
-from .packed_prefill import PackedPrefillKernel
+from .prefill import DensePrefillKernel
 
 __all__ = [
     "GQASlidingWindowFwdWgmmaPipelinedKernel",
@@ -262,8 +262,8 @@ def _(
     return fake_o, fake_lse
 
 
-class GQASlidingWindowFwdWgmmaPipelinedKernel(PackedPrefillKernel):
-    """SM90 dense sliding-window specialization of the packed prefill slot."""
+class GQASlidingWindowFwdWgmmaPipelinedKernel(DensePrefillKernel):
+    """SM90 Dense sliding-window specialization with a native BSHD ABI."""
 
     supported_archs: list[int] = [90]
 
@@ -311,15 +311,12 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(PackedPrefillKernel):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         output, _ = _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
             self.batch,
             self.heads,
@@ -336,8 +333,8 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(PackedPrefillKernel):
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            q_bshd,
-            k_bshd,
-            v_bshd,
+            q,
+            k,
+            v,
         )
-        return output.reshape(q.shape)
+        return output

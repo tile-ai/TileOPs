@@ -63,15 +63,12 @@ def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(
         batch, heads, heads_kv, seq_len, seq_len, dim, False, torch.float16
     )
-    # The packed prefill slot: THD tensors and cu-seqlens in, semantic output
-    # out. A log-sum-exp the implementation computes stays inside it.
-    cu_seqlens = torch.arange(batch + 1, dtype=torch.int32, device=q.device) * seq_len
+    # Native Dense kernels consume BSHD directly. A log-sum-exp the
+    # implementation computes stays internal to the semantic output contract.
     out = kernel(
-        q_fp8.view(-1, heads, dim),
-        k_fp8.view(-1, heads_kv, dim),
-        v_fp8.view(-1, heads_kv, dim),
-        cu_seqlens,
-        cu_seqlens,
+        q_fp8,
+        k_fp8,
+        v_fp8,
         q_descale,
         k_descale,
         v_descale,
@@ -80,7 +77,7 @@ def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     assert tuple(q_descale.shape) == (batch, heads_kv)
     assert tuple(k_descale.shape) == (batch, heads_kv)
     assert tuple(v_descale.shape) == (batch, heads_kv)
-    assert out.shape == (batch * seq_len, heads, dim)
+    assert out.shape == (batch, seq_len, heads, dim)
     assert torch.isfinite(out.float()).all()
 
 

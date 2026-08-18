@@ -13,7 +13,7 @@ from tileops.kernels.online_softmax import (
 
 from .call_spec import ATTENTION_DTYPES, uses_sliding_window
 from .fp8_prefill_core import make_native_fp8_prefill_tile_update
-from .packed_prefill import PackedPrefillKernel
+from .prefill import DensePrefillKernel
 from .prefill_rope import make_prefill_rope_policy
 
 __all__ = ["GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel"]
@@ -1065,7 +1065,7 @@ def _validate_fa3_gqa_descales(
             raise ValueError(f"{name} must be contiguous.")
 
 
-class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
+class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(DensePrefillKernel):
     """Native-FP8 dense GQA family with a BN224 fast schedule.
 
     Query, key and value are always ``torch.float8_e4m3fn``; the only free dtype
@@ -1143,8 +1143,6 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
@@ -1170,7 +1168,6 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 self._rope_dummy[q.device] = dummy
             rope_cos = dummy
             rope_sin = dummy
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         if self._uses_bn224_fast_schedule():
             _validate_fa3_gqa_descales(
                 q_scale,
@@ -1178,7 +1175,7 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 v_scale,
                 self.batch,
                 self.heads_kv,
-                q_bshd.device,
+                q.device,
             )
             output, _ = _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
                 self.batch,
@@ -1187,9 +1184,9 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 self.max_seqlen_q,
                 self.dim,
                 self.dtype_str,
-                q_bshd,
-                k_bshd,
-                v_bshd,
+                q,
+                k,
+                v,
                 q_scale,
                 k_scale,
                 v_scale,
@@ -1216,13 +1213,13 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 64,
                 1,
                 128,
-                q_bshd,
-                k_bshd,
-                v_bshd,
+                q,
+                k,
+                v,
                 q_scale,
                 k_scale,
                 v_scale,
                 rope_cos,
                 rope_sin,
             )
-        return output.reshape(q.shape)
+        return output

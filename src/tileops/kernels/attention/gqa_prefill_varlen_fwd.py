@@ -25,7 +25,7 @@ from tileops.kernels.online_softmax import (
 )
 
 from .call_spec import uses_sliding_window
-from .packed_prefill import PackedPrefillKernel
+from .prefill import PackedPrefillKernel
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
 

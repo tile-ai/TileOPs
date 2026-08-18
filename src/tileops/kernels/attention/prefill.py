@@ -1,23 +1,26 @@
-"""The packed GQA prefill slot: one constructor, one call, one result.
+"""Shared construction state for GQA prefill kernel families.
 
-    kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale) -> o
+Dense and packed/variable-length prefill use the same static configuration,
+but they deliberately expose different runtime tensor ABIs:
 
-Tensors are packed THD throughout, and an implementation accepts the whole spec
-whether or not it reads every field. See the kernel-selection section of
-``docs/design/ops-design.md``.
+* :class:`DensePrefillKernel` consumes BSHD tensors.
+* :class:`PackedPrefillKernel` consumes packed THD tensors plus cu-seqlens.
+
+Keeping them as sibling families prevents a native Dense implementation from
+acquiring synthetic packed inputs merely to reuse constructor bookkeeping.
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
 from ..kernel_base import Kernel
 
-__all__ = ["PackedPrefillKernel"]
+__all__ = ["DensePrefillKernel", "PackedPrefillKernel", "PrefillKernel"]
 
 
-class PackedPrefillKernel(Kernel):
-    """Base for every implementation of the packed GQA prefill slot."""
+class PrefillKernel(Kernel):
+    """Topology-neutral static configuration shared by prefill kernels."""
 
     def __init__(
         self,
@@ -76,19 +79,26 @@ class PackedPrefillKernel(Kernel):
         """Build whatever the implementation launches. Override."""
         raise NotImplementedError
 
-    def _bshd(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """View packed THD tensors as BSHD; valid only for a uniform request.
 
-        An implementation whose program is written against BSHD takes this view
-        itself, so the op never has to know which layout a kernel prefers.
-        """
-        return (
-            q.view(self.batch, self.max_seqlen_q, self.heads, self.dim),
-            k.view(self.batch, self.max_seqlen_kv, self.heads_kv, self.dim),
-            v.view(self.batch, self.max_seqlen_kv, self.heads_kv, self.dim),
-        )
+class DensePrefillKernel(PrefillKernel):
+    """Base for native fixed-shape BSHD prefill implementations."""
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class PackedPrefillKernel(PrefillKernel):
+    """Base for packed THD prefill implementations with explicit ranges."""
 
     def forward(
         self,
@@ -103,5 +113,4 @@ class PackedPrefillKernel(Kernel):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run packed prefill and return the semantic output only."""
         raise NotImplementedError

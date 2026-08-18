@@ -1,4 +1,5 @@
 import dataclasses
+import inspect
 import re
 from typing import Optional
 
@@ -13,6 +14,7 @@ from tileops.kernels.attention import (
     GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
 )
+from tileops.kernels.attention.prefill import DensePrefillKernel, PackedPrefillKernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionPrefillDenseFwdOp,
@@ -1597,7 +1599,72 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> N
     entries = op.built_kernels("gqa_prefill_dense")
     assert len(entries) == 1
     assert isinstance(next(iter(entries.values())).kernel, GQAPrefillDenseFwdKernel)
+    assert not hasattr(op, "_cu_seqlens")
     assert _op_valued_attrs(op) == []
+
+
+@pytest.mark.smoke
+def test_dense_and_packed_prefill_have_distinct_runtime_abis() -> None:
+    """Fixed-shape kernels are BSHD-native; only ragged kernels consume ranges."""
+    assert all(
+        issubclass(kernel_cls, DensePrefillKernel)
+        for kernel_cls in _SHIPPED_DENSE_PREFILL_MAP.values()
+    )
+    dense_kernel_classes = {
+        *_SHIPPED_DENSE_PREFILL_MAP.values(),
+        _SHIPPED_PREFILL_MAP["gqa_prefill_fwd_kernel"],
+    }
+    dense_abi = {
+        "q",
+        "k",
+        "v",
+        "q_scale",
+        "k_scale",
+        "v_scale",
+        "rope_cos",
+        "rope_sin",
+    }
+    for kernel_cls in dense_kernel_classes:
+        assert dense_abi <= set(inspect.signature(kernel_cls.forward).parameters)
+    for key, kernel_cls in _SHIPPED_PREFILL_MAP.items():
+        expected_base = (
+            PackedPrefillKernel
+            if key
+            in (
+                "gqa_prefill_varlen_fwd_kernel",
+                "gqa_sliding_window_varlen_fwd_kernel",
+            )
+            else DensePrefillKernel
+        )
+        assert issubclass(kernel_cls, expected_base)
+
+
+@pytest.mark.smoke
+def test_legacy_packed_op_owns_the_dense_layout_adapter() -> None:
+    """Deprecated THD calls may adapt to Dense without polluting the Dense ABI."""
+    batch, seq_len, heads, heads_kv, dim = 2, 8, 8, 2, 64
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        is_causal=False,
+        dtype=torch.float16,
+        backend="dense",
+        kernel_map=_stand_in_prefill_map(),
+    )
+    call = op.attention_call(is_fp8=False, is_uniform=True)
+    entry = op._kernel_for("gqa_prefill_fwd_kernel", call)
+    assert isinstance(entry.kernel, DensePrefillKernel)
+
+    q = torch.empty(batch * seq_len, heads, dim, dtype=torch.float16)
+    k = torch.empty(batch * seq_len, heads_kv, dim, dtype=torch.float16)
+    v = torch.empty_like(k)
+    cu = torch.arange(batch + 1, dtype=torch.int32) * seq_len
+    scale = torch.ones(batch, heads_kv, dtype=torch.float32)
+    assert entry(q, k, v, cu, cu, scale, scale, scale).shape == q.shape
 
 
 @pytest.mark.smoke
@@ -1634,21 +1701,18 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
     """A non-square geometry reaches the kernel with q and kv lengths unswapped."""
     batch, heads, heads_kv, dim = 1, 8, 2, 128
     max_seqlen_q, max_seqlen_kv = 128, 256
-    packed = GroupedQueryAttentionPrefillFwdOp(
+    dense = GroupedQueryAttentionPrefillDenseFwdOp(
         batch=batch,
         heads=heads,
         heads_kv=heads_kv,
+        seq_len=max_seqlen_q,
+        seq_len_kv=max_seqlen_kv,
         dim=dim,
-        max_seqlen_q=max_seqlen_q,
-        max_seqlen_kv=max_seqlen_kv,
         is_causal=True,
-        dtype=torch.float16,
-        backend="dense",
-        kernel_map=_stand_in_prefill_map(),
+        kernel_map=_stand_in_dense_prefill_map(),
     )
 
-    call = packed.attention_call(is_fp8=False, is_uniform=True)
-    kernel = packed._kernel_for(packed.select_kernel_key(PACKED_PREFILL_KEYS, call), call)
+    kernel = dense._get_kernel(torch.float16, device=torch.device("cuda"))
 
     assert kernel.kwargs["max_seqlen_q"] == max_seqlen_q
     assert kernel.kwargs["max_seqlen_kv"] == max_seqlen_kv

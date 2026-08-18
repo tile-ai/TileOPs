@@ -25,6 +25,7 @@ from tileops.kernels.attention import (
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
+from tileops.kernels.attention.prefill import DensePrefillKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
@@ -172,12 +173,12 @@ def _prepare_group_scales(
     return tuple(resolved)
 
 
-def _build_packed_prefill_kernel(
+def _build_prefill_kernel(
     kernel_map: Dict[str, Kernel],
     key: str,
     call: AttentionCall,
 ) -> Kernel:
-    """Construct the packed-prefill implementation *key* names.
+    """Construct the prefill implementation *key* names.
 
     Every implementation of the slot takes the same constructor, so one step
     builds any of them and no caller carries a per-implementation argument list.
@@ -206,26 +207,11 @@ def _build_packed_prefill_kernel(
 
 @dataclass(frozen=True)
 class _DensePrefillBuiltin:
-    """Adapt the public dense ABI to the packed in-tree kernel ABI."""
+    """Bind constructor-owned operands to one selected native Dense kernel."""
 
-    kernel: Kernel
-    batch: int
-    heads: int
-    heads_kv: int
-    dim: int
-    seq_len: int
-    seq_len_kv: int
-    cu_seqlens: Dict[tuple[torch.device, int], torch.Tensor]
+    kernel: DensePrefillKernel
     rope_cos: torch.Tensor
     rope_sin: torch.Tensor
-
-    def _uniform_cu_seqlens(self, device: torch.device, seq_len: int) -> torch.Tensor:
-        cache_key = (device, seq_len)
-        cu_seqlens = self.cu_seqlens.get(cache_key)
-        if cu_seqlens is None:
-            cu_seqlens = torch.arange(self.batch + 1, device=device, dtype=torch.int32) * seq_len
-            self.cu_seqlens[cache_key] = cu_seqlens
-        return cu_seqlens
 
     def __call__(
         self,
@@ -236,19 +222,62 @@ class _DensePrefillBuiltin:
     ) -> torch.Tensor:
         if len(scales) not in (0, 3):
             raise ValueError("Dense prefill expects either zero or three scale tensors")
-        cu_q = self._uniform_cu_seqlens(q.device, self.seq_len)
-        cu_kv = self._uniform_cu_seqlens(q.device, self.seq_len_kv)
-        output = self.kernel(
-            q.view(-1, self.heads, self.dim),
-            k.view(-1, self.heads_kv, self.dim),
-            v.view(-1, self.heads_kv, self.dim),
-            cu_q,
-            cu_kv,
+        return self.kernel(
+            q,
+            k,
+            v,
             *scales,
             rope_cos=self.rope_cos,
             rope_sin=self.rope_sin,
         )
-        return output.view(q.shape)
+
+
+@dataclass(frozen=True)
+class _LegacyPackedDenseAdapter:
+    """Keep the deprecated packed Op compatible with native Dense kernels."""
+
+    kernel: DensePrefillKernel
+    batch: int
+    heads: int
+    heads_kv: int
+    max_seqlen_q: int
+    max_seqlen_kv: int
+    dim: int
+
+    def __call__(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        del cu_seqlens_q, cu_seqlens_kv
+        q_bshd = q.view(
+            self.batch,
+            self.max_seqlen_q,
+            self.heads,
+            self.dim,
+        )
+        k_bshd = k.view(
+            self.batch,
+            self.max_seqlen_kv,
+            self.heads_kv,
+            self.dim,
+        )
+        v_bshd = v.view_as(k_bshd)
+        output = self.kernel(
+            q_bshd,
+            k_bshd,
+            v_bshd,
+            q_scale,
+            k_scale,
+            v_scale,
+        )
+        return output.view_as(q)
 
 
 class GroupedQueryAttentionPrefillDenseFwdOp(Op):
@@ -328,10 +357,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # Packed ranges for a batch of equal-length requests, per device. Not a
-        # kernel cache: the dense implementations take the same packed call as
-        # every other, and a fixed-shape request supplies its ranges.
-        self._cu_seqlens: Dict[tuple[torch.device, int], torch.Tensor] = {}
         self._rope_table_cache: Dict[
             tuple[torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]
         ] = {}
@@ -436,18 +461,10 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         call = self.attention_call(dtype, device)
         key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
         rope_cos, rope_sin = self._rope_tables(device, self.output_dtype or dtype)
-        return _DensePrefillBuiltin(
-            _build_packed_prefill_kernel(self.kernel_map, key, call),
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            self.dim,
-            self.seq_len,
-            self.seq_len_kv,
-            self._cu_seqlens,
-            rope_cos,
-            rope_sin,
-        )
+        kernel = _build_prefill_kernel(self.kernel_map, key, call)
+        if not isinstance(kernel, DensePrefillKernel):
+            raise TypeError(f"Dense prefill selected a non-Dense kernel: {type(kernel).__name__}")
+        return _DensePrefillBuiltin(kernel, rope_cos, rope_sin)
 
     def _rope_tables(
         self, device: torch.device, dtype: torch.dtype
@@ -728,7 +745,18 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         """The implementation *key* names, built once for this element type."""
 
         def build() -> Kernel:
-            return _build_packed_prefill_kernel(self.kernel_map, key, call)
+            kernel = _build_prefill_kernel(self.kernel_map, key, call)
+            if isinstance(kernel, DensePrefillKernel):
+                return _LegacyPackedDenseAdapter(
+                    kernel,
+                    call.batch,
+                    call.heads,
+                    call.heads_kv,
+                    call.max_seqlen_q,
+                    call.max_seqlen_kv,
+                    call.dim,
+                )
+            return kernel
 
         return self.get_or_build_kernel(key, key=call.dtype, build=build)
 

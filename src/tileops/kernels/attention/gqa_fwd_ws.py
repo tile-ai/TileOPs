@@ -13,7 +13,7 @@ from tileops.kernels.online_softmax import (
 )
 
 from .call_spec import ATTENTION_DTYPES, WS_ARCH, square_ws_prefill_region
-from .packed_prefill import PackedPrefillKernel
+from .prefill import DensePrefillKernel
 
 __all__ = ["GQAFwdWsPersistentCausalKernel"]
 
@@ -580,8 +580,8 @@ def _gqa_fwd_ws_persistent_causal_kernel(
     return func
 
 
-class GQAFwdWsPersistentCausalKernel(PackedPrefillKernel):
-    """Square causal packed prefill, warp-specialized and persistent (H200).
+class GQAFwdWsPersistentCausalKernel(DensePrefillKernel):
+    """Square causal Dense prefill, warp-specialized and persistent (H200).
 
     Serves the region where the persistent schedule fills the device: square
     causal fp16/bf16 at head dim 128, tile-aligned, with enough work items.
@@ -626,14 +626,11 @@ class GQAFwdWsPersistentCausalKernel(PackedPrefillKernel):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
-        output = self.kernel(self.config["block_m"], self.config["block_n"])(q_bshd, k_bshd, v_bshd)
-        return output.reshape(q.shape)
+        output = self.kernel(self.config["block_m"], self.config["block_n"])(q, k, v)
+        return output
