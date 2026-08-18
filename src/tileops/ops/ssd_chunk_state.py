@@ -63,6 +63,7 @@ class SSDChunkStateFwdOp(Op):
         d_state: int,
         n_groups: int,
         dtype: torch.dtype,
+        dt_dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
         key = (
@@ -74,6 +75,7 @@ class SSDChunkStateFwdOp(Op):
             d_state,
             n_groups,
             dtype,
+            dt_dtype,
             self.has_seq_idx,
             device_index,
             self.tune,
@@ -91,6 +93,7 @@ class SSDChunkStateFwdOp(Op):
                 n_groups,
                 dtype,
                 has_seq_idx=self.has_seq_idx,
+                dt_dtype=dt_dtype,
                 tune=self.tune,
             ),
         )
@@ -147,7 +150,7 @@ class SSDChunkStateFwdOp(Op):
         self.dtype = x.dtype
         self.kernel = self._get_kernel(
             batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, x.dtype,
-            x.device.index)
+            dt.dtype, x.device.index)
 
         x = x.contiguous()
         Bmat = Bmat.contiguous()
@@ -155,7 +158,7 @@ class SSDChunkStateFwdOp(Op):
         dA_cumsum = dA_cumsum.contiguous()
 
         if seq_idx is None:
-            seq_idx = x.new_zeros(self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32)
+            seq_idx = x.new_empty(self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32)
         else:
             seq_idx = seq_idx.contiguous()
 
