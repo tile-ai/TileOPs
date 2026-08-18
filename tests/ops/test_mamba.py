@@ -191,8 +191,8 @@ def test_ssd_chunk_state_fwd(
 
 
 @pytest.mark.smoke
-def test_ssd_chunk_state_fwd_seq_end_negative():
-    """Kernel must zero the whole chunk when the last token's seq_idx is -1."""
+def test_ssd_chunk_state_fwd_seq_idx_semantics():
+    """Exercise negative chunk ends and the optional unmasked path."""
     batch, num_chunks, chunk_len = 1, 2, 64
     n_heads, d_head, d_state, n_groups = 4, 64, 32, 1
     dtype = torch.float16
@@ -222,6 +222,13 @@ def test_ssd_chunk_state_fwd_seq_end_negative():
     # chunk 1 (seq_idx == 1 throughout) must have non-zero state.
     allclose_compare(out[:, 0], torch.zeros_like(out[:, 0]), atol=0.0, rtol=0.0)
     assert out[:, 1].abs().max().item() > 0
+
+    poison = torch.full((b, seq_len), -1, dtype=torch.int32, device="cuda")
+    torch.cuda.synchronize()
+    del poison
+    out = op(x, Bmat, dt, dA_cumsum)
+    ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g)
+    allclose_compare(out, ref, atol=atol, rtol=rtol)
 
 
 class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):

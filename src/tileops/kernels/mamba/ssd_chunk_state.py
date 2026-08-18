@@ -389,8 +389,9 @@ class SSDChunkStateFwdKernel(Kernel):
         )
         if primary_mamba_geometry:
             small_grid = grid_size <= 640
+            launch_shape = (self.batch, self.num_chunks, self.n_heads)
             if small_grid and not self.has_seq_idx and self.dt_dtype == torch.float32:
-                if self.dtype == torch.float16 and grid_size == 512:
+                if self.dtype == torch.float16 and launch_shape == (1, 8, 64):
                     return {
                         "block_n": 128,
                         "block_p": 64,
@@ -398,7 +399,7 @@ class SSDChunkStateFwdKernel(Kernel):
                         "threads": 256,
                         "num_stages": 2,
                     }
-                if self.dtype == torch.bfloat16 and grid_size == 640:
+                if self.dtype == torch.bfloat16 and launch_shape == (1, 8, 80):
                     return {
                         "block_n": 64,
                         "block_p": 64,
