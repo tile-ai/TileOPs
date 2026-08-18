@@ -17,7 +17,10 @@ from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 
-__all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+__all__ = ["GEMM_KEYS", "GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+
+#: Implementations of the dense-GEMM slot.
+GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
 
 
 class GemmFwdOp(Op):
@@ -118,7 +121,7 @@ class GemmFwdOp(Op):
         selected key to a kernel instance and caching it.
         """
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
-        key = self.select_kernel_key(("gemv_kernel", "small_batch_kernel", "gemm_kernel"), call)
+        key = self.select_kernel_key(GEMM_KEYS, call)
         if key == "gemv_kernel":
             # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
             mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
