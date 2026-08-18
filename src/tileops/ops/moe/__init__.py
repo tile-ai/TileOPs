@@ -8,7 +8,7 @@ from .abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
-from .fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
+from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
@@ -27,7 +27,6 @@ __all__ = [
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
     "FusedMoEPrepareAndFinalize",
     "FusedMoe",
-    "FusedMoeFwdCbFwdOp",
     "FusedMoeFwdOp",
     "FusedTopKOp",
     "MoEPrepareAndFinalizeNoDPEP",

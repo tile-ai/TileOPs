@@ -19,7 +19,7 @@ _INPLACE_PARAMETRIC_OPS = (
     "LeakyReluFwdOp", "EluFwdOp", "HardtanhFwdOp",
 )
 
-_CLAMP_OPS = ("ClampFwdOp", "ClampScalarFwdOp", "ClampMinFwdOp", "ClampMaxFwdOp")
+_CLAMP_OPS = ("ClampFwdOp", "ClampScalarFwdOp")
 
 
 def _torch_reference(op_name: str):

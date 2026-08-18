@@ -4,14 +4,10 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops.norm.group_norm import (
-    GroupNormFwdOp,
-    GroupNormNoAffineFwdOp,
-)
+from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
 
 _OP_NAME = "GroupNormFwdOp"
-_OP_NAME_NO_AFFINE = "GroupNormNoAffineFwdOp"
 
 
 def _build_params(workloads):
@@ -32,8 +28,13 @@ def _build_params(workloads):
     return params
 
 
-_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME))
-_NO_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME_NO_AFFINE))
+_WORKLOADS = load_workloads(_OP_NAME)
+_AFFINE_PARAMS = _build_params(
+    [w for w in _WORKLOADS if "weight_shape" in w]
+)
+_NO_AFFINE_PARAMS = _build_params(
+    [w for w in _WORKLOADS if "weight_shape" not in w]
+)
 
 
 @pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune",
@@ -61,8 +62,8 @@ def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     test = GroupNormWorkload(n, c, spatial, num_groups, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = GroupNormNoAffineFwdOp(num_groups=num_groups, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME_NO_AFFINE, op, test)
+    op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
 
     def baseline_no_affine(x):
         return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)

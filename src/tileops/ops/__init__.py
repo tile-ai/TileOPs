@@ -20,11 +20,8 @@ from .attention import (
 )
 from .bmm import BmmFp8Op, BmmFwdOp
 from .convolution import (
-    Conv1dBiasFwdOp,
     Conv1dFwdOp,
-    Conv2dBiasFwdOp,
     Conv2dFwdOp,
-    Conv3dBiasFwdOp,
     Conv3dFwdOp,
 )
 from .da_cumsum import DaCumsumFwdOp
@@ -132,11 +129,8 @@ __all__ = [
     "BatchNormFwdOp",
     "BmmFp8Op",
     "BmmFwdOp",
-    "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
-    "Conv2dBiasFwdOp",
     "Conv2dFwdOp",
-    "Conv3dBiasFwdOp",
     "Conv3dFwdOp",
     "DaCumsumFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",

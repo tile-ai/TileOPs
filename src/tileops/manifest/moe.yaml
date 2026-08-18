@@ -336,6 +336,8 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
 
 FusedMoeFwdOp:
   ref_api: "none"
+  # correction_bias, when passed, is added to sigmoid scores for top-k selection
+  # only; the returned weights stay the unbiased scores (Kimi K2 routing).
   family: moe
   status: implemented
 
@@ -345,6 +347,7 @@ FusedMoeFwdOp:
       gating_output: {dtype: "float32"}
       w_gate_up: {dtype: "same_as(hidden_states)"}
       w_down: {dtype: "same_as(hidden_states)"}
+      correction_bias: {dtype: "float32", optional: true}
     outputs:
       output: {dtype: "same_as(hidden_states)"}
     params:
@@ -360,6 +363,7 @@ FusedMoeFwdOp:
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "gating_output.shape == (num_tokens, num_experts)"
+    - "correction_bias is None or correction_bias.shape == (num_experts,)"
     - "output.shape        == (num_tokens, hidden_size)"
 
   workloads:
@@ -369,61 +373,9 @@ FusedMoeFwdOp:
     # DeepSeek-V3: scoring_func=sigmoid
   - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "deepseek-v3-decode"}
   - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
-
-  roofline:
-    func: "tileops.perf.formulas.fused_moe_fwd_bytes"
-
-  source:
-    kernel: tileops/ops/moe/fused_moe.py
-    op: tileops/ops/moe/fused_moe.py
-    test: tests/ops/test_moe_fused_moe.py
-    bench: benchmarks/ops/bench_moe_fused_moe.py
-    bench_manifest_driven: true
-    kernel_map:
-      fused_topk_kernel: FusedTopKKernel
-      permute_nopad_kernel: MoePermuteNopadKernel
-      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
-      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
-      silu_and_mul: SiluAndMulFwdKernel
-      gelu_and_mul: GeluAndMulFwdKernel
-      unpermute_kernel: MoeUnpermuteKernel
-
-FusedMoeFwdCbFwdOp:
-  ref_api: "none"
-  family: moe
-  status: implemented
-  variant_of: FusedMoeFwdOp
-
-  signature:
-    inputs:
-      hidden_states: {dtype: "float16 | bfloat16"}
-      gating_output: {dtype: "float32"}
-      correction_bias: {dtype: "float32"}
-      w_gate_up: {dtype: "same_as(hidden_states)"}
-      w_down: {dtype: "same_as(hidden_states)"}
-    outputs:
-      output: {dtype: "same_as(hidden_states)"}
-    params:
-      num_tokens: {type: int}
-      num_experts: {type: int}
-      top_k: {type: int}
-      hidden_size: {type: int}
-      ffn_size: {type: int}
-      scoring_func: {type: str, default: sigmoid}
-      renormalize: {type: bool, default: false}
-      routed_scaling_factor: {type: float, default: 1.0}
-      activation: {type: str, default: silu_and_mul, kw_only: true}
-    shape_rules:
-    - "hidden_states.shape   == (num_tokens, hidden_size)"
-    - "gating_output.shape   == (num_tokens, num_experts)"
-    - "correction_bias.shape == (num_experts,)"
-    - "output.shape          == (num_tokens, hidden_size)"
-
-  workloads:
     # Kimi K2: scoring_func=sigmoid, correction_bias, renormalize=True, routed_scaling_factor=2.827
-  - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, dtypes: [bfloat16], label: "kimi-k2-decode"}
-  - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+  - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [256], dtypes: [bfloat16], label: "kimi-k2-decode"}
+  - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [256], dtypes: [bfloat16], label: "kimi-k2-prefill"}
 
   roofline:
     func: "tileops.perf.formulas.fused_moe_fwd_bytes"

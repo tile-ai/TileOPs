@@ -62,7 +62,9 @@ class _ShapeProxy:
         self.ndim = len(self.shape)
 
 
-def _resolve_tensor_binding(op: Any, name: str, op_name: str) -> Any:
+def _resolve_tensor_binding(
+    op: Any, name: str, op_name: str, *, optional: bool = False,
+) -> Any:
     """Bind ``name`` for inline-mode synthesis from op-instance state.
 
     Two accepted conventions, in order:
@@ -76,20 +78,32 @@ def _resolve_tensor_binding(op: Any, name: str, op_name: str) -> Any:
     missing binding is diagnosable rather than a vacuous ``'NoneType' object has
     no attribute 'shape'`` from inside the generated body.
 
+    An ``optional: true`` input binds to ``None`` when the op exposes it as
+    ``None`` under either convention — the call did not pass it, and R18.1
+    limits what the expression may then do with the name to a presence test.
+    Exposing neither attribute still raises: silently reading "absent" off an
+    op that forgot to expose the input would under-count the roofline.
+
     Op-family-specific aliases (``self.shape`` / ``self.num_channels``
     / ``self.N_total``) are *not* consulted; ops opting into inline
     roofline declare bindings explicitly per ``docs/design/roofline.md``
     §4.4.3.
     """
-    direct = getattr(op, name, None)
+    _unset = object()
+    direct = getattr(op, name, _unset)
     # Tier 1 requires both ``.shape`` and ``.ndim`` so a partially
     # conformant object (e.g. exposes ``.shape`` only) does not slip
     # past and die later when the generated body reads ``.ndim``.
-    if direct is not None and hasattr(direct, "shape") and hasattr(direct, "ndim"):
+    if (
+        direct is not _unset and direct is not None
+        and hasattr(direct, "shape") and hasattr(direct, "ndim")
+    ):
         return direct
-    shape_attr = getattr(op, f"{name}_shape", None)
+    shape_attr = getattr(op, f"{name}_shape", _unset)
     if isinstance(shape_attr, (tuple, list)):
         return _ShapeProxy(tuple(shape_attr))
+    if optional and (direct is None or shape_attr is None):
+        return None
     raise ValueError(
         f"{op_name}: cannot resolve roofline input {name!r}; expected "
         f"either self.{name} (with .shape/.ndim) or self.{name}_shape "
@@ -202,9 +216,12 @@ class _VarsExprValidator(ast.NodeVisitor):
         var_name: str,
         allowed: set[str],
         input_names: set[str],
+        optional_names: set[str] | None = None,
     ) -> None:
         self.op_name = op_name
         self.var_name = var_name
+        # Cleared by ``visit_Compare`` when they carry a presence test.
+        self._optional_names = set(optional_names or ())
         # Names referring to tensor inputs. They are bound (the
         # generated body receives them from the resolver) but may only
         # appear as the operand of a whitelisted attribute access
@@ -276,6 +293,15 @@ class _VarsExprValidator(ast.NodeVisitor):
             )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        base = node.value
+        if isinstance(base, ast.Name) and base.id in self._optional_names:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] reads "
+                f"{base.id}.{node.attr} from an optional input; the call may "
+                f"omit it, so only '{base.id} is None' / "
+                f"'{base.id} is not None' is allowed here. A formula that "
+                f"needs its shape uses roofline.func"
+            )
         if node.attr not in _VARS_ATTR_WHITELIST:
             raise ValueError(
                 f"{self.op_name}: roofline.vars[{self.var_name!r}] "
@@ -320,6 +346,35 @@ class _VarsExprValidator(ast.NodeVisitor):
         for kw in node.keywords:
             self.visit(kw.value)
 
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        base = node.value
+        if isinstance(base, ast.Name) and base.id in self._optional_names:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] subscripts "
+                f"optional input {base.id!r}; the call may omit it, so only "
+                f"'{base.id} is None' / '{base.id} is not None' is allowed here"
+            )
+        self.generic_visit(node)
+
+    def visit_Compare(self, node: ast.Compare) -> None:
+        # ``X is None`` / ``X is not None`` is the one place an optional
+        # input's bare name is legal; the rest is checked normally.
+        skip = self._presence_operand(node)
+        for child in ast.iter_child_nodes(node):
+            if child is skip:
+                continue
+            self.visit(child)
+
+    def _presence_operand(self, node: ast.Compare) -> ast.AST | None:
+        if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Is, ast.IsNot)):
+            return None
+        left, right = node.left, node.comparators[0]
+        if not isinstance(right, ast.Constant) or right.value is not None:
+            return None
+        if isinstance(left, ast.Name) and left.id in self._optional_names:
+            return left
+        return None
+
     def generic_visit(self, node: ast.AST) -> None:
         if isinstance(node, _VARS_FORBIDDEN_NODES):
             raise ValueError(
@@ -354,13 +409,16 @@ def _validate_vars_expr(
     expr: str,
     allowed_names: set[str],
     input_names: set[str],
+    optional_names: set[str] | None = None,
 ) -> ast.Expression:
     """Parse and AST-check a vars-layer expression.
 
     Vars-layer permits ``.shape`` / ``.ndim`` access on tensor inputs,
     small comprehensions, calls to whitelisted helpers, and references
     to bound names (params, ``elem_bytes``, earlier vars, helpers).
-    Tensor inputs may not appear as bare values; comprehension target
+    Tensor inputs may not appear as bare values, except an
+    ``optional: true`` input inside ``is None`` / ``is not None`` (R18.1);
+    comprehension target
     names bind to a child scope reachable only inside the comprehension.
     Forbidden constructs raise ``ValueError`` so class construction
     fails before the manifest lands.
@@ -373,7 +431,7 @@ def _validate_vars_expr(
             f"expression ({exc})"
         ) from exc
     _VarsExprValidator(
-        op_name, var_name, allowed_names, input_names,
+        op_name, var_name, allowed_names, input_names, optional_names,
     ).visit(tree)
     return tree
 
@@ -496,6 +554,10 @@ def _synthesize_inline_mode(
     vars_allowed.update(_VARS_HELPERS.keys())
 
     input_name_set = set(input_names)
+    optional_name_set = {
+        name for name, attrs in inputs.items()
+        if isinstance(attrs, dict) and attrs.get("optional") is True
+    } if isinstance(inputs, dict) else set()
     for name, expr in vars_block.items():
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(
@@ -518,7 +580,10 @@ def _synthesize_inline_mode(
                 f"existing name (input / param / helper / elem_bytes / "
                 f"earlier var)"
             )
-        _validate_vars_expr(op_name, name, expr, vars_allowed, input_name_set)
+        _validate_vars_expr(
+            op_name, name, expr, vars_allowed, input_name_set,
+            optional_name_set,
+        )
         vars_allowed.add(name)
 
     # Arithmetic-layer legal name set per §4.4.3 Block 2: "references
@@ -559,7 +624,8 @@ def _synthesize_inline_mode(
         # ``self.<n>_shape`` as a tuple. Anything else raises
         # ``ValueError`` at call time naming the missing convention.
         src_lines.append(
-            f"    {n} = _resolve_tensor_binding(self, {n!r}, {op_name!r})"
+            f"    {n} = _resolve_tensor_binding(self, {n!r}, {op_name!r}, "
+            f"optional={n in optional_name_set})"
         )
     for n in param_names:
         if n not in referenced:

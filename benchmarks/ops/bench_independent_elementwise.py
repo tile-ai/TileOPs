@@ -16,8 +16,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AlibiFwdOp,
     ClampFwdOp,
-    ClampMaxFwdOp,
-    ClampMinFwdOp,
     ClampScalarFwdOp,
     EluFwdOp,
     HardtanhFwdOp,
@@ -57,23 +55,21 @@ class UnaryBenchmark(BenchmarkBase[ShapedRandnWorkload]):
         return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
-# Tensor-bound clamp ops: ClampFwdOp, ClampMinFwdOp, ClampMaxFwdOp.
-# N_total is post-broadcast, i.e. product(out_shape).
+# Tensor-bound clamp. N_total is post-broadcast, i.e. product(out_shape).
 
 _CLAMP_FWD_OP = "ClampFwdOp"
-_CLAMP_MIN_OP = "ClampMinFwdOp"
-_CLAMP_MAX_OP = "ClampMaxFwdOp"
 
 
-def _workloads_to_clamp_params(
-    workloads: list, *, needs_min: bool, needs_max: bool,
-) -> list:
-    """Convert manifest workload dicts to clamp-bench pytest params."""
+def _workloads_to_clamp_params(workloads: list) -> list:
+    """Convert manifest workload dicts to clamp-bench pytest params.
+
+    A row passes a bound exactly when it declares that bound's shape (R18.1).
+    """
     params = []
     for idx, w in enumerate(workloads):
         input_shape = tuple(w["input_shape"])
-        min_shape = tuple(w["min_shape"]) if needs_min else None
-        max_shape = tuple(w["max_shape"]) if needs_max else None
+        min_shape = tuple(w["min_shape"]) if "min_shape" in w else None
+        max_shape = tuple(w["max_shape"]) if "max_shape" in w else None
         label = w.get("label", "x".join(str(s) for s in input_shape))
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
@@ -94,18 +90,21 @@ def _workloads_to_clamp_params(
 
 @pytest.mark.parametrize(
     "input_shape, min_shape, max_shape, dtype",
-    _workloads_to_clamp_params(
-        load_workloads(_CLAMP_FWD_OP), needs_min=True, needs_max=True,
-    ),
+    _workloads_to_clamp_params(load_workloads(_CLAMP_FWD_OP)),
 )
 def test_clamp_tensor_bench(
     input_shape: tuple,
-    min_shape: tuple,
-    max_shape: tuple,
+    min_shape: Optional[tuple],
+    max_shape: Optional[tuple],
     dtype: torch.dtype,
 ) -> None:
-    test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape, max_shape=max_shape)
-    x, t_min, t_max = test.gen_inputs()
+    test = TensorClampBenchCase(
+        input_shape, dtype, min_shape=min_shape, max_shape=max_shape,
+    )
+    # gen_inputs yields only the bounds this row passes; widen to (x, min, max).
+    x, *bounds = test.gen_inputs()
+    t_min = bounds.pop(0) if min_shape is not None else None
+    t_max = bounds.pop(0) if max_shape is not None else None
 
     op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape)
     bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
@@ -113,55 +112,10 @@ def test_clamp_tensor_bench(
     def baseline_fn(x, t_min, t_max):
         return torch.clamp(x, t_min, t_max)
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, x, t_min, t_max, record_as=op, params=locals())
-
-
-@pytest.mark.parametrize(
-    "input_shape, min_shape, _max_shape, dtype",
-    _workloads_to_clamp_params(
-        load_workloads(_CLAMP_MIN_OP), needs_min=True, needs_max=False,
-    ),
-)
-def test_clamp_min_bench(
-    input_shape: tuple,
-    min_shape: tuple,
-    _max_shape: Optional[tuple],
-    dtype: torch.dtype,
-) -> None:
-    test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape)
-    x, t_min = test.gen_inputs()
-
-    op = ClampMinFwdOp(input=input_shape, min=min_shape)
-    bm = ManifestBenchmark(_CLAMP_MIN_OP, op, test)
-
-    def baseline_fn(x, t_min):
-        return torch.maximum(x, t_min)
-
-    bm.compare({"tileops": op, "torch": baseline_fn}, x, t_min, record_as=op, params=locals())
-
-
-@pytest.mark.parametrize(
-    "input_shape, _min_shape, max_shape, dtype",
-    _workloads_to_clamp_params(
-        load_workloads(_CLAMP_MAX_OP), needs_min=False, needs_max=True,
-    ),
-)
-def test_clamp_max_bench(
-    input_shape: tuple,
-    _min_shape: Optional[tuple],
-    max_shape: tuple,
-    dtype: torch.dtype,
-) -> None:
-    test = TensorClampBenchCase(input_shape, dtype, max_shape=max_shape)
-    x, t_max = test.gen_inputs()
-
-    op = ClampMaxFwdOp(input=input_shape, max=max_shape)
-    bm = ManifestBenchmark(_CLAMP_MAX_OP, op, test)
-
-    def baseline_fn(x, t_max):
-        return torch.minimum(x, t_max)
-
-    bm.compare({"tileops": op, "torch": baseline_fn}, x, t_max, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch": baseline_fn}, x, t_min, t_max,
+        record_as=op, params=locals(),
+    )
 
 
 # alibi & sinusoidal (generative: no input tensors)

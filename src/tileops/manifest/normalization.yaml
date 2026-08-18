@@ -412,88 +412,51 @@ GroupNormFwdOp:
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
-      weight: {dtype: "same_as(x)"}
-      bias: {dtype: "same_as(x)"}
+      # torch.nn.GroupNorm(affine=) toggles both together, so they are one
+      # switch; the first shape rule states that.
+      weight: {dtype: "same_as(x)", optional: true}
+      bias: {dtype: "same_as(x)", optional: true}
     outputs:
       output: {dtype: "same_as(x)"}
     params:
       num_groups: {type: int}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-      - "weight.shape == (x.shape[1],)"
-      - "bias.shape == (x.shape[1],)"
+      - "(weight is None) == (bias is None)"
+      - "weight is None or weight.shape == (x.shape[1],)"
+      - "bias is None or bias.shape == (x.shape[1],)"
       - "x.shape[1] % num_groups == 0"
       - "output.shape == x.shape"
 
   workloads:
-    # Typical CV shapes
+    # Typical CV shapes, each side of the affine switch. The affine rows
+    # reuse the shapes above and only add the two keys.
     - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
     - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
     - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
+    - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16],
+       weight_shape: [128], bias_shape: [128], label: "image-g32-affine"}
+    - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16],
+       weight_shape: [256], bias_shape: [256], label: "wider-channel-g32-affine"}
+    - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16],
+       weight_shape: [128], bias_shape: [128], label: "tail-spatial-g16-affine"}
 
   roofline:
     vars:
       N: "x.shape[0]"
       C: "x.shape[1]"
       spatial_size: "product(x.shape[2:])"
-    # Per element: subtract mean + square for var + normalize + scale + bias ≈ 5
-    flops: "5 * N * C * spatial_size"
-    # Read x + write output + read weight (C) + read bias (C)
-    bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
+      affine: "weight is not None"
+    # Per element: subtract mean + square for var + normalize = 3; affine adds
+    # scale and bias = 5.
+    flops: "(5 if affine else 3) * N * C * spatial_size"
+    # Read x + write output; affine also reads weight and bias, C elements each.
+    bytes: "(2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes"
 
   source:
     kernel: tileops/kernels/norm/group_norm.py
     kernel_map:
       group_norm: GroupNormKernel
-    op: tileops/ops/norm/group_norm.py
-    test: tests/ops/test_group_norm.py
-    bench: benchmarks/ops/bench_group_norm.py
-    bench_manifest_driven: true
-
-GroupNormNoAffineFwdOp:
-  ref_api: "torch.nn.functional.group_norm"
-  # No-affine variant: torch.nn.functional.group_norm(x, num_groups, weight=None,
-  # bias=None, eps), matching torch.nn.GroupNorm(affine=False). Split from
-  # the affine primary per the "No Optional[Tensor]" rule (R16,
-  # .claude/domain-rules/manifest-spec.md). torch.nn.GroupNorm toggles
-  # weight and bias together via the affine flag.
-  family: normalization
-  status: implemented
-  variant_of: GroupNormFwdOp
-
-  signature:
-    inputs:
-      x: {dtype: "float32 | float16 | bfloat16"}
-    outputs:
-      output: {dtype: "same_as(x)"}
-    params:
-      num_groups: {type: int}
-      eps: {type: float, default: 1.0e-5}
-    shape_rules:
-      - "x.shape[1] % num_groups == 0"
-      - "output.shape == x.shape"
-
-  workloads:
-    # Mirror the affine primary's CV shapes; affine-vs-no-affine perf
-    # difference is sub-percent, so shape coverage is what matters.
-    - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
-    - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
-    - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
-
-  roofline:
-    vars:
-      N: "x.shape[0]"
-      C: "x.shape[1]"
-      spatial_size: "product(x.shape[2:])"
-    # Per element: subtract mean + square for var + normalize ≈ 3
-    # (no scale, no bias relative to the affine primary's 5).
-    flops: "3 * N * C * spatial_size"
-    # Read x + write output (no weight, no bias).
-    bytes: "2 * N * C * spatial_size * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/norm/group_norm.py
-    kernel_map:
       group_norm_no_affine: GroupNormNoAffineKernel
     op: tileops/ops/norm/group_norm.py
     test: tests/ops/test_group_norm.py
@@ -502,14 +465,20 @@ GroupNormNoAffineFwdOp:
 
 InstanceNormFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
+  # Input order follows torch.nn.functional.instance_norm. Two switches, each
+  # made of a pair: weight + bias is the affine
+  # (torch.nn.InstanceNorm*(affine=)), running_mean + running_var is what
+  # use_input_stats=False normalizes by.
   family: normalization
   status: implemented
 
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
-      weight: {dtype: "same_as(x)"}
-      bias: {dtype: "same_as(x)"}
+      running_mean: {dtype: "float32", optional: true}
+      running_var: {dtype: "float32", optional: true}
+      weight: {dtype: "same_as(x)", optional: true}
+      bias: {dtype: "same_as(x)", optional: true}
     outputs:
       output: {dtype: "same_as(x)"}
     params:
@@ -517,64 +486,24 @@ InstanceNormFwdOp:
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-      - "weight.shape == (x.shape[1],)"
-      - "bias.shape == (x.shape[1],)"
+      - "(weight is None) == (bias is None)"
+      - "(running_mean is None) == (running_var is None)"
+      # An inference op: the running stats normalize the input on the eval
+      # path and are never updated, so the batch-stats path has no use for them.
+      - "running_mean is None or not use_input_stats"
+      - "weight is None or weight.shape == (x.shape[1],)"
+      - "bias is None or bias.shape == (x.shape[1],)"
+      - "running_mean is None or running_mean.shape == (x.shape[1],)"
+      - "running_var is None or running_var.shape == (x.shape[1],)"
       - "output.shape == x.shape"
 
   workloads:
-    # Typical CV shapes (style transfer, image generation)
-    - {x_shape: [8, 128, 32, 32], dtypes: [float16, bfloat16], label: "image"}
-    - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "wider-channel"}
-    - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
-
-  roofline:
-    vars:
-      N: "x.shape[0]"
-      C: "x.shape[1]"
-      spatial_size: "product(x.shape[2:])"
-    # Same as GroupNorm (InstanceNorm = GroupNorm with G=C)
-    flops: "5 * N * C * spatial_size"
-    # Read x + write output + read weight (C) + read bias (C)
-    bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/norm/group_norm.py
-    kernel_map:
-      group_norm: GroupNormKernel
-    op: tileops/ops/norm/instance_norm.py
-    test: tests/ops/test_instance_norm.py
-    bench: benchmarks/ops/bench_instance_norm.py
-    bench_manifest_driven: true
-
-InstanceNormNoAffineFwdOp:
-  ref_api: "torch.nn.functional.instance_norm"
-  # No-affine variant: torch.nn.functional.instance_norm(x, weight=None,
-  # bias=None, ...), matching torch.nn.InstanceNorm*(affine=False) — the
-  # default for InstanceNorm. Split from the affine primary per the
-  # "No Optional[Tensor]" rule (R16, .claude/domain-rules/manifest-spec.md).
-  family: normalization
-  status: implemented
-  variant_of: InstanceNormFwdOp
-
-  signature:
-    inputs:
-      x: {dtype: "float32 | float16 | bfloat16"}
-      running_mean: {dtype: "float32"}
-      running_var: {dtype: "float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
-    params:
-      use_input_stats: {type: bool, default: true}
-      momentum: {type: float, default: 0.1}
-      eps: {type: float, default: 1.0e-5}
-    shape_rules:
-      - "running_mean.shape == (x.shape[1],)"
-      - "running_var.shape == (x.shape[1],)"
-      - "output.shape == x.shape"
-
-  workloads:
-    # Mirror the affine primary's CV shapes. running_mean / running_var
-    # are per-channel (shape [C]) per torch.nn.functional.instance_norm.
+    # Typical CV shapes (style transfer, image generation), affine on and off.
+    - {x_shape: [8, 128, 32, 32], weight_shape: [128], bias_shape: [128], dtypes: [float16, bfloat16], label: "image-affine"}
+    - {x_shape: [4, 256, 28, 28], weight_shape: [256], bias_shape: [256], dtypes: [float16], label: "wider-channel-affine"}
+    - {x_shape: [4, 64, 30, 30], weight_shape: [64], bias_shape: [64], dtypes: [float16], label: "tail-spatial-affine"}
+    # running_mean / running_var are per-channel (shape [C]) per
+    # torch.nn.functional.instance_norm.
     - {x_shape: [8, 128, 32, 32], running_mean_shape: [128], running_var_shape: [128], dtypes: [float16, bfloat16], label: "image"}
     - {x_shape: [4, 256, 28, 28], running_mean_shape: [256], running_var_shape: [256], dtypes: [float16], label: "wider-channel"}
     - {x_shape: [4, 64, 30, 30], running_mean_shape: [64], running_var_shape: [64], dtypes: [float16], label: "tail-spatial"}
@@ -584,15 +513,20 @@ InstanceNormNoAffineFwdOp:
       N: "x.shape[0]"
       C: "x.shape[1]"
       spatial_size: "product(x.shape[2:])"
-    # No-affine: 3 fp ops/elem (subtract mean + square for var + normalize),
-    # vs the affine primary's 5 (which includes scale + bias).
-    flops: "3 * N * C * spatial_size"
-    # Read x + write output (no weight, no bias).
-    bytes: "2 * N * C * spatial_size * elem_bytes"
+      affine: "weight is not None"
+      # The batch-stats path ignores them, and no path writes them back.
+      reads_running_stats: "running_mean is not None and not use_input_stats"
+    # Per element: subtract mean + square for var + normalize = 3; affine adds
+    # scale + bias, matching GroupNorm (InstanceNorm = GroupNorm with G=C).
+    flops: "(5 if affine else 3) * N * C * spatial_size"
+    # Read x + write output; affine reads weight and bias (C each); passed
+    # running stats are read and written back, 2 * C float32 each way.
+    bytes: "(2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes + (2 * C * 4 if reads_running_stats else 0)"
 
   source:
     kernel: tileops/kernels/norm/group_norm.py
     kernel_map:
+      group_norm: GroupNormKernel
       instance_norm_no_affine: InstanceNormNoAffineKernel
     op: tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py

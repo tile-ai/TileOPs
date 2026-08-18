@@ -1,4 +1,4 @@
-"""Benchmarks for the convolution op family (1d/2d/3d, with and without bias).
+"""Benchmarks for the convolution op family (1d/2d/3d).
 
 Workload shapes, channel counts, kernel sizes, strides, paddings, and dtypes
 are loaded from the ops manifest (``src/tileops/manifest/convolution.yaml``);
@@ -6,7 +6,8 @@ FLOP/byte counts come from each op's ``eval_roofline()`` via
 :class:`ManifestBenchmark`.
 
 One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
-``load_workloads("<OpName>")`` call to its manifest entry.
+``load_workloads("<OpName>")`` call to its manifest entry. A row passes bias
+when it declares ``bias_shape``.
 """
 
 from dataclasses import asdict, dataclass
@@ -18,14 +19,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops import (
-    Conv1dBiasFwdOp,
-    Conv1dFwdOp,
-    Conv2dBiasFwdOp,
-    Conv2dFwdOp,
-    Conv3dBiasFwdOp,
-    Conv3dFwdOp,
-)
+from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 
 # Bench-local: autotuning is benchmark infrastructure, not a workload property.
 _TUNE = True
@@ -55,6 +49,7 @@ class ConvCase:
     dilation: tuple[int, ...]
     groups: int
     dtype: torch.dtype
+    with_bias: bool
 
     def as_record(self) -> dict:
         return asdict(self)
@@ -88,11 +83,12 @@ def _conv_params(workloads: list[dict], kernel_keys: tuple[str, ...]) -> list:
         padding = _spatial(w.get("padding", 0))
         dilation = _spatial(w.get("dilation", 1))
         groups = w.get("groups", 1)
+        with_bias = "bias_shape" in w
         for dtype_name in w["dtypes"]:
             params.append(pytest.param(
                 ConvCase(
                     input_shape, w["C_out"], kernel_size, stride, padding,
-                    dilation, groups, getattr(torch, dtype_name),
+                    dilation, groups, getattr(torch, dtype_name), with_bias,
                 ),
                 id=f"{w['label']}-{dtype_name}",
                 marks=_mark(idx),
@@ -224,23 +220,7 @@ def test_conv1d_bench(case: ConvCase) -> None:
         dilation=case.dilation, groups=case.groups, tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV1D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv1d, case, with_bias=False, static_weight=True)
-
-
-_CONV1D_BIAS_OP = "Conv1dBiasFwdOp"
-
-
-@pytest.mark.parametrize(
-    "case",
-    _conv_params(load_workloads(_CONV1D_BIAS_OP), _CONV1D_KERNEL_KEYS),
-)
-def test_conv1d_bias_bench(case: ConvCase) -> None:
-    op = Conv1dBiasFwdOp(
-        stride=case.stride, padding=case.padding,
-        dilation=case.dilation, groups=case.groups, tune=_TUNE,
-    )
-    bm = ManifestBenchmark(_CONV1D_BIAS_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv1d, case, with_bias=True, static_weight=True)
+    _run_conv(op, bm, F.conv1d, case, with_bias=case.with_bias, static_weight=True)
 
 
 # Conv2d
@@ -259,23 +239,7 @@ def test_conv2d_bench(case: ConvCase) -> None:
         dilation=case.dilation, groups=case.groups, tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV2D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv2d, case, with_bias=False)
-
-
-_CONV2D_BIAS_OP = "Conv2dBiasFwdOp"
-
-
-@pytest.mark.parametrize(
-    "case",
-    _conv_params(load_workloads(_CONV2D_BIAS_OP), _CONV2D_KERNEL_KEYS),
-)
-def test_conv2d_bias_bench(case: ConvCase) -> None:
-    op = Conv2dBiasFwdOp(
-        stride=case.stride, padding=case.padding,
-        dilation=case.dilation, groups=case.groups, tune=_TUNE,
-    )
-    bm = ManifestBenchmark(_CONV2D_BIAS_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv2d, case, with_bias=True)
+    _run_conv(op, bm, F.conv2d, case, with_bias=case.with_bias)
 
 
 # Conv3d
@@ -294,20 +258,4 @@ def test_conv3d_bench(case: ConvCase) -> None:
         dilation=case.dilation, groups=case.groups, tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV3D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv3d, case, with_bias=False)
-
-
-_CONV3D_BIAS_OP = "Conv3dBiasFwdOp"
-
-
-@pytest.mark.parametrize(
-    "case",
-    _conv_params(load_workloads(_CONV3D_BIAS_OP), _CONV3D_KERNEL_KEYS),
-)
-def test_conv3d_bias_bench(case: ConvCase) -> None:
-    op = Conv3dBiasFwdOp(
-        stride=case.stride, padding=case.padding,
-        dilation=case.dilation, groups=case.groups, tune=_TUNE,
-    )
-    bm = ManifestBenchmark(_CONV3D_BIAS_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv3d, case, with_bias=True)
+    _run_conv(op, bm, F.conv3d, case, with_bias=case.with_bias)

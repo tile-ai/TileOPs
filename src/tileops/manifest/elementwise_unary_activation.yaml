@@ -422,13 +422,10 @@ SoftplusFwdOp:
     bench_manifest_driven: true
 ClampFwdOp:
   ref_api: "torch.clamp"
-  # Primary entry: PyTorch's torch.clamp(input, min=None, max=None) where
-  # min and max are Tensors. PyTorch broadcasts min/max with input. The
-  # "No Optional[Tensor]" rule (.claude/rules/manifest-trust-model.md +
-  # .claude/domain-rules/manifest-spec.md) forbids encoding optional
-  # tensor inputs in a single entry; the scalar (Number) form, the
-  # single-bound min-only form, and the single-bound max-only form each
-  # land as their own variant_of entries below.
+  # PyTorch's torch.clamp(input, min=None, max=None) where each bound is a
+  # Tensor or absent, broadcast with input. At least one bound must be passed;
+  # min-only is torch.clamp_min and max-only is torch.clamp_max. The scalar
+  # (Number) form is its own entry, ClampScalarFwdOp.
   family: elementwise
   status: implemented
 
@@ -436,17 +433,25 @@ ClampFwdOp:
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
-      min: {dtype: "same_as(input)"}
-      max: {dtype: "same_as(input)"}
+      min: {dtype: "same_as(input)", optional: true}
+      max: {dtype: "same_as(input)", optional: true}
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
-      # PyTorch broadcasts input/min/max together for tensor-bound clamp.
-      - "output.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
+      # A clamp with neither bound is not a clamp.
+      - "not (min is None and max is None)"
+      # PyTorch broadcasts input with whichever bounds are passed.
+      - "min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
+      - "min is None or max is not None or output.shape == broadcast_shapes(input.shape, min.shape)"
+      - "max is None or min is not None or output.shape == broadcast_shapes(input.shape, max.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], min_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
     - {input_shape: [16384, 16384], min_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+    - {input_shape: [4096, 4096], min_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M-min-only"}
+    - {input_shape: [16384, 16384], min_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M-min-only"}
+    - {input_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M-max-only"}
+    - {input_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M-max-only"}
 
   roofline:
     # Func mode: post-broadcast N_total uses broadcast_shapes which is
@@ -465,13 +470,12 @@ ClampFwdOp:
 
 ClampScalarFwdOp:
   ref_api: "torch.clamp"
-  # Scalar-bound variant: PyTorch's torch.clamp(input, min=None, max=None)
-  # with Number (or None) bounds. Per the "No Optional[Tensor]" manifest
-  # rule, this is split from the Tensor-bound primary entry above.
+  # PyTorch's torch.clamp(input, min=None, max=None) with Number (or None)
+  # bounds. The bounds are params here and tensor inputs in ClampFwdOp above:
+  # two signatures, so two entries.
   family: elementwise
   status: implemented
   torch_compile_fullgraph: true
-  variant_of: ClampFwdOp
 
   signature:
     inputs:
@@ -504,78 +508,6 @@ ClampScalarFwdOp:
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_elementwise_manifest.py
-    bench_manifest_driven: true
-
-ClampMinFwdOp:
-  ref_api: "torch.clamp_min"
-  # Single-bound Tensor variant: torch.clamp_min(input, min: Tensor) —
-  # equivalent to torch.clamp with only the lower bound provided.
-  family: elementwise
-  status: implemented
-  torch_compile_fullgraph: true
-  variant_of: ClampFwdOp
-
-  signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
-      min: {dtype: "same_as(input)"}
-    outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-      - "output.shape == broadcast_shapes(input.shape, min.shape)"
-
-  workloads:
-    - {input_shape: [4096, 4096], min_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], min_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-  roofline:
-    # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
-    # not in inline-roofline vars-layer namespace).
-    func: "tileops.perf.formulas.clamp_min_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      clamp_tensor: ClampTensorFwdKernel
-    op: tileops/ops/elementwise/clamp.py
-    test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: true
-
-ClampMaxFwdOp:
-  ref_api: "torch.clamp_max"
-  # Single-bound Tensor variant: torch.clamp_max(input, max: Tensor) —
-  # equivalent to torch.clamp with only the upper bound provided.
-  family: elementwise
-  status: implemented
-  torch_compile_fullgraph: true
-  variant_of: ClampFwdOp
-
-  signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
-      max: {dtype: "same_as(input)"}
-    outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-      - "output.shape == broadcast_shapes(input.shape, max.shape)"
-
-  workloads:
-    - {input_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-  roofline:
-    # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
-    # not in inline-roofline vars-layer namespace).
-    func: "tileops.perf.formulas.clamp_max_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/elementwise.py
-    kernel_map:
-      clamp_tensor: ClampTensorFwdKernel
-    op: tileops/ops/elementwise/clamp.py
-    test: tests/ops/test_special_elementwise_conformance.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: true
 
 NanToNumFwdOp:

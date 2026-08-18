@@ -78,7 +78,7 @@ GemmFp8Op:
     - "a.shape[1] == b.shape[1]"
     - "d.shape == (a.shape[0], b.shape[0])"
     - "(scale_a.shape == (1, 1) and scale_b.shape == (1, 1)) or (scale_a.shape == (a.shape[0], (a.shape[1] + 127) // 128) and scale_b.shape == (b.shape[0], (a.shape[1] + 127) // 128))"
-    - "bias.shape == (b.shape[0],)"
+    - "bias is None or bias.shape == (b.shape[0],)"
 
   workloads:
   - {m: 128, n: 2112, k: 7168, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "ds-v3-decode-gate-up-per-tensor"}
@@ -95,6 +95,7 @@ GemmFp8Op:
   - {m: 8, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "small-batch-down-m8-per-tensor"}
   - {m: 1, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "gemv-down-m1-per-tensor"}
   - {m: 1, n: 7168, k: 2048, scale_mode: block128, dtypes: [float8_e4m3fn], label: "gemv-down-m1-block128"}
+  - {m: 128, n: 2112, k: 7168, scale_mode: per_tensor, dtypes: [float8_e4m3fn], bias_shape: [2112], label: "ds-v3-decode-gate-up-per-tensor-bias"}
   roofline:
     func: "tileops.perf.formulas.gemm_fp8_fwd_roofline"
 

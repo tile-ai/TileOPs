@@ -20,8 +20,6 @@ from ._base import (
     FusedGatedOp,
     UnaryOp,
     _register_binary_custom_op,
-    _register_clamp_max_custom_op,
-    _register_clamp_min_custom_op,
     _register_clamp_tensor_custom_op,
     _register_fused_gated_custom_op,
     _register_lerp_tensor_custom_op,
@@ -71,7 +69,7 @@ from .bitwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
 )
-from .clamp import ClampFwdOp, ClampMaxFwdOp, ClampMinFwdOp, ClampScalarFwdOp
+from .clamp import ClampFwdOp, ClampScalarFwdOp
 from .comparison import (
     EqFwdOp,
     GeFwdOp,
@@ -120,8 +118,6 @@ __all__ = [
     "BitwiseXorFwdOp",
     "CeilFwdOp",
     "ClampFwdOp",
-    "ClampMaxFwdOp",
-    "ClampMinFwdOp",
     "ClampScalarFwdOp",
     "CosFwdOp",
     "DivFwdOp",
@@ -229,8 +225,8 @@ for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
 
 # --- Independent unary-like ops (6 ops: x -> y with baked params) ---
 # ClampScalarFwdOp is the scalar-bound clamp (single-tensor input + min/max
-# baked into __init__). The Tensor-bound ClampFwdOp / ClampMinFwdOp /
-# ClampMaxFwdOp variants register their own multi-input custom_ops below.
+# baked into __init__). The Tensor-bound ClampFwdOp registers its own
+# multi-input custom_op below.
 for _cls in [
     LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp, SoftplusFwdOp, ClampScalarFwdOp,
     NanToNumFwdOp,
@@ -251,16 +247,12 @@ for _cls in [
 # --- PReLU op (1 op: x, weight -> y) ---
 _register_prelu_custom_op(PreluFwdOp)
 
-# --- Tensor-bound clamp variants (3 ops: multi-tensor inputs -> out) ---
-# Registered under distinct custom_op namespaces from ClampScalarFwdOp:
-# ``top::elementwise_clamp_tensor`` (Optional Tensor min/max),
-# ``top::elementwise_clamp_min`` and ``top::elementwise_clamp_max`` for the
-# single-bound variants. register_fake is broadcast-aware so
-# torch.compile(fullgraph=True) traces correctly for both same-shape and
-# broadcasting inputs.
+# --- Tensor-bound clamp (multi-tensor inputs -> out) ---
+# ``top::elementwise_clamp_tensor`` takes Optional Tensor min/max, so one
+# registration covers either bound alone and both together. Its namespace is
+# distinct from ClampScalarFwdOp's, and its register_fake is broadcast-aware so
+# torch.compile(fullgraph=True) traces broadcasting inputs too.
 _register_clamp_tensor_custom_op(ClampFwdOp)
-_register_clamp_min_custom_op(ClampMinFwdOp)
-_register_clamp_max_custom_op(ClampMaxFwdOp)
 
 # --- MaskedFill variants (input, mask[, value] -> out) ---
 # Both register broadcast-aware fake functions so torch.compile(fullgraph=True)

@@ -19,7 +19,7 @@ FP8LightningIndexerOp:
       clean_logits: {type: bool, default: true}
       config: {type: "dict | None", default: null}
     dtype_combos:
-    - {index_q: float8_e4m3fn, index_k: float8_e4m3fn, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
+    - {index_q: float8_e4m3fn, index_k: float8_e4m3fn, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32}
     shape_rules:
     - "index_q.ndim == 4 and index_k.ndim == 4"
     - "index_q.shape[0] == index_k.shape[0]"
@@ -28,11 +28,12 @@ FP8LightningIndexerOp:
     - "weights.shape == (index_q.shape[1], index_q.shape[2])"
     - "cu_seqlen_ks.shape == (index_q.shape[1],)"
     - "cu_seqlen_ke.shape == (index_q.shape[1],)"
-    - "index_k_scale.shape == (index_q.shape[0], index_k.shape[1], index_k.shape[2])"
+    - "index_k_scale is None or index_k_scale.shape == (index_q.shape[0], index_k.shape[1], index_k.shape[2])"
 
   workloads:
   - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [bfloat16], label: "lightning-indexer-bf16-s8k-h32-d64"}
   - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], label: "lightning-indexer-fp8-s8k-h32-d64"}
+  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], index_k_scale_shape: [1, 8192, 1], label: "lightning-indexer-fp8-s8k-h32-d64-kscale"}
 
   roofline:
     func: "tileops.perf.formulas.fp8_lightning_indexer_roofline"

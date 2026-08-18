@@ -115,11 +115,11 @@ def test_clamp_init_signature_pytorch_aligned():
 
 # ClampFwdOp must accept Tensor min with max=None and
 # Tensor max with min=None, matching torch.clamp(input, min=tensor, max=None)
-# and torch.clamp(input, min=None, max=tensor) on CUDA. Single-bound shape
-# matrix is covered by test_clamp_min_tensor / test_clamp_max_tensor on the
-# dedicated ClampMin/Max ops; here we only verify ClampFwdOp's None routing.
+# and torch.clamp(input, min=None, max=tensor) on CUDA. The single-bound shape
+# matrix is covered by test_clamp_min_only_tensor / test_clamp_max_only_tensor;
+# these two verify the None routing at one shape.
 @pytest.mark.smoke
-def test_clamp_min_only_tensor_parity():
+def test_clamp_min_only_none_routing():
     from tileops.ops.elementwise import ClampFwdOp
 
     inp = torch.randn((4, 8), device="cuda", dtype=torch.float32)
@@ -131,7 +131,7 @@ def test_clamp_min_only_tensor_parity():
 
 
 @pytest.mark.smoke
-def test_clamp_max_only_tensor_parity():
+def test_clamp_max_only_none_routing():
     from tileops.ops.elementwise import ClampFwdOp
 
     inp = torch.randn((4, 8), device="cuda", dtype=torch.float32)
@@ -192,7 +192,7 @@ def test_clamp_runtime_tensor_none_must_match_init():
         op2(inp, mn, mn)
 
 
-# ClampScalarFwdOp / ClampMinFwdOp / ClampMaxFwdOp
+# ClampScalarFwdOp, and ClampFwdOp with one bound withheld
 
 
 @pytest.mark.smoke
@@ -229,25 +229,16 @@ def test_clamp_scalar_init_signature_pytorch_aligned():
     "input_shape, min_shape",
     [((4, 8), (4, 8)), ((4, 8), (1, 8)), ((4, 8), ())],
 )
-def test_clamp_min_tensor(input_shape, min_shape):
-    from tileops.ops.elementwise import ClampMinFwdOp
+def test_clamp_min_only_tensor(input_shape, min_shape):
+    from tileops.ops.elementwise import ClampFwdOp
 
     inp = torch.randn(input_shape, device="cuda", dtype=torch.float32)
     mn = torch.randn(min_shape, device="cuda", dtype=torch.float32)
     ref = torch.clamp_min(inp, mn) if min_shape else torch.clamp(inp, min=mn.item())
 
-    op = ClampMinFwdOp(input=tuple(inp.shape), min=tuple(mn.shape))
+    op = ClampFwdOp(input=tuple(inp.shape), min=tuple(mn.shape))
     out = op(inp, mn)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-
-
-@pytest.mark.smoke
-def test_clamp_min_init_signature_pytorch_aligned():
-    from tileops.ops.elementwise import ClampMinFwdOp
-    init_params = list(inspect.signature(ClampMinFwdOp.__init__).parameters.keys())
-    fwd_params = list(inspect.signature(ClampMinFwdOp.forward).parameters.keys())
-    assert init_params[1:3] == ["input", "min"], init_params
-    assert fwd_params[1:] == ["input", "min"], fwd_params
 
 
 @pytest.mark.smoke
@@ -255,25 +246,16 @@ def test_clamp_min_init_signature_pytorch_aligned():
     "input_shape, max_shape",
     [((4, 8), (4, 8)), ((4, 8), (4, 1)), ((4, 8), ())],
 )
-def test_clamp_max_tensor(input_shape, max_shape):
-    from tileops.ops.elementwise import ClampMaxFwdOp
+def test_clamp_max_only_tensor(input_shape, max_shape):
+    from tileops.ops.elementwise import ClampFwdOp
 
     inp = torch.randn(input_shape, device="cuda", dtype=torch.float32)
     mx = torch.randn(max_shape, device="cuda", dtype=torch.float32)
     ref = torch.clamp_max(inp, mx) if max_shape else torch.clamp(inp, max=mx.item())
 
-    op = ClampMaxFwdOp(input=tuple(inp.shape), max=tuple(mx.shape))
-    out = op(inp, mx)
+    op = ClampFwdOp(input=tuple(inp.shape), max=tuple(mx.shape))
+    out = op(inp, None, mx)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-
-
-@pytest.mark.smoke
-def test_clamp_max_init_signature_pytorch_aligned():
-    from tileops.ops.elementwise import ClampMaxFwdOp
-    init_params = list(inspect.signature(ClampMaxFwdOp.__init__).parameters.keys())
-    fwd_params = list(inspect.signature(ClampMaxFwdOp.forward).parameters.keys())
-    assert init_params[1:3] == ["input", "max"], init_params
-    assert fwd_params[1:] == ["input", "max"], fwd_params
 
 
 # Regression: NaN propagation for Tensor-bound clamp variants.
@@ -302,38 +284,37 @@ def test_clamp_tensor_nan_propagation(dtype):
 
 
 # Single-bound NaN behaviour is covered by test_clamp_min_nan_propagation /
-# test_clamp_max_nan_propagation below — same ClampTensorFwdKernel branch
-# (has_min only / has_max only). ClampFwdOp(min=Tensor, max=None) /
-# (min=None, max=Tensor) dispatch is verified separately.
+# test_clamp_max_only_nan_propagation below exercises the same
+# ClampTensorFwdKernel branches (has_min only / has_max only).
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
-def test_clamp_min_nan_propagation(dtype):
-    """ClampMinFwdOp must match torch.clamp_min NaN semantics."""
-    from tileops.ops.elementwise import ClampMinFwdOp
+def test_clamp_min_only_nan_propagation(dtype):
+    """A min-only clamp must match torch.clamp_min NaN semantics."""
+    from tileops.ops.elementwise import ClampFwdOp
 
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
     mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=dtype)
 
     ref = torch.clamp_min(x, mn)
-    op = ClampMinFwdOp(input=(4,), min=(4,))
+    op = ClampFwdOp(input=(4,), min=(4,))
     out = op(x, mn)
     torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
-def test_clamp_max_nan_propagation(dtype):
-    """ClampMaxFwdOp must match torch.clamp_max NaN semantics."""
-    from tileops.ops.elementwise import ClampMaxFwdOp
+def test_clamp_max_only_nan_propagation(dtype):
+    """A max-only clamp must match torch.clamp_max NaN semantics."""
+    from tileops.ops.elementwise import ClampFwdOp
 
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
     mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=dtype)
 
     ref = torch.clamp_max(x, mx)
-    op = ClampMaxFwdOp(input=(4,), max=(4,))
-    out = op(x, mx)
+    op = ClampFwdOp(input=(4,), max=(4,))
+    out = op(x, None, mx)
     torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
 
 
@@ -442,8 +423,6 @@ def test_masked_fill_scalar_init_signature_pytorch_aligned():
         ("WhereFwdOp", ["condition", "input", "other"], []),
         ("ClampFwdOp", ["input", "min", "max"], []),
         ("ClampScalarFwdOp", ["input"], ["min", "max"]),
-        ("ClampMinFwdOp", ["input", "min"], []),
-        ("ClampMaxFwdOp", ["input", "max"], []),
         ("MaskedFillFwdOp", ["input", "mask", "value"], []),
         ("MaskedFillScalarFwdOp", ["input", "mask"], ["value"]),
     ],

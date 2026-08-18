@@ -209,11 +209,17 @@ def synthesize_validate_dtypes(
     combos = _parse_dtype_combos(
         op_name, sig.get("dtype_combos"), input_names,
     )
-    # R6 guarantees every combo row enumerates every declared input, so the
-    # observed key spans all of input_names, same_as-bound ones resolved.
+    # Every combo row enumerates every required declared input, so the
+    # observed key spans them all, same_as-bound ones resolved. An optional
+    # input is never a row's column, so the tuple spans the required ones.
+    optional_names = {
+        name for name, attrs in inputs.items()
+        if isinstance(attrs, dict) and attrs.get("optional") is True
+    }
+    required_names = [n for n in input_names if n not in optional_names]
     combo_keys: set[tuple] | None = None
     if combos is not None:
-        input_names_set = set(input_names)
+        input_names_set = set(required_names)
         for idx, row in enumerate(combos):
             row_keys = set(row.keys())
             if row_keys != input_names_set:
@@ -233,19 +239,26 @@ def synthesize_validate_dtypes(
                     f"declared input"
                 )
         combo_keys = {
-            tuple(row[n] for n in input_names) for row in combos
+            tuple(row[n] for n in required_names) for row in combos
         }
 
     # ``exec`` with explicit named params so ``inspect.signature`` reports the
     # manifest inputs natively. A ``**kwargs`` body would need a per-call
     # ``Signature.bind``, which is measurable on this ``forward()`` hot path.
     closure: dict[str, Any] = {
-        "input_names": input_names,
+        "input_names": required_names,
         "combo_keys": combo_keys,
         "ValueError": ValueError,
         "op_name": op_name,
     }
-    params_src = ", ".join(input_names)
+    # Optional inputs are keyword-only with a None default: the call may omit
+    # them, and their position among the required ones stays free. The parity
+    # probe binds by keyword either way.
+    required_src = [n for n in input_names if n not in optional_names]
+    optional_src = [f"{n}=None" for n in input_names if n in optional_names]
+    params_src = ", ".join(
+        required_src + (["*"] + optional_src if optional_src else [])
+    )
     # Unrolled per input rather than looping via `locals()`: dynamo cannot
     # trace `locals()`, and this body runs inside `forward()`.
     src_lines = [
@@ -256,16 +269,20 @@ def synthesize_validate_dtypes(
         concrete, refs, dtype_str = per_input[name]
         closure[f"_concrete_{name}"] = frozenset(concrete)
         closure[f"_dtype_str_{name}"] = dtype_str
-        src_lines.append(f"    _actual = {name}.dtype")
-        src_lines.append(f"    if _actual not in _concrete_{name}:")
+        pad = ""
+        if name in optional_names:
+            src_lines.append(f"    if {name} is not None:")
+            pad = "    "
+        src_lines.append(f"    {pad}_actual = {name}.dtype")
+        src_lines.append(f"    {pad}if _actual not in _concrete_{name}:")
         # Every `same_as(ref)` was checked above to name a sibling input, so
         # each ref is in scope as a parameter here.
         if refs:
             cond = " or ".join(f"_actual == {r}.dtype" for r in refs)
-            src_lines.append(f"        if not ({cond}):")
-            indent = "            "
+            src_lines.append(f"    {pad}    if not ({cond}):")
+            indent = f"    {pad}        "
         else:
-            indent = "        "
+            indent = f"    {pad}    "
         src_lines += [
             f"{indent}raise ValueError(",
             f'{indent}    f"{{op_name}}: input {name!r} has dtype {{_actual}}, "',
@@ -273,8 +290,8 @@ def synthesize_validate_dtypes(
             f"{indent})",
         ]
     if combo_keys is not None:
-        observed = ", ".join(f"{n}.dtype" for n in input_names)
-        trailing = "," if len(input_names) == 1 else ""
+        observed = ", ".join(f"{n}.dtype" for n in required_names)
+        trailing = "," if len(required_names) == 1 else ""
         src_lines += [
             f"    _observed = ({observed}{trailing})",
             "    if _observed not in combo_keys:",

@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormNoAffineFwdOp
+from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
 
 
@@ -91,31 +91,17 @@ def test_group_norm_non_contiguous(n: int, c: int, spatial: tuple, g: int,
 
 
 @pytest.mark.smoke
-def test_group_norm_rejects_none_weight_or_bias() -> None:
-    """Affine op rejects ``weight=None`` / ``bias=None``; affine-free path lives on NoAffine."""
+def test_group_norm_no_affine_matches_torch() -> None:
+    """Omitting the affine pair is the torch.nn.GroupNorm(affine=False) path."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    weight = torch.randn((c,), dtype=dtype, device="cuda")
-    bias = torch.randn((c,), dtype=dtype, device="cuda")
-
-    with pytest.raises((ValueError, TypeError)):
-        op(x, None, bias)
-    with pytest.raises((ValueError, TypeError)):
-        op(x, weight, None)
-    with pytest.raises((ValueError, TypeError)):
-        op(x, None, None)
-
-
-@pytest.mark.smoke
-def test_group_norm_forward_required_signature() -> None:
-    """`forward` declares weight and bias as required (no Optional, no default)."""
-    import inspect
-    sig = inspect.signature(GroupNormFwdOp.forward)
-    weight_param = sig.parameters["weight"]
-    bias_param = sig.parameters["bias"]
-    assert weight_param.default is inspect.Parameter.empty
-    assert bias_param.default is inspect.Parameter.empty
+    y = op(x)
+    y_ref = F.group_norm(x.float(), g, weight=None, bias=None,
+                         eps=1e-5).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
 
 
 @pytest.mark.smoke
@@ -223,7 +209,7 @@ class GroupNormNoAffineFixture(FixtureBase):
 def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
                                  dtype: torch.dtype) -> None:
     """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
-    op = GroupNormNoAffineFwdOp(num_groups=g)
+    op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
@@ -233,12 +219,28 @@ def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
 
 
 @pytest.mark.smoke
-def test_group_norm_no_affine_forward_signature() -> None:
-    """No-affine forward accepts only x — no weight/bias parameters."""
+def test_group_norm_forward_signature() -> None:
+    """One forward takes x plus the optional affine pair (R18)."""
     import inspect
-    sig = inspect.signature(GroupNormNoAffineFwdOp.forward)
+    sig = inspect.signature(GroupNormFwdOp.forward)
     params = [p for p in sig.parameters if p != "self"]
-    assert params == ["x"], f"expected ['x'], got {params}"
+    assert params == ["x", "weight", "bias"], f"got {params}"
+    for name in ("weight", "bias"):
+        assert sig.parameters[name].default is None, \
+            f"{name} must default to None"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("give", ["weight", "bias"])
+def test_group_norm_rejects_half_the_affine_switch(give: str) -> None:
+    """weight and bias are one switch; half of it is an error (R18.3)."""
+    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
+    op = GroupNormFwdOp(num_groups=g)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    t = torch.randn((c,), dtype=dtype, device="cuda")
+    kwargs = {give: t}
+    with pytest.raises(ValueError, match="one switch"):
+        op(x, **kwargs)
 
 
 @pytest.mark.smoke
@@ -248,7 +250,7 @@ def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
         pytest.skip("multi-device test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormNoAffineFwdOp(num_groups=g)
+    op = GroupNormFwdOp(num_groups=g)
     x_other = torch.randn(
         (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
     )
@@ -268,7 +270,7 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
                                          g: int) -> None:
     """No-affine GroupNorm handles a row count smaller than one grid block."""
     dtype = torch.float16
-    op = GroupNormNoAffineFwdOp(num_groups=g)
+    op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None,

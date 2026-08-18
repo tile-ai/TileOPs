@@ -412,56 +412,6 @@ def _register_clamp_tensor_custom_op(op_cls):
     op_cls._wrapped = _wrapped
 
 
-def _register_clamp_min_custom_op(op_cls):
-    """Register single-bound Tensor lower-clamp (input, min -> out)."""
-    op_name = op_cls._op_name
-
-    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
-    def _wrapped(
-        input: torch.Tensor,
-        min: torch.Tensor,
-        instance_key: str,
-    ) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(input, min)
-
-    @_wrapped.register_fake
-    def _(
-        input: torch.Tensor,
-        min: torch.Tensor,
-        instance_key: str,
-    ) -> torch.Tensor:
-        out_shape = torch.broadcast_shapes(input.shape, min.shape)
-        return input.new_empty(out_shape)
-
-    op_cls._wrapped = _wrapped
-
-
-def _register_clamp_max_custom_op(op_cls):
-    """Register single-bound Tensor upper-clamp (input, max -> out)."""
-    op_name = op_cls._op_name
-
-    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
-    def _wrapped(
-        input: torch.Tensor,
-        max: torch.Tensor,
-        instance_key: str,
-    ) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(input, max)
-
-    @_wrapped.register_fake
-    def _(
-        input: torch.Tensor,
-        max: torch.Tensor,
-        instance_key: str,
-    ) -> torch.Tensor:
-        out_shape = torch.broadcast_shapes(input.shape, max.shape)
-        return input.new_empty(out_shape)
-
-    op_cls._wrapped = _wrapped
-
-
 def _register_fused_gated_custom_op(op_cls):
     """Register a fused gated elementwise op for torch.compile.
 

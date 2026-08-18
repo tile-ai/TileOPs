@@ -90,13 +90,15 @@ dtype_combos:
 
 **R14. Reduction `dim` semantics.** Expressed via `shape_rules` (range validity, normalize-then-check, uniqueness), reusing the existing vocabulary rather than a dedicated manifest field. Authoring boilerplate and per-op empty-sequence semantics: see [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
-**R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
+**R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on the targeted entry.
 
 **R16. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
 
 **R17. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
 
-**R18. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs split into variants via `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
+**R18. Optional tensor inputs.** A tensor input the op *reads* may declare `optional: true`, under `signature.inputs` only; params express optionality with `default`. "Not passed" means bound to `None`, and whether it was passed is a fact kernel dispatch may read — the tensor's contents are not. A caller-supplied output buffer (`out=`) is not this: the op writes it and the return aliases it, so the mutating and functional forms are two operators. Authoring rules: [Optional Inputs](#optional-inputs).
+
+**R18.1. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch is two entries, because the caller cannot unpack a return whose shape it does not know.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 
@@ -227,7 +229,7 @@ Each top-level entry is keyed by the **Python class name** of the Op — PascalC
 {PascalCaseName}[{Direction}]Op
 ```
 
-- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. Variant words are part of this name and always precede `{Direction}Op` (`GroupNormNoAffineFwdOp`, never `GroupNormFwdOpNoAffine`).
+- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. A qualifier is part of this name and always precedes `{Direction}Op` (`MaxPool2dIndicesFwdOp`, never `MaxPool2dFwdOpIndices`).
 - **Direction** — `Fwd` or `Bwd`. REQUIRED when the manifest carries both directions of the same op (a direction sibling exists); single-direction ops MAY omit it.
 - **Op** — literal suffix.
 
@@ -312,21 +314,84 @@ Fixed rank, expressible with dimension names?
 
 #### Optional Inputs
 
-Manifest does not support `Optional[Tensor]` (R18). Split into variant entries with fixed signatures, linked by `variant_of`.
+A tensor input the op reads may be optional (R18). One entry then covers passing it and
+omitting it.
 
-**Decision tree:**
-
+```yaml
+signature:
+  inputs:
+    x:      {dtype: "float32 | float16 | bfloat16"}
+    weight: {dtype: "same_as(x)", optional: true}
+    bias:   {dtype: "same_as(x)", optional: true}
+  shape_rules:
+  - "(weight is None) == (bias is None)"                # one switch, two tensors
+  - "weight is None or weight.shape == (x.shape[1],)"   # guard precedes the use
+  - "bias is None or bias.shape == (x.shape[1],)"
+workloads:
+- {label: image-g32, x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16]}
+- {label: image-g32-affine, x_shape: [8, 128, 32, 32], num_groups: 32,
+   dtypes: [float16], weight_shape: [128], bias_shape: [128]}
 ```
-Op has Optional[Tensor] inputs?
-├─ NO → single entry
-└─ YES
-   ├─ 1 optional → 2 entries (primary + variant)
-   ├─ 2 optionals, always together → 2 entries
-   ├─ 2 optionals, independent → up to 4 entries
-   └─ 3+ → decompose the op first
-```
 
-**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix inserted before `{Direction}Op` (e.g., `Conv1dBiasFwdOp`, the `Bias` variant of `Conv1dFwdOp`).
+Optional inputs that share one switch state that relation in `shape_rules`, as the first
+rule above does. The rules are ordinary conjuncts — no new field, no separate list.
+
+**Where the name may appear.** In three places: `X`'s own `dtype` / `shape` declaration; a
+bare presence test `X is None` / `X is not None`; and a use already guarded by `X is None`
+earlier in the same expression. Every other position states something that must hold on
+every call, and absence is not a value — it is the name having no referent — so an
+unconditional declaration that depends on it means nothing on the call that omits it.
+
+| position                             | rule                                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or` |
+| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                            |
+| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params and `elem_bytes`, so a presence test reaches it through a `vars` entry                |
+| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                            |
+| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                           |
+| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                               |
+
+The guard is `X is None or <condition>`, never `X is not None and <condition>`:
+`shape_rules` entries are conjuncts, so the second form reports a legal absent call as a
+violation. It must precede the use but need not sit leftmost —
+`min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)`
+is well formed. A formula that needs an optional tensor's own shape uses
+`roofline: {func: ...}`, where the function sees the actual call.
+
+**Workload coverage.** Every optional input needs at least one row that passes it and at
+least one that omits it, counted per input rather than per combination: n optional inputs
+are 2n states, not 2ⁿ. A row passes `X` by carrying `<X>_shape`, whatever else it writes —
+a row is sample call data, not a contract expression, so the position rules above do not
+reach it. `status: spec-only` entries are exempt (R15 runs them at L0 only).
+
+Coverage reaches optional inputs and nothing else. Which value a param takes is benchmark
+completeness, tracked on its own; which shape range picks which kernel is a branch only the
+kernel knows, and [testing.md](testing.md) already makes the op author cover it with the
+smallest shape that triggers each branch.
+
+**Roofline counts the call that ran.** Its cost includes the optional inputs the call
+passed and excludes the ones it did not; "everything passed" is not an upper bound to fall
+back on. Inline expressions branch on a presence test taken from `vars`, `func` mode reads
+the call.
+
+**What the validator does not check.** Five things, deliberately:
+
+- It does not solve `shape_rules` for the set of legal ways to call the op.
+- It does not sort rules into presence rules and shape rules; both kinds may reference shapes, params and whitelisted helpers.
+- It does not enumerate the 2ⁿ ways to pass n optional inputs.
+- It does not ask the manifest for a field declaring which optional inputs go together; `(weight is None) == (bias is None)` stays an ordinary `shape_rules` string.
+- It does not stop a call that passes half of a co-occurring group. The op's own check in `forward` does, the same way every other shape constraint is caught, and the error names which group was given in part.
+
+What runtime can never report — a contract position no workload row covers — is what the
+coverage rule checks statically.
+
+**What stays separate.** `optional: true` does not merge everything. Three shapes keep
+their own entries: an op whose outputs change with a switch (R18.1), an op that puts the
+same concept in `params` in one form and in `inputs` in another (`LerpFwdOp` versus
+`LerpTensorFwdOp`), and one signature served by genuinely different algorithms (the `Rope*`
+family), which produce different values from the same inputs and so carry a `ref_api` and a
+roofline each. There is no field linking them: each writes the same `source.op`, which is
+where a reader sees they come from one implementation.
 
 ### Workloads
 
@@ -517,7 +582,7 @@ workloads:
 | L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                     |
 | L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
-`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
+`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on the targeted entry. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
 
 ```bash
 python scripts/validate_manifest.py

@@ -25,9 +25,6 @@ __all__ = [
     "bitwise_xor_fwd_roofline",
     "cb_producer_roofline",
     "clamp_fwd_roofline",
-    "clamp_max_fwd_roofline",
-    "clamp_min_fwd_roofline",
-    "da_cumsum_bias_fwd_roofline",
     "da_cumsum_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
@@ -65,10 +62,7 @@ __all__ = [
     "logical_and_fwd_roofline",
     "logical_or_fwd_roofline",
     "lt_fwd_roofline",
-    "mamba2_bias_fwd_roofline",
-    "mamba2_bias_init_states_fwd_roofline",
     "mamba2_fwd_roofline",
-    "mamba2_init_states_fwd_roofline",
     "masked_fill_fwd_roofline",
     "maximum_fwd_roofline",
     "mha_bwd_roofline",
@@ -86,10 +80,8 @@ __all__ = [
     "rope_roofline",
     "ssd_chunk_scan_fwd_roofline",
     "ssd_chunk_state_fwd_roofline",
-    "ssd_chunk_state_seq_idx_fwd_roofline",
     "ssd_decode_roofline",
     "ssd_state_passing_fwd_roofline",
-    "ssd_state_passing_init_states_fwd_roofline",
     "sub_fwd_roofline",
     "topk_selector_roofline",
     "where_fwd_roofline",
@@ -197,6 +189,17 @@ def _dtype_itemsize(dtype: Any) -> int:
     if "bool" in dtype_name or "int8" in dtype_name or "uint8" in dtype_name:
         return 1
     return 2
+
+
+def _supplied(op: Any, name: str) -> bool:
+    """Whether the call passed the ``optional: true`` input *name* (R18.1).
+
+    Mirrors the two bindings inline roofline synthesis accepts: the tensor on
+    ``self.<name>``, or its shape on ``self.<name>_shape``.
+    """
+    if getattr(op, name, None) is not None:
+        return True
+    return getattr(op, f"{name}_shape", None) is not None
 
 
 def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
@@ -711,56 +714,18 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampFwdOp`` (Tensor-bound double-sided clamp).
+    """Roofline for ``ClampFwdOp`` (Tensor-bound clamp).
 
-    ``torch.clamp(input, min: Tensor, max: Tensor)``, broadcasting across all
-    three operands. Per docs/design/roofline.md §1.3 two-sided clamp collapses
-    to one fused compare-and-select, so ``flops = N_total``; bytes read input,
-    min, max and write out → ``4 * N_total * elem_bytes``.
+    ``torch.clamp(input, min, max)`` with each bound a Tensor or absent,
+    broadcasting across the operands present. Per docs/design/roofline.md §1.3 a
+    two-sided clamp collapses to one fused compare-and-select, so
+    ``flops = N_total`` either way; bytes read input and each bound that was
+    passed, then write out.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    return n_total, 4 * n_total * elem_bytes
-
-
-def clamp_min_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampMinFwdOp`` (Tensor lower bound only).
-
-    Models ``torch.clamp_min(input, min: Tensor)`` with broadcasting.
-    Per output element: one ``max(input, min)``. Bytes: read input +
-    read min + write out, all post-broadcast.
-
-    Args:
-        op: bound ``ClampMinFwdOp`` instance exposing ``N_total`` and
-            ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints with ``flops == N_total`` and
-        ``bytes == 3 * N_total * elem_bytes``.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    return n_total, 3 * n_total * elem_bytes
-
-
-def clamp_max_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampMaxFwdOp`` (Tensor upper bound only).
-
-    Models ``torch.clamp_max(input, max: Tensor)`` with broadcasting.
-    Per output element: one ``min(input, max)``. Bytes: read input +
-    read max + write out, all post-broadcast.
-
-    Args:
-        op: bound ``ClampMaxFwdOp`` instance exposing ``N_total`` and
-            ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints with ``flops == N_total`` and
-        ``bytes == 3 * N_total * elem_bytes``.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    return n_total, 3 * n_total * elem_bytes
+    reads = 1 + _supplied(op, "min") + _supplied(op, "max")
+    return n_total, (reads + 1) * n_total * elem_bytes
 
 
 def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
@@ -901,11 +866,11 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
-    """Roofline for FusedMoeFwdOp / FusedMoeFwdCbFwdOp.
+    """Roofline for FusedMoeFwdOp.
 
-    Func-mode: byte traffic mixes float32 gating (and float32 correction bias
-    for the Cb variant) with hidden-states / weights at ``op.dtype``, so a
-    single ``elem_bytes`` cannot express the total.
+    Func-mode: byte traffic mixes float32 gating (and the float32 correction
+    bias, when the call passes one) with hidden-states / weights at
+    ``op.dtype``, so a single ``elem_bytes`` cannot express the total.
     """
     num_tokens = int(op.num_tokens)
     num_experts = int(op.num_experts)
@@ -918,7 +883,7 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     weight_bytes = num_experts * 3 * ffn_size * hidden_size * elem_bytes
     token_bytes = 2 * num_tokens * hidden_size * elem_bytes
     gating_bytes = num_tokens * num_experts * 4  # float32 logits
-    bias_bytes = num_experts * 4 if getattr(op, "with_correction_bias", False) else 0
+    bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
     return flops, weight_bytes + token_bytes + gating_bytes + bias_bytes
 
 
@@ -1229,8 +1194,8 @@ def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-# Mamba-2 / State-Space Dual (SSD) family. Each variant_of entry binds its own
-# public function; all helpers are valid only after the first ``forward()``.
+# Mamba-2 / State-Space Dual (SSD) family. All helpers are valid only after the
+# first ``forward()``.
 
 
 def _da_cumsum_fwd_cost(batch: int, seq_len: int, n_heads: int,
@@ -1251,20 +1216,11 @@ def _da_cumsum_fwd_cost(batch: int, seq_len: int, n_heads: int,
 
 
 def da_cumsum_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the Mamba-2 dA_cumsum forward stage (no dt bias)."""
+    """Roofline for the Mamba-2 dA_cumsum forward stage."""
     return _da_cumsum_fwd_cost(
         int(op.batch), int(op.seq_len), int(op.n_heads),
         _dtype_itemsize(getattr(op, "dtype", "float32")),
-        has_dt_bias=False,
-        dt_softplus=bool(getattr(op, "dt_softplus", False)))
-
-
-def da_cumsum_bias_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the dt_bias-consuming dA_cumsum variant."""
-    return _da_cumsum_fwd_cost(
-        int(op.batch), int(op.seq_len), int(op.n_heads),
-        _dtype_itemsize(getattr(op, "dtype", "float32")),
-        has_dt_bias=True,
+        has_dt_bias=_supplied(op, "dt_bias"),
         dt_softplus=bool(getattr(op, "dt_softplus", False)))
 
 
@@ -1312,21 +1268,12 @@ def _ssd_chunk_state_fwd_cost(batch: int, num_chunks: int, chunk_len: int,
 
 
 def ssd_chunk_state_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the SSD per-chunk state computation (no seq_idx)."""
+    """Roofline for the SSD per-chunk state computation."""
     return _ssd_chunk_state_fwd_cost(
         int(op.batch), int(op.num_chunks), int(op.chunk_len),
         int(op.n_heads), int(op.d_head), int(op.d_state), int(op.n_groups),
         _dtype_itemsize(getattr(op, "dtype", "float16")),
-        has_seq_idx=False)
-
-
-def ssd_chunk_state_seq_idx_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the seq_idx-consuming SSD chunk-state variant."""
-    return _ssd_chunk_state_fwd_cost(
-        int(op.batch), int(op.num_chunks), int(op.chunk_len),
-        int(op.n_heads), int(op.d_head), int(op.d_state), int(op.n_groups),
-        _dtype_itemsize(getattr(op, "dtype", "float16")),
-        has_seq_idx=True)
+        has_seq_idx=_supplied(op, "seq_idx"))
 
 
 def _ssd_state_passing_fwd_cost(batch: int, num_chunks: int, n_heads: int,
@@ -1349,19 +1296,11 @@ def _ssd_state_passing_fwd_cost(batch: int, num_chunks: int, n_heads: int,
 
 
 def ssd_state_passing_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the SSD inter-chunk state scan (zero initial state)."""
+    """Roofline for the SSD inter-chunk state scan."""
     return _ssd_state_passing_fwd_cost(
         int(op.batch), int(op.num_chunks), int(op.n_heads), int(op.d_state),
         _dtype_itemsize(getattr(op, "dtype", "float32")),
-        has_initial_states=False)
-
-
-def ssd_state_passing_init_states_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the initial_states-seeded SSD state-scan variant."""
-    return _ssd_state_passing_fwd_cost(
-        int(op.batch), int(op.num_chunks), int(op.n_heads), int(op.d_state),
-        _dtype_itemsize(getattr(op, "dtype", "float32")),
-        has_initial_states=True)
+        has_initial_states=_supplied(op, "initial_states"))
 
 
 def ssd_chunk_scan_fwd_roofline(op: "Op") -> tuple[int, int]:
@@ -1473,19 +1412,7 @@ def _mamba2_fwd_cost(op: Any, *, has_dt_bias: bool,
 def mamba2_fwd_roofline(op: Any) -> tuple[int, int]:
     """End-to-end Mamba-2 SSD forward: sums the five stage costs (state
     passing runs over the flattened ``d_head * d_state`` dimension)."""
-    return _mamba2_fwd_cost(op, has_dt_bias=False, has_initial_states=False)
-
-
-def mamba2_bias_fwd_roofline(op: Any) -> tuple[int, int]:
-    """Roofline for the dt_bias-consuming Mamba-2 forward variant."""
-    return _mamba2_fwd_cost(op, has_dt_bias=True, has_initial_states=False)
-
-
-def mamba2_init_states_fwd_roofline(op: Any) -> tuple[int, int]:
-    """Roofline for the initial_states-seeded Mamba-2 forward variant."""
-    return _mamba2_fwd_cost(op, has_dt_bias=False, has_initial_states=True)
-
-
-def mamba2_bias_init_states_fwd_roofline(op: Any) -> tuple[int, int]:
-    """Roofline for the Mamba-2 forward variant with dt_bias + initial_states."""
-    return _mamba2_fwd_cost(op, has_dt_bias=True, has_initial_states=True)
+    return _mamba2_fwd_cost(
+        op,
+        has_dt_bias=_supplied(op, "dt_bias"),
+        has_initial_states=_supplied(op, "initial_states"))

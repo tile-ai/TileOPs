@@ -1,4 +1,4 @@
-"""Benchmark for FusedMoeFwdOp / FusedMoeFwdCbFwdOp (routed MoE FFN).
+"""Benchmark for FusedMoeFwdOp (routed MoE FFN).
 
 Workload shapes come from each op's manifest ``workloads`` (via
 ``load_workloads``); the benchmark reports TileOPs latency
@@ -7,9 +7,9 @@ and a vLLM / torch-ref baseline.
 
 Coverage:
 
-  Op                       Models (manifest workloads)
-  FusedMoeFwdOp            Qwen3-235B-A22B (softmax), DeepSeek-V3 (sigmoid)
-  FusedMoeFwdCbFwdOp       Kimi K2 (sigmoid + correction_bias)
+  Qwen3-235B-A22B (softmax), DeepSeek-V3 (sigmoid), and Kimi K2 (sigmoid with
+  a correction bias) — a row passes the bias when it declares
+  ``correction_bias_shape``.
 """
 
 from typing import Optional
@@ -31,11 +31,10 @@ except ImportError:
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
-from tileops.ops.moe import FusedMoeFwdCbFwdOp, FusedMoeFwdOp, FusedTopKOp
+from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
 from workloads.moe import FusedMoeWorkload
 
 _OP_NAME = "FusedMoeFwdOp"
-_OP_NAME_CB = "FusedMoeFwdCbFwdOp"
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -73,8 +72,12 @@ def _renormalize(w: dict) -> bool:
     return bool(w.get("renormalize", False))
 
 
-def _to_params(workloads, *, with_correction_bias: bool):
-    """Convert a manifest entry's workloads to pytest params."""
+def _to_params(workloads):
+    """Convert the manifest entry's workloads to pytest params.
+
+    A row passes the correction bias exactly when it declares
+    ``correction_bias_shape`` (R18.1).
+    """
     params = []
     for w in workloads:
         label = w.get("label", "unlabeled")
@@ -83,7 +86,7 @@ def _to_params(workloads, *, with_correction_bias: bool):
                 w["num_tokens"], w["num_experts"], w["top_k"],
                 w["hidden_size"], w["ffn_size"],
                 w["scoring_func"], _renormalize(w),
-                with_correction_bias,
+                "correction_bias_shape" in w,
                 _routed_scaling_factor(w),
                 dtype_str,
                 id=f"{label}-{dtype_str}",
@@ -91,12 +94,10 @@ def _to_params(workloads, *, with_correction_bias: bool):
     return params
 
 
-_FWD_PARAMS = _to_params(load_workloads(_OP_NAME), with_correction_bias=False)
-_FWD_CB_PARAMS = _to_params(load_workloads(_OP_NAME_CB), with_correction_bias=True)
+_FWD_PARAMS = _to_params(load_workloads(_OP_NAME))
 
 
 def _run_bench(
-    op_cls,
     num_tokens: int,
     num_experts: int,
     top_k: int,
@@ -122,13 +123,10 @@ def _run_bench(
         routed_scaling_factor=routed_scaling_factor,
     )
 
-    if with_correction_bias:
-        forward_args_tileops = (hidden, gating, correction_bias, w_gate_up, w_down)
-    else:
-        forward_args_tileops = (hidden, gating, w_gate_up, w_down)
+    forward_args_tileops = (hidden, gating, w_gate_up, w_down, correction_bias)
 
     # -- TileOPs nopad -----------------------------------------------------
-    op = op_cls(**common_kwargs)
+    op = FusedMoeFwdOp(**common_kwargs)
     bm = FusedMoeBenchmark(test, op)
     op(*forward_args_tileops)  # warmup / JIT compile
     torch.cuda.synchronize()
@@ -136,9 +134,9 @@ def _run_bench(
     functors = {"tileops": op}
 
     # -- Baseline ----------------------------------------------------------
-    # vLLM's ``fused_topk`` has no correction_bias parameter, so routing for
-    # FusedMoeFwdCbFwdOp would diverge from TileOPs. Fall back to torch-ref
-    # for correction-bias workloads; otherwise prefer vLLM when available.
+    # vLLM's ``fused_topk`` has no correction_bias parameter, so routing would
+    # diverge from TileOPs on a row that passes one. Fall back to torch-ref for
+    # those; otherwise prefer vLLM when available.
     use_vllm = _VLLM_AVAILABLE and not with_correction_bias
     if use_vllm:
         gating_f32 = gating.float()
@@ -165,7 +163,6 @@ def _run_bench(
         fk = FusedTopKOp(
             top_k=top_k,
             scoring_func=scoring_func, renormalize=renormalize,
-            with_correction_bias=with_correction_bias,
         )
         topk_weights, topk_ids = fk(gating, correction_bias)
         output_buf = torch.zeros(
@@ -211,27 +208,6 @@ def test_fused_moe_fwd_bench(
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     _run_bench(
-        FusedMoeFwdOp,
-        num_tokens, num_experts, top_k, hidden_size, ffn_size,
-        scoring_func, renormalize, with_correction_bias,
-        routed_scaling_factor, dtype,
-    )
-
-
-@pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
-    " scoring_func, renormalize, with_correction_bias,"
-    " routed_scaling_factor, dtype_str",
-    _FWD_CB_PARAMS,
-)
-def test_fused_moe_fwd_cb_bench(
-    num_tokens, num_experts, top_k, hidden_size, ffn_size,
-    scoring_func, renormalize, with_correction_bias,
-    routed_scaling_factor, dtype_str,
-) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
-    _run_bench(
-        FusedMoeFwdCbFwdOp,
         num_tokens, num_experts, top_k, hidden_size, ffn_size,
         scoring_func, renormalize, with_correction_bias,
         routed_scaling_factor, dtype,

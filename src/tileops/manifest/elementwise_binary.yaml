@@ -92,13 +92,12 @@ MaskedFillFwdOp:
 
 MaskedFillScalarFwdOp:
   ref_api: "torch.Tensor.masked_fill"
-  # Scalar-value variant: PyTorch's torch.Tensor.masked_fill(mask, value: Number).
-  # Per the "No Optional[Tensor]" manifest rule, this is split from the
-  # 0-dim-Tensor-value primary entry above.
+  # PyTorch's torch.Tensor.masked_fill(mask, value: Number). `value` is a scalar
+  # param here and a 0-dim tensor input in MaskedFillFwdOp above: two signatures,
+  # so two entries.
   family: elementwise
   status: implemented
   torch_compile_fullgraph: true
-  variant_of: MaskedFillFwdOp
 
   signature:
     inputs:

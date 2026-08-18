@@ -3,8 +3,8 @@ from .ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from .batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from .fused_add_layer_norm import FusedAddLayerNormFwdOp
 from .fused_add_rms_norm import FusedAddRMSNormFwdOp
-from .group_norm import GroupNormFwdOp, GroupNormNoAffineFwdOp
-from .instance_norm import InstanceNormFwdOp, InstanceNormNoAffineFwdOp
+from .group_norm import GroupNormFwdOp
+from .instance_norm import InstanceNormFwdOp
 from .layer_norm import LayerNormFwdOp
 from .rms_norm import RMSNormFwdOp
 
@@ -16,9 +16,7 @@ __all__: list[str] = [
     "FusedAddLayerNormFwdOp",
     "FusedAddRMSNormFwdOp",
     "GroupNormFwdOp",
-    "GroupNormNoAffineFwdOp",
     "InstanceNormFwdOp",
-    "InstanceNormNoAffineFwdOp",
     "LayerNormFwdOp",
     "RMSNormFwdOp",
 ]

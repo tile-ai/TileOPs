@@ -43,7 +43,6 @@ RopeNonNeoxOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
-  variant_of: RopeNeoxOp
 
   signature:
     inputs:
@@ -78,7 +77,6 @@ RopeLlama31Op:
   ref_api: "none"
   family: position_encoding
   status: implemented
-  variant_of: RopeNeoxOp
 
   signature:
     inputs:
@@ -117,7 +115,6 @@ RopeYarnOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
-  variant_of: RopeNeoxOp
 
   signature:
     inputs:
@@ -157,7 +154,6 @@ RopeLongRopeOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
-  variant_of: RopeNeoxOp
 
   signature:
     inputs:
