@@ -236,6 +236,10 @@ class _DensePrefillBuiltin:
 class _LegacyPackedDenseAdapter:
     """Keep the deprecated packed Op compatible with native Dense kernels."""
 
+    # TODO(#1917): Delete this adapter together with
+    # GroupedQueryAttentionPrefillFwdOp after its remaining packed/ragged
+    # behavior moves to GroupedQueryAttentionPrefillVarlenFwdOp.
+
     kernel: DensePrefillKernel
     batch: int
     heads: int
