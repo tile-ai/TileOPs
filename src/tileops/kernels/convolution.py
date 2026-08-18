@@ -2314,6 +2314,7 @@ class Conv2d1x1Kernel(Kernel):
         self.pad_w = pad_w
         self.dtype = dtype
         self.has_bias = has_bias
+        self._zero_bias_cache: Optional[torch.Tensor] = None
 
         self.kernel = _conv2d_1x1_kernel(
             n,
@@ -2374,7 +2375,11 @@ class Conv2d1x1Kernel(Kernel):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
+            if self._zero_bias_cache is None or self._zero_bias_cache.device != x.device:
+                self._zero_bias_cache = torch.zeros(
+                    self.c_out, device=x.device, dtype=x.dtype,
+                )
+            bias = self._zero_bias_cache
         # OIHW -> OC,IC since the 1x1 kernel consumes a dense [C_out, C_in] weight matrix.
         weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()
         return _conv2d_1x1_wrapped_kernel(
