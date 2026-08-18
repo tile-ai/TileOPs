@@ -324,6 +324,17 @@ def test_instance_norm_init_signature_covers_manifest_params(
 
 
 @pytest.mark.smoke
+def test_instance_norm_batch_stats_path_rejects_running_stats() -> None:
+    """They normalize on the eval path only, and no path updates them."""
+    c = 16
+    op = InstanceNormFwdOp()
+    x = torch.randn((2, c, 8, 8), dtype=torch.float32, device="cuda")
+    stat = torch.randn(c, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="use_input_stats=False"):
+        op(x, stat, stat.abs() + 0.1)
+
+
+@pytest.mark.smoke
 def test_instance_norm_running_stats_path_rejects_affine() -> None:
     """The affine variant still defers `use_input_stats=False`."""
     op = InstanceNormFwdOp(use_input_stats=False)

@@ -312,6 +312,15 @@ class InstanceNormFwdOp(Op):
                     "call only"
                 )
 
+        if self.use_input_stats and running_mean is not None:
+            raise ValueError(
+                "running_mean and running_var normalize the input only when "
+                "use_input_stats=False. With use_input_stats=True torch "
+                "updates them in place, which this inference op does not "
+                "implement. If these were meant as the affine pair, pass them "
+                "as weight= and bias=."
+            )
+
         self._validate_dtypes(x, running_mean, running_var, weight, bias)
         N, C, spatial, spatial_size, D, M, dtype = self._resolve_spec(x)
         if affine:

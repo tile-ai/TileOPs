@@ -211,7 +211,7 @@ class GroupNormFwdOp(Op):
             M,
             dtype,
         ) = self._resolve_spec(x)
-        # manifest shape_rules: "(weight is None) == (bias is None)"
+        # weight and bias are a single affine switch.
         if (weight is None) != (bias is None):
             given, missing = (
                 ("weight", "bias") if bias is None else ("bias", "weight")

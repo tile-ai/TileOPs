@@ -488,6 +488,9 @@ InstanceNormFwdOp:
     shape_rules:
       - "(weight is None) == (bias is None)"
       - "(running_mean is None) == (running_var is None)"
+      # An inference op: the running stats normalize the input on the eval
+      # path and are never updated, so the batch-stats path has no use for them.
+      - "running_mean is None or not use_input_stats"
       - "weight is None or weight.shape == (x.shape[1],)"
       - "bias is None or bias.shape == (x.shape[1],)"
       - "running_mean is None or running_mean.shape == (x.shape[1],)"

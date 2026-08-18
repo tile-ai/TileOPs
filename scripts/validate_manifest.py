@@ -2944,23 +2944,20 @@ def check_l3_validate_dtypes_parity(
         # passes one. Probe the other side too: each listed combo, augmented
         # with every optional at a declared dtype, must still be accepted.
         for name in sorted(optional_inputs):
-            opts = dtype_options.get(name) or []
-            if not opts:
-                continue
-            for i, combo in enumerate(dtype_combos):
-                if not isinstance(combo, dict):
-                    continue
-                accepted, reason = _combo_accepted(
-                    cls, forward_inputs + [name], {**combo, name: opts[0]},
-                    param_defaults, sig=sig,
-                )
-                if reason is None and not accepted:
-                    err(
-                        f"_validate_dtypes rejects dtype_combos[{i}] "
-                        f"{combo!r} once optional input {name!r} is passed "
-                        f"as {opts[0]}"
+            for dtype_name in dtype_options.get(name) or []:
+                for i, combo in enumerate(dtype_combos):
+                    if not isinstance(combo, dict):
+                        continue
+                    accepted, reason = _combo_accepted(
+                        cls, forward_inputs + [name],
+                        {**combo, name: dtype_name}, param_defaults, sig=sig,
                     )
-                break
+                    if reason is None and not accepted:
+                        err(
+                            f"_validate_dtypes rejects dtype_combos[{i}] "
+                            f"{combo!r} once optional input {name!r} is "
+                            f"passed as {dtype_name}"
+                        )
 
         # Every non-listed combo drawn from the inputs' union must be
         # rejected. Enumerate the full Cartesian product and report any
