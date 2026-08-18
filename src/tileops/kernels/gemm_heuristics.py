@@ -62,7 +62,6 @@ __all__ = [
 
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
-_DEFAULT_SM_COUNT = 132  # H100/H200 SXM fallback when no device is bound
 
 # n-tile width of the tiny-m generic configs. ``gemm_call.small_batch_region``
 # prices its underfill gate on the competing generic grid with the same width
@@ -242,7 +241,7 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
     return us
 
 
-def swap_ab_stages(n: int, sm_count: int = _DEFAULT_SM_COUNT) -> Optional[int]:
+def swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     """``num_stages`` for the tiny-m swap_ab kernel, or None if it underfills.
 
     ``_gemm_swap_ab_kernel`` puts ``n`` on the 64-row WGMMA axis, so its grid
@@ -345,9 +344,7 @@ def _best_config_cached(
     return best.to_config()
 
 
-def best_config(
-    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int = _DEFAULT_SM_COUNT
-) -> dict:
+def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> dict:
     """Return the analytically selected ``GemmKernel`` config for a shape.
 
     Args:
@@ -396,7 +393,7 @@ def gemv_config(k: int) -> dict:
     return {"block_n": 1, "reduce_threads": 128, "num_stages": 4}
 
 
-def small_batch_config(n: int, k: int, sm_count: int = _DEFAULT_SM_COUNT) -> dict:
+def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     """``SmallBatchGemmKernel`` (m == 2 NT band) config rule.
 
     Modal best across the dispatched band (H200 per-rep interleaved sweep):
