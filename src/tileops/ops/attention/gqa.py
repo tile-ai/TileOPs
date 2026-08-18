@@ -420,19 +420,14 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             output_dtype = output_dtype or q.dtype
 
         scales = (q_scale, k_scale, v_scale)
-        has_scales = tuple(scale is not None for scale in scales)
-        if any(has_scales) and not all(has_scales):
-            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
-        if all(has_scales) and any(scale.dtype != torch.float32 for scale in scales):
-            raise ValueError("q_scale, k_scale, and v_scale must be float32")
+        for name, scale in zip(("q_scale", "k_scale", "v_scale"), scales, strict=True):
+            if scale is not None and scale.dtype != torch.float32:
+                raise ValueError(f"{name} must be float32")
 
-        if is_fp8 and not all(has_scales):
-            raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
-
-        has_rope = (rope_cos is not None, rope_sin is not None)
-        if any(has_rope) and not all(has_rope):
-            raise ValueError("fused RoPE requires both rope_cos and rope_sin")
-        if all(has_rope):
+        for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if table is not None and table.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"{name} must be float16 or bfloat16")
+        if rope_cos is not None and rope_sin is not None:
             if rope_cos.dtype not in (torch.float16, torch.bfloat16):
                 raise ValueError("rope_cos and rope_sin must be float16 or bfloat16")
             if rope_sin.dtype != rope_cos.dtype:
@@ -603,6 +598,14 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         if tuple(v.shape) != expected_kv:
             raise ValueError(f"v must have shape {expected_kv}, got {tuple(v.shape)}")
         self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
+        has_scales = tuple(scale is not None for scale in (q_scale, k_scale, v_scale))
+        if any(has_scales) and not all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
+        if q.dtype == fp8_dtype() and not all(has_scales):
+            raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
+        has_rope = (rope_cos is not None, rope_sin is not None)
+        if any(has_rope) and not all(has_rope):
+            raise ValueError("fused RoPE requires both rope_cos and rope_sin")
         _validate_same_device(q, k=k, v=v)
         q_scale, k_scale, v_scale = self._scales_or_identity(q, q_scale, k_scale, v_scale)
         rope_cos, rope_sin, max_position = _resolve_rope_tables(
