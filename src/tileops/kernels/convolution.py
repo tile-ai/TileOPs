@@ -1123,6 +1123,44 @@ def _conv2d_1x1_kernel(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
             out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
+        ):
+            x_flat = T.Tensor((n, c_in, hw), dtype, x.data)
+            out_flat = T.Tensor((n, c_out, hw), dtype, out.data)
+            with T.Kernel(
+                T.ceildiv(hw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
+                    T.copy(weight[by * block_m, k_iter * block_k], weight_shared)
+                    T.copy(x_flat[bz, k_iter * block_k, bx * block_n], data_shared)
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    hw_idx = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (oc < c_out) & (hw_idx < hw),
+                        T.cast(out_local[i, j], dtype),
+                        T.cast(0.0, dtype),
+                    )
+
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
+
+        @T.prim_func
+        def _conv2d_1x1_bias_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
             x_flat = T.Tensor((n, c_in, hw), dtype, x.data)
@@ -1149,22 +1187,15 @@ def _conv2d_1x1_kernel(
                 for i, j in T.Parallel(block_m, block_n):
                     oc = by * block_m + i
                     hw_idx = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (hw_idx < hw),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (hw_idx < hw),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                    out_shared[i, j] = T.if_then_else(
+                        (oc < c_out) & (hw_idx < hw),
+                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                        T.cast(0.0, dtype),
+                    )
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
-        return _conv2d_1x1_main
+        return _conv2d_1x1_bias_main if has_bias else _conv2d_1x1_main
 
     return _conv2d_1x1_func
 
@@ -1630,11 +1661,14 @@ def _conv2d_1x1_wrapped_kernel(
     enable_rasterization: bool,
     x: torch.Tensor,
     weight: torch.Tensor,
-    bias: torch.Tensor,
+    bias: Optional[torch.Tensor],
 ) -> torch.Tensor:
-    return _conv2d_1x1_kernel(n, c_in, h, w, c_out, 1, 1, 0, 0, has_bias, dtype)(
+    kernel = _conv2d_1x1_kernel(n, c_in, h, w, c_out, 1, 1, 0, 0, has_bias, dtype)(
         block_m, block_n, block_k, num_stages, threads, enable_rasterization
-    )(x, weight, bias)
+    )
+    if bias is not None:
+        return kernel(x, weight, bias)
+    return kernel(x, weight)
 
 
 @_conv2d_1x1_wrapped_kernel.register_fake
@@ -2314,7 +2348,6 @@ class Conv2d1x1Kernel(Kernel):
         self.pad_w = pad_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self._zero_bias_cache: Optional[torch.Tensor] = None
 
         self.kernel = _conv2d_1x1_kernel(
             n,
@@ -2374,12 +2407,6 @@ class Conv2d1x1Kernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            if self._zero_bias_cache is None or self._zero_bias_cache.device != x.device:
-                self._zero_bias_cache = torch.zeros(
-                    self.c_out, device=x.device, dtype=x.dtype,
-                )
-            bias = self._zero_bias_cache
         # OIHW -> OC,IC since the 1x1 kernel consumes a dense [C_out, C_in] weight matrix.
         weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()
         return _conv2d_1x1_wrapped_kernel(
