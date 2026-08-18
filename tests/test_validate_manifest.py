@@ -705,6 +705,39 @@ class TestTorchCompileFullgraph:
         ), errors
 
 
+class TestParamDomain:
+    """A param's type parses and covers its default."""
+
+    @staticmethod
+    def _entry(**param_attrs):
+        entry = _make_entry(status="implemented", kernel_map={"k": "K"})
+        entry["signature"]["params"] = {"p": param_attrs}
+        return entry
+
+    def test_a_type_that_admits_none_may_default_to_null(self, validator):
+        entry = self._entry(type="float | None", default=None)
+        assert validator.check_l0("Op", entry) == []
+
+    def test_a_type_without_none_may_not_default_to_null(self, validator):
+        errors = validator.check_l0("Op", self._entry(type="float", default=None))
+        assert any("does not admit None" in e for e in errors), errors
+
+    def test_an_unparsable_type_is_rejected(self, validator):
+        errors = validator.check_l0("Op", self._entry(type="float |", default=1.0))
+        assert any("is not a type expression" in e for e in errors), errors
+
+    def test_spelling_of_the_same_domain_is_the_authors(self, validator):
+        """``Optional[X]``, ``Union[X, None]`` and ``X | None`` state one thing."""
+        for spelling in ("Optional[float]", "Union[float, None]", "float | None"):
+            entry = self._entry(type=spelling, default=None)
+            assert validator.check_l0("Op", entry) == [], spelling
+
+    def test_a_type_that_is_not_text_is_rejected(self, validator):
+        """A YAML scalar that is not a string cannot be a type expression."""
+        for written in (None, 123):
+            errors = validator.check_l0("Op", self._entry(type=written, default="x"))
+            assert any("is not a type expression" in e for e in errors), written
+
 class TestOptionalInputs:
     """R18: optional tensor inputs, where the name may appear, coverage."""
 

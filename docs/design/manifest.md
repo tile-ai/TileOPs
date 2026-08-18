@@ -295,10 +295,17 @@ signature:
 | `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
 | `optional`    | no       | `true` when the op may be called without this input (R18). Inputs only.                                                                  |
 
-**Param fields:** `type` (string: `int`, `float`, `bool`, `"list[int]"`) + optional `default`.
+**Param fields:** `type`, plus optional `default`.
 A param that omits `default` MUST have no `__init__` default either: a
 constructor that accepts a placeholder and rejects it later states a contract
 the signature does not.
+
+`type` is a Python type expression: `int`, `float | None`, `torch.dtype`.
+
+The declared type and the implementation's annotation must agree on one point — whether
+`None` is admitted. Spelling stays the author's: `Number` and `bool | int | float` name one
+domain. `None` is the exception because admitting it decides whether a caller may withhold
+the value. A type that does not admit `None` may not carry `default: null`.
 
 #### Shape Decision Tree
 

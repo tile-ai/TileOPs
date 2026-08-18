@@ -68,7 +68,7 @@ LayerNormFwdOp:
       output: {dtype: "same_as(x)"}
     params:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
-      eps: {type: float, default: 1.0e-5}
+      eps: {type: "float | None", default: 1.0e-5}
     shape_rules:
       - "len(normalized_shape) > 0"
       - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"

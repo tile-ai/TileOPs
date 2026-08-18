@@ -162,8 +162,8 @@ GroupedQueryAttentionPrefillFwdOp:
       max_seqlen_q: {type: int}
       max_seqlen_kv: {type: int}
       is_causal: {type: bool, default: true}
-      sm_scale: {type: float, default: null}
-      softcap: {type: float, default: null}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
       backend: {type: str, default: "auto"}
@@ -250,8 +250,8 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       max_seqlen_q: {type: int}
       cache_dtype: {type: "dtype | None", default: null}
       is_causal: {type: bool, default: true}
-      sm_scale: {type: float, default: null}
-      softcap: {type: float, default: null}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
       fuse_rope: {type: bool, default: false}
       rope_base: {type: float, default: 10000.0}
       max_position: {type: "int | None", default: null}
@@ -511,8 +511,8 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
       o: {dtype: "same_as(q)"}
     params:
       page_size: {type: int}
-      sm_scale: {type: float, default: null}
-      softcap: {type: float, default: null}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
     shape_rules:
       - "q.shape == (B, H, D)"
       - "k.shape == (N_kv, H_kv, D)"
@@ -709,7 +709,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
       stride_kv: {type: int}
       q_start_index_s: {type: int}
       is_causal: {type: bool, default: true}
-      sm_scale: {type: float, default: null}
+      sm_scale: {type: "float | None", default: null}
     shape_rules:
       - "q.shape == (B, S, H, D + dim_tail)"
       - "kv.shape == (B, S_kv, H_kv, D + dim_tail)"
