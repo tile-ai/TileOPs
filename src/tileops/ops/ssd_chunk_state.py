@@ -158,7 +158,14 @@ class SSDChunkStateFwdOp(Op):
         dA_cumsum = dA_cumsum.contiguous()
 
         if seq_idx is None:
-            seq_idx = x.new_empty(self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32)
+            if self.has_seq_idx:
+                seq_idx = x.new_zeros(
+                    self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32,
+                )
+            else:
+                seq_idx = x.new_empty(
+                    self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32,
+                )
         else:
             seq_idx = seq_idx.contiguous()
 
