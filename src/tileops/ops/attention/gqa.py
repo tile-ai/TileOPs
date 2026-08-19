@@ -245,7 +245,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
 
     def __init__(
         self,
-        *,
         is_causal: bool = True,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
