@@ -53,11 +53,6 @@ class MultiHeadAttentionFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._gqa_op = GroupedQueryAttentionPrefillDenseFwdOp(
-            batch=batch,
-            heads=heads,
-            heads_kv=heads,
-            seq_len=seq_len,
-            dim=dim,
             is_causal=is_causal,
             kernel_map=self.forwarded_overrides(),
             tune=tune,

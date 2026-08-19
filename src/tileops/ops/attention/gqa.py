@@ -263,6 +263,18 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         if pos_encoding_mode not in ("none", "rope"):
             raise ValueError(f"pos_encoding_mode must be 'none' or 'rope', got {pos_encoding_mode}")
 
+        # 验证 rotary_dim 需要 rope 模式
+        if rotary_dim is not None and pos_encoding_mode != "rope":
+            raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+
+        # 验证 rope_base
+        if pos_encoding_mode == "rope" and (rope_base <= 0 or not math.isfinite(rope_base)):
+            raise ValueError("rope_base must be finite and positive")
+
+        # 验证 sm_scale
+        if sm_scale is not None and not math.isfinite(sm_scale):
+            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
+
         # 保存配置参数（不保存 shape）
         self.is_causal = is_causal
         self.sm_scale = sm_scale  # 延迟到 forward 时根据 dim 计算

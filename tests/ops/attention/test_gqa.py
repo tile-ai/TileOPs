@@ -1434,14 +1434,30 @@ def _record_kernel_builds(op: Op) -> list:
 
 @pytest.mark.smoke
 def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
-    """Nothing downstream validates; a zero ``heads_kv`` would surface as
-    ``ZeroDivisionError`` at ``heads % heads_kv``."""
-    with pytest.raises(ValueError, match="heads_kv must be positive"):
-        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 0, 64, 64, True)
-    with pytest.raises(ValueError, match="batch must be positive"):
-        GroupedQueryAttentionPrefillDenseFwdOp(0, 8, 2, 64, 64, True)
-    with pytest.raises(ValueError, match="seq_len must be positive"):
-        GroupedQueryAttentionPrefillDenseFwdOp(1, 8, 2, 0, 64, True)
+    """Shape validation now happens in forward(), not constructor.
+    This test verifies that invalid shapes are caught during forward."""
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=True)
+
+    # Test with zero heads_kv dimension
+    q = torch.randn(1, 64, 8, 64, device="cuda", dtype=torch.float16)
+    k = torch.randn(1, 64, 0, 64, device="cuda", dtype=torch.float16)  # heads_kv = 0
+    v = torch.randn_like(k)
+    with pytest.raises((ValueError, RuntimeError), match="heads_kv|divisible|positive"):
+        op(q, k, v)
+
+    # Test with zero batch dimension
+    q = torch.randn(0, 64, 8, 64, device="cuda", dtype=torch.float16)  # batch = 0
+    k = torch.randn(0, 64, 2, 64, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    with pytest.raises((ValueError, RuntimeError), match="batch|positive"):
+        op(q, k, v)
+
+    # Test with zero seq_len dimension
+    q = torch.randn(1, 0, 8, 64, device="cuda", dtype=torch.float16)  # seq_len = 0
+    k = torch.randn(1, 0, 2, 64, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    with pytest.raises((ValueError, RuntimeError), match="seq_len|positive"):
+        op(q, k, v)
 
 
 @pytest.mark.smoke

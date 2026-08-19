@@ -93,11 +93,6 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
         pytest.skip("native FP8 prefill requires SM90 and float8_e4m3fn")
     batch, seq_len, heads, heads_kv, dim = 1, 65, 8, 2, 128
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seq_len,
-        dim,
         is_causal=False,
         dtype=torch.float16,
         pos_encoding_mode="rope",
@@ -121,11 +116,6 @@ def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     """The Op-owned fake, not an internal kernel fake, defines graph metadata."""
     batch, seq_len, heads, heads_kv, dim = 1, 7, 8, 2, 128
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seq_len,
-        dim,
         is_causal=False,
         dtype=torch.bfloat16,
     )
