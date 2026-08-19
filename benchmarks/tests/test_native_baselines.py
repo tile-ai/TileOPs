@@ -38,17 +38,18 @@ def test_reduction_baselines_preserve_contract_dtype(dtype):
     cases = [
         (_torch_sum(x, dim=dim, keepdim=keepdim), x.float().sum(dim, keepdim=True)),
         (_torch_mean(x, dim=dim, keepdim=keepdim), x.float().mean(dim, keepdim=True)),
-        (_torch_std(x, dim=dim, keepdim=keepdim),
-         x.float().std(dim, keepdim=True, correction=1)),
-        (_torch_var(x, dim=dim, keepdim=keepdim),
-         x.float().var(dim, keepdim=True, correction=1)),
+        (_torch_std(x, dim=dim, keepdim=keepdim), x.float().std(dim, keepdim=True, correction=1)),
+        (_torch_var(x, dim=dim, keepdim=keepdim), x.float().var(dim, keepdim=True, correction=1)),
     ]
     for actual, expected in cases:
         _assert_contract_output(actual, expected.to(dtype), dtype)
 
     actual_var, actual_mean = _torch_var_mean(x, dim=dim, keepdim=keepdim)
     expected_var, expected_mean = torch.var_mean(
-        x.float(), dim=dim, keepdim=keepdim, correction=1,
+        x.float(),
+        dim=dim,
+        keepdim=keepdim,
+        correction=1,
     )
     _assert_contract_output(actual_var, expected_var.to(dtype), dtype)
     _assert_contract_output(actual_mean, expected_mean.to(dtype), dtype)
@@ -107,10 +108,20 @@ def test_batch_norm_forward_uses_contract_inputs_and_updates_state(dtype):
     ref_var = running_var.clone()
 
     actual = _torch_bn_fwd(
-        x, running_mean, running_var, weight, bias, training=True,
+        x,
+        running_mean,
+        running_var,
+        weight,
+        bias,
+        training=True,
     )
     expected, expected_mean, expected_var = batch_norm_fwd_ref(
-        x, weight, bias, ref_mean, ref_var, training=True,
+        x,
+        weight,
+        bias,
+        ref_mean,
+        ref_var,
+        training=True,
     )
 
     _assert_contract_output(actual, expected, dtype)
@@ -133,5 +144,8 @@ def test_batch_norm_backward_consumes_saved_statistics(dtype):
         assert actual_tensor.shape == expected_tensor.shape
         assert actual_tensor.dtype == expected_tensor.dtype
         assert torch.allclose(
-            actual_tensor.float(), expected_tensor.float(), atol=2e-2, rtol=2e-2,
+            actual_tensor.float(),
+            expected_tensor.float(),
+            atol=2e-2,
+            rtol=2e-2,
         )
