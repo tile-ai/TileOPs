@@ -480,6 +480,8 @@ def _gemm_kernel(
     trans_b: bool,
     dtype: str = "float16",
     traced: bool = False,
+    *,
+    sm_count: int,
 ) -> Callable:
     """Hand-written warp-specialized GEMM ``C = op(A) @ op(B)`` for Hopper (SM90).
 
@@ -507,6 +509,9 @@ def _gemm_kernel(
             process trace switch never returns a stale variant. Callers pass
             ``trace.enabled`` explicitly rather than letting the build read the
             global switch.
+        sm_count: Device SM count, deciding the multi-wave TMA-store epilogue
+            gate. Part of the cache key so a kernel built for one GPU is never
+            reused on another.
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_m, block_n,
@@ -541,12 +546,12 @@ def _gemm_kernel(
         # TMA-store epilogue needs C's row stride 16-byte aligned (descriptor
         # constraint). It also only pays off on multi-wave grids: T.copy's
         # store drains via tma_store_wait, and that drain is hidden by the
-        # next wave's compute. On a single wave (H100/H200: 132 SMs) it sits
-        # exposed on the critical path and loses to fire-and-forget scalar
-        # stores (measured: decode shapes -13..-22%). Resolved at trace time;
-        # the fallback keeps the supported-shape envelope unchanged.
+        # next wave's compute. On a single wave it sits exposed on the
+        # critical path and loses to fire-and-forget scalar stores (measured
+        # on H200: decode shapes -13..-22%). Resolved at trace time; the
+        # fallback keeps the supported-shape envelope unchanged.
         grid_size = -(-n // block_n) * -(-m // block_m)
-        tma_epilogue = (n * 2) % 16 == 0 and grid_size > 132
+        tma_epilogue = (n * 2) % 16 == 0 and grid_size > sm_count
 
         @T.prim_func
         def _gemm_main(
@@ -863,7 +868,7 @@ def _gemm_splitk_kernel(
                     T.barrier_arrive(ab_empty[ps[0]])
                     # Epilogue: predicated scalar store of the fp32 partial.
                     # Split-K targets underfilled grids where the TMA-store
-                    # drain would sit exposed (cf. the grid > 132 gate in
+                    # drain would sit exposed (cf. the multi-wave gate in
                     # ``_gemm_kernel``), so the scalar store is deliberate.
                     for i, j in T.Parallel(block_m, block_n):
                         if m_start + i < m and n_start + j < n:
@@ -939,7 +944,8 @@ def _gemm_coop2_kernel(
     trans_a: bool,
     trans_b: bool,
     dtype: str = "float16",
-    sm_count: int = 132,
+    *,
+    sm_count: int,
 ) -> Callable:
     """Persistent 2-consumer (cooperative) warp-specialized GEMM for Hopper.
 
@@ -1803,7 +1809,7 @@ def _gemm_wrapped_kernel(
         )(a, b)
         _splitk_reduce_kernel(split_k, m, n, dtype)()(w, c)
         return c
-    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(
+    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype, sm_count=get_sm_count())(
         block_m, block_n, block_k, num_stages, panel_size
     )(a, b)
 
@@ -1904,11 +1910,14 @@ class GemmKernel(Kernel):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
-        # Persistent-grid width for the coop2 (2-consumer) kernel: the device SM
-        # count. Fixed per device, so it is a build-time constant of that kernel.
+        # Device SM count: the coop2 kernel's persistent-grid width and the
+        # basic kernel's multi-wave epilogue gate. Fixed per device, so it is
+        # a build-time constant of both.
         self.sm_count = get_sm_count()
 
-        self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
+        self.kernel = _gemm_kernel(
+            m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
+        )
 
         self.init_config(config, tune)
 
@@ -2139,7 +2148,13 @@ class GemmKernel(Kernel):
         if self.config.get("coop2"):
             cfg = self.config
             compiled = _gemm_coop2_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str, self.sm_count
+                self.m,
+                self.n,
+                self.k,
+                self.trans_a,
+                self.trans_b,
+                self.dtype_str,
+                sm_count=self.sm_count,
             )(
                 cfg["block_n"],
                 cfg["block_k"],
@@ -2177,8 +2192,8 @@ class GemmKernel(Kernel):
         # Split-K path: slice K across grid-z CTAs into an fp32 workspace,
         # then reduce. Selected via config only (``split_k > 1``); the in-tree
         # tuner cannot rank it (see the class-level ``autotune_configs`` note).
-        # Worth trying when the natural grid underfills the GPU (< 132 CTAs
-        # on H100/H200).
+        # Worth trying when the natural grid underfills the GPU (fewer CTAs
+        # than SMs).
         split_k = self.config.get("split_k", 1)
         if split_k > 1:
             cfg = self.config
@@ -2207,7 +2222,14 @@ class GemmKernel(Kernel):
         # when tracing is on and otherwise just returns C — so no branch here.
         main_cfg = {k2: v for k2, v in self.config.items() if k2 != "split_k"}
         compiled = _gemm_kernel(
-            self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str, traced=trace.enabled
+            self.m,
+            self.n,
+            self.k,
+            self.trans_a,
+            self.trans_b,
+            self.dtype_str,
+            traced=trace.enabled,
+            sm_count=self.sm_count,
         )(**main_cfg)
         layout = f"{'T' if self.trans_a else 'N'}{'T' if self.trans_b else 'N'}"
         return trace.run(
