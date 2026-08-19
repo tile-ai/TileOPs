@@ -1,4 +1,4 @@
-"""The facts of one GEMM call, and the region the GEMV kernel serves."""
+"""The facts of one GEMM call, and the regions the bandwidth kernels serve."""
 
 import dataclasses
 from typing import Optional
@@ -8,7 +8,7 @@ import torch
 from tileops.utils import get_sm_count
 
 from .call_spec import CallSpec
-from .gemm_heuristics import swap_ab_stages
+from .gemm_heuristics import swap_ab_grid_underfills
 
 __all__ = ["GemmCall", "gemv_region", "small_batch_region"]
 
@@ -38,7 +38,7 @@ def gemv_region(call: GemmCall) -> bool:
 
 
 def small_batch_region(call: GemmCall) -> bool:
-    """Whether the small-batch bandwidth kernel serves this call.
+    """The region the small-batch bandwidth kernel claims: m == 2, NT, narrow n.
 
     Its CUDA-core inner loop pays ``m`` FMAs and ``m`` converts per weight
     element, so its lead over the tensor-core kernel shrinks as ``m`` grows.
@@ -49,20 +49,20 @@ def small_batch_region(call: GemmCall) -> bool:
     beats the best general config at ``m = 2`` on all three families and loses
     from ``m = 3`` up (gate-up 1.02x vs 1.05x, down 0.81x vs 0.92x).
 
-    It steps aside wherever the operand-swapped generic kernel applies: that
-    one streams the same weights on a grid twice as wide with no padded ``A``
-    re-read, and measures 1.07-1.08x cuBLAS at ``m = 2`` on the down and
-    attention shapes against this kernel's 1.01x.
+    The n bound is ``swap_ab_grid_underfills``: the claim holds while a
+    64-wide n-tiling sits below three-eighths of a wave. From that fill upward
+    the lead inverts — a grid that wide streams the same weights with no
+    padded ``A`` re-read, and measures 1.07-1.08x cuBLAS at ``m = 2`` on the
+    down and attention shapes against this kernel's 1.01x.
 
-    That exclusion also settles occupancy: ``swap_ab`` claims every ``n`` past
-    three-eighths of a wave on its 64-wide grid (``n > 24 * sm_count``), while
-    a full wave of the tiny-m generic band needs ``n >= TINY_M_BLOCK_N *
-    sm_count`` — so nothing reaching here is out of idle SMs to reclaim.
-    Narrowing ``swap_ab``'s band brings that condition back.
+    The same bound settles occupancy: a full wave of the tiny-m generic band
+    needs ``n >= TINY_M_BLOCK_N * sm_count``, far past it — so nothing claimed
+    here is out of idle SMs a generic config could reclaim. Widening the
+    claimed band brings that condition back.
 
     ``m == 1`` is the GEMV region. NT only: the reduction over ``K`` needs
     ``K`` contiguous.
     """
     if call.trans_a or not call.trans_b or call.m != 2:
         return False
-    return swap_ab_stages(call.n, get_sm_count()) is None
+    return swap_ab_grid_underfills(call.n, get_sm_count())

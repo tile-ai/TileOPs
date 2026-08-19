@@ -57,15 +57,16 @@ __all__ = [
     "best_config",
     "gemv_config",
     "small_batch_config",
+    "swap_ab_grid_underfills",
     "swap_ab_stages",
 ]
 
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
 
-# n-tile width of the tiny-m generic configs. ``gemm_call.small_batch_region``
-# prices its underfill gate on the competing generic grid with the same width
-# — retune them together.
+# n-tile width of the tiny-m generic configs (``_tiny_m_config``). The
+# occupancy note in ``gemm_call.small_batch_region`` prices a full wave of
+# that band with this width — retune them together.
 TINY_M_BLOCK_N = 128
 
 # Operand-swapped tiny-m kernel geometry (``_gemm_swap_ab_kernel``): ``n`` rides
@@ -241,14 +242,28 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
     return us
 
 
+def swap_ab_grid_underfills(n: int, sm_count: int) -> bool:
+    """Whether ``ceil(n / SWAP_AB_BLOCK_NN)`` CTAs sit below three-eighths of a wave.
+
+    The measured n boundary where the operand-swapped grid loses its width
+    advantage, written once for its two consumers: ``swap_ab_stages`` returns
+    None below it (the tiny-m band falls to split-K or the plain tile), and
+    ``gemm_call.small_batch_region`` claims exactly this underfilled band at
+    ``m == 2`` — that handoff has no gap and no overlap. Retune the two
+    together.
+    """
+    return -(-n // SWAP_AB_BLOCK_NN) * 8 < sm_count * 3
+
+
 def swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     """``num_stages`` for the tiny-m swap_ab kernel, or None if it underfills.
 
     ``_gemm_swap_ab_kernel`` puts ``n`` on the 64-row WGMMA axis, so its grid
     is ``ceil(n / SWAP_AB_BLOCK_NN)`` CTAs — the whole point being that this is
     twice the CTA count of the ``block_n = 128`` output tiling, with no padded
-    ``A`` re-read. Below roughly three-eighths of a wave that advantage is gone
-    and the split-K path (which multiplies its own grid by ``split_k``) wins.
+    ``A`` re-read. Below three-eighths of a wave
+    (``swap_ab_grid_underfills``) that advantage is gone and the split-K path
+    (which multiplies its own grid by ``split_k``) wins.
 
     Measured on H200 vs ``min(torch, cuBLASLt-best)`` (per-rep interleaved,
     fp32-guarded, bf16 NT), best swap_ab config against the path it replaces:
@@ -261,9 +276,9 @@ def swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     already has enough loads in flight, and a deeper ring only costs SMEM. Both
     ends are measured points; the boundary between them is interpolated.
     """
-    ctas = -(-n // SWAP_AB_BLOCK_NN)
-    if ctas * 8 < sm_count * 3:
+    if swap_ab_grid_underfills(n, sm_count):
         return None
+    ctas = -(-n // SWAP_AB_BLOCK_NN)
     return 4 if ctas * 4 >= sm_count * 3 else 8
 
 
