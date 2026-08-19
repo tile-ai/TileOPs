@@ -20,8 +20,11 @@ from .attention import (
 )
 from .bmm import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
 from .convolution import (
+    Conv1dBiasFwdOp,
     Conv1dFwdOp,
+    Conv2dBiasFwdOp,
     Conv2dFwdOp,
+    Conv3dBiasFwdOp,
     Conv3dFwdOp,
 )
 from .da_cumsum import DaCumsumFwdOp
@@ -34,7 +37,6 @@ from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from .fp8_quant import FP8QuantFwdOp
 from .gated_deltanet import (
     GatedDeltaNetBHTDFwdOp,
-    GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeFwdOp,
     GatedDeltaNetOp,
@@ -43,7 +45,7 @@ from .gated_deltanet import (
 )
 from .gated_linear_attn import GLADecodeFwdOp
 from .gemm import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
-from .gla import GLABwdOp, GLAFwdOp
+from .gla import GLABwdOp, GLAFwdOp, GLAPrefillFwdOp
 from .grouped_gemm import GroupedGemmFwdOp
 from .mamba2_fwd import Mamba2FwdOp
 from .mhc import MHCPostFwdOp, MHCPreFwdOp
@@ -132,8 +134,11 @@ __all__ = [
     "BmmFp8KNFwdOp",
     "BmmFp8NKFwdOp",
     "BmmFwdOp",
+    "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
+    "Conv2dBiasFwdOp",
     "Conv2dFwdOp",
+    "Conv3dBiasFwdOp",
     "Conv3dFwdOp",
     "DaCumsumFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
@@ -148,16 +153,15 @@ __all__ = [
     "DeltaNetDecodeFwdOp",
     "DeltaNetFwdOp",
     "DeltaNetOp",
-    "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeFwdOp",
     "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetOp",
-    "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillBTHDFwdOp",
     "GLABwdOp",
     "GLADecodeFwdOp",
     "GLAFwdOp",
+    "GLAPrefillFwdOp",
     "GemmFp8FwdOp",
     "GemmFwdOp",
     "GemmW4A16FwdOp",

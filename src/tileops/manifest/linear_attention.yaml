@@ -446,6 +446,49 @@ DeltaNetBwdOp:
     bench: benchmarks/ops/bench_deltanet.py
     bench_manifest_driven: false
 
+GLAPrefillFwdOp:
+  # Inference prefill is separate from GLAFwdOp so the serving path can avoid
+  # retaining training-forward state and can partition the long recurrence.
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      final_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    params:
+      chunk_size: {type: int, default: 64}
+      scale: {type: float, default: -1.0}
+    shape_rules:
+    - "k.shape == (B, S, H, DK)"
+    - "v.shape == (B, S, H, DV)"
+    - "g.shape == (B, S, H, DK)"
+    - "o.shape == (B, S, H, DV)"
+    - "final_state.shape == (B, H, DK, DV)"
+    - "S % chunk_size == 0"
+  workloads:
+  - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s4k-h16-d128"}
+  - {q_shape: [1, 32768, 16, 128], k_shape: [1, 32768, 16, 128], v_shape: [1, 32768, 16, 128], g_shape: [1, 32768, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s32k-h16-d128"}
+  - {q_shape: [1, 65536, 16, 128], k_shape: [1, 65536, 16, 128], v_shape: [1, 65536, 16, 128], g_shape: [1, 65536, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s64k-h16-d128"}
+  - {q_shape: [1, 131072, 16, 128], k_shape: [1, 131072, 16, 128], v_shape: [1, 131072, 16, 128], g_shape: [1, 131072, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s128k-h16-d128"}
+  - {q_shape: [1, 32768, 32, 128], k_shape: [1, 32768, 32, 128], v_shape: [1, 32768, 32, 128], g_shape: [1, 32768, 32, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s32k-h32-d128"}
+  - {q_shape: [1, 32768, 64, 128], k_shape: [1, 32768, 64, 128], v_shape: [1, 32768, 64, 128], g_shape: [1, 32768, 64, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s32k-h64-d128"}
+  roofline:
+    func: "tileops.perf.formulas.gla_prefill_fwd_roofline"
+  source:
+    kernel: tileops/kernels/gla/gla_fwd.py
+    kernel_map:
+      GLAPrefillFwdKernel: GLAPrefillFwdKernel
+    op: tileops/ops/gla.py
+    test: tests/ops/test_gla_prefill.py
+    bench: benchmarks/ops/bench_gla_prefill.py
+    bench_manifest_driven: true
+
 GLAFwdOp:
   ref_api: "none"
   family: linear_attention
