@@ -15,23 +15,32 @@ class RMSNormTest(RMSNormWorkload, TestBase):
 
 class RMSNormFixture(FixtureBase):
     PARAMS = [
-        ("m, n, dtype, tune", [
-            # Standard aligned shapes (AC required)
-            pytest.param(1024, 4096, torch.float16, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(8192, 8192, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(8192, 8192, torch.bfloat16, False, marks=pytest.mark.full),
-            # Non-aligned N (AC required)
-            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2048, 5120, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2048, 5120, torch.bfloat16, False, marks=pytest.mark.full),
-            # Tail-M: M not divisible by block_m (proves T.copy partial block safety)
-            pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "m, n, dtype, tune",
+            [
+                # Standard aligned shapes (AC required)
+                pytest.param(
+                    1024,
+                    4096,
+                    torch.float16,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                ),
+                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(8192, 8192, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(8192, 8192, torch.bfloat16, False, marks=pytest.mark.full),
+                # Non-aligned N (AC required)
+                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2048, 5120, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2048, 5120, torch.bfloat16, False, marks=pytest.mark.full),
+                # Tail-M: M not divisible by block_m (proves T.copy partial block safety)
+                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -46,10 +55,13 @@ def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 
 class RMSNormNonContigFixture(FixtureBase):
     PARAMS = [
-        ("m, n, dtype", [
-            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-        ]),
+        (
+            "m, n, dtype",
+            [
+                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -71,16 +83,20 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     y = op(x, weight)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), \
+    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), (
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
+    )
 
 
 class RMSNorm3DFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq, hidden, dtype", [
-            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-        ]),
+        (
+            "batch, seq, hidden, dtype",
+            [
+                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -100,10 +116,9 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
     y = op(x, weight)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), \
+    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), (
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
-
-
+    )
 
 
 # --------------------------------------------------------------------------------------

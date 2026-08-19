@@ -18,7 +18,8 @@ from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS, GatedDeltaNet
 from tileops.ops.gemm import GemmFwdOp
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="selection reads the device architecture")
+    not torch.cuda.is_available(), reason="selection reads the device architecture"
+)
 
 _SM90 = 90
 _SM80 = 80
@@ -29,21 +30,24 @@ _SM80 = 80
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(("m", "n", "trans_a", "trans_b", "expected"), [
-    pytest.param(1, 8, False, True, "gemv_kernel", id="lhs-row"),
-    pytest.param(8, 1, False, False, "gemv_kernel", id="rhs-col"),
-    pytest.param(1, 8, False, False, "gemm_kernel", id="lhs-row-wrong-layout"),
-    pytest.param(1, 8, True, True, "gemm_kernel", id="lhs-row-trans-a"),
-    pytest.param(8, 1, False, True, "gemm_kernel", id="rhs-col-wrong-layout"),
-    pytest.param(8, 1, True, False, "gemm_kernel", id="rhs-col-trans-a"),
-    pytest.param(8, 8, False, False, "gemm_kernel", id="neither-is-a-vector"),
-    pytest.param(1, 1, False, False, "gemv_kernel", id="both-are-vectors"),
-])
-def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool,
-                       expected: str) -> None:
+@pytest.mark.parametrize(
+    ("m", "n", "trans_a", "trans_b", "expected"),
+    [
+        pytest.param(1, 8, False, True, "gemv_kernel", id="lhs-row"),
+        pytest.param(8, 1, False, False, "gemv_kernel", id="rhs-col"),
+        pytest.param(1, 8, False, False, "gemm_kernel", id="lhs-row-wrong-layout"),
+        pytest.param(1, 8, True, True, "gemm_kernel", id="lhs-row-trans-a"),
+        pytest.param(8, 1, False, True, "gemm_kernel", id="rhs-col-wrong-layout"),
+        pytest.param(8, 1, True, False, "gemm_kernel", id="rhs-col-trans-a"),
+        pytest.param(8, 8, False, False, "gemm_kernel", id="neither-is-a-vector"),
+        pytest.param(1, 1, False, False, "gemv_kernel", id="both-are-vectors"),
+    ],
+)
+def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: str) -> None:
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
-    call = GemmCall(arch=_SM90, m=m, n=n, k=64, dtype=torch.float16,
-                    trans_a=trans_a, trans_b=trans_b)
+    call = GemmCall(
+        arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
+    )
 
     assert op.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == expected
 
@@ -77,11 +81,11 @@ _DELTANET_ROWS = [
     ("dtype", "dim_k", "dim_v", "arch", "expected"),
     [pytest.param(*row[:5], id=row[5]) for row in _DELTANET_ROWS],
 )
-def test_deltanet_decode_dispatch(dtype: torch.dtype, dim_k: int, dim_v: int,
-                                  arch: int, expected: str) -> None:
+def test_deltanet_decode_dispatch(
+    dtype: torch.dtype, dim_k: int, dim_v: int, arch: int, expected: str
+) -> None:
     op = DeltaNetDecodeFwdOp()
-    call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v,
-                              dtype=dtype)
+    call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
 
     assert op.select_kernel_key(DELTANET_DECODE_KEYS, call) == expected
 
@@ -91,8 +95,7 @@ def test_deltanet_decode_dispatch(dtype: torch.dtype, dim_k: int, dim_v: int,
 
 _GATED_ROWS = [
     (torch.float32, 128, 128, _SM90, "GatedDeltaNetDecodeFP32Kernel", "fp32"),
-    (torch.bfloat16, 128, 128, _SM90,
-     "GatedDeltaNetDecodeRawCudaFlaStyleKernel", "bf16-raw"),
+    (torch.bfloat16, 128, 128, _SM90, "GatedDeltaNetDecodeRawCudaFlaStyleKernel", "bf16-raw"),
     (torch.float16, 128, 128, _SM90, "GatedDeltaNetDecodeKernel", "fp16-not-raw"),
     (torch.bfloat16, 64, 128, _SM90, "GatedDeltaNetDecodeKernel", "dim-k-off"),
     (torch.bfloat16, 128, 64, _SM90, "GatedDeltaNetDecodeKernel", "dim-v-off"),
@@ -105,11 +108,11 @@ _GATED_ROWS = [
     ("dtype", "dim_k", "dim_v", "arch", "expected"),
     [pytest.param(*row[:5], id=row[5]) for row in _GATED_ROWS],
 )
-def test_gated_deltanet_decode_dispatch(dtype: torch.dtype, dim_k: int, dim_v: int,
-                                        arch: int, expected: str) -> None:
+def test_gated_deltanet_decode_dispatch(
+    dtype: torch.dtype, dim_k: int, dim_v: int, arch: int, expected: str
+) -> None:
     op = GatedDeltaNetDecodeFwdOp()
-    call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v,
-                              dtype=dtype)
+    call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
 
     assert op.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call) == expected
 
@@ -121,11 +124,11 @@ def test_gated_deltanet_raw_cuda_declines_when_asked_to_autotune() -> None:
     Nothing is autotuned here: only the key is resolved.
     """
     op = GatedDeltaNetDecodeFwdOp(tune=True)
-    call = DeltaNetDecodeCall(arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128,
-                              dtype=torch.bfloat16, tune=True)
+    call = DeltaNetDecodeCall(
+        arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128, dtype=torch.bfloat16, tune=True
+    )
 
-    assert op.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call) == (
-        "GatedDeltaNetDecodeKernel")
+    assert op.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call) == ("GatedDeltaNetDecodeKernel")
 
 
 @pytest.mark.smoke
@@ -142,10 +145,9 @@ def test_gemv_region_matches_the_layouts_it_was_written_for() -> None:
     """The predicate the op used to carry, over every (m, n, layout) combination."""
     from tileops.kernels.gemm_call import gemv_region
 
-    for m, n, trans_a, trans_b in itertools.product([1, 8], [1, 8], [False, True],
-                                                    [False, True]):
-        expected = (m == 1 and not trans_a and trans_b) or (
-            n == 1 and not trans_a and not trans_b)
-        call = GemmCall(arch=_SM90, m=m, n=n, k=64, dtype=torch.float16,
-                        trans_a=trans_a, trans_b=trans_b)
+    for m, n, trans_a, trans_b in itertools.product([1, 8], [1, 8], [False, True], [False, True]):
+        expected = (m == 1 and not trans_a and trans_b) or (n == 1 and not trans_a and not trans_b)
+        call = GemmCall(
+            arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
+        )
         assert gemv_region(call) is expected, (m, n, trans_a, trans_b)

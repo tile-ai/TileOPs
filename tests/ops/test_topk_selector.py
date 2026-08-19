@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -14,12 +13,39 @@ class TopkSelectorTest(TopkSelectorWorkload, TestBase):
 
 class TopkSelectorFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, seq_len_kv, kv_group, topk, in_dtype_str, out_dtype_str, tune", [
-            pytest.param(4, 256, 1024, 1, 32, "float32", "int32", False, marks=pytest.mark.smoke),
-            pytest.param(8, 512, 2048, 1, 64, "float32", "int32", False, marks=pytest.mark.full),
-            pytest.param(1, 32 * 1024, 64 * 1024, 1, 1024, "float32", "int32", False, marks=pytest.mark.full),
-            pytest.param(1, 32 * 1024, 64 * 2048, 1, 2048, "float32", "int32", False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype_str, out_dtype_str, tune",
+            [
+                pytest.param(
+                    4, 256, 1024, 1, 32, "float32", "int32", False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    8, 512, 2048, 1, 64, "float32", "int32", False, marks=pytest.mark.full
+                ),
+                pytest.param(
+                    1,
+                    32 * 1024,
+                    64 * 1024,
+                    1,
+                    1024,
+                    "float32",
+                    "int32",
+                    False,
+                    marks=pytest.mark.full,
+                ),
+                pytest.param(
+                    1,
+                    32 * 1024,
+                    64 * 2048,
+                    1,
+                    2048,
+                    "float32",
+                    "int32",
+                    False,
+                    marks=pytest.mark.full,
+                ),
+            ],
+        ),
     ]
 
 
@@ -31,19 +57,20 @@ def _set_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     set_ref = set(ref_np.flatten().tolist())
     set_trt = set(trt_np.flatten().tolist())
     intersection = set_ref & set_trt
-    assert len(intersection) / len(set_ref) == 1.0, \
-        "output indices do not match reference indices"
+    assert len(intersection) / len(set_ref) == 1.0, "output indices do not match reference indices"
 
 
 @TopkSelectorFixture
-def test_topk_selector_op(batch: int,
-                          seq_len: int,
-                          seq_len_kv: int,
-                          kv_group: int,
-                          topk: int,
-                          in_dtype_str: str,
-                          out_dtype_str: str,
-                          tune: bool) -> None:
+def test_topk_selector_op(
+    batch: int,
+    seq_len: int,
+    seq_len_kv: int,
+    kv_group: int,
+    topk: int,
+    in_dtype_str: str,
+    out_dtype_str: str,
+    tune: bool,
+) -> None:
     in_dtype = str2dtype[in_dtype_str]
     out_dtype = str2dtype[out_dtype_str]
     test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)

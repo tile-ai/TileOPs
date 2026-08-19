@@ -74,20 +74,23 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
         if self.posinf is None:
             posinf = torch.finfo(dtype).max
         else:
-            _validate_scalar_param_repr(
-                "posinf", self.posinf, dtype, self._op_name)
+            _validate_scalar_param_repr("posinf", self.posinf, dtype, self._op_name)
             posinf = self.posinf
         if self.neginf is None:
             neginf = torch.finfo(dtype).min
         else:
-            _validate_scalar_param_repr(
-                "neginf", self.neginf, dtype, self._op_name)
+            _validate_scalar_param_repr("neginf", self.neginf, dtype, self._op_name)
             neginf = self.neginf
         # Replacement values are positional; the kernel constructor's
         # parameter naming is encapsulated below the Op layer.
         impl, ctor_dtype = self._selected_kernel_cls("nan_to_num").specialize(dtype)
         kernel = impl(
-            self.N_total, ctor_dtype, self.nan, posinf, neginf, tune=self.tune,
+            self.N_total,
+            ctor_dtype,
+            self.nan,
+            posinf,
+            neginf,
+            tune=self.tune,
         )
 
         return KernelEntry(
@@ -102,9 +105,7 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        return self._entry(input.dtype).kernel(
-            input.contiguous().reshape(-1)
-        ).reshape(orig_shape)
+        return self._entry(input.dtype).kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:

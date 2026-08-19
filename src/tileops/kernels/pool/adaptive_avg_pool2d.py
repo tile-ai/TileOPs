@@ -81,9 +81,9 @@ def _adaptive_avg_pool2d_wrapped_kernel(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _adaptive_avg_pool2d_kernel(
-        n, c_in, h_in, w_in, out_h, out_w, dtype
-    )(block_m, threads)(x)
+    return _adaptive_avg_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(block_m, threads)(
+        x
+    )
 
 
 @_adaptive_avg_pool2d_wrapped_kernel.register_fake

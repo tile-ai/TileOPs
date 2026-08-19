@@ -411,8 +411,6 @@ def _(
     )
 
 
-
-
 class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase):
     """Max pooling forward-with-indices kernel."""
 

@@ -147,9 +147,7 @@ def _normalize_layout(layout: str) -> str:
     """Lower-case *layout* and reject anything outside the two this file serves."""
     normalized = layout.lower()
     if normalized not in _LAYOUTS:
-        raise ValueError(
-            f"layout must be one of {_LAYOUTS}, got {layout!r}"
-        )
+        raise ValueError(f"layout must be one of {_LAYOUTS}, got {layout!r}")
     return normalized
 
 
@@ -258,15 +256,15 @@ class GatedDeltaNetBHTDFwdOp(Op):
         g = g.contiguous()
         beta = beta.contiguous()
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size)
+            q, k, v, g, beta, self.chunk_size
+        )
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
@@ -321,12 +319,10 @@ class GatedDeltaNetBTHDFwdOp(Op):
     ) -> None:
         """Manifest ``dtype``: every input carries q's dtype, which must be half."""
         if q.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(
-                f"Expected q.dtype float16 or bfloat16, got {q.dtype}")
+            raise ValueError(f"Expected q.dtype float16 or bfloat16, got {q.dtype}")
         for name, tensor in (("k", k), ("v", v), ("g", g), ("beta", beta)):
             if tensor.dtype != q.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
+                raise ValueError(f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
         self.dtype = q.dtype
 
     def _infer_output_shapes(
@@ -366,11 +362,9 @@ class GatedDeltaNetBTHDFwdOp(Op):
         gaps = _bthd_production_gaps(self.chunk_size, dim_k, dim_v, dtype, device_index)
         if gaps:
             raise ValueError(
-                "BTHD GatedDeltaNet forward has no kernel for this call: "
-                + "; ".join(gaps)
+                "BTHD GatedDeltaNet forward has no kernel for this call: " + "; ".join(gaps)
             )
-        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype,
-               device_index, self.tune)
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "GatedDeltaNetFwdProductionKernel",
             key=key,
@@ -412,15 +406,15 @@ class GatedDeltaNetBTHDFwdOp(Op):
         g = g.contiguous()
         beta = beta.contiguous()
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bthd(
-            q, k, v, g, beta, self.chunk_size)
+            q, k, v, g, beta, self.chunk_size
+        )
         self._validate_dtypes(q, k, v, g, beta)
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
@@ -590,9 +584,7 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
             streams = batch * heads
             chunk_size = 128 if streams <= 8 and seq_len % 128 == 0 else 64
         if seq_len % chunk_size != 0:
-            raise ValueError(
-                f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-            )
+            raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -601,7 +593,8 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
         self.chunk_size = chunk_size
         self.dtype = q.dtype
         self.kernel = self._get_kernel(
-            batch, heads, seq_len, chunk_size, dim_k, self.dim_v, q.dtype, q.device.index)
+            batch, heads, seq_len, chunk_size, dim_k, self.dim_v, q.dtype, q.device.index
+        )
 
     def eval_roofline(self) -> tuple[int, int]:
         from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
@@ -746,15 +739,15 @@ class GatedDeltaNetBwdOp(Op):
             Tuple of (dq, dk, dv, dg, dbeta).
         """
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size, do=do)
+            q, k, v, g, beta, self.chunk_size, do=do
+        )
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, S)
         return dq, dk, dv, dg, dbeta
 
@@ -830,7 +823,8 @@ class GatedDeltaNetOp(Op):
         beta: torch.Tensor,
     ) -> Tuple[Kernel, Kernel]:
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size)
+            q, k, v, g, beta, self.chunk_size
+        )
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len

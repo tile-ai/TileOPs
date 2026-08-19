@@ -68,27 +68,36 @@ class MoeGateUpFwdOp(Op):
 
     def _call(self, n: int, dtype: torch.dtype, activation: str) -> GroupedGemmCall:
         return GroupedGemmCall(
-            numel=self.numel, num_experts=self.num_experts,
-            n=n, k=self.k, dtype=dtype, activation=activation,
+            numel=self.numel,
+            num_experts=self.num_experts,
+            n=n,
+            k=self.k,
+            dtype=dtype,
+            activation=activation,
         )
 
     def _get_kernel(self, inputs: tuple, dtype: torch.dtype) -> Kernel:
-        name = self.select_kernel_key(
-            _GATE_UP_KEYS, self._call(self.ffn, dtype, self.activation))
+        name = self.select_kernel_key(_GATE_UP_KEYS, self._call(self.ffn, dtype, self.activation))
         gemm_key, extra = None, {}
         if name == "moe_grouped_gemm_act_kernel":
             # The GEMM it composes with is a role of its own, selected here because
             # this is where the map holding those candidates lives. That role applies
             # no activation, so its call describes none.
-            gemm_key = self.select_kernel_key(
-                _GEMM_KEYS, self._call(2 * self.ffn, dtype, ""))
+            gemm_key = self.select_kernel_key(_GEMM_KEYS, self._call(2 * self.ffn, dtype, ""))
             extra["gemm_cls"] = self.kernel_map[gemm_key]
         return self.get_or_build_kernel(
-            name, inputs,
+            name,
+            inputs,
             key=(name, gemm_key, dtype),
             build=lambda: self.kernel_map[name](
-                self.numel, self.num_experts, self.ffn, self.k,
-                dtype=dtype, activation=self.activation, tune=self.tune, **extra,
+                self.numel,
+                self.num_experts,
+                self.ffn,
+                self.k,
+                dtype=dtype,
+                activation=self.activation,
+                tune=self.tune,
+                **extra,
             ),
         )
 
@@ -113,9 +122,9 @@ class MoeGateUpFwdOp(Op):
 
     def forward(
         self,
-        a: torch.Tensor,             # [numel, K]
-        b: torch.Tensor,             # [num_experts, 2*ffn, K]
-        true_sizes: torch.Tensor,    # [E] int32
+        a: torch.Tensor,  # [numel, K]
+        b: torch.Tensor,  # [num_experts, 2*ffn, K]
+        true_sizes: torch.Tensor,  # [E] int32
         true_offsets: torch.Tensor,  # [E] int32
     ) -> torch.Tensor:
         """Run the gate/up GEMM and apply the gated activation.
@@ -146,8 +155,7 @@ class MoeGateUpFwdOp(Op):
         self._validate_dtypes(a, b, true_sizes, true_offsets)
         for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
             if t.device != a.device:
-                raise ValueError(
-                    f"{name} must be on {a.device}, got {t.device}")
+                raise ValueError(f"{name} must be on {a.device}, got {t.device}")
         self.dtype = a.dtype
         # The op hands over what the manifest declares; how a kernel wants it laid
         # out is its own business.
@@ -176,8 +184,8 @@ def _moe_gate_up_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(
-        tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape),
-        tuple(true_offsets.shape))
+        tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape), tuple(true_offsets.shape)
+    )
     # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
     # non-contiguous public input's strides must not survive into the fake. Dtype is the
     # manifest's ``same_as(a)``.

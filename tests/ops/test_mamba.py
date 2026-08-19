@@ -55,16 +55,19 @@ def cb_producer_fwd_ref(
     return cb.to(dtype)
 
 
-@pytest.mark.parametrize("batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune", [
-    pytest.param(1, 2, 64, 1, 64, torch.float16,  False, marks=pytest.mark.smoke),
-    pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-    pytest.param(1, 2, 64, 2, 64, torch.float16,  False, marks=pytest.mark.smoke),
-    pytest.param(1, 2, 64, 1, 64, torch.float16,  True,  marks=pytest.mark.full),
-    pytest.param(1, 2, 64, 1, 96, torch.float16,  False, marks=pytest.mark.full),
-    pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
-    pytest.param(1, 2, 256, 1, 64, torch.float16,  False, marks=pytest.mark.full),
-    pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
-])
+@pytest.mark.parametrize(
+    "batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune",
+    [
+        pytest.param(1, 2, 64, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
+        pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+        pytest.param(1, 2, 64, 2, 64, torch.float16, False, marks=pytest.mark.smoke),
+        pytest.param(1, 2, 64, 1, 64, torch.float16, True, marks=pytest.mark.full),
+        pytest.param(1, 2, 64, 1, 96, torch.float16, False, marks=pytest.mark.full),
+        pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
+        pytest.param(1, 2, 256, 1, 64, torch.float16, False, marks=pytest.mark.full),
+        pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
+    ],
+)
 def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
     op = CBProducerFwdOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
     seq_len = num_chunks * chunk_len
@@ -97,10 +100,17 @@ class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune):
+def test_da_cumsum_fwd(
+    batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune
+):
     test = DaCumsumFwdTest(
-        batch, num_chunks, chunk_len, n_heads,
-        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        has_dt_bias=has_dt_bias,
+        dt_softplus=dt_softplus,
+        dtype=dtype,
     )
     op = DaCumsumFwdOp(
         chunk_len=chunk_len,
@@ -116,9 +126,14 @@ def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_so
 def test_da_cumsum_fwd_missing_bias_raises():
     """DaCumsumFwdKernel must raise when has_dt_bias=True but dt_bias is None."""
     from tileops.kernels.mamba import DaCumsumFwdKernel
+
     kernel = DaCumsumFwdKernel(
-        batch=1, num_chunks=2, chunk_len=64, n_heads=4,
-        seq_len=128, has_dt_bias=True,
+        batch=1,
+        num_chunks=2,
+        chunk_len=64,
+        n_heads=4,
+        seq_len=128,
+        has_dt_bias=True,
     )
     dt = torch.randn(1, 128, 4, dtype=torch.float32, device="cuda")
     A = -torch.rand(4, dtype=torch.float32, device="cuda")
@@ -137,7 +152,11 @@ def test_da_cumsum_fwd_padded_head_tile():
 
     dt_out, dA_cumsum = op(dt, A)
     ref_dt, ref_cumsum = da_cumsum_fwd_ref(
-        dt, A, num_chunks, chunk_len, dtype=torch.float32,
+        dt,
+        A,
+        num_chunks,
+        chunk_len,
+        dtype=torch.float32,
     )
     torch.testing.assert_close(dt_out, ref_dt, atol=1e-5, rtol=1e-5)
     torch.testing.assert_close(dA_cumsum, ref_cumsum, atol=1e-5, rtol=1e-5)
@@ -156,14 +175,17 @@ def test_da_cumsum_fwd_rejects_undeclared_output_dtype(dtype):
         DaCumsumFwdOp(chunk_len=64, dtype=dtype)
 
 
-
 class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
     pass
 
 
 @SSDChunkScanFwdFixture
-def test_ssd_chunk_scan_fwd(batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune):
-    test = SSDChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype)
+def test_ssd_chunk_scan_fwd(
+    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune
+):
+    test = SSDChunkScanFwdTest(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype
+    )
     op = SSDChunkScanFwdOp(tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 2e-3
@@ -177,10 +199,27 @@ class SSDChunkStateFwdTest(SSDChunkStateFwdWorkload, TestBase):
 
 @SSDChunkStateFwdFixture
 def test_ssd_chunk_state_fwd(
-    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx,
+    batch,
+    num_chunks,
+    chunk_len,
+    n_heads,
+    d_head,
+    d_state,
+    n_groups,
+    dtype,
+    tune,
+    has_seq_idx,
 ):
     test = SSDChunkStateFwdTest(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        dtype,
+        has_seq_idx,
     )
     op = SSDChunkStateFwdOp(tune=tune)
     inputs = test.gen_inputs()
@@ -213,6 +252,7 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g, seq_idx=seq_idx)
 
     from tests.test_base import allclose_compare
+
     atol = 1e-3
     rtol = 1e-3
     allclose_compare(out, ref, atol=atol, rtol=rtol)
@@ -245,11 +285,14 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("config", [
-    {"block_d": 64,  "threads": 32,  "vectorize": True},
-    {"block_d": 128, "threads": 64,  "vectorize": True},
-    {"block_d": 256, "threads": 128, "vectorize": True},
-])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"block_d": 64, "threads": 32, "vectorize": True},
+        {"block_d": 128, "threads": 64, "vectorize": True},
+        {"block_d": 256, "threads": 128, "vectorize": True},
+    ],
+)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_ssd_state_passing_fwd_vectorize(config, dtype):
     """Exercises the vectorize=True code path (lo/hi split per thread)."""
@@ -368,9 +411,9 @@ def mamba2_fwd_ref(
 
     dA_l = dA_cumsum.unsqueeze(-1)
     dA_s = dA_cumsum.unsqueeze(-2)
-    decay_ls = torch.exp(dA_l - dA_s).masked_fill(
-        ~mask.view(1, 1, 1, Q, Q), 0.0
-    ).permute(0, 2, 1, 3, 4)
+    decay_ls = (
+        torch.exp(dA_l - dA_s).masked_fill(~mask.view(1, 1, 1, Q, Q), 0.0).permute(0, 2, 1, 3, 4)
+    )
     cb_heads = cb[:, :, torch.arange(h, device=x.device) // hpg, :, :]
     lcb = cb_heads * decay_ls * dt_c.permute(0, 1, 3, 2).unsqueeze(-2)
     wx_t = x_c.permute(0, 1, 3, 2, 4)
@@ -381,25 +424,28 @@ def mamba2_fwd_ref(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("batch,seqlen,n_heads,d_head,d_state,n_groups,chunk_size", [
-    (1, 256,  4, 64, 32,  1, 256),
-    (2, 512,  8, 64, 64,  2, 256),
-    (1, 512,  4, 64, 128, 1, 256),   # d_state=16 not supported by SSDChunkScanFwdKernel
-])
+@pytest.mark.parametrize(
+    "batch,seqlen,n_heads,d_head,d_state,n_groups,chunk_size",
+    [
+        (1, 256, 4, 64, 32, 1, 256),
+        (2, 512, 8, 64, 64, 2, 256),
+        (1, 512, 4, 64, 128, 1, 256),  # d_state=16 not supported by SSDChunkScanFwdKernel
+    ],
+)
 def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dtype):
     """Mamba2FwdOp output must match the pure-PyTorch reference within tolerance."""
     dev = "cuda"
     torch.manual_seed(42)
-    x       = torch.randn(batch, seqlen, n_heads, d_head,   dtype=dtype,          device=dev) * 0.1
-    dt_raw  = torch.randn(batch, seqlen, n_heads,           dtype=torch.float32,  device=dev) * 0.5
-    A       = -torch.rand(n_heads,                          dtype=torch.float32,  device=dev)
-    B       = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype,          device=dev) * 0.1
-    C       = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype,          device=dev) * 0.1
-    dt_bias = torch.randn(n_heads,                          dtype=torch.float32,  device=dev) * 0.1
+    x = torch.randn(batch, seqlen, n_heads, d_head, dtype=dtype, device=dev) * 0.1
+    dt_raw = torch.randn(batch, seqlen, n_heads, dtype=torch.float32, device=dev) * 0.5
+    A = -torch.rand(n_heads, dtype=torch.float32, device=dev)
+    B = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype, device=dev) * 0.1
+    C = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype, device=dev) * 0.1
+    dt_bias = torch.randn(n_heads, dtype=torch.float32, device=dev) * 0.1
 
     op = Mamba2FwdOp(chunk_size=chunk_size, dt_softplus=True)
     y_op, _ = op.forward(x, dt_raw, A, B, C, dt_bias=dt_bias)
-    y_ref   = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
+    y_ref = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
 
     atol = 1e-2 if dtype == torch.float16 else 2e-2
     allclose_compare(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)
@@ -422,56 +468,92 @@ TOKENS = B * S * H
 
 def _da_cumsum_op(dt_softplus: bool, has_dt_bias: bool) -> SimpleNamespace:
     return SimpleNamespace(
-        batch=B, seq_len=S, n_heads=H, dt_softplus=dt_softplus,
+        batch=B,
+        seq_len=S,
+        n_heads=H,
+        dt_softplus=dt_softplus,
         dt_bias_shape=(H,) if has_dt_bias else None,
-        dtype=torch.float16)
+        dtype=torch.float16,
+    )
 
 
 def _chunk_state_op() -> SimpleNamespace:
     return SimpleNamespace(
-        batch=B, num_chunks=NC, chunk_len=Q, n_heads=H, d_head=P, d_state=N,
-        n_groups=G, dtype=torch.float16)
+        batch=B,
+        num_chunks=NC,
+        chunk_len=Q,
+        n_heads=H,
+        d_head=P,
+        d_state=N,
+        n_groups=G,
+        dtype=torch.float16,
+    )
 
 
 def _state_passing_op(d_state: int, has_initial_states: bool) -> SimpleNamespace:
     return SimpleNamespace(
-        batch=B, num_chunks=NC, n_heads=H, d_state=d_state,
+        batch=B,
+        num_chunks=NC,
+        n_heads=H,
+        d_state=d_state,
         initial_states_shape=(B, H, d_state) if has_initial_states else None,
-        dtype=torch.float32)
+        dtype=torch.float32,
+    )
 
 
 def _mamba2_op(has_dt_bias: bool, has_initial_states: bool) -> SimpleNamespace:
     return SimpleNamespace(
-        batch=B, seqlen=S, num_chunks=NC, chunk_size=Q, n_heads=H, d_head=P,
-        d_state=N, n_groups=G, dtype=torch.float16, dt_softplus=True,
+        batch=B,
+        seqlen=S,
+        num_chunks=NC,
+        chunk_size=Q,
+        n_heads=H,
+        d_head=P,
+        d_state=N,
+        n_groups=G,
+        dtype=torch.float16,
+        dt_softplus=True,
         dt_bias_shape=(H,) if has_dt_bias else None,
-        initial_states_shape=(B, H, P, N) if has_initial_states else None)
+        initial_states_shape=(B, H, P, N) if has_initial_states else None,
+    )
 
 
 # One public roofline function reads which optional inputs the call passed, so
 # the four presence configurations exercise the same helper.
-@pytest.mark.parametrize(("has_dt_bias", "has_initial_states"),
-                         [(False, False), (True, False),
-                          (False, True), (True, True)])
+@pytest.mark.parametrize(
+    ("has_dt_bias", "has_initial_states"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
 @pytest.mark.smoke
-def test_mamba2_fwd_roofline_flops_equal_stage_sum(has_dt_bias: bool,
-                                                   has_initial_states: bool):
+def test_mamba2_fwd_roofline_flops_equal_stage_sum(has_dt_bias: bool, has_initial_states: bool):
     """Composite FLOPs must equal the sum of the five standalone stages."""
-    composite_flops, _ = formulas.mamba2_fwd_roofline(
-        _mamba2_op(has_dt_bias, has_initial_states))
+    composite_flops, _ = formulas.mamba2_fwd_roofline(_mamba2_op(has_dt_bias, has_initial_states))
 
     stage_flops = 0
     stage_flops += formulas.da_cumsum_fwd_roofline(
-        _da_cumsum_op(dt_softplus=True, has_dt_bias=has_dt_bias))[0]
-    stage_flops += formulas.cb_producer_roofline(SimpleNamespace(
-        batch=B, num_chunks=NC, n_groups=G, chunk_len=Q, d_state=N,
-        dtype=torch.float16))[0]
+        _da_cumsum_op(dt_softplus=True, has_dt_bias=has_dt_bias)
+    )[0]
+    stage_flops += formulas.cb_producer_roofline(
+        SimpleNamespace(
+            batch=B, num_chunks=NC, n_groups=G, chunk_len=Q, d_state=N, dtype=torch.float16
+        )
+    )[0]
     stage_flops += formulas.ssd_chunk_state_fwd_roofline(_chunk_state_op())[0]
     # State passing runs over the flattened d_head * d_state dimension.
     stage_flops += formulas.ssd_state_passing_fwd_roofline(
-        _state_passing_op(P * N, has_initial_states))[0]
-    stage_flops += formulas.ssd_chunk_scan_fwd_roofline(SimpleNamespace(
-        batch=B, num_chunks=NC, chunk_len=Q, n_heads=H, d_head=P, d_state=N,
-        n_groups=G, dtype=torch.float16))[0]
+        _state_passing_op(P * N, has_initial_states)
+    )[0]
+    stage_flops += formulas.ssd_chunk_scan_fwd_roofline(
+        SimpleNamespace(
+            batch=B,
+            num_chunks=NC,
+            chunk_len=Q,
+            n_heads=H,
+            d_head=P,
+            d_state=N,
+            n_groups=G,
+            dtype=torch.float16,
+        )
+    )[0]
 
     assert composite_flops == stage_flops

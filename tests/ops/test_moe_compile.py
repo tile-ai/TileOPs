@@ -66,8 +66,7 @@ def _permute_align_case():
     def make():
         return MoePermuteAlignFwdOp(_TOKENS, _TOP_K, _NUM_EXPERTS, block_size=4)
 
-    topk_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
+    topk_ids = torch.randint(0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
     # Only the padded token count is reproducible: a slot inside an expert is claimed
     # by ``atomic_add``, so two runs order the same tokens differently.
     return make, (topk_ids,), (2,)
@@ -75,13 +74,10 @@ def _permute_align_case():
 
 def _permute_nopad_case(local: int = _NUM_EXPERTS, with_map: bool = False):
     def make():
-        return MoePermuteNopadFwdOp(
-            num_experts=_NUM_EXPERTS, num_experts_local=local)
+        return MoePermuteNopadFwdOp(num_experts=_NUM_EXPERTS, num_experts_local=local)
 
-    hidden_states = torch.randn(
-        _TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
+    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    topk_ids = torch.randint(0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
     inputs = (hidden_states, topk_ids)
     if with_map:
         expert_map = torch.full((_NUM_EXPERTS,), -1, dtype=torch.int32, device="cuda")
@@ -116,8 +112,7 @@ _LEAF_CASES = {
     # Supplying the map keeps the graph inside the same operator: the fake sizes the
     # four per-expert outputs from ``num_experts_local``, a constructor parameter, so
     # the map's contents never reach a traced region.
-    "permute_nopad_with_a_map": lambda: _permute_nopad_case(
-        local=_NUM_EXPERTS // 2, with_map=True),
+    "permute_nopad_with_a_map": lambda: _permute_nopad_case(local=_NUM_EXPERTS // 2, with_map=True),
     "gate_up": _gate_up_case,
     "grouped_gemm_nopad": _grouped_gemm_nopad_case,
 }
@@ -177,8 +172,12 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     """
     num_experts, top_k, tokens, hidden, ffn = 4, 2, 4, 128, 128
     experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-        num_tokens=tokens, num_experts=num_experts, num_experts_local=num_experts,
-        top_k=top_k, hidden_size=hidden, ffn_size=ffn,
+        num_tokens=tokens,
+        num_experts=num_experts,
+        num_experts_local=num_experts,
+        top_k=top_k,
+        hidden_size=hidden,
+        ffn_size=ffn,
     )
     assert experts.compile_op_names == ()
 
@@ -196,8 +195,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     kwargs = {"num_experts": num_experts}
     owned_by_leaves = {
         operator_overload(name)
-        for leaf in (experts._permute, experts._gate_up, experts._gemm_down,
-                     experts._unpermute)
+        for leaf in (experts._permute, experts._gate_up, experts._gemm_down, experts._unpermute)
         for name in type(leaf).compile_op_names
     }
 
@@ -205,8 +203,8 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 
     assert calls, "the traced graph called nothing"
     assert calls <= owned_by_leaves, (
-        f"graph holds nodes no leaf op owns: "
-        f"{sorted(str(c) for c in calls - owned_by_leaves)}")
+        f"graph holds nodes no leaf op owns: {sorted(str(c) for c in calls - owned_by_leaves)}"
+    )
 
 
 for _op_cls in (

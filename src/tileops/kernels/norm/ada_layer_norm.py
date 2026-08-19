@@ -34,7 +34,6 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["AdaLayerNormKernel"]
 
 
-
 def _should_use_cp_async(
     n: int,
     dtype: torch.dtype,

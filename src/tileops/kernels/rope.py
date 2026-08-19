@@ -45,8 +45,9 @@ __all__ = [
 
 
 @functools.lru_cache(maxsize=32)
-def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str,
-                       threads: int = 256, num_per_thread: int = 8) -> object:
+def _make_rope_neox_1d(
+    seq_len: int, head_dim: int, dtype: str, threads: int = 256, num_per_thread: int = 8
+) -> object:
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
 
     cos/sin are of shape (seq_len, head_dim // 2).
@@ -90,8 +91,15 @@ def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str,
 
 
 @functools.lru_cache(maxsize=32)
-def _make_rope_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
-                       dtype: str, threads: int = 256, num_per_thread: int = 8) -> object:
+def _make_rope_neox_2d(
+    batch: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+    dtype: str,
+    threads: int = 256,
+    num_per_thread: int = 8,
+) -> object:
     """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
 
     cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
@@ -139,8 +147,9 @@ def _make_rope_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
 
 
 @functools.lru_cache(maxsize=32)
-def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str,
-                           threads: int = 256, num_per_thread: int = 8) -> object:
+def _make_rope_non_neox_1d(
+    seq_len: int, head_dim: int, dtype: str, threads: int = 256, num_per_thread: int = 8
+) -> object:
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
 
     cos/sin shape: (seq_len, head_dim // 2). Applied with interleaving to match
@@ -184,10 +193,16 @@ def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str,
 
 
 @functools.lru_cache(maxsize=32)
-def _make_rope_neox_position_ids_thd(num_tokens: int, num_heads: int, head_dim: int,
-                                     rotary_dim: int, max_position: int, dtype: str,
-                                     threads: int = 256,
-                                     num_per_thread: int = 8) -> object:
+def _make_rope_neox_position_ids_thd(
+    num_tokens: int,
+    num_heads: int,
+    head_dim: int,
+    rotary_dim: int,
+    max_position: int,
+    dtype: str,
+    threads: int = 256,
+    num_per_thread: int = 8,
+) -> object:
     """THD neox RoPE kernel with explicit absolute position ids."""
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
@@ -218,8 +233,10 @@ def _make_rope_neox_position_ids_thd(num_tokens: int, num_heads: int, head_dim: 
                         val = x[flat_idx]
 
                         paired_col = T.if_then_else(
-                            col < half, col + half,
-                            T.if_then_else(col < rotary_dim, col - half, col))
+                            col < half,
+                            col + half,
+                            T.if_then_else(col < rotary_dim, col - half, col),
+                        )
                         head_base = flat_idx - col
                         paired_idx = head_base + paired_col
                         paired_val = x[paired_idx]
@@ -232,9 +249,15 @@ def _make_rope_neox_position_ids_thd(num_tokens: int, num_heads: int, head_dim: 
 
 
 @functools.lru_cache(maxsize=32)
-def _make_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
-                           dtype: str, threads: int = 256,
-                           num_per_thread: int = 8) -> object:
+def _make_rope_non_neox_2d(
+    batch: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+    dtype: str,
+    threads: int = 256,
+    num_per_thread: int = 8,
+) -> object:
     """2D non-neox (RoFormer) RoPE kernel: (batch, seq_len, num_heads, head_dim)."""
     half = head_dim // 2
     N_total = batch * seq_len * num_heads * head_dim
@@ -304,9 +327,17 @@ class _RopeKernelBase(Kernel):
     SUPPORTED_DTYPES = _FLOAT_DTYPES
     ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
 
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
-                 layout: str = "1d", batch: int = 1, num_heads: int = 1,
-                 config: dict | None = None, tune: bool = False):
+    def __init__(
+        self,
+        seq_len: int,
+        head_dim: int,
+        dtype: torch.dtype,
+        layout: str = "1d",
+        batch: int = 1,
+        num_heads: int = 1,
+        config: dict | None = None,
+        tune: bool = False,
+    ):
         super().__init__()
         if dtype not in self.SUPPORTED_DTYPES:
             supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
@@ -335,25 +366,39 @@ class _RopeKernelBase(Kernel):
         if self.ROTATION_STYLE == "neox":
             if self.layout == "1d":
                 return _make_rope_neox_1d(
-                    self.seq_len, self.head_dim, dtype_str,
-                    threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                    self.seq_len,
+                    self.head_dim,
+                    dtype_str,
+                    threads=cfg["threads"],
+                    num_per_thread=cfg["num_per_thread"],
                 )
             else:
                 return _make_rope_neox_2d(
-                    self.batch, self.seq_len, self.num_heads, self.head_dim,
-                    dtype_str, threads=cfg["threads"],
+                    self.batch,
+                    self.seq_len,
+                    self.num_heads,
+                    self.head_dim,
+                    dtype_str,
+                    threads=cfg["threads"],
                     num_per_thread=cfg["num_per_thread"],
                 )
         elif self.ROTATION_STYLE == "non_neox":
             if self.layout == "1d":
                 return _make_rope_non_neox_1d(
-                    self.seq_len, self.head_dim, dtype_str,
-                    threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                    self.seq_len,
+                    self.head_dim,
+                    dtype_str,
+                    threads=cfg["threads"],
+                    num_per_thread=cfg["num_per_thread"],
                 )
             else:
                 return _make_rope_non_neox_2d(
-                    self.batch, self.seq_len, self.num_heads, self.head_dim,
-                    dtype_str, threads=cfg["threads"],
+                    self.batch,
+                    self.seq_len,
+                    self.num_heads,
+                    self.head_dim,
+                    dtype_str,
+                    threads=cfg["threads"],
                     num_per_thread=cfg["num_per_thread"],
                 )
         else:
@@ -364,8 +409,7 @@ class _RopeKernelBase(Kernel):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor,
-                sin: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation.
 
         Args:
@@ -405,9 +449,17 @@ class RopeNeoxPositionIdsKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
-    def __init__(self, num_tokens: int, num_heads: int, head_dim: int, rotary_dim: int,
-                 max_position: int, dtype: torch.dtype, config: dict | None = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        num_tokens: int,
+        num_heads: int,
+        head_dim: int,
+        rotary_dim: int,
+        max_position: int,
+        dtype: torch.dtype,
+        config: dict | None = None,
+        tune: bool = False,
+    ):
         super().__init__()
         if dtype not in self.SUPPORTED_DTYPES:
             supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
@@ -450,8 +502,9 @@ class RopeNeoxPositionIdsKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
-                position_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor
+    ) -> torch.Tensor:
         cfg = self.config
         orig_shape = x.shape
         result = self.kernel(cfg["threads"], cfg["num_per_thread"])(

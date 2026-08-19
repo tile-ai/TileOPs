@@ -107,12 +107,16 @@ class SSDStatePassingFwdOp(Op):
         self.n_heads = n_heads
         self.d_state = d_state
         self.dtype = states.dtype
-        self.initial_states_shape = (
-            None if initial_states is None else tuple(initial_states.shape)
-        )
+        self.initial_states_shape = None if initial_states is None else tuple(initial_states.shape)
         self.kernel = self._get_kernel(
-            batch, num_chunks, n_heads, d_state, states.dtype,
-            initial_states is not None, states.device.index)
+            batch,
+            num_chunks,
+            n_heads,
+            d_state,
+            states.dtype,
+            initial_states is not None,
+            states.device.index,
+        )
 
         states = states.contiguous()
         dA_chunk_cumsum = dA_chunk_cumsum.contiguous()

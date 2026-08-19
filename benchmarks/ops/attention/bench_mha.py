@@ -61,15 +61,20 @@ def _flashinfer_mha_fwd(test: MhaFwdWorkload, q, k, v):
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
     wrapper.plan(
-        qo_indptr=cu_seqlens, kv_indptr=cu_seqlens,
-        num_qo_heads=H, num_kv_heads=H, head_dim_qk=D,
+        qo_indptr=cu_seqlens,
+        kv_indptr=cu_seqlens,
+        num_qo_heads=H,
+        num_kv_heads=H,
+        head_dim_qk=D,
         causal=test.is_causal,
         q_data_type=q.dtype,
     )
 
     def run_fn(q, k, v):
         return wrapper.run(
-            q.reshape(-1, H, D), k.reshape(-1, H, D), v.reshape(-1, H, D),
+            q.reshape(-1, H, D),
+            k.reshape(-1, H, D),
+            v.reshape(-1, H, D),
         ).reshape(B, S, H, D)
 
     return run_fn
@@ -77,27 +82,31 @@ def _flashinfer_mha_fwd(test: MhaFwdWorkload, q, k, v):
 
 def _torch_mha_fwd(test):
     """Torch SDPA forward baseline."""
+
     def fn(q, k, v):
         out = F.scaled_dot_product_attention(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
-            is_causal=test.is_causal)
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=test.is_causal
+        )
         return out.transpose(1, 2)
+
     return fn
 
 
 def _torch_mha_bwd(test):
     """Torch SDPA backward baseline (includes forward recompute)."""
+
     @torch.enable_grad()
     def fn(q, k, v, o, grad_output, lse):
         q = q.detach().requires_grad_(True)
         k = k.detach().requires_grad_(True)
         v = v.detach().requires_grad_(True)
         out = F.scaled_dot_product_attention(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
-            is_causal=test.is_causal)
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=test.is_causal
+        )
         # Transposing grad_output into SDPA's layout is a view, so the baseline
         # measures SDPA's backward alone.
         return backward_of(out)(grad_output.transpose(1, 2))
+
     return fn
 
 
@@ -105,8 +114,9 @@ _MHA_FWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_FWD_OP), mha_qkv_arg
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_FWD_BENCH_PARAMS)
-def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
-                       dtype: torch.dtype, tune: bool) -> None:
+def test_mha_fwd_bench(
+    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
+) -> None:
     test = MhaFwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
@@ -132,8 +142,9 @@ _MHA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_BWD_OP), mha_qkv_arg
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)
-def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
-                       dtype: torch.dtype, tune: bool) -> None:
+def test_mha_bwd_bench(
+    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
+) -> None:
     test = MhaBwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 

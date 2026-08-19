@@ -24,12 +24,14 @@ def main() -> int:
     env = {}
     if os.path.exists(args.env_json):
         # A truncated file must not block publishing the numbers.
-        with contextlib.suppress(json.JSONDecodeError), \
-                open(args.env_json, encoding="utf-8") as f:
+        with contextlib.suppress(json.JSONDecodeError), open(args.env_json, encoding="utf-8") as f:
             env = json.load(f)
     if not env:
-        print("::warning::env.json missing or empty; the Benchmarks page will "
-              "report the run environment as unpublished", file=sys.stderr)
+        print(
+            "::warning::env.json missing or empty; the Benchmarks page will "
+            "report the run environment as unpublished",
+            file=sys.stderr,
+        )
 
     # The installed set sits beside the environment rather than inside it: the
     # environment is a table a reader scans, and this is an inventory to search.

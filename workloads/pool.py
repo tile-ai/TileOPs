@@ -1,6 +1,5 @@
 """Workload definitions for the pool op family."""
 
-
 from typing import Callable, Optional
 
 import torch
@@ -41,6 +40,7 @@ class AvgPool1dBenchCase:
         x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
 
+
 class AvgPool2dBenchCase:
     def __init__(
         self,
@@ -73,6 +73,7 @@ class AvgPool2dBenchCase:
             self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
         ).contiguous()
         return (x,)
+
 
 class AvgPool3dBenchCase:
     def __init__(
@@ -115,6 +116,7 @@ class AvgPool3dBenchCase:
         ).contiguous()
         return (x,)
 
+
 class MaxPool2dBenchCase:
     def __init__(
         self,
@@ -148,6 +150,7 @@ class MaxPool2dBenchCase:
         ).contiguous()
         return (x,)
 
+
 class MaxPool1dBenchCase:
     def __init__(
         self,
@@ -176,6 +179,7 @@ class MaxPool1dBenchCase:
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
+
 
 class MaxPool3dBenchCase:
     def __init__(
@@ -217,6 +221,7 @@ class MaxPool3dBenchCase:
             dtype=self.dtype,
         ).contiguous()
         return (x,)
+
 
 class AvgPoolWorkload(WorkloadBase):
     def __init__(
@@ -324,7 +329,6 @@ class AdaptivePool2dWorkload(WorkloadBase):
         self.output_size = output_size
         self.dtype = dtype
 
-
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(
             self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
@@ -333,12 +337,21 @@ class AdaptivePool2dWorkload(WorkloadBase):
 
 
 class MeanPoolingWorkload(WorkloadBase):
-
-    def __init__(self, batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
-                 chunks_per_batch: int, seq_num: int, use_offsets: int,
-                 dtype: torch.dtype, accum_dtype: torch.dtype,
-                 offsets: Optional[torch.Tensor] = None,
-                 indices: Optional[torch.Tensor] = None) -> None:
+    def __init__(
+        self,
+        batch_size: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        chunks_per_batch: int,
+        seq_num: int,
+        use_offsets: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
+    ) -> None:
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.heads = heads
@@ -354,18 +367,20 @@ class MeanPoolingWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         x = torch.randn(
-            self.batch_size, self.seq_len, self.heads, self.dim,
-            device="cuda", dtype=self.dtype)
+            self.batch_size, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         return x, self.offsets, self.indices
 
-    def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
-                    indices: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
+    ) -> torch.Tensor:
         _ = indices
         batch_size, seq_len, heads, dim = x.shape
 
         if self.use_offsets == 0:
             output = torch.empty(
-                batch_size, self.chunks_per_batch, heads, dim, dtype=x.dtype, device=x.device)
+                batch_size, self.chunks_per_batch, heads, dim, dtype=x.dtype, device=x.device
+            )
             for chunk_id in range(self.chunks_per_batch):
                 start_token = chunk_id * self.chunk_size
                 end_token = min(start_token + self.chunk_size, seq_len)
@@ -376,7 +391,8 @@ class MeanPoolingWorkload(WorkloadBase):
             chunk_counts = ((lengths + self.chunk_size - 1) // self.chunk_size).tolist()
             total_chunks = sum(chunk_counts)
             output = torch.empty(
-                batch_size, total_chunks, heads, dim, dtype=x.dtype, device=x.device)
+                batch_size, total_chunks, heads, dim, dtype=x.dtype, device=x.device
+            )
             chunk_idx = 0
             for b in range(batch_size):
                 for seq_id, chunks_i in enumerate(chunk_counts):

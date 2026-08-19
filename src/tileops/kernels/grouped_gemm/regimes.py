@@ -10,8 +10,8 @@ gains 4-7% inside them and costs 34-39% above them.
 
 __all__ = ["rows_per_group_regime"]
 
-_SHORT_MAX_ROWS_PER_GROUP = 32     # above this, groups fill tiles and the default wins
-_THIN_MAX_ROWS_PER_GROUP = 16      # at or below, a group cannot fill a cooperative split
+_SHORT_MAX_ROWS_PER_GROUP = 32  # above this, groups fill tiles and the default wins
+_THIN_MAX_ROWS_PER_GROUP = 16  # at or below, a group cannot fill a cooperative split
 
 
 def rows_per_group_regime(numel: int, num_groups: int) -> str | None:

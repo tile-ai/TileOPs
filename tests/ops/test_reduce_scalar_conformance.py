@@ -11,9 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
-)
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 _DIMS = [None, 0, -1, (), []]
@@ -84,8 +82,18 @@ def test_scalar_welford_reductions(dim, keepdim: bool, dtype: torch.dtype) -> No
 
     x = _make_scalar(dtype)
     cases = [
-        (VarFwdOp, lambda t, *, dim, keepdim: torch.var(t.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)),
-        (StdFwdOp, lambda t, *, dim, keepdim: torch.std(t.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)),
+        (
+            VarFwdOp,
+            lambda t, *, dim, keepdim: torch.var(
+                t.float(), dim=dim, keepdim=keepdim, correction=1
+            ).to(dtype),
+        ),
+        (
+            StdFwdOp,
+            lambda t, *, dim, keepdim: torch.std(
+                t.float(), dim=dim, keepdim=keepdim, correction=1
+            ).to(dtype),
+        ),
     ]
 
     for op_cls, ref_fn in cases:
@@ -101,7 +109,10 @@ def test_scalar_welford_reductions(dim, keepdim: bool, dtype: torch.dtype) -> No
     op = VarMeanFwdOp(dim=dim, keepdim=keepdim)
     var_y, mean_y = op(x)
     ref_var, ref_mean = torch.var_mean(
-        x.float(), dim=dim, keepdim=keepdim, correction=1,
+        x.float(),
+        dim=dim,
+        keepdim=keepdim,
+        correction=1,
     )
     ref_var = ref_var.to(dtype)
     ref_mean = ref_mean.to(dtype)
@@ -120,7 +131,9 @@ def test_scalar_welford_reductions(dim, keepdim: bool, dtype: torch.dtype) -> No
 )
 @pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
 def test_invalid_dof_welford_reductions_match_pytorch(
-    shape: tuple[int, ...], dim, keepdim: bool,
+    shape: tuple[int, ...],
+    dim,
+    keepdim: bool,
 ) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 
@@ -149,10 +162,14 @@ def test_invalid_dof_welford_reductions_match_pytorch(
 @pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
 @pytest.mark.parametrize("dtype", _FLOAT_DTYPES, ids=["fp16", "bf16", "fp32"])
 @pytest.mark.parametrize(
-    "make_input", [_make_zero_scalar, _make_scalar], ids=["zero", "nonzero"],
+    "make_input",
+    [_make_zero_scalar, _make_scalar],
+    ids=["zero", "nonzero"],
 )
 def test_scalar_logical_and_count_reductions(
-    dim, dtype: torch.dtype, make_input,
+    dim,
+    dtype: torch.dtype,
+    make_input,
 ) -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
@@ -168,8 +185,7 @@ def test_scalar_logical_and_count_reductions(
         ref = torch_fn(x, dim=dim)
         assert y.dtype == out_dtype, f"{op_cls.__name__} scalar dtype {y.dtype}"
         assert y.shape == ref.shape, (
-            f"{op_cls.__name__} scalar dim={dim} dtype={dtype}: "
-            f"shape {y.shape} vs ref {ref.shape}"
+            f"{op_cls.__name__} scalar dim={dim} dtype={dtype}: shape {y.shape} vs ref {ref.shape}"
         )
         torch.testing.assert_close(y, ref, atol=0, rtol=0)
 

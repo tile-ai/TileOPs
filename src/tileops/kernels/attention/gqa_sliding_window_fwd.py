@@ -10,7 +10,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale
 
 __all__ = [
-    'GQASlidingWindowFwdWgmmaPipelinedKernel',
+    "GQASlidingWindowFwdWgmmaPipelinedKernel",
 ]
 
 
@@ -36,7 +36,8 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     @tilelang.jit(
         out_idx=[3, 4],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _gqa_sw_fwd_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
         q_shape = (batch, seq_len, heads, dim)
         kv_shape = (batch, seq_len, heads_kv, dim)
@@ -52,32 +53,35 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
             by: T.int32,
             bz: T.int32,
         ) -> None:
-            T.copy(k[bz, k_idx * block_n:(k_idx + 1) * block_n,
-                      by // groups, :], k_shared)
+            T.copy(k[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :], k_shared)
             if is_causal and has_window:
                 for i, j in T.Parallel(block_m, block_n):
                     causal_mask = bx * block_m + i < k_idx * block_n + j
                     left_mask = (window_size_left >= 0) and (
-                        k_idx * block_n + j < bx * block_m + i - window_size_left)
+                        k_idx * block_n + j < bx * block_m + i - window_size_left
+                    )
                     acc_s[i, j] = T.if_then_else(
-                        causal_mask or left_mask, -T.infinity(accum_dtype), 0)
+                        causal_mask or left_mask, -T.infinity(accum_dtype), 0
+                    )
             elif is_causal:
                 for i, j in T.Parallel(block_m, block_n):
                     acc_s[i, j] = T.if_then_else(
-                        bx * block_m + i < k_idx * block_n + j,
-                        -T.infinity(accum_dtype), 0)
+                        bx * block_m + i < k_idx * block_n + j, -T.infinity(accum_dtype), 0
+                    )
             elif has_window:
                 for i, j in T.Parallel(block_m, block_n):
                     left_mask = (window_size_left >= 0) and (
-                        k_idx * block_n + j < bx * block_m + i - window_size_left)
+                        k_idx * block_n + j < bx * block_m + i - window_size_left
+                    )
                     right_mask = (window_size_right >= 0) and (
-                        k_idx * block_n + j > bx * block_m + i + window_size_right)
+                        k_idx * block_n + j > bx * block_m + i + window_size_right
+                    )
                     acc_s[i, j] = T.if_then_else(
-                        left_mask or right_mask, -T.infinity(accum_dtype), 0)
+                        left_mask or right_mask, -T.infinity(accum_dtype), 0
+                    )
             else:
                 T.clear(acc_s)
-            T.gemm(q_shared, k_shared, acc_s,
-                   transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+            T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
         @T.macro
         def mma1(
@@ -89,8 +93,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
             by: T.int32,
             bz: T.int32,
         ) -> None:
-            T.copy(v[bz, k_idx * block_n:(k_idx + 1) * block_n,
-                      by // groups, :], v_shared)
+            T.copy(v[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :], v_shared)
             T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
         @T.prim_func
@@ -101,10 +104,11 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
             output: T.Tensor(q_shape, dtype),
             lse: T.Tensor([batch, heads, seq_len], accum_dtype),
         ) -> None:
-            with T.Kernel(
-                T.ceildiv(seq_len, block_m), heads, batch,
-                threads=threads) as (bx, by, bz):
-
+            with T.Kernel(T.ceildiv(seq_len, block_m), heads, batch, threads=threads) as (
+                bx,
+                by,
+                bz,
+            ):
                 q_shared = T.alloc_shared([block_m, dim], dtype)
                 k_shared = T.alloc_shared([block_n, dim], dtype)
                 v_shared = T.alloc_shared([block_n, dim], dtype)
@@ -118,9 +122,8 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                T.annotate_layout(
-                    {o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
-                T.copy(q[bz, bx * block_m:(bx + 1) * block_m, by, :], q_shared)
+                T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
+                T.copy(q[bz, bx * block_m : (bx + 1) * block_m, by, :], q_shared)
                 T.clear(acc_o)
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -129,8 +132,8 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                     k_end = T.ceildiv(T.min(seq_len, (bx + 1) * block_m), block_n)
                 elif has_window and window_size_right >= 0:
                     k_end = T.ceildiv(
-                        T.min(seq_len, (bx + 1) * block_m + window_size_right),
-                        block_n)
+                        T.min(seq_len, (bx + 1) * block_m + window_size_right), block_n
+                    )
                 else:
                     k_end = T.ceildiv(seq_len, block_n)
 
@@ -141,9 +144,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
 
                 loop_count = T.max(k_end - k_start, 0)
 
-                for k_offset in T.Pipelined(
-                    loop_count,
-                    num_stages=num_stages):
+                for k_offset in T.Pipelined(loop_count, num_stages=num_stages):
                     k_idx = k_start + k_offset
                     mma0(k, q_shared, k_shared, acc_s, k_idx, bx, by, bz)
                     # Online softmax with scores_max clamping.
@@ -156,14 +157,11 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                     for i in T.Parallel(block_m):
                         # Clamp to a finite floor so exp2(prev - curr) never
                         # evaluates to exp2(-inf - (-inf)) = exp2(nan).
-                        scores_max[i] = T.max(scores_max[i],
-                                              T.cast(-1e38, accum_dtype))
+                        scores_max[i] = T.max(scores_max[i], T.cast(-1e38, accum_dtype))
                     for i in T.Parallel(block_m):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale -
-                                                 scores_max[i] * scale)
+                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_m, block_n):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale -
-                                             scores_max[i] * scale)
+                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
                     T.reduce_sum(acc_s, scores_sum, dim=1)
                     for i in T.Parallel(block_m):
                         logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
@@ -181,35 +179,57 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                 T.sync_threads(3, threads)
                 T.copy(acc_o, o_shared)
                 T.sync_threads(3, threads)
-                T.copy(o_shared, output[bz, bx * block_m:(bx + 1) * block_m, by, :])
+                T.copy(o_shared, output[bz, bx * block_m : (bx + 1) * block_m, by, :])
                 for i in T.Parallel(block_m):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                T.copy(logsum, lse[bz, by, bx * block_m:(bx + 1) * block_m])
+                T.copy(logsum, lse[bz, by, bx * block_m : (bx + 1) * block_m])
 
         return _gqa_sw_fwd_wgmma_pipelined_main
 
     return _gqa_sw_fwd_wgmma_pipelined_func
 
 
-@torch.library.custom_op(
-    "top::gqa_sw_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("top::gqa_sw_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
 def _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
-    batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
-    is_causal: bool, window_size_left: int, window_size_right: int,
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    is_causal: bool,
+    window_size_left: int,
+    window_size_right: int,
     dtype: str,
-    block_m: int, block_n: int, num_stages: int, threads: int,
-    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    block_m: int,
+    block_n: int,
+    num_stages: int,
+    threads: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _gqa_sw_fwd_wgmma_pipelined_kernel(
-        batch, heads, heads_kv, seq_len, dim,
-        is_causal, window_size_left, window_size_right, dtype)(
-        block_m, block_n, num_stages, threads)(q, k, v)
+        batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left, window_size_right, dtype
+    )(block_m, block_n, num_stages, threads)(q, k, v)
 
 
 @_gqa_sw_fwd_wgmma_pipelined_wrapped_kernel.register_fake
-def _(batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left,
-      window_size_right, dtype, block_m, block_n, num_stages, threads,
-      *inputs):
+def _(
+    batch,
+    heads,
+    heads_kv,
+    seq_len,
+    dim,
+    is_causal,
+    window_size_left,
+    window_size_right,
+    dtype,
+    block_m,
+    block_n,
+    num_stages,
+    threads,
+    *inputs,
+):
     fake_o = torch.empty_like(inputs[0])
     fake_lse = fake_o.new_empty([batch, heads, seq_len])
     return fake_o, fake_lse
@@ -246,9 +266,16 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
         self.dtype = dtype
 
         self.kernel = _gqa_sw_fwd_wgmma_pipelined_kernel(
-            self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
-            self.is_causal, self.window_size_left, self.window_size_right,
-            self.dtype_str)
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+            self.dim,
+            self.is_causal,
+            self.window_size_left,
+            self.window_size_right,
+            self.dtype_str,
+        )
 
         self.init_config(config, tune)
 
@@ -263,19 +290,28 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        configs = list(itertools.product([64, 128], [64, 128],
-                                         [2, 3], [128, 256]))
-        return [{'block_m': c[0], 'block_n': c[1],
-                 'num_stages': c[2], 'threads': c[3]} for c in configs]
+        configs = list(itertools.product([64, 128], [64, 128], [2, 3], [128, 256]))
+        return [
+            {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs
+        ]
 
-    def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         output, _ = _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
-            self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
-            self.is_causal, self.window_size_left, self.window_size_right,
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+            self.dim,
+            self.is_causal,
+            self.window_size_left,
+            self.window_size_right,
             self.dtype_str,
-            self.config["block_m"], self.config["block_n"],
-            self.config["num_stages"], self.config["threads"],
-            q, k, v)
+            self.config["block_m"],
+            self.config["block_n"],
+            self.config["num_stages"],
+            self.config["threads"],
+            q,
+            k,
+            v,
+        )
         return output

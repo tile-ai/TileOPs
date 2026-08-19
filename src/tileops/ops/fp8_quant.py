@@ -11,10 +11,7 @@ __all__ = ["FP8QuantFwdOp"]
 
 
 class FP8QuantFwdOp(Op):
-
-    def __init__(self,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False):
         self.batch = None
         self.seq_len_kv = None
         self.kv_group = None
@@ -42,7 +39,8 @@ class FP8QuantFwdOp(Op):
             "fp8_quant_kernel",
             key=key,
             build=lambda: self.kernel_map["fp8_quant_kernel"](
-                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune),
+                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
+            ),
         )
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -63,5 +61,6 @@ class FP8QuantFwdOp(Op):
         self.index_dim = index_dim
         self.in_dtype = input_tensor.dtype
         self.kernel = self._get_kernel(
-            batch, seq_len_kv, kv_group, index_dim, input_tensor.dtype, input_tensor.device.index)
+            batch, seq_len_kv, kv_group, index_dim, input_tensor.dtype, input_tensor.device.index
+        )
         return self.kernel(input_tensor)

@@ -17,6 +17,7 @@ import torch
 
 try:
     from vllm.model_executor.layers.fused_moe import fused_topk as _vllm_fused_topk
+
     _VLLM_AVAILABLE = True
 except ImportError:
     _VLLM_AVAILABLE = False
@@ -46,11 +47,11 @@ def fused_topk_torch(
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
     return topk_weights, topk_ids.int()
 
+
 # Benchmark class
 
 
 class FusedTopKBenchmark(BenchmarkBase[FusedTopKWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         return t.num_tokens * t.num_experts * 2 * (1 + t.top_k)
@@ -66,16 +67,19 @@ class FusedTopKBenchmark(BenchmarkBase[FusedTopKWorkload]):
 
 class FusedTopKBenchFixture(FixtureBase):
     PARAMS = [
-        ("num_tokens, num_experts, top_k, scoring_func, renormalize", [
-            (1,    384, 8, "sigmoid", True),
-            (32,   384, 8, "sigmoid", True),
-            (512,  384, 8, "sigmoid", True),
-            (4096, 384, 8, "sigmoid", True),
-            (1,    128, 8, "softmax", False),
-            (32,   128, 8, "softmax", False),
-            (512,  128, 8, "softmax", False),
-            (4096, 128, 8, "softmax", False),
-        ]),
+        (
+            "num_tokens, num_experts, top_k, scoring_func, renormalize",
+            [
+                (1, 384, 8, "sigmoid", True),
+                (32, 384, 8, "sigmoid", True),
+                (512, 384, 8, "sigmoid", True),
+                (4096, 384, 8, "sigmoid", True),
+                (1, 128, 8, "softmax", False),
+                (32, 128, 8, "softmax", False),
+                (512, 128, 8, "softmax", False),
+                (4096, 128, 8, "softmax", False),
+            ],
+        ),
     ]
 
 
@@ -107,6 +111,7 @@ def test_fused_topk_bench(
     if _VLLM_AVAILABLE and scoring_func in ("softmax", "sigmoid"):
         has_external = True
         hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
+
         # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
         def _vllm_fn(gating_output):
             return _vllm_fused_topk(
@@ -124,6 +129,7 @@ def test_fused_topk_bench(
 
     # Fallback: torch reference baseline (only when no external baselines)
     if not has_external:
+
         def _ref_fn(gating_output):
             return fused_topk_torch(gating_output, top_k, scoring_func, renormalize)
 

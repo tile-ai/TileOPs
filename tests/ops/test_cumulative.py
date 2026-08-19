@@ -254,17 +254,18 @@ def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
 
 class CumulativeDimAxis1Fixture(FixtureBase):
     PARAMS = [
-        ("batch, hidden, seq, dtype", [
-            pytest.param(2, 512, 256, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 256, torch.bfloat16, marks=pytest.mark.smoke),
-        ]),
+        (
+            "batch, hidden, seq, dtype",
+            [
+                pytest.param(2, 512, 256, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 512, 256, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
 @CumulativeDimAxis1Fixture
-def test_cumsum_dim_axis1(
-    batch: int, hidden: int, seq: int, dtype: torch.dtype
-) -> None:
+def test_cumsum_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype) -> None:
     """Cumsum along dim=1 (3D) — exercises movedim choreography in `_run`."""
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
@@ -273,14 +274,13 @@ def test_cumsum_dim_axis1(
     ref = x.float().cumsum(dim=1).to(dtype)
     y = op(x)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, ref, atol=atol, rtol=atol), \
+    assert torch.allclose(y, ref, atol=atol, rtol=atol), (
         f"cumsum dim=1 max err: {(y - ref).abs().max()}"
+    )
 
 
 @CumulativeDimAxis1Fixture
-def test_cumprod_dim_axis1(
-    batch: int, hidden: int, seq: int, dtype: torch.dtype
-) -> None:
+def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype) -> None:
     """Cumprod along dim=1 (3D) — exercises movedim choreography in `_run`."""
     from tileops.ops.reduction.cumulative import CumprodFwdOp
 
@@ -290,20 +290,19 @@ def test_cumprod_dim_axis1(
     ref = x.float().cumprod(dim=1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), \
-        f"cumprod dim=1 max err: {(y - ref).abs().max()}"
+    assert torch.allclose(y, ref, **tol), f"cumprod dim=1 max err: {(y - ref).abs().max()}"
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "M, N, dtype, parallel",
     [
-        (64, 16384, torch.float32, True),      # block_n=128
-        (64, 32768, torch.bfloat16, True),     # block_n=256
-        (32, 16384, torch.float16, True),      # fp16 intermediate
-        (64, 8200, torch.float32, True),       # N % block_n != 0: masked tail
-        (64, 8192, torch.bfloat16, False),     # N boundary
-        (128, 16384, torch.bfloat16, False),   # M boundary
+        (64, 16384, torch.float32, True),  # block_n=128
+        (64, 32768, torch.bfloat16, True),  # block_n=256
+        (32, 16384, torch.float16, True),  # fp16 intermediate
+        (64, 8200, torch.float32, True),  # N % block_n != 0: masked tail
+        (64, 8192, torch.bfloat16, False),  # N boundary
+        (128, 16384, torch.bfloat16, False),  # M boundary
     ],
 )
 def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, parallel: bool) -> None:
@@ -315,8 +314,9 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, parallel: b
     y = op(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **_tol(dtype)), \
+    assert torch.allclose(y, ref, **_tol(dtype)), (
         f"({M}, {N}) {dtype}: max_diff={torch.abs(y - ref).max()}"
+    )
 
     kernel = op._get_kernel(M, N, dtype, x.device.index)
     assert kernel.use_parallel == parallel, f"({M}, {N}): unexpected backend"
@@ -337,15 +337,16 @@ def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
 
     # Row r holds the constant r + 1, so its cumsum is (r + 1) * [1, ..., N].
     expected = row_values * torch.arange(1, N + 1, dtype=torch.float32, device="cuda")
-    assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), \
+    assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), (
         f"({M}, {N}): max_diff={torch.abs(y - expected).max()}"
+    )
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "M, N, dtype",
     [
-        pytest.param(64, 512, torch.float16),    # sequential custom_op
+        pytest.param(64, 512, torch.float16),  # sequential custom_op
         pytest.param(64, 16384, torch.float16),  # parallel custom_op
     ],
 )
@@ -370,8 +371,9 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
     y = compiled(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **_tol(dtype)), \
+    assert torch.allclose(y, ref, **_tol(dtype)), (
         f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
+    )
 
 
 if __name__ == "__main__":

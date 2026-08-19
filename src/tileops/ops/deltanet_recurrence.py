@@ -71,8 +71,9 @@ class DeltaNetDecodeFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
-        call = DeltaNetDecodeCall(batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v,
-                                  dtype=dtype, tune=self.tune)
+        call = DeltaNetDecodeCall(
+            batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=self.tune
+        )
         chosen = self.select_kernel_key(DELTANET_DECODE_KEYS, call)
 
         def build() -> Kernel:
@@ -143,9 +144,7 @@ class DeltaNetDecodeFwdOp(Op):
         )
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
-                raise ValueError(
-                    f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
-        )
+                raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
         if not all(tensor.is_cuda for tensor in (q, k, v, beta, state)):
             raise ValueError("q, k, v, beta, and state must be CUDA tensors")
         self.batch = batch

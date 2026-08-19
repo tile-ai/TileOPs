@@ -66,8 +66,8 @@ def normalize_dim(
             return []
         raise ValueError(
             "dim=[] is not supported by this op; pass "
-            "empty_dim_policy=\"full\" to opt in to full-reduction "
-            "or empty_dim_policy=\"noop\" to opt in to the identity "
+            'empty_dim_policy="full" to opt in to full-reduction '
+            'or empty_dim_policy="noop" to opt in to the identity '
             "(return-input) contract."
         )
 
@@ -87,7 +87,8 @@ def normalize_dim(
 
 
 def flatten_for_multidim(
-    x: torch.Tensor, dims: list[int],
+    x: torch.Tensor,
+    dims: list[int],
 ) -> tuple[torch.Tensor, torch.Size, list[int]]:
     """Move target dims to end and flatten them into one dim.
 

@@ -81,10 +81,7 @@ class _SoftmaxBaseOp(Op):
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(
-                "x.dtype must be float16, bfloat16, or float32, "
-                f"got {x.dtype}"
-            )
+            raise ValueError(f"x.dtype must be float16, bfloat16, or float32, got {x.dtype}")
         if x.ndim == 0:
             raise ValueError("Input tensor must be at least 1D")
         self.dtype = x.dtype
@@ -109,11 +106,12 @@ class _SoftmaxBaseOp(Op):
         if isinstance(effective_dim, (list, tuple)) or effective_dim is None:
             if not self._supports_multidim:
                 raise ValueError(
-                    f"{type(self).__name__} does not support multi-dim reduction. "
-                    "Use a scalar dim."
+                    f"{type(self).__name__} does not support multi-dim reduction. Use a scalar dim."
                 )
             dims = normalize_dim(
-                effective_dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+                effective_dim,
+                x.ndim,
+                empty_dim_policy=self._empty_dim_policy,
             )
             # Bind the dynamic static-axes (param-dependent reduction axes) so
             # the Op-layer cache-key / introspection consumers see the
@@ -126,7 +124,10 @@ class _SoftmaxBaseOp(Op):
             self._last_roofline_spec = (M, N, dtype)
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(
-                M, N, dtype=dtype, device_index=x.device.index,
+                M,
+                N,
+                dtype=dtype,
+                device_index=x.device.index,
             )
             self.kernel = kernel
             # Alignment padding is handled by the kernel's forward().
@@ -166,7 +167,10 @@ class _SoftmaxBaseOp(Op):
 
         # Get or create cached kernel for this (M, N, device).
         kernel = self._get_or_create_kernel(
-            M, N, dtype=dtype, device_index=x.device.index,
+            M,
+            N,
+            dtype=dtype,
+            device_index=x.device.index,
         )
         self.kernel = kernel
 
@@ -205,7 +209,11 @@ class _SoftmaxBaseOp(Op):
             self._kernel_key,
             key=(M, N, dtype, device_index),
             build=lambda: self.kernel_map[self._kernel_key](
-                M, N, self._op_kind, dtype, tune=self.tune,
+                M,
+                N,
+                self._op_kind,
+                dtype,
+                tune=self.tune,
                 device_index=device_index,
             ),
         )
@@ -247,7 +255,6 @@ class _SoftmaxBaseOp(Op):
         return y
 
 
-
 class SoftmaxFwdOp(_SoftmaxBaseOp):
     """Softmax operator: y = softmax(x, dim).
 
@@ -278,7 +285,6 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
         super().__init__(dim=dim, kernel_map=kernel_map, tune=tune)
 
 
-
 class LogSoftmaxFwdOp(_SoftmaxBaseOp):
     """Log-softmax operator: y = log_softmax(x, dim).
 
@@ -307,7 +313,6 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
         tune: bool = False,
     ):
         super().__init__(dim=dim, kernel_map=kernel_map, tune=tune)
-
 
 
 class LogSumExpFwdOp(_SoftmaxBaseOp):

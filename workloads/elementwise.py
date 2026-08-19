@@ -9,7 +9,6 @@ from workloads.workload_base import WorkloadBase
 
 
 class ReluWorkload(WorkloadBase):
-
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
         self.dtype = dtype
@@ -148,6 +147,8 @@ class LerpTensorManifestWorkload:
         end = torch.randn(self.end_shape, device="cuda", dtype=self.dtype)
         weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
         return x, end, weight
+
+
 class TensorClampBenchCase:
     """Workload adapter for Tensor-bound clamp ops.
 
@@ -180,13 +181,9 @@ class TensorClampBenchCase:
         x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
         tensors: list[torch.Tensor] = [x]
         if self.min_shape is not None:
-            tensors.append(
-                torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5
-            )
+            tensors.append(torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5)
         if self.max_shape is not None:
-            tensors.append(
-                torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5
-            )
+            tensors.append(torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5)
         return tuple(tensors)
 
 
@@ -220,12 +217,8 @@ class Fp8WhereBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         cond = torch.rand(self.shape, device="cuda") > 0.5
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
-            self.dtype
-        )
-        y = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
-            self.dtype
-        )
+        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
+        y = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
         return cond, x, y
 
 
@@ -236,9 +229,7 @@ class Fp8MaskedFillBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
-            self.dtype
-        )
+        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
         mask = torch.rand(self.shape, device="cuda") > 0.5
         return x, mask
 
@@ -297,6 +288,8 @@ class BroadcastBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         return BROADCAST_DOMAINS[self.domain](self.a_shape, self.b_shape, self.dtype)
+
+
 class AddBroadcastWorkload(WorkloadBase):
     def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
         self.a_shape = a_shape
@@ -387,8 +380,8 @@ class SiluAndMulCompileWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x):
-        gate = x[:, :self.N].float()
-        value = x[:, self.N:].float()
+        gate = x[:, : self.N].float()
+        value = x[:, self.N :].float()
         return (torch.nn.functional.silu(gate) * value).to(x.dtype)
 
 
@@ -426,6 +419,8 @@ class BitwiseWorkload(WorkloadBase):
         a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
         b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
         return a, b
+
+
 class LogicalWorkload(WorkloadBase):
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -451,8 +446,8 @@ class SpecialWorkload(WorkloadBase):
         x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
         quarter = self.n_total // 4
         x[:quarter] = float("nan")
-        x[quarter:2 * quarter] = float("inf")
-        x[2 * quarter:3 * quarter] = float("-inf")
+        x[quarter : 2 * quarter] = float("inf")
+        x[2 * quarter : 3 * quarter] = float("-inf")
         return (x,)
 
 
@@ -596,8 +591,8 @@ def draw_special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]
     flat = x.view(-1)
     quarter = flat.numel() // 4
     flat[:quarter] = float("nan")
-    flat[quarter:2 * quarter] = float("inf")
-    flat[2 * quarter:3 * quarter] = float("-inf")
+    flat[quarter : 2 * quarter] = float("inf")
+    flat[2 * quarter : 3 * quarter] = float("-inf")
     return (x,)
 
 

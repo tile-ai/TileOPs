@@ -16,6 +16,7 @@ import triton.language as tl
 
 try:
     from sgl_kernel import moe_align_block_size as _sgl_moe_align_block_size
+
     _SGL_KERNEL_AVAILABLE = True
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
@@ -128,8 +129,15 @@ def _triton_permute_align(
     _stage2_reduce[grid](tokens_cnts, num_experts)
     _stage3_cumsum[(1,)](num_tokens_post_pad, tokens_cnts, cumsum, num_experts, block_size)
     _stage4_scatter[grid](
-        topk_ids, sorted_token_ids, expert_ids, tokens_cnts, cumsum,
-        num_experts, block_size, numel, tokens_per_thread,
+        topk_ids,
+        sorted_token_ids,
+        expert_ids,
+        tokens_cnts,
+        cumsum,
+        num_experts,
+        block_size,
+        numel,
+        tokens_per_thread,
     )
 
 
@@ -145,10 +153,15 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["total_tokens"], w["top_k"], w["num_experts"], w["block_size"],
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["total_tokens"],
+                    w["top_k"],
+                    w["num_experts"],
+                    w["block_size"],
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -187,8 +200,9 @@ def test_permute_align_bench(
 
     def _triton_fn(topk_ids):
         sorted_ids.fill_(numel)
-        _triton_permute_align(topk_ids, num_experts, block_size,
-                              sorted_ids, expert_ids, num_post_pad)
+        _triton_permute_align(
+            topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_post_pad
+        )
         return sorted_ids, expert_ids, num_post_pad
 
     # Warmup Triton baseline
@@ -206,9 +220,15 @@ def test_permute_align_bench(
 
         def _sgl_fn(topk_ids):
             sorted_ids_sgl.fill_(numel)
-            _sgl_moe_align_block_size(topk_ids, num_experts, block_size,
-                                      sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl,
-                                      cumsum_buf)
+            _sgl_moe_align_block_size(
+                topk_ids,
+                num_experts,
+                block_size,
+                sorted_ids_sgl,
+                expert_ids_sgl,
+                num_post_pad_sgl,
+                cumsum_buf,
+            )
             return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
         # Warmup sgl-kernel baseline

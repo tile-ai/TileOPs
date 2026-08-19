@@ -23,25 +23,35 @@ class DimNoneFixture(FixtureBase):
             [
                 # 3D: keepdim=False (keep total elements moderate for kernel)
                 pytest.param(
-                    (4, 8, 256), False, torch.float16,
+                    (4, 8, 256),
+                    False,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), False, torch.bfloat16,
+                    (4, 8, 256),
+                    False,
+                    torch.bfloat16,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), False, torch.float32,
+                    (4, 8, 256),
+                    False,
+                    torch.float32,
                     marks=pytest.mark.smoke,
                 ),
                 # 2D: basic case
                 pytest.param(
-                    (4, 256), False, torch.float16,
+                    (4, 256),
+                    False,
+                    torch.float16,
                     marks=pytest.mark.full,
                 ),
                 # 3D: keepdim=True
                 pytest.param(
-                    (4, 8, 256), True, torch.float16,
+                    (4, 8, 256),
+                    True,
+                    torch.float16,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -81,7 +91,9 @@ def test_normalize_dim_none() -> None:
 
 @DimNoneFixture
 def test_sum_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
@@ -97,7 +109,9 @@ def test_sum_dim_none(
 
 @DimNoneFixture
 def test_mean_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import MeanFwdOp
 
@@ -113,7 +127,9 @@ def test_mean_dim_none(
 
 @DimNoneFixture
 def test_amax_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
@@ -129,7 +145,9 @@ def test_amax_dim_none(
 
 @DimNoneFixture
 def test_amin_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import AminFwdOp
 
@@ -159,7 +177,9 @@ def test_prod_dim_none_rejected() -> None:
 
 @DimNoneFixture
 def test_var_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
@@ -175,7 +195,9 @@ def test_var_dim_none(
 
 @DimNoneFixture
 def test_std_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
@@ -191,7 +213,9 @@ def test_std_dim_none(
 
 @DimNoneFixture
 def test_var_mean_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
@@ -199,7 +223,10 @@ def test_var_mean_dim_none(
     op = VarMeanFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref_var = torch.var(
-        x.float(), dim=dims, keepdim=keepdim, correction=1,
+        x.float(),
+        dim=dims,
+        keepdim=keepdim,
+        correction=1,
     ).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
@@ -207,9 +234,9 @@ def test_var_mean_dim_none(
     assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
     assert torch.allclose(var_out, ref_var, **tol), f"var err: {(var_out - ref_var).abs().max()}"
-    assert torch.allclose(mean_out, ref_mean, **tol), f"mean err: {(mean_out - ref_mean).abs().max()}"
-
-
+    assert torch.allclose(mean_out, ref_mean, **tol), (
+        f"mean err: {(mean_out - ref_mean).abs().max()}"
+    )
 
 
 # Logical reduce ops: all, any, count_nonzero
@@ -221,23 +248,33 @@ class DimNoneLogicalFixture(FixtureBase):
             "shape, keepdim, dtype",
             [
                 pytest.param(
-                    (4, 8, 256), False, torch.float32,
+                    (4, 8, 256),
+                    False,
+                    torch.float32,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), False, torch.bool,
+                    (4, 8, 256),
+                    False,
+                    torch.bool,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), False, torch.float16,
+                    (4, 8, 256),
+                    False,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), False, torch.bfloat16,
+                    (4, 8, 256),
+                    False,
+                    torch.bfloat16,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), True, torch.float32,
+                    (4, 8, 256),
+                    True,
+                    torch.float32,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -254,7 +291,9 @@ def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
 
 @DimNoneLogicalFixture
 def test_all_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp
 
@@ -269,7 +308,9 @@ def test_all_dim_none(
 
 @DimNoneLogicalFixture
 def test_any_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
@@ -297,10 +338,13 @@ def test_count_nonzero_dim_none() -> None:
     assert torch.equal(y, ref), "count_nonzero dim=None mismatch"
 
 
-@pytest.mark.parametrize("dtype", [
-    pytest.param(torch.float16, marks=pytest.mark.smoke),
-    pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
-])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(torch.float16, marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
+    ],
+)
 def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
     from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
@@ -320,7 +364,9 @@ def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
 
 @DimNoneFixture
 def test_l1_norm_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.vector_norm import L1NormFwdOp
 
@@ -328,7 +374,10 @@ def test_l1_norm_dim_none(
     op = L1NormFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=1, dim=dims, keepdim=keepdim,
+        x.float(),
+        ord=1,
+        dim=dims,
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -338,7 +387,9 @@ def test_l1_norm_dim_none(
 
 @DimNoneFixture
 def test_l2_norm_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.vector_norm import L2NormFwdOp
 
@@ -346,7 +397,10 @@ def test_l2_norm_dim_none(
     op = L2NormFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=2, dim=dims, keepdim=keepdim,
+        x.float(),
+        ord=2,
+        dim=dims,
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -356,7 +410,9 @@ def test_l2_norm_dim_none(
 
 @DimNoneFixture
 def test_inf_norm_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.vector_norm import InfNormFwdOp
 
@@ -364,7 +420,10 @@ def test_inf_norm_dim_none(
     op = InfNormFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=float("inf"), dim=dims, keepdim=keepdim,
+        x.float(),
+        ord=float("inf"),
+        dim=dims,
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     tol = _tol(dtype)

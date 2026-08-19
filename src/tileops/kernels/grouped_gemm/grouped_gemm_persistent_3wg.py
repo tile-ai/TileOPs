@@ -28,6 +28,7 @@ A per-WG ring buffer with ``num_stages`` slots overlaps TMA loads with
 WGMMA.  Default ``num_stages=4`` (autotuned over {2..6} with H100 SMEM
 limit pruning).
 """
+
 import functools
 import math
 
@@ -44,7 +45,7 @@ from .regimes import rows_per_group_regime
 __all__ = ["GroupedGemmPersistent3WGKernel"]
 
 _DEFAULT_CONFIG = {
-    "block_m": 128,        # cooperative template (split-A, shared-B)
+    "block_m": 128,  # cooperative template (split-A, shared-B)
     "block_n": 256,
     "block_k": 64,
     "num_stages": 3,
@@ -81,9 +82,9 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    def __init__(self, numel, num_experts, N, K,
-                 dtype=torch.bfloat16, sm_count=None,
-                 config=None, tune=False):
+    def __init__(
+        self, numel, num_experts, N, K, dtype=torch.bfloat16, sm_count=None, config=None, tune=False
+    ):
         super().__init__()
         self.numel = numel
         self.num_experts = num_experts
@@ -92,15 +93,22 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         self.dtype = dtype
         self.sm_count = get_sm_count() if sm_count is None else sm_count
         self.kernel = lambda: _persistent_grouped_gemm_v2_kernel(
-            self.numel, self.num_experts, self.N, self.K,
-            self.dtype_str, self.sm_count, _DEFAULT_CONFIG["block_k"])
+            self.numel,
+            self.num_experts,
+            self.N,
+            self.K,
+            self.dtype_str,
+            self.sm_count,
+            _DEFAULT_CONFIG["block_k"],
+        )
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         """The schedule this shape asks for; see :mod:`.regimes`."""
-        if (rows_per_group_regime(self.numel, self.num_experts) is not None
-                and _tiling_divides(self.N, self.K)):
+        if rows_per_group_regime(self.numel, self.num_experts) is not None and _tiling_divides(
+            self.N, self.K
+        ):
             return dict(_DECODE_CONFIG)
         return dict(_DEFAULT_CONFIG)
 
@@ -119,16 +127,14 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         best_ms = float("inf")
         best_cfg = None
         # Build dummy inputs once for benchmarking all configs
-        A_dummy = torch.randn(
-            self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
-        B_dummy = torch.randn(
-            self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
+        A_dummy = torch.randn(self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
+        B_dummy = (
+            torch.randn(self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
+        )
         per = max(1, self.numel // self.num_experts)
-        sizes = torch.full(
-            (self.num_experts,), per, dtype=torch.int32, device="cuda")
+        sizes = torch.full((self.num_experts,), per, dtype=torch.int32, device="cuda")
         sizes[-1] = self.numel - per * (self.num_experts - 1)
-        offsets = torch.zeros(
-            self.num_experts, dtype=torch.int32, device="cuda")
+        offsets = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
 
         def _bench_forward():
@@ -170,11 +176,16 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         smem_c = 2 * block_m * block_n * bytes_per_elem
                         if smem_main + smem_c > SMEM_LIMIT:
                             continue
-                        configs.append({
-                            "block_m": block_m, "block_n": block_n,
-                            "block_k": block_k, "num_stages": num_stages,
-                            "threads": 384, "group_size_m": 1,
-                        })
+                        configs.append(
+                            {
+                                "block_m": block_m,
+                                "block_n": block_n,
+                                "block_k": block_k,
+                                "num_stages": num_stages,
+                                "threads": 384,
+                                "group_size_m": 1,
+                            }
+                        )
         # ── Cooperative template (bm >= 128): split-A, shared B ──
         # SMEM: 2 × A_smem (ns, bm/2, bk) + 1 × B_smem (ns, bn, bk).
         # Same total A footprint as pingpong, but the duplicated B ring is
@@ -196,11 +207,16 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         # Threadblock swizzle width: larger groups give more L2
                         # B-column reuse but saturate near num_pid_m per expert.
                         for group_size_m in (1, 4, 8, 16):
-                            configs.append({
-                                "block_m": block_m, "block_n": block_n,
-                                "block_k": block_k, "num_stages": num_stages,
-                                "threads": 384, "group_size_m": group_size_m,
-                            })
+                            configs.append(
+                                {
+                                    "block_m": block_m,
+                                    "block_n": block_n,
+                                    "block_k": block_k,
+                                    "num_stages": num_stages,
+                                    "threads": 384,
+                                    "group_size_m": group_size_m,
+                                }
+                            )
         return configs
 
     def forward(self, A, B, true_sizes, true_offsets, out=None):
@@ -235,8 +251,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         # (kernel compiled for a generic "cuda" device), so a cuda:0 vs cuda:1
         # mix can slip through and read the wrong device's memory. Guard that.
         if not (B.device == true_sizes.device == true_offsets.device == A.device):
-            raise ValueError(
-                "A, B, true_sizes, true_offsets must be on the same device")
+            raise ValueError("A, B, true_sizes, true_offsets must be on the same device")
 
         # Output buffer. Every row in [0, numel) belongs to some expert and is
         # written by exactly one tile (full tiles via TMA-store, partial tiles
@@ -249,7 +264,8 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         else:
             if tuple(out.shape) != (self.numel, self.N):
                 raise ValueError(
-                    f"out shape must be {(self.numel, self.N)}, got {tuple(out.shape)}")
+                    f"out shape must be {(self.numel, self.N)}, got {tuple(out.shape)}"
+                )
             if out.dtype != self.dtype:
                 raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
             if out.device != A.device:
@@ -273,10 +289,17 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         # masks the store. No F.pad / guard rows / alignment detection needed —
         # mirrors moe_grouped_gemm_persistent_3wg_fused_act.py.
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
-            self.numel, self.num_experts, self.N, self.K,
-            self.dtype_str, self.sm_count, block_k,
+            self.numel,
+            self.num_experts,
+            self.N,
+            self.K,
+            self.dtype_str,
+            self.sm_count,
+            block_k,
         )(
-            block_m, block_n, block_k,
+            block_m,
+            block_n,
+            block_k,
             self.config["num_stages"],
             self.config["threads"],
             self.config.get("group_size_m", 1),
@@ -285,9 +308,20 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         return C
 
 
-def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
-                          block_m, block_n, block_k, num_stages, threads,
-                          group_size_m):
+def _make_pingpong_kernel(
+    numel,
+    num_experts,
+    N,
+    K,
+    dtype,
+    sm_count,
+    block_m,
+    block_n,
+    block_k,
+    num_stages,
+    threads,
+    group_size_m,
+):
     """Build a @T.prim_func for the pingpong template (block_m <= 64).
 
     Two math WGs each work an independent tile per wave; each WG holds
@@ -315,11 +349,11 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
 
     @T.prim_func
     def _gemm_main_v2(
-        A: T.Tensor(A_shape, dtype),                        # type: ignore
-        B: T.Tensor((num_experts, N, K), dtype),            # type: ignore
+        A: T.Tensor(A_shape, dtype),  # type: ignore
+        B: T.Tensor((num_experts, N, K), dtype),  # type: ignore
         true_sizes: T.Tensor((num_experts,), "int32"),
         true_offsets: T.Tensor((num_experts,), "int32"),
-        C: T.Tensor((numel, N), dtype),                     # type: ignore
+        C: T.Tensor((numel, N), dtype),  # type: ignore
     ):
         with T.Kernel(sm_count, threads=threads) as (pid,):
             # ── Per-WG ring-buffered SMEM (num_stages slots) ──
@@ -356,14 +390,16 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
             ex1 = T.alloc_local((1,), "int32")
             v1 = T.alloc_local((1,), "int32")
 
-            T.annotate_layout({
-                A_smem_wg0: tilelang.layout.make_swizzled_layout(A_smem_wg0),
-                B_smem_wg0: tilelang.layout.make_swizzled_layout(B_smem_wg0),
-                A_smem_wg1: tilelang.layout.make_swizzled_layout(A_smem_wg1),
-                B_smem_wg1: tilelang.layout.make_swizzled_layout(B_smem_wg1),
-                C_shared_wg0: tilelang.layout.make_swizzled_layout(C_shared_wg0),
-                C_shared_wg1: tilelang.layout.make_swizzled_layout(C_shared_wg1),
-            })
+            T.annotate_layout(
+                {
+                    A_smem_wg0: tilelang.layout.make_swizzled_layout(A_smem_wg0),
+                    B_smem_wg0: tilelang.layout.make_swizzled_layout(B_smem_wg0),
+                    A_smem_wg1: tilelang.layout.make_swizzled_layout(A_smem_wg1),
+                    B_smem_wg1: tilelang.layout.make_swizzled_layout(B_smem_wg1),
+                    C_shared_wg0: tilelang.layout.make_swizzled_layout(C_shared_wg0),
+                    C_shared_wg1: tilelang.layout.make_swizzled_layout(C_shared_wg1),
+                }
+            )
 
             # ── Per-WG producer/consumer barriers (arrive_count=128) ──
             ab_full_wg0 = T.alloc_barrier([128] * num_stages)
@@ -417,8 +453,9 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             else:
                                 hi[0] = mid
                         ex0[0] = lo[0]
-                        ms0[0] = (true_offsets[ex0[0]]
-                                  + (m_tile_0 - s_cum[ex0[0]]) * T.int32(block_m))
+                        ms0[0] = true_offsets[ex0[0]] + (m_tile_0 - s_cum[ex0[0]]) * T.int32(
+                            block_m
+                        )
                         ns0[0] = n_tile_0 * T.int32(block_n)
                         v0[0] = T.int32(1)
                     else:
@@ -439,8 +476,9 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             else:
                                 hi[0] = mid
                         ex1[0] = lo[0]
-                        ms1[0] = (true_offsets[ex1[0]]
-                                  + (m_tile_1 - s_cum[ex1[0]]) * T.int32(block_m))
+                        ms1[0] = true_offsets[ex1[0]] + (m_tile_1 - s_cum[ex1[0]]) * T.int32(
+                            block_m
+                        )
                         ns1[0] = n_tile_1 * T.int32(block_n)
                         v1[0] = T.int32(1)
                     else:
@@ -453,19 +491,14 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         # WG0 stream (ring slot = gi_prod_0 % num_stages)
                         if v0[0] != 0:
                             slot0 = gi_prod_0 % num_stages
-                            T.barrier_wait(
-                                ab_empty_wg0[slot0],
-                                ((gi_prod_0 // num_stages) & 1) ^ 1)
+                            T.barrier_wait(ab_empty_wg0[slot0], ((gi_prod_0 // num_stages) & 1) ^ 1)
                             T.tma_copy(
-                                A[ms0[0]:ms0[0] + block_m,
-                                  k_start:k_start + block_k],
+                                A[ms0[0] : ms0[0] + block_m, k_start : k_start + block_k],
                                 A_smem_wg0[slot0, :, :],
                                 barrier=ab_full_wg0[slot0],
                             )
                             T.tma_copy(
-                                B[ex0[0],
-                                  ns0[0]:ns0[0] + block_n,
-                                  k_start:k_start + block_k],
+                                B[ex0[0], ns0[0] : ns0[0] + block_n, k_start : k_start + block_k],
                                 B_smem_wg0[slot0, :, :],
                                 barrier=ab_full_wg0[slot0],
                             )
@@ -475,19 +508,14 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         # WG1 stream (ring slot = gi_prod_1 % num_stages)
                         if v1[0] != 0:
                             slot1 = gi_prod_1 % num_stages
-                            T.barrier_wait(
-                                ab_empty_wg1[slot1],
-                                ((gi_prod_1 // num_stages) & 1) ^ 1)
+                            T.barrier_wait(ab_empty_wg1[slot1], ((gi_prod_1 // num_stages) & 1) ^ 1)
                             T.tma_copy(
-                                A[ms1[0]:ms1[0] + block_m,
-                                  k_start:k_start + block_k],
+                                A[ms1[0] : ms1[0] + block_m, k_start : k_start + block_k],
                                 A_smem_wg1[slot1, :, :],
                                 barrier=ab_full_wg1[slot1],
                             )
                             T.tma_copy(
-                                B[ex1[0],
-                                  ns1[0]:ns1[0] + block_n,
-                                  k_start:k_start + block_k],
+                                B[ex1[0], ns1[0] : ns1[0] + block_n, k_start : k_start + block_k],
                                 B_smem_wg1[slot1, :, :],
                                 barrier=ab_full_wg1[slot1],
                             )
@@ -523,16 +551,12 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         row_0 = (m_tile_0 - s_cum[expert_id_0]) * T.int32(block_m)
                         m_start_0 = true_offsets[expert_id_0] + row_0
                         n_start_0 = n_tile_0 * T.int32(block_n)
-                        arows_0 = T.min(T.int32(block_m),
-                                        true_sizes[expert_id_0] - row_0)
-                        acols_0 = T.min(T.int32(block_n),
-                                        T.int32(N) - n_start_0)
-
+                        arows_0 = T.min(T.int32(block_m), true_sizes[expert_id_0] - row_0)
+                        acols_0 = T.min(T.int32(block_n), T.int32(N) - n_start_0)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_0 % num_stages
-                            T.barrier_wait(ab_full_wg0[slot],
-                                           (gi_cons_0 // num_stages) & 1)
+                            T.barrier_wait(ab_full_wg0[slot], (gi_cons_0 // num_stages) & 1)
                             T.wgmma_gemm(
                                 A_smem_wg0[slot, :, :],
                                 B_smem_wg0[slot, :, :],
@@ -569,8 +593,7 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # half-written C_shared (intra-wave write→read race).
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=4, arrive_count=128)
-                            T.copy(C_shared_wg0,
-                                   C[m_start_0, n_start_0])
+                            T.copy(C_shared_wg0, C[m_start_0, n_start_0])
                         else:
                             # Slow path: partial tile → predicated direct STG.
                             for i, j in T.Parallel(block_m, block_n):
@@ -606,16 +629,12 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         row_1 = (m_tile_1 - s_cum[expert_id_1]) * T.int32(block_m)
                         m_start_1 = true_offsets[expert_id_1] + row_1
                         n_start_1 = n_tile_1 * T.int32(block_n)
-                        arows_1 = T.min(T.int32(block_m),
-                                        true_sizes[expert_id_1] - row_1)
-                        acols_1 = T.min(T.int32(block_n),
-                                        T.int32(N) - n_start_1)
-
+                        arows_1 = T.min(T.int32(block_m), true_sizes[expert_id_1] - row_1)
+                        acols_1 = T.min(T.int32(block_n), T.int32(N) - n_start_1)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_1 % num_stages
-                            T.barrier_wait(ab_full_wg1[slot],
-                                           (gi_cons_1 // num_stages) & 1)
+                            T.barrier_wait(ab_full_wg1[slot], (gi_cons_1 // num_stages) & 1)
                             T.wgmma_gemm(
                                 A_smem_wg1[slot, :, :],
                                 B_smem_wg1[slot, :, :],
@@ -643,8 +662,7 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # SMEM writes before the async TMA read.
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=5, arrive_count=128)
-                            T.copy(C_shared_wg1,
-                                   C[m_start_1, n_start_1])
+                            T.copy(C_shared_wg1, C[m_start_1, n_start_1])
                         else:
                             # Slow path: partial tile → predicated direct STG.
                             for i, j in T.Parallel(block_m, block_n):
@@ -654,9 +672,20 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
     return _gemm_main_v2
 
 
-def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
-                             block_m, block_n, block_k, num_stages, threads,
-                             group_size_m):
+def _make_cooperative_kernel(
+    numel,
+    num_experts,
+    N,
+    K,
+    dtype,
+    sm_count,
+    block_m,
+    block_n,
+    block_k,
+    num_stages,
+    threads,
+    group_size_m,
+):
     """Build a @T.prim_func for the cooperative template (block_m >= 128).
 
     Both math WGs split the M dimension of one shared tile in half.
@@ -691,8 +720,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
     )
     half_m = block_m // 2
     assert half_m >= 64, (
-        f"cooperative template requires block_m >= 128 (half_m={half_m} < "
-        f"WGMMA minimum M=64)"
+        f"cooperative template requires block_m >= 128 (half_m={half_m} < WGMMA minimum M=64)"
     )
 
     _num_pid_n = math.ceil(N / block_n)
@@ -733,11 +761,11 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
 
     @T.prim_func
     def _gemm_main_v2_coop(
-        A: T.Tensor(A_shape, dtype),                        # type: ignore
-        B: T.Tensor((num_experts, N, K), dtype),            # type: ignore
+        A: T.Tensor(A_shape, dtype),  # type: ignore
+        B: T.Tensor((num_experts, N, K), dtype),  # type: ignore
         true_sizes: T.Tensor((num_experts,), "int32"),
         true_offsets: T.Tensor((num_experts,), "int32"),
-        C: T.Tensor((numel, N), dtype),                     # type: ignore
+        C: T.Tensor((numel, N), dtype),  # type: ignore
     ):
         with T.Kernel(sm_count, threads=threads) as (pid,):
             # ── Split-A SMEM rings (zero-offset WGMMA) + shared B ring ──
@@ -774,13 +802,15 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
             swz_m = T.alloc_local((1,), "int32")
             swz_n = T.alloc_local((1,), "int32")
 
-            T.annotate_layout({
-                A_smem_top: tilelang.layout.make_swizzled_layout(A_smem_top),
-                A_smem_bot: tilelang.layout.make_swizzled_layout(A_smem_bot),
-                B_smem: tilelang.layout.make_swizzled_layout(B_smem),
-                C_shared_wg0: tilelang.layout.make_swizzled_layout(C_shared_wg0),
-                C_shared_wg1: tilelang.layout.make_swizzled_layout(C_shared_wg1),
-            })
+            T.annotate_layout(
+                {
+                    A_smem_top: tilelang.layout.make_swizzled_layout(A_smem_top),
+                    A_smem_bot: tilelang.layout.make_swizzled_layout(A_smem_bot),
+                    B_smem: tilelang.layout.make_swizzled_layout(B_smem),
+                    C_shared_wg0: tilelang.layout.make_swizzled_layout(C_shared_wg0),
+                    C_shared_wg1: tilelang.layout.make_swizzled_layout(C_shared_wg1),
+                }
+            )
 
             # ── Single shared barrier set: producer WG (128 threads)
             #     fills, both math WGs (256 threads total) drain ──
@@ -829,8 +859,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             else:
                                 hi[0] = mid
                         ex[0] = lo[0]
-                        ms[0] = (true_offsets[ex[0]]
-                                 + (m_tile - s_cum[ex[0]]) * T.int32(block_m))
+                        ms[0] = true_offsets[ex[0]] + (m_tile - s_cum[ex[0]]) * T.int32(block_m)
                         ns_[0] = n_tile * T.int32(block_n)
                         v[0] = T.int32(1)
                     else:
@@ -841,28 +870,22 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
 
                         if v[0] != 0:
                             slot = gi_prod % num_stages
-                            T.barrier_wait(
-                                ab_empty[slot],
-                                ((gi_prod // num_stages) & 1) ^ 1)
+                            T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
                             # Top half of A (rows ms..ms+half_m).
                             T.tma_copy(
-                                A[ms[0]:ms[0] + half_m,
-                                  k_start:k_start + block_k],
+                                A[ms[0] : ms[0] + half_m, k_start : k_start + block_k],
                                 A_smem_top[slot, :, :],
                                 barrier=ab_full[slot],
                             )
                             # Bottom half of A (rows ms+half_m..ms+block_m).
                             T.tma_copy(
-                                A[ms[0] + half_m:ms[0] + block_m,
-                                  k_start:k_start + block_k],
+                                A[ms[0] + half_m : ms[0] + block_m, k_start : k_start + block_k],
                                 A_smem_bot[slot, :, :],
                                 barrier=ab_full[slot],
                             )
                             # Full B tile (shared between the two math WGs).
                             T.tma_copy(
-                                B[ex[0],
-                                  ns_[0]:ns_[0] + block_n,
-                                  k_start:k_start + block_k],
+                                B[ex[0], ns_[0] : ns_[0] + block_n, k_start : k_start + block_k],
                                 B_smem[slot, :, :],
                                 barrier=ab_full[slot],
                             )
@@ -902,14 +925,11 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                         n_start = n_tile * T.int32(block_n)
                         # Top-half row count: clamp(true_arows, 0, half_m).
                         true_arows = true_sizes[expert_id] - row
-                        arows0 = T.max(T.int32(0),
-                                       T.min(T.int32(half_m), true_arows))
-
+                        arows0 = T.max(T.int32(0), T.min(T.int32(half_m), true_arows))
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_0 % num_stages
-                            T.barrier_wait(ab_full[slot],
-                                           (gi_cons_0 // num_stages) & 1)
+                            T.barrier_wait(ab_full[slot], (gi_cons_0 // num_stages) & 1)
                             T.wgmma_gemm(
                                 A_smem_top[slot, :, :],
                                 B_smem[slot, :, :],
@@ -947,8 +967,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # half-written C_shared (intra-wave write→read race).
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=4, arrive_count=128)
-                            T.copy(C_shared_wg0,
-                                   C[m_start, n_start])
+                            T.copy(C_shared_wg0, C[m_start, n_start])
                         else:
                             # Slow path: predicated direct STG (rows 0..arows0).
                             for i, j in T.Parallel(half_m, block_n):
@@ -988,15 +1007,13 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                         n_start = n_tile * T.int32(block_n)
                         # Bottom-half row count: clamp(true_arows-half_m, 0, half_m).
                         true_arows = true_sizes[expert_id] - row
-                        arows1 = T.max(T.int32(0),
-                                       T.min(T.int32(half_m),
-                                             true_arows - T.int32(half_m)))
-
+                        arows1 = T.max(
+                            T.int32(0), T.min(T.int32(half_m), true_arows - T.int32(half_m))
+                        )
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_1 % num_stages
-                            T.barrier_wait(ab_full[slot],
-                                           (gi_cons_1 // num_stages) & 1)
+                            T.barrier_wait(ab_full[slot], (gi_cons_1 // num_stages) & 1)
                             T.wgmma_gemm(
                                 A_smem_bot[slot, :, :],
                                 B_smem[slot, :, :],
@@ -1028,8 +1045,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # the SMEM writes before the async TMA read.
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=5, arrive_count=128)
-                            T.copy(C_shared_wg1,
-                                   C[m_start + half_m, n_start])
+                            T.copy(C_shared_wg1, C[m_start + half_m, n_start])
                         elif arows1 > T.int32(0):
                             # Slow path: predicated direct STG.
                             for i, j in T.Parallel(half_m, block_n):
@@ -1041,8 +1057,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
 
 
 @functools.lru_cache(maxsize=64)
-def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
-                                       sm_count, block_k):
+def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype, sm_count, block_k):
     """V2 persistent grouped-GEMM JIT factory.
 
     Dispatches between two prim_func templates by ``block_m``:
@@ -1067,13 +1082,33 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
     def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
         if block_m <= 64:
             return _make_pingpong_kernel(
-                numel, num_experts, N, K, dtype, sm_count,
-                block_m, block_n, block_k, num_stages, threads, group_size_m,
+                numel,
+                num_experts,
+                N,
+                K,
+                dtype,
+                sm_count,
+                block_m,
+                block_n,
+                block_k,
+                num_stages,
+                threads,
+                group_size_m,
             )
         else:
             return _make_cooperative_kernel(
-                numel, num_experts, N, K, dtype, sm_count,
-                block_m, block_n, block_k, num_stages, threads, group_size_m,
+                numel,
+                num_experts,
+                N,
+                K,
+                dtype,
+                sm_count,
+                block_m,
+                block_n,
+                block_k,
+                num_stages,
+                threads,
+                group_size_m,
             )
 
     return _func

@@ -12,22 +12,25 @@ class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):
 
 class FusedAddRMSNormFixture(FixtureBase):
     PARAMS = [
-        ("m, n, dtype, tune", [
-            # Standard aligned shapes -- fp16
-            pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
-            # Standard aligned shapes -- bf16
-            pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-            # Non-aligned N
-            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2048, 5120, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2048, 5120, torch.bfloat16, False, marks=pytest.mark.full),
-            # Tail-M: M not divisible by block_m
-            pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "m, n, dtype, tune",
+            [
+                # Standard aligned shapes -- fp16
+                pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+                # Standard aligned shapes -- bf16
+                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                # Non-aligned N
+                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2048, 5120, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2048, 5120, torch.bfloat16, False, marks=pytest.mark.full),
+                # Tail-M: M not divisible by block_m
+                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -48,10 +51,13 @@ def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -
 
 class FusedAddRMSNormNonContigFixture(FixtureBase):
     PARAMS = [
-        ("m, n, dtype", [
-            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-        ]),
+        (
+            "m, n, dtype",
+            [
+                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -72,18 +78,23 @@ def test_fused_add_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -
 
     y, residual_out = op(x, residual, weight)
     atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
         f"Non-contiguous y test failed, max err: {(y - y_ref).abs().max()}"
-    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), \
+    )
+    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
         f"Non-contiguous residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
+    )
 
 
 class FusedAddRMSNorm3DFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq, hidden, dtype", [
-            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-        ]),
+        (
+            "batch, seq, hidden, dtype",
+            [
+                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -102,10 +113,12 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
 
     y, residual_out = op(x, residual, weight)
     atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
         f"3D y test failed, max err: {(y - y_ref).abs().max()}"
-    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), \
+    )
+    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
         f"3D residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
+    )
 
 
 if __name__ == "__main__":

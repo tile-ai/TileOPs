@@ -29,8 +29,8 @@ def _emit(event_id: int, kind: int, lane: int, payload) -> None:
     else:
         payload_expr = payload
     T.evaluate(
-        T.call_extern("handle", MARKER, event_id, int(kind), lane, state.active_gid,
-                      payload_expr))
+        T.call_extern("handle", MARKER, event_id, int(kind), lane, state.active_gid, payload_expr)
+    )
 
 
 class AnnoToken:

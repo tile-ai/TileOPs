@@ -23,7 +23,6 @@ from .op_base import Op
 __all__ = ["DropoutFwdOp"]
 
 
-
 class DropoutFwdOp(Op):
     """Dropout operation with deterministic replay via TileLang RNG.
 
@@ -73,7 +72,6 @@ class DropoutFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._op_name: self.kernel_cls}
@@ -92,7 +90,11 @@ class DropoutFwdOp(Op):
             self._op_name,
             key=(x.numel(), x.dtype, x.device.index),
             build=lambda: self.kernel_map[self._op_name](
-                x.numel(), x.dtype, p=self.p, seed=self.seed, tune=self.tune,
+                x.numel(),
+                x.dtype,
+                p=self.p,
+                seed=self.seed,
+                tune=self.tune,
             ),
         )
 
@@ -113,7 +115,9 @@ class DropoutFwdOp(Op):
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}")
+            raise ValueError(
+                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, self._instance_key)
@@ -123,6 +127,7 @@ class DropoutFwdOp(Op):
 
 
 # torch.compile registration
+
 
 @torch.library.custom_op("top::dropout", mutates_args=())
 def _wrapped_dropout(x: torch.Tensor, instance_key: str) -> torch.Tensor:

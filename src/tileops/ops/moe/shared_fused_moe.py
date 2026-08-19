@@ -129,7 +129,9 @@ class SharedFusedMoE(FusedMoe):
         if tp_size < 1:
             raise ValueError(f"tp_size must be >= 1, got {tp_size}")
         if not (0 <= tp_rank < tp_size):
-            raise ValueError(f"tp_rank must be in [0, tp_size), got tp_rank={tp_rank}, tp_size={tp_size}")
+            raise ValueError(
+                f"tp_rank must be in [0, tp_size), got tp_rank={tp_rank}, tp_size={tp_size}"
+            )
         if shared_ffn_size is not None and shared_ffn_size % tp_size != 0:
             raise ValueError(
                 f"shared_ffn_size ({shared_ffn_size}) must be divisible by tp_size ({tp_size})"
@@ -228,8 +230,8 @@ class SharedFusedMoE(FusedMoe):
                 # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.
                 # ColumnParallel: rank r computes neurons [r*s, (r+1)*s), so it needs
                 # gate[r*s:(r+1)*s] and up[r*s:(r+1)*s] concatenated into [2*s, H].
-                gate_shard = shared_w_gate_up[r * s : (r + 1) * s]          # [s, H]
-                up_shard   = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
+                gate_shard = shared_w_gate_up[r * s : (r + 1) * s]  # [s, H]
+                up_shard = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
                 gate_up_shard = torch.cat([gate_shard, up_shard], dim=0).contiguous()  # [2*s, H]
                 down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
             else:
@@ -237,7 +239,9 @@ class SharedFusedMoE(FusedMoe):
                 down_shard = shared_w_down
 
             shared_out = self._shared_mlp_kernel_for(hidden_states.dtype)(
-                hidden_states, gate_up_shard, down_shard,
+                hidden_states,
+                gate_up_shard,
+                down_shard,
             )
         else:
             shared_out = None

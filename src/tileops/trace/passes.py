@@ -149,8 +149,9 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     num_cta = gx * gy * gz
 
     # 2) New slots param Var + Buffer: [num_cta, num_groups, slot_words] int64.
-    slots_buf = tx.decl_buffer((num_cta, num_groups, slot_words), "int64",
-                               name="slots", scope="global")
+    slots_buf = tx.decl_buffer(
+        (num_cta, num_groups, slot_words), "int64", name="slots", scope="global"
+    )
     slots_var = tx.Var("slots_handle", "handle")
 
     # 3) Cursor lives in the slot HEADER word (slots[cta,gid,0]), read-modify-write
@@ -199,9 +200,14 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
             zero_body = zero_stores[0] if len(zero_stores) == 1 else tx.SeqStmt(zero_stores)
             new_body = tx.SeqStmt([zero_body, node.body])
             return tx.SBlock(
-                iter_vars=node.iter_vars, reads=node.reads, writes=node.writes,
-                name_hint=node.name_hint, body=new_body, init=node.init,
-                alloc_buffers=node.alloc_buffers, match_buffers=node.match_buffers,
+                iter_vars=node.iter_vars,
+                reads=node.reads,
+                writes=node.writes,
+                name_hint=node.name_hint,
+                body=new_body,
+                init=node.init,
+                alloc_buffers=node.alloc_buffers,
+                match_buffers=node.match_buffers,
                 annotations=anns,
             )
         return node
@@ -353,7 +359,8 @@ def lookup_meta(kernel) -> dict:
     if meta_id is None:
         raise ValueError(
             "kernel was not produced by trace.lower (no tl.trace_meta_id attr on "
-            "kernel.prim_func); cannot resolve host decode maps")
+            "kernel.prim_func); cannot resolve host decode maps"
+        )
     meta_id = int(meta_id)
     if meta_id not in _META_REGISTRY:
         raise ValueError(f"unknown trace meta id {meta_id}; host maps not registered")

@@ -236,9 +236,7 @@ def _vector_norm_tiled_fwd_wrapped(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _vector_norm_kernel_tiled(
-        M, N, op_kind, dtype_str, tile_n
-    )(block_m, threads)(x)
+    return _vector_norm_kernel_tiled(M, N, op_kind, dtype_str, tile_n)(block_m, threads)(x)
 
 
 @_vector_norm_fwd_wrapped.register_fake
@@ -297,7 +295,9 @@ class VectorNormKernel(Kernel):
         self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
         self._smem_budget = device_smem_budget()
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget,
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
         )
         self._needs_tiling = self._planner.needs_tiling
         self.kernel = None
@@ -330,9 +330,7 @@ class VectorNormKernel(Kernel):
         """Autotune vector norm, benchmarking tiled configs directly."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-        x = torch.randn(
-            self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device()
-        )
+        x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
         tune_by_forward(self, x, warmup=warmup, rep=rep)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

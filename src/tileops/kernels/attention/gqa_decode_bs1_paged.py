@@ -187,10 +187,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     def applies(cls, call) -> bool:
         # The page-tile question is asked of this class, so a kernel_map
         # override answers for its own tiling rather than for the shipped one.
-        return (
-            decode_bs1_region(call)
-            and cls.block_n_for_page_size(call.page_size) is not None
-        )
+        return decode_bs1_region(call) and cls.block_n_for_page_size(call.page_size) is not None
 
     @staticmethod
     def block_n_for_page_size(page_size: int) -> Optional[int]:
@@ -241,9 +238,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     def default_config(self) -> dict:
         block_n = self.block_n_for_page_size(self.page_size)
         if block_n is None:
-            raise ValueError(
-                "batch=1 paged decode requires page_size=64 or a multiple of 128"
-            )
+            raise ValueError("batch=1 paged decode requires page_size=64 or a multiple of 128")
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
     def forward(

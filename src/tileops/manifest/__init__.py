@@ -61,7 +61,6 @@ def load_manifest() -> dict[str, Any]:
     return merged
 
 
-
 def try_load_entry(op_name: str) -> dict[str, Any] | None:
     """Return the manifest entry for *op_name*, or None if unavailable.
 
@@ -117,7 +116,8 @@ def single_input_workload_contract(
     params = sig.get("params")
     param_names = (
         frozenset(k for k in params if isinstance(k, str))
-        if isinstance(params, dict) else frozenset()
+        if isinstance(params, dict)
+        else frozenset()
     )
     allowed = param_names | WORKLOAD_RESERVED_KEYS | {shape_key}
     return shape_key, allowed

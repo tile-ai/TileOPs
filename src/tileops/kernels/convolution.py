@@ -24,6 +24,7 @@ __all__ = [
 
 # Shared helpers
 
+
 def conv_autotune_configs(
     dtype,
     *,
@@ -37,14 +38,24 @@ def conv_autotune_configs(
     limit = get_shared_memory_limit_bytes()
     valid = []
     for bm, bn, bk, ns, th in itertools.product(
-        block_m, block_n, block_k, num_stages, threads,
+        block_m,
+        block_n,
+        block_k,
+        num_stages,
+        threads,
     ):
         if conv_shared_memory_bytes(bm, bn, bk, ns, dtype) > limit:
             continue
-        valid.append({
-            "block_m": bm, "block_n": bn, "block_k": bk,
-            "num_stages": ns, "threads": th, "enable_rasterization": True,
-        })
+        valid.append(
+            {
+                "block_m": bm,
+                "block_n": bn,
+                "block_k": bk,
+                "num_stages": ns,
+                "threads": th,
+                "enable_rasterization": True,
+            }
+        )
     return valid
 
 
@@ -73,6 +84,7 @@ def _group_conv1d_block_m_choices(c_out_g: int) -> list[int]:
 
 
 # Conv1d
+
 
 @functools.lru_cache(maxsize=64)
 def _conv1d_kernel(
@@ -127,9 +139,7 @@ def _conv1d_kernel(
                 tile_input_start = tile_ol_start * stride_l - pad_left
                 tile_input_end = tile_ol_end * stride_l + (kernel_l - 1) * dilation_l - pad_left
                 tile_spatial_full = (
-                    (tile_ol_end < out_l)
-                    & (tile_input_start >= 0)
-                    & (tile_input_end < l_in)
+                    (tile_ol_end < out_l) & (tile_input_start >= 0) & (tile_input_end < l_in)
                 )
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -144,12 +154,7 @@ def _conv1d_kernel(
                         if tile_spatial_full & ((k_iter + 1) * block_k <= k_total):
                             data_shared[i, j] = x[bz, ci, il]
                         else:
-                            in_bound = (
-                                (k_idx < k_total)
-                                & (ol < out_l)
-                                & (il >= 0)
-                                & (il < l_in)
-                            )
+                            in_bound = (k_idx < k_total) & (ol < out_l) & (il >= 0) & (il < l_in)
                             data_shared[i, j] = T.if_then_else(
                                 in_bound,
                                 x[bz, ci, il],
@@ -334,10 +339,7 @@ def _conv1d_group_kernel(
                         ci_g = k_idx % c_in_g
                         il = ol * stride_l + kw * dilation_l - pad_left
                         data_shared[k, j] = T.if_then_else(
-                            (k_idx < k_total)
-                            & (ol < out_l)
-                            & (il >= 0)
-                            & (il < l_in),
+                            (k_idx < k_total) & (ol < out_l) & (il >= 0) & (il < l_in),
                             x[batch_id, group_id * c_in_g + ci_g, il],
                             T.cast(0.0, dtype),
                         )
@@ -539,7 +541,20 @@ def _conv1d_group_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_group_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_left, pad_right, dilation_l, has_bias, dtype, groups, c_in_g, c_out_g
+        n,
+        c_in,
+        l_in,
+        c_out,
+        kernel_l,
+        stride_l,
+        pad_left,
+        pad_right,
+        dilation_l,
+        has_bias,
+        dtype,
+        groups,
+        c_in_g,
+        c_out_g,
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -561,9 +576,9 @@ def _conv1d_pointwise_wrapped_kernel(
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor:
-    return _conv1d_pointwise_kernel(
-        n, c_in, l_in, c_out, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+    return _conv1d_pointwise_kernel(n, c_in, l_in, c_out, has_bias, dtype)(
+        block_m, block_n, block_k, num_stages, threads, enable_rasterization
+    )(x, weight, bias)
 
 
 @_conv1d_wrapped_kernel.register_fake
@@ -1074,6 +1089,7 @@ class GroupConv1dKernel(Kernel):
 
 # Conv2d
 
+
 @functools.lru_cache(maxsize=32)
 def _conv2d_1x1_kernel(
     n: int,
@@ -1456,9 +1472,7 @@ def _conv2d_symmetric_kernel(
             assert spatial_block * channel_lanes == 256, (
                 "spatial_block * channel_lanes must equal 256"
             )
-            assert channel_block % channel_lanes == 0, (
-                "channel_lanes must divide channel_block"
-            )
+            assert channel_block % channel_lanes == 0, "channel_lanes must divide channel_block"
             if not channel_fastest:
                 assert channel_block * spatial_block == 256, (
                     "channel_block * spatial_block must equal 256 when channel_fastest=False"
@@ -1472,9 +1486,7 @@ def _conv2d_symmetric_kernel(
             ) as (bx, by, bz):
                 if channel_fastest:
                     values_per_thread = channel_block // channel_lanes
-                    for spatial_inner, channel_lane in T.Parallel(
-                        spatial_block, channel_lanes
-                    ):
+                    for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
                         spatial = bx * spatial_block + spatial_inner
                         h_idx = spatial // width
                         w_idx = spatial - h_idx * width
@@ -1487,9 +1499,7 @@ def _conv2d_symmetric_kernel(
                                 else:
                                     dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
                 else:
-                    for channel_inner, spatial_inner in T.Parallel(
-                        channel_block, spatial_block
-                    ):
+                    for channel_inner, spatial_inner in T.Parallel(channel_block, spatial_block):
                         spatial = bx * spatial_block + spatial_inner
                         h_idx = spatial // width
                         w_idx = spatial - h_idx * width
@@ -1622,9 +1632,9 @@ def _conv2d_1x1_wrapped_kernel(
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor:
-    return _conv2d_1x1_kernel(
-        n, c_in, h, w, c_out, 1, 1, 0, 0, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+    return _conv2d_1x1_kernel(n, c_in, h, w, c_out, 1, 1, 0, 0, has_bias, dtype)(
+        block_m, block_n, block_k, num_stages, threads, enable_rasterization
+    )(x, weight, bias)
 
 
 @_conv2d_1x1_wrapped_kernel.register_fake
@@ -1675,9 +1685,7 @@ def _conv2d_symmetric_wrapped_kernel(
 ) -> torch.Tensor:
     return _conv2d_symmetric_kernel(
         n, c_in, h, w, c_out, kernel_size, stride, pad, dilation, has_bias, dtype
-    )(
-        block_m, block_n, block_k, num_stages, threads, enable_rasterization
-    )(
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(
         x, weight, bias, x_nhwc, weight_krsc, out_nhwc
     )
 
@@ -1737,7 +1745,21 @@ def _conv2d_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv2d_kernel(
-        n, c_in, h, w, c_out, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, has_bias, dtype
+        n,
+        c_in,
+        h,
+        w,
+        c_out,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dilation_h,
+        dilation_w,
+        has_bias,
+        dtype,
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -2376,6 +2398,7 @@ class Conv2d1x1Kernel(Kernel):
 
 
 # Conv3d
+
 
 @functools.lru_cache(maxsize=64)
 def _conv3d_kernel(

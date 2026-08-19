@@ -148,8 +148,18 @@ class SSDChunkStateFwdOp(Op):
         self.dtype = x.dtype
         self.seq_idx_shape = None if seq_idx is None else tuple(seq_idx.shape)
         self.kernel = self._get_kernel(
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, x.dtype,
-            dt.dtype, seq_idx is not None, x.device.index)
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            x.dtype,
+            dt.dtype,
+            seq_idx is not None,
+            x.device.index,
+        )
 
         x = x.contiguous()
         Bmat = Bmat.contiguous()
@@ -160,7 +170,9 @@ class SSDChunkStateFwdOp(Op):
             # The kernel built for this call has no seq_idx branch, so this
             # buffer only fills the argument slot and is never read.
             seq_idx = x.new_empty(
-                self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32,
+                self.batch,
+                self.num_chunks * self.chunk_len,
+                dtype=torch.int32,
             )
         else:
             seq_idx = seq_idx.contiguous()

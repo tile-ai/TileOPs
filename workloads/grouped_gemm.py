@@ -13,6 +13,7 @@ def _generate_batch_sizes(batch_sum: int, batch_count: int):
         batch_sizes[i] += 1
     return batch_sizes
 
+
 def _generate_offsets(batch_sizes_list, padding_M):
     batch_count = len(batch_sizes_list)
     batch_offsets_list = [0]
@@ -22,13 +23,22 @@ def _generate_offsets(batch_sizes_list, padding_M):
     for i in range(batch_count - 1):
         batch_padded_offsets_list.append(
             batch_padded_offsets_list[-1]
-            + math.ceil((batch_sizes_list[i] + 1) / padding_M) * padding_M)
+            + math.ceil((batch_sizes_list[i] + 1) / padding_M) * padding_M
+        )
     return batch_offsets_list, batch_padded_offsets_list
 
-class GroupedGemmWorkload(WorkloadBase):
 
-    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
-                 transpose_a: bool, transpose_b: bool):
+class GroupedGemmWorkload(WorkloadBase):
+    def __init__(
+        self,
+        batch_sum: int,
+        batch_count: int,
+        N: int,
+        K: int,
+        dtype: torch.dtype,
+        transpose_a: bool,
+        transpose_b: bool,
+    ):
         self.batch_sum = batch_sum
         self.batch_count = batch_count
         self.N = N
@@ -42,12 +52,13 @@ class GroupedGemmWorkload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         batch_sizes_list = self.batch_sizes_list
         N, K = self.N, self.K
-        device = 'cuda'
+        device = "cuda"
         dtype = self.dtype
         batch_sum = sum(batch_sizes_list)
         batch_count = len(batch_sizes_list)
         batch_offsets_list, batch_padded_offsets_list = _generate_offsets(
-            batch_sizes_list, self.padding_M)
+            batch_sizes_list, self.padding_M
+        )
 
         if not self.transpose_a:
             # NT / NN: A is (batch_sum, K)
@@ -71,12 +82,18 @@ class GroupedGemmWorkload(WorkloadBase):
         batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
         batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
         batch_padded_offsets = torch.tensor(
-            batch_padded_offsets_list, device=device, dtype=torch.int32)
+            batch_padded_offsets_list, device=device, dtype=torch.int32
+        )
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
-    def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,
+        batch_padded_offsets: torch.Tensor,
+    ) -> torch.Tensor:
         if not self.transpose_a:
             # NT / NN: output is (batch_sum, N)
             if self.transpose_b:
@@ -117,8 +134,9 @@ class GroupedGemmWorkload(WorkloadBase):
                 for i, size in enumerate(batch_sizes):
                     size = int(size.item())
                     end = start + size
-                    output[i] = torch.mm(A[start:end].transpose(0, 1),
-                                         B[:, start:end].transpose(0, 1))
+                    output[i] = torch.mm(
+                        A[start:end].transpose(0, 1), B[:, start:end].transpose(0, 1)
+                    )
                     start = end
             else:
                 # TN: A^T @ B
@@ -157,9 +175,7 @@ class GroupedGemmUniformWorkload(WorkloadBase):
         dev = "cuda"
         a = torch.randn(self.numel, self.k, dtype=self.dtype, device=dev) * 0.02
         b = torch.randn(self.num_experts, self.n, self.k, dtype=self.dtype, device=dev) * 0.02
-        sizes = torch.full(
-            (self.num_experts,), self.rows_per_expert, dtype=torch.int32, device=dev
-        )
+        sizes = torch.full((self.num_experts,), self.rows_per_expert, dtype=torch.int32, device=dev)
         offsets = torch.zeros(self.num_experts, dtype=torch.int32, device=dev)
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
         return a, b, sizes, offsets

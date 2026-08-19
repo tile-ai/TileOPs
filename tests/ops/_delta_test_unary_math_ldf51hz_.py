@@ -37,11 +37,14 @@ class MathFixture(FixtureBase):
     """Parametrize over supported float dtypes for unary math ops."""
 
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -49,9 +52,12 @@ class MathEdgeFixture(FixtureBase):
     """L4 edge-case fixture: fp32, 4K elements."""
 
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -271,7 +277,11 @@ def test_round_int_identity_with_decimals() -> None:
 
 
 _INT_DTYPES = [
-    torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+    torch.uint8,
 ]
 
 
@@ -502,12 +512,15 @@ def test_round_decimals_binds_call_metadata() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("invoke", [
-    pytest.param(lambda op, x: op(x), id="call"),
-    pytest.param(lambda op, x: op.forward(x), id="forward"),
-    pytest.param(lambda op, x: op._eager_forward(x), id="eager_forward"),
-    pytest.param(lambda op, x: torch.compile(op, fullgraph=True)(x), id="compiled"),
-])
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        pytest.param(lambda op, x: op(x), id="call"),
+        pytest.param(lambda op, x: op.forward(x), id="forward"),
+        pytest.param(lambda op, x: op._eager_forward(x), id="eager_forward"),
+        pytest.param(lambda op, x: torch.compile(op, fullgraph=True)(x), id="compiled"),
+    ],
+)
 def test_every_execution_path_records_its_dtype(invoke) -> None:
     """Metadata must not depend on which entry point the caller used.
 
@@ -555,8 +568,7 @@ def test_round_decimals_validates_input() -> None:
     with pytest.raises(ValueError, match="CUDA tensor"):
         op(cpu_x, decimals=2)
     # float16 is in the manifest union, so the same instance accepts it.
-    assert op(torch.ones(2, device="cuda", dtype=torch.float16), decimals=2).dtype \
-        == torch.float16
+    assert op(torch.ones(2, device="cuda", dtype=torch.float16), decimals=2).dtype == torch.float16
     # A dtype outside the union must still raise.
     with pytest.raises(ValueError, match="dtype"):
         op(torch.ones(2, device="cuda", dtype=torch.float64), decimals=2)
@@ -628,9 +640,7 @@ def test_reciprocal_int_metadata_preserves_input_dtype(
     op(x)
     # Metadata describes the most recent call: the caller's integer dtype in,
     # float32 out.
-    assert op.dtype == dtype, (
-        f"op.dtype must report the most recent input dtype, got {op.dtype}"
-    )
+    assert op.dtype == dtype, f"op.dtype must report the most recent input dtype, got {op.dtype}"
     assert op._entry(dtype).output_dtype == torch.float32
     expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
     assert int(op.total_memory) == expected_bytes, (

@@ -42,7 +42,6 @@ def _make_scan_kernel_nopad(numel: int, num_experts: int, top_k: int):
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scan(threads: int):
-
         @T.prim_func
         def _scan_main(
             flat_ids: T.Tensor([numel], "int32"),
@@ -127,7 +126,6 @@ def _make_scan_kernel_nopad_ep(
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scan_ep(threads: int):
-
         @T.prim_func
         def _scan_ep_main(
             flat_ids: T.Tensor([numel], "int32"),
@@ -198,7 +196,9 @@ def _make_scan_kernel_nopad_ep(
                         if local_eid >= T.int32(0) and local_eid < T.int32(num_experts_local):
                             # Keep the returned slot in a local buffer: TileLang may otherwise
                             # duplicate the atomic while lowering bounds checks for the stores.
-                            slot_buf[0] = T.atomic_add(write_offsets[local_eid], T.int32(1), return_prev=True)
+                            slot_buf[0] = T.atomic_add(
+                                write_offsets[local_eid], T.int32(1), return_prev=True
+                            )
                             slot = slot_buf[0]
                             permuted_idx[slot] = idx // T.int32(top_k)
                             fwd_idx[idx] = slot
@@ -232,7 +232,6 @@ def _make_gather_kernel_nopad(num_tokens: int, numel: int, hidden_size: int, dty
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gather():
-
         @T.prim_func
         def _gather_main(
             hidden_states: T.Tensor([num_tokens, hidden_size], dtype),
@@ -245,8 +244,10 @@ def _make_gather_kernel_nopad(num_tokens: int, numel: int, hidden_size: int, dty
                     if slot < numel:
                         # Direct global->global vectorized copy (no register-fragment
                         # round-trip; TileLang lowers both identically).
-                        T.copy(hidden_states[permuted_idx[slot], 0:hidden_size],
-                               perm_h[slot, 0:hidden_size])
+                        T.copy(
+                            hidden_states[permuted_idx[slot], 0:hidden_size],
+                            perm_h[slot, 0:hidden_size],
+                        )
 
         return _gather_main
 
@@ -311,8 +312,7 @@ class MoePermuteNopadKernel(Kernel):
         if num_experts_local is not None:
             if not 0 < num_experts_local <= num_experts:
                 raise ValueError(
-                    f"num_experts_local must be in (0, {num_experts}], "
-                    f"got {num_experts_local}"
+                    f"num_experts_local must be in (0, {num_experts}], got {num_experts_local}"
                 )
             self.num_experts_local = num_experts_local
             self._scan_fn = _make_scan_kernel_nopad_ep(
@@ -368,9 +368,7 @@ class MoePermuteNopadKernel(Kernel):
                     "expert_map at every call"
                 )
             if expert_map.dtype != torch.int32:
-                raise ValueError(
-                    f"Expected expert_map.dtype torch.int32, got {expert_map.dtype}"
-                )
+                raise ValueError(f"Expected expert_map.dtype torch.int32, got {expert_map.dtype}")
             if expert_map.shape != (self.num_experts,):
                 raise ValueError(
                     f"Expected expert_map.shape ({self.num_experts},), "
@@ -398,22 +396,30 @@ class MoePermuteNopadKernel(Kernel):
         scan_fn = self._scan_fn(threads)
         if self.expert_parallel:
             scan_fn(
-                flat_ids, expert_map,
-                expert_first_token_offset, true_offsets, true_sizes,
-                permuted_idx, fwd_idx, write_offsets,
+                flat_ids,
+                expert_map,
+                expert_first_token_offset,
+                true_offsets,
+                true_sizes,
+                permuted_idx,
+                fwd_idx,
+                write_offsets,
             )
         else:
             scan_fn(
-                flat_ids, expert_first_token_offset, true_offsets, true_sizes,
-                permuted_idx, fwd_idx, write_offsets,
+                flat_ids,
+                expert_first_token_offset,
+                true_offsets,
+                true_sizes,
+                permuted_idx,
+                fwd_idx,
+                write_offsets,
             )
 
         # perm_h always has numel rows; downstream ops (GEMM/SiluAndMul) are compiled
         # with numel.  In EP mode, rows M_local..numel-1 contain row-0 duplicates
         # (safe dummy data) that the tile scheduler never accesses.
-        perm_h = torch.empty(
-            (self.numel, self.hidden_size), dtype=self.dtype, device=dev
-        )
+        perm_h = torch.empty((self.numel, self.hidden_size), dtype=self.dtype, device=dev)
         gather_fn = self._gather_fn()
         gather_fn(hidden_states, permuted_idx, perm_h)
 

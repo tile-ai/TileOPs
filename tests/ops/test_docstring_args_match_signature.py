@@ -13,7 +13,9 @@ import pytest
 
 import tileops.ops.elementwise as ew
 
-_SECTION = re.compile(r"^\s*(Args|Returns|Raises|Example|Examples|Attributes|Note|Notes|Yields):\s*$")
+_SECTION = re.compile(
+    r"^\s*(Args|Returns|Raises|Example|Examples|Attributes|Note|Notes|Yields):\s*$"
+)
 _ARG_KEY = re.compile(r"^(\s*)(\*{0,2}\w+)\s*(?:\([^)]*\))?:\s")
 
 

@@ -285,8 +285,14 @@ def test_enumeration_still_sees_the_family():
     assert len(_SINGLE_TENSOR_OPS) >= 24, (
         f"only {len(_SINGLE_TENSOR_OPS)} single-tensor ops found; the filter broke"
     )
-    for expected in ("AbsFwdOp", "ReciprocalFwdOp", "RoundFwdOp", "IsnanFwdOp",
-                     "LogicalNotFwdOp", "BitwiseNotFwdOp"):
+    for expected in (
+        "AbsFwdOp",
+        "ReciprocalFwdOp",
+        "RoundFwdOp",
+        "IsnanFwdOp",
+        "LogicalNotFwdOp",
+        "BitwiseNotFwdOp",
+    ):
         assert expected in _SINGLE_TENSOR_OPS, f"{expected} dropped out of the sweep"
 
 

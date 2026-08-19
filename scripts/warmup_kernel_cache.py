@@ -36,19 +36,28 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pre-compile benchmark kernels to warm tilelang cache")
+        description="Pre-compile benchmark kernels to warm tilelang cache"
+    )
     parser.add_argument(
-        "--shard", type=int, default=0,
-        help="Shard index for splitting work across parallel jobs (0-based)")
+        "--shard",
+        type=int,
+        default=0,
+        help="Shard index for splitting work across parallel jobs (0-based)",
+    )
+    parser.add_argument("--total-shards", type=int, default=1, help="Total number of shards")
     parser.add_argument(
-        "--total-shards", type=int, default=1,
-        help="Total number of shards")
+        "--max-workers",
+        type=int,
+        default=64,
+        help="Max parallel compilation threads per autotune call (default: 64)",
+    )
     parser.add_argument(
-        "--max-workers", type=int, default=64,
-        help="Max parallel compilation threads per autotune call (default: 64)")
-    parser.add_argument(
-        "-n", "--num-pytest-workers", type=int, default=16,
-        help="Number of pytest-xdist workers for parallel test execution (default: 16)")
+        "-n",
+        "--num-pytest-workers",
+        type=int,
+        default=16,
+        help="Number of pytest-xdist workers for parallel test execution (default: 16)",
+    )
     args = parser.parse_args()
 
     # Communicate settings to worker processes via environment variables.
@@ -56,20 +65,24 @@ def main():
     os.environ["TILEOPS_WARMUP_MODE"] = "1"
     os.environ["TILEOPS_WARMUP_MAX_WORKERS"] = str(args.max_workers)
 
-    print(f"Compilation parallelism: {args.num_pytest_workers} pytest workers "
-          f"x {args.max_workers} compile threads each")
+    print(
+        f"Compilation parallelism: {args.num_pytest_workers} pytest workers "
+        f"x {args.max_workers} compile threads each"
+    )
 
     # Collect benchmark files and shard.
     bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
     all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
-    shard_files = all_files[args.shard::args.total_shards]
+    shard_files = all_files[args.shard :: args.total_shards]
 
     if not shard_files:
         print(f"Shard {args.shard}/{args.total_shards}: no files to process")
         return
 
-    print(f"Shard {args.shard}/{args.total_shards}: "
-          f"{len(shard_files)}/{len(all_files)} benchmark files")
+    print(
+        f"Shard {args.shard}/{args.total_shards}: "
+        f"{len(shard_files)}/{len(all_files)} benchmark files"
+    )
     for f in shard_files:
         print(f"  {os.path.basename(f)}")
 
@@ -86,8 +99,10 @@ def main():
         *shard_files,
         "-v",
         "--tb=line",
-        "-p", "no:cacheprovider",
-        "-p", "conftest_warmup",
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "conftest_warmup",
         "--override-ini=continue_on_collection_errors=true",
     ]
 
@@ -103,7 +118,10 @@ def main():
     # indicate the warmup didn't run at all and should be surfaced.
     print(f"\nWarmup complete (pytest exit code: {exit_code})")
     if exit_code not in (0, 1):
-        print(f"ERROR: warmup failed with infrastructure error (exit code {exit_code})", file=sys.stderr)
+        print(
+            f"ERROR: warmup failed with infrastructure error (exit code {exit_code})",
+            file=sys.stderr,
+        )
         sys.exit(exit_code)
 
     # ── Phase 2: Serial validation ──────────────────────────────────────
@@ -122,8 +140,10 @@ def main():
         *shard_files,
         "-v",
         "--tb=line",
-        "-p", "no:cacheprovider",
-        "-p", "conftest_warmup",
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "conftest_warmup",
         "--override-ini=continue_on_collection_errors=true",
     ]
     # No -n flag: serial execution for accurate GPU profiling
@@ -134,8 +154,10 @@ def main():
     if validate_code in (0, 1):
         sys.exit(0)
     else:
-        print(f"ERROR: validation failed with infrastructure error (exit code {validate_code})",
-              file=sys.stderr)
+        print(
+            f"ERROR: validation failed with infrastructure error (exit code {validate_code})",
+            file=sys.stderr,
+        )
         sys.exit(validate_code)
 
 

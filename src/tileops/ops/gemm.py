@@ -100,8 +100,7 @@ class GemmFwdOp(Op):
         ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
         covering all four ``(trans_a, trans_b)`` layouts.
         """
-        call = GemmCall(m=m, n=n, k=k, dtype=dtype,
-                        trans_a=self.trans_a, trans_b=self.trans_b)
+        call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
         if self.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == "gemv_kernel":
             # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
             mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
@@ -167,7 +166,9 @@ class GemmFp8FwdOp(Op):
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(f"GemmFp8FwdOp outputs torch.float16 or torch.bfloat16, got {out_dtype}")
+            raise ValueError(
+                f"GemmFp8FwdOp outputs torch.float16 or torch.bfloat16, got {out_dtype}"
+            )
         self.out_dtype = out_dtype
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -288,7 +289,8 @@ class GemmFp8FwdOp(Op):
             kernel_name,
             key=(m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
             build=lambda: self.kernel_map[kernel_name](
-                m, n, k, dtype, self.out_dtype, tune=self.tune),
+                m, n, k, dtype, self.out_dtype, tune=self.tune
+            ),
         )
 
     def forward(
@@ -379,9 +381,13 @@ class GemmW4A16FwdOp(Op):
                 f"GemmW4A16FwdOp currently supports float16 activation, got {activation.dtype}"
             )
         if packed_weight.dtype != torch.uint8:
-            raise ValueError(f"GemmW4A16FwdOp expects uint8 packed_weight, got {packed_weight.dtype}")
+            raise ValueError(
+                f"GemmW4A16FwdOp expects uint8 packed_weight, got {packed_weight.dtype}"
+            )
         if weight_scale.dtype != torch.float32:
-            raise ValueError(f"GemmW4A16FwdOp expects float32 weight_scale, got {weight_scale.dtype}")
+            raise ValueError(
+                f"GemmW4A16FwdOp expects float32 weight_scale, got {weight_scale.dtype}"
+            )
         if weight_zero.dtype != torch.uint8:
             raise ValueError(f"GemmW4A16FwdOp expects uint8 weight_zero, got {weight_zero.dtype}")
 
@@ -449,9 +455,7 @@ class GemmW4A16FwdOp(Op):
         dtype: torch.dtype,
     ) -> Kernel:
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_b=True)
-        key_name = self.select_kernel_key(
-            ("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call
-        )
+        key_name = self.select_kernel_key(("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call)
         return self.get_or_build_kernel(
             key_name,
             key=(m, n, k, dtype, self.group_size),

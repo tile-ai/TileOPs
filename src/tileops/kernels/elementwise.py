@@ -168,9 +168,7 @@ _BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
     torch.bfloat16,
     torch.float32,
 )
-_BINARY_NO_BOOL_DTYPES = tuple(
-    dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool
-)
+_BINARY_NO_BOOL_DTYPES = tuple(dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool)
 
 
 def _is_fp8(dtype: torch.dtype) -> bool:
@@ -249,7 +247,12 @@ def _clamp_to_dtype_range(value, dtype: torch.dtype):
         if isinstance(value, float) and math.isinf(value):
             iinfo = torch.iinfo(dtype)
             return iinfo.max if value > 0 else iinfo.min
-        if dtype == torch.uint8 and isinstance(value, int) and not isinstance(value, bool) and value < 0:
+        if (
+            dtype == torch.uint8
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value < 0
+        ):
             return value & 0xFF
         return int(value)
     fvalue = float(value)
@@ -281,20 +284,26 @@ def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
     if _fp8_needs_nonsaturating_cast(dtype):
         # e5m2: compute in fp16, leave result as fp16
         if arity == 1:
+
             def fp8_accum_op(x):
                 return base_op(T.cast(x, accum))
         else:
+
             def fp8_accum_op(a, b):
                 return base_op(T.cast(a, accum), T.cast(b, accum))
+
         return fp8_accum_op
 
     # e4m3fn: compute in fp16, saturating cast back
     if arity == 1:
+
         def fp8_accum_op(x):
             return T.Cast(dtype_str, base_op(T.cast(x, accum)))
     else:
+
         def fp8_accum_op(a, b):
             return T.Cast(dtype_str, base_op(T.cast(a, accum), T.cast(b, accum)))
+
     return fp8_accum_op
 
 
@@ -401,10 +410,7 @@ def coalesce_broadcast_dims(a_shape, b_shape):
         for i in range(ndim - 2, -1, -1):
             strides[i] = strides[i + 1] * padded_shape[i + 1]
         # Only zero strides for genuinely broadcast dims (size-1 expanded to >1)
-        return [
-            0 if padded_shape[i] == 1 and out_shape[i] > 1 else strides[i]
-            for i in range(ndim)
-        ]
+        return [0 if padded_shape[i] == 1 and out_shape[i] > 1 else strides[i] for i in range(ndim)]
 
     a_raw = _make_strides(a_pad)
     b_raw = _make_strides(b_pad)
@@ -462,7 +468,12 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
 
 @functools.lru_cache(maxsize=32)
 def _make_binary_register_copy(
-    N_total, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8,
+    N_total,
+    dtype,
+    op_func,
+    output_dtype=None,
+    threads=256,
+    num_per_thread=8,
 ):
     """Binary register_copy: fragment load -> compute -> fragment store.
 
@@ -487,12 +498,12 @@ def _make_binary_register_copy(
                 a_reg = T.alloc_fragment((block_size,), dtype)
                 b_reg = T.alloc_fragment((block_size,), dtype)
                 y_reg = T.alloc_fragment((block_size,), out_dtype)
-                T.copy(a[bx * block_size:(bx + 1) * block_size], a_reg)
-                T.copy(b[bx * block_size:(bx + 1) * block_size], b_reg)
+                T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
+                T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
                 for i, j in T.Parallel(threads, num_per_thread):
                     idx = i * num_per_thread + j
                     y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
-                T.copy(y_reg, y[bx * block_size:(bx + 1) * block_size])
+                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -501,14 +512,23 @@ def _make_binary_register_copy(
 
 @functools.lru_cache(maxsize=32)
 def _make_binary_direct(
-    N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
-    a_numel, b_numel, output_dtype=None, threads=256,
+    N_total,
+    dtype,
+    op_func,
+    coalesced_shape,
+    a_strides,
+    b_strides,
+    a_numel,
+    b_numel,
+    output_dtype=None,
+    threads=256,
 ):
     """Binary direct: 1 element per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
 
     # Fast path: same-shape contiguous inputs -- skip broadcast machinery
     if _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+
         @tilelang.jit(out_idx=[2])
         def kernel(threads):
             @T.prim_func
@@ -543,7 +563,11 @@ def _make_binary_direct(
                 for i in T.Parallel(threads):
                     flat_idx = bx * threads + i
                     a_off, b_off = _compute_broadcast_offsets(
-                        flat_idx, ndim, divisors, a_strides, b_strides,
+                        flat_idx,
+                        ndim,
+                        divisors,
+                        a_strides,
+                        b_strides,
                     )
                     y[flat_idx] = op_func(a[a_off], b[b_off])
 
@@ -554,14 +578,24 @@ def _make_binary_direct(
 
 @functools.lru_cache(maxsize=32)
 def _make_binary_explicit(
-    N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
-    a_numel, b_numel, output_dtype=None, threads=256, num_per_thread=8,
+    N_total,
+    dtype,
+    op_func,
+    coalesced_shape,
+    a_strides,
+    b_strides,
+    a_numel,
+    b_numel,
+    output_dtype=None,
+    threads=256,
+    num_per_thread=8,
 ):
     """Binary explicit_parallel: N elements per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
 
     # Fast path: same-shape contiguous inputs -- skip broadcast machinery
     if _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+
         @tilelang.jit(out_idx=[2])
         def kernel(threads, num_per_thread):
             block_size = threads * num_per_thread
@@ -600,7 +634,11 @@ def _make_binary_explicit(
                 for i, j in T.Parallel(threads, num_per_thread):
                     flat_idx = (bx * threads + i) * num_per_thread + j
                     a_off, b_off = _compute_broadcast_offsets(
-                        flat_idx, ndim, divisors, a_strides, b_strides,
+                        flat_idx,
+                        ndim,
+                        divisors,
+                        a_strides,
+                        b_strides,
                     )
                     y[flat_idx] = op_func(a[a_off], b[b_off])
 
@@ -643,8 +681,9 @@ def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=Non
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread=8,
-                               output_dtype=None):
+def _make_fused_gated_explicit(
+    M, N, dtype, op_func, threads=256, num_per_thread=8, output_dtype=None
+):
     """FusedGated explicit_parallel: N elements per thread.
 
     ``op_func(gate, value)`` is the compound operation (see
@@ -729,14 +768,14 @@ class UnaryKernel(Kernel):
         # otherwise silently accept an unknown strategy for bool inputs).
         requested = (config or {}).get("strategy")
         if requested is not None and requested not in self.STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}"
-            )
+            raise ValueError(f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}")
         # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads, which
         # the CUDA codegen cannot lower. Keep bool inputs on the scalar path.
         bool_output = torch.bool == self.OUTPUT_DTYPE
         bool_output_needs_scalar = bool_output and dtype in (
-            torch.uint8, torch.int8, torch.int16,
+            torch.uint8,
+            torch.int8,
+            torch.int16,
         )
         if dtype == torch.bool:
             if requested is not None and requested != "direct":
@@ -788,20 +827,29 @@ class UnaryKernel(Kernel):
         effective_op = self._get_effective_op_func()
         if strategy == "direct":
             return _make_unary_direct(
-                self.N_total, self.dtype_str, effective_op,
-                output_dtype=self.output_dtype_str, threads=cfg["threads"],
+                self.N_total,
+                self.dtype_str,
+                effective_op,
+                output_dtype=self.output_dtype_str,
+                threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_unary_explicit(
-                self.N_total, self.dtype_str, effective_op,
+                self.N_total,
+                self.dtype_str,
+                effective_op,
                 output_dtype=self.output_dtype_str,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                threads=cfg["threads"],
+                num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
             return _make_unary_regcopy(
-                self.N_total, self.dtype_str, effective_op,
+                self.N_total,
+                self.dtype_str,
+                effective_op,
                 output_dtype=self.output_dtype_str,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                threads=cfg["threads"],
+                num_per_thread=cfg["num_per_thread"],
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -835,11 +883,7 @@ class UnaryKernel(Kernel):
             # fp16 / bf16 / fp32
             threads_opts = [128, 256, 512]
             npt_opts = [2, 4, 8]
-        return [
-            {"threads": t, "num_per_thread": n}
-            for t in threads_opts
-            for n in npt_opts
-        ]
+        return [{"threads": t, "num_per_thread": n} for t in threads_opts for n in npt_opts]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override to handle serialization failures in the TileLang autotuner.
@@ -931,7 +975,8 @@ class BinaryKernel(Kernel):
         # Index representation is the kernel's own choice: collapse the
         # broadcast into the fewest dims the divmod chain has to walk.
         out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
-            self.a_shape, self.b_shape,
+            self.a_shape,
+            self.b_shape,
         )
         self.out_shape = out_shape
         self.N_total = math.prod(out_shape)
@@ -948,23 +993,25 @@ class BinaryKernel(Kernel):
         self.a_strides = a_strides
         self.b_strides = b_strides
         self._same_shape = _is_contiguous_same_shape(
-            coalesced_shape, a_strides, b_strides,
+            coalesced_shape,
+            a_strides,
+            b_strides,
         )
         # Validate a config-requested strategy up front so typos raise the
         # same ValueError regardless of dtype (the bool override below
         # otherwise silently accepts an unknown strategy for bool inputs).
         requested = (config or {}).get("strategy")
         if requested is not None and requested not in self.STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}"
-            )
+            raise ValueError(f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}")
         # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads /
         # stores, which the CUDA codegen cannot lower. Force the scalar
         # ``direct`` strategy for bool inputs regardless of caller request.
         bool_input = dtype == torch.bool
         bool_output = torch.bool == self.OUTPUT_DTYPE
         bool_output_needs_scalar = bool_output and dtype in (
-            torch.uint8, torch.int8, torch.int16,
+            torch.uint8,
+            torch.int8,
+            torch.int16,
         )
         if bool_input:
             if requested is not None and requested != "direct":
@@ -1030,24 +1077,39 @@ class BinaryKernel(Kernel):
             kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
             return _make_binary_direct(
-                self.N_total, self.dtype_str, effective_op,
-                self.coalesced_shape, self.a_strides, self.b_strides,
-                self.a_numel, self.b_numel,
-                output_dtype=kernel_output_dtype, threads=cfg["threads"],
+                self.N_total,
+                self.dtype_str,
+                effective_op,
+                self.coalesced_shape,
+                self.a_strides,
+                self.b_strides,
+                self.a_numel,
+                self.b_numel,
+                output_dtype=kernel_output_dtype,
+                threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_binary_explicit(
-                self.N_total, self.dtype_str, effective_op,
-                self.coalesced_shape, self.a_strides, self.b_strides,
-                self.a_numel, self.b_numel,
+                self.N_total,
+                self.dtype_str,
+                effective_op,
+                self.coalesced_shape,
+                self.a_strides,
+                self.b_strides,
+                self.a_numel,
+                self.b_numel,
                 output_dtype=kernel_output_dtype,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                threads=cfg["threads"],
+                num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
             return _make_binary_register_copy(
-                self.N_total, self.dtype_str, effective_op,
+                self.N_total,
+                self.dtype_str,
+                effective_op,
                 output_dtype=kernel_output_dtype,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                threads=cfg["threads"],
+                num_per_thread=cfg["num_per_thread"],
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -1074,11 +1136,7 @@ class BinaryKernel(Kernel):
             # fp16 / bf16 / fp32
             threads_opts = [128, 256, 512]
             npt_opts = [2, 4, 8]
-        return [
-            {"threads": t, "num_per_thread": n}
-            for t in threads_opts
-            for n in npt_opts
-        ]
+        return [{"threads": t, "num_per_thread": n} for t in threads_opts for n in npt_opts]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override to handle known TileLang autotuner fallback failures.
@@ -1101,7 +1159,8 @@ class BinaryKernel(Kernel):
             ):
                 warnings.warn(  # noqa: B028
                     f"{self.__class__.__name__} autotuning failed "
-                    f"({message}); falling back to default_config.")
+                    f"({message}); falling back to default_config."
+                )
                 self.config = dict(self.default_config)
             else:
                 raise
@@ -1202,14 +1261,21 @@ class FusedGatedKernel(Kernel):
         effective_op = self._get_effective_op_func()
         if strategy == "direct":
             return _make_fused_gated_direct(
-                self.M, self.N, self.dtype_str, effective_op,
+                self.M,
+                self.N,
+                self.dtype_str,
+                effective_op,
                 threads=cfg["threads"],
                 output_dtype=self._kernel_output_dtype,
             )
         elif strategy == "explicit_parallel":
             return _make_fused_gated_explicit(
-                self.M, self.N, self.dtype_str, effective_op,
-                cfg["threads"], cfg["num_per_thread"],
+                self.M,
+                self.N,
+                self.dtype_str,
+                effective_op,
+                cfg["threads"],
+                cfg["num_per_thread"],
                 output_dtype=self._kernel_output_dtype,
             )
         else:
@@ -1241,11 +1307,7 @@ class FusedGatedKernel(Kernel):
             # fp16 / bf16 / fp32
             threads_opts = [128, 256, 512]
             npt_opts = [2, 4, 8]
-        return [
-            {"threads": t, "num_per_thread": n}
-            for t in threads_opts
-            for n in npt_opts
-        ]
+        return [{"threads": t, "num_per_thread": n} for t in threads_opts for n in npt_opts]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override to handle serialization failures in the TileLang autotuner.
@@ -1396,9 +1458,7 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         # Out-of-range integer alphas are NOT rejected — PyTorch wraps them via
         # the input dtype (uint8 alpha=-1 → 255), which T.cast reproduces.
         if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
-            raise ValueError(
-                "alpha must be an integer when input dtype is integral"
-            )
+            raise ValueError("alpha must be an integer when input dtype is integral")
         self._alpha = alpha
         super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
 
@@ -1604,7 +1664,10 @@ class LerpFwdKernel(BinaryKernel):
 
         # Wrap with fp8 accumulation via shared helper
         effective_op = _wrap_fp8_accumulation(
-            lerp_func, self.dtype, self.dtype_str, arity=2,
+            lerp_func,
+            self.dtype,
+            self.dtype_str,
+            arity=2,
         )
 
         # For e5m2: kernel output is fp16 (non-saturating path)
@@ -1617,24 +1680,39 @@ class LerpFwdKernel(BinaryKernel):
         cfg = self.default_config
         if strategy == "direct":
             return _make_binary_direct(
-                self.N_total, self.dtype_str, effective_op,
-                self.coalesced_shape, self.a_strides, self.b_strides,
-                self.a_numel, self.b_numel,
-                output_dtype=kernel_output_dtype, threads=cfg["threads"],
+                self.N_total,
+                self.dtype_str,
+                effective_op,
+                self.coalesced_shape,
+                self.a_strides,
+                self.b_strides,
+                self.a_numel,
+                self.b_numel,
+                output_dtype=kernel_output_dtype,
+                threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_binary_explicit(
-                self.N_total, self.dtype_str, effective_op,
-                self.coalesced_shape, self.a_strides, self.b_strides,
-                self.a_numel, self.b_numel,
+                self.N_total,
+                self.dtype_str,
+                effective_op,
+                self.coalesced_shape,
+                self.a_strides,
+                self.b_strides,
+                self.a_numel,
+                self.b_numel,
                 output_dtype=kernel_output_dtype,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                threads=cfg["threads"],
+                num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
             return _make_binary_register_copy(
-                self.N_total, self.dtype_str, effective_op,
+                self.N_total,
+                self.dtype_str,
+                effective_op,
                 output_dtype=kernel_output_dtype,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+                threads=cfg["threads"],
+                num_per_thread=cfg["num_per_thread"],
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -2415,7 +2493,8 @@ class ParametricUnaryKernel(Kernel):
         if not self._skip_fp8_output:
             builder_kwargs["output_dtype"] = self.dtype_to_str(self.output_dtype)
         self.kernel = self._builder_fn()(
-            *self._builder_positional_args(), **builder_kwargs,
+            *self._builder_positional_args(),
+            **builder_kwargs,
         )
         self.init_config(config, tune)
 
@@ -2467,8 +2546,9 @@ class ParametricUnaryKernel(Kernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
-                            is_fp8=False, threads=256, npt=8):
+def _make_leaky_relu_kernel(
+    N, dtype, negative_slope, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
     """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
 
     For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
@@ -2537,10 +2617,8 @@ class LeakyReluFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
-                     threads=256, npt=8):
-    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1).
-    """
+def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=256, npt=8):
+    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
@@ -2559,7 +2637,11 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
                             a = T.cast(alpha, "float32")
                             one = T.cast(1.0, "float32")
                             v32 = T.cast(val, "float32")
-                            y[idx] = T.if_then_else(v32 > zero, T.Cast(out_dtype, v32), T.Cast(out_dtype, a * (T.exp(v32) - one)))
+                            y[idx] = T.if_then_else(
+                                v32 > zero,
+                                T.Cast(out_dtype, v32),
+                                T.Cast(out_dtype, a * (T.exp(v32) - one)),
+                            )
 
             return main
     else:
@@ -2579,7 +2661,9 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
                         one = T.cast(1.0, "float32")
                         v32 = T.cast(val, "float32")
                         y_reg[i * npt_arg + j] = T.if_then_else(
-                            v32 > zero, val, T.Cast(val.dtype, a * (T.exp(v32) - one)),
+                            v32 > zero,
+                            val,
+                            T.Cast(val.dtype, a * (T.exp(v32) - one)),
                         )
                     T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
@@ -2604,10 +2688,10 @@ class EluFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None,
-                          is_fp8=False, threads=256, npt=8):
-    """Build hardtanh kernel: y = clamp(x, min_val, max_val).
-    """
+def _make_hardtanh_kernel(
+    N, dtype, min_val, max_val, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
+    """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
@@ -2668,10 +2752,10 @@ class HardtanhFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
-                          is_fp8=False, threads=256, npt=8):
-    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
-    """
+def _make_softplus_kernel(
+    N, dtype, beta, threshold, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
+    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
@@ -2692,7 +2776,9 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
                             one = T.cast(1.0, "float32")
                             scaled = v32 * b
                             sp = T.log(one + T.exp(scaled)) / b
-                            y[idx] = T.if_then_else(scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp))
+                            y[idx] = T.if_then_else(
+                                scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
+                            )
 
             return main
     else:
@@ -2714,7 +2800,9 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
                         scaled = v32 * b
                         sp = T.log(one + T.exp(scaled)) / b
                         y_reg[i * npt_arg + j] = T.if_then_else(
-                            scaled > t, val, T.Cast(val.dtype, sp),
+                            scaled > t,
+                            val,
+                            T.Cast(val.dtype, sp),
                         )
                     T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
@@ -2740,8 +2828,9 @@ class SoftplusFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
-                       is_fp8=False, threads=256, npt=8):
+def _make_prelu_kernel(
+    N, C, inner_size, dtype, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
 
     Weight is per-channel. Channel index follows PyTorch convention:
@@ -2776,7 +2865,9 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                             v = T.cast(val, accum)
                             wf = T.cast(w, accum)
                             zero = T.cast(0, accum)
-                            y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
+                            y[idx] = T.if_then_else(
+                                v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v)
+                            )
 
             return main
     else:
@@ -2858,7 +2949,9 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
                             out[idx] = T.if_then_else(
-                                cond[idx] != T.cast(0, "uint8"), x[idx], y_in[idx],
+                                cond[idx] != T.cast(0, "uint8"),
+                                x[idx],
+                                y_in[idx],
                             )
 
             return main
@@ -2883,7 +2976,9 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
                         x_reg[k] = T.if_then_else(
-                            c_reg[k] != T.cast(0, "uint8"), x_reg[k], y_reg[k],
+                            c_reg[k] != T.cast(0, "uint8"),
+                            x_reg[k],
+                            y_reg[k],
                         )
                     T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
@@ -2911,8 +3006,7 @@ class WhereFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False,
-                             threads=256, npt=8):
+def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
 
     The Op layer pre-broadcasts ``input`` / ``end`` / ``weight`` to the
@@ -2982,8 +3076,18 @@ class LerpTensorFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
-                       output_dtype=None, is_fp8=False, threads=256, npt=8):
+def _make_clamp_kernel(
+    N,
+    dtype,
+    has_min,
+    has_max,
+    min_val,
+    max_val,
+    output_dtype=None,
+    is_fp8=False,
+    threads=256,
+    npt=8,
+):
     """Build clamp kernel: y = clamp(x, min_val, max_val) with optional bounds.
 
     For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
@@ -3062,9 +3166,9 @@ class ClampFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
-                              output_dtype=None, is_fp8=False,
-                              threads=256, npt=8):
+def _make_clamp_tensor_kernel(
+    N, dtype, has_min, has_max, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
     """Build Tensor-bound clamp kernel.
 
     Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
@@ -3094,6 +3198,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
 
     if is_fp8:
         if has_min and has_max:
+
             @tilelang.jit(out_idx=[3])
             def kernel(threads_arg, npt_arg):
                 @T.prim_func
@@ -3123,6 +3228,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
 
             return kernel
         if has_min:
+
             @tilelang.jit(out_idx=[2])
             def kernel(threads_arg, npt_arg):
                 @T.prim_func
@@ -3176,6 +3282,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
 
     # non-fp8 path (register_copy)
     if has_min and has_max:
+
         @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
             @T.prim_func
@@ -3211,6 +3318,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
 
         return kernel
     if has_min:
+
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
             @T.prim_func
@@ -3283,8 +3391,7 @@ class ClampTensorFwdKernel(ParametricUnaryKernel):
 
     _DEFAULT_THREADS = 512
 
-    def __init__(self, N_total, dtype, has_min, has_max,
-                 config=None, tune=False):
+    def __init__(self, N_total, dtype, has_min, has_max, config=None, tune=False):
         if not (has_min or has_max):
             raise ValueError(
                 "ClampTensorFwdKernel requires has_min or has_max to be True",
@@ -3313,8 +3420,9 @@ class ClampTensorFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
-                             is_fp8=False, threads=256, npt=8):
+def _make_masked_fill_kernel(
+    N, dtype, fill_value, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
     The Op layer packs the bool mask as uint8 so that T.copy can
@@ -3349,7 +3457,9 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                             fv = T.cast(fill_value, out_dtype)
                             x_val = T.Cast(out_dtype, x[idx])
                             out[idx] = T.if_then_else(
-                                mask[idx] != T.cast(0, "uint8"), fv, x_val,
+                                mask[idx] != T.cast(0, "uint8"),
+                                fv,
+                                x_val,
                             )
 
             return main
@@ -3372,7 +3482,9 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                         k = i * npt_arg + j
                         fv = T.cast(fill_value, dtype)
                         x_reg[k] = T.if_then_else(
-                            m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
+                            m_reg[k] != T.cast(0, "uint8"),
+                            fv,
+                            x_reg[k],
                         )
                     T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
@@ -3418,8 +3530,9 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
-                                          is_fp8=False, threads=256, npt=8):
+def _make_masked_fill_tensor_value_kernel(
+    N, dtype, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
     """Build masked_fill kernel with a 0-dim Tensor fill value.
 
     Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
@@ -3435,6 +3548,7 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
     block_size = threads * npt
 
     if is_fp8:
+
         @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
             @T.prim_func
@@ -3451,7 +3565,9 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
                         if idx < N:
                             x_val = T.Cast(out_dtype, x[idx])
                             out[idx] = T.if_then_else(
-                                mask[idx] != T.cast(0, "uint8"), fv, x_val,
+                                mask[idx] != T.cast(0, "uint8"),
+                                fv,
+                                x_val,
                             )
 
             return main
@@ -3476,7 +3592,9 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
                     x_reg[k] = T.if_then_else(
-                        m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
+                        m_reg[k] != T.cast(0, "uint8"),
+                        fv,
+                        x_reg[k],
                     )
                 T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
@@ -3521,8 +3639,9 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
-                            output_dtype=None, is_fp8=False, threads=256, npt=8):
+def _make_nan_to_num_kernel(
+    N, dtype, nan_val, posinf_val, neginf_val, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
     """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values.
 
     For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
@@ -3596,8 +3715,9 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
 class NanToNumFwdKernel(ParametricUnaryKernel):
     """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
-    def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4,
-                 config=None, tune=False):
+    def __init__(
+        self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4, config=None, tune=False
+    ):
         self._raw_nan_val = nan_val
         self._raw_posinf_val = posinf_val
         self._raw_neginf_val = neginf_val
@@ -3641,7 +3761,11 @@ def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
                         row = rem // seq_len
                         col = rem % seq_len
                         # slope = 2^(-8 * (h+1) / num_heads)
-                        exp_val = T.cast(-8.0, "float32") * T.cast(h + 1, "float32") / T.cast(num_heads, "float32")
+                        exp_val = (
+                            T.cast(-8.0, "float32")
+                            * T.cast(h + 1, "float32")
+                            / T.cast(num_heads, "float32")
+                        )
                         slope = T.exp2(exp_val)
                         dist = T.cast(row - col, "float32")
                         # Use abs via if_then_else since T.abs may not handle int
@@ -3684,8 +3808,11 @@ class AlibiFwdKernel(Kernel):
         self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_alibi_kernel(
-            seq_len, num_heads, self.dtype_to_str(self.output_dtype),
-            cfg["threads"], cfg["num_per_thread"],
+            seq_len,
+            num_heads,
+            self.dtype_to_str(self.output_dtype),
+            cfg["threads"],
+            cfg["num_per_thread"],
         )
         self.init_config(config, tune)
 
@@ -3729,7 +3856,11 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
                         dim_pair = dim // 2
                         # angle = pos / 10000^(2*dim_pair / d_model)
                         base = T.cast(10000.0, "float32")
-                        exp_frac = T.cast(dim_pair, "float32") * T.cast(2.0, "float32") / T.cast(d_model, "float32")
+                        exp_frac = (
+                            T.cast(dim_pair, "float32")
+                            * T.cast(2.0, "float32")
+                            / T.cast(d_model, "float32")
+                        )
                         divisor = T.pow(base, exp_frac)
                         angle = T.cast(pos, "float32") / divisor
                         # Even dim -> sin, odd dim -> cos
@@ -3773,8 +3904,11 @@ class SinusoidalFwdKernel(Kernel):
         self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_sinusoidal_kernel(
-            seq_len, d_model, self.dtype_to_str(self.output_dtype),
-            cfg["threads"], cfg["num_per_thread"],
+            seq_len,
+            d_model,
+            self.dtype_to_str(self.output_dtype),
+            cfg["threads"],
+            cfg["num_per_thread"],
         )
         self.init_config(config, tune)
 

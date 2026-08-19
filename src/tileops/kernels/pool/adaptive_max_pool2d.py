@@ -87,9 +87,9 @@ def _adaptive_max_pool2d_wrapped_kernel(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _adaptive_max_pool2d_kernel(
-        n, c_in, h_in, w_in, out_h, out_w, dtype
-    )(block_m, threads)(x)
+    return _adaptive_max_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(block_m, threads)(
+        x
+    )
 
 
 @_adaptive_max_pool2d_wrapped_kernel.register_fake
@@ -206,9 +206,7 @@ def _adaptive_max_pool2d_with_indices_kernel(
     return _adaptive_max_pool2d_with_indices_func
 
 
-@torch.library.custom_op(
-    "top::adaptive_max_pool2d_with_indices_wrapped_kernel", mutates_args=()
-)
+@torch.library.custom_op("top::adaptive_max_pool2d_with_indices_wrapped_kernel", mutates_args=())
 def _adaptive_max_pool2d_with_indices_wrapped_kernel(
     n: int,
     c_in: int,
@@ -221,9 +219,9 @@ def _adaptive_max_pool2d_with_indices_wrapped_kernel(
     threads: int,
     x: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _adaptive_max_pool2d_with_indices_kernel(
-        n, c_in, h_in, w_in, out_h, out_w, dtype
-    )(block_m, threads)(x)
+    return _adaptive_max_pool2d_with_indices_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(
+        block_m, threads
+    )(x)
 
 
 @_adaptive_max_pool2d_with_indices_wrapped_kernel.register_fake

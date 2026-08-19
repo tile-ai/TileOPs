@@ -24,7 +24,7 @@ def _nsa_fwd_varlen_kernel(
     accum_dtype: str,
 ) -> Callable:
     if scale is None:
-        scale = (1.0 / dim)**0.5
+        scale = (1.0 / dim) ** 0.5
     scale *= LOG2E
 
     @tilelang.jit(
@@ -33,7 +33,8 @@ def _nsa_fwd_varlen_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        })
+        },
+    )
     def _nsa_fwd_varlen_func(threads: int):
         head_kv = heads // groups
         q_shape = [c_seq_len, heads, dim]
@@ -66,14 +67,14 @@ def _nsa_fwd_varlen_kernel(
 
         @T.prim_func
         def _nsa_fwd_varlen_main(
-                q: T.Tensor(q_shape, dtype),
-                k: T.Tensor(kv_shape, dtype),
-                v: T.Tensor(kv_shape, dtype),
-                o_slc: T.Tensor(o_slc_shape, dtype),
-                block_indices: T.Tensor(block_indices_shape, block_indices_dtype),
-                block_counts: T.Tensor(block_counts_shape, block_counts_dtype),
-                offsets: T.Tensor(offsets_shape, offsets_dtype),
-                token_indices: T.Tensor(token_indices_shape, token_indices_dtype),
+            q: T.Tensor(q_shape, dtype),
+            k: T.Tensor(kv_shape, dtype),
+            v: T.Tensor(kv_shape, dtype),
+            o_slc: T.Tensor(o_slc_shape, dtype),
+            block_indices: T.Tensor(block_indices_shape, block_indices_dtype),
+            block_counts: T.Tensor(block_counts_shape, block_counts_dtype),
+            offsets: T.Tensor(offsets_shape, offsets_dtype),
+            token_indices: T.Tensor(token_indices_shape, token_indices_dtype),
         ):
             with T.Kernel(c_seq_len, nv, head_kv, threads=threads) as (bx, by, bz):
                 q_shared = T.alloc_shared([g, bk], dtype)
@@ -98,7 +99,7 @@ def _nsa_fwd_varlen_kernel(
                 bos = offsets[i_n]
 
                 ns = block_counts[bos + i_t, i_h]
-                T.copy(q[bos + i_t, i_h * g:(i_h + 1) * g, :bk], q_shared)
+                T.copy(q[bos + i_t, i_h * g : (i_h + 1) * g, :bk], q_shared)
 
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
@@ -110,12 +111,13 @@ def _nsa_fwd_varlen_kernel(
                         # [BS, BK]
                         # TODO(TileOPs): may have some padding issues
                         # we should learn from mha varlen templates to handle this
-                        T.copy(k[bos + i_s:bos + i_s + bs, i_h, :bk], k_shared)
+                        T.copy(k[bos + i_s : bos + i_s + bs, i_h, :bk], k_shared)
 
                         if is_causal:
                             for i, j in T.Parallel(g, bs):
-                                acc_s[i, j] = T.if_then_else(i_t >= (i_s + j), 0,
-                                                             -T.infinity(acc_s.dtype))
+                                acc_s[i, j] = T.if_then_else(
+                                    i_t >= (i_s + j), 0, -T.infinity(acc_s.dtype)
+                                )
                         else:
                             T.clear(acc_s)
 
@@ -124,23 +126,30 @@ def _nsa_fwd_varlen_kernel(
                             k_shared,
                             acc_s,
                             transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow)
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
 
                         # Softmax
-                        online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
                         T.copy(acc_s, acc_s_cast)
 
                         # Rescale
                         rescale(acc_o, scores_scale)
 
                         # V * softmax(Q * K)
-                        T.copy(v[bos + i_s:bos + i_s + bs, i_h, i_v * bv:(i_v + 1) * bv], v_shared)
+                        T.copy(
+                            v[bos + i_s : bos + i_s + bs, i_h, i_v * bv : (i_v + 1) * bv], v_shared
+                        )
                         T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
                 for i, j in T.Parallel(g, bv):
                     acc_o[i, j] /= logsum[i]
                 T.copy(acc_o, o_shared)
-                T.copy(o_shared, o_slc[bos + i_t, i_h * g:(i_h + 1) * g, i_v * bv:(i_v + 1) * bv])
+                T.copy(
+                    o_shared, o_slc[bos + i_t, i_h * g : (i_h + 1) * g, i_v * bv : (i_v + 1) * bv]
+                )
 
         return _nsa_fwd_varlen_main
 
@@ -169,10 +178,19 @@ def _nsa_fwd_varlen_wrapped_kernel(
     offsets: torch.Tensor,
     token_indices: torch.Tensor,
 ) -> torch.Tensor:
-    return _nsa_fwd_varlen_kernel(batch, heads, c_seq_len, dim, is_causal, scale, block_size,
-                                  groups, selected_blocks, dtype,
-                                  accum_dtype)(threads)(q, k, v, block_indices, block_counts,
-                                                        offsets, token_indices)
+    return _nsa_fwd_varlen_kernel(
+        batch,
+        heads,
+        c_seq_len,
+        dim,
+        is_causal,
+        scale,
+        block_size,
+        groups,
+        selected_blocks,
+        dtype,
+        accum_dtype,
+    )(threads)(q, k, v, block_indices, block_counts, offsets, token_indices)
 
 
 @_nsa_fwd_varlen_wrapped_kernel.register_fake
@@ -199,21 +217,22 @@ def _(
 class NSAFwdVarlenKernel(Kernel):
     supported_archs: list[int] = [90]
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 c_seq_len: int,
-                 dim: int,
-                 is_causal: bool,
-                 scale: float,
-                 block_size: int,
-                 groups: int,
-                 selected_blocks: int,
-                 dtype: torch.dtype,
-                 accum_dtype: torch.dtype,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
-
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        c_seq_len: int,
+        dim: int,
+        is_causal: bool,
+        scale: float,
+        block_size: int,
+        groups: int,
+        selected_blocks: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -243,11 +262,34 @@ class NSAFwdVarlenKernel(Kernel):
         ]
         return [{"threads": t} for t in threads]
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                block_indices: torch.Tensor, block_counts: torch.Tensor, offsets: torch.Tensor,
-                token_indices: torch.Tensor) -> torch.Tensor:
-        return _nsa_fwd_varlen_wrapped_kernel(self.batch, self.heads, self.c_seq_len, self.dim,
-                                              self.is_causal, self.scale, self.block_size,
-                                              self.groups, self.selected_blocks, self.dtype_str,
-                                              self.accum_dtype_str, self.config["threads"], q, k, v,
-                                              block_indices, block_counts, offsets, token_indices)
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_counts: torch.Tensor,
+        offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        return _nsa_fwd_varlen_wrapped_kernel(
+            self.batch,
+            self.heads,
+            self.c_seq_len,
+            self.dim,
+            self.is_causal,
+            self.scale,
+            self.block_size,
+            self.groups,
+            self.selected_blocks,
+            self.dtype_str,
+            self.accum_dtype_str,
+            self.config["threads"],
+            q,
+            k,
+            v,
+            block_indices,
+            block_counts,
+            offsets,
+            token_indices,
+        )

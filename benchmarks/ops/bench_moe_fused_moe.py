@@ -25,6 +25,7 @@ try:
     from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
         fused_topk as _vllm_fused_topk,
     )
+
     _VLLM_AVAILABLE = True
 except ImportError:
     _VLLM_AVAILABLE = False
@@ -82,15 +83,21 @@ def _to_params(workloads):
     for w in workloads:
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["num_tokens"], w["num_experts"], w["top_k"],
-                w["hidden_size"], w["ffn_size"],
-                w["scoring_func"], _renormalize(w),
-                "correction_bias_shape" in w,
-                _routed_scaling_factor(w),
-                dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["num_tokens"],
+                    w["num_experts"],
+                    w["top_k"],
+                    w["hidden_size"],
+                    w["ffn_size"],
+                    w["scoring_func"],
+                    _renormalize(w),
+                    "correction_bias_shape" in w,
+                    _routed_scaling_factor(w),
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -110,16 +117,27 @@ def _run_bench(
     dtype: torch.dtype,
 ) -> None:
     test = FusedMoeWorkload(
-        num_tokens, num_experts, top_k, hidden_size, ffn_size,
-        scoring_func, renormalize, with_correction_bias,
-        routed_scaling_factor, dtype,
+        num_tokens,
+        num_experts,
+        top_k,
+        hidden_size,
+        ffn_size,
+        scoring_func,
+        renormalize,
+        with_correction_bias,
+        routed_scaling_factor,
+        dtype,
     )
     hidden, gating, correction_bias, w_gate_up, w_down = test.gen_inputs()
 
     common_kwargs = dict(
-        num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
-        hidden_size=hidden_size, ffn_size=ffn_size,
-        scoring_func=scoring_func, renormalize=renormalize,
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        top_k=top_k,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
         routed_scaling_factor=routed_scaling_factor,
     )
 
@@ -157,16 +175,29 @@ def _run_bench(
         _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down)
         torch.cuda.synchronize()
 
-        functors["vllm"] = (_vllm_fn, (hidden, gating, correction_bias, w_gate_up, w_down, ))
+        functors["vllm"] = (
+            _vllm_fn,
+            (
+                hidden,
+                gating,
+                correction_bias,
+                w_gate_up,
+                w_down,
+            ),
+        )
     else:
         # torch-ref baseline: memory-efficient per-expert GEMM loop.
         fk = FusedTopKOp(
             top_k=top_k,
-            scoring_func=scoring_func, renormalize=renormalize,
+            scoring_func=scoring_func,
+            renormalize=renormalize,
         )
         topk_weights, topk_ids = fk(gating, correction_bias)
         output_buf = torch.zeros(
-            num_tokens, hidden_size, dtype=torch.float32, device=hidden.device,
+            num_tokens,
+            hidden_size,
+            dtype=torch.float32,
+            device=hidden.device,
         )
         ids_i64 = topk_ids.to(torch.int64)
 
@@ -175,7 +206,7 @@ def _run_bench(
             ffn_dim = w_gate_up.shape[1] // 2
             output_buf.zero_()
             for e in range(E):
-                mask = (ids_i64 == e)
+                mask = ids_i64 == e
                 if not mask.any():
                     continue
                 t_idx, k_idx = mask.nonzero(as_tuple=True)
@@ -190,7 +221,16 @@ def _run_bench(
         _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down)
         torch.cuda.synchronize()
 
-        functors["torch-ref"] = (_ref_fn, (hidden, gating, correction_bias, w_gate_up, w_down, ))
+        functors["torch-ref"] = (
+            _ref_fn,
+            (
+                hidden,
+                gating,
+                correction_bias,
+                w_gate_up,
+                w_down,
+            ),
+        )
 
     bm.compare(functors, *forward_args_tileops, record_as=op, params=locals())
 
@@ -202,13 +242,27 @@ def _run_bench(
     _FWD_PARAMS,
 )
 def test_fused_moe_fwd_bench(
-    num_tokens, num_experts, top_k, hidden_size, ffn_size,
-    scoring_func, renormalize, with_correction_bias,
-    routed_scaling_factor, dtype_str,
+    num_tokens,
+    num_experts,
+    top_k,
+    hidden_size,
+    ffn_size,
+    scoring_func,
+    renormalize,
+    with_correction_bias,
+    routed_scaling_factor,
+    dtype_str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     _run_bench(
-        num_tokens, num_experts, top_k, hidden_size, ffn_size,
-        scoring_func, renormalize, with_correction_bias,
-        routed_scaling_factor, dtype,
+        num_tokens,
+        num_experts,
+        top_k,
+        hidden_size,
+        ffn_size,
+        scoring_func,
+        renormalize,
+        with_correction_bias,
+        routed_scaling_factor,
+        dtype,
     )

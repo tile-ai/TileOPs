@@ -12,11 +12,12 @@ from tileops.utils import get_sm_version, str2dtype
 from .gemm_call import gemv_region
 
 __all__ = [
-    'GemmFp8BlockScaledKernel',
-    'GemmFp8EpilogueKernel',
-    'GemmKernel',
-    'GemvKernel',
+    "GemmFp8BlockScaledKernel",
+    "GemmFp8EpilogueKernel",
+    "GemmKernel",
+    "GemvKernel",
 ]
+
 
 class GemmFp8EpilogueKernel(Kernel):
     """Simple TileLang FP8 GEMM for per-tensor scales."""
@@ -38,7 +39,8 @@ class GemmFp8EpilogueKernel(Kernel):
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.kernel = _gemm_fp8_kernel(
-            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=False)
+            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=False
+        )
         self.init_config(config, tune)
 
     @property
@@ -65,10 +67,17 @@ class GemmFp8EpilogueKernel(Kernel):
     ) -> torch.Tensor:
         if self.dtype != torch.float8_e4m3fn:
             raise NotImplementedError(
-                f"GemmFp8EpilogueKernel only supports torch.float8_e4m3fn, got {self.dtype}")
+                f"GemmFp8EpilogueKernel only supports torch.float8_e4m3fn, got {self.dtype}"
+            )
         compiled = _gemm_fp8_kernel(
-            self.m, self.n, self.k, self.dtype_str, self.out_dtype_str,
-            block_scaled=False, has_bias=bias is not None)(**self.config)
+            self.m,
+            self.n,
+            self.k,
+            self.dtype_str,
+            self.out_dtype_str,
+            block_scaled=False,
+            has_bias=bias is not None,
+        )(**self.config)
         if bias is not None:
             return compiled(a, b, scale_a, scale_b, bias)
         return compiled(a, b, scale_a, scale_b)
@@ -94,7 +103,8 @@ class GemmFp8BlockScaledKernel(Kernel):
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.kernel = _gemm_fp8_kernel(
-            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=True)
+            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=True
+        )
         self.init_config(config, tune)
 
     @property
@@ -121,10 +131,17 @@ class GemmFp8BlockScaledKernel(Kernel):
     ) -> torch.Tensor:
         if self.dtype != torch.float8_e4m3fn:
             raise NotImplementedError(
-                f"GemmFp8BlockScaledKernel only supports torch.float8_e4m3fn, got {self.dtype}")
+                f"GemmFp8BlockScaledKernel only supports torch.float8_e4m3fn, got {self.dtype}"
+            )
         compiled = _gemm_fp8_kernel(
-            self.m, self.n, self.k, self.dtype_str, self.out_dtype_str,
-            block_scaled=True, has_bias=bias is not None)(**self.config)
+            self.m,
+            self.n,
+            self.k,
+            self.dtype_str,
+            self.out_dtype_str,
+            block_scaled=True,
+            has_bias=bias is not None,
+        )(**self.config)
         if bias is not None:
             return compiled(a, b, scale_a, scale_b, bias)
         return compiled(a, b, scale_a, scale_b)
@@ -173,18 +190,22 @@ def _gemm_fp8_kernel(
             scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
             c: T.Tensor((m, n), out_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(
-                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
+                bx,
+                by,
+            ):
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 if block_scaled:
                     partial = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.annotate_layout({
-                    a_shared: tilelang.layout.make_swizzled_layout(a_shared),
-                    b_shared: tilelang.layout.make_swizzled_layout(b_shared),
-                })
+                T.annotate_layout(
+                    {
+                        a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                        b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                    }
+                )
 
                 m_start = by * block_m
                 n_start = bx * block_n
@@ -207,8 +228,13 @@ def _gemm_fp8_kernel(
                     if block_scaled:
                         scale_idx = kk * block_k // 128
                         T.clear(partial)
-                        T.gemm(a_shared, b_shared, partial, transpose_B=True,
-                               policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            a_shared,
+                            b_shared,
+                            partial,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
                         for i, j in T.Parallel(block_m, block_n):
                             if m_start + i < m and n_start + j < n:
                                 c_local[i, j] += (
@@ -217,8 +243,13 @@ def _gemm_fp8_kernel(
                                     * scale_b[n_start + j, scale_idx]
                                 )
                     else:
-                        T.gemm(a_shared, b_shared, c_local, transpose_B=True,
-                               policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            a_shared,
+                            b_shared,
+                            c_local,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
 
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
@@ -238,18 +269,22 @@ def _gemm_fp8_kernel(
             bias: T.Tensor((n,), out_dtype),  # type: ignore
             c: T.Tensor((m, n), out_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(
-                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
+                bx,
+                by,
+            ):
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 if block_scaled:
                     partial = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.annotate_layout({
-                    a_shared: tilelang.layout.make_swizzled_layout(a_shared),
-                    b_shared: tilelang.layout.make_swizzled_layout(b_shared),
-                })
+                T.annotate_layout(
+                    {
+                        a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                        b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                    }
+                )
 
                 m_start = by * block_m
                 n_start = bx * block_n
@@ -272,8 +307,13 @@ def _gemm_fp8_kernel(
                     if block_scaled:
                         scale_idx = kk * block_k // 128
                         T.clear(partial)
-                        T.gemm(a_shared, b_shared, partial, transpose_B=True,
-                               policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            a_shared,
+                            b_shared,
+                            partial,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
                         for i, j in T.Parallel(block_m, block_n):
                             if m_start + i < m and n_start + j < n:
                                 c_local[i, j] += (
@@ -282,8 +322,13 @@ def _gemm_fp8_kernel(
                                     * scale_b[n_start + j, scale_idx]
                                 )
                     else:
-                        T.gemm(a_shared, b_shared, c_local, transpose_B=True,
-                               policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            a_shared,
+                            b_shared,
+                            c_local,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
 
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
@@ -291,8 +336,7 @@ def _gemm_fp8_kernel(
                             c[m_start + i, n_start + j] = c_local[i, j] + bias[n_start + j]
                         else:
                             c[m_start + i, n_start + j] = (
-                                c_local[i, j] * scale_a[0, 0] * scale_b[0, 0]
-                                + bias[n_start + j]
+                                c_local[i, j] * scale_a[0, 0] * scale_b[0, 0] + bias[n_start + j]
                             )
 
         return _gemm_fp8_bias_main if has_bias else _gemm_fp8_main
@@ -301,13 +345,15 @@ def _gemm_fp8_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gemm_kernel(m: int,
-                 n: int,
-                 k: int,
-                 trans_a: bool,
-                 trans_b: bool,
-                 dtype: str = "float16",
-                 traced: bool = False) -> Callable:
+def _gemm_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str = "float16",
+    traced: bool = False,
+) -> Callable:
     """Hand-written warp-specialized GEMM ``C = op(A) @ op(B)`` for Hopper (SM90).
 
     One producer warpgroup (128 threads) issues TMA loads into a double-buffered
@@ -353,10 +399,9 @@ def _gemm_kernel(m: int,
         pass_configs={"tl.disable_warp_specialized": True},
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
-    def _gemm_func(block_m: int = 128,
-                   block_n: int = 128,
-                   block_k: int = 64,
-                   num_stages: int = 3) -> Callable:
+    def _gemm_func(
+        block_m: int = 128, block_n: int = 128, block_k: int = 64, num_stages: int = 3
+    ) -> Callable:
         # Manual 2-warpgroup WS: 1 producer WG (128 threads) issues TMA, 1
         # consumer WG (128 threads) runs WGMMA. Barrier arrive_counts (128) are
         # bound to this layout, so threads is fixed at 256.
@@ -369,22 +414,26 @@ def _gemm_kernel(m: int,
 
         @T.prim_func
         def _gemm_main(
-                a: T.Tensor(a_shape, dtype),  # type: ignore
-                b: T.Tensor(b_shape, dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
+            a: T.Tensor(a_shape, dtype),  # type: ignore
+            b: T.Tensor(b_shape, dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(
-                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
+                bx,
+                by,
+            ):
                 # Multi-stage ring of A/B SMEM buffers. Indexed by stage = gi %
                 # num_stages; the phase bit flips every num_stages iterations.
                 a_smem = T.alloc_shared((num_stages,) + a_tile, dtype)
                 b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.annotate_layout({
-                    a_smem: tilelang.layout.make_swizzled_layout(a_smem),
-                    b_smem: tilelang.layout.make_swizzled_layout(b_smem),
-                })
+                T.annotate_layout(
+                    {
+                        a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                    }
+                )
 
                 # Producer→consumer (buffer full) and consumer→producer (buffer
                 # empty) barriers, one per ring slot. Each is arrived by exactly
@@ -428,24 +477,40 @@ def _gemm_kernel(m: int,
                                     with trace.range("tma", lane="tma"):
                                         if trans_a:
                                             T.tma_copy(
-                                                a[k_start:k_start + block_k,
-                                                  m_start:m_start + block_m],
-                                                a_smem[s, :, :], barrier=ab_full[s])
+                                                a[
+                                                    k_start : k_start + block_k,
+                                                    m_start : m_start + block_m,
+                                                ],
+                                                a_smem[s, :, :],
+                                                barrier=ab_full[s],
+                                            )
                                         else:
                                             T.tma_copy(
-                                                a[m_start:m_start + block_m,
-                                                  k_start:k_start + block_k],
-                                                a_smem[s, :, :], barrier=ab_full[s])
+                                                a[
+                                                    m_start : m_start + block_m,
+                                                    k_start : k_start + block_k,
+                                                ],
+                                                a_smem[s, :, :],
+                                                barrier=ab_full[s],
+                                            )
                                         if trans_b:
                                             T.tma_copy(
-                                                b[n_start:n_start + block_n,
-                                                  k_start:k_start + block_k],
-                                                b_smem[s, :, :], barrier=ab_full[s])
+                                                b[
+                                                    n_start : n_start + block_n,
+                                                    k_start : k_start + block_k,
+                                                ],
+                                                b_smem[s, :, :],
+                                                barrier=ab_full[s],
+                                            )
                                         else:
                                             T.tma_copy(
-                                                b[k_start:k_start + block_k,
-                                                  n_start:n_start + block_n],
-                                                b_smem[s, :, :], barrier=ab_full[s])
+                                                b[
+                                                    k_start : k_start + block_k,
+                                                    n_start : n_start + block_n,
+                                                ],
+                                                b_smem[s, :, :],
+                                                barrier=ab_full[s],
+                                            )
                                     with trace.range("arrive", lane="barrier"):
                                         T.barrier_arrive(ab_full[s])
                             gi_prod = gi_prod + 1
@@ -516,14 +581,25 @@ def _gemm_wrapped_kernel(
     ``GemmKernel.forward`` calls the compiled JIT directly (cf. ``GemvKernel``),
     so this wrapper is not on the eager forward path.
     """
-    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(
-        block_m, block_n, block_k, num_stages)(a, b)
+    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(block_m, block_n, block_k, num_stages)(
+        a, b
+    )
 
 
 @_gemm_wrapped_kernel.register_fake
-def _(m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str,
-      block_m: int, block_n: int, block_k: int, num_stages: int,
-      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
+def _(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
     return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
@@ -539,15 +615,17 @@ class GemmKernel(Kernel):
     supported_archs: list[int] = [90]
     general = True
 
-    def __init__(self,
-                 m: int,
-                 n: int,
-                 k: int,
-                 dtype: torch.dtype,
-                 config: Optional[dict] = None,
-                 tune: bool = False,
-                 trans_a: bool = False,
-                 trans_b: bool = False) -> None:
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        trans_a: bool = False,
+        trans_b: bool = False,
+    ) -> None:
         super().__init__()
         self.m = m
         self.n = n
@@ -574,12 +652,12 @@ class GemmKernel(Kernel):
         # kept only for torch.compile compatibility. trace.run dumps the timeline
         # when tracing is on and otherwise just returns C — so no branch here.
         compiled = _gemm_kernel(
-            self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str,
-            traced=trace.enabled)(**self.config)
+            self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str, traced=trace.enabled
+        )(**self.config)
         layout = f"{'T' if self.trans_a else 'N'}{'T' if self.trans_b else 'N'}"
         return trace.run(
-            compiled, (a, b),
-            stem=f"gemm_{self.m}x{self.n}x{self.k}_{layout}_{self.dtype_str}")
+            compiled, (a, b), stem=f"gemm_{self.m}x{self.n}x{self.k}_{layout}_{self.dtype_str}"
+        )
 
 
 # TODO: add persistent, split-k, steam-k...
@@ -595,23 +673,24 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
         reduce_threads: int = 32,
         num_stages: int = 2,
     ) -> Callable:
-
         max_transaction_size_in_bits = 128
         tile_k = max_transaction_size_in_bits // (str2dtype[dtype].itemsize * 8)
         block_k = reduce_threads * tile_k
 
         @T.prim_func
         def _gemv_main(
-                a: T.Tensor((k,), dtype),
-                b: T.Tensor((n, k), dtype),
-                c: T.Tensor((n,), dtype),
+            a: T.Tensor((k,), dtype),
+            b: T.Tensor((n, k), dtype),
+            c: T.Tensor((n,), dtype),
         ):
             # threads=(reduce_threads, block_n): tk=threadIdx.x is the fast-varying
             # dimension so consecutive warp threads access consecutive columns of B
             # (same row, stride-1) → coalesced 128-bit loads.
             with T.Kernel(T.ceildiv(n, block_n), threads=(reduce_threads, block_n)) as bn:
                 tk = T.get_thread_binding(0)  # threadIdx.x — varies within a warp
-                tn = T.get_thread_binding(1)  # threadIdx.y — one row per warp (when reduce_threads=32)
+                tn = T.get_thread_binding(
+                    1
+                )  # threadIdx.y — one row per warp (when reduce_threads=32)
                 c_accum = T.alloc_local((1,), accum_dtype)
 
                 T.clear(c_accum)
@@ -634,13 +713,14 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
                     # FMA
                     for _k in T.serial(tile_k):
                         c_accum[0] += a_local[_k].astype(accum_dtype) * b_shared[
-                            tn, tk * tile_k + _k].astype(accum_dtype)
+                            tn, tk * tile_k + _k
+                        ].astype(accum_dtype)
 
                 c_reduced = T.alloc_local((1,), accum_dtype)
                 with T.attr(
-                        T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
-                        "reduce_scope",
-                        T.reinterpret(T.uint64(0), dtype="handle"),
+                    T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
+                    "reduce_scope",
+                    T.reinterpret(T.uint64(0), dtype="handle"),
                 ):
                     T.evaluate(
                         T.tvm_thread_allreduce(
@@ -650,7 +730,8 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
                             c_reduced[0],
                             tk,
                             dtype="handle",
-                        ))
+                        )
+                    )
 
                 c[bn * block_n + tn] = c_reduced[0]
 
@@ -674,9 +755,15 @@ def _gemv_wrapped_kernel(
 
 
 @_gemv_wrapped_kernel.register_fake
-def _(n: int, k: int,
-      dtype: str, block_n: int, reduce_threads: int, num_stages: int,
-      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
+def _(
+    n: int,
+    k: int,
+    dtype: str,
+    block_n: int,
+    reduce_threads: int,
+    num_stages: int,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
     return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
@@ -689,12 +776,9 @@ class GemvKernel(Kernel):
     def applies(cls, call) -> bool:
         return gemv_region(call)
 
-    def __init__(self,
-                 n: int,
-                 k: int,
-                 dtype: torch.dtype,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self, n: int, k: int, dtype: torch.dtype, config: Optional[dict] = None, tune: bool = False
+    ) -> None:
         super().__init__()
         self.n = n
         self.k = k
@@ -729,7 +813,7 @@ class GemvKernel(Kernel):
         # num_stages=1: sequential shared-memory path (no overlap, baseline for comparison)
         # num_stages>=2: actual pipeline with cp.async prefetch to hide HBM latency
         return [
-            {'block_n': bn, 'reduce_threads': rt, 'num_stages': ns}
+            {"block_n": bn, "reduce_threads": rt, "num_stages": ns}
             for bn in [1, 2, 4, 8, 16]
             for rt in [32]
             for ns in [1, 2, 3]

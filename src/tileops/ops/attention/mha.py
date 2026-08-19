@@ -35,14 +35,16 @@ class MultiHeadAttentionFwdOp(Op):
     maintained forward path through the GQA prefill dispatcher.
     """
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 seq_len: int,
-                 dim: int,
-                 is_causal: bool = True,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim: int,
+        is_causal: bool = True,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -88,8 +90,7 @@ class MultiHeadAttentionFwdOp(Op):
         """Run MHA forward."""
         return _mha_fwd(q, k, v, self._instance_key)
 
-    def _eager_forward(self, q: torch.Tensor, k: torch.Tensor,
-                       v: torch.Tensor) -> torch.Tensor:
+    def _eager_forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         self.dtype = q.dtype
         return self._gqa_op(q, k, v)
 
@@ -101,20 +102,24 @@ class MultiHeadAttentionBwdOp(Op):
     matching the forward path's dispatch through GQA.
     """
 
-    _LEGACY_KERNEL_MAP_KEYS = frozenset({
-        "mha_bwd_preprocess_kernel",
-        "mha_bwd_kernel",
-        "mha_bwd_postprocess_kernel",
-    })
+    _LEGACY_KERNEL_MAP_KEYS = frozenset(
+        {
+            "mha_bwd_preprocess_kernel",
+            "mha_bwd_kernel",
+            "mha_bwd_postprocess_kernel",
+        }
+    )
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 seq_len: int,
-                 dim: int,
-                 is_causal: bool = True,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim: int,
+        is_causal: bool = True,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -137,10 +142,8 @@ class MultiHeadAttentionBwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_bwd_preprocess_kernel":
-                FlashAttnBwdPreprocessKernel,
-            "gqa_bwd_kernel":
-                GQABwdWgmmaPipelinedKernel,
+            "gqa_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
+            "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
         }
 
     def kernel_delegates(self) -> tuple[GroupedQueryAttentionBwdOp, ...]:
@@ -157,26 +160,35 @@ class MultiHeadAttentionBwdOp(Op):
             raise ValueError(
                 "MultiHeadAttentionBwdOp delegates to GroupedQueryAttentionBwdOp; "
                 f"legacy MHA backward kernel_map keys are not compatible: {keys}. "
-                "Use gqa_bwd_* keys with kernels that implement the GQA backward ABI.")
+                "Use gqa_bwd_* keys with kernels that implement the GQA backward ABI."
+            )
         return dict(kernel_map)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                do: torch.Tensor,
-                lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._gqa_op(q, k, v, o, do, lse)
 
 
 class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 seqlen_q: int,
-                 seqlen_kv: int,
-                 dim: int,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seqlen_q: int,
+        seqlen_kv: int,
+        dim: int,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -191,8 +203,14 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
             "mha_decode_kernel",
             key=dtype,
             build=lambda: self.kernel_map["mha_decode_kernel"](
-                self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
-                self.dim, False, dtype, tune=self.tune,
+                self.batch,
+                self.heads,
+                self.seqlen_q,
+                self.seqlen_kv,
+                self.dim,
+                False,
+                dtype,
+                tune=self.tune,
             ),
         )
 
@@ -204,9 +222,11 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         real_seqlen_kv = k.shape[1]
         if real_seqlen_kv < self.seqlen_kv:
             k = F.pad(
-                k, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
+                k, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode="constant", value=0
+            )
             v = F.pad(
-                v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
+                v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode="constant", value=0
+            )
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv)
 
@@ -216,16 +236,18 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 seqlen_q: int,
-                 seqlen_kv: int,
-                 dim: int,
-                 page_size: int,
-                 is_causal: bool = False,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seqlen_q: int,
+        seqlen_kv: int,
+        dim: int,
+        page_size: int,
+        is_causal: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -242,8 +264,15 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
         def build() -> Kernel:
             return self.kernel_map[key](
-                call.batch, call.heads, call.max_seqlen_q, call.seqlen_kv,
-                call.dim, call.page_size, call.is_causal, dtype, tune=call.tune,
+                call.batch,
+                call.heads,
+                call.max_seqlen_q,
+                call.seqlen_kv,
+                call.dim,
+                call.page_size,
+                call.is_causal,
+                dtype,
+                tune=call.tune,
             )
 
         return self.get_or_build_kernel(key, key=dtype, build=build)
@@ -276,8 +305,14 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             tune=self.tune,
         )
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> torch.Tensor:
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv, block_table)
 
@@ -286,14 +321,14 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
 
 @torch.library.custom_op("top::mha_fwd", mutates_args=())
-def _mha_fwd(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-             instance_key: str) -> torch.Tensor:
+def _mha_fwd(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, instance_key: str) -> torch.Tensor:
     return get_instance(instance_key)._eager_forward(q, k, v)
 
 
 @_mha_fwd.register_fake
-def _mha_fwd_fake(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                  instance_key: str) -> torch.Tensor:
+def _mha_fwd_fake(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, instance_key: str
+) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(q.shape), tuple(k.shape), tuple(v.shape))
     return q.new_empty(shapes["o"])

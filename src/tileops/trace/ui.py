@@ -134,8 +134,9 @@ def _ns(cy: float, sm_clock_ghz: float) -> float:
     return round(cy / sm_clock_ghz, 1)
 
 
-def _bar_trace(name, color, lane_labels, bases, durs, texts, payloads, sm_clock_ghz,
-               *, width, textangle):
+def _bar_trace(
+    name, color, lane_labels, bases, durs, texts, payloads, sm_clock_ghz, *, width, textangle
+):
     """Build one Plotly horizontal-bar trace for an event name.
 
     Args:
@@ -153,8 +154,10 @@ def _bar_trace(name, color, lane_labels, bases, durs, texts, payloads, sm_clock_
     Returns:
         A Plotly trace dict.
     """
-    customdata = [[name, "" if p is None else p, d, _ns(d, sm_clock_ghz)]
-                  for d, p in zip(durs, payloads, strict=True)]
+    customdata = [
+        [name, "" if p is None else p, d, _ns(d, sm_clock_ghz)]
+        for d, p in zip(durs, payloads, strict=True)
+    ]
     return {
         "type": "bar",
         "orientation": "h",
@@ -173,14 +176,17 @@ def _bar_trace(name, color, lane_labels, bases, durs, texts, payloads, sm_clock_
         "width": width,
         "showlegend": True,
         "customdata": customdata,
-        "hovertemplate": ("<b>%{customdata[0]}</b>  payload %{customdata[1]}<br>"
-                          "start %{base} cyc   dur %{x} cyc "
-                          "(~%{customdata[3]} ns)<extra></extra>"),
+        "hovertemplate": (
+            "<b>%{customdata[0]}</b>  payload %{customdata[1]}<br>"
+            "start %{base} cyc   dur %{x} cyc "
+            "(~%{customdata[3]} ns)<extra></extra>"
+        ),
     }
 
 
-def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color_map,
-                    title, sm_clock_ghz):
+def _figure_for_cta(
+    cta, events, group_id_to_name, lane_id_to_name, flows, color_map, title, sm_clock_ghz
+):
     """Build the Plotly ``{data, layout}`` figure dict for one CTA.
 
     Args:
@@ -205,8 +211,9 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
 
     # Lanes auto-derived: distinct (gid, lane) with events, sorted by (gid, lane).
     lane_pairs = sorted({(e.track[1], e.track[2]) for e in events})
-    lane_labels = {(g, l): _lane_label(g, l, group_id_to_name, lane_id_to_name)
-                   for (g, l) in lane_pairs}
+    lane_labels = {
+        (g, l): _lane_label(g, l, group_id_to_name, lane_id_to_name) for (g, l) in lane_pairs
+    }
 
     # x span for instant-bar width and the initial range.
     span = 0
@@ -227,16 +234,21 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
         by_name.setdefault(s.name, []).append(s)
     for name in sorted(by_name):
         items = by_name[name]
-        text = [(f"{s.name}<br>{s.payload}" if s.payload is not None else s.name)
-                for s in items]
-        data.append(_bar_trace(
-            name, color_map[name],
-            [lane_labels[(s.track[1], s.track[2])] for s in items],
-            [s.ts_cy for s in items],
-            [s.dur_cy for s in items],
-            text,
-            [s.payload for s in items],
-            sm_clock_ghz, width=0.62, textangle=0))
+        text = [(f"{s.name}<br>{s.payload}" if s.payload is not None else s.name) for s in items]
+        data.append(
+            _bar_trace(
+                name,
+                color_map[name],
+                [lane_labels[(s.track[1], s.track[2])] for s in items],
+                [s.ts_cy for s in items],
+                [s.dur_cy for s in items],
+                text,
+                [s.payload for s in items],
+                sm_clock_ghz,
+                width=0.62,
+                textangle=0,
+            )
+        )
 
     # Instant traces (thin bars), grouped by name.
     inst_by_name: dict = {}
@@ -244,14 +256,20 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
         inst_by_name.setdefault(inst.name, []).append(inst)
     for name in sorted(inst_by_name):
         items = inst_by_name[name]
-        data.append(_bar_trace(
-            name, color_map[name],
-            [lane_labels[(i.track[1], i.track[2])] for i in items],
-            [i.ts_cy for i in items],
-            [instant_w] * len(items),
-            [name] * len(items),
-            [i.payload for i in items],
-            sm_clock_ghz, width=0.34, textangle=0))
+        data.append(
+            _bar_trace(
+                name,
+                color_map[name],
+                [lane_labels[(i.track[1], i.track[2])] for i in items],
+                [i.ts_cy for i in items],
+                [instant_w] * len(items),
+                [name] * len(items),
+                [i.payload for i in items],
+                sm_clock_ghz,
+                width=0.34,
+                textangle=0,
+            )
+        )
 
     # Plotly draws categoryarray bottom-up; reverse the sorted lane order so the
     # first (gid, lane) — producer / group0 main — renders at the TOP.
@@ -262,26 +280,41 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
     # so the arrows fan out instead of collapsing onto a shared endpoint.
     annotations = []
     for edge in edges:
-        src_label = _lane_label(edge.src_track[1], edge.src_track[2], group_id_to_name,
-                                lane_id_to_name)
-        dst_label = _lane_label(edge.dst_track[1], edge.dst_track[2], group_id_to_name,
-                                lane_id_to_name)
+        src_label = _lane_label(
+            edge.src_track[1], edge.src_track[2], group_id_to_name, lane_id_to_name
+        )
+        dst_label = _lane_label(
+            edge.dst_track[1], edge.dst_track[2], group_id_to_name, lane_id_to_name
+        )
         src_ts = edge.src_ts_cy
         dst_ts = edge.dst_ts_cy
         # Arrow only, no text label: the line from src to dst already says it all.
-        annotations.append({
-            "x": dst_ts, "y": dst_label,
-            "ax": src_ts, "ay": src_label,
-            "xref": "x", "yref": "y", "axref": "x", "ayref": "y",
-            "showarrow": True, "arrowhead": 2, "arrowwidth": 1.5, "arrowsize": 1.1,
-            "arrowcolor": _ARROW_COLOR, "opacity": 0.85, "text": "",
-        })
+        annotations.append(
+            {
+                "x": dst_ts,
+                "y": dst_label,
+                "ax": src_ts,
+                "ay": src_label,
+                "xref": "x",
+                "yref": "y",
+                "axref": "x",
+                "ayref": "y",
+                "showarrow": True,
+                "arrowhead": 2,
+                "arrowwidth": 1.5,
+                "arrowsize": 1.1,
+                "arrowcolor": _ARROW_COLOR,
+                "opacity": 0.85,
+                "text": "",
+            }
+        )
 
     layout = {
         "title": {
             "text": f"<b>{title} · CTA {cta}</b>",
             "font": {"size": 20, "family": _FONT_FAMILY},
-            "x": 0.02, "xanchor": "left",
+            "x": 0.02,
+            "xanchor": "left",
         },
         "barmode": "overlay",
         "bargap": 0.35,
@@ -307,8 +340,7 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
             "tickfont": {"size": 13, "family": _FONT_FAMILY},
             "automargin": True,
         },
-        "legend": {"orientation": "h", "y": -0.30, "yanchor": "top", "x": 0,
-                   "font": {"size": 12}},
+        "legend": {"orientation": "h", "y": -0.30, "yanchor": "top", "x": 0, "font": {"size": 12}},
         "margin": {"l": 200, "r": 30, "t": 80, "b": 170},
         "hoverlabel": {"font": {"family": _FONT_FAMILY, "size": 12}},
         "annotations": annotations,
@@ -324,7 +356,12 @@ _CONFIG = {
     "displaylogo": False,
     "responsive": True,
     "modeBarButtonsToRemove": [
-        "zoom2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d",
+        "zoom2d",
+        "select2d",
+        "lasso2d",
+        "zoomIn2d",
+        "zoomOut2d",
+        "autoScale2d",
     ],
 }
 
@@ -366,10 +403,16 @@ _HTML_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 </script></body></html>"""
 
 
-def export_timeline_html(events: list, path: str, *, group_id_to_name: dict,
-                         lane_id_to_name: dict | None = None,
-                         flows: list | None = None, title: str = "",
-                         sm_clock_ghz: float = 1.5) -> None:
+def export_timeline_html(
+    events: list,
+    path: str,
+    *,
+    group_id_to_name: dict,
+    lane_id_to_name: dict | None = None,
+    flows: list | None = None,
+    title: str = "",
+    sm_clock_ghz: float = 1.5,
+) -> None:
     """Write decoded trace events as a self-contained Plotly HTML timeline.
 
     Groups the events by CTA (``track[0]``), builds one horizontal-bar Gantt figure
@@ -406,8 +449,16 @@ def export_timeline_html(events: list, path: str, *, group_id_to_name: dict,
 
     ctas = sorted(by_cta)
     figs = {
-        str(cta): _figure_for_cta(cta, by_cta[cta], group_id_to_name, lane_id_to_name,
-                                  flows, color_map, title, sm_clock_ghz)
+        str(cta): _figure_for_cta(
+            cta,
+            by_cta[cta],
+            group_id_to_name,
+            lane_id_to_name,
+            flows,
+            color_map,
+            title,
+            sm_clock_ghz,
+        )
         for cta in ctas
     }
 

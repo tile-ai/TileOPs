@@ -11,11 +11,9 @@ __all__ = ["TopkSelectorFwdOp"]
 
 
 class TopkSelectorFwdOp(Op):
-
-    def __init__(self,
-                 topk: int,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self, topk: int, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False
+    ) -> None:
         self.batch = None
         self.seq_len = None
         self.seq_len_kv = None
@@ -53,7 +51,8 @@ class TopkSelectorFwdOp(Op):
                 self.topk,
                 in_dtype,
                 self.out_dtype,
-                tune=self.tune),
+                tune=self.tune,
+            ),
         )
 
     def forward(self, index_score, starts, ends) -> torch.Tensor:
@@ -80,6 +79,7 @@ class TopkSelectorFwdOp(Op):
         self.kv_group = kv_group
         self.in_dtype = index_score.dtype
         self.kernel = self._get_kernel(
-            batch, seq_len, seq_len_kv, kv_group, index_score.dtype, index_score.device.index)
+            batch, seq_len, seq_len_kv, kv_group, index_score.dtype, index_score.device.index
+        )
 
         return self.kernel(index_score, starts, ends)

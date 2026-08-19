@@ -14,20 +14,22 @@ __all__ = ["SparseMlaKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _sparse_mla_kernel(batch: int,
-                       seq_len: int,
-                       seq_len_kv: int,
-                       heads: int,
-                       dim: int,
-                       tail_dim: int,
-                       topk: int,
-                       kv_stride: int,
-                       q_start_index_s: int,
-                       kv_group: int = 1,
-                       sm_scale: float = None,
-                       is_causal: bool = True,
-                       cp0: bool = True,
-                       dtype: torch.dtype = "float16") -> None:
+def _sparse_mla_kernel(
+    batch: int,
+    seq_len: int,
+    seq_len_kv: int,
+    heads: int,
+    dim: int,
+    tail_dim: int,
+    topk: int,
+    kv_stride: int,
+    q_start_index_s: int,
+    kv_group: int = 1,
+    sm_scale: float = None,
+    is_causal: bool = True,
+    cp0: bool = True,
+    dtype: torch.dtype = "float16",
+) -> None:
     """
     This code implements sparse MLA attention.
 
@@ -72,8 +74,8 @@ def _sparse_mla_kernel(batch: int,
     if tail_dim != tilelang.math.next_power_of_2(tail_dim):
         raise ValueError(f"haven't check padding correctness yet, dim={tail_dim}")
     if not is_causal:
-        raise ValueError('non-causal is not supported')
-    sm_scale = ((1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale) * LOG2E
+        raise ValueError("non-causal is not supported")
+    sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
     ori_heads = heads
@@ -83,11 +85,17 @@ def _sparse_mla_kernel(batch: int,
     @tilelang.jit(
         out_idx=[-1],
         compile_flags=[
-            "--use_fast_math", "-O3", "-Wno-deprecated-declarations",
-            "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
-            "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            "--expt-relaxed-constexpr", "--expt-extended-lambda",
-            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
+            "--use_fast_math",
+            "-O3",
+            "-Wno-deprecated-declarations",
+            "-U__CUDA_NO_HALF_OPERATORS__",
+            "-U__CUDA_NO_HALF_CONVERSIONS__",
+            "-U__CUDA_NO_HALF2_OPERATORS__",
+            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+            "--expt-relaxed-constexpr",
+            "--expt-extended-lambda",
+            "--ptxas-options=-v,--register-usage-level=10",
+            "-DNDEBUG",
         ],
     )
     def _sparse_mla_fwd_func(block_i: int, threads: int) -> None:
@@ -111,25 +119,25 @@ def _sparse_mla_kernel(batch: int,
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_h != heads and kv_group != 1:
             raise ValueError(
-                'here we solve the heads padding automatically, '
-                'other wise you should handle q copy and output copy '
-                'with your mask (when kv_group == 1, use g_i * padded_h:(g_i+1) * '
-                'padded_h would be handled automatically)')
+                "here we solve the heads padding automatically, "
+                "other wise you should handle q copy and output copy "
+                "with your mask (when kv_group == 1, use g_i * padded_h:(g_i+1) * "
+                "padded_h would be handled automatically)"
+            )
 
         if topk % block_i != 0:
-            raise ValueError(
-                'otherwise will load some index=0 thus causing wrong kv to be loaded')
+            raise ValueError("otherwise will load some index=0 thus causing wrong kv to be loaded")
         i_block = block_i
         n_i = tilelang.cdiv(topk, block_i)
         if n_i % 2 != 0:
-            raise ValueError('n_i should be a multiple of 2')
+            raise ValueError("n_i should be a multiple of 2")
         d = dim
         d_tail = tail_dim
         stride_kv = kv_stride
 
         if head_kv > 64:
             if head_kv % 64 != 0:
-                raise ValueError('head_kv should be a multiple of 64')
+                raise ValueError("head_kv should be a multiple of 64")
             replicate_h = head_kv // 64
         else:
             replicate_h = 1
@@ -138,10 +146,10 @@ def _sparse_mla_kernel(batch: int,
 
         @T.prim_func
         def _sparse_mla_fwd_main(
-                q: T.Tensor(q_shape, dtype),  # type: ignore
-                kv: T.Tensor(kv_shape, dtype),  # type: ignore
-                indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-                output: T.Tensor(o_shape, dtype),  # type: ignore
+            q: T.Tensor(q_shape, dtype),  # type: ignore
+            kv: T.Tensor(kv_shape, dtype),  # type: ignore
+            indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
+            output: T.Tensor(o_shape, dtype),  # type: ignore
         ) -> None:
             """
             Computes the forward pass of sparse multi-head attention.
@@ -163,9 +171,10 @@ def _sparse_mla_kernel(batch: int,
             """
             with T.Kernel(
                 (seq_len - kv_stride + 1 if cp0 else seq_len) * replicate_h,
-                    batch,
-                    kv_group,
-                    threads=threads) as (bx, by, bz):
+                batch,
+                kv_group,
+                threads=threads,
+            ) as (bx, by, bz):
                 q_shared_l = T.alloc_shared([h_per_block, d // 2], dtype)
                 q_shared_r = T.alloc_shared([h_per_block, d // 2], dtype)
                 q_tail_shared = T.alloc_shared([h_per_block, d_tail], dtype)
@@ -201,8 +210,11 @@ def _sparse_mla_kernel(batch: int,
                 bar_s_scale_and_s_free = T.alloc_barrier(arrive_count=256)
 
                 b_i, g_i = by, bz
-                s_i = (bx + (stride_kv - 1 if cp0 else 0)) if replicate_h == 1 else (
-                    bx // replicate_h + (stride_kv - 1 if cp0 else 0))
+                s_i = (
+                    (bx + (stride_kv - 1 if cp0 else 0))
+                    if replicate_h == 1
+                    else (bx // replicate_h + (stride_kv - 1 if cp0 else 0))
+                )
                 q_i = q_start_index_s + s_i
                 max_kv_i = (q_i + 1 - stride_kv) // stride_kv
 
@@ -218,21 +230,21 @@ def _sparse_mla_kernel(batch: int,
                 # "no available layout found".
                 if tx < 128:
                     T.set_max_nreg(240, 1)
-                    T.copy(q[b_i, s_i, h0:h1, 0:d // 2], q_shared_l)
-                    T.copy(q[b_i, s_i, h0:h1, d // 2:d], q_shared_r)
+                    T.copy(q[b_i, s_i, h0:h1, 0 : d // 2], q_shared_l)
+                    T.copy(q[b_i, s_i, h0:h1, d // 2 : d], q_shared_r)
                     T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
                     T.fill(sumexp, 0)
-                    T.fill(m_i, -2**30)  # avoid -inf - inf to cause nan
+                    T.fill(m_i, -(2**30))  # avoid -inf - inf to cause nan
                     T.fill(acc_o_l, 0)
 
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
-
                         # Buffer 0
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0,
-                                                              -T.infinity(acc_s.dtype))
+                            acc_s[h_i, bi_i] = T.if_then_else(
+                                is_kv_valid[bi_i], 0, -T.infinity(acc_s.dtype)
+                            )
                         T.wgmma_gemm(q_shared_l, kv_shared_0_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(q_shared_r, kv_shared_0_r, acc_s, transpose_B=True)
                         T.wgmma_gemm(q_tail_shared, k_tail_shared_0, acc_s, transpose_B=True)
@@ -248,8 +260,9 @@ def _sparse_mla_kernel(batch: int,
                         for h_i in T.Parallel(h_per_block):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i,
-                                  bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                            acc_s[h_i, bi_i] = T.exp2(
+                                acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
+                            )
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -267,8 +280,9 @@ def _sparse_mla_kernel(batch: int,
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0,
-                                                              -T.infinity(acc_s.dtype))
+                            acc_s[h_i, bi_i] = T.if_then_else(
+                                is_kv_valid[bi_i], 0, -T.infinity(acc_s.dtype)
+                            )
                         T.wgmma_gemm(q_shared_l, kv_shared_1_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(q_shared_r, kv_shared_1_r, acc_s, transpose_B=True)
                         T.wgmma_gemm(q_tail_shared, k_tail_shared_1, acc_s, transpose_B=True)
@@ -283,8 +297,9 @@ def _sparse_mla_kernel(batch: int,
                         for h_i in T.Parallel(h_per_block):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i,
-                                  bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                            acc_s[h_i, bi_i] = T.exp2(
+                                acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
+                            )
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -306,7 +321,7 @@ def _sparse_mla_kernel(batch: int,
                     for h_i in T.Parallel(h_per_block):
                         sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
                     T.copy(acc_o_l, o_shared_l)
-                    T.copy(o_shared_l, output[b_i, s_i, h0:h1, 0:d // 2])
+                    T.copy(o_shared_l, output[b_i, s_i, h0:h1, 0 : d // 2])
 
                 elif tx >= 128 and tx < 256:
                     T.set_max_nreg(168, 1)
@@ -336,7 +351,7 @@ def _sparse_mla_kernel(batch: int,
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
                     T.copy(acc_o_r, o_shared_r)
-                    T.copy(o_shared_r, output[b_i, s_i, h0:h1, d // 2:d])
+                    T.copy(o_shared_r, output[b_i, s_i, h0:h1, d // 2 : d])
 
                 elif tx >= 256:
                     # producer
@@ -345,55 +360,77 @@ def _sparse_mla_kernel(batch: int,
                         # Buffer 0
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
-                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2) * i_block + r * 16 +
-                                                       (tx - 256) // 8]
+                            indices_local[0] = indices[
+                                b_i, s_i, g_i, (i_i * 2) * i_block + r * 16 + (tx - 256) // 8
+                            ]
                             is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
                             if is_kv_valid[r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(4):
                                         for v in T.vectorized(8):
-                                            kv_shared_0_l[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 +
-                                                          v] = kv[b_i, indices_local[0], g_i,
-                                                                  64 * u + (tx - 256) % 8 * 8 + v]
-                                            kv_shared_0_r[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 +
-                                                          v] = kv[b_i, indices_local[0], g_i,
-                                                                  d // 2 + 64 * u +
-                                                                  (tx - 256) % 8 * 8 + v]
+                                            kv_shared_0_l[
+                                                r * 16 + (tx - 256) // 8,
+                                                64 * u + (tx - 256) % 8 * 8 + v,
+                                            ] = kv[
+                                                b_i,
+                                                indices_local[0],
+                                                g_i,
+                                                64 * u + (tx - 256) % 8 * 8 + v,
+                                            ]
+                                            kv_shared_0_r[
+                                                r * 16 + (tx - 256) // 8,
+                                                64 * u + (tx - 256) % 8 * 8 + v,
+                                            ] = kv[
+                                                b_i,
+                                                indices_local[0],
+                                                g_i,
+                                                d // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
+                                            ]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
-                                        k_tail_shared_0[r * 16 + (tx - 256) // 8,
-                                                        (tx - 256) % 8 * 8 +
-                                                        v] = kv[b_i, indices_local[0], g_i,
-                                                                d + (tx - 256) % 8 * 8 + v]
+                                        k_tail_shared_0[
+                                            r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
+                                        ] = kv[
+                                            b_i, indices_local[0], g_i, d + (tx - 256) % 8 * 8 + v
+                                        ]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
-                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2 + 1) * i_block +
-                                                       r * 16 + (tx - 256) // 8]
+                            indices_local[0] = indices[
+                                b_i, s_i, g_i, (i_i * 2 + 1) * i_block + r * 16 + (tx - 256) // 8
+                            ]
                             is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
                             if is_kv_valid[r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(4):
                                         for v in T.vectorized(8):
-                                            kv_shared_1_l[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 +
-                                                          v] = kv[b_i, indices_local[0], g_i,
-                                                                  64 * u + (tx - 256) % 8 * 8 + v]
-                                            kv_shared_1_r[r * 16 + (tx - 256) // 8,
-                                                          64 * u + (tx - 256) % 8 * 8 +
-                                                          v] = kv[b_i, indices_local[0], g_i,
-                                                                  d // 2 + 64 * u +
-                                                                  (tx - 256) % 8 * 8 + v]
+                                            kv_shared_1_l[
+                                                r * 16 + (tx - 256) // 8,
+                                                64 * u + (tx - 256) % 8 * 8 + v,
+                                            ] = kv[
+                                                b_i,
+                                                indices_local[0],
+                                                g_i,
+                                                64 * u + (tx - 256) % 8 * 8 + v,
+                                            ]
+                                            kv_shared_1_r[
+                                                r * 16 + (tx - 256) // 8,
+                                                64 * u + (tx - 256) % 8 * 8 + v,
+                                            ] = kv[
+                                                b_i,
+                                                indices_local[0],
+                                                g_i,
+                                                d // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
+                                            ]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
-                                        k_tail_shared_1[r * 16 + (tx - 256) // 8,
-                                                        (tx - 256) % 8 * 8 +
-                                                        v] = kv[b_i, indices_local[0], g_i,
-                                                                d + (tx - 256) % 8 * 8 + v]
+                                        k_tail_shared_1[
+                                            r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
+                                        ] = kv[
+                                            b_i, indices_local[0], g_i, d + (tx - 256) % 8 * 8 + v
+                                        ]
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         return _sparse_mla_fwd_main
@@ -424,9 +461,22 @@ def _sparse_mla_wrapped_kernel(
     indices: torch.Tensor,
 ) -> torch.Tensor:
     """Wrapper for sparse multi-head attention kernel execution."""
-    return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
-                              q_start_index_s, kv_group, sm_scale, is_causal, cp0,
-                              dtype)(block_i, threads)(q, kv, indices)
+    return _sparse_mla_kernel(
+        batch,
+        seq_len,
+        seq_len_kv,
+        heads,
+        dim,
+        tail_dim,
+        topk,
+        kv_stride,
+        q_start_index_s,
+        kv_group,
+        sm_scale,
+        is_causal,
+        cp0,
+        dtype,
+    )(block_i, threads)(q, kv, indices)
 
 
 @_sparse_mla_wrapped_kernel.register_fake
@@ -463,23 +513,25 @@ class SparseMlaKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    def __init__(self,
-                 batch: int,
-                 seq_len: int,
-                 seq_len_kv: int,
-                 heads: int,
-                 dim: int,
-                 tail_dim: int,
-                 dtype: torch.dtype,
-                 topk: int,
-                 kv_stride: int,
-                 q_start_index_s: int,
-                 kv_group: int = 1,
-                 sm_scale: float = None,
-                 is_causal: bool = True,
-                 cp0: bool = True,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        seq_len_kv: int,
+        heads: int,
+        dim: int,
+        tail_dim: int,
+        dtype: torch.dtype,
+        topk: int,
+        kv_stride: int,
+        q_start_index_s: int,
+        kv_group: int = 1,
+        sm_scale: float = None,
+        is_causal: bool = True,
+        cp0: bool = True,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
         super().__init__()
         self.batch = batch
         self.seq_len = seq_len
@@ -496,10 +548,22 @@ class SparseMlaKernel(Kernel):
         self.q_start_index_s = q_start_index_s
         self.cp0 = cp0
 
-        self.kernel = _sparse_mla_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
-                                         self.dim, self.tail_dim, self.topk, self.kv_stride,
-                                         self.q_start_index_s, self.kv_group, self.sm_scale,
-                                         self.is_causal, self.cp0, self.dtype_str)
+        self.kernel = _sparse_mla_kernel(
+            self.batch,
+            self.seq_len,
+            self.seq_len_kv,
+            self.heads,
+            self.dim,
+            self.tail_dim,
+            self.topk,
+            self.kv_stride,
+            self.q_start_index_s,
+            self.kv_group,
+            self.sm_scale,
+            self.is_causal,
+            self.cp0,
+            self.dtype_str,
+        )
 
         self.init_config(config, tune)
 
@@ -525,10 +589,13 @@ class SparseMlaKernel(Kernel):
         threads = [384, 512]
         _configs = list(itertools.product(block_i, threads))
 
-        return [{
-            'block_i': c[0],
-            'threads': c[1],
-        } for c in _configs]
+        return [
+            {
+                "block_i": c[0],
+                "threads": c[1],
+            }
+            for c in _configs
+        ]
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
@@ -542,12 +609,27 @@ class SparseMlaKernel(Kernel):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
-                                          self.dim, self.tail_dim, self.topk, self.kv_stride,
-                                          self.q_start_index_s, self.kv_group, self.sm_scale,
-                                          self.is_causal, self.cp0, self.dtype_str,
-                                          self.config["block_i"], self.config["threads"], q, kv,
-                                          indices)
+        return _sparse_mla_wrapped_kernel(
+            self.batch,
+            self.seq_len,
+            self.seq_len_kv,
+            self.heads,
+            self.dim,
+            self.tail_dim,
+            self.topk,
+            self.kv_stride,
+            self.q_start_index_s,
+            self.kv_group,
+            self.sm_scale,
+            self.is_causal,
+            self.cp0,
+            self.dtype_str,
+            self.config["block_i"],
+            self.config["threads"],
+            q,
+            kv,
+            indices,
+        )
 
     # @property
     # params unused
@@ -564,27 +646,33 @@ class SparseMlaKernel(Kernel):
             self.seq_len,
             self.heads,
             self.dim + self.tail_dim,
-            device='cuda',
-            dtype=self.dtype)
+            device="cuda",
+            dtype=self.dtype,
+        )
         kv = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
             self.dim + self.tail_dim,
-            device='cuda',
-            dtype=self.dtype)
-        indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
-                             self.seq_len_kv,
-                             dtype=torch.int32,
-                             device='cuda')
+            device="cuda",
+            dtype=self.dtype,
+        )
+        indices = torch.full(
+            (self.batch, self.seq_len, self.kv_group, self.topk),
+            self.seq_len_kv,
+            dtype=torch.int32,
+            device="cuda",
+        )
         for b in range(self.batch):
             for t in range(self.seq_len):
                 for h in range(self.kv_group):
                     i_i = torch.randperm(
                         min(
                             max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
-                            self.seq_len_kv))[:self.topk]
-                    indices[b, t, h, :len(i_i)] = i_i
+                            self.seq_len_kv,
+                        )
+                    )[: self.topk]
+                    indices[b, t, h, : len(i_i)] = i_i
 
         return q, kv, indices
 
@@ -601,14 +689,17 @@ class SparseMlaKernel(Kernel):
         """
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
-        print(f'Start autotuning {self.__class__.__name__}...')
+        print(f"Start autotuning {self.__class__.__name__}...")
 
         tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
         # TileLang invokes supply_prog with the candidate JIT params; SparseMlaKernel.supply_prog
         # generates inputs from instance shape attributes and takes none, so discard them.
         autotune_kwargs = dict(
-            configs=self.autotune_configs, warmup=warmup, rep=rep,
-            supply_prog=lambda *args, **kwargs: self.supply_prog())
+            configs=self.autotune_configs,
+            warmup=warmup,
+            rep=rep,
+            supply_prog=lambda *args, **kwargs: self.supply_prog(),
+        )
         if tunable_params:
             autotune_kwargs["do_not_specialize"] = tunable_params
         autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
@@ -617,4 +708,4 @@ class SparseMlaKernel(Kernel):
 
         # Extract and store the best config
         self.config = tuned_kernel.config
-        print(f'Best config: {self.config}')
+        print(f"Best config: {self.config}")

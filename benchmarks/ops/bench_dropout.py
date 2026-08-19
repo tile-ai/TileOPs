@@ -25,6 +25,7 @@ class DropoutBenchmarkWorkload(ShapedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.dropout(x, p=self.p, training=True)
 
+
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
 def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = DropoutBenchmarkWorkload(shape, dtype)

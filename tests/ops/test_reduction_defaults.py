@@ -18,9 +18,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
-)
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
 _FLOAT_SHAPE = (2, 4, 8)
@@ -233,8 +231,14 @@ def test_empty_dim_policy_class_attrs() -> None:
     assert AllFwdOp._empty_dim_policy == "noop"
     assert AnyFwdOp._empty_dim_policy == "noop"
     for cls in (
-        SumFwdOp, MeanFwdOp, AmaxFwdOp, AminFwdOp,
-        StdFwdOp, VarFwdOp, VarMeanFwdOp, CountNonzeroFwdOp,
+        SumFwdOp,
+        MeanFwdOp,
+        AmaxFwdOp,
+        AminFwdOp,
+        StdFwdOp,
+        VarFwdOp,
+        VarMeanFwdOp,
+        CountNonzeroFwdOp,
     ):
         assert cls._empty_dim_policy == "full", cls.__name__
     # ProdFwdOp inherits default (reject); empty dim is not in its contract
@@ -304,8 +308,7 @@ def test_all_empty_dim_noop_binds_roofline() -> None:
     expected_lower = numel * elem_bytes
     expected_upper = 2 * numel * elem_bytes + numel
     assert mem_bytes >= expected_lower, (
-        f"noop bandwidth {mem_bytes} under-counts input read "
-        f"({expected_lower} bytes)"
+        f"noop bandwidth {mem_bytes} under-counts input read ({expected_lower} bytes)"
     )
     assert mem_bytes <= expected_upper
     # flops are degenerate (one op per element); contract is non-negative.
@@ -327,6 +330,7 @@ def test_any_empty_dim_noop_binds_roofline() -> None:
     assert mem_bytes >= expected_lower
     assert mem_bytes <= expected_upper
     assert flops >= 0
+
 
 @pytest.mark.smoke
 def test_validate_dim_rejects_bool_scalar() -> None:

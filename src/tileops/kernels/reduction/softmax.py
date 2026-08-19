@@ -254,8 +254,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             tile_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                                 T.cast(
-                                                    x[pid_m * block_m + i,
-                                                      t * tile_n + j],
+                                                    x[pid_m * block_m + i, t * tile_n + j],
                                                     "float32",
                                                 ),
                                                 T.cast(_neg_inf, "float32"),
@@ -280,9 +279,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                         T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                         for i in T.Parallel(block_m):
-                            row_sum[i] = (
-                                row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
-                            )
+                            row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
 
                     # Precompute reciprocal to replace division with
                     # multiplication in the per-element normalisation.
@@ -311,9 +308,12 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                     T.copy(p2_shared, p2_local)
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
-                                            p2_f32[i, j] = T.exp(
-                                                T.cast(p2_local[i, j], "float32") - row_max[i]
-                                            ) * inv_sum[i]
+                                            p2_f32[i, j] = (
+                                                T.exp(
+                                                    T.cast(p2_local[i, j], "float32") - row_max[i]
+                                                )
+                                                * inv_sum[i]
+                                            )
                                 with T.Else():
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
@@ -334,9 +334,10 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                             T.copy(p2_shared, p2_local)
                             for i in T.serial(block_m):
                                 for j in T.Parallel(tile_n):
-                                    p2_f32[i, j] = T.exp(
-                                        T.cast(p2_local[i, j], "float32") - row_max[i]
-                                    ) * inv_sum[i]
+                                    p2_f32[i, j] = (
+                                        T.exp(T.cast(p2_local[i, j], "float32") - row_max[i])
+                                        * inv_sum[i]
+                                    )
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
@@ -386,8 +387,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             tile_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                                 T.cast(
-                                                    x[pid_m * block_m + i,
-                                                      t * tile_n + j],
+                                                    x[pid_m * block_m + i, t * tile_n + j],
                                                     "float32",
                                                 ),
                                                 T.cast(_neg_inf, "float32"),
@@ -412,9 +412,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                         T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                         for i in T.Parallel(block_m):
-                            row_sum[i] = (
-                                row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
-                            )
+                            row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
 
                     # Precompute log(sum) to avoid recomputing per-element
                     log_sum = T.alloc_fragment((block_m,), "float32")
@@ -447,8 +445,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             p2_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                                 T.cast(
-                                                    x[pid_m * block_m + i,
-                                                      t * tile_n + j],
+                                                    x[pid_m * block_m + i, t * tile_n + j],
                                                     "float32",
                                                 )
                                                 - row_max[i]
@@ -579,7 +576,9 @@ class SoftmaxKernel(Kernel):
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget,
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
             num_buffers=self._NUM_SHARED_BUFFERS,
         )
 
@@ -611,7 +610,8 @@ class SoftmaxKernel(Kernel):
                 caller_tile_n = None
             if caller_tile_n is not None:
                 reason = self._planner.reject_tile_n(
-                    self.config["block_m"], caller_tile_n,
+                    self.config["block_m"],
+                    caller_tile_n,
                     self.config.get("threads", _DEFAULT_TUNE_THREADS),
                 )
                 if reason:
@@ -690,8 +690,7 @@ class SoftmaxKernel(Kernel):
                     best_bm = bm
                     best_tile_n = tn
 
-        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS,
-                "tile_n": best_tile_n}
+        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS, "tile_n": best_tile_n}
 
     def _tile_n_candidates(self) -> list[int]:
         """Return candidate tile_n values for autotune exploration.
@@ -735,13 +734,14 @@ class SoftmaxKernel(Kernel):
         # search point when block_m exploration didn't yield alternatives.
         if len(candidates) < 2:
             from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
+
             half_tn = (default_tn // 2 // DEFAULT_ALIGNMENT) * DEFAULT_ALIGNMENT
             if half_tn > 0 and half_tn != default_tn:
                 candidates.add(half_tn)
 
         # Cap to avoid excessive compilation time.
         sorted_candidates = sorted(candidates, reverse=True)
-        return sorted_candidates[:self._MAX_TILE_N_CANDIDATES]
+        return sorted_candidates[: self._MAX_TILE_N_CANDIDATES]
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -811,11 +811,17 @@ class SoftmaxKernel(Kernel):
 
         for tile_n, group_cfgs in by_tile_n.items():
             kernel = _softmax_kernel(
-                self.M, self.N, self.op_kind, self.dtype_str, tile_n,
+                self.M,
+                self.N,
+                self.op_kind,
+                self.dtype_str,
+                tile_n,
             )
             tunable_params = list(self._autotune_initial_kwargs(kernel, group_cfgs[0]).keys())
             autotune_kwargs: dict = dict(
-                configs=group_cfgs, warmup=warmup, rep=rep,
+                configs=group_cfgs,
+                warmup=warmup,
+                rep=rep,
             )
             if tunable_params:
                 autotune_kwargs["do_not_specialize"] = tunable_params
@@ -835,7 +841,11 @@ class SoftmaxKernel(Kernel):
             if winning_tile_n != self._tile_n:
                 self._tile_n = winning_tile_n
                 self.kernel = _softmax_kernel(
-                    self.M, self.N, self.op_kind, self.dtype_str, self._tile_n,
+                    self.M,
+                    self.N,
+                    self.op_kind,
+                    self.dtype_str,
+                    self._tile_n,
                 )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -31,10 +31,16 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["numel"], w["num_experts"], w["n"], w["k"], dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["numel"],
+                    w["num_experts"],
+                    w["n"],
+                    w["k"],
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -43,7 +49,11 @@ def _manifest_params():
     _manifest_params(),
 )
 def test_moe_grouped_gemm_nopad_bench(
-    numel: int, num_experts: int, n: int, k: int, dtype_str: str,
+    numel: int,
+    num_experts: int,
+    n: int,
+    k: int,
+    dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     workload = MoeGroupedGemmNopadWorkload(numel, num_experts, n, k, dtype)
@@ -67,10 +77,18 @@ def test_moe_grouped_gemm_nopad_bench(
             if size_e == 0:
                 continue
             off_e = offsets_l[e]
-            out[off_e:off_e + size_e] = a[off_e:off_e + size_e] @ b[e].T
+            out[off_e : off_e + size_e] = a[off_e : off_e + size_e] @ b[e].T
         return out
 
     _torch_fn(a, b, true_sizes, true_offsets)  # warmup
     torch.cuda.synchronize()
 
-    bm.compare({"tileops": op, "torch-ref": _torch_fn}, a, b, true_sizes, true_offsets, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": _torch_fn},
+        a,
+        b,
+        true_sizes,
+        true_offsets,
+        record_as=op,
+        params=locals(),
+    )

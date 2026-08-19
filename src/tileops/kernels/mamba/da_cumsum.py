@@ -80,11 +80,11 @@ def _da_cumsum_fwd_kernel(
     def kernel_func(block_h: int, threads: int):
         @T.prim_func
         def main(
-            dt:        T.Tensor((B, S, H), accum_dtype),          # type: ignore  # raw dt input
-            A:         T.Tensor((H,),       accum_dtype),           # type: ignore
-            dt_bias:   T.Tensor((H,),       accum_dtype),           # type: ignore
-            dt_out:    T.Tensor((B, H, C, Q), dtype),              # type: ignore  # Output in dtype for chunk_scan
-            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),        # type: ignore  # Keep float32 for precision
+            dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore  # raw dt input
+            A: T.Tensor((H,), accum_dtype),  # type: ignore
+            dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
+            dt_out: T.Tensor((B, H, C, Q), dtype),  # type: ignore  # Output in dtype for chunk_scan
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore  # Keep float32 for precision
         ):
             # Grid: one block per (batch, chunk, head-tile).
             # block_h heads are processed together in parallel within each block.
@@ -97,15 +97,15 @@ def _da_cumsum_fwd_kernel(
                 # ── Step 1: load raw dt, apply transforms, compute dA ─────────
                 # All (block_h × Q) elements are processed in parallel.
                 for i, j in T.Parallel(block_h, Q):
-                    bh      = bh_tile * block_h + i
+                    bh = bh_tile * block_h + i
                     seq_idx = bc * Q + j
-                    in_b    = T.And(bh < H, seq_idx < S)
+                    in_b = T.And(bh < H, seq_idx < S)
 
                     # Clamp indices to valid range before memory reads.
                     # T.if_then_else lowers to a select instruction (not a branch),
                     # so both arms are evaluated — out-of-bounds indices must be
                     # clamped to prevent illegal memory access on padding threads.
-                    safe_bh      = T.min(bh, H - 1)
+                    safe_bh = T.min(bh, H - 1)
                     safe_seq_idx = T.min(seq_idx, S - 1)
 
                     # Load dt; zero-pad out-of-bounds positions.
@@ -114,7 +114,7 @@ def _da_cumsum_fwd_kernel(
                     # Optional bias addition.
                     if has_dt_bias:
                         bias = T.if_then_else(bh < H, dt_bias[safe_bh], T.float32(0.0))
-                        val  = val + bias
+                        val = val + bias
 
                     # Optional softplus (log(1+exp(x))) with large-value bypass.
                     if dt_softplus:
@@ -173,8 +173,16 @@ def _da_cumsum_fwd_wrapped(
     dt_bias: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _da_cumsum_fwd_kernel(
-        batch, num_chunks, chunk_len, n_heads, seq_len, dtype,
-        dt_softplus, has_dt_bias, dt_min, dt_max,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        seq_len,
+        dtype,
+        dt_softplus,
+        has_dt_bias,
+        dt_min,
+        dt_max,
     )(block_h, threads)(dt, A, dt_bias)
 
 
@@ -199,7 +207,7 @@ def _(
     # Convert dtype string to torch.dtype
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
     torch_dtype = dtype_map.get(dtype, torch.float16)
-    dt_out    = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch_dtype)
+    dt_out = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch_dtype)
     dA_cumsum = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch.float32)
     return dt_out, dA_cumsum
 
@@ -262,8 +270,16 @@ class DaCumsumFwdKernel(Kernel):
         self.dt_max = dt_max
         self.dtype = dtype
         self.kernel = _da_cumsum_fwd_kernel(
-            batch, num_chunks, chunk_len, n_heads, seq_len, self.dtype_str,
-            dt_softplus, has_dt_bias, dt_min, dt_max,
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            seq_len,
+            self.dtype_str,
+            dt_softplus,
+            has_dt_bias,
+            dt_min,
+            dt_max,
         )
         self.init_config(config, tune)
 
@@ -309,17 +325,26 @@ class DaCumsumFwdKernel(Kernel):
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
         """
         dt = dt.contiguous()
-        A  = A.contiguous()
+        A = A.contiguous()
         if self.has_dt_bias and dt_bias is None:
             raise ValueError("dt_bias is required when has_dt_bias=True")
         # Dummy zero bias keeps the kernel signature stable when has_dt_bias=False.
         dt_bias = dt.new_zeros(self.n_heads) if dt_bias is None else dt_bias.contiguous()
 
         return _da_cumsum_fwd_wrapped(
-            self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.seq_len,
+            self.batch,
+            self.num_chunks,
+            self.chunk_len,
+            self.n_heads,
+            self.seq_len,
             self.dtype_str,
             self.config["threads"],
-            self.dt_softplus, self.has_dt_bias, self.dt_min, self.dt_max,
+            self.dt_softplus,
+            self.has_dt_bias,
+            self.dt_min,
+            self.dt_max,
             self.config["block_h"],
-            dt, A, dt_bias,
+            dt,
+            A,
+            dt_bias,
         )

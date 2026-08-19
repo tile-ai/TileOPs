@@ -33,10 +33,16 @@ _TOPK_SELECTOR_PARAMS = workload_field_params(
     "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype",
     _TOPK_SELECTOR_PARAMS,
 )
-def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group: int, topk: int,
-                             in_dtype: torch.dtype, out_dtype: torch.dtype) -> None:
-    test = TopkSelectorWorkload(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype,
-                                out_dtype)
+def test_topk_selector_bench(
+    batch: int,
+    seq_len: int,
+    seq_len_kv: int,
+    kv_group: int,
+    topk: int,
+    in_dtype: torch.dtype,
+    out_dtype: torch.dtype,
+) -> None:
+    test = TopkSelectorWorkload(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
     inputs = test.gen_inputs()
 
     op = TopkSelectorFwdOp(topk=topk, tune=_TUNE)

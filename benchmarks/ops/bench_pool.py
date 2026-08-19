@@ -191,7 +191,9 @@ def test_avg_pool1d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL1D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 def _avg_pool2d_bench_params() -> list:
@@ -273,7 +275,9 @@ def test_avg_pool2d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL2D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 def _avg_pool3d_bench_params() -> list:
@@ -358,7 +362,9 @@ def test_avg_pool3d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL3D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 def _max_pool2d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -443,7 +449,9 @@ def test_max_pool2d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 @pytest.mark.parametrize(
@@ -488,7 +496,9 @@ def test_max_pool2d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_INDICES_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 def _max_pool1d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -573,7 +583,9 @@ def test_max_pool1d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 @pytest.mark.parametrize(
@@ -616,7 +628,9 @@ def test_max_pool1d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_INDICES_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 def _max_pool3d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -707,7 +721,9 @@ def test_max_pool3d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 @pytest.mark.parametrize(
@@ -754,7 +770,9 @@ def test_max_pool3d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 class AdaptiveAvgPool2dBenchmarkWorkload(AdaptivePool2dWorkload):
@@ -772,9 +790,7 @@ class AdaptiveMaxPool2dBenchmarkWorkload(AdaptivePool2dWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # torch rejects a scalar None here; (None, None) means the same.
         size = (None, None) if self.output_size is None else self.output_size
-        return F.adaptive_max_pool2d(
-            x, size, return_indices=self.return_indices
-        )
+        return F.adaptive_max_pool2d(x, size, return_indices=self.return_indices)
 
 
 def _adaptive_pool2d_bench_params_from_workloads(workloads) -> list:
@@ -819,7 +835,9 @@ def test_adaptive_avg_pool2d_bench(
     op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_AVG_POOL2D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 @pytest.mark.parametrize(
@@ -841,12 +859,16 @@ def test_adaptive_max_pool2d_bench(
     op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME)),
+    _adaptive_pool2d_bench_params_from_workloads(
+        load_workloads(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME)
+    ),
 )
 def test_adaptive_max_pool2d_indices_bench(
     n: int,
@@ -865,4 +887,6 @@ def test_adaptive_max_pool2d_indices_bench(
     op = AdaptiveMaxPool2dIndicesFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

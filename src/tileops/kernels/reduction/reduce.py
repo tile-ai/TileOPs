@@ -387,7 +387,9 @@ def _prod_reduce_kernel_tiled(M, N, dtype, tile_n):
                             abs_val = T.abs(tile_f32[i, j])
                             log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
                             sign_neg[i, j] = T.if_then_else(
-                                tile_f32[i, j] < 0.0, 1.0, 0.0,
+                                tile_f32[i, j] < 0.0,
+                                1.0,
+                                0.0,
                             )
 
                     T.reduce_sum(log_abs, tile_log, dim=1)
@@ -782,17 +784,14 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                     pad_count = total_cols - N
                     if op_kind == "var":
                         for i in T.Parallel(block_m):
-                            corrected = (
-                                var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                            )
+                            corrected = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
                             out_local[i] = T.cast(corrected / float(N - correction), dtype)
                     else:  # std
                         for i in T.Parallel(block_m):
-                            corrected = (
-                                var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                            )
+                            corrected = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
                             out_local[i] = T.cast(
-                                T.sqrt(corrected / float(N - correction)), dtype,
+                                T.sqrt(corrected / float(N - correction)),
+                                dtype,
                             )
 
                     T.copy(out_local, out[pid_m * block_m])
@@ -943,7 +942,9 @@ class ReduceKernel(Kernel):
         self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
         self._smem_budget = device_smem_budget()
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget,
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
             num_buffers=2 if self._is_welford else 1,
         )
         self._needs_tiling = self._planner.needs_tiling
@@ -992,9 +993,7 @@ class ReduceKernel(Kernel):
         """Autotune the reduce kernel by benchmarking candidate configs."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-        x = torch.randn(
-            self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device()
-        )
+        x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
         tune_by_forward(self, x, warmup=warmup, rep=rep)
 
     def forward(self, x: torch.Tensor) -> object:

@@ -19,8 +19,7 @@ def _to_params(workloads):
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(pytest.param(m, n, dtype, id=f"{label}-{dtype_str}"))
     return params
 
 

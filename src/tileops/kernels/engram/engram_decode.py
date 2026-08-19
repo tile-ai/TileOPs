@@ -51,7 +51,6 @@ from tileops.kernels.tiling import ALIGNMENT, align_up
 __all__ = ["EngramDecodeKernel"]
 
 
-
 @functools.lru_cache(maxsize=32)
 def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, eps, dtype):
     """
@@ -74,7 +73,6 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
-
         @T.macro
         def _decode_fused(
             e_t: T.Tensor((batch, d_mem), dtype),
@@ -178,12 +176,9 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
                 # History taps (p = 0 to w-2): read from state at dilated positions
                 for p in T.serial(w - 1):
                     for j in T.Parallel(d_padded):
-                        conv_out[j] += (
-                            T.cast(conv_w[p, j], accum_dtype)
-                            * T.cast(
-                                conv_state[bid, max_conv_len - (w - 1 - p) * dilation, j],
-                                accum_dtype,
-                            )
+                        conv_out[j] += T.cast(conv_w[p, j], accum_dtype) * T.cast(
+                            conv_state[bid, max_conv_len - (w - 1 - p) * dilation, j],
+                            accum_dtype,
                         )
                 # Current tap (p = w-1)
                 for j in T.Parallel(d_padded):
@@ -222,9 +217,16 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
             new_conv_state: T.Tensor((batch, max_conv_len, d_padded), dtype),
         ):
             _decode_fused(
-                e_t, h_t, conv_state,
-                W_K, W_V, rms_w_h, rms_w_v, conv_w,
-                y_t, new_conv_state,
+                e_t,
+                h_t,
+                conv_state,
+                W_K,
+                W_V,
+                rms_w_h,
+                rms_w_v,
+                conv_w,
+                y_t,
+                new_conv_state,
             )
 
         return main
@@ -253,15 +255,38 @@ def _engram_decode_wrapped(
     conv_w: torch.Tensor,
 ) -> list[torch.Tensor]:
     results = _engram_decode_kernel(
-        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, eps, dtype_str,
+        batch,
+        d_mem,
+        d,
+        max_conv_len,
+        conv_kernel_size,
+        dilation,
+        eps,
+        dtype_str,
     )(threads)(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
     return list(results)
 
 
 @_engram_decode_wrapped.register_fake
-def _(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation,
-      eps, dtype_str, threads,
-      e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
+def _(
+    batch,
+    d_mem,
+    d,
+    max_conv_len,
+    conv_kernel_size,
+    dilation,
+    eps,
+    dtype_str,
+    threads,
+    e_t,
+    h_t,
+    conv_state,
+    W_K,
+    W_V,
+    rms_w_h,
+    rms_w_v,
+    conv_w,
+):
     d_padded = align_up(d, ALIGNMENT)
     device = e_t.device
     dt = e_t.dtype
@@ -322,8 +347,14 @@ class EngramDecodeKernel(Kernel):
             )
 
         self.kernel = _engram_decode_kernel(
-            batch, d_mem, d, max_conv_len, conv_kernel_size, dilation,
-            eps, self.dtype_str,
+            batch,
+            d_mem,
+            d,
+            max_conv_len,
+            conv_kernel_size,
+            dilation,
+            eps,
+            self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -378,10 +409,23 @@ class EngramDecodeKernel(Kernel):
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
         results = _engram_decode_wrapped(
-            self.batch, self.d_mem, self.d, self.max_conv_len,
-            self.conv_kernel_size, self.dilation, self.eps,
-            self.dtype_str, self.config["threads"],
-            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+            self.batch,
+            self.d_mem,
+            self.d,
+            self.max_conv_len,
+            self.conv_kernel_size,
+            self.dilation,
+            self.eps,
+            self.dtype_str,
+            self.config["threads"],
+            e_t,
+            h_t,
+            conv_state,
+            W_K,
+            W_V,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
         )
         if pad:
             results[0] = results[0][:, : self.d]

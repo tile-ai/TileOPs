@@ -79,14 +79,22 @@ class FusedAddRMSNormFwdOp(Op):
         )
 
     def _get_kernel(
-        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
+        self,
+        M: int,
+        N: int,
+        dtype: torch.dtype,
+        device_index: int | None,
     ) -> Kernel:
         key = (M, N, dtype, device_index)
         return self.get_or_build_kernel(
             "fused_add_rms_norm",
             key=key,
             build=lambda: self.kernel_map["fused_add_rms_norm"](
-                M, N, self.eps, dtype, tune=self.tune,
+                M,
+                N,
+                self.eps,
+                dtype,
+                tune=self.tune,
             ),
         )
 
@@ -117,26 +125,16 @@ class FusedAddRMSNormFwdOp(Op):
             if not tensor.is_cuda:
                 raise ValueError(f"{name} must be a CUDA tensor")
             if tensor.dtype != expected_dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype {expected_dtype}, got {tensor.dtype}"
-                )
+                raise ValueError(f"Expected {name}.dtype {expected_dtype}, got {tensor.dtype}")
         if weight.ndim != 1:
-            raise ValueError(
-                f"Expected weight to be 1D, got {weight.ndim}D"
-            )
+            raise ValueError(f"Expected weight to be 1D, got {weight.ndim}D")
         N = x.shape[-1]
         if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(
-                f"Expected hidden dim {self._committed_N}, got {N}"
-            )
+            raise ValueError(f"Expected hidden dim {self._committed_N}, got {N}")
         if residual.shape != x.shape:
-            raise ValueError(
-                f"Expected residual shape {x.shape}, got {residual.shape}"
-            )
+            raise ValueError(f"Expected residual shape {x.shape}, got {residual.shape}")
         if weight.shape[0] != N:
-            raise ValueError(
-                f"Expected weight dim {N}, got {weight.shape[0]}"
-            )
+            raise ValueError(f"Expected weight dim {N}, got {weight.shape[0]}")
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, N)

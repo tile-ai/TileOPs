@@ -37,17 +37,26 @@ class MoeGroupedGemmSeparateActKernel(Kernel):
         """Any shape, with a gated activation it can launch."""
         return call.activation in cls.SUPPORTED_ACTIVATIONS
 
-    def __init__(self, numel, num_experts, N, K, dtype=torch.bfloat16,
-                 activation="silu_and_mul", gemm_cls=MoeGroupedGemmNopadKernel,
-                 config=None, tune=False):
+    def __init__(
+        self,
+        numel,
+        num_experts,
+        N,
+        K,
+        dtype=torch.bfloat16,
+        activation="silu_and_mul",
+        gemm_cls=MoeGroupedGemmNopadKernel,
+        config=None,
+        tune=False,
+    ):
         super().__init__()
         if activation not in self.SUPPORTED_ACTIVATIONS:
             raise ValueError(
-                f"activation must be one of {list(self.SUPPORTED_ACTIVATIONS)}, "
-                f"got {activation!r}")
+                f"activation must be one of {list(self.SUPPORTED_ACTIVATIONS)}, got {activation!r}"
+            )
         self.numel = numel
         self.num_experts = num_experts
-        self.N = N            # ffn (output width), NOT 2*ffn
+        self.N = N  # ffn (output width), NOT 2*ffn
         self.K = K
         self.dtype = dtype
         self.activation = activation

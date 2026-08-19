@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -49,10 +48,12 @@ def deltanet_autograd_bwd_torch(do, q, k, v, beta, chunk_size):
     dq, dk, dv, dbeta = torch.autograd.grad(loss, [q_, k_, v_, beta_])
     return dq, dk, dv, dbeta
 
+
 # Autograd-based reference: differentiable forward -> torch.autograd.grad
 
 
 # Backward correctness tests
+
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
@@ -65,16 +66,29 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
 
 class DeltaNetBwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, True, marks=pytest.mark.full,
-                         id="full-bf16-tuned"),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(
+                    2,
+                    64,
+                    2,
+                    64,
+                    64,
+                    32,
+                    torch.bfloat16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-bf16-tuned",
+                ),
+            ],
+        ),
     ]
 
 
@@ -98,6 +112,7 @@ def test_deltanet_bwd(
 
     # Forward to get S for backward kernel
     from tileops.ops import DeltaNetFwdOp
+
     fwd_op = DeltaNetFwdOp(chunk_size=BC)
     _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
@@ -114,7 +129,9 @@ def test_deltanet_bwd(
     names = ["dq", "dk", "dv", "dbeta"]
     for name, ref_out, op_out in zip(names, ref_outputs, op_outputs, strict=True):
         torch.testing.assert_close(
-            op_out, ref_out.to(dtype), **tols,
+            op_out,
+            ref_out.to(dtype),
+            **tols,
             msg=lambda m, n=name: f"{n}: {m}",
         )
 

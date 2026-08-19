@@ -29,10 +29,21 @@ from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, rest
 # ``N == 1``), so the Op layer computes the scalar result directly without
 # invoking PyTorch's reduction ops. Mapping a degenerate single-element
 # reduction to its closed-form result is pure arithmetic, not a fallback.
-_SCALAR_REDUCE_KINDS = frozenset({
-    "sum", "mean", "amin", "amax", "prod", "std", "var", "var_mean",
-    "all", "any", "count_nonzero",
-})
+_SCALAR_REDUCE_KINDS = frozenset(
+    {
+        "sum",
+        "mean",
+        "amin",
+        "amax",
+        "prod",
+        "std",
+        "var",
+        "var_mean",
+        "all",
+        "any",
+        "count_nonzero",
+    }
+)
 
 
 __all__ = [
@@ -119,22 +130,17 @@ class _ReduceOpBase(Op):
         dim = self.dim
         if isinstance(dim, bool):
             raise TypeError(
-                f"dim must not be bool (subclasses int but is not a valid "
-                f"axis), got {dim!r}"
+                f"dim must not be bool (subclasses int but is not a valid axis), got {dim!r}"
             )
         if dim is None or isinstance(dim, int):
             return
         if isinstance(dim, (list, tuple)):
             for d in dim:
                 if isinstance(d, bool) or not isinstance(d, int):
-                    raise TypeError(
-                        f"All elements of dim must be int (not bool), "
-                        f"got {dim!r}"
-                    )
+                    raise TypeError(f"All elements of dim must be int (not bool), got {dim!r}")
             return
         raise TypeError(
-            f"dim must be int, list[int], tuple[int, ...], or None, "
-            f"got {type(dim).__name__}"
+            f"dim must be int, list[int], tuple[int, ...], or None, got {type(dim).__name__}"
         )
 
     @property
@@ -227,8 +233,7 @@ class _ReduceOpBase(Op):
         if isinstance(dim, int):
             if dim not in (0, -1):
                 raise IndexError(
-                    f"Dimension out of range (expected to be in range of "
-                    f"[-1, 0], but got {dim})"
+                    f"Dimension out of range (expected to be in range of [-1, 0], but got {dim})"
                 )
             return
         if isinstance(dim, (list, tuple)):
@@ -236,14 +241,11 @@ class _ReduceOpBase(Op):
             for d in dim:
                 if d not in (0, -1):
                     raise IndexError(
-                        f"Dimension out of range (expected to be in range of "
-                        f"[-1, 0], but got {d})"
+                        f"Dimension out of range (expected to be in range of [-1, 0], but got {d})"
                     )
                 canon = 0  # 0 and -1 alias the same axis on a 0-D tensor.
                 if canon in seen:
-                    raise RuntimeError(
-                        f"dim {canon} appears multiple times in the list of dims"
-                    )
+                    raise RuntimeError(f"dim {canon} appears multiple times in the list of dims")
                 seen.add(canon)
             return
 
@@ -379,22 +381,30 @@ class _ReduceOpBase(Op):
     # Kernel cache
 
     def _get_or_create_kernel(
-        self, M: int, N: int, dtype: torch.dtype,
+        self,
+        M: int,
+        N: int,
+        dtype: torch.dtype,
     ) -> object:
         """Return a cached kernel for (M, N, dtype), creating one if needed."""
         return self.get_or_build_kernel(
             self._kernel_key,
             key=(M, N, dtype),
             build=lambda: self.kernel_map[self._kernel_key](
-                M, N, self._op_kind, dtype,
-                tune=self.tune, **self._build_kernel_kwargs(),
+                M,
+                N,
+                self._op_kind,
+                dtype,
+                tune=self.tune,
+                **self._build_kernel_kwargs(),
             ),
         )
 
     # Input preparation (validate → transpose → reshape)
 
     def _prepare_input(
-        self, x: torch.Tensor,
+        self,
+        x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Size, object, object]:
         """Validate, derive M/N, transpose, and reshape to 2D.
 
@@ -409,7 +419,9 @@ class _ReduceOpBase(Op):
         # --- multi-dim path (includes dim=None for full reduction) ---
         if isinstance(self.dim, (list, tuple)) or self.dim is None:
             dims = normalize_dim(
-                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+                self.dim,
+                x.ndim,
+                empty_dim_policy=self._empty_dim_policy,
             )
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
@@ -442,7 +454,10 @@ class _ReduceOpBase(Op):
     # Output reshape
 
     def _reshape_output(
-        self, y: torch.Tensor, orig_shape: torch.Size, dim_info: Union[int, List[int]],
+        self,
+        y: torch.Tensor,
+        orig_shape: torch.Size,
+        dim_info: Union[int, List[int]],
     ) -> torch.Tensor:
         """Reshape (M,) kernel output to match keepdim setting.
 
@@ -483,7 +498,6 @@ class _SimpleReduceOp(_ReduceOpBase):
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
-
 
 
 class SumFwdOp(_SimpleReduceOp):
@@ -540,18 +554,17 @@ class ProdFwdOp(_SimpleReduceOp):
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
 
     def _validate_dim(self) -> None:
         # Manifest declares prod.signature.params.dim as int; reject the
         # multi-dim and full-reduction overloads inherited from the base.
         if not isinstance(self.dim, int) or isinstance(self.dim, bool):
-            raise TypeError(
-                f"ProdFwdOp.dim must be int, got "
-                f"{type(self.dim).__name__}"
-            )
+            raise TypeError(f"ProdFwdOp.dim must be int, got {type(self.dim).__name__}")
 
 
 # Welford-based ops (std, var, var_mean)
@@ -598,8 +611,10 @@ class _WelfordReduceOp(_ReduceOpBase):
         """
         self.correction = correction
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
 
     def _build_kernel_kwargs(self) -> dict:

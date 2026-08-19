@@ -60,9 +60,7 @@ def _avg_pool2d_kernel(
                                 ih = oh * stride_h + kh - pad_h
                                 iw = ow * stride_w + kw - pad_w
                                 if ih >= 0 and ih < h_in and iw >= 0 and iw < w_in:
-                                    sum_val += T.cast(
-                                        x[batch, c_idx, ih, iw], accum_dtype
-                                    )
+                                    sum_val += T.cast(x[batch, c_idx, ih, iw], accum_dtype)
 
                         start_h = oh * stride_h - pad_h
                         start_w = ow * stride_w - pad_w
@@ -71,17 +69,11 @@ def _avg_pool2d_kernel(
                         valid_h = T.max(T.min(end_h, h_in) - T.max(start_h, 0), 0)
                         valid_w = T.max(T.min(end_w, w_in) - T.max(start_w, 0), 0)
                         valid_count = valid_h * valid_w
-                        padded_h = T.max(
-                            T.min(end_h, h_in + pad_h) - T.max(start_h, -pad_h), 0
-                        )
-                        padded_w = T.max(
-                            T.min(end_w, w_in + pad_w) - T.max(start_w, -pad_w), 0
-                        )
+                        padded_h = T.max(T.min(end_h, h_in + pad_h) - T.max(start_h, -pad_h), 0)
+                        padded_w = T.max(T.min(end_w, w_in + pad_w) - T.max(start_w, -pad_w), 0)
                         padded_count = padded_h * padded_w
                         auto_divisor = T.max(
-                            T.if_then_else(
-                                count_include_pad, padded_count, valid_count
-                            ),
+                            T.if_then_else(count_include_pad, padded_count, valid_count),
                             1,
                         )
                         divisor = T.if_then_else(
@@ -143,9 +135,7 @@ def _avg_pool2d_spatial_kernel(
                                 ih = oh * stride_h + kh - pad_h
                                 iw = ow * stride_w + kw - pad_w
                                 if ih >= 0 and ih < h_in and iw >= 0 and iw < w_in:
-                                    sum_val += T.cast(
-                                        x[batch, c_idx, ih, iw], accum_dtype
-                                    )
+                                    sum_val += T.cast(x[batch, c_idx, ih, iw], accum_dtype)
 
                         out[batch, c_idx, oh, ow] = T.cast(
                             sum_val / T.cast(kernel_h * kernel_w, accum_dtype),

@@ -58,7 +58,9 @@ class BmmFwdOp(Op):
         return {"bmm_kernel": BmmKernel}
 
     def _infer_bmnk(
-        self, a: torch.Tensor, b: torch.Tensor,
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
     ) -> Tuple[int, int, int, int]:
         """Derive logical ``(batch, m, n, k)`` from ``[B,M,K]`` and ``[B,K,N]``.
 
@@ -75,8 +77,7 @@ class BmmFwdOp(Op):
         batch_b, k_b, n = b.shape
         if batch_a != batch_b:
             raise ValueError(
-                f"BmmFwdOp batch dim mismatch: a.shape[0]={batch_a} vs "
-                f"b.shape[0]={batch_b}"
+                f"BmmFwdOp batch dim mismatch: a.shape[0]={batch_a} vs b.shape[0]={batch_b}"
             )
         if k_a != k_b:
             raise ValueError(
@@ -87,7 +88,8 @@ class BmmFwdOp(Op):
         if k_a % 16 != 0:
             raise ValueError(
                 f"BmmFwdOp requires contraction dim K to be a multiple of 16 "
-                f"(WGMMA alignment; see manifest shape_rules), got K={k_a}")
+                f"(WGMMA alignment; see manifest shape_rules), got K={k_a}"
+            )
         return batch_a, m, n, k_a
 
     def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
@@ -98,18 +100,21 @@ class BmmFwdOp(Op):
                 batch, m, k = a_shape
                 _, _, n = b_shape
                 return (batch, m, n, k, None if self.dtype is None else str(self.dtype))
-        return (self.batch, self.m, self.n, self.k,
-                None if self.dtype is None else str(self.dtype))
+        return (self.batch, self.m, self.n, self.k, None if self.dtype is None else str(self.dtype))
 
     def _get_kernel(
-        self, batch: int, m: int, n: int, k: int, dtype: torch.dtype,
+        self,
+        batch: int,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
     ) -> Kernel:
         """Return the cached BmmKernel for the given dims, building lazily."""
         return self.get_or_build_kernel(
             "bmm_kernel",
             key=(batch, m, n, k, dtype),
-            build=lambda: self.kernel_map["bmm_kernel"](
-                batch, m, n, k, dtype, tune=self.tune),
+            build=lambda: self.kernel_map["bmm_kernel"](batch, m, n, k, dtype, tune=self.tune),
         )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -163,8 +168,8 @@ class BmmFp8KNFwdOp(Op):
             out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
-                f"BmmFp8KNFwdOp outputs torch.float16 or torch.bfloat16, "
-                f"got {out_dtype}")
+                f"BmmFp8KNFwdOp outputs torch.float16 or torch.bfloat16, got {out_dtype}"
+            )
         self.out_dtype = out_dtype
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -194,18 +199,18 @@ class BmmFp8KNFwdOp(Op):
         scale_b: torch.Tensor,
     ) -> None:
         if a.dtype != torch.float8_e4m3fn:
-            raise ValueError(
-                f"BmmFp8KNFwdOp only supports torch.float8_e4m3fn, got {a.dtype}")
+            raise ValueError(f"BmmFp8KNFwdOp only supports torch.float8_e4m3fn, got {a.dtype}")
         if b.dtype != a.dtype:
             raise ValueError(f"BmmFp8KNFwdOp expects b dtype {a.dtype}, got {b.dtype}")
         if scale_a.dtype != torch.float32 or scale_b.dtype != torch.float32:
             raise ValueError("BmmFp8KNFwdOp expects scale_a and scale_b to be torch.float32")
 
     def _infer_bmnk(
-        self, a: torch.Tensor, b: torch.Tensor,
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
     ) -> Tuple[int, int, int, int, bool]:
-        """Derive logical ``(batch, m, n, k, b_is_nk)`` from ``a`` and ``b``.
-        """
+        """Derive logical ``(batch, m, n, k, b_is_nk)`` from ``a`` and ``b``."""
         if a.dim() != 3 or b.dim() != 3:
             raise ValueError(
                 f"BmmFp8KNFwdOp expects strict 3D inputs a=[B,M,K] and "
@@ -216,8 +221,7 @@ class BmmFp8KNFwdOp(Op):
         batch_b, b1, b2 = b.shape
         if batch_a != batch_b:
             raise ValueError(
-                f"BmmFp8KNFwdOp batch dim mismatch: a.shape[0]={batch_a} vs "
-                f"b.shape[0]={batch_b}"
+                f"BmmFp8KNFwdOp batch dim mismatch: a.shape[0]={batch_a} vs b.shape[0]={batch_b}"
             )
         if self.B_IS_NK:
             if b2 != k:
@@ -237,7 +241,8 @@ class BmmFp8KNFwdOp(Op):
         if k % 32 != 0:
             raise ValueError(
                 f"BmmFp8KNFwdOp requires contraction dim K to be a multiple of "
-                f"32 (FP8 WGMMA K-step), got K={k}")
+                f"32 (FP8 WGMMA K-step), got K={k}"
+            )
         return batch_a, m, n, k, b_is_nk
 
     def _validate_shapes(
@@ -251,8 +256,7 @@ class BmmFp8KNFwdOp(Op):
             raise ValueError(
                 f"BmmFp8KNFwdOp expects all inputs to be on CUDA, got device {a.device}"
             )
-        if (b.device != a.device or scale_a.device != a.device
-                or scale_b.device != a.device):
+        if b.device != a.device or scale_a.device != a.device or scale_b.device != a.device:
             raise ValueError(
                 f"BmmFp8KNFwdOp expects all inputs to be on the same CUDA device, got "
                 f"a: {a.device}, b: {b.device}, scale_a: {scale_a.device}, "
@@ -281,8 +285,8 @@ class BmmFp8KNFwdOp(Op):
             "bmm_fp8_kernel",
             key=(batch, m, n, k, dtype, self.out_dtype, device),
             build=lambda: self.kernel_map["bmm_fp8_kernel"](
-                batch, m, n, k, dtype, self.out_dtype, device=device,
-                tune=self.tune),
+                batch, m, n, k, dtype, self.out_dtype, device=device, tune=self.tune
+            ),
         )
 
     def forward(
@@ -306,8 +310,7 @@ class BmmFp8KNFwdOp(Op):
         )
         if sig != self._active_sig:
             self._validate_dtypes(a, b, scale_a, scale_b)
-            batch, m, n, k, b_is_nk = self._validate_shapes(
-                a, b, scale_a, scale_b)
+            batch, m, n, k, b_is_nk = self._validate_shapes(a, b, scale_a, scale_b)
             self.batch, self.m, self.n, self.k = batch, m, n, k
             self.dtype = a.dtype
             self.a_shape = tuple(a.shape)

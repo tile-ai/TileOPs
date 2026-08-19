@@ -34,8 +34,9 @@ def _make_item(
 ) -> MagicMock:
     """Build a lightweight mock pytest.Item for tier validation tests."""
     markers = markers or []
-    item = MagicMock(spec=["nodeid", "path", "name", "originalname",
-                           "get_closest_marker", "callspec"])
+    item = MagicMock(
+        spec=["nodeid", "path", "name", "originalname", "get_closest_marker", "callspec"]
+    )
     item.nodeid = f"{path}::{name}"
     item.path = Path(path)
     item.name = name

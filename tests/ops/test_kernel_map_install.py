@@ -6,7 +6,6 @@ refused when a kernel is first selected — not at construction, where most ops
 do not yet know which device they will run on.
 """
 
-
 import pytest
 import torch
 
@@ -82,10 +81,12 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     class IncompatibleGeneral(GQADecodeKernel):
         supported_archs = incompatible_archs
 
-    op = _decode_op(kernel_map={
-        "gqa_decode_bs1_kernel": IncompatibleBs1,
-        "gqa_decode_kernel": IncompatibleGeneral,
-    })
+    op = _decode_op(
+        kernel_map={
+            "gqa_decode_bs1_kernel": IncompatibleBs1,
+            "gqa_decode_kernel": IncompatibleGeneral,
+        }
+    )
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
         op._get_kernel(torch.float16)
@@ -113,8 +114,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
                 "gqa_decode_kernel": IncompatibleGeneral,
             }
 
-    op = AutoDiscoveredIncompatibleOp(
-        batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
+    op = AutoDiscoveredIncompatibleOp(batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op._get_kernel(torch.float16)
@@ -130,7 +130,7 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
     """
     import tileops.ops.elementwise as mod
 
-    (key, default_kernel_cls), = mod.ReluFwdOp(N_total=8).default_kernel_map.items()
+    ((key, default_kernel_cls),) = mod.ReluFwdOp(N_total=8).default_kernel_map.items()
 
     class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = _make_incompatible_arch_list()
@@ -157,13 +157,14 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     dtype = torch.float16
 
     baseline = cls(N_total=n_total)
-    (key, default_kernel_cls), = baseline.default_kernel_map.items()
+    ((key, default_kernel_cls),) = baseline.default_kernel_map.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
 
     overridden = cls(
-        N_total=n_total, kernel_map={key: MarkerKernel},
+        N_total=n_total,
+        kernel_map={key: MarkerKernel},
     )
     assert isinstance(overridden._entry(torch.float16).kernel, MarkerKernel)
 
@@ -189,7 +190,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    (key, default_kernel_cls), = cls(N_total=8).default_kernel_map.items()
+    ((key, default_kernel_cls),) = cls(N_total=8).default_kernel_map.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
@@ -258,10 +259,12 @@ def test_default_backend_still_routes_bool_through_uint8():
     )
 
     assert BitwiseAndFwdKernel.specialize(torch.bool) == (
-        BitwiseAndBoolStorageFwdKernel, torch.uint8,
+        BitwiseAndBoolStorageFwdKernel,
+        torch.uint8,
     )
     assert BitwiseAndFwdKernel.specialize(torch.int32) == (
-        BitwiseAndFwdKernel, torch.int32,
+        BitwiseAndFwdKernel,
+        torch.int32,
     )
 
 
@@ -281,7 +284,9 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     shipped = FloorFwdOp(N_total=64)
     torch.testing.assert_close(shipped(x), x)
-    assert shipped.built_kernels(shipped._op_name)[torch.int32].kernel is None, "float-only kernel was used"
+    assert shipped.built_kernels(shipped._op_name)[torch.int32].kernel is None, (
+        "float-only kernel was used"
+    )
 
     class NativeIntFloor(FloorFwdKernel):
         SUPPORTED_DTYPES = (torch.int32, torch.float32)
@@ -344,8 +349,12 @@ _BUILDER_SHAPES = [
     ("LerpFwdOp", {"a_shape": (64,), "b_shape": (64,), "weight": 0.5}, ["lerp"], ()),
     ("ClampScalarFwdOp", {"input": (64,), "min": 0.0}, ["clamp"], ()),
     ("MaskedFillScalarFwdOp", {"input": (64,), "mask": (64,), "value": 1.0}, ["masked_fill"], ()),
-    ("MaskedFillFwdOp", {"input": (64,), "mask": (64,), "value": ()},
-     ["masked_fill_tensor_value"], ()),
+    (
+        "MaskedFillFwdOp",
+        {"input": (64,), "mask": (64,), "value": ()},
+        ["masked_fill_tensor_value"],
+        (),
+    ),
 ]
 
 
@@ -372,17 +381,19 @@ def test_builder_constructs_what_the_backend_specialized(op_name, kwargs, slots,
     )
     assert entry.kernel is _ProbeKernel.instances[0]
     assert entry.kernel.ctor_dtype == probe_dtype, (
-        f"{op_name} constructed with {entry.kernel.ctor_dtype}, not the dtype "
-        "the backend asked for"
+        f"{op_name} constructed with {entry.kernel.ctor_dtype}, not the dtype the backend asked for"
     )
     assert entry.compute_dtype == probe_dtype
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_name,kwargs", [
-    ("AlibiFwdOp", {"seq_len": 8, "num_heads": 4}),
-    ("SinusoidalFwdOp", {"seq_len": 8, "d_model": 8}),
-])
+@pytest.mark.parametrize(
+    "op_name,kwargs",
+    [
+        ("AlibiFwdOp", {"seq_len": 8, "num_heads": 4}),
+        ("SinusoidalFwdOp", {"seq_len": 8, "d_model": 8}),
+    ],
+)
 def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
     """A dtype supplied as a parameter is still the backend's to specialize on."""
     import tileops.ops.elementwise as ew
@@ -391,7 +402,9 @@ def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
     slot = {"AlibiFwdOp": "alibi", "SinusoidalFwdOp": "sinusoidal"}[op_name]
     _ProbeKernel.instances = []
     op = getattr(ew, op_name)(
-        dtype=torch.float16, kernel_map={slot: _probe_backend(probe_dtype)}, **kwargs,
+        dtype=torch.float16,
+        kernel_map={slot: _probe_backend(probe_dtype)},
+        **kwargs,
     )
 
     assert len(_ProbeKernel.instances) == 1

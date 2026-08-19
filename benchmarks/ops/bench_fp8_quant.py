@@ -30,12 +30,15 @@ _FP8_QUANT_PARAMS = workload_field_params(
 
 
 @pytest.mark.parametrize("batch, seq_len_kv, kv_group, index_dim, in_dtype", _FP8_QUANT_PARAMS)
-def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
-                         in_dtype: torch.dtype) -> None:
+def test_fp8_quant_bench(
+    batch: int, seq_len_kv: int, kv_group: int, index_dim: int, in_dtype: torch.dtype
+) -> None:
     test = FP8QuantWorkload(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     inputs = test.gen_inputs()
 
     op = FP8QuantFwdOp(tune=_TUNE)
     bm = ManifestBenchmark(_FP8_QUANT_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

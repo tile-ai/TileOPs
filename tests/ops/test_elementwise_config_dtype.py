@@ -132,10 +132,14 @@ def test_unary_default_config_preserves_strategy_npt_split():
         patch.object(ReluFwdKernel, "init_config"),
     ):
         explicit = ReluFwdKernel(
-            N_total=1024, dtype=torch.float16, config={"strategy": "explicit_parallel"},
+            N_total=1024,
+            dtype=torch.float16,
+            config={"strategy": "explicit_parallel"},
         )
         register = ReluFwdKernel(
-            N_total=1024, dtype=torch.float16, config={"strategy": "register_copy"},
+            N_total=1024,
+            dtype=torch.float16,
+            config={"strategy": "register_copy"},
         )
     assert explicit.default_config["num_per_thread"] == 4
     assert register.default_config["num_per_thread"] == 8
@@ -173,26 +177,44 @@ def test_fused_gated_explicit_uses_occupancy_config():
         patch.object(SiluAndMulFwdKernel, "init_config"),
     ):
         direct = SiluAndMulFwdKernel(
-            M=32, N=1024, dtype=torch.float16, config={"strategy": "direct"},
+            M=32,
+            N=1024,
+            dtype=torch.float16,
+            config={"strategy": "direct"},
         )
         explicit_fp16 = SiluAndMulFwdKernel(
-            M=32, N=1024, dtype=torch.float16, config={"strategy": "explicit_parallel"},
+            M=32,
+            N=1024,
+            dtype=torch.float16,
+            config={"strategy": "explicit_parallel"},
         )
         explicit_bf16 = SiluAndMulFwdKernel(
-            M=32, N=1024, dtype=torch.bfloat16, config={"strategy": "explicit_parallel"},
+            M=32,
+            N=1024,
+            dtype=torch.bfloat16,
+            config={"strategy": "explicit_parallel"},
         )
         explicit_fp32 = SiluAndMulFwdKernel(
-            M=32, N=1024, dtype=torch.float32, config={"strategy": "explicit_parallel"},
+            M=32,
+            N=1024,
+            dtype=torch.float32,
+            config={"strategy": "explicit_parallel"},
         )
     assert direct.default_config["num_per_thread"] == 8
     assert explicit_fp16.default_config == {
-        "strategy": "explicit_parallel", "threads": 128, "num_per_thread": 8,
+        "strategy": "explicit_parallel",
+        "threads": 128,
+        "num_per_thread": 8,
     }
     assert explicit_bf16.default_config == {
-        "strategy": "explicit_parallel", "threads": 128, "num_per_thread": 8,
+        "strategy": "explicit_parallel",
+        "threads": 128,
+        "num_per_thread": 8,
     }
     assert explicit_fp32.default_config == {
-        "strategy": "explicit_parallel", "threads": 256, "num_per_thread": 4,
+        "strategy": "explicit_parallel",
+        "threads": 256,
+        "num_per_thread": 4,
     }
 
 
@@ -215,9 +237,7 @@ def test_elementwise_ops_do_not_expose_strategy_kwarg():
         if not (isinstance(obj, type) and issubclass(obj, Op)):
             continue
         params = inspect.signature(obj.__init__).parameters
-        assert "strategy" not in params, (
-            f"{name}.__init__ still exposes a strategy kwarg"
-        )
+        assert "strategy" not in params, f"{name}.__init__ still exposes a strategy kwarg"
         checked += 1
     assert checked > 0, "Test bug: no Op classes discovered"
 

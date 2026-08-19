@@ -89,12 +89,14 @@ class Kernel(ABC):
         if cls.supported_archs is None:
             return
         from tileops.utils import get_sm_version
+
         arch = get_sm_version()
         if arch not in cls.supported_archs:
             raise ValueError(
                 f"{cls.__name__} is built for architectures "
                 f"{sorted(cls.supported_archs)}, but the current device reports "
-                f"{arch}")
+                f"{arch}"
+            )
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
         if tune and self.autotune_configs is None:
@@ -102,15 +104,18 @@ class Kernel(ABC):
 
             warnings.warn(  # noqa: B028
                 f"{self.__class__.__name__} does not define autotune_configs; "
-                "falling back to the provided config or default_config.")
+                "falling back to the provided config or default_config."
+            )
             tune = False
 
         if tune:
             if config is not None:
                 import warnings
+
                 warnings.warn(  # noqa: B028
                     "Both 'config' and 'tune' are set. "
-                    "'config' will be ignored in favor of autotuning.")
+                    "'config' will be ignored in favor of autotuning."
+                )
             self.autotune()
         else:
             if config is not None:
@@ -129,7 +134,7 @@ class Kernel(ABC):
     @staticmethod
     def dtype_to_str(dtype: torch.dtype) -> str:
         """Convert a torch dtype to the TileLang dtype string."""
-        return str(dtype).split('.')[-1]
+        return str(dtype).split(".")[-1]
 
     @property
     def default_config(self) -> Dict[str, Any]:
@@ -211,9 +216,7 @@ class Kernel(ABC):
         kernel: Optional[Callable] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        return autotuned_kernel_fn(
-            **self._autotune_initial_kwargs(kernel=kernel, config=config)
-        )
+        return autotuned_kernel_fn(**self._autotune_initial_kwargs(kernel=kernel, config=config))
 
     def tune_jit_kernel(
         self,
@@ -265,14 +268,16 @@ class Kernel(ABC):
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
-        if not hasattr(self, 'kernel') or self.kernel is None:
+        if not hasattr(self, "kernel") or self.kernel is None:
             raise AttributeError(
                 f"Cannot autotune {self.__class__.__name__}: 'self.kernel' is not set. "
-                "Set 'self.kernel' in __init__ before calling init_config with tune=True.")
-        print(f'Start autotuning {self.__class__.__name__}...')
+                "Set 'self.kernel' in __init__ before calling init_config with tune=True."
+            )
+        print(f"Start autotuning {self.__class__.__name__}...")
 
         tuned_kernel = self.tune_jit_kernel(
-            self.kernel, self.autotune_configs, warmup=warmup, rep=rep)
+            self.kernel, self.autotune_configs, warmup=warmup, rep=rep
+        )
 
         self.config = tuned_kernel.config
-        print(f'Best config: {self.config}')
+        print(f"Best config: {self.config}")

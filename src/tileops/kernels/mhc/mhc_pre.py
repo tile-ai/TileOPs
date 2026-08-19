@@ -13,8 +13,7 @@ __all__ = ["MHCPreKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
-
+def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat16"):
     dtype = "float32"
     accum_dtype = "float32"
 
@@ -23,7 +22,8 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _mhc_func(block_x_b, block_C, num_stages, threads=128):
         x_dim = n_expand * c_x
         phi_dim = n_expand * n_expand + 2 * n_expand
@@ -31,14 +31,12 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
 
         @T.macro
         def _get_H_0_no_split(
-                phi: T.Tensor([x_dim, phi_dim], dtype),
-                x: T.Tensor([batch, x_dim], x_dtype),
-                r: T.Tensor([batch], dtype),
-                H: T.Tensor([batch, phi_dim], dtype),
+            phi: T.Tensor([x_dim, phi_dim], dtype),
+            x: T.Tensor([batch, x_dim], x_dtype),
+            r: T.Tensor([batch], dtype),
+            H: T.Tensor([batch, phi_dim], dtype),
         ):
-
             with T.Kernel(batch // block_x_b, threads=threads) as (bx):
-
                 phi_dim = n_expand * n_expand + 2 * n_expand
                 x_shared = T.alloc_shared([block_x_b, block_C], x_dtype)
                 phi_shared = T.alloc_shared([block_C, phi_dim], dtype)
@@ -57,8 +55,10 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                     acc_r_sqr[i] = 0
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
-                    T.copy(x[bx * block_x_b:(bx + 1) * block_x_b, k * block_C:(k + 1) * block_C],
-                           x_shared)
+                    T.copy(
+                        x[bx * block_x_b : (bx + 1) * block_x_b, k * block_C : (k + 1) * block_C],
+                        x_shared,
+                    )
                     # TODO: <*important> try to figure out why "T.copy" does not work...
                     # (probably a mbarrier failure)
                     # T.copy(phi[k * block_C : (k + 1) * block_C, :], phi_shared)
@@ -75,23 +75,23 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 for i in T.Parallel(block_x_b):
                     acc_r_sqr[i] = T.sqrt(xsqr_sum[i])
 
-                T.copy(acc_x_phi, H[bx * block_x_b:(bx + 1) * block_x_b, :])
+                T.copy(acc_x_phi, H[bx * block_x_b : (bx + 1) * block_x_b, :])
                 norm_eps = 0.0001
                 for i in T.Parallel(block_x_b):
-                    acc_r_sqr[i] = acc_r_sqr[i] / (n_expand * c_x)**0.5 + norm_eps
-                T.copy(acc_r_sqr, r[bx * block_x_b:(bx + 1) * block_x_b])
+                    acc_r_sqr[i] = acc_r_sqr[i] / (n_expand * c_x) ** 0.5 + norm_eps
+                T.copy(acc_r_sqr, r[bx * block_x_b : (bx + 1) * block_x_b])
 
         @T.macro
         def _get_H_1(
-                H: T.Tensor([batch, n_expand * n_expand + 2 * n_expand], dtype),
-                r: T.Tensor([batch], dtype),
-                b: T.Tensor([n_expand * n_expand + 2 * n_expand], dtype),
-                alpha_pre: T.float,
-                alpha_post: T.float,
-                alpha_res: T.float,
-                H_pre: T.Tensor([batch, n_expand], dtype),
-                H_post: T.Tensor([batch, n_expand], dtype),
-                H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
+            H: T.Tensor([batch, n_expand * n_expand + 2 * n_expand], dtype),
+            r: T.Tensor([batch], dtype),
+            b: T.Tensor([n_expand * n_expand + 2 * n_expand], dtype),
+            alpha_pre: T.float,
+            alpha_post: T.float,
+            alpha_res: T.float,
+            H_pre: T.Tensor([batch, n_expand], dtype),
+            H_post: T.Tensor([batch, n_expand], dtype),
+            H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
         ):
             with T.Kernel(batch // block_x_b, threads=threads) as (bx):
                 # needs binding
@@ -102,13 +102,16 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 b_shared = T.alloc_shared([n_expand * n_expand + 2 * n_expand], dtype)
                 h_res_frag = T.alloc_fragment([block_x_b, n_expand, n_expand], dtype)
 
-                T.copy(H[bx * block_x_b:(bx + 1) * block_x_b, 0:n_expand], h_pre_shared)
-                T.copy(H[bx * block_x_b:(bx + 1) * block_x_b, n_expand:2 * n_expand], h_post_shared)
+                T.copy(H[bx * block_x_b : (bx + 1) * block_x_b, 0:n_expand], h_pre_shared)
+                T.copy(
+                    H[bx * block_x_b : (bx + 1) * block_x_b, n_expand : 2 * n_expand], h_post_shared
+                )
 
                 for i, j in T.Parallel(block_x_b, n_expand):
                     for k in T.Serial(n_expand):
-                        h_res_shared[i, j, k] = H[bx * block_x_b + i,
-                                                  2 * n_expand + j * n_expand + k]
+                        h_res_shared[i, j, k] = H[
+                            bx * block_x_b + i, 2 * n_expand + j * n_expand + k
+                        ]
 
                 T.copy(h_res_shared, h_res_frag)
 
@@ -126,10 +129,11 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
 
                     elif j < 2 * n_expand:
                         alpha = alpha_post
-                        _x = (1 / r[bx * block_x_b + i] * alpha *
-                              h_post_shared[i, j - n_expand] + b_shared[j])
-                        h_post_shared[i, j -
-                                      n_expand] = 2 / (1 + T.exp2(-_x * LOG2E))
+                        _x = (
+                            1 / r[bx * block_x_b + i] * alpha * h_post_shared[i, j - n_expand]
+                            + b_shared[j]
+                        )
+                        h_post_shared[i, j - n_expand] = 2 / (1 + T.exp2(-_x * LOG2E))
                         H_post[bx * block_x_b + i, j - n_expand] = h_post_shared[i, j - n_expand]
 
                     else:
@@ -138,17 +142,19 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                         row_res = j_tmp // n_expand
                         col_res = j_tmp % n_expand
                         h_res_shared[i, row_res, col_res] = (
-                            1 / r[bx * block_x_b + i] * alpha * h_res_shared[i, row_res, col_res] +
-                            b_shared[j])
-                        H_res_0[bx * block_x_b + i, row_res, col_res] = h_res_shared[i, row_res,
-                                                                                     col_res]
+                            1 / r[bx * block_x_b + i] * alpha * h_res_shared[i, row_res, col_res]
+                            + b_shared[j]
+                        )
+                        H_res_0[bx * block_x_b + i, row_res, col_res] = h_res_shared[
+                            i, row_res, col_res
+                        ]
 
         @T.macro
         def _get_H_res(
-                H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
-                sinkhorn_repeat: T.int,
-                sinkhorn_eps: T.float,
-                H_res: T.Tensor([batch, n_expand, n_expand], dtype),
+            H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
+            sinkhorn_repeat: T.int,
+            sinkhorn_eps: T.float,
+            H_res: T.Tensor([batch, n_expand, n_expand], dtype),
         ):
             with T.Kernel(batch, threads=threads) as (bx):
                 h_frag = T.alloc_fragment([n_expand, n_expand], dtype)
@@ -170,15 +176,15 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 for i, j in T.Parallel(n_expand, n_expand):
                     h_frag[i, j] = T.exp2((h_frag[i, j] - tmp1[i]) * LOG2E)
 
-                #for iter_sinkhorn in T.Pipelined(sinkhorn_repeat):
+                # for iter_sinkhorn in T.Pipelined(sinkhorn_repeat):
 
                 for _iter_sinkhorn in T.Serial(sinkhorn_repeat):
                     T.reduce_sum(h_frag, tmp1, dim=1)
                     for j, k in T.Parallel(n_expand, n_expand):
-                        h_frag[j, k] /= (tmp1[j] + eps)
+                        h_frag[j, k] /= tmp1[j] + eps
                     T.reduce_sum(h_frag, tmp2, dim=0)
                     for j, k in T.Parallel(n_expand, n_expand):
-                        h_frag[j, k] /= (tmp2[k] + eps)
+                        h_frag[j, k] /= tmp2[k] + eps
 
                 T.copy(h_frag, h_out_shared)
                 for i, j in T.Parallel(n_expand, n_expand):
@@ -186,14 +192,13 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
 
         @T.macro
         def _get_x(
-                x_in: T.Tensor([batch, n_expand * c_x], dtype),
-                h_pre: T.Tensor([batch, n_expand], dtype),
-                h_res: T.Tensor([batch, n_expand, n_expand], dtype),
-                x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
-                x_layer: T.Tensor([batch, c_x], x_dtype),
+            x_in: T.Tensor([batch, n_expand * c_x], dtype),
+            h_pre: T.Tensor([batch, n_expand], dtype),
+            h_res: T.Tensor([batch, n_expand, n_expand], dtype),
+            x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
+            x_layer: T.Tensor([batch, c_x], x_dtype),
         ):
             with T.Kernel(batch, c_x // block_C, threads=threads) as (bx, by):
-
                 h_pre_shared = T.alloc_shared([n_expand], dtype)
                 h_res_shared = T.alloc_shared([n_expand, n_expand], dtype)
 
@@ -228,22 +233,22 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
 
         @T.prim_func
         def mhc_pre(
-                phi: T.Tensor([x_dim, phi_dim], dtype),
-                x: T.Tensor([batch, x_dim], x_dtype),
-                H: T.Tensor([batch, n_expand * n_expand + 2 * n_expand], dtype),
-                r: T.Tensor([batch], dtype),
-                b: T.Tensor([n_expand * n_expand + 2 * n_expand], dtype),
-                alpha_pre: T.float,
-                alpha_post: T.float,
-                alpha_res: T.float,
-                H_pre: T.Tensor([batch, n_expand], dtype),
-                H_post: T.Tensor([batch, n_expand], dtype),
-                H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
-                sinkhorn_repeat: T.int,
-                sinkhorn_eps: T.float,
-                H_res: T.Tensor([batch, n_expand, n_expand], dtype),
-                x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
-                x_layer: T.Tensor([batch, c_x], x_dtype),
+            phi: T.Tensor([x_dim, phi_dim], dtype),
+            x: T.Tensor([batch, x_dim], x_dtype),
+            H: T.Tensor([batch, n_expand * n_expand + 2 * n_expand], dtype),
+            r: T.Tensor([batch], dtype),
+            b: T.Tensor([n_expand * n_expand + 2 * n_expand], dtype),
+            alpha_pre: T.float,
+            alpha_post: T.float,
+            alpha_res: T.float,
+            H_pre: T.Tensor([batch, n_expand], dtype),
+            H_post: T.Tensor([batch, n_expand], dtype),
+            H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
+            sinkhorn_repeat: T.int,
+            sinkhorn_eps: T.float,
+            H_res: T.Tensor([batch, n_expand, n_expand], dtype),
+            x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
+            x_layer: T.Tensor([batch, c_x], x_dtype),
         ):
             _get_H_0_no_split(phi, x, r, H)
             _get_H_1(H, r, b, alpha_pre, alpha_post, alpha_res, H_pre, H_post, H_res_0)
@@ -256,18 +261,48 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
 
 
 @torch.library.custom_op("top::mhc_pre_wrapped_kernel", mutates_args=())
-def _mhc_pre_wrapped_kernel(batch: int, n_expand: int, c_x: int, dtype: str, block_x_b: int,
-                            block_C: int, num_stages: int, threads: int, phi: torch.Tensor,
-                            x: torch.Tensor, H: torch.Tensor, r: torch.Tensor, b: torch.Tensor,
-                            alpha_pre: float, alpha_post: float, alpha_res: float,
-                            H_pre: torch.Tensor, H_post: torch.Tensor, H_res_0: torch.Tensor,
-                            sinkhorn_repeat: int, sinkhorn_eps: float, H_res: torch.Tensor,
-                            x_res: torch.Tensor) -> torch.Tensor:
-    return _mhc_pre_kernel(batch, n_expand, c_x,
-                           dtype)(block_x_b, block_C, num_stages,
-                                  threads)(phi, x, H, r, b, alpha_pre, alpha_post, alpha_res, H_pre,
-                                           H_post, H_res_0, sinkhorn_repeat, sinkhorn_eps, H_res,
-                                           x_res)
+def _mhc_pre_wrapped_kernel(
+    batch: int,
+    n_expand: int,
+    c_x: int,
+    dtype: str,
+    block_x_b: int,
+    block_C: int,
+    num_stages: int,
+    threads: int,
+    phi: torch.Tensor,
+    x: torch.Tensor,
+    H: torch.Tensor,
+    r: torch.Tensor,
+    b: torch.Tensor,
+    alpha_pre: float,
+    alpha_post: float,
+    alpha_res: float,
+    H_pre: torch.Tensor,
+    H_post: torch.Tensor,
+    H_res_0: torch.Tensor,
+    sinkhorn_repeat: int,
+    sinkhorn_eps: float,
+    H_res: torch.Tensor,
+    x_res: torch.Tensor,
+) -> torch.Tensor:
+    return _mhc_pre_kernel(batch, n_expand, c_x, dtype)(block_x_b, block_C, num_stages, threads)(
+        phi,
+        x,
+        H,
+        r,
+        b,
+        alpha_pre,
+        alpha_post,
+        alpha_res,
+        H_pre,
+        H_post,
+        H_res_0,
+        sinkhorn_repeat,
+        sinkhorn_eps,
+        H_res,
+        x_res,
+    )
 
 
 @_mhc_pre_wrapped_kernel.register_fake
@@ -288,13 +323,15 @@ def _(
 class MHCPreKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self,
-                 batch,
-                 n_expand,
-                 c_x,
-                 dtype: torch.dtype = torch.float32,
-                 config: Optional[dict] = None,
-                 tune=False):
+    def __init__(
+        self,
+        batch,
+        n_expand,
+        c_x,
+        dtype: torch.dtype = torch.float32,
+        config: Optional[dict] = None,
+        tune=False,
+    ):
         super().__init__()
         self.batch = batch
         self.n_expand = n_expand
@@ -315,8 +352,8 @@ class MHCPreKernel(Kernel):
         # Scalar defaults: alpha_pre, alpha_post, alpha_res are T.float;
         # sinkhorn_repeat is T.int; sinkhorn_eps is T.float
         scalar_defaults = {
-            "int32": 20,       # sinkhorn_repeat
-            "float32": 0.5,    # alpha or sinkhorn_eps
+            "int32": 20,  # sinkhorn_repeat
+            "float32": 0.5,  # alpha or sinkhorn_eps
         }
 
         def supply_prog(params):
@@ -336,7 +373,7 @@ class MHCPreKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {'block_x_b': 1, 'block_C': 64, "num_stages": 2, "threads": 128}
+        return {"block_x_b": 1, "block_C": 64, "num_stages": 2, "threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -346,41 +383,55 @@ class MHCPreKernel(Kernel):
         block_C = [64, 128]
         _configs = list(itertools.product(block_x_b, block_C, num_stages, threads))
 
-        configs = [{
-            'block_x_b': c[0],
-            'block_C': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        configs = [
+            {"block_x_b": c[0], "block_C": c[1], "num_stages": c[2], "threads": c[3]}
+            for c in _configs
+        ]
         return configs
 
-    def forward(self,
-                phi,
-                x,
-                b,
-                alpha_pre,
-                alpha_post,
-                alpha_res,
-                sinkhorn_repeat,
-                sinkhorn_eps=0.02):
+    def forward(
+        self, phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, sinkhorn_eps=0.02
+    ):
         # H_pre, H_post, H_res_0, H_res are tensors need to be allocated....
         r = torch.empty([self.batch], device=x.device, dtype=self.weights_dtype)
-        H = torch.empty([self.batch, self.n_expand * self.n_expand + 2 * self.n_expand],
-                        device=x.device,
-                        dtype=self.weights_dtype)
+        H = torch.empty(
+            [self.batch, self.n_expand * self.n_expand + 2 * self.n_expand],
+            device=x.device,
+            dtype=self.weights_dtype,
+        )
         H_pre = torch.empty((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
-        H_res_0 = torch.empty([self.batch, self.n_expand, self.n_expand],
-                              device=x.device,
-                              dtype=self.weights_dtype)
-        H_res = torch.empty([self.batch, self.n_expand, self.n_expand],
-                            device=x.device,
-                            dtype=self.weights_dtype)
+        H_res_0 = torch.empty(
+            [self.batch, self.n_expand, self.n_expand], device=x.device, dtype=self.weights_dtype
+        )
+        H_res = torch.empty(
+            [self.batch, self.n_expand, self.n_expand], device=x.device, dtype=self.weights_dtype
+        )
         H_post = torch.empty((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
         x_res = torch.empty_like(x, device=x.device, dtype=x.dtype)
 
-        result = _mhc_pre_wrapped_kernel(self.batch, self.n_expand, self.c_x, self.dtype_str,
-                                         self.config["block_x_b"], self.config["block_C"],
-                                         self.config["num_stages"], self.config["threads"], phi, x,
-                                         H, r, b, alpha_pre, alpha_post, alpha_res, H_pre, H_post,
-                                         H_res_0, sinkhorn_repeat, sinkhorn_eps, H_res, x_res)
+        result = _mhc_pre_wrapped_kernel(
+            self.batch,
+            self.n_expand,
+            self.c_x,
+            self.dtype_str,
+            self.config["block_x_b"],
+            self.config["block_C"],
+            self.config["num_stages"],
+            self.config["threads"],
+            phi,
+            x,
+            H,
+            r,
+            b,
+            alpha_pre,
+            alpha_post,
+            alpha_res,
+            H_pre,
+            H_post,
+            H_res_0,
+            sinkhorn_repeat,
+            sinkhorn_eps,
+            H_res,
+            x_res,
+        )
         return x_res, result

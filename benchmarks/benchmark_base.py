@@ -125,13 +125,16 @@ class BenchmarkBase(Generic[W], ABC):
         for tag in order:
             functor, args = plan[tag]
             with torch.no_grad():
-                samples[tag].extend(bench_kernel(
-                    functor, args=args,
-                    dry_run_ms=DRY_RUN_MS / passes,
-                    repeat_ms=REPEAT_MS / passes,
-                    max_iters=_MAX_ITERS // passes,
-                    min_iters=max(1, _MIN_ITERS // passes),
-                ))
+                samples[tag].extend(
+                    bench_kernel(
+                        functor,
+                        args=args,
+                        dry_run_ms=DRY_RUN_MS / passes,
+                        repeat_ms=REPEAT_MS / passes,
+                        max_iters=_MAX_ITERS // passes,
+                        min_iters=max(1, _MIN_ITERS // passes),
+                    )
+                )
             pass_meta = _capture_bench_meta()
             previous = meta.get(tag)
             if previous is not None and previous["timing"] != pass_meta["timing"]:
@@ -218,7 +221,8 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
                 f"{shape_key!r} (derived from the signature's input name)."
             )
         unknown = sorted(
-            repr(k) for k in w
+            repr(k)
+            for k in w
             if not isinstance(k, str) or (k not in allowed and not k.startswith("__"))
         )
         if unknown:
@@ -233,11 +237,7 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
             dtype = getattr(torch, dtype_str)
             # Copy ``extra`` per parametrization so mutation in one test case
             # cannot leak into later cases sharing the workload entry.
-            param_args = (
-                (shape, dtype, dict(extra))
-                if include_extra
-                else (shape, dtype)
-            )
+            param_args = (shape, dtype, dict(extra)) if include_extra else (shape, dtype)
             params.append(pytest.param(*param_args, id=f"{label}-{dtype_str}"))
     return params
 

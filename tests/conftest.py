@@ -23,7 +23,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         default=False,
         help="Build instrumented kernels with in-kernel tracing and dump their "
-             "timeline (HTML + Chrome JSON) for the trace-dump tests.",
+        "timeline (HTML + Chrome JSON) for the trace-dump tests.",
     )
 
 
@@ -83,6 +83,7 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = set()
 
 TILELANG_019_KNOWN_FAILING_PREFIXES = ()
 
+
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)
     if callspec is None:
@@ -135,8 +136,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if _hopper_skipped and _is_hopper():
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
         raise pytest.UsageError(
-            "hopper-marked tests were skipped on a Hopper device: "
-            + ", ".join(_hopper_skipped)
+            "hopper-marked tests were skipped on a Hopper device: " + ", ".join(_hopper_skipped)
         )
 
 
@@ -155,9 +155,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if (
             item.nodeid in TILELANG_019_KNOWN_FAILING_NODEIDS
             or any(path.endswith(suffix) for suffix in TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES)
-            or any(
-                item.nodeid.startswith(prefix) for prefix in TILELANG_019_KNOWN_FAILING_PREFIXES
-            )
+            or any(item.nodeid.startswith(prefix) for prefix in TILELANG_019_KNOWN_FAILING_PREFIXES)
         ):
             item.add_marker(tilelang_019_skip)
 
@@ -182,12 +180,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if any(_path.endswith(path) for path in NON_RUNTIME_OPS_TIER_FILES):
             continue
 
-        non_xfail_items = [
-            item for item in group if item.get_closest_marker("xfail") is None
-        ]
-        smoke_items = [
-            item for item in group if item.get_closest_marker("smoke") is not None
-        ]
+        non_xfail_items = [item for item in group if item.get_closest_marker("xfail") is None]
+        smoke_items = [item for item in group if item.get_closest_marker("smoke") is not None]
 
         # Smoke cases must never be xfail (checked before tune gate)
         for item in smoke_items:

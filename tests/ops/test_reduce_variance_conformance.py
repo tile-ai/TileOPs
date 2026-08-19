@@ -42,21 +42,33 @@ def _tol(dtype: torch.dtype) -> dict:
 
 def _ref_var(x: torch.Tensor, dim, keepdim: bool, correction: int) -> torch.Tensor:
     return torch.var(
-        x.float(), dim=dim, keepdim=keepdim, correction=correction,
+        x.float(),
+        dim=dim,
+        keepdim=keepdim,
+        correction=correction,
     ).to(x.dtype)
 
 
 def _ref_std(x: torch.Tensor, dim, keepdim: bool, correction: int) -> torch.Tensor:
     return torch.std(
-        x.float(), dim=dim, keepdim=keepdim, correction=correction,
+        x.float(),
+        dim=dim,
+        keepdim=keepdim,
+        correction=correction,
     ).to(x.dtype)
 
 
 def _ref_var_mean(
-    x: torch.Tensor, dim, keepdim: bool, correction: int,
+    x: torch.Tensor,
+    dim,
+    keepdim: bool,
+    correction: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     var, mean = torch.var_mean(
-        x.float(), dim=dim, keepdim=keepdim, correction=correction,
+        x.float(),
+        dim=dim,
+        keepdim=keepdim,
+        correction=correction,
     )
     return var.to(x.dtype), mean.to(x.dtype)
 
@@ -78,7 +90,10 @@ def _ref_var_mean(
     ids=["fp16", "bf16", "fp32"],
 )
 def test_var_conformance(
-    dim, correction: int, keepdim: bool, dtype: torch.dtype,
+    dim,
+    correction: int,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     """Each (dim-shape, correction, keepdim, dtype) cell must match torch.var."""
     torch.manual_seed(0)
@@ -110,7 +125,10 @@ def test_var_conformance(
     ids=["fp16", "bf16", "fp32"],
 )
 def test_std_conformance(
-    dim, correction: int, keepdim: bool, dtype: torch.dtype,
+    dim,
+    correction: int,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     """Each (dim-shape, correction, keepdim, dtype) cell must match torch.std."""
     torch.manual_seed(0)
@@ -142,7 +160,10 @@ def test_std_conformance(
     ids=["fp16", "bf16", "fp32"],
 )
 def test_var_mean_conformance(
-    dim, correction: int, keepdim: bool, dtype: torch.dtype,
+    dim,
+    correction: int,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     """Each (dim-shape, correction, keepdim, dtype) cell must match torch.var_mean.
 
@@ -159,22 +180,12 @@ def test_var_mean_conformance(
     var_y, mean_y = out
     ref_var, ref_mean = _ref_var_mean(x, dim, keepdim, correction)
     # Tuple field order: (var, mean) — same as torch.var_mean.
-    assert var_y.shape == ref_var.shape, (
-        f"var shape {var_y.shape} vs ref {ref_var.shape}"
-    )
-    assert mean_y.shape == ref_mean.shape, (
-        f"mean shape {mean_y.shape} vs ref {ref_mean.shape}"
-    )
-    assert var_y.dtype == ref_var.dtype, (
-        f"var dtype {var_y.dtype} vs ref {ref_var.dtype}"
-    )
-    assert mean_y.dtype == ref_mean.dtype, (
-        f"mean dtype {mean_y.dtype} vs ref {ref_mean.dtype}"
-    )
+    assert var_y.shape == ref_var.shape, f"var shape {var_y.shape} vs ref {ref_var.shape}"
+    assert mean_y.shape == ref_mean.shape, f"mean shape {mean_y.shape} vs ref {ref_mean.shape}"
+    assert var_y.dtype == ref_var.dtype, f"var dtype {var_y.dtype} vs ref {ref_var.dtype}"
+    assert mean_y.dtype == ref_mean.dtype, f"mean dtype {mean_y.dtype} vs ref {ref_mean.dtype}"
     torch.testing.assert_close(var_y, ref_var, **_tol(dtype))
     torch.testing.assert_close(mean_y, ref_mean, **_tol(dtype))
-
-
 
 
 @pytest.mark.smoke

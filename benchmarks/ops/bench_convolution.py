@@ -85,14 +85,23 @@ def _conv_params(workloads: list[dict], kernel_keys: tuple[str, ...]) -> list:
         groups = w.get("groups", 1)
         with_bias = "bias_shape" in w
         for dtype_name in w["dtypes"]:
-            params.append(pytest.param(
-                ConvCase(
-                    input_shape, w["C_out"], kernel_size, stride, padding,
-                    dilation, groups, getattr(torch, dtype_name), with_bias,
-                ),
-                id=f"{w['label']}-{dtype_name}",
-                marks=_mark(idx),
-            ))
+            params.append(
+                pytest.param(
+                    ConvCase(
+                        input_shape,
+                        w["C_out"],
+                        kernel_size,
+                        stride,
+                        padding,
+                        dilation,
+                        groups,
+                        getattr(torch, dtype_name),
+                        with_bias,
+                    ),
+                    id=f"{w['label']}-{dtype_name}",
+                    marks=_mark(idx),
+                )
+            )
     return params
 
 
@@ -109,7 +118,11 @@ def _conv_inputs(
     c_in = input_shape[1]
     x = torch.randn(input_shape, device="cuda", dtype=dtype).contiguous()
     weight = torch.randn(
-        c_out, c_in // groups, *kernel_size, device="cuda", dtype=dtype,
+        c_out,
+        c_in // groups,
+        *kernel_size,
+        device="cuda",
+        dtype=dtype,
     ).contiguous()
     if not with_bias:
         return x, weight
@@ -132,9 +145,13 @@ def _torch_conv_baseline(
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         return conv_fn(
-            x, weight, bias=bias,
-            stride=stride, padding=padding,
-            dilation=dilation, groups=groups,
+            x,
+            weight,
+            bias=bias,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
         )
 
     return baseline_fn
@@ -156,11 +173,19 @@ def _run_conv(
     statically.
     """
     inputs = _conv_inputs(
-        case.input_shape, case.c_out, case.kernel_size, case.dtype,
-        groups=case.groups, with_bias=with_bias,
+        case.input_shape,
+        case.c_out,
+        case.kernel_size,
+        case.dtype,
+        groups=case.groups,
+        with_bias=with_bias,
     )
     baseline = _torch_conv_baseline(
-        torch_fn, case.stride, case.padding, case.dilation, case.groups,
+        torch_fn,
+        case.stride,
+        case.padding,
+        case.dilation,
+        case.groups,
     )
     _profile_conv(
         op,
@@ -196,12 +221,13 @@ def _profile_conv(
 
         bm.compare(
             {"tileops": op_with_static_weight, "torch": baseline_with_static_weight},
-            x, record_as=op, params=params,
+            x,
+            record_as=op,
+            params=params,
         )
         return
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-               record_as=op, params=params)
+    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=params)
 
 
 # Conv1d
@@ -216,8 +242,11 @@ _CONV1D_KERNEL_KEYS = ("kW",)
 )
 def test_conv1d_bench(case: ConvCase) -> None:
     op = Conv1dFwdOp(
-        stride=case.stride, padding=case.padding,
-        dilation=case.dilation, groups=case.groups, tune=_TUNE,
+        stride=case.stride,
+        padding=case.padding,
+        dilation=case.dilation,
+        groups=case.groups,
+        tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV1D_OP, op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv1d, case, with_bias=case.with_bias, static_weight=True)
@@ -235,8 +264,11 @@ _CONV2D_KERNEL_KEYS = ("kH", "kW")
 )
 def test_conv2d_bench(case: ConvCase) -> None:
     op = Conv2dFwdOp(
-        stride=case.stride, padding=case.padding,
-        dilation=case.dilation, groups=case.groups, tune=_TUNE,
+        stride=case.stride,
+        padding=case.padding,
+        dilation=case.dilation,
+        groups=case.groups,
+        tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV2D_OP, op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv2d, case, with_bias=case.with_bias)
@@ -254,8 +286,11 @@ _CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
 )
 def test_conv3d_bench(case: ConvCase) -> None:
     op = Conv3dFwdOp(
-        stride=case.stride, padding=case.padding,
-        dilation=case.dilation, groups=case.groups, tune=_TUNE,
+        stride=case.stride,
+        padding=case.padding,
+        dilation=case.dilation,
+        groups=case.groups,
+        tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV3D_OP, op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv3d, case, with_bias=case.with_bias)

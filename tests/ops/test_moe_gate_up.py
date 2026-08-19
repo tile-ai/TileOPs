@@ -22,23 +22,26 @@ def _ref_fused_gate_up(a, b, true_sizes, true_offsets, ffn):
     for e, (size_e, off_e) in enumerate(zip(sizes, offsets, strict=True)):
         if size_e == 0:
             continue
-        gate_up = a[off_e:off_e + size_e].float() @ b[e].float().T
-        c[off_e:off_e + size_e] = (
-            F.silu(gate_up[:, :ffn]) * gate_up[:, ffn:]
-        ).to(a.dtype)
+        gate_up = a[off_e : off_e + size_e].float() @ b[e].float().T
+        c[off_e : off_e + size_e] = (F.silu(gate_up[:, :ffn]) * gate_up[:, ffn:]).to(a.dtype)
     return c
 
 
 class MoeGroupedGemmNopadFusedActFixture(FixtureBase):
     PARAMS = [
-        ("numel, num_experts, ffn, k, distribution", [
-            # 16 rows per expert — the short-group schedule.
-            pytest.param(64, 4, 128, 128, "uniform",
-                         marks=pytest.mark.smoke, id="short-group-uniform"),
-            # 256 rows per expert — the default schedule, skewed routing.
-            pytest.param(1024, 4, 128, 128, "skewed",
-                         marks=pytest.mark.full, id="full-tiles-skewed"),
-        ]),
+        (
+            "numel, num_experts, ffn, k, distribution",
+            [
+                # 16 rows per expert — the short-group schedule.
+                pytest.param(
+                    64, 4, 128, 128, "uniform", marks=pytest.mark.smoke, id="short-group-uniform"
+                ),
+                # 256 rows per expert — the default schedule, skewed routing.
+                pytest.param(
+                    1024, 4, 128, 128, "skewed", marks=pytest.mark.full, id="full-tiles-skewed"
+                ),
+            ],
+        ),
     ]
 
 
@@ -55,8 +58,10 @@ def test_moe_gate_up_op(numel, num_experts, ffn, k, distribution):
     assert c.shape == (numel, ffn), f"expected ({numel}, {ffn}), got {tuple(c.shape)}"
     assert c.dtype == torch.bfloat16
     torch.testing.assert_close(
-        c.float(), _ref_fused_gate_up(a, b, true_sizes, true_offsets, ffn).float(),
-        atol=2e-2, rtol=2e-2,
+        c.float(),
+        _ref_fused_gate_up(a, b, true_sizes, true_offsets, ffn).float(),
+        atol=2e-2,
+        rtol=2e-2,
     )
 
 

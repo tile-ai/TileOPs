@@ -17,17 +17,21 @@ except ImportError:
 
 # Forward correctness tests
 
+
 class GLAFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 64, 2, 64, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 256, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 64, 2, 64, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 256, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -44,7 +48,7 @@ def test_gla_fwd(
 ) -> None:
     torch.manual_seed(42)
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
-    scale = K ** -0.5
+    scale = K**-0.5
 
     q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
     k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
@@ -74,7 +78,9 @@ def test_gla_fwd(
     cos = cosine_sim(ref_o, op_o)
     print(f"  TileOPs vs ref o: cosine={cos:.6f}")
     torch.testing.assert_close(
-        op_o.float(), ref_o.float(), **tols,
+        op_o.float(),
+        ref_o.float(),
+        **tols,
         msg=lambda m: f"o: {m}",
     )
 

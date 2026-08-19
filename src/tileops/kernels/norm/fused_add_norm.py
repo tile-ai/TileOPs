@@ -28,8 +28,8 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 
 
-
 # Fused Add + LayerNorm kernel
+
 
 @functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
@@ -38,7 +38,6 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
 
     @tilelang.jit(out_idx=[4, 5])
     def _func(block_m, threads):
-
         @T.prim_func
         def main(
             x: T.Tensor[(M, N_padded), dtype],
@@ -81,27 +80,20 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
 
                 # --- Centered variance reduction ---
                 for i, j in T.Parallel(block_m, N_padded):
-                    add_f32[i, j] = (add_f32[i, j] - mean_val[i]) * (
-                        add_f32[i, j] - mean_val[i]
-                    )
+                    add_f32[i, j] = (add_f32[i, j] - mean_val[i]) * (add_f32[i, j] - mean_val[i])
 
                 T.reduce_sum(add_f32, acc, dim=1)
                 for i in T.Parallel(block_m):
                     rstd[i] = T.rsqrt(
-                        (acc[i] - float(pad_count) * mean_val[i] * mean_val[i])
-                        / float(N)
-                        + eps
+                        (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
                     )
 
                 # --- Output y: (add - mean) * rstd * weight + bias ---
                 # Re-cast from x_local (which holds the pre-norm sum in native dtype)
                 for i, j in T.Parallel(block_m, N_padded):
-                    r_local[i, j] = (
-                        (T.cast(x_local[i, j], "float32") - mean_val[i])
-                        * rstd[i]
-                        * T.cast(weight[j], "float32")
-                        + T.cast(bias[j], "float32")
-                    )
+                    r_local[i, j] = (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[
+                        i
+                    ] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
 
                 # Write y
                 T.copy(r_local, shared_x)
@@ -227,13 +219,13 @@ class FusedAddLayerNormKernel(Kernel):
 
 # Fused Add + RMSNorm kernel
 
+
 @functools.lru_cache(maxsize=32)
 def _fused_add_rms_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
 
     @tilelang.jit(out_idx=[3, 4])
     def _func(block_m, threads):
-
         @T.prim_func
         def main(
             x: T.Tensor[(M, N_padded), dtype],
@@ -265,9 +257,8 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype):
 
                 # Compute (x+residual)^2 in fp32
                 for i, j in T.Parallel(block_m, N_padded):
-                    xsq_f32[i, j] = (
-                        T.cast(x_local[i, j], "float32")
-                        * T.cast(x_local[i, j], "float32")
+                    xsq_f32[i, j] = T.cast(x_local[i, j], "float32") * T.cast(
+                        x_local[i, j], "float32"
                     )
 
                 # Sum of squares
@@ -280,9 +271,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype):
                 # y = (x+residual) * rrms * weight
                 for i, j in T.Parallel(block_m, N_padded):
                     r_local[i, j] = (
-                        T.cast(x_local[i, j], "float32")
-                        * rrms[i]
-                        * T.cast(weight[j], "float32")
+                        T.cast(x_local[i, j], "float32") * rrms[i] * T.cast(weight[j], "float32")
                     )
 
                 # Write y
@@ -311,9 +300,7 @@ def _fused_add_rms_norm_wrapped(
     weight: torch.Tensor,
 ) -> list[torch.Tensor]:
     return list(
-        _fused_add_rms_norm_kernel(M, N, eps, dtype_str)(block_m, threads)(
-            x, residual, weight
-        )
+        _fused_add_rms_norm_kernel(M, N, eps, dtype_str)(block_m, threads)(x, residual, weight)
     )
 
 

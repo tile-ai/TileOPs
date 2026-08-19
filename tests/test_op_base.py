@@ -104,9 +104,7 @@ class TestCacheKeyWarning:
 
     def test_override_suppresses_warning(self):
         """When the subclass overrides _cache_key, no warning fires."""
-        Cls = _make_op_subclass(
-            static_axes=frozenset(), override_cache_key=True
-        )
+        Cls = _make_op_subclass(static_axes=frozenset(), override_cache_key=True)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -241,11 +239,15 @@ class TestIterKernels:
         class BundleOp(_SlottedOp):
             def populate(self):
                 self.get_or_build_kernel(
-                    "pair", key=torch.float16,
-                    build=lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)))
+                    "pair",
+                    key=torch.float16,
+                    build=lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)),
+                )
                 self.get_or_build_kernel(
-                    "entry", key=torch.bfloat16,
-                    build=lambda: Entry(_RecordingKernel("record", tuned), torch.float32))
+                    "entry",
+                    key=torch.bfloat16,
+                    build=lambda: Entry(_RecordingKernel("record", tuned), torch.float32),
+                )
 
         op = BundleOp(tuned)
         op.populate()
@@ -374,7 +376,7 @@ class TestTunedMode:
     def test_a_kernel_built_after_autotune_is_tuned(self):
         tuned: list[str] = []
         op = _TunableOp(tuned)
-        op.autotune()          # nothing built yet
+        op.autotune()  # nothing built yet
         assert tuned == []
         op.build(torch.float16)
         assert tuned == ["torch.float16"]

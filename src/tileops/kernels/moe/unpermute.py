@@ -63,7 +63,6 @@ def _make_unpermute_kernel(
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
     def _unpermute():
-
         @T.prim_func
         def _unpermute_main(
             mm2_pad: T.Tensor([padded_batch_sum, hidden_size], dtype),
@@ -83,15 +82,12 @@ def _make_unpermute_kernel(
                 # gathers (num_stages=2) so each scattered row load overlaps the
                 # previous slot's accumulate — the K loads are latency-bound.
                 # Serial fallback when top_k < 2 (pipeline depth > trip count).
-                for k in (T.Pipelined(top_k, num_stages=2)
-                          if top_k >= 2 else T.serial(top_k)):
+                for k in T.Pipelined(top_k, num_stages=2) if top_k >= 2 else T.serial(top_k):
                     flat_idx = token_idx * T.int32(top_k) + k
                     raw_slot = fwd_idx[flat_idx]
                     # EP mode: fwd_idx == -1 marks non-local expert → zero contribution.
                     # Use slot 0 as a safe dummy read; zero the weight to suppress output.
-                    safe_slot = T.if_then_else(
-                        raw_slot >= T.int32(0), raw_slot, T.int32(0)
-                    )
+                    safe_slot = T.if_then_else(raw_slot >= T.int32(0), raw_slot, T.int32(0))
                     weight = topk_weights[token_idx, k] * T.Cast(
                         "float32",
                         T.if_then_else(raw_slot >= T.int32(0), T.int32(1), T.int32(0)),
@@ -196,13 +192,13 @@ class MoeUnpermuteKernel(Kernel):
 
         dev = mm2_pad.device
         if out is None:
-            output = torch.empty(
-                (self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
+            output = torch.empty((self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
         else:
             if tuple(out.shape) != (self.num_tokens, self.hidden_size):
                 raise ValueError(
                     f"out shape must be {(self.num_tokens, self.hidden_size)}, "
-                    f"got {tuple(out.shape)}")
+                    f"got {tuple(out.shape)}"
+                )
             if out.dtype != self.dtype:
                 raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
             # The kernel writes ``out`` on mm2_pad's device as a row-major compact

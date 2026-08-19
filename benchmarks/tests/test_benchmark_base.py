@@ -72,8 +72,7 @@ def test_multi_input_op_raises_keyerror():
 
 
 def _kernel(start_ns: int, end_ns: int, correlation_id: int = 0) -> dict:
-    return {"name": "k", "start_ns": start_ns, "end_ns": end_ns,
-            "correlation_id": correlation_id}
+    return {"name": "k", "start_ns": start_ns, "end_ns": end_ns, "correlation_id": correlation_id}
 
 
 def test_attribution_separates_execution_from_the_gaps_between_kernels():
@@ -109,7 +108,7 @@ def test_busy_counts_overlapping_kernels_once():
     """Concurrent kernels occupy the device once, however they are summed."""
     kernels = [_kernel(1_000, 5_000, 3), _kernel(2_000, 9_000, 3)]
 
-    sample, = _attributed_samples(kernels, {3: 0}, n_repeat=1)
+    (sample,) = _attributed_samples(kernels, {3: 0}, n_repeat=1)
 
     assert sample.device_busy_ms == pytest.approx(0.008)
     assert sample.latency_ms == pytest.approx(0.008)
@@ -135,10 +134,13 @@ def test_attribution_fails_closed_when_an_iteration_reaches_no_device():
         _attributed_samples([_kernel(1_000, 2_000, 1)], {1: 0}, n_repeat=2)
 
 
-@pytest.mark.parametrize("iteration_of", [
-    {1: 0},                 # the second kernel carries an id nothing mapped
-    {1: 0, 99: 7},          # ... or one from outside the range this phase pushed
-])
+@pytest.mark.parametrize(
+    "iteration_of",
+    [
+        {1: 0},  # the second kernel carries an id nothing mapped
+        {1: 0, 99: 7},  # ... or one from outside the range this phase pushed
+    ],
+)
 def test_a_kernel_no_iteration_pushed_is_named_as_such(iteration_of):
     """Autograd's engine thread never sees the pushed id, and that is not a lost record."""
     kernels = [_kernel(1_000, 2_000, 1), _kernel(3_000, 4_000, 99)]
@@ -151,14 +153,20 @@ def test_a_discarded_record_is_not_reported_as_a_call_that_missed_the_device():
     """The causes of a missing reading get separate errors, so one can be retried."""
     with pytest.raises(_CUPTIRecordsLostError, match="discarded 7 activity records"):
         _attributed_samples(
-            [_kernel(1_000, 2_000, 1)], {1: 0}, n_repeat=2, dropped=7,
+            [_kernel(1_000, 2_000, 1)],
+            {1: 0},
+            n_repeat=2,
+            dropped=7,
         )
 
 
 def test_an_unreadable_drop_count_rules_nothing_out():
     with pytest.raises(_CUPTIAttributionError, match="count is unproven"):
         _attributed_samples(
-            [_kernel(1_000, 2_000, 1)], {1: 0}, n_repeat=2, dropped=None,
+            [_kernel(1_000, 2_000, 1)],
+            {1: 0},
+            n_repeat=2,
+            dropped=None,
         )
 
 
@@ -166,7 +174,9 @@ def test_a_phase_that_lost_records_is_measured_again(monkeypatch):
     """A lost reading is re-taken, and the retry asks CUPTI for a larger buffer."""
     lossy = Trace([_kernel(1_000, 2_000, 1)], {1: 0}, 4)
     clean = Trace(
-        [_kernel(1_000, 2_000, 1), _kernel(4_100, 4_500, 2)], {1: 0, 2: 1}, 0,
+        [_kernel(1_000, 2_000, 1), _kernel(4_100, 4_500, 2)],
+        {1: 0, 2: 1},
+        0,
     )
     traces = [lossy, clean]
     requested_bytes = []
@@ -213,6 +223,7 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_kernel_runtime_error_propagates():
     """Genuine RuntimeErrors must reach the caller, not the fallback path."""
+
     def boom():
         raise RuntimeError("kernel failure")
 

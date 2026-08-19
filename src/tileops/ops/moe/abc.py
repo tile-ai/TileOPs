@@ -54,9 +54,7 @@ def _validate_fused_moe_experts_dtypes(
     """
     allowed = (torch.float16, torch.bfloat16)
     if op_dtype not in allowed:
-        raise ValueError(
-            f"hidden_states.dtype must be one of {allowed}, got {op_dtype}"
-        )
+        raise ValueError(f"hidden_states.dtype must be one of {allowed}, got {op_dtype}")
     for name, t in (
         ("output", output),
         ("hidden_states", hidden_states),
@@ -64,9 +62,7 @@ def _validate_fused_moe_experts_dtypes(
         ("w_down", w_down),
     ):
         if t.dtype != op_dtype:
-            raise ValueError(
-                f"Expected {name}.dtype == op dtype ({op_dtype}), got {t.dtype}"
-            )
+            raise ValueError(f"Expected {name}.dtype == op dtype ({op_dtype}), got {t.dtype}")
     if topk_weights.dtype != torch.float32:
         raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
     if topk_ids.dtype != torch.int32:
@@ -83,10 +79,10 @@ class PrepareResult:
     T = original token count; T' = post-dispatch count (T'==T when no EP).
     """
 
-    hidden_q: Tensor        # [T', H]  quantized or pass-through hidden states
-    scale: Tensor | None    # [T', *]  quantization scale; None for bf16/fp16
-    topk_weights: Tensor    # [T', K]  float32, may be remapped by EP dispatch
-    topk_ids: Tensor        # [T', K]  int32,   may be remapped by EP dispatch
+    hidden_q: Tensor  # [T', H]  quantized or pass-through hidden states
+    scale: Tensor | None  # [T', *]  quantization scale; None for bf16/fp16
+    topk_weights: Tensor  # [T', K]  float32, may be remapped by EP dispatch
+    topk_ids: Tensor  # [T', K]  int32,   may be remapped by EP dispatch
 
 
 class WeightedReduce(ABC):
@@ -99,10 +95,10 @@ class WeightedReduce(ABC):
     @abstractmethod
     def apply(
         self,
-        output: Tensor,        # [T, H]  write destination
-        expert_out: Tensor,    # output of FusedMoEExperts.forward()
+        output: Tensor,  # [T, H]  write destination
+        expert_out: Tensor,  # output of FusedMoEExperts.forward()
         topk_weights: Tensor,  # [T', K] float32
-        topk_ids: Tensor,      # [T', K] int32
+        topk_ids: Tensor,  # [T', K] int32
     ) -> None: ...
 
 
@@ -136,24 +132,24 @@ class FusedMoEPrepareAndFinalize(ABC):
     @abstractmethod
     def prepare(
         self,
-        hidden: Tensor,             # [T, H]
-        topk_weights: Tensor,       # [T, K] float32
-        topk_ids: Tensor,           # [T, K] int32
+        hidden: Tensor,  # [T, H]
+        topk_weights: Tensor,  # [T, K] float32
+        topk_ids: Tensor,  # [T, K] int32
         num_experts: int,
         expert_map: Tensor | None,  # [E_global] int32, for EP local filtering
     ) -> PrepareResult:
         """Post-conditions:
-            result.hidden_q.shape[1] == H
-            no EP: result.hidden_q.shape[0] == T
+        result.hidden_q.shape[1] == H
+        no EP: result.hidden_q.shape[0] == T
         """
 
     @abstractmethod
     def finalize(
         self,
-        output: Tensor,                  # [T, H]  write destination (pre-allocated)
-        expert_out: Tensor,              # output of FusedMoEExperts.forward()
-        topk_weights: Tensor,            # [T', K] float32
-        topk_ids: Tensor,                # [T', K] int32
+        output: Tensor,  # [T, H]  write destination (pre-allocated)
+        expert_out: Tensor,  # output of FusedMoEExperts.forward()
+        topk_weights: Tensor,  # [T', K] float32
+        topk_ids: Tensor,  # [T', K] int32
         weight_and_reduce: WeightedReduce,
     ) -> None:
         """Post-condition: output.shape == (T, H)  (T = original token count)."""
@@ -173,9 +169,9 @@ class FusedMoEExperts(Op, ABC):
     @abstractmethod
     def workspace_shapes(
         self,
-        M: int,           # T' (post-dispatch token count)
-        N: int,           # ffn_size
-        K: int,           # hidden_size
+        M: int,  # T' (post-dispatch token count)
+        N: int,  # ffn_size
+        K: int,  # hidden_size
         topk: int,
         num_experts: int,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -198,12 +194,12 @@ class FusedMoEExperts(Op, ABC):
     @abstractmethod
     def forward(
         self,
-        output: Tensor,             # pre-allocated, shape == output_shape()
-        hidden_states: Tensor,      # [T', H] from PrepareResult.hidden_q
-        w_gate_up: Tensor,          # [E_local, 2F, H]
-        w_down: Tensor,             # [E_local, H, F]
-        topk_weights: Tensor,       # [T', K] float32
-        topk_ids: Tensor,           # [T', K] int32
+        output: Tensor,  # pre-allocated, shape == output_shape()
+        hidden_states: Tensor,  # [T', H] from PrepareResult.hidden_q
+        w_gate_up: Tensor,  # [E_local, 2F, H]
+        w_down: Tensor,  # [E_local, H, F]
+        topk_weights: Tensor,  # [T', K] float32
+        topk_ids: Tensor,  # [T', K] int32
         expert_map: Tensor | None,  # [E] int32 global-to-local ids; None if all local
         workspace1: Tensor,
         workspace2: Tensor,

@@ -129,7 +129,9 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                         # TileLang requires T.If/T.Then as nested context managers
                                         with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                             with T.Then():
-                                                shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                                shared_in[i, j] = x[
+                                                    pid_m * block_m + i, tile_idx * block_n + j
+                                                ]
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
@@ -152,7 +154,9 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                 # TileLang requires T.If/T.Then as nested context managers
                                 with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                     with T.Then():
-                                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                        shared_in[i, j] = x[
+                                            pid_m * block_m + i, tile_idx * block_n + j
+                                        ]
                             for i, j in T.Parallel(block_m, block_n):
                                 tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
@@ -169,7 +173,9 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                             # TileLang requires T.If/T.Then as nested context managers
                             with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                 with T.Then():
-                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
+                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[
+                                        i, j
+                                    ]
 
             return main
 
@@ -209,7 +215,9 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                         # TileLang requires T.If/T.Then as nested context managers
                                         with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                             with T.Then():
-                                                shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                                shared_in[i, j] = x[
+                                                    pid_m * block_m + i, tile_idx * block_n + j
+                                                ]
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
@@ -232,7 +240,9 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                 # TileLang requires T.If/T.Then as nested context managers
                                 with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                     with T.Then():
-                                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                        shared_in[i, j] = x[
+                                            pid_m * block_m + i, tile_idx * block_n + j
+                                        ]
                             for i, j in T.Parallel(block_m, block_n):
                                 tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
@@ -249,7 +259,9 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                             # TileLang requires T.If/T.Then as nested context managers
                             with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                 with T.Then():
-                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
+                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[
+                                        i, j
+                                    ]
 
             return main
 
@@ -351,7 +363,7 @@ class CumulativeKernel(Kernel):
 
         # Parallel scan only pays off for small-M, large-N; cumprod has no
         # parallel implementation.
-        self.use_parallel = (M < 128 and N > 8192 and op_kind == "sum")
+        self.use_parallel = M < 128 and N > 8192 and op_kind == "sum"
 
         if self.use_parallel:
             self.kernel = None
@@ -522,6 +534,7 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
     ``n_tiles`` is small (128-256); one thread owns one row, so the writes
     cannot race.
     """
+
     @tilelang.jit(out_idx=[1])
     def _func(threads):
         @T.prim_func

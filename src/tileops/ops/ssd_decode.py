@@ -63,7 +63,8 @@ class SSDDecodeFwdOp(Op):
             "ssd_decode",
             key=key,
             build=lambda: self.kernel_map["ssd_decode"](
-                batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune),
+                batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
+            ),
         )
 
     def forward(
@@ -123,7 +124,8 @@ class SSDDecodeFwdOp(Op):
         self.n_groups = n_groups
         self.dtype = x.dtype
         self.kernel = self._get_kernel(
-            batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index)
+            batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index
+        )
 
         A = A.contiguous()
         dt = dt.contiguous()

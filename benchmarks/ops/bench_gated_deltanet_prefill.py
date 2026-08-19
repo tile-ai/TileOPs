@@ -24,6 +24,8 @@ from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
 
 _OP_NAME = "GatedDeltaNetPrefillBTHDFwdOp"
 _BHTD_OP_NAME = "GatedDeltaNetPrefillBHTDFwdOp"
+
+
 def _fla_prefill_fwd():
     """Return the FLA prefill baseline callable."""
     signature = inspect.signature(chunk_gated_delta_rule)

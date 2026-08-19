@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -31,15 +30,29 @@ def _da_cumsum_args(w: dict) -> tuple:
     """Constructor arguments for one manifest workload row."""
     batch, seq_len, n_heads = w["dt_shape"]
     chunk_len = w["chunk_len"]
-    return (batch, seq_len // chunk_len, chunk_len, n_heads,
-            "dt_bias_shape" in w, bool(w.get("dt_softplus", True)))
+    return (
+        batch,
+        seq_len // chunk_len,
+        chunk_len,
+        n_heads,
+        "dt_bias_shape" in w,
+        bool(w.get("dt_softplus", True)),
+    )
 
 
 def _chunk_state_args(w: dict) -> tuple:
     batch, _, n_heads, d_head = w["x_shape"]
     _, _, n_groups, d_state = w["Bmat_shape"]
-    return (batch, w["dt_shape"][2], w["dt_shape"][3], n_heads, d_head, d_state,
-            n_groups, "seq_idx_shape" in w)
+    return (
+        batch,
+        w["dt_shape"][2],
+        w["dt_shape"][3],
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        "seq_idx_shape" in w,
+    )
 
 
 def _chunk_scan_args(w: dict) -> tuple:
@@ -108,9 +121,9 @@ def da_cumsum_fwd_ref(
         dt_val = F.softplus(dt_val)
     dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
     dt_chunked = dt_val.reshape(b, C, Q, h)
-    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()          # (b, h, C, Q)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
     dA = dt_chunked * A.float()
-    dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous() # (b, h, C, Q)
+    dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
     return dt_out, dA_cumsum
 
 
@@ -118,10 +131,17 @@ def da_cumsum_fwd_ref(
     "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune",
     manifest_params(load_workloads(_DA_CUMSUM_OP_NAME), _da_cumsum_args, tune=False),
 )
-def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune):
+def test_da_cumsum_fwd_bench(
+    batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune
+):
     test = DaCumsumFwdWorkload(
-        batch, num_chunks, chunk_len, n_heads,
-        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        has_dt_bias=has_dt_bias,
+        dt_softplus=dt_softplus,
+        dtype=dtype,
     )
     inputs = test.gen_inputs()  # (dt_raw, A, dt_bias)
 
@@ -151,17 +171,20 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias,
 
         functors["mamba"] = (mamba_fwd, ())
     else:
+
         def baseline(dt_raw, A, dt_bias):
             return da_cumsum_fwd_ref(
-                dt_raw, A, num_chunks, chunk_len,
+                dt_raw,
+                A,
+                num_chunks,
+                chunk_len,
                 dt_bias=dt_bias if has_dt_bias else None,
                 dt_softplus=dt_softplus,
             )
+
         functors["torch-ref"] = baseline
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
 
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
@@ -183,8 +206,8 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     g = n_groups
     heads_per_group = h // g
 
-    x_chunked = x.float().reshape(b, c, L, h, p)             # [B, C, L, H, P]
-    C_chunked = C.float().reshape(b, c, L, g, n)              # [B, C, L, G, N]
+    x_chunked = x.float().reshape(b, c, L, h, p)  # [B, C, L, H, P]
+    C_chunked = C.float().reshape(b, c, L, g, n)  # [B, C, L, G, N]
     # broadcast C from groups to heads: [B, C, L, H, N]
     C_heads = C_chunked[:, :, :, torch.arange(h, device=x.device) // heads_per_group, :]
 
@@ -205,12 +228,12 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     # decay[b,c,h,l,s] = exp(dA_cumsum[l] - dA_cumsum[s])
     dA_l = dA_cumsum.float().unsqueeze(-1)  # [B, H, C, L, 1]
     dA_s = dA_cumsum.float().unsqueeze(-2)  # [B, H, C, 1, L]
-    decay = torch.exp(dA_l - dA_s)         # [B, H, C, L, L]
+    decay = torch.exp(dA_l - dA_s)  # [B, H, C, L, L]
 
     # causal mask
     mask = torch.tril(torch.ones(L, L, device=x.device, dtype=torch.bool))
     decay = decay.masked_fill(~mask.unsqueeze(0).unsqueeze(0).unsqueeze(0), 0.0)
-    decay = decay.permute(0, 2, 1, 3, 4)   # [B, C, H, L, L]
+    decay = decay.permute(0, 2, 1, 3, 4)  # [B, C, H, L, L]
 
     # dt: [B, H, C, L] -> [B, C, H, 1, L]
     dt_s = dt.float().permute(0, 2, 1, 3).unsqueeze(-2)  # [B, C, H, 1, L]
@@ -253,7 +276,14 @@ def test_ssd_chunk_scan_fwd_bench(
     tune: bool,
 ) -> None:
     test = SSDChunkScanFwdWorkload(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        dtype,
     )
     inputs = test.gen_inputs()  # x, cb, dA_cumsum, C, prev_states, dt
 
@@ -265,6 +295,7 @@ def test_ssd_chunk_scan_fwd_bench(
     # ── Mamba-2 Triton baseline ──
     if _mamba_chunk_scan_fwd is not None:
         x, cb, dA_cumsum, C, prev_states, dt = inputs
+
         # All tensors are already in official mamba_ssm layout
         # mamba signature: _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, ...)
         def mamba_fwd():
@@ -272,6 +303,7 @@ def test_ssd_chunk_scan_fwd_bench(
 
         functors["mamba"] = (mamba_fwd, ())
     else:
+
         def torch_ref(x, cb, dA_cumsum, C, prev_states, dt):
             return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups)
 
@@ -318,16 +350,31 @@ def ssd_chunk_state_fwd_ref(
 
 
 @pytest.mark.parametrize(
-    "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, has_seq_idx,"
-    " dtype, tune",
+    "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, has_seq_idx, dtype, tune",
     manifest_params(load_workloads(_CHUNK_STATE_OP_NAME), _chunk_state_args, tune=False),
 )
 def test_ssd_chunk_state_fwd_bench(
-    batch: int, num_chunks: int, chunk_len: int, n_heads: int, d_head: int,
-    d_state: int, n_groups: int, has_seq_idx: bool, dtype: torch.dtype, tune: bool,
+    batch: int,
+    num_chunks: int,
+    chunk_len: int,
+    n_heads: int,
+    d_head: int,
+    d_state: int,
+    n_groups: int,
+    has_seq_idx: bool,
+    dtype: torch.dtype,
+    tune: bool,
 ) -> None:
     test = SSDChunkStateFwdWorkload(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        dtype,
+        has_seq_idx,
     )
     inputs = test.gen_inputs()
 
@@ -351,8 +398,12 @@ def test_ssd_chunk_state_fwd_bench(
 
         functors["mamba"] = (mamba_fwd, ())
     else:
+
         def baseline(x, Bmat, dt, dA_cumsum, seq_idx):
-            return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)
+            return ssd_chunk_state_fwd_ref(
+                x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx
+            )
+
         functors["torch-ref"] = baseline
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
@@ -373,8 +424,13 @@ def test_ssd_chunk_state_fwd_bench(
     manifest_params(load_workloads(_STATE_PASSING_OP_NAME), _state_passing_args, tune=False),
 )
 def test_ssd_state_passing_fwd_bench(
-    batch: int, num_chunks: int, n_heads: int, d_state: int,
-    has_initial_states: bool, dtype: torch.dtype, tune: bool,
+    batch: int,
+    num_chunks: int,
+    n_heads: int,
+    d_state: int,
+    has_initial_states: bool,
+    dtype: torch.dtype,
+    tune: bool,
 ) -> None:
     test = SSDStatePassingFwdWorkload(
         batch, num_chunks, n_heads, d_state, dtype, has_initial_states
@@ -387,6 +443,7 @@ def test_ssd_state_passing_fwd_bench(
     functors = {"tileops": op}
 
     if _mamba_state_passing_fwd is not None:
+
         def mamba_fwd():
             # mamba_ssm _state_passing_fwd: dA_chunk_cumsum layout (b, h, c) matches
             # TileOPs — no permutation needed.  out_dtype=float32 matches TileOPs output
@@ -394,9 +451,7 @@ def test_ssd_state_passing_fwd_bench(
             return _mamba_state_passing_fwd(
                 states.contiguous(),
                 dA_chunk_cumsum.contiguous(),
-                initial_states=(
-                    None if initial_states is None else initial_states.contiguous()
-                ),
+                initial_states=(None if initial_states is None else initial_states.contiguous()),
                 out_dtype=torch.float32,
             )
 
@@ -407,19 +462,21 @@ def test_ssd_state_passing_fwd_bench(
 
         functors["mamba"] = (mamba_fwd, ())
     else:
+
         def baseline(states, dA_chunk_cumsum, initial_states):
             return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
+
         functors["torch-ref"] = baseline
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 def ssd_decode_ref(
-    A: torch.Tensor,      # (H, P, N)     float32
-    dt: torch.Tensor,     # (B, H, P)     float32
-    x: torch.Tensor,      # (B, H, P)     any dtype
-    B_in: torch.Tensor,   # (B, G, N)     any dtype
-    C_in: torch.Tensor,   # (B, G, N)     any dtype
+    A: torch.Tensor,  # (H, P, N)     float32
+    dt: torch.Tensor,  # (B, H, P)     float32
+    x: torch.Tensor,  # (B, H, P)     any dtype
+    B_in: torch.Tensor,  # (B, G, N)     any dtype
+    C_in: torch.Tensor,  # (B, G, N)     any dtype
     state: torch.Tensor,  # (B, H, P, N)  float32  -- updated in-place
 ) -> torch.Tensor:
     """PyTorch reference for ssd_decode (benchmark-local copy)."""
@@ -431,15 +488,11 @@ def ssd_decode_ref(
     dA = torch.exp(dt.float()[:, :, :, None] * A.float()[None, :, :, :])
 
     head_idx = torch.arange(H, device=B_in.device) // heads_per_group
-    B_heads = B_in.float()[:, head_idx, :]   # (B, H, N)
-    C_heads = C_in.float()[:, head_idx, :]   # (B, H, N)
+    B_heads = B_in.float()[:, head_idx, :]  # (B, H, N)
+    C_heads = C_in.float()[:, head_idx, :]  # (B, H, N)
 
     # dBx[b, h, p, n] = dt[b, h, p] * x[b, h, p] * B[b, h, n]
-    dBx = (
-        dt.float()[:, :, :, None]
-        * x.float()[:, :, :, None]
-        * B_heads[:, :, None, :]
-    )
+    dBx = dt.float()[:, :, :, None] * x.float()[:, :, :, None] * B_heads[:, :, None, :]
 
     new_state = dA * state.float() + dBx
     state.copy_(new_state)
@@ -464,8 +517,13 @@ def ssd_decode_ref(
     manifest_params(load_workloads(_DECODE_OP_NAME), _decode_args, tune=False),
 )
 def test_ssd_decode_bench(
-    batch: int, n_heads: int, d_head: int, d_state: int,
-    n_groups: int, dtype: torch.dtype, tune: bool,
+    batch: int,
+    n_heads: int,
+    d_head: int,
+    d_state: int,
+    n_groups: int,
+    dtype: torch.dtype,
+    tune: bool,
 ) -> None:
     test = SSDDecodeWorkload(batch, n_heads, d_head, d_state, n_groups, dtype)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
@@ -482,5 +540,15 @@ def test_ssd_decode_bench(
     def baseline(A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 
-    functors["torch-ref"] = (baseline, (A, dt, x, B_in, C_in, state_bl, ))
+    functors["torch-ref"] = (
+        baseline,
+        (
+            A,
+            dt,
+            x,
+            B_in,
+            C_in,
+            state_bl,
+        ),
+    )
     bm.compare(functors, A, dt, x, B_in, C_in, state_for_op, record_as=op, params=locals())

@@ -19,15 +19,20 @@ class ReluTest(ReluWorkload, TestBase):
 
 class ReluFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            # Smoke: one typical shape per supported dtype
-            pytest.param(1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
-            # Full: larger follow-up coverage
-            pytest.param(4_000_000, torch.float16, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.bfloat16, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                # Smoke: one typical shape per supported dtype
+                pytest.param(
+                    1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]
+                ),
+                pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
+                # Full: larger follow-up coverage
+                pytest.param(4_000_000, torch.float16, marks=pytest.mark.full),
+                pytest.param(4_000_000, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -50,11 +55,14 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
 
 class ReluStrategyFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype, strategy", [
-            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype, strategy",
+            [
+                pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
+                pytest.param(1_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -74,21 +82,29 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
 
 class ActivationFixture(FixtureBase):
     """Parametrize over shapes / dtypes for activation ops."""
+
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
 class ActivationEdgeFixture(FixtureBase):
     """L4 edge-case fixture: fp32, 4K elements."""
+
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -129,49 +145,61 @@ def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
         return F.gelu(x, approximate=approximate)
 
     _make_activation_test(
-        n_total, dtype, _randn, _ref, GeluFwdOp, approximate=approximate,
+        n_total,
+        dtype,
+        _randn,
+        _ref,
+        GeluFwdOp,
+        approximate=approximate,
     )
 
 
 @ActivationFixture
 def test_silu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SiluFwdOp
+
     _make_activation_test(n_total, dtype, _randn, F.silu, SiluFwdOp)
 
 
 @ActivationFixture
 def test_sigmoid(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SigmoidFwdOp
+
     _make_activation_test(n_total, dtype, _randn, torch.sigmoid, SigmoidFwdOp)
 
 
 @ActivationFixture
 def test_tanh(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import TanhFwdOp
+
     _make_activation_test(n_total, dtype, _randn, torch.tanh, TanhFwdOp)
 
 
 @ActivationFixture
 def test_hardswish(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import HardswishFwdOp
+
     _make_activation_test(n_total, dtype, _randn, F.hardswish, HardswishFwdOp)
 
 
 @ActivationFixture
 def test_hardsigmoid(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import HardsigmoidFwdOp
+
     _make_activation_test(n_total, dtype, _randn, F.hardsigmoid, HardsigmoidFwdOp)
 
 
 @ActivationFixture
 def test_mish(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import MishFwdOp
+
     _make_activation_test(n_total, dtype, _randn, F.mish, MishFwdOp)
 
 
 @ActivationFixture
 def test_selu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SeluFwdOp
+
     _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
 
 
@@ -193,8 +221,8 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
 
     def _extreme(n, dtype):
         x = torch.zeros(n, device="cuda", dtype=dtype)
-        x[:n // 2] = -50.0
-        x[n // 2:] = 50.0
+        x[: n // 2] = -50.0
+        x[n // 2 :] = 50.0
         return x
 
     _make_activation_test(n_total, dtype, _extreme, torch.sigmoid, SigmoidFwdOp)
@@ -207,8 +235,8 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
 
     def _extreme(n, dtype):
         x = torch.zeros(n, device="cuda", dtype=dtype)
-        x[:n // 2] = -50.0
-        x[n // 2:] = 50.0
+        x[: n // 2] = -50.0
+        x[n // 2 :] = 50.0
         return x
 
     _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhFwdOp)
@@ -220,8 +248,11 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
 @ActivationFixture
 def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import LeakyReluFwdOp
+
     _make_activation_test(
-        n_total, dtype, _randn,
+        n_total,
+        dtype,
+        _randn,
         lambda x: F.leaky_relu(x.float(), 0.01).to(x.dtype),
         LeakyReluFwdOp,
     )
@@ -230,8 +261,11 @@ def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
 @ActivationFixture
 def test_elu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import EluFwdOp
+
     _make_activation_test(
-        n_total, dtype, _randn,
+        n_total,
+        dtype,
+        _randn,
         lambda x: F.elu(x.float(), 1.0).to(x.dtype),
         EluFwdOp,
     )
@@ -240,8 +274,11 @@ def test_elu(n_total: int, dtype: torch.dtype) -> None:
 @ActivationFixture
 def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import HardtanhFwdOp
+
     _make_activation_test(
-        n_total, dtype, _randn,
+        n_total,
+        dtype,
+        _randn,
         lambda x: F.hardtanh(x.float(), -1.0, 1.0).to(x.dtype),
         HardtanhFwdOp,
     )
@@ -250,8 +287,11 @@ def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
 @ActivationFixture
 def test_softplus(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SoftplusFwdOp
+
     _make_activation_test(
-        n_total, dtype, _randn,
+        n_total,
+        dtype,
+        _randn,
         lambda x: F.softplus(x.float(), 1.0, 20.0).to(x.dtype),
         SoftplusFwdOp,
     )
@@ -259,11 +299,14 @@ def test_softplus(n_total: int, dtype: torch.dtype) -> None:
 
 class PreluFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -327,6 +370,7 @@ def test_prelu_rejects_mismatched_shape_same_numel() -> None:
 @pytest.mark.smoke
 def test_independent_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import LeakyReluFwdKernel
+
     with pytest.raises(ValueError, match="only supports dtypes"):
         LeakyReluFwdKernel(N_total=16, dtype=torch.int32)
 

@@ -24,23 +24,26 @@ class MoePermuteAlignTest(MoePermuteAlignWorkload, TestBase):
 
 class MoePermuteAlignFixture(FixtureBase):
     PARAMS = [
-        ("total_tokens, top_k, num_experts, block_size", [
-            pytest.param(4,   2,   4,   4,   marks=pytest.mark.smoke, id="tiny-bs4"),
-            pytest.param(16,  2,   8,   16,  marks=pytest.mark.full,  id="small-bs16"),
-            pytest.param(128, 4,   8,   64,  marks=pytest.mark.full,  id="medium-bs64"),
-            pytest.param(1024,8,   64,  128, marks=pytest.mark.full,  id="large-bs128"),
-            pytest.param(1,   2,   4,   4,   marks=pytest.mark.full,  id="single-token"),
-            # top_k=1: each token is routed to exactly one expert
-            pytest.param(8,   1,   4,   4,   marks=pytest.mark.full,  id="top-k-1"),
-            # small-batch path (numel < 1024, num_experts <= 64)
-            pytest.param(100, 2,   8,   16,  marks=pytest.mark.full,  id="sb-numel200"),
-            pytest.param(300, 2,   8,   16,  marks=pytest.mark.full,  id="sb-numel600"),
-            pytest.param(400, 2,   8,   16,  marks=pytest.mark.full,  id="sb-numel800"),
-            pytest.param(100, 6,  64,   64,  marks=pytest.mark.full,  id="sb-numel600-maxexp"),
-            # dispatch boundary: numel=1023 (last small-batch) vs numel=1024 (first large-batch)
-            pytest.param(511, 2,   8,   16,  marks=pytest.mark.full,  id="sb-boundary-1022"),
-            pytest.param(512, 2,   8,   16,  marks=pytest.mark.full,  id="lb-boundary-1024"),
-        ]),
+        (
+            "total_tokens, top_k, num_experts, block_size",
+            [
+                pytest.param(4, 2, 4, 4, marks=pytest.mark.smoke, id="tiny-bs4"),
+                pytest.param(16, 2, 8, 16, marks=pytest.mark.full, id="small-bs16"),
+                pytest.param(128, 4, 8, 64, marks=pytest.mark.full, id="medium-bs64"),
+                pytest.param(1024, 8, 64, 128, marks=pytest.mark.full, id="large-bs128"),
+                pytest.param(1, 2, 4, 4, marks=pytest.mark.full, id="single-token"),
+                # top_k=1: each token is routed to exactly one expert
+                pytest.param(8, 1, 4, 4, marks=pytest.mark.full, id="top-k-1"),
+                # small-batch path (numel < 1024, num_experts <= 64)
+                pytest.param(100, 2, 8, 16, marks=pytest.mark.full, id="sb-numel200"),
+                pytest.param(300, 2, 8, 16, marks=pytest.mark.full, id="sb-numel600"),
+                pytest.param(400, 2, 8, 16, marks=pytest.mark.full, id="sb-numel800"),
+                pytest.param(100, 6, 64, 64, marks=pytest.mark.full, id="sb-numel600-maxexp"),
+                # dispatch boundary: numel=1023 (last small-batch) vs numel=1024 (first large-batch)
+                pytest.param(511, 2, 8, 16, marks=pytest.mark.full, id="sb-boundary-1022"),
+                pytest.param(512, 2, 8, 16, marks=pytest.mark.full, id="lb-boundary-1024"),
+            ],
+        ),
     ]
 
 
@@ -76,8 +79,7 @@ def _permute_align_compare(
     num_blocks = n // block_size
 
     assert num_post_pad.item() == ref_num.item(), (
-        f"num_tokens_post_pad mismatch: got {num_post_pad.item()}, "
-        f"expected {ref_num.item()}"
+        f"num_tokens_post_pad mismatch: got {num_post_pad.item()}, expected {ref_num.item()}"
     )
     assert torch.equal(expert_ids[:num_blocks].cpu(), ref_expert[:num_blocks].cpu()), (
         f"expert_ids mismatch:\n  got: {expert_ids[:num_blocks].cpu()}"
@@ -93,14 +95,14 @@ def _permute_align_compare(
             tok
             for b, eid in enumerate(ref_eids)
             if eid == e
-            for tok in got_sorted[b * block_size:(b + 1) * block_size]
+            for tok in got_sorted[b * block_size : (b + 1) * block_size]
             if tok < numel
         )
         ref_tokens = sorted(
             tok
             for b, eid in enumerate(ref_eids)
             if eid == e
-            for tok in ref_sorted[:n].cpu().tolist()[b * block_size:(b + 1) * block_size]
+            for tok in ref_sorted[:n].cpu().tolist()[b * block_size : (b + 1) * block_size]
             if tok < numel
         )
         assert got_tokens == ref_tokens, (
@@ -118,9 +120,7 @@ def _permute_align_compare(
 
 
 @MoePermuteAlignFixture
-def test_permute_align_op(
-    total_tokens: int, top_k: int, num_experts: int, block_size: int
-) -> None:
+def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block_size: int) -> None:
     numel = total_tokens * top_k
     test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
@@ -140,8 +140,9 @@ def test_permute_align_sentinel_padding() -> None:
     """
     total_tokens, top_k, num_experts, block_size = 3, 2, 4, 4
     numel = total_tokens * top_k
-    topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
-                              dtype=torch.int32, device="cuda")
+    topk_ids = torch.randint(
+        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device="cuda"
+    )
 
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     sorted_ids, _, num_post_pad = op(topk_ids)
@@ -157,8 +158,9 @@ def test_permute_align_sentinel_padding() -> None:
 def test_permute_align_expert_ids_range() -> None:
     """All expert_ids must be in [0, num_experts)."""
     total_tokens, top_k, num_experts, block_size = 16, 4, 8, 16
-    topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
-                              dtype=torch.int32, device="cuda")
+    topk_ids = torch.randint(
+        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device="cuda"
+    )
 
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     _, expert_ids, num_post_pad = op(topk_ids)

@@ -1,5 +1,3 @@
-
-
 import pytest
 import torch
 
@@ -31,15 +29,18 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
 
 class GLADecodeFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, dim_k, dim_v, dtype, tune", [
-            pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, heads, dim_k, dim_v, dtype, tune",
+            [
+                pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -111,7 +112,7 @@ def test_gla_decode_vs_fla(
 
     torch.manual_seed(42)
     B, H, DK, DV = batch, heads, dim_k, dim_v
-    scale = DK ** -0.5
+    scale = DK**-0.5
 
     q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
     k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
@@ -132,8 +133,12 @@ def test_gla_decode_vs_fla(
     gk_fla = gk.unsqueeze(1)
 
     o_fla, s_fla = fused_recurrent_gla(
-        q_fla, k_fla, v_fla, gk=gk_fla,
-        scale=scale, initial_state=state.contiguous(),
+        q_fla,
+        k_fla,
+        v_fla,
+        gk=gk_fla,
+        scale=scale,
+        initial_state=state.contiguous(),
         output_final_state=True,
     )
     o_fla = o_fla.squeeze(1).to(dtype)

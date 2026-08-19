@@ -142,10 +142,12 @@ def _gqa_fwd_ws_persistent_kernel(
                 q_full_1 = T.alloc_barrier(arrive_count=128)
                 q_full_2 = T.alloc_barrier(arrive_count=128)
 
-                T.annotate_layout({
-                    q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
-                    q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
-                })
+                T.annotate_layout(
+                    {
+                        q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
+                        q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
+                    }
+                )
                 T.sync_threads()
 
                 gi_kp = T.alloc_var("int32", init=0)
@@ -175,13 +177,13 @@ def _gqa_fwd_ws_persistent_kernel(
                             T.barrier_wait(k_empty, (gi_kp + 1) % 2)
                             if gi_kp % 2 == 0:
                                 T.tma_copy(
-                                    k[tile_b, n_idx * block_n:(n_idx + 1) * block_n, head_kv, :],
+                                    k[tile_b, n_idx * block_n : (n_idx + 1) * block_n, head_kv, :],
                                     k_smem_0,
                                     barrier=k_full,
                                 )
                             else:
                                 T.tma_copy(
-                                    k[tile_b, n_idx * block_n:(n_idx + 1) * block_n, head_kv, :],
+                                    k[tile_b, n_idx * block_n : (n_idx + 1) * block_n, head_kv, :],
                                     k_smem_1,
                                     barrier=k_full,
                                 )
@@ -190,13 +192,23 @@ def _gqa_fwd_ws_persistent_kernel(
                                 T.barrier_wait(v_empty, (gi_vp + 1) % 2)
                                 if gi_vp % 2 == 0:
                                     T.tma_copy(
-                                        v[tile_b, (n_idx - 1) * block_n:n_idx * block_n, head_kv, :],
+                                        v[
+                                            tile_b,
+                                            (n_idx - 1) * block_n : n_idx * block_n,
+                                            head_kv,
+                                            :,
+                                        ],
                                         v_smem_0,
                                         barrier=v_full,
                                     )
                                 else:
                                     T.tma_copy(
-                                        v[tile_b, (n_idx - 1) * block_n:n_idx * block_n, head_kv, :],
+                                        v[
+                                            tile_b,
+                                            (n_idx - 1) * block_n : n_idx * block_n,
+                                            head_kv,
+                                            :,
+                                        ],
                                         v_smem_1,
                                         barrier=v_full,
                                     )
@@ -207,13 +219,23 @@ def _gqa_fwd_ws_persistent_kernel(
                         T.barrier_wait(v_empty, (gi_vp + 1) % 2)
                         if gi_vp % 2 == 0:
                             T.tma_copy(
-                                v[tile_b, (loop_range - 1) * block_n:loop_range * block_n, head_kv, :],
+                                v[
+                                    tile_b,
+                                    (loop_range - 1) * block_n : loop_range * block_n,
+                                    head_kv,
+                                    :,
+                                ],
                                 v_smem_0,
                                 barrier=v_full,
                             )
                         else:
                             T.tma_copy(
-                                v[tile_b, (loop_range - 1) * block_n:loop_range * block_n, head_kv, :],
+                                v[
+                                    tile_b,
+                                    (loop_range - 1) * block_n : loop_range * block_n,
+                                    head_kv,
+                                    :,
+                                ],
                                 v_smem_1,
                                 barrier=v_full,
                             )
@@ -236,7 +258,11 @@ def _gqa_fwd_ws_persistent_kernel(
                         row_base = tile_m * block_m
                         loop_range = T.ceildiv(seq_len, block_n)
 
-                        T.tma_copy(q[tile_b, row_base:row_base + half_m, tile_h, :], q_shared_1, barrier=q_full_1)
+                        T.tma_copy(
+                            q[tile_b, row_base : row_base + half_m, tile_h, :],
+                            q_shared_1,
+                            barrier=q_full_1,
+                        )
                         T.barrier_arrive(q_full_1)
                         T.barrier_wait(q_full_1, gi_q1 % 2)
                         gi_q1 = gi_q1 + 1
@@ -250,9 +276,23 @@ def _gqa_fwd_ws_persistent_kernel(
                             T.sync_threads(barrier_id=1, arrive_count=256)
                             if n_idx == 0:
                                 if gi_kc1 % 2 == 0:
-                                    T.wgmma_gemm(q_shared_1, k_smem_0, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_1,
+                                        k_smem_0,
+                                        acc_s_1,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 else:
-                                    T.wgmma_gemm(q_shared_1, k_smem_1, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_1,
+                                        k_smem_1,
+                                        acc_s_1,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 T.named_barrier_arrive(2, 256)
                                 T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=64)
@@ -261,14 +301,38 @@ def _gqa_fwd_ws_persistent_kernel(
                                 T.copy(acc_s_1, acc_s_cast_1)
                             else:
                                 if gi_kc1 % 2 == 0:
-                                    T.wgmma_gemm(q_shared_1, k_smem_0, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_1,
+                                        k_smem_0,
+                                        acc_s_1,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 else:
-                                    T.wgmma_gemm(q_shared_1, k_smem_1, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_1,
+                                        k_smem_1,
+                                        acc_s_1,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 T.barrier_wait(v_full, gi_vc1 % 2)
                                 if gi_vc1 % 2 == 0:
-                                    T.wgmma_gemm(acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                                    T.wgmma_gemm(
+                                        acc_s_cast_1,
+                                        v_smem_0,
+                                        acc_o_1,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                    )
                                 else:
-                                    T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                                    T.wgmma_gemm(
+                                        acc_s_cast_1,
+                                        v_smem_1,
+                                        acc_o_1,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                    )
                                 T.named_barrier_arrive(2, 256)
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=64)
@@ -284,9 +348,13 @@ def _gqa_fwd_ws_persistent_kernel(
 
                         T.barrier_wait(v_full, gi_vc1 % 2)
                         if gi_vc1 % 2 == 0:
-                            T.wgmma_gemm(acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                            T.wgmma_gemm(
+                                acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow
+                            )
                         else:
-                            T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                            T.wgmma_gemm(
+                                acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow
+                            )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                         T.barrier_arrive(v_empty)
@@ -296,10 +364,10 @@ def _gqa_fwd_ws_persistent_kernel(
                         T.copy(acc_o_1, q_shared_1)
                         T.fence_proxy_async()
                         T.sync_threads(barrier_id=3, arrive_count=128)
-                        T.copy(q_shared_1, output[tile_b, row_base:row_base + half_m, tile_h, :])
+                        T.copy(q_shared_1, output[tile_b, row_base : row_base + half_m, tile_h, :])
                         for i in T.Parallel(half_m):
                             ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * scale
-                        T.copy(ls_1, lse[tile_b, tile_h, row_base:row_base + half_m])
+                        T.copy(ls_1, lse[tile_b, tile_h, row_base : row_base + half_m])
 
                 else:
                     T.inc_max_nreg(240)
@@ -314,7 +382,7 @@ def _gqa_fwd_ws_persistent_kernel(
                         loop_range = T.ceildiv(seq_len, block_n)
 
                         T.tma_copy(
-                            q[tile_b, row_base + half_m:row_base + block_m, tile_h, :],
+                            q[tile_b, row_base + half_m : row_base + block_m, tile_h, :],
                             q_shared_2,
                             barrier=q_full_2,
                         )
@@ -331,9 +399,23 @@ def _gqa_fwd_ws_persistent_kernel(
                             T.sync_threads(barrier_id=2, arrive_count=256)
                             if n_idx == 0:
                                 if gi_kc2 % 2 == 0:
-                                    T.wgmma_gemm(q_shared_2, k_smem_0, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_2,
+                                        k_smem_0,
+                                        acc_s_2,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 else:
-                                    T.wgmma_gemm(q_shared_2, k_smem_1, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_2,
+                                        k_smem_1,
+                                        acc_s_2,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 T.named_barrier_arrive(1, 256)
                                 T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=64)
@@ -342,14 +424,38 @@ def _gqa_fwd_ws_persistent_kernel(
                                 T.copy(acc_s_2, acc_s_cast_2)
                             else:
                                 if gi_kc2 % 2 == 0:
-                                    T.wgmma_gemm(q_shared_2, k_smem_0, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_2,
+                                        k_smem_0,
+                                        acc_s_2,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 else:
-                                    T.wgmma_gemm(q_shared_2, k_smem_1, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                    T.wgmma_gemm(
+                                        q_shared_2,
+                                        k_smem_1,
+                                        acc_s_2,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=True,
+                                    )
                                 T.barrier_wait(v_full, gi_vc2 % 2)
                                 if gi_vc2 % 2 == 0:
-                                    T.wgmma_gemm(acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                                    T.wgmma_gemm(
+                                        acc_s_cast_2,
+                                        v_smem_0,
+                                        acc_o_2,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                    )
                                 else:
-                                    T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                                    T.wgmma_gemm(
+                                        acc_s_cast_2,
+                                        v_smem_1,
+                                        acc_o_2,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                    )
                                 T.named_barrier_arrive(1, 256)
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=64)
@@ -365,9 +471,13 @@ def _gqa_fwd_ws_persistent_kernel(
 
                         T.barrier_wait(v_full, gi_vc2 % 2)
                         if gi_vc2 % 2 == 0:
-                            T.wgmma_gemm(acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                            T.wgmma_gemm(
+                                acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow
+                            )
                         else:
-                            T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                            T.wgmma_gemm(
+                                acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow
+                            )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                         T.barrier_arrive(v_empty)
@@ -377,10 +487,13 @@ def _gqa_fwd_ws_persistent_kernel(
                         T.copy(acc_o_2, q_shared_2)
                         T.fence_proxy_async()
                         T.sync_threads(barrier_id=4, arrive_count=128)
-                        T.copy(q_shared_2, output[tile_b, row_base + half_m:row_base + block_m, tile_h, :])
+                        T.copy(
+                            q_shared_2,
+                            output[tile_b, row_base + half_m : row_base + block_m, tile_h, :],
+                        )
                         for i in T.Parallel(half_m):
                             ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * scale
-                        T.copy(ls_2, lse[tile_b, tile_h, row_base + half_m:row_base + block_m])
+                        T.copy(ls_2, lse[tile_b, tile_h, row_base + half_m : row_base + block_m])
 
         return main
 
@@ -439,12 +552,21 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
         softmax_1 = make_online_softmax_with_mask_guard(scale, accum_dtype, half_m, block_n)
         softmax_2 = make_online_softmax_with_mask_guard(scale, accum_dtype, half_m, block_n)
-        apply_softcap_1 = _make_apply_softcap_no_mask_guard(
-            score_scale, softcap, accum_dtype, half_m, block_n) if use_softcap else None
-        apply_softcap_2 = _make_apply_softcap_no_mask_guard(
-            score_scale, softcap, accum_dtype, half_m, block_n) if use_softcap else None
-        apply_softcap_causal_mask = _make_apply_softcap_causal_mask(
-            score_scale, softcap, accum_dtype, half_m, block_n) if use_softcap else None
+        apply_softcap_1 = (
+            _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, half_m, block_n)
+            if use_softcap
+            else None
+        )
+        apply_softcap_2 = (
+            _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, half_m, block_n)
+            if use_softcap
+            else None
+        )
+        apply_softcap_causal_mask = (
+            _make_apply_softcap_causal_mask(score_scale, softcap, accum_dtype, half_m, block_n)
+            if use_softcap
+            else None
+        )
         rescale_1 = make_rescale(half_m, dim)
         rescale_2 = make_rescale(half_m, dim)
 
@@ -488,10 +610,12 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                 q_full_1 = T.alloc_barrier(arrive_count=128)
                 q_full_2 = T.alloc_barrier(arrive_count=128)
 
-                T.annotate_layout({
-                    q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
-                    q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
-                })
+                T.annotate_layout(
+                    {
+                        q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
+                        q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
+                    }
+                )
                 T.sync_threads()
 
                 gi_kp = T.alloc_var("int32", init=0)
@@ -522,13 +646,23 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                 T.barrier_wait(k_empty, (gi_kp + 1) % 2)
                                 if gi_kp % 2 == 0:
                                     T.tma_copy(
-                                        k[tile_b, n_idx * block_n:(n_idx + 1) * block_n, head_kv, :],
+                                        k[
+                                            tile_b,
+                                            n_idx * block_n : (n_idx + 1) * block_n,
+                                            head_kv,
+                                            :,
+                                        ],
                                         k_smem_0,
                                         barrier=k_full,
                                     )
                                 else:
                                     T.tma_copy(
-                                        k[tile_b, n_idx * block_n:(n_idx + 1) * block_n, head_kv, :],
+                                        k[
+                                            tile_b,
+                                            n_idx * block_n : (n_idx + 1) * block_n,
+                                            head_kv,
+                                            :,
+                                        ],
                                         k_smem_1,
                                         barrier=k_full,
                                     )
@@ -537,13 +671,23 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.barrier_wait(v_empty, (gi_vp + 1) % 2)
                                     if gi_vp % 2 == 0:
                                         T.tma_copy(
-                                            v[tile_b, (n_idx - 1) * block_n:n_idx * block_n, head_kv, :],
+                                            v[
+                                                tile_b,
+                                                (n_idx - 1) * block_n : n_idx * block_n,
+                                                head_kv,
+                                                :,
+                                            ],
                                             v_smem_0,
                                             barrier=v_full,
                                         )
                                     else:
                                         T.tma_copy(
-                                            v[tile_b, (n_idx - 1) * block_n:n_idx * block_n, head_kv, :],
+                                            v[
+                                                tile_b,
+                                                (n_idx - 1) * block_n : n_idx * block_n,
+                                                head_kv,
+                                                :,
+                                            ],
                                             v_smem_1,
                                             barrier=v_full,
                                         )
@@ -554,13 +698,23 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             T.barrier_wait(v_empty, (gi_vp + 1) % 2)
                             if gi_vp % 2 == 0:
                                 T.tma_copy(
-                                    v[tile_b, (loop_range - 1) * block_n:loop_range * block_n, head_kv, :],
+                                    v[
+                                        tile_b,
+                                        (loop_range - 1) * block_n : loop_range * block_n,
+                                        head_kv,
+                                        :,
+                                    ],
                                     v_smem_0,
                                     barrier=v_full,
                                 )
                             else:
                                 T.tma_copy(
-                                    v[tile_b, (loop_range - 1) * block_n:loop_range * block_n, head_kv, :],
+                                    v[
+                                        tile_b,
+                                        (loop_range - 1) * block_n : loop_range * block_n,
+                                        head_kv,
+                                        :,
+                                    ],
                                     v_smem_1,
                                     barrier=v_full,
                                 )
@@ -583,7 +737,11 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             row_base = tile_m * block_m
                             loop_range = T.ceildiv((tile_m + 1) * block_m, block_n)
 
-                            T.tma_copy(q[tile_b, row_base:row_base + half_m, tile_h, :], q_shared_1, barrier=q_full_1)
+                            T.tma_copy(
+                                q[tile_b, row_base : row_base + half_m, tile_h, :],
+                                q_shared_1,
+                                barrier=q_full_1,
+                            )
                             T.barrier_arrive(q_full_1)
                             T.barrier_wait(q_full_1, gi_q1 % 2)
                             gi_q1 = gi_q1 + 1
@@ -597,16 +755,31 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                 T.sync_threads(barrier_id=1, arrive_count=256)
                                 if n_idx == 0:
                                     if gi_kc1 % 2 == 0:
-                                        T.wgmma_gemm(q_shared_1, k_smem_0, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_1,
+                                            k_smem_0,
+                                            acc_s_1,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     else:
-                                        T.wgmma_gemm(q_shared_1, k_smem_1, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_1,
+                                            k_smem_1,
+                                            acc_s_1,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     T.named_barrier_arrive(2, 256)
                                     T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
                                     if use_softcap and n_idx == loop_range - 1:
                                         apply_softcap_causal_mask(
-                                            acc_s_1, row_base, n_idx * block_n)
+                                            acc_s_1, row_base, n_idx * block_n
+                                        )
                                     elif use_softcap:
                                         apply_softcap_1(acc_s_1)
                                     elif n_idx == loop_range - 1:
@@ -620,21 +793,46 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.copy(acc_s_1, acc_s_cast_1)
                                 else:
                                     if gi_kc1 % 2 == 0:
-                                        T.wgmma_gemm(q_shared_1, k_smem_0, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_1,
+                                            k_smem_0,
+                                            acc_s_1,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     else:
-                                        T.wgmma_gemm(q_shared_1, k_smem_1, acc_s_1, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_1,
+                                            k_smem_1,
+                                            acc_s_1,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     T.barrier_wait(v_full, gi_vc1 % 2)
                                     if gi_vc1 % 2 == 0:
-                                        T.wgmma_gemm(acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                                        T.wgmma_gemm(
+                                            acc_s_cast_1,
+                                            v_smem_0,
+                                            acc_o_1,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                        )
                                     else:
-                                        T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                                        T.wgmma_gemm(
+                                            acc_s_cast_1,
+                                            v_smem_1,
+                                            acc_o_1,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                        )
                                     T.named_barrier_arrive(2, 256)
                                     T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
                                     if use_softcap and n_idx == loop_range - 1:
                                         apply_softcap_causal_mask(
-                                            acc_s_1, row_base, n_idx * block_n)
+                                            acc_s_1, row_base, n_idx * block_n
+                                        )
                                     elif use_softcap:
                                         apply_softcap_1(acc_s_1)
                                     elif n_idx == loop_range - 1:
@@ -655,9 +853,13 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
                             T.barrier_wait(v_full, gi_vc1 % 2)
                             if gi_vc1 % 2 == 0:
-                                T.wgmma_gemm(acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                                T.wgmma_gemm(
+                                    acc_s_cast_1, v_smem_0, acc_o_1, policy=T.GemmWarpPolicy.FullRow
+                                )
                             else:
-                                T.wgmma_gemm(acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow)
+                                T.wgmma_gemm(
+                                    acc_s_cast_1, v_smem_1, acc_o_1, policy=T.GemmWarpPolicy.FullRow
+                                )
                             T.wait_wgmma(0)
                             T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                             T.barrier_arrive(v_empty)
@@ -667,7 +869,9 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             T.copy(acc_o_1, q_shared_1)
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=3, arrive_count=128)
-                            T.copy(q_shared_1, output[tile_b, row_base:row_base + half_m, tile_h, :])
+                            T.copy(
+                                q_shared_1, output[tile_b, row_base : row_base + half_m, tile_h, :]
+                            )
 
                 else:
                     T.inc_max_nreg(240)
@@ -685,7 +889,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             loop_range = T.ceildiv((tile_m + 1) * block_m, block_n)
 
                             T.tma_copy(
-                                q[tile_b, row_base + half_m:row_base + block_m, tile_h, :],
+                                q[tile_b, row_base + half_m : row_base + block_m, tile_h, :],
                                 q_shared_2,
                                 barrier=q_full_2,
                             )
@@ -702,16 +906,31 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                 T.sync_threads(barrier_id=2, arrive_count=256)
                                 if n_idx == 0:
                                     if gi_kc2 % 2 == 0:
-                                        T.wgmma_gemm(q_shared_2, k_smem_0, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_2,
+                                            k_smem_0,
+                                            acc_s_2,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     else:
-                                        T.wgmma_gemm(q_shared_2, k_smem_1, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_2,
+                                            k_smem_1,
+                                            acc_s_2,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     T.named_barrier_arrive(1, 256)
                                     T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
                                     if use_softcap and n_idx == loop_range - 1:
                                         apply_softcap_causal_mask(
-                                            acc_s_2, row_base + half_m, n_idx * block_n)
+                                            acc_s_2, row_base + half_m, n_idx * block_n
+                                        )
                                     elif use_softcap:
                                         apply_softcap_2(acc_s_2)
                                     elif n_idx == loop_range - 1:
@@ -725,21 +944,46 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.copy(acc_s_2, acc_s_cast_2)
                                 else:
                                     if gi_kc2 % 2 == 0:
-                                        T.wgmma_gemm(q_shared_2, k_smem_0, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_2,
+                                            k_smem_0,
+                                            acc_s_2,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     else:
-                                        T.wgmma_gemm(q_shared_2, k_smem_1, acc_s_2, transpose_B=True, policy=T.GemmWarpPolicy.FullRow, clear_accum=True)
+                                        T.wgmma_gemm(
+                                            q_shared_2,
+                                            k_smem_1,
+                                            acc_s_2,
+                                            transpose_B=True,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                            clear_accum=True,
+                                        )
                                     T.barrier_wait(v_full, gi_vc2 % 2)
                                     if gi_vc2 % 2 == 0:
-                                        T.wgmma_gemm(acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                                        T.wgmma_gemm(
+                                            acc_s_cast_2,
+                                            v_smem_0,
+                                            acc_o_2,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                        )
                                     else:
-                                        T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                                        T.wgmma_gemm(
+                                            acc_s_cast_2,
+                                            v_smem_1,
+                                            acc_o_2,
+                                            policy=T.GemmWarpPolicy.FullRow,
+                                        )
                                     T.named_barrier_arrive(1, 256)
                                     T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
                                     if use_softcap and n_idx == loop_range - 1:
                                         apply_softcap_causal_mask(
-                                            acc_s_2, row_base + half_m, n_idx * block_n)
+                                            acc_s_2, row_base + half_m, n_idx * block_n
+                                        )
                                     elif use_softcap:
                                         apply_softcap_2(acc_s_2)
                                     elif n_idx == loop_range - 1:
@@ -760,9 +1004,13 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
                             T.barrier_wait(v_full, gi_vc2 % 2)
                             if gi_vc2 % 2 == 0:
-                                T.wgmma_gemm(acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                                T.wgmma_gemm(
+                                    acc_s_cast_2, v_smem_0, acc_o_2, policy=T.GemmWarpPolicy.FullRow
+                                )
                             else:
-                                T.wgmma_gemm(acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow)
+                                T.wgmma_gemm(
+                                    acc_s_cast_2, v_smem_1, acc_o_2, policy=T.GemmWarpPolicy.FullRow
+                                )
                             T.wait_wgmma(0)
                             T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                             T.barrier_arrive(v_empty)
@@ -772,7 +1020,10 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             T.copy(acc_o_2, q_shared_2)
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=4, arrive_count=128)
-                            T.copy(q_shared_2, output[tile_b, row_base + half_m:row_base + block_m, tile_h, :])
+                            T.copy(
+                                q_shared_2,
+                                output[tile_b, row_base + half_m : row_base + block_m, tile_h, :],
+                            )
 
         return main
 
@@ -806,14 +1057,18 @@ class GQAFwdWsPersistentKernel(Kernel):
         self.dim = dim
         self.is_causal = is_causal
         self.dtype = dtype
-        self.kernel = _gqa_fwd_ws_persistent_kernel(batch, heads, heads_kv, seq_len, dim, self.dtype_str)
+        self.kernel = _gqa_fwd_ws_persistent_kernel(
+            batch, heads, heads_kv, seq_len, dim, self.dtype_str
+        )
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         return {"block_m": 128, "block_n": 128}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.kernel(self.config["block_m"], self.config["block_n"])(q, k, v)
 
 
@@ -834,26 +1089,41 @@ class GQAFwdWsPersistentCausalKernel(PackedPrefillKernel):
         if not self.is_causal:
             raise ValueError("GQAFwdWsPersistentCausalKernel only supports causal forward.")
         if self.dtype not in ATTENTION_DTYPES:
-            raise ValueError("GQAFwdWsPersistentCausalKernel currently supports float16/bfloat16 only.")
+            raise ValueError(
+                "GQAFwdWsPersistentCausalKernel currently supports float16/bfloat16 only."
+            )
         if self.max_seqlen_q != self.max_seqlen_kv:
             raise ValueError(
-                "GQAFwdWsPersistentCausalKernel requires max_seqlen_q == max_seqlen_kv.")
+                "GQAFwdWsPersistentCausalKernel requires max_seqlen_q == max_seqlen_kv."
+            )
 
     def _build_program(self) -> None:
         self.kernel = _gqa_fwd_ws_persistent_causal_kernel(
-            self.batch, self.heads, self.heads_kv, self.max_seqlen_q, self.dim,
-            self.sm_scale, self.softcap, self.dtype_str)
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.max_seqlen_q,
+            self.dim,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )
 
     @property
     def default_config(self) -> dict:
         return {"block_m": 128, "block_n": 128}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                cu_seqlens_q: torch.Tensor, cu_seqlens_kv: torch.Tensor,
-                q_scale: Optional[torch.Tensor] = None,
-                k_scale: Optional[torch.Tensor] = None,
-                v_scale: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
-        output = self.kernel(self.config["block_m"], self.config["block_n"])(
-            q_bshd, k_bshd, v_bshd)
+        output = self.kernel(self.config["block_m"], self.config["block_n"])(q_bshd, k_bshd, v_bshd)
         return output.reshape(q.shape)

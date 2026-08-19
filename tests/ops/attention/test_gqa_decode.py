@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -16,28 +15,37 @@ class GroupedQueryAttentionDecodeTest(GroupedQueryAttentionDecodeWorkload, TestB
 
 class GroupedQueryAttentionDecodeFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", [
-            pytest.param(1, 32, 8, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 32, 8, 8192, 128, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 16, 2, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(8, 64, 16, 8192, 128, torch.float16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, heads, heads_kv, seq_len_kv, dim, dtype, tune",
+            [
+                pytest.param(1, 32, 8, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 32, 8, 8192, 128, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 16, 2, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(8, 64, 16, 8192, 128, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
 @GroupedQueryAttentionDecodeFixture
-def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
-                    dtype: torch.dtype, tune: bool) -> None:
+def test_gqa_decode(
+    batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int, dtype: torch.dtype, tune: bool
+) -> None:
     test = GroupedQueryAttentionDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
-    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(batch, heads, heads_kv, seq_len_kv, dim, tune=tune)
+    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(
+        batch, heads, heads_kv, seq_len_kv, dim, tune=tune
+    )
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("sm_scale, softcap", [
-    pytest.param(0.25, None, id="custom-sm-scale"),
-    pytest.param(None, 2.0, id="softcap"),
-])
+@pytest.mark.parametrize(
+    "sm_scale, softcap",
+    [
+        pytest.param(0.25, None, id="custom-sm-scale"),
+        pytest.param(None, 2.0, id="softcap"),
+    ],
+)
 def test_gqa_decode_softmax_controls(sm_scale: float | None, softcap: float | None) -> None:
     batch, heads, heads_kv, seq_len_kv, dim = 1, 16, 4, 1024, 64
     dtype = torch.float16
@@ -137,8 +145,13 @@ def test_gqa_decode_bs1_runtime_context_switch() -> None:
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128)
     kernel = op._get_kernel(torch.float16)
     assert kernel.__class__.__name__ == "GQADecodeBs1Kernel"
-    for real, tier in ((6000, "ctx"), (3072, "ctx"), (2048, "ctx"), (1024, "ctx"),
-                       (512, "no_split")):
+    for real, tier in (
+        (6000, "ctx"),
+        (3072, "ctx"),
+        (2048, "ctx"),
+        (1024, "ctx"),
+        (512, "no_split"),
+    ):
         assert kernel._select_tier(real) == tier
         test = GroupedQueryAttentionDecodeTest(1, 32, 4, real, 128, torch.float16)
         test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)

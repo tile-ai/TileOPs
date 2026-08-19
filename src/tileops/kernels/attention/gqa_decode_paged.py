@@ -23,9 +23,7 @@ def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
         raise ValueError("page_size must be positive")
 
     block_ns = tuple(
-        block_n
-        for block_n in (128, 64)
-        if block_n <= page_size and page_size % block_n == 0
+        block_n for block_n in (128, 64) if block_n <= page_size and page_size % block_n == 0
     )
     if block_ns:
         return block_ns
@@ -38,12 +36,14 @@ def gqa_decode_paged_block_n(page_size: int) -> int:
     """Return the widest page-contained N tile supported by generic paged decode."""
     return gqa_decode_paged_block_ns(page_size)[0]
 
+
 # JIT kernel: no-split variant (paged)
 
 
 @functools.lru_cache(maxsize=32)
 def _gqa_decode_no_split_paged_kernel(
-        batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype):
+    batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype
+):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
@@ -54,9 +54,9 @@ def _gqa_decode_no_split_paged_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _func(block_H, block_N, num_stages, threads):
-
         shape_q = [batch, heads, dim]
         shape_kv = [seqlen_kv, groups, dim]
         kv_group_num = heads // groups
@@ -64,22 +64,23 @@ def _gqa_decode_no_split_paged_kernel(
         valid_block_H = min(block_H, kv_group_num)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
-        apply_softcap = make_apply_softcap(
-            score_scale, softcap, accum_dtype, block_H, block_N) if use_softcap else None
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_H, block_N)
+            if use_softcap
+            else None
+        )
         rescale = make_rescale(block_H, dim)
 
         @T.prim_func
         def gqa_decode_no_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.Tensor([batch], T.int32),
-                block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
-                Output: T.Tensor([batch, heads, dim], dtype),
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_kv, dtype),
+            V: T.Tensor(shape_kv, dtype),
+            real_seqlen_kv: T.Tensor([batch], T.int32),
+            block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
+            Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(
-                    batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
-
+            with T.Kernel(batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -98,7 +99,7 @@ def _gqa_decode_no_split_paged_kernel(
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
                 seqlen_kv_b = real_seqlen_kv[bid]
 
-                T.copy(Q[bid, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
+                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -109,34 +110,50 @@ def _gqa_decode_no_split_paged_kernel(
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     page_idx = k // num_blockn_in_page
                     block_idx_in_page = k % num_blockn_in_page
-                    blockn_num_offset = block_table[
-                        bid, page_idx] * num_blockn_in_page + block_idx_in_page
+                    blockn_num_offset = (
+                        block_table[bid, page_idx] * num_blockn_in_page + block_idx_in_page
+                    )
 
                     T.copy(
-                        K[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
-                          cur_kv_head, :], K_shared)
+                        K[
+                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        K_shared,
+                    )
                     # Issue both K/V loads before QK so copies can overlap the GEMMs.
                     T.copy(
-                        V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
-                          cur_kv_head, :], V_shared)
+                        V[
+                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        V_shared,
+                    )
                     T.clear(acc_s)
                     T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                        Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                    )
                     for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.if_then_else((k * block_N + j < seqlen_kv_b), acc_s[i, j],
-                                                     -T.infinity(accum_dtype))
+                        acc_s[i, j] = T.if_then_else(
+                            (k * block_N + j < seqlen_kv_b), acc_s[i, j], -T.infinity(accum_dtype)
+                        )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
+                    online_softmax(
+                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                    )
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.copy(
-                        V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
-                          cur_kv_head, :], V_shared)
+                        V[
+                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        V_shared,
+                    )
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
@@ -145,7 +162,7 @@ def _gqa_decode_no_split_paged_kernel(
                     logsum[i] = T.log2(logsum_safe) + scores_max[i] * scale
 
                 T.copy(acc_o[:valid_block_H, :], O_shared)
-                T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
+                T.copy(O_shared, Output[bid, hid * valid_block_H : (hid + 1) * valid_block_H, :])
 
         return gqa_decode_no_split
 
@@ -157,7 +174,8 @@ def _gqa_decode_no_split_paged_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _gqa_decode_split_paged_kernel(
-        batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype):
+    batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype
+):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
@@ -168,9 +186,9 @@ def _gqa_decode_split_paged_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _func(block_H, block_N, num_split, num_stages, threads):
-
         shape_q = [batch, heads, dim]
         shape_kv = [seqlen_kv, groups, dim]
         shape_o = [batch, heads, dim]
@@ -180,23 +198,29 @@ def _gqa_decode_split_paged_kernel(
         valid_block_H = min(block_H, kv_group_num)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
-        apply_softcap = make_apply_softcap(
-            score_scale, softcap, accum_dtype, block_H, block_N) if use_softcap else None
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_H, block_N)
+            if use_softcap
+            else None
+        )
         rescale = make_rescale(block_H, dim)
 
         @T.macro
         def _gqa_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.Tensor([batch], T.int32),
-                block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                split_length: T.Tensor([batch, num_split], "int32"),
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_kv, dtype),
+            V: T.Tensor(shape_kv, dtype),
+            real_seqlen_kv: T.Tensor([batch], T.int32),
+            block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
+            glse: T.Tensor([batch, heads, num_split], dtype),
+            Output_partial: T.Tensor(part_shape, dtype),
+            split_length: T.Tensor([batch, num_split], "int32"),
         ):
-            with T.Kernel(
-                    batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
+            with T.Kernel(batch, heads // valid_block_H, num_split, threads=threads) as (
+                bx,
+                by,
+                bz,
+            ):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -218,15 +242,16 @@ def _gqa_decode_split_paged_kernel(
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
                 seqlen_kv_b = real_seqlen_kv[bid]
 
-                T.copy(Q[bid, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
+                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 # Per-batch loop_range: only iterate blocks that are within real_seqlen_kv[bid],
                 # so shorter batches (e.g. batch1 with 2048) don't run empty splits -> all -inf -> NaN
-                start_block_sid = T.if_then_else(sid > 0, split_length_shared[sid - 1] // block_N,
-                                                 0)
+                start_block_sid = T.if_then_else(
+                    sid > 0, split_length_shared[sid - 1] // block_N, 0
+                )
                 end_block_valid = T.ceildiv(seqlen_kv_b, block_N)
                 blocks_valid_this_split = end_block_valid - start_block_sid
                 blocks_in_split = T.if_then_else(
@@ -251,36 +276,52 @@ def _gqa_decode_split_paged_kernel(
                     k_global += offset
                     page_idx = k_global // num_blockn_in_page
                     block_idx_in_page = k_global % num_blockn_in_page
-                    blockn_num_offset = block_table[
-                        bid, page_idx] * num_blockn_in_page + block_idx_in_page
+                    blockn_num_offset = (
+                        block_table[bid, page_idx] * num_blockn_in_page + block_idx_in_page
+                    )
 
                     T.copy(
-                        K[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
-                          cur_kv_head, :], K_shared)
+                        K[
+                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        K_shared,
+                    )
                     # Issue both K/V loads before QK so copies can overlap the GEMMs.
                     T.copy(
-                        V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
-                          cur_kv_head, :], V_shared)
+                        V[
+                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        V_shared,
+                    )
                     T.clear(acc_s)
                     T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                        Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                    )
                     start_sid = T.if_then_else(sid > 0, split_length_shared[sid - 1], 0)
                     for i, j in T.Parallel(block_H, block_N):
                         logical_pos = start_sid + k * block_N + j
-                        acc_s[i, j] = T.if_then_else(logical_pos < seqlen_kv_b, acc_s[i, j],
-                                                     -T.infinity(accum_dtype))
+                        acc_s[i, j] = T.if_then_else(
+                            logical_pos < seqlen_kv_b, acc_s[i, j], -T.infinity(accum_dtype)
+                        )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
+                    online_softmax(
+                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                    )
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.copy(
-                        V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
-                          cur_kv_head, :], V_shared)
+                        V[
+                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        V_shared,
+                    )
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     # When loop_range was 0 (split entirely beyond real_seqlen_kv), logsum=0 -> avoid 0/0
@@ -294,14 +335,16 @@ def _gqa_decode_split_paged_kernel(
                     if i < valid_block_H:
                         glse[bid, hid * valid_block_H + i, sid] = logsum[i]
                 T.copy(acc_o[:valid_block_H, :], O_shared)
-                T.copy(O_shared, Output_partial[bid, hid * valid_block_H:(hid + 1) * valid_block_H,
-                                                sid, :])
+                T.copy(
+                    O_shared,
+                    Output_partial[bid, hid * valid_block_H : (hid + 1) * valid_block_H, sid, :],
+                )
 
         @T.macro
         def combine(
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                Output: T.Tensor(shape_o, dtype),
+            glse: T.Tensor([batch, heads, num_split], dtype),
+            Output_partial: T.Tensor(part_shape, dtype),
+            Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
                 #
@@ -331,18 +374,19 @@ def _gqa_decode_split_paged_kernel(
 
         @T.prim_func
         def gqa_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.Tensor([batch], T.int32),
-                block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                split_length: T.Tensor([batch, num_split], "int32"),
-                Output: T.Tensor(shape_o, dtype),
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_kv, dtype),
+            V: T.Tensor(shape_kv, dtype),
+            real_seqlen_kv: T.Tensor([batch], T.int32),
+            block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
+            glse: T.Tensor([batch, heads, num_split], dtype),
+            Output_partial: T.Tensor(part_shape, dtype),
+            split_length: T.Tensor([batch, num_split], "int32"),
+            Output: T.Tensor(shape_o, dtype),
         ):
-            _gqa_decode_split(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial,
-                              split_length)
+            _gqa_decode_split(
+                Q, K, V, real_seqlen_kv, block_table, glse, Output_partial, split_length
+            )
             combine(glse, Output_partial, Output)
 
         return gqa_decode_split
@@ -355,49 +399,111 @@ def _gqa_decode_split_paged_kernel(
 
 @torch.library.custom_op("top::gqa_decode_paged_no_split_op", mutates_args=())
 def _gqa_decode_paged_no_split_op(
-        batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
-        sm_scale: float, softcap: float, dtype: str, block_H: int, block_N: int,
-        num_stages: int, threads: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-        real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
-    return _gqa_decode_no_split_paged_kernel(batch, heads, groups, seqlen_kv, dim, page_size,
-                                             sm_scale, softcap, dtype)(block_H, block_N,
-                                                                       num_stages, threads)(
-                                                                           Q, K, V,
-                                                                           real_seqlen_kv,
-                                                                           block_table)
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    real_seqlen_kv: torch.Tensor,
+    block_table: torch.Tensor,
+) -> torch.Tensor:
+    return _gqa_decode_no_split_paged_kernel(
+        batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype
+    )(block_H, block_N, num_stages, threads)(Q, K, V, real_seqlen_kv, block_table)
 
 
 @_gqa_decode_paged_no_split_op.register_fake
-def _(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
-      sm_scale: float, softcap: float, dtype: str, block_H: int, block_N: int, num_stages: int, threads: int,
-      Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: torch.Tensor,
-      block_table: torch.Tensor) -> torch.Tensor:
+def _(
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    real_seqlen_kv: torch.Tensor,
+    block_table: torch.Tensor,
+) -> torch.Tensor:
     return torch.empty_like(Q)
 
 
 @torch.library.custom_op("top::gqa_decode_paged_split_op", mutates_args=())
 def _gqa_decode_paged_split_op(
-        batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
-        sm_scale: float, softcap: float, dtype: str, block_H: int, block_N: int,
-        num_stages: int, threads: int, num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-        real_seqlen_kv: torch.Tensor, block_table: torch.Tensor, glse: torch.Tensor,
-        Output_partial: torch.Tensor,
-        acc_split_length: torch.Tensor) -> torch.Tensor:
-    return _gqa_decode_split_paged_kernel(batch, heads, groups, seqlen_kv, dim, page_size,
-                                          sm_scale, softcap, dtype)(block_H, block_N, num_split,
-                                                                    num_stages, threads)(
-                                                                        Q, K, V, real_seqlen_kv,
-                                                                        block_table, glse,
-                                                                        Output_partial,
-                                                                        acc_split_length)
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    num_split: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    real_seqlen_kv: torch.Tensor,
+    block_table: torch.Tensor,
+    glse: torch.Tensor,
+    Output_partial: torch.Tensor,
+    acc_split_length: torch.Tensor,
+) -> torch.Tensor:
+    return _gqa_decode_split_paged_kernel(
+        batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype
+    )(block_H, block_N, num_split, num_stages, threads)(
+        Q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length
+    )
 
 
 @_gqa_decode_paged_split_op.register_fake
-def _(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
-      sm_scale: float, softcap: float, dtype: str, block_H: int, block_N: int, num_stages: int, threads: int,
-      num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-      real_seqlen_kv: torch.Tensor, block_table: torch.Tensor, glse: torch.Tensor,
-      Output_partial: torch.Tensor, acc_split_length: torch.Tensor) -> torch.Tensor:
+def _(
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    num_split: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    real_seqlen_kv: torch.Tensor,
+    block_table: torch.Tensor,
+    glse: torch.Tensor,
+    Output_partial: torch.Tensor,
+    acc_split_length: torch.Tensor,
+) -> torch.Tensor:
     return torch.empty_like(Q)
 
 
@@ -416,18 +522,20 @@ class GQADecodePagedKernel(Kernel):
         # wins wherever it applies.
         return True
 
-    def __init__(self,
-                 batch,
-                 heads,
-                 groups,
-                 seqlen_kv,
-                 dim,
-                 page_size,
-                 dtype="float16",
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune=False):
+    def __init__(
+        self,
+        batch,
+        heads,
+        groups,
+        seqlen_kv,
+        dim,
+        page_size,
+        dtype="float16",
+        sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
+        config: Optional[dict] = None,
+        tune=False,
+    ):
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -442,9 +550,7 @@ class GQADecodePagedKernel(Kernel):
         if config is not None:
             block_n = config.get("block_N")
             if block_n is not None and block_n not in self._supported_block_ns:
-                raise ValueError(
-                    f"block_N={block_n} is not supported for page_size={page_size}"
-                )
+                raise ValueError(f"block_N={block_n} is not supported for page_size={page_size}")
         if self.groups <= 0:
             raise ValueError("groups must be positive")
         if self.heads % self.groups != 0:
@@ -457,11 +563,27 @@ class GQADecodePagedKernel(Kernel):
             raise ValueError("seqlen_kv must be divisible by page_size")
 
         self.no_split_jit = _gqa_decode_no_split_paged_kernel(
-            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
-            self.sm_scale, self.softcap, self.dtype_str)
+            self.batch,
+            self.heads,
+            self.groups,
+            self.seqlen_kv,
+            self.dim,
+            self.page_size,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )
         self.split_jit = _gqa_decode_split_paged_kernel(
-            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
-            self.sm_scale, self.softcap, self.dtype_str)
+            self.batch,
+            self.heads,
+            self.groups,
+            self.seqlen_kv,
+            self.dim,
+            self.page_size,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )
 
         # autotune targets the split kernel
         self.kernel = self.split_jit
@@ -486,12 +608,16 @@ class GQADecodePagedKernel(Kernel):
                     if len(shape) == 1 and shape[0] == batch:
                         # real_seqlen_kv: [batch]
                         inputs.append(
-                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"))
+                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
+                        )
                     elif len(shape) == 2 and shape[1] == num_pages:
                         # block_table: [batch, num_pages] — sequential page indices
-                        t = torch.arange(
-                            num_pages, dtype=torch.int32,
-                            device="cuda").unsqueeze(0).expand(batch, -1).contiguous()
+                        t = (
+                            torch.arange(num_pages, dtype=torch.int32, device="cuda")
+                            .unsqueeze(0)
+                            .expand(batch, -1)
+                            .contiguous()
+                        )
                         inputs.append(t)
                     elif len(shape) == 2:
                         # acc_split_length (cumulative): [batch, num_split]
@@ -527,17 +653,26 @@ class GQADecodePagedKernel(Kernel):
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
-        configs = [{
-            'block_N': c[0],
-            'block_H': c[1],
-            'num_split': c[2],
-            'num_stages': c[3],
-            'threads': c[4]
-        } for c in _configs]
+        configs = [
+            {
+                "block_N": c[0],
+                "block_H": c[1],
+                "num_split": c[2],
+                "num_stages": c[3],
+                "threads": c[4],
+            }
+            for c in _configs
+        ]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor):
+    def forward(
+        self,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ):
         block_H = self.config["block_H"]
         block_N = self.config["block_N"]
         num_split = self.config["num_split"]
@@ -545,29 +680,66 @@ class GQADecodePagedKernel(Kernel):
         threads = self.config["threads"]
 
         # Dispatch: use no-split for short sequences where splitting is not beneficial
-        real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
+        real_max = (
+            real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
+        )
         threshold = num_split * block_N
         if real_max < threshold:
             return _gqa_decode_paged_no_split_op(
-                self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
-                self.sm_scale, self.softcap, self.dtype_str, block_H, block_N, num_stages, threads, Q, K, V,
-                real_seqlen_kv, block_table)
+                self.batch,
+                self.heads,
+                self.groups,
+                self.seqlen_kv,
+                self.dim,
+                self.page_size,
+                self.sm_scale,
+                self.softcap,
+                self.dtype_str,
+                block_H,
+                block_N,
+                num_stages,
+                threads,
+                Q,
+                K,
+                V,
+                real_seqlen_kv,
+                block_table,
+            )
 
         # Split path: compute cumulative per-split lengths
         chunk_size = real_max // (num_split * block_N) * block_N
-        split_length = torch.full((self.batch, num_split), chunk_size, dtype=torch.int32,
-                                  device=Q.device)
+        split_length = torch.full(
+            (self.batch, num_split), chunk_size, dtype=torch.int32, device=Q.device
+        )
         split_length[:, -1] = int(real_max - (num_split - 1) * chunk_size)
         acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
 
-        glse = torch.empty((self.batch, self.heads, num_split),
-                           dtype=self.dtype,
-                           device=Q.device)
-        Output_partial = torch.empty((self.batch, self.heads, num_split, self.dim),
-                                     dtype=self.dtype,
-                                     device=Q.device)
+        glse = torch.empty((self.batch, self.heads, num_split), dtype=self.dtype, device=Q.device)
+        Output_partial = torch.empty(
+            (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
+        )
 
         return _gqa_decode_paged_split_op(
-            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
-            self.sm_scale, self.softcap, self.dtype_str, block_H, block_N, num_stages, threads, num_split, Q, K, V,
-            real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
+            self.batch,
+            self.heads,
+            self.groups,
+            self.seqlen_kv,
+            self.dim,
+            self.page_size,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+            block_H,
+            block_N,
+            num_stages,
+            threads,
+            num_split,
+            Q,
+            K,
+            V,
+            real_seqlen_kv,
+            block_table,
+            glse,
+            Output_partial,
+            acc_split_length,
+        )

@@ -1,6 +1,5 @@
 """Test NativeSparseAttention operation."""
 
-
 import pytest
 import torch
 
@@ -15,21 +14,57 @@ class NsaFwdTest(NsaFwdWorkload, TestBase):
 
 class NsaFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
-         "groups, selected_blocks, dtype, accum_dtype, tune", [
-             pytest.param(
-                 1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
-                 marks=pytest.mark.smoke,
-             ),
-             pytest.param(
-                 4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
-                 marks=pytest.mark.full,
-             ),
-             pytest.param(
-                 2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False,
-                 marks=pytest.mark.full,
-             ),
-         ]),
+        (
+            "batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
+            "groups, selected_blocks, dtype, accum_dtype, tune",
+            [
+                pytest.param(
+                    1,
+                    16,
+                    1024,
+                    64,
+                    True,
+                    0.1,
+                    32,
+                    16,
+                    1,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    4,
+                    16,
+                    8192,
+                    64,
+                    True,
+                    0.1,
+                    32,
+                    16,
+                    1,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.full,
+                ),
+                pytest.param(
+                    2,
+                    16,
+                    8192,
+                    64,
+                    True,
+                    0.1,
+                    32,
+                    16,
+                    4,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.full,
+                ),
+            ],
+        ),
     ]
 
 
@@ -50,8 +85,19 @@ def test_nsa_varlen_op(
 ) -> None:
     assert groups % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaFwdTest(batch, heads, c_seq_len, dim, is_causal, scale, block_size, groups,
-                      selected_blocks, dtype, accum_dtype)
+    test = NsaFwdTest(
+        batch,
+        heads,
+        c_seq_len,
+        dim,
+        is_causal,
+        scale,
+        block_size,
+        groups,
+        selected_blocks,
+        dtype,
+        accum_dtype,
+    )
     params = {
         "batch": batch,
         "heads": heads,

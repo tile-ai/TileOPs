@@ -143,9 +143,7 @@ class RMSNormFwdOp(Op):
                 f"got {tuple(x.shape[-k:]) if x.ndim >= k else tuple(x.shape)}"
             )
         if tuple(weight.shape) != ns:
-            raise ValueError(
-                f"Expected weight shape {ns}, got {tuple(weight.shape)}"
-            )
+            raise ValueError(f"Expected weight shape {ns}, got {tuple(weight.shape)}")
 
         # The op normalizes contiguity and hands over what the manifest declares; how a
         # kernel wants that laid out is its own business.
@@ -154,9 +152,12 @@ class RMSNormFwdOp(Op):
         kernel = self.get_or_build_kernel(
             "rms_norm",
             (x, weight),
-            key=x.dtype,                      # this instance's in-tree cache key
+            key=x.dtype,  # this instance's in-tree cache key
             build=lambda: self.kernel_map["rms_norm"](
-                self.N, self.eps, x.dtype, tune=self.tune,
+                self.N,
+                self.eps,
+                x.dtype,
+                tune=self.tune,
             ),
         )
         self._last_m = x.numel() // self.N
@@ -172,14 +173,18 @@ class RMSNormFwdOp(Op):
 
 @torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())
 def _rms_norm_fwd(
-    x: torch.Tensor, weight: torch.Tensor, instance_key: str,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
 ) -> torch.Tensor:
     return get_instance(instance_key)._eager_forward(x, weight)
 
 
 @_rms_norm_fwd.register_fake
 def _rms_norm_fwd_fake(
-    x: torch.Tensor, weight: torch.Tensor, instance_key: str,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))

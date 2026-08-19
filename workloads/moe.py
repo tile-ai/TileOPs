@@ -21,7 +21,6 @@ class FusedTopKWorkload(WorkloadBase):
 
 
 class MoePermuteWorkload(WorkloadBase):
-
     def __init__(self, total_tokens, top_k, num_experts, hidden_size, dtype):
         self.total_tokens = total_tokens
         self.top_k = top_k
@@ -34,9 +33,11 @@ class MoePermuteWorkload(WorkloadBase):
             self.total_tokens, self.hidden_size, dtype=self.dtype, device="cuda"
         )
         topk_ids = torch.randint(
-            0, self.num_experts,
+            0,
+            self.num_experts,
             (self.total_tokens, self.top_k),
-            dtype=torch.int32, device="cuda",
+            dtype=torch.int32,
+            device="cuda",
         )
         return hidden_states, topk_ids
 
@@ -45,7 +46,6 @@ class MoePermuteWorkload(WorkloadBase):
 
 
 class MoePermuteAlignWorkload(WorkloadBase):
-
     def __init__(self, total_tokens: int, top_k: int, num_experts: int, block_size: int):
         self.total_tokens = total_tokens
         self.top_k = top_k
@@ -54,9 +54,11 @@ class MoePermuteAlignWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         topk_ids = torch.randint(
-            0, self.num_experts,
+            0,
+            self.num_experts,
             (self.total_tokens, self.top_k),
-            dtype=torch.int32, device="cuda",
+            dtype=torch.int32,
+            device="cuda",
         )
         return (topk_ids,)
 
@@ -67,7 +69,6 @@ class MoePermuteAlignWorkload(WorkloadBase):
 
 
 class MoeUnpermuteWorkload(WorkloadBase):
-
     def __init__(self, total_tokens, top_k, hidden_size, dtype):
         self.total_tokens = total_tokens
         self.top_k = top_k
@@ -79,9 +80,7 @@ class MoeUnpermuteWorkload(WorkloadBase):
         mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device="cuda")
         # fwd_idx: simulate a valid mapping: random shuffle of [0, numel)
         fwd_idx = torch.randperm(numel, dtype=torch.int32, device="cuda")
-        topk_weights = torch.rand(
-            self.total_tokens, self.top_k, dtype=torch.float32, device="cuda"
-        )
+        topk_weights = torch.rand(self.total_tokens, self.top_k, dtype=torch.float32, device="cuda")
         return mm2_pad, fwd_idx, topk_weights
 
     def ref_program(self, mm2_pad, fwd_idx, topk_weights):
@@ -188,23 +187,42 @@ class FusedMoeWorkload(WorkloadBase):
         torch.manual_seed(42)
         dev = "cuda"
         hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev,
+            self.num_tokens,
+            self.hidden_size,
+            dtype=self.dtype,
+            device=dev,
         )
         gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=torch.float32, device=dev,
+            self.num_tokens,
+            self.num_experts,
+            dtype=torch.float32,
+            device=dev,
         )
         correction_bias = (
             torch.randn(self.num_experts, dtype=torch.float32, device=dev) * 0.1
-            if self.with_correction_bias else None
+            if self.with_correction_bias
+            else None
         )
-        w_gate_up = torch.randn(
-            self.num_experts, self.ffn_size * 2, self.hidden_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        w_down = torch.randn(
-            self.num_experts, self.hidden_size, self.ffn_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
+        w_gate_up = (
+            torch.randn(
+                self.num_experts,
+                self.ffn_size * 2,
+                self.hidden_size,
+                dtype=self.dtype,
+                device=dev,
+            )
+            * 0.02
+        )
+        w_down = (
+            torch.randn(
+                self.num_experts,
+                self.hidden_size,
+                self.ffn_size,
+                dtype=self.dtype,
+                device=dev,
+            )
+            * 0.02
+        )
         return hidden, gating, correction_bias, w_gate_up, w_down
 
 
@@ -238,31 +256,41 @@ class SharedFusedMoeWorkload(WorkloadBase):
     def gen_inputs(self):
         torch.manual_seed(42)
         dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev
-        )
-        gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=self.dtype, device=dev
-        )
+        hidden = torch.randn(self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev)
+        gating = torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device=dev)
         correction_bias = (
             torch.randn(self.num_experts, dtype=torch.float32, device=dev) * 0.1
-            if self.with_correction_bias else None
+            if self.with_correction_bias
+            else None
         )
-        w_gate_up = torch.randn(
-            self.num_experts, self.ffn_size * 2, self.hidden_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        w_down = torch.randn(
-            self.num_experts, self.hidden_size, self.ffn_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
+        w_gate_up = (
+            torch.randn(
+                self.num_experts,
+                self.ffn_size * 2,
+                self.hidden_size,
+                dtype=self.dtype,
+                device=dev,
+            )
+            * 0.02
+        )
+        w_down = (
+            torch.randn(
+                self.num_experts,
+                self.hidden_size,
+                self.ffn_size,
+                dtype=self.dtype,
+                device=dev,
+            )
+            * 0.02
+        )
         # Shared expert weights: gate+up concatenated [2*Fs, H], down [H, Fs]
-        shared_w_gate_up = torch.randn(
-            self.shared_ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev
-        ) * 0.02
-        shared_w_down = torch.randn(
-            self.hidden_size, self.shared_ffn_size, dtype=self.dtype, device=dev
-        ) * 0.02
+        shared_w_gate_up = (
+            torch.randn(self.shared_ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev)
+            * 0.02
+        )
+        shared_w_down = (
+            torch.randn(self.hidden_size, self.shared_ffn_size, dtype=self.dtype, device=dev) * 0.02
+        )
         return hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
 
 
@@ -279,12 +307,24 @@ class MoeExpertsWorkload(WorkloadBase):
         torch.manual_seed(42)
         dev = "cuda"
         hidden = torch.randn(self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev)
-        w1 = torch.randn(self.num_experts, self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev) * 0.02
-        w2 = torch.randn(self.num_experts, self.hidden_size, self.ffn_size, dtype=self.dtype, device=dev) * 0.02
+        w1 = (
+            torch.randn(
+                self.num_experts, self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev
+            )
+            * 0.02
+        )
+        w2 = (
+            torch.randn(
+                self.num_experts, self.hidden_size, self.ffn_size, dtype=self.dtype, device=dev
+            )
+            * 0.02
+        )
         topk_weights = torch.softmax(
             torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev), dim=-1
         )
-        topk_ids = torch.randint(0, self.num_experts, (self.num_tokens, self.top_k), dtype=torch.int32, device=dev)
+        topk_ids = torch.randint(
+            0, self.num_experts, (self.num_tokens, self.top_k), dtype=torch.int32, device=dev
+        )
         return hidden, w1, w2, topk_weights, topk_ids
 
 
@@ -313,23 +353,41 @@ class MoeFusedActivationWorkload(WorkloadBase):
         torch.manual_seed(42)
         dev = "cuda"
         hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev,
+            self.num_tokens,
+            self.hidden_size,
+            dtype=self.dtype,
+            device=dev,
         )
-        w_gate_up = torch.randn(
-            self.num_experts, self.ffn_size * 2, self.hidden_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        w_down = torch.randn(
-            self.num_experts, self.hidden_size, self.ffn_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
+        w_gate_up = (
+            torch.randn(
+                self.num_experts,
+                self.ffn_size * 2,
+                self.hidden_size,
+                dtype=self.dtype,
+                device=dev,
+            )
+            * 0.02
+        )
+        w_down = (
+            torch.randn(
+                self.num_experts,
+                self.hidden_size,
+                self.ffn_size,
+                dtype=self.dtype,
+                device=dev,
+            )
+            * 0.02
+        )
         topk_weights = torch.softmax(
             torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev),
             dim=-1,
         )
         topk_ids = torch.randint(
-            0, self.num_experts,
-            (self.num_tokens, self.top_k), dtype=torch.int32, device=dev,
+            0,
+            self.num_experts,
+            (self.num_tokens, self.top_k),
+            dtype=torch.int32,
+            device=dev,
         )
         return hidden, w_gate_up, w_down, topk_weights, topk_ids
 

@@ -23,25 +23,40 @@ class MultiDimFixture(FixtureBase):
             [
                 # 3D: reduce two dims
                 pytest.param(
-                    (4, 32, 256), [0, 1], False, torch.float16,
+                    (4, 32, 256),
+                    [0, 1],
+                    False,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], False, torch.bfloat16,
+                    (4, 32, 256),
+                    [0, 1],
+                    False,
+                    torch.bfloat16,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], True, torch.float16,
+                    (4, 32, 256),
+                    [0, 1],
+                    True,
+                    torch.float16,
                     marks=pytest.mark.full,
                 ),
                 # 4D: reduce middle two dims
                 pytest.param(
-                    (2, 4, 8, 256), [1, 2], False, torch.float16,
+                    (2, 4, 8, 256),
+                    [1, 2],
+                    False,
+                    torch.float16,
                     marks=pytest.mark.full,
                 ),
                 # 4D: reduce first and last
                 pytest.param(
-                    (2, 4, 8, 256), [0, 3], False, torch.float16,
+                    (2, 4, 8, 256),
+                    [0, 3],
+                    False,
+                    torch.float16,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -63,7 +78,10 @@ def _tol(dtype: torch.dtype) -> dict:
 
 @MultiDimFixture
 def test_sum_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
@@ -78,7 +96,10 @@ def test_sum_multidim(
 
 @MultiDimFixture
 def test_mean_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import MeanFwdOp
 
@@ -93,7 +114,10 @@ def test_mean_multidim(
 
 @MultiDimFixture
 def test_amax_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
@@ -121,7 +145,10 @@ def test_prod_multidim_rejected() -> None:
 
 @MultiDimFixture
 def test_amin_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import AminFwdOp
 
@@ -139,7 +166,10 @@ def test_amin_multidim(
 
 @MultiDimFixture
 def test_var_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
@@ -154,7 +184,10 @@ def test_var_multidim(
 
 @MultiDimFixture
 def test_std_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
@@ -169,14 +202,20 @@ def test_std_multidim(
 
 @MultiDimFixture
 def test_var_mean_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = VarMeanFwdOp(dim=dims, keepdim=keepdim)
     ref_var = torch.var(
-        x.float(), dim=dims, keepdim=keepdim, correction=1,
+        x.float(),
+        dim=dims,
+        keepdim=keepdim,
+        correction=1,
     ).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
@@ -184,7 +223,9 @@ def test_var_mean_multidim(
     assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
     assert torch.allclose(var_out, ref_var, **tol), f"var err: {(var_out - ref_var).abs().max()}"
-    assert torch.allclose(mean_out, ref_mean, **tol), f"mean err: {(mean_out - ref_mean).abs().max()}"
+    assert torch.allclose(mean_out, ref_mean, **tol), (
+        f"mean err: {(mean_out - ref_mean).abs().max()}"
+    )
 
 
 # LogSumExp
@@ -192,7 +233,10 @@ def test_var_mean_multidim(
 
 @MultiDimFixture
 def test_logsumexp_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.softmax import LogSumExpFwdOp
 
@@ -214,19 +258,31 @@ class MultiDimLogicalFixture(FixtureBase):
             "shape, dims, keepdim, dtype",
             [
                 pytest.param(
-                    (4, 32, 256), [0, 1], False, torch.float32,
+                    (4, 32, 256),
+                    [0, 1],
+                    False,
+                    torch.float32,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], False, torch.bool,
+                    (4, 32, 256),
+                    [0, 1],
+                    False,
+                    torch.bool,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], False, torch.complex64,
+                    (4, 32, 256),
+                    [0, 1],
+                    False,
+                    torch.complex64,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], True, torch.float32,
+                    (4, 32, 256),
+                    [0, 1],
+                    True,
+                    torch.float32,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -235,7 +291,8 @@ class MultiDimLogicalFixture(FixtureBase):
 
 
 def _make_logical_input(
-    shape: tuple, dtype: torch.dtype,
+    shape: tuple,
+    dtype: torch.dtype,
 ) -> torch.Tensor:
     """Generate input tensor for logical reduce ops."""
     if dtype == torch.bool:
@@ -247,7 +304,10 @@ def _make_logical_input(
 
 @MultiDimLogicalFixture
 def test_all_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp
 
@@ -261,7 +321,10 @@ def test_all_multidim(
 
 @MultiDimLogicalFixture
 def test_any_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
@@ -279,15 +342,21 @@ class MultiDimCountFixture(FixtureBase):
             "shape, dims, dtype",
             [
                 pytest.param(
-                    (4, 32, 256), [0, 1], torch.float32,
+                    (4, 32, 256),
+                    [0, 1],
+                    torch.float32,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], torch.bool,
+                    (4, 32, 256),
+                    [0, 1],
+                    torch.bool,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], torch.complex64,
+                    (4, 32, 256),
+                    [0, 1],
+                    torch.complex64,
                     marks=pytest.mark.smoke,
                 ),
             ],
@@ -297,7 +366,9 @@ class MultiDimCountFixture(FixtureBase):
 
 @MultiDimCountFixture
 def test_count_nonzero_multidim(
-    shape: tuple, dims: list, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
@@ -321,14 +392,20 @@ def test_count_nonzero_multidim(
 
 @MultiDimFixture
 def test_l1_norm_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.vector_norm import L1NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = L1NormFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=1, dim=dims, keepdim=keepdim,
+        x.float(),
+        ord=1,
+        dim=dims,
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -338,14 +415,20 @@ def test_l1_norm_multidim(
 
 @MultiDimFixture
 def test_l2_norm_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.vector_norm import L2NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = L2NormFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=2, dim=dims, keepdim=keepdim,
+        x.float(),
+        ord=2,
+        dim=dims,
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -355,14 +438,20 @@ def test_l2_norm_multidim(
 
 @MultiDimFixture
 def test_inf_norm_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+    shape: tuple,
+    dims: list,
+    keepdim: bool,
+    dtype: torch.dtype,
 ) -> None:
     from tileops.ops.reduction.vector_norm import InfNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = InfNormFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=float("inf"), dim=dims, keepdim=keepdim,
+        x.float(),
+        ord=float("inf"),
+        dim=dims,
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     tol = _tol(dtype)

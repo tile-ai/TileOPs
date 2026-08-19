@@ -42,7 +42,13 @@ class SoftmaxFixture(FixtureBase):
             "shape, dim, dtype, tune",
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
-                pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                pytest.param(
+                    (32, 256),
+                    -1,
+                    torch.float32,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
                 # tune=True regression: kernel must be built before autotune runs
@@ -180,7 +186,13 @@ class LogSoftmaxFixture(FixtureBase):
             "shape, dim, dtype, tune",
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
-                pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                pytest.param(
+                    (32, 256),
+                    -1,
+                    torch.float32,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
                 # tune=True regression: kernel must be built before autotune runs
@@ -249,7 +261,13 @@ class LogSumExpFixture(FixtureBase):
             "shape, dim, dtype, tune",
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
-                pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                pytest.param(
+                    (32, 256),
+                    -1,
+                    torch.float32,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
                 # tune=True regression: kernel must be built before autotune runs
@@ -536,6 +554,7 @@ def _expected_implicit_dim(ndim: int) -> int:
 def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
     """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
     import warnings as _warnings
+
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = SoftmaxFwdOp(dim=None)
 
@@ -562,6 +581,7 @@ def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> Non
 def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
     """LogSoftmaxFwdOp(dim=None) must match F.log_softmax(x, dim=None) and warn."""
     import warnings as _warnings
+
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = LogSoftmaxFwdOp(dim=None)
 
@@ -588,6 +608,7 @@ def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) ->
 def test_softmax_dim_none_reused_across_ranks() -> None:
     """SoftmaxFwdOp(dim=None) must re-resolve per call across input ranks."""
     import warnings as _warnings
+
     op = SoftmaxFwdOp(dim=None)
 
     x1 = torch.randn(4, dtype=torch.float32, device="cuda")
@@ -615,6 +636,7 @@ def test_softmax_dim_none_reused_across_ranks() -> None:
 def test_log_softmax_dim_none_reused_across_ranks() -> None:
     """LogSoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation)."""
     import warnings as _warnings
+
     op = LogSoftmaxFwdOp(dim=None)
 
     x1 = torch.randn(4, dtype=torch.float32, device="cuda")
@@ -655,8 +677,7 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
     elem_bytes = dtype.itemsize
     assert flops == 5 * M * N, f"LogSoftmax flops {flops} != 5 * M * N = {5 * M * N}"
     assert mem_bytes == 2 * M * N * elem_bytes, (
-        f"LogSoftmax bytes {mem_bytes} != 2 * M * N * elem_bytes = "
-        f"{2 * M * N * elem_bytes}"
+        f"LogSoftmax bytes {mem_bytes} != 2 * M * N * elem_bytes = {2 * M * N * elem_bytes}"
     )
 
 

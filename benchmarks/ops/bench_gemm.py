@@ -36,8 +36,7 @@ class GemmFp8BenchmarkWorkload(GemmFp8Workload):
             return scale.expand(rows, cols)
         scale_cols = (cols + 127) // 128
         if tuple(scale.shape) != (rows, scale_cols):
-            raise ValueError(
-                f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
+            raise ValueError(f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
         return scale.repeat_interleave(128, dim=1)[:, :cols]
 
     def torch_scaled_matmul(self, *inputs: torch.Tensor) -> torch.Tensor:
@@ -78,7 +77,8 @@ def _flashinfer_fp8_blockscale_ref(
     if workload.k % 128 != 0:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires k divisible by 128.")
     if scale_a.shape != (workload.m, workload.k // 128) or scale_b.shape != (
-        workload.n, workload.k // 128
+        workload.n,
+        workload.k // 128,
     ):
         raise ValueError(
             "FlashInfer FP8 blockscale GEMM baseline requires exact "
@@ -292,7 +292,9 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    bm.compare({"tileops": op, "torch-cublas": workload.torch_matmul}, a, b, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-cublas": workload.torch_matmul}, a, b, record_as=op, params=locals()
+    )
 
 
 @pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())
@@ -343,7 +345,8 @@ def test_gemm_fp8_bench(
             print(f"  [skip] flashinfer-fp8-blockscale-sm90: {exc}")
         else:
             functors["flashinfer-fp8-blockscale-sm90"] = (
-                lambda *args: _flashinfer_fp8_blockscale_ref(workload, *args), inputs,
+                lambda *args: _flashinfer_fp8_blockscale_ref(workload, *args),
+                inputs,
             )
 
     bm.compare(functors, *inputs, record_as=op, params=locals())

@@ -38,6 +38,7 @@ def fused_topk_torch(
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
     return topk_weights, topk_ids.int()
 
+
 # Reference implementation
 
 
@@ -46,28 +47,148 @@ def fused_topk_torch(
 
 class FusedTopKFixture(FixtureBase):
     PARAMS = [
-        ("num_tokens, num_experts, top_k, scoring_func, renormalize, dtype", [
-            # smoke cases must be first
-            pytest.param(32,   128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.smoke, id="smoke-softmax-bf16"),
-            pytest.param(32,   128, 8, "softmax", False, torch.float16,  marks=pytest.mark.smoke, id="smoke-softmax-fp16"),
-            pytest.param(32,   256, 8, "sigmoid", True,  torch.bfloat16, marks=pytest.mark.smoke, id="smoke-sigmoid-renorm"),
-            # E not divisible by 32 — exercises padding path (expert_idx >= num_experts)
-            pytest.param(32,   100, 4, "softmax", False, torch.bfloat16, marks=pytest.mark.smoke, id="smoke-e100-pad"),
-            pytest.param(32,    33, 2, "sigmoid", False, torch.bfloat16, marks=pytest.mark.smoke, id="smoke-e33-pad"),
-            # softmax, no renorm (Qwen3-MoE style)
-            pytest.param(512,  128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="qwen3-small"),
-            pytest.param(2048, 128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="qwen3-medium"),
-            pytest.param(4096, 128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="qwen3-large"),
-            # softmax + renorm (Qwen3.5-MoE style)
-            pytest.param(512,  256, 8, "softmax", True,  torch.bfloat16, marks=pytest.mark.full, id="qwen35-small"),
-            pytest.param(2048, 256, 8, "softmax", True,  torch.bfloat16, marks=pytest.mark.full, id="qwen35-medium"),
-            # sigmoid, no renorm
-            pytest.param(512,  256, 8, "sigmoid", False, torch.bfloat16, marks=pytest.mark.full, id="sigmoid-no-renorm"),
-            # sigmoid + renorm (DeepSeek-V3/GLM-4 style)
-            pytest.param(512,  256, 8, "sigmoid", True,  torch.bfloat16, marks=pytest.mark.full, id="sigmoid-renorm"),
-            # top_k=1
-            pytest.param(512,   64, 1, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="top-k-1"),
-        ]),
+        (
+            "num_tokens, num_experts, top_k, scoring_func, renormalize, dtype",
+            [
+                # smoke cases must be first
+                pytest.param(
+                    32,
+                    128,
+                    8,
+                    "softmax",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-softmax-bf16",
+                ),
+                pytest.param(
+                    32,
+                    128,
+                    8,
+                    "softmax",
+                    False,
+                    torch.float16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-softmax-fp16",
+                ),
+                pytest.param(
+                    32,
+                    256,
+                    8,
+                    "sigmoid",
+                    True,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-sigmoid-renorm",
+                ),
+                # E not divisible by 32 — exercises padding path (expert_idx >= num_experts)
+                pytest.param(
+                    32,
+                    100,
+                    4,
+                    "softmax",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-e100-pad",
+                ),
+                pytest.param(
+                    32,
+                    33,
+                    2,
+                    "sigmoid",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-e33-pad",
+                ),
+                # softmax, no renorm (Qwen3-MoE style)
+                pytest.param(
+                    512,
+                    128,
+                    8,
+                    "softmax",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="qwen3-small",
+                ),
+                pytest.param(
+                    2048,
+                    128,
+                    8,
+                    "softmax",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="qwen3-medium",
+                ),
+                pytest.param(
+                    4096,
+                    128,
+                    8,
+                    "softmax",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="qwen3-large",
+                ),
+                # softmax + renorm (Qwen3.5-MoE style)
+                pytest.param(
+                    512,
+                    256,
+                    8,
+                    "softmax",
+                    True,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="qwen35-small",
+                ),
+                pytest.param(
+                    2048,
+                    256,
+                    8,
+                    "softmax",
+                    True,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="qwen35-medium",
+                ),
+                # sigmoid, no renorm
+                pytest.param(
+                    512,
+                    256,
+                    8,
+                    "sigmoid",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="sigmoid-no-renorm",
+                ),
+                # sigmoid + renorm (DeepSeek-V3/GLM-4 style)
+                pytest.param(
+                    512,
+                    256,
+                    8,
+                    "sigmoid",
+                    True,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="sigmoid-renorm",
+                ),
+                # top_k=1
+                pytest.param(
+                    512,
+                    64,
+                    1,
+                    "softmax",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="top-k-1",
+                ),
+            ],
+        ),
     ]
 
 
@@ -117,16 +238,12 @@ def _check(test: FusedTopKWorkload) -> None:
             for eid in sel_ids:
                 got_score = all_scores[i, eid].item()
                 assert got_score >= kth_val - 1e-4, (
-                    f"token {i}: expert {eid} score {got_score:.6f} < min ref score "
-                    f"{kth_val:.6f}"
+                    f"token {i}: expert {eid} score {got_score:.6f} < min ref score {kth_val:.6f}"
                 )
 
 
-
 @FusedTopKFixture
-def test_fused_topk(
-    num_tokens, num_experts, top_k, scoring_func, renormalize, dtype
-) -> None:
+def test_fused_topk(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype) -> None:
     test = FusedTopKWorkload(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
     _check(test)
 

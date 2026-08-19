@@ -41,11 +41,13 @@ try:
         initialize_model_parallel,
     )
     from vllm.model_executor.models.deepseek_v2 import DeepseekV2MLP
+
     _VLLM_AVAILABLE = True
 except ImportError:
     _VLLM_AVAILABLE = False
 
 # Helpers
+
 
 def _setup_vllm_distributed(tp_size: int) -> tuple[int, int]:
     """Initialize torch.distributed + vLLM model parallel groups.
@@ -101,15 +103,17 @@ def _teardown_vllm_distributed():
 
 # Fixtures
 
+
 class TPFixture:
     """Fixture for shared expert TP tests."""
+
     PARAMS = [
         (
             "T, H, F_s, tp_size",
             [
-                pytest.param(64,   128,  64,  2, marks=pytest.mark.smoke, id="smoke-tp2"),
-                pytest.param(512,  7168, 18432, 2, marks=pytest.mark.full,  id="kimi-k2-tp2"),
-                pytest.param(512,  7168, 18432, 8, marks=pytest.mark.full,  id="kimi-k2-tp8"),
+                pytest.param(64, 128, 64, 2, marks=pytest.mark.smoke, id="smoke-tp2"),
+                pytest.param(512, 7168, 18432, 2, marks=pytest.mark.full, id="kimi-k2-tp2"),
+                pytest.param(512, 7168, 18432, 8, marks=pytest.mark.full, id="kimi-k2-tp8"),
             ],
         )
     ]
@@ -121,10 +125,12 @@ class TPFixture:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             return fn(*args, **kwargs)
+
         return wrapper
 
 
 # Test: TileOPs SharedFusedMoE TP vs vLLM DeepseekV2MLP TP
+
 
 @TPFixture()
 def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
@@ -166,15 +172,22 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
             ).to(dtype=dtype, device=dev)
 
             # gate_up: ColumnParallel → each rank holds [2*shard, H]
-            gate_up_shard = torch.cat([
-                shared_w_gate_up[tp_rank * shard_size : (tp_rank + 1) * shard_size],
-                shared_w_gate_up[F_s + tp_rank * shard_size : F_s + (tp_rank + 1) * shard_size],
-            ], dim=0)  # [2*shard, H]
+            gate_up_shard = torch.cat(
+                [
+                    shared_w_gate_up[tp_rank * shard_size : (tp_rank + 1) * shard_size],
+                    shared_w_gate_up[F_s + tp_rank * shard_size : F_s + (tp_rank + 1) * shard_size],
+                ],
+                dim=0,
+            )  # [2*shard, H]
             # down: RowParallel → vLLM stores [H, shard] (input dim partitioned, no transpose)
-            down_shard = shared_w_down[:, tp_rank * shard_size : (tp_rank + 1) * shard_size].contiguous()
+            down_shard = shared_w_down[
+                :, tp_rank * shard_size : (tp_rank + 1) * shard_size
+            ].contiguous()
 
             with torch.no_grad():
-                vllm_mlp.gate_up_proj.weight.data.copy_(gate_up_shard.to(vllm_mlp.gate_up_proj.weight.dtype))
+                vllm_mlp.gate_up_proj.weight.data.copy_(
+                    gate_up_shard.to(vllm_mlp.gate_up_proj.weight.dtype)
+                )
                 vllm_mlp.down_proj.weight.data.copy_(down_shard.to(vllm_mlp.down_proj.weight.dtype))
 
             with torch.no_grad():
@@ -188,15 +201,23 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
         w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
         op = SharedFusedMoE(
-            num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
-            scoring_func="softmax", renormalize=False,
+            num_tokens=T,
+            num_experts=E,
+            top_k=K,
+            hidden_size=H,
+            ffn_size=F,
+            scoring_func="softmax",
+            renormalize=False,
             shared_ffn_size=F_s,
-            tp_size=tp_size, tp_rank=tp_rank,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
         )
 
         shared_partial, _ = op(
-            hidden, gating, w_gate_up, w_down,
+            hidden,
+            gating,
+            w_gate_up,
+            w_down,
             shared_w_gate_up=shared_w_gate_up,
             shared_w_down=shared_w_down,
         )

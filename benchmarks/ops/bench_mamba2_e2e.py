@@ -9,7 +9,6 @@ Run:
     pytest benchmarks/ops/bench_mamba2_e2e.py -m full --benchmark-json=results.json
 """
 
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -97,7 +96,8 @@ def mamba2_fwd_ref(
     exp_dA_chunk = torch.exp(dA_cumsum[:, :, :, -1])
     s = (
         torch.zeros(b, h, p, n, device=x.device, dtype=torch.float32)
-        if initial_states is None else initial_states.float().clone()
+        if initial_states is None
+        else initial_states.float().clone()
     )
     prev_states_list = []
     for ci in range(num_chunks):
@@ -115,9 +115,9 @@ def mamba2_fwd_ref(
 
     dA_l = dA_cumsum.unsqueeze(-1)
     dA_s = dA_cumsum.unsqueeze(-2)
-    decay_ls = torch.exp(dA_l - dA_s).masked_fill(
-        ~mask.view(1, 1, 1, Q, Q), 0.0
-    ).permute(0, 2, 1, 3, 4)
+    decay_ls = (
+        torch.exp(dA_l - dA_s).masked_fill(~mask.view(1, 1, 1, Q, Q), 0.0).permute(0, 2, 1, 3, 4)
+    )
     cb_heads = cb[:, :, torch.arange(h, device=x.device) // hpg, :, :]
     lcb = cb_heads * decay_ls * dt_c.permute(0, 1, 3, 2).unsqueeze(-2)
     wx_t = x_c.permute(0, 1, 3, 2, 4)
@@ -137,9 +137,18 @@ def _mamba2_args(workload: dict) -> tuple:
     """Constructor arguments for one manifest workload row."""
     batch, seqlen, n_heads, d_head = workload["x_shape"]
     n_groups, d_state = workload["B_shape"][2], workload["B_shape"][3]
-    return (batch, seqlen, n_heads, d_head, d_state, n_groups,
-            workload.get("chunk_size", 256), bool(workload.get("dt_softplus", True)),
-            "dt_bias_shape" in workload, "initial_states_shape" in workload)
+    return (
+        batch,
+        seqlen,
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        workload.get("chunk_size", 256),
+        bool(workload.get("dt_softplus", True)),
+        "dt_bias_shape" in workload,
+        "initial_states_shape" in workload,
+    )
 
 
 @pytest.mark.parametrize(
@@ -147,12 +156,30 @@ def _mamba2_args(workload: dict) -> tuple:
     " has_dt_bias, has_initial_states, dtype, tune",
     manifest_params(load_workloads("Mamba2FwdOp"), _mamba2_args, tune=False),
 )
-def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
-                          chunk_size, dt_softplus, has_dt_bias, has_initial_states,
-                          dtype, tune):
+def test_mamba2_fwd_bench(
+    batch,
+    seqlen,
+    n_heads,
+    d_head,
+    d_state,
+    n_groups,
+    chunk_size,
+    dt_softplus,
+    has_dt_bias,
+    has_initial_states,
+    dtype,
+    tune,
+):
     test = Mamba2FwdWorkload(
-        batch, seqlen, n_heads, d_head, d_state, n_groups,
-        dtype, chunk_size, dt_softplus,
+        batch,
+        seqlen,
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        dtype,
+        chunk_size,
+        dt_softplus,
     )
     inputs = test.gen_inputs()  # (x, dt, A, B, C, dt_bias)
     x, dt, A, B, C, dt_bias = inputs
@@ -161,9 +188,9 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
     if not has_dt_bias:
         dt_bias = None
     initial_states = (
-        torch.randn(batch, n_heads, d_head, d_state, dtype=torch.float32,
-                    device=x.device) * 0.1
-        if has_initial_states else None
+        torch.randn(batch, n_heads, d_head, d_state, dtype=torch.float32, device=x.device) * 0.1
+        if has_initial_states
+        else None
     )
 
     # ── TileOPs ──────────────────────────────────────────────────────────────
@@ -184,23 +211,44 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
     # Non-tensor kwargs (chunk_size, dt_softplus, dt_bias) are captured by the
     # partial wrapper below — bench_kernel only clones the positional tensors.
     if _mamba_chunk_scan_combined is not None:
+
         def _mamba_wrapper(x, dt, A, B, C):
             return _mamba_chunk_scan_combined(
-                x, dt, A, B, C,
+                x,
+                dt,
+                A,
+                B,
+                C,
                 chunk_size,
                 dt_bias=dt_bias,
                 dt_softplus=dt_softplus,
                 initial_states=initial_states,
             )
 
-        functors["mamba"] = (_mamba_wrapper, (x, dt, A, B, C, ))
+        functors["mamba"] = (
+            _mamba_wrapper,
+            (
+                x,
+                dt,
+                A,
+                B,
+                C,
+            ),
+        )
     else:
+
         def _torch_wrapper(x, dt, A, B, C):
-            return mamba2_fwd_ref(
-                x, dt, A, B, C, dt_bias, chunk_size, dt_softplus, initial_states
-            )
+            return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus, initial_states)
 
-        functors["torch-ref"] = (_torch_wrapper, (x, dt, A, B, C, ))
+        functors["torch-ref"] = (
+            _torch_wrapper,
+            (
+                x,
+                dt,
+                A,
+                B,
+                C,
+            ),
+        )
 
-    bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states,
-               record_as=op, params=locals())
+    bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states, record_as=op, params=locals())

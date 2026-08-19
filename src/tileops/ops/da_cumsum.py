@@ -54,8 +54,7 @@ class DaCumsumFwdOp(Op):
         if dtype not in declared:
             supported = ", ".join(str(dt) for dt in declared)
             raise ValueError(
-                f"{type(self).__name__} dt_out dtype must be one of "
-                f"[{supported}], got {dtype}"
+                f"{type(self).__name__} dt_out dtype must be one of [{supported}], got {dtype}"
             )
         self.batch = None
         self.num_chunks = None
@@ -155,8 +154,8 @@ class DaCumsumFwdOp(Op):
         self.num_chunks = seq_len // self.chunk_len
         self.dt_bias_shape = None if dt_bias is None else tuple(dt_bias.shape)
         self.kernel = self._get_kernel(
-            batch, self.num_chunks, n_heads, seq_len, dt_bias is not None,
-            dt.device.index)
+            batch, self.num_chunks, n_heads, seq_len, dt_bias is not None, dt.device.index
+        )
 
         dt = dt.contiguous()
         A = A.contiguous()

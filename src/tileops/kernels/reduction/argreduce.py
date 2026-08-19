@@ -280,9 +280,7 @@ def _argreduce_output_kernel(
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m: int, threads: int):
-        set_identity, init_accumulators, update, merge_accumulators, _ = _make_pair_ops(
-            op_kind, N
-        )
+        set_identity, init_accumulators, update, merge_accumulators, _ = _make_pair_ops(op_kind, N)
 
         @T.prim_func
         def main(
@@ -548,9 +546,7 @@ def _argreduce_fwd_wrapped(
     x: torch.Tensor,
 ) -> torch.Tensor:
     if strategy == "output":
-        return _argreduce_output_kernel(M, N, inner_stride, op_kind, dtype_str)(
-            block_m, threads
-        )(x)
+        return _argreduce_output_kernel(M, N, inner_stride, op_kind, dtype_str)(block_m, threads)(x)
     if strategy == "cta":
         return _argreduce_cta_kernel(M, N, op_kind, dtype_str)(threads)(x)
     if strategy == "multi_cta":
@@ -597,7 +593,7 @@ class ArgreduceKernel(Kernel):
         super().__init__()
         if op_kind not in _ARGREDUCE_KINDS:
             raise ValueError(
-                f"Unsupported op_kind '{op_kind}'. " f"Expected one of {sorted(_ARGREDUCE_KINDS)}."
+                f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_ARGREDUCE_KINDS)}."
             )
         if N <= 0:
             raise ValueError(
@@ -650,7 +646,11 @@ class ArgreduceKernel(Kernel):
         else:
             threads = block_m * lanes
         return self._knobs(
-            {"block_m": block_m, "threads": threads, "ctas_per_row": _plan_row_split(self.M, self.N)}
+            {
+                "block_m": block_m,
+                "threads": threads,
+                "ctas_per_row": _plan_row_split(self.M, self.N),
+            }
         )
 
     @property

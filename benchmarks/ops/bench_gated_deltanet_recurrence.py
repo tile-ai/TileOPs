@@ -50,7 +50,6 @@ except ImportError:
 
 
 class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
@@ -100,17 +99,21 @@ def test_gated_deltanet_decode_bench(
     if fused_recurrent_gated_delta_rule is not None:
         # --- FLA: fused_recurrent_gated_delta_rule with T=1 ---
         q, k, v, g, beta, state = inputs
-        q_fla = q.unsqueeze(1)       # [B, H, DK] -> [B, 1, H, DK]
+        q_fla = q.unsqueeze(1)  # [B, H, DK] -> [B, 1, H, DK]
         k_fla = k.unsqueeze(1)
         v_fla = v.unsqueeze(1)
-        g_fla = g.unsqueeze(1)       # [B, H] -> [B, 1, H]
+        g_fla = g.unsqueeze(1)  # [B, H] -> [B, 1, H]
         beta_fla = beta.unsqueeze(1)
 
         state_fla = state.contiguous()
 
         def fla_decode():
             return fused_recurrent_gated_delta_rule(
-                q_fla, k_fla, v_fla, g=g_fla, beta=beta_fla,
+                q_fla,
+                k_fla,
+                v_fla,
+                g=g_fla,
+                beta=beta_fla,
                 initial_state=state_fla,
                 output_final_state=True,
             )

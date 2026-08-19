@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -8,7 +7,6 @@ from workloads.attention.deepseek import NsaTopkWorkload
 
 
 class NsaTopkTest(NsaTopkWorkload, TestBase):
-
     def check_topk(self, op, *inputs, threshold: float = 1e-3) -> None:
         """Custom check for topk indices (not floating point closeness)."""
         outputs_ref = self.ref_program(*inputs)
@@ -30,25 +28,53 @@ class NsaTopkTest(NsaTopkWorkload, TestBase):
                 total_count = out.numel()
                 mismatch_ratio = mismatch_count / total_count
 
-                assert mismatch_ratio <= threshold, \
+                assert mismatch_ratio <= threshold, (
                     f"Top-K mismatch ratio {mismatch_ratio:.3%} exceeds threshold {threshold:.3%}"
-                print(f"Top-K Indices Mismatched slightly within threshold: "
-                      f"{mismatch_ratio * 100:.3f}%")
+                )
+                print(
+                    f"Top-K Indices Mismatched slightly within threshold: "
+                    f"{mismatch_ratio * 100:.3f}%"
+                )
 
 
 class NsaTopkFixture(FixtureBase):
     PARAMS = [
-        ("seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, "
-         "dtype, accum_dtype, tune", [
-             pytest.param(
-                 5, 1024, 32, 128, 16, 1, 16, 32, 32, torch.float16, torch.float32, False,
-                 marks=pytest.mark.smoke,
-             ),
-             pytest.param(
-                 3, 512, 32, 128, 16, 1, 16, 32, 32, torch.float16, torch.float32, False,
-                 marks=pytest.mark.full,
-             ),
-         ]),
+        (
+            "seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, "
+            "dtype, accum_dtype, tune",
+            [
+                pytest.param(
+                    5,
+                    1024,
+                    32,
+                    128,
+                    16,
+                    1,
+                    16,
+                    32,
+                    32,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    3,
+                    512,
+                    32,
+                    128,
+                    16,
+                    1,
+                    16,
+                    32,
+                    32,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.full,
+                ),
+            ],
+        ),
     ]
 
 
@@ -69,13 +95,24 @@ def test_nsa_topk_varlen_op(
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs,
-                       dtype, accum_dtype)
+    test = NsaTopkTest(
+        seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, dtype, accum_dtype
+    )
     inputs = test.gen_inputs()
     op = NSATopkVarlenOp(
-        seq_num=seq_num, c_seq_len=c_seq_len, heads=heads, dim=dim, group=group, scale=scale,
-        selected_block_num=selected_block_num, bc=bc, bs=bs,
-        accum_dtype=accum_dtype, tune=tune, chunk_num=test.chunk_num)
+        seq_num=seq_num,
+        c_seq_len=c_seq_len,
+        heads=heads,
+        dim=dim,
+        group=group,
+        scale=scale,
+        selected_block_num=selected_block_num,
+        bc=bc,
+        bs=bs,
+        accum_dtype=accum_dtype,
+        tune=tune,
+        chunk_num=test.chunk_num,
+    )
     test.check_topk(op, *inputs)
 
 

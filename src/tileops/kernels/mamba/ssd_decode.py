@@ -107,6 +107,7 @@ __all__ = ["SSDDecodeKernel"]
 #     Here:     Supports arbitrary ngroups via g = h // HEADS_PER_GROUP indexing,
 #               matching the behaviour of the optimised selective_state_update path.
 
+
 @functools.lru_cache(maxsize=32)
 def _ssd_decode_kernel(
     batch: int,
@@ -141,13 +142,13 @@ def _ssd_decode_kernel(
 
         @T.prim_func
         def main(
-            A: T.Tensor((H, P, N), accum_dtype),                # type: ignore
-            dt: T.Tensor((B, H, P), accum_dtype),               # type: ignore
-            x: T.Tensor((B, H, P), dtype),                      # type: ignore
-            B_in: T.Tensor((B, G, N), dtype),                   # type: ignore
-            C_in: T.Tensor((B, G, N), dtype),                   # type: ignore
-            state: T.Tensor((B, H, P, N), accum_dtype),         # type: ignore  in-place
-            y_out: T.Tensor((B, H, P), accum_dtype),            # type: ignore
+            A: T.Tensor((H, P, N), accum_dtype),  # type: ignore
+            dt: T.Tensor((B, H, P), accum_dtype),  # type: ignore
+            x: T.Tensor((B, H, P), dtype),  # type: ignore
+            B_in: T.Tensor((B, G, N), dtype),  # type: ignore
+            C_in: T.Tensor((B, G, N), dtype),  # type: ignore
+            state: T.Tensor((B, H, P, N), accum_dtype),  # type: ignore  in-place
+            y_out: T.Tensor((B, H, P), accum_dtype),  # type: ignore
         ):
             # Grid: axis-0 fuses (batch, head); axis-1 tiles d_head.
             # threads = block_p * block_n.
@@ -182,7 +183,7 @@ def _ssd_decode_kernel(
                 #   Allocated as (block_p,) — one scalar per pp — so each
                 #   thread stores exactly one value, not block_n redundant
                 #   copies.  Loaded by T.Parallel(block_p) only.
-                x_frag  = T.alloc_fragment((block_p,), accum_dtype)
+                x_frag = T.alloc_fragment((block_p,), accum_dtype)
                 dt_frag = T.alloc_fragment((block_p,), accum_dtype)
                 for pp in T.Parallel(block_p):
                     p_idx = p0 + pp
@@ -286,7 +287,9 @@ def _ssd_decode_wrapped(
     state: torch.Tensor,
 ) -> torch.Tensor:
     return _ssd_decode_kernel(batch, n_heads, d_head, d_state, n_groups, dtype)(
-        block_p, block_n, threads,
+        block_p,
+        block_n,
+        threads,
     )(A, dt, x, B_in, C_in, state)
 
 
@@ -352,7 +355,12 @@ class SSDDecodeKernel(Kernel):
         self.n_groups = n_groups
         self.dtype = dtype
         self.kernel = _ssd_decode_kernel(
-            batch, n_heads, d_head, d_state, n_groups, self.dtype_str,
+            batch,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            self.dtype_str,
         )
         self.init_config(config, tune)
         cfg = self.config
@@ -403,8 +411,19 @@ class SSDDecodeKernel(Kernel):
         state: torch.Tensor,
     ) -> torch.Tensor:
         return _ssd_decode_wrapped(
-            self.batch, self.n_heads, self.d_head, self.d_state, self.n_groups,
+            self.batch,
+            self.n_heads,
+            self.d_head,
+            self.d_state,
+            self.n_groups,
             self.dtype_str,
-            self.config["block_p"], self.config["block_n"], self.config["threads"],
-            A, dt, x, B_in, C_in, state,
+            self.config["block_p"],
+            self.config["block_n"],
+            self.config["threads"],
+            A,
+            dt,
+            x,
+            B_in,
+            C_in,
+            state,
         )

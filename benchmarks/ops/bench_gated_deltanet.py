@@ -46,7 +46,6 @@ def _to_fla_layout(q, k, v, g, beta):
 
 
 class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
@@ -102,7 +101,6 @@ def test_gated_deltanet_vs_fla_fwd(
 
 
 class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
@@ -117,16 +115,19 @@ class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
 class GatedDeltaNetVsFlaBwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            # chunk_size=32
-            (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
-            # chunk_size=64
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                # chunk_size=32
+                (2, 4096, 4, 64, 64, 32, torch.float16, False),
+                (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+                # chunk_size=64
+                (2, 2048, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.float16, False),
+                (2, 8192, 4, 64, 64, 64, torch.float16, False),
+                (2, 16384, 4, 64, 64, 64, torch.float16, False),
+            ],
+        ),
     ]
 
 
@@ -160,7 +161,7 @@ def test_gated_deltanet_vs_fla_bwd(
     functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---
-    scale = DK ** -0.5
+    scale = DK**-0.5
     q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
     do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
 
@@ -177,5 +178,4 @@ def test_gated_deltanet_vs_fla_bwd(
         return fla_backward(do_fla, None)
 
     functors["fla"] = (fla_bwd, ())
-    bm.compare(functors, do, q, k, v, g, beta, S_fwd,
-               record_as=bwd_op, params=locals())
+    bm.compare(functors, do, q, k, v, g, beta, S_fwd, record_as=bwd_op, params=locals())

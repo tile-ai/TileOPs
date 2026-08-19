@@ -107,7 +107,7 @@ def pytest_runtest_call(item):
                 item.user_properties.append(("op_module", tileops_entry["op_module"]))
             tag = tileops_entry["tag"]
             if tag != "tileops" and tag.startswith("tileops_"):
-                item.user_properties.append(("tileops_variant", tag[len("tileops_"):]))
+                item.user_properties.append(("tileops_variant", tag[len("tileops_") :]))
             _emit(item, "tileops", tileops_entry)
 
         # Every baseline is written under its own tag. The first also uses the

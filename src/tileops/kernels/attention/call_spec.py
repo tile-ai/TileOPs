@@ -169,7 +169,8 @@ def paged_decode_ws_region(call: AttentionCall) -> bool:
         return False
     return any(
         tile <= call.page_size and call.page_size % tile == 0 and tile <= call.seqlen_kv
-        for tile in _WS_DECODE_TILES)
+        for tile in _WS_DECODE_TILES
+    )
 
 
 def decode_bs1_region(call: AttentionCall) -> bool:
@@ -180,10 +181,7 @@ def decode_bs1_region(call: AttentionCall) -> bool:
     page-tile condition only it can answer.
     """
     if not (
-        call.batch == 1
-        and call.dtype == torch.float16
-        and call.dim == 128
-        and call.softcap == 0.0
+        call.batch == 1 and call.dtype == torch.float16 and call.dim == 128 and call.softcap == 0.0
     ):
         return False
     if call.heads_kv <= 0 or call.heads % call.heads_kv != 0:

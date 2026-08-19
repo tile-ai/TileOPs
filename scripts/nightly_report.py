@@ -29,25 +29,35 @@ REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
 # Measurement properties carried from the benchmark XML through to the report.
 # Parsing and aggregation must read the same set.
 _PERF_KEYS = (
-    "tileops_device_busy_ms", "tileops_latency_ms", "tileops_gap_ms",
-    "tileops_n_kernels", "tileops_tflops", "tileops_bandwidth_tbs",
-    "tileops_variant", "tileops_timing",
-    "tileops_device_busy_p10_ms", "tileops_device_busy_p90_ms",
-    "tileops_n_samples", "baseline_tag", "baseline_device_busy_ms",
-    "baseline_latency_ms", "baseline_tflops", "baseline_ratio",
+    "tileops_device_busy_ms",
+    "tileops_latency_ms",
+    "tileops_gap_ms",
+    "tileops_n_kernels",
+    "tileops_tflops",
+    "tileops_bandwidth_tbs",
+    "tileops_variant",
+    "tileops_timing",
+    "tileops_device_busy_p10_ms",
+    "tileops_device_busy_p90_ms",
+    "tileops_n_samples",
+    "baseline_tag",
+    "baseline_device_busy_ms",
+    "baseline_latency_ms",
+    "baseline_tflops",
+    "baseline_ratio",
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
 
 # ── Emoji constants ───────────────────────────────────────────────────────
-_PASS = "\u2705"          # ✅
-_FAIL = "\u274c"          # ❌
-_WARN = "\u26a0\ufe0f"   # ⚠️
-_PARTY = "\U0001f389"     # 🎉
-_RED = "\U0001f534"       # 🔴
-_YELLOW = "\U0001f7e1"    # 🟡
-_BLUE = "\U0001f535"      # 🔵
-_GREEN = "\U0001f7e2"     # 🟢
+_PASS = "\u2705"  # ✅
+_FAIL = "\u274c"  # ❌
+_WARN = "\u26a0\ufe0f"  # ⚠️
+_PARTY = "\U0001f389"  # 🎉
+_RED = "\U0001f534"  # 🔴
+_YELLOW = "\U0001f7e1"  # 🟡
+_BLUE = "\U0001f535"  # 🔵
+_GREEN = "\U0001f7e2"  # 🟢
 
 # ---------------------------------------------------------------------------
 # JUnit XML parsing
@@ -78,17 +88,23 @@ def parse_test_xml(path: str) -> list[dict]:
             outcome = "failed"
         else:
             outcome = "passed"
-        results.append({
-            "nodeid": f"{tc.attrib.get('classname', '')}::{tc.attrib.get('name', '')}",
-            "name": tc.attrib.get("name", ""),
-            "outcome": outcome,
-            "op": props.get("op"),
-            "op_module": props.get("op_module"),
-            "max_abs_err": props.get("max_abs_err"),
-            "failure_message": (failure.attrib.get("message", "") if failure is not None
-                                else error.attrib.get("message", "") if error is not None
-                                else None),
-        })
+        results.append(
+            {
+                "nodeid": f"{tc.attrib.get('classname', '')}::{tc.attrib.get('name', '')}",
+                "name": tc.attrib.get("name", ""),
+                "outcome": outcome,
+                "op": props.get("op"),
+                "op_module": props.get("op_module"),
+                "max_abs_err": props.get("max_abs_err"),
+                "failure_message": (
+                    failure.attrib.get("message", "")
+                    if failure is not None
+                    else error.attrib.get("message", "")
+                    if error is not None
+                    else None
+                ),
+            }
+        )
     return results
 
 
@@ -114,9 +130,13 @@ def parse_bench_xml(path: str) -> list[dict]:
             "outcome": outcome,
             "op": props.get("op"),
             "op_module": props.get("op_module"),
-            "failure_message": (failure.attrib.get("message", "") if failure is not None
-                                else error.attrib.get("message", "") if error is not None
-                                else None),
+            "failure_message": (
+                failure.attrib.get("message", "")
+                if failure is not None
+                else error.attrib.get("message", "")
+                if error is not None
+                else None
+            ),
         }
         # Perf data
         for key in _PERF_KEYS:
@@ -131,15 +151,18 @@ def parse_bench_xml(path: str) -> list[dict]:
         baselines = {}
         for pkey, pval in props.items():
             if pkey.endswith("_device_busy_ms") and pkey not in (
-                    "tileops_device_busy_ms", "baseline_device_busy_ms"):
+                "tileops_device_busy_ms",
+                "baseline_device_busy_ms",
+            ):
                 tag = pkey.removesuffix("_device_busy_ms")
                 baselines.setdefault(tag, {})["device_busy_ms"] = _try_float(pval)
             elif pkey.endswith("_latency_ms") and pkey not in (
-                    "tileops_latency_ms", "baseline_latency_ms"):
+                "tileops_latency_ms",
+                "baseline_latency_ms",
+            ):
                 tag = pkey.removesuffix("_latency_ms")
                 baselines.setdefault(tag, {})["latency_ms"] = _try_float(pval)
-            elif pkey.endswith("_tflops") and pkey not in (
-                    "tileops_tflops", "baseline_tflops"):
+            elif pkey.endswith("_tflops") and pkey not in ("tileops_tflops", "baseline_tflops"):
                 tag = pkey.removesuffix("_tflops")
                 baselines.setdefault(tag, {})["tflops"] = _try_float(pval)
             elif pkey.endswith("_ratio") and pkey not in ("baseline_ratio",):
@@ -189,13 +212,15 @@ def parse_coverage_xml(path: str) -> list[dict] | None:
                 branches += int(total)
                 branches_hit += int(hit)
         if stmts:
-            files.append({
-                "path": filename.split(marker, 1)[1],
-                "stmts": stmts,
-                "covered": covered,
-                "branches": branches,
-                "branches_hit": branches_hit,
-            })
+            files.append(
+                {
+                    "path": filename.split(marker, 1)[1],
+                    "stmts": stmts,
+                    "covered": covered,
+                    "branches": branches,
+                    "branches_hit": branches_hit,
+                }
+            )
 
     return files or None
 
@@ -207,10 +232,16 @@ def parse_coverage_xml(path: str) -> list[dict] | None:
 
 def aggregate_test_results(results: list[dict]) -> dict:
     """Group test results by Op."""
-    ops = defaultdict(lambda: {
-        "module": None, "passed": 0, "failed": 0, "skipped": 0,
-        "max_abs_err": 0.0, "failing_tests": [],
-    })
+    ops = defaultdict(
+        lambda: {
+            "module": None,
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "max_abs_err": 0.0,
+            "failing_tests": [],
+        }
+    )
     for r in results:
         op = r.get("op")
         if not op:
@@ -301,14 +332,15 @@ def _conclusion_ms(cfg: dict) -> float | None:
 
 
 def find_best_latency(
-    runs: list[dict], op: str, config_name: str, key: str = _CONCLUSION_KEY,
+    runs: list[dict],
+    op: str,
+    config_name: str,
+    key: str = _CONCLUSION_KEY,
 ) -> float | None:
     """Find the best (lowest) tileops reading for an op+config across history."""
     best = None
     for run in runs:
-        tileops_data = (
-            run.get("ops", {}).get(op, {}).get(config_name, {}).get("tileops", {})
-        )
+        tileops_data = run.get("ops", {}).get(op, {}).get(config_name, {}).get("tileops", {})
         lat = tileops_data.get(key)
         if lat is not None and (best is None or lat < best):
             best = lat
@@ -328,20 +360,24 @@ def _history_deltas(bench_ops: dict, history_runs: list[dict]):
             best = find_best_latency(history_runs, op, cfg["name"], key)
             if best is None:
                 continue
-            yield {
-                "op": op,
-                "config": cfg["name"],
-                "best_ms": best,
-                "curr_ms": lat,
-                "delta_pct": (lat - best) / best * 100,
-                "tflops": cfg.get("tileops_tflops"),
-            }, (lat - best) / best
+            yield (
+                {
+                    "op": op,
+                    "config": cfg["name"],
+                    "best_ms": best,
+                    "curr_ms": lat,
+                    "delta_pct": (lat - best) / best * 100,
+                    "tflops": cfg.get("tileops_tflops"),
+                },
+                (lat - best) / best,
+            )
 
 
 def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     """Detect performance regressions vs 14-day best."""
     return [
-        record for record, delta in _history_deltas(bench_ops, history_runs)
+        record
+        for record, delta in _history_deltas(bench_ops, history_runs)
         if delta > REGRESSION_THRESHOLD
         and (record["curr_ms"] - record["best_ms"]) > REGRESSION_ABS_MIN
     ]
@@ -350,7 +386,8 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     """Detect performance improvements vs 14-day best."""
     return [
-        record for record, delta in _history_deltas(bench_ops, history_runs)
+        record
+        for record, delta in _history_deltas(bench_ops, history_runs)
         if delta < -REGRESSION_THRESHOLD
     ]
 
@@ -363,15 +400,18 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
             # Check legacy primary baseline
             ratio = cfg.get("baseline_ratio")
             if ratio is not None and ratio < BASELINE_RATIO_ALERT:
-                alerts.append({
-                    "op": op,
-                    "config": cfg["name"],
-                    "tileops_ms": _conclusion_ms(cfg),
-                    "baseline_ms": cfg.get(f"baseline_{_CONCLUSION_KEY}",
-                                           cfg.get("baseline_latency_ms")),
-                    "ratio": ratio,
-                    "baseline_tag": cfg.get("baseline_tag", "baseline"),
-                })
+                alerts.append(
+                    {
+                        "op": op,
+                        "config": cfg["name"],
+                        "tileops_ms": _conclusion_ms(cfg),
+                        "baseline_ms": cfg.get(
+                            f"baseline_{_CONCLUSION_KEY}", cfg.get("baseline_latency_ms")
+                        ),
+                        "ratio": ratio,
+                        "baseline_tag": cfg.get("baseline_tag", "baseline"),
+                    }
+                )
             # Check additional baselines
             for tag, bl in cfg.get("baselines", {}).items():
                 bl_ratio = bl.get("ratio")
@@ -379,15 +419,16 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
                     # Skip if this is the same as the primary baseline
                     if tag == cfg.get("baseline_tag"):
                         continue
-                    alerts.append({
-                        "op": op,
-                        "config": cfg["name"],
-                        "tileops_ms": _conclusion_ms(cfg),
-                        "baseline_ms": bl.get(_CONCLUSION_KEY,
-                                              bl.get("latency_ms")),
-                        "ratio": bl_ratio,
-                        "baseline_tag": tag,
-                    })
+                    alerts.append(
+                        {
+                            "op": op,
+                            "config": cfg["name"],
+                            "tileops_ms": _conclusion_ms(cfg),
+                            "baseline_ms": bl.get(_CONCLUSION_KEY, bl.get("latency_ms")),
+                            "ratio": bl_ratio,
+                            "baseline_tag": tag,
+                        }
+                    )
     return alerts
 
 
@@ -426,8 +467,7 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
                 tag = cfg.get("baseline_tag", "baseline")
                 if isinstance(tag, str):
                     entry[tag] = {}
-                    for key, value in (("latency_ms", bl_lat),
-                                       (_CONCLUSION_KEY, bl_busy)):
+                    for key, value in (("latency_ms", bl_lat), (_CONCLUSION_KEY, bl_busy)):
                         if value is not None:
                             entry[tag][key] = value
                     bl_tflops = cfg.get("baseline_tflops")
@@ -500,7 +540,9 @@ def _get_git_commit() -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else "unknown"
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -510,6 +552,7 @@ def _get_git_commit() -> str:
 def _get_gpu_name() -> str:
     try:
         import torch
+
         if torch.cuda.is_available():
             return torch.cuda.get_device_name(0)
     except ImportError:
@@ -553,12 +596,10 @@ def generate_report(
     n_test_ops = len(test_ops) if test_ops else 0
     n_bench_ops = len(bench_ops) if bench_ops else 0
     n_failures = sum(1 for d in (test_ops or {}).values() if d["failed"] > 0)
-    total_tests = sum(d["passed"] + d["failed"] + d["skipped"]
-                      for d in (test_ops or {}).values())
+    total_tests = sum(d["passed"] + d["failed"] + d["skipped"] for d in (test_ops or {}).values())
     total_passed = sum(d["passed"] for d in (test_ops or {}).values())
 
-    health = _PASS if (n_failures == 0 and not regressions
-                       and not bench_failures) else _FAIL
+    health = _PASS if (n_failures == 0 and not regressions and not bench_failures) else _FAIL
     lines.append(f"# {health} TileOPs Nightly Report")
     lines.append("")
     lines.append(f"> **{now}** &ensp;|&ensp; `{commit}` &ensp;|&ensp; {gpu}")
@@ -566,25 +607,23 @@ def generate_report(
 
     # ── Summary ───────────────────────────────────────────────────────────
     corr_icon = _PASS if n_failures == 0 else f"{_FAIL} {n_failures} failed"
-    bench_fail_icon = (f"{_FAIL} {len(bench_failures)}"
-                       if bench_failures else f"{_PASS} None")
+    bench_fail_icon = f"{_FAIL} {len(bench_failures)}" if bench_failures else f"{_PASS} None"
     reg_icon = f"{_PASS} None" if not regressions else f"{_WARN} {len(regressions)}"
-    alert_icon = (f"{_WARN} {len(baseline_alerts)}"
-                  if baseline_alerts else f"{_PASS} None")
+    alert_icon = f"{_WARN} {len(baseline_alerts)}" if baseline_alerts else f"{_PASS} None"
 
     lines.append("| | |")
     lines.append("|---|---|")
-    lines.append(f"| **Correctness** | {corr_icon}"
-                 f" &ensp; ({total_passed}/{total_tests} tests across"
-                 f" {n_test_ops} ops) |")
+    lines.append(
+        f"| **Correctness** | {corr_icon}"
+        f" &ensp; ({total_passed}/{total_tests} tests across"
+        f" {n_test_ops} ops) |"
+    )
     lines.append(f"| **Benchmarked Ops** | {n_bench_ops} |")
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day best) | {reg_icon} |")
-    lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) |"
-                 f" {alert_icon} |")
+    lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
     if improvements:
-        lines.append(f"| **Improvements** (vs 14-day best) |"
-                     f" {_PARTY} {len(improvements)} |")
+        lines.append(f"| **Improvements** (vs 14-day best) | {_PARTY} {len(improvements)} |")
     if coverage:
         # Repeated here because the Coverage section sits below the benchmark
         # tables, which run to hundreds of rows. One row per concern: a single
@@ -595,31 +634,46 @@ def generate_report(
         sep = " &ensp;·&ensp; "
         if sig["never_built"]:
             worst = sig["never_built"][0]
-            lines.append(f"| **Never-built kernels** | {_WARN} "
-                         f"{len(sig['never_built'])} files"
-                         f"{_delta(len(sig['never_built']), prev.get('never_built'))}"
-                         f"{sep}`{worst['path']}` at "
-                         f"{_pct(worst['covered'], worst['stmts'])} |")
+            lines.append(
+                f"| **Never-built kernels** | {_WARN} "
+                f"{len(sig['never_built'])} files"
+                f"{_delta(len(sig['never_built']), prev.get('never_built'))}"
+                f"{sep}`{worst['path']}` at "
+                f"{_pct(worst['covered'], worst['stmts'])} |"
+            )
         else:
             lines.append(f"| **Never-built kernels** | {_PASS} None |")
         rl_worst = sig["roofline_worst"]
-        rl_hint = (f"{sep}`{rl_worst['path']}` at "
-                   f"{_pct(rl_worst['covered'], rl_worst['stmts'])}" if rl_worst else "")
-        lines.append(f"| **Untested roofline math** | {sig['roofline_untested']} lines"
-                     f" in `perf/`"
-                     f"{_delta(sig['roofline_untested'], prev.get('roofline_untested'))}"
-                     f"{rl_hint} |")
-        op_branch_pct = (100 * sig["op_branches_hit"] / sig["op_branches"]
-                         if sig["op_branches"] else 0.0)
-        prev_branch_pct = (100 * prev.get("op_branches_hit", 0) / prev["op_branches"]
-                           if prev.get("op_branches") else None)
-        lines.append(f"| **Untested op logic** | {sig['op_untested']} lines in `ops/`"
-                     f"{_delta(sig['op_untested'], prev.get('op_untested'))}"
-                     f"{sep}{op_branch_pct:.1f}% of branches taken"
-                     f"{_delta(op_branch_pct, prev_branch_pct, 'pp')} |")
+        rl_hint = (
+            f"{sep}`{rl_worst['path']}` at {_pct(rl_worst['covered'], rl_worst['stmts'])}"
+            if rl_worst
+            else ""
+        )
+        lines.append(
+            f"| **Untested roofline math** | {sig['roofline_untested']} lines"
+            f" in `perf/`"
+            f"{_delta(sig['roofline_untested'], prev.get('roofline_untested'))}"
+            f"{rl_hint} |"
+        )
+        op_branch_pct = (
+            100 * sig["op_branches_hit"] / sig["op_branches"] if sig["op_branches"] else 0.0
+        )
+        prev_branch_pct = (
+            100 * prev.get("op_branches_hit", 0) / prev["op_branches"]
+            if prev.get("op_branches")
+            else None
+        )
+        lines.append(
+            f"| **Untested op logic** | {sig['op_untested']} lines in `ops/`"
+            f"{_delta(sig['op_untested'], prev.get('op_untested'))}"
+            f"{sep}{op_branch_pct:.1f}% of branches taken"
+            f"{_delta(op_branch_pct, prev_branch_pct, 'pp')} |"
+        )
         if prev.get("date"):
-            lines.append("| | <sub>coverage compared against the "
-                         f"{prev['date']} run; no figure means it held</sub> |")
+            lines.append(
+                "| | <sub>coverage compared against the "
+                f"{prev['date']} run; no figure means it held</sub> |"
+            )
     lines.append("")
 
     # ── Test Failures (only if any) ───────────────────────────────────────
@@ -634,8 +688,9 @@ def generate_report(
             tests_str = ", ".join(d["failing_tests"][:3])
             if len(d["failing_tests"]) > 3:
                 tests_str += f", ... (+{len(d['failing_tests']) - 3})"
-            lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
-                         f"| {d['failed']}/{total} | {tests_str} |")
+            lines.append(
+                f"| **{op}** | `{d['module'] or 'N/A'}` | {d['failed']}/{total} | {tests_str} |"
+            )
         lines.append("")
 
     # ── Benchmark Failures (only if any) ─────────────────────────────────
@@ -661,9 +716,11 @@ def generate_report(
         lines.append("|:---|:-------|----------:|-----------:|------:|-------:|")
         for r in sorted(regressions, key=lambda x: -x["delta_pct"]):
             tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
-            lines.append(f"| **{r['op']}** | {r['config']} "
-                         f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
-                         f"| +{r['delta_pct']:.1f}% | {tflops_str} |")
+            lines.append(
+                f"| **{r['op']}** | {r['config']} "
+                f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
+                f"| +{r['delta_pct']:.1f}% | {tflops_str} |"
+            )
         lines.append("")
 
     # ── Improvements ──────────────────────────────────────────────────────
@@ -674,35 +731,40 @@ def generate_report(
         lines.append("|:---|:-------|---------------:|-----------:|------:|-------:|")
         for r in sorted(improvements, key=lambda x: x["delta_pct"]):
             tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
-            lines.append(f"| **{r['op']}** | {r['config']} "
-                         f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
-                         f"| {r['delta_pct']:.1f}% | {tflops_str} |")
+            lines.append(
+                f"| **{r['op']}** | {r['config']} "
+                f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
+                f"| {r['delta_pct']:.1f}% | {tflops_str} |"
+            )
         lines.append("")
 
     # ── Baseline Alerts ───────────────────────────────────────────────────
     if baseline_alerts:
         lines.append(f"## {_RED} Baseline Performance Alerts")
         lines.append("")
-        lines.append("> TileOPs is slower than baseline"
-                     f" (ratio < {BASELINE_RATIO_ALERT:.0%})."
-                     " Ratio = baseline_latency / tileops_latency.")
+        lines.append(
+            "> TileOPs is slower than baseline"
+            f" (ratio < {BASELINE_RATIO_ALERT:.0%})."
+            " Ratio = baseline_latency / tileops_latency."
+        )
         lines.append("")
-        lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms)"
-                     " | Ratio | Via |")
-        lines.append("|:-|:---|:-------|------------:|-------------:"
-                     "|------:|:----|")
+        lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |")
+        lines.append("|:-|:---|:-------|------------:|-------------:|------:|:----|")
         for a in sorted(baseline_alerts, key=lambda x: x.get("ratio", 1)):
             emoji = _ratio_emoji(a["ratio"])
-            lines.append(f"| {emoji} | **{a['op']}** | {a['config']} "
-                         f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
-                         f"| {a['ratio']:.1%} | {a['baseline_tag']} |")
+            lines.append(
+                f"| {emoji} | **{a['op']}** | {a['config']} "
+                f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
+                f"| {a['ratio']:.1%} | {a['baseline_tag']} |"
+            )
         lines.append("")
 
     # ── Full Correctness Results (collapsible) ────────────────────────────
     if test_ops:
         lines.append("<details>")
-        lines.append(f"<summary><strong>Full Correctness Results"
-                     f" ({n_test_ops} ops)</strong></summary>")
+        lines.append(
+            f"<summary><strong>Full Correctness Results ({n_test_ops} ops)</strong></summary>"
+        )
         lines.append("")
         lines.append("| | Op | Module | Pass | Fail | Skip | Max Error |")
         lines.append("|:-|:---|:-------|-----:|-----:|-----:|----------:|")
@@ -710,9 +772,11 @@ def generate_report(
             d = test_ops[op]
             err_str = f"{d['max_abs_err']:.2e}" if d["max_abs_err"] else "-"
             icon = _PASS if d["failed"] == 0 else _FAIL
-            lines.append(f"| {icon} | {op} | `{d['module'] or 'N/A'}` "
-                         f"| {d['passed']} | {d['failed']} | {d['skipped']} "
-                         f"| {err_str} |")
+            lines.append(
+                f"| {icon} | {op} | `{d['module'] or 'N/A'}` "
+                f"| {d['passed']} | {d['failed']} | {d['skipped']} "
+                f"| {err_str} |"
+            )
         lines.append("")
         lines.append("</details>")
         lines.append("")
@@ -721,14 +785,14 @@ def generate_report(
     if bench_ops:
         n_configs = sum(len(d["configs"]) for d in bench_ops.values())
         lines.append("<details>")
-        lines.append(f"<summary><strong>Full Benchmark Results"
-                     f" ({n_configs} configs across"
-                     f" {n_bench_ops} ops)</strong></summary>")
+        lines.append(
+            f"<summary><strong>Full Benchmark Results"
+            f" ({n_configs} configs across"
+            f" {n_bench_ops} ops)</strong></summary>"
+        )
         lines.append("")
-        lines.append("| | Op | Config | Latency (ms) | TFLOPS | BW (TB/s)"
-                     " | Via | Ratio |")
-        lines.append("|:-|:---|:-------|------------:|-------:|----------:"
-                     "|:----|------:|")
+        lines.append("| | Op | Config | Latency (ms) | TFLOPS | BW (TB/s) | Via | Ratio |")
+        lines.append("|:-|:---|:-------|------------:|-------:|----------:|:----|------:|")
         for op in sorted(bench_ops):
             for cfg in bench_ops[op]["configs"]:
                 lat = _conclusion_ms(cfg)
@@ -752,9 +816,11 @@ def generate_report(
 
                 if not bl_rows:
                     bl_str = f"strategy: {variant}" if variant else "-"
-                    lines.append(f"|  | {op} | {cfg['name']} "
-                                 f"| {lat_str} | {tflops_str} | {bw_str} "
-                                 f"| {bl_str} | - |")
+                    lines.append(
+                        f"|  | {op} | {cfg['name']} "
+                        f"| {lat_str} | {tflops_str} | {bw_str} "
+                        f"| {bl_str} | - |"
+                    )
                 else:
                     via_parts = []
                     for btag, bratio in bl_rows:
@@ -764,9 +830,11 @@ def generate_report(
                     # Use the best (highest) ratio for the emoji
                     best_ratio = max((r for _, r in bl_rows if r), default=None)
                     emoji = _ratio_emoji(best_ratio) if best_ratio else ""
-                    lines.append(f"| {emoji} | {op} | {cfg['name']} "
-                                 f"| {lat_str} | {tflops_str} | {bw_str} "
-                                 f"| {via_str} | - |")
+                    lines.append(
+                        f"| {emoji} | {op} | {cfg['name']} "
+                        f"| {lat_str} | {tflops_str} | {bw_str} "
+                        f"| {via_str} | - |"
+                    )
         lines.append("")
         lines.append("</details>")
         lines.append("")
@@ -803,13 +871,17 @@ def _coverage_signals(files: list[dict]) -> dict:
     pure = [f for f in files if not f["path"].startswith("kernels/")]
 
     never_built = sorted(
-        (f for f in kernels
-         if f["stmts"] >= _COVERAGE_MIN_STMTS
-         and 100 * f["covered"] / f["stmts"] < _KERNEL_BUILT_PCT),
-        key=lambda f: f["covered"] / f["stmts"])
+        (
+            f
+            for f in kernels
+            if f["stmts"] >= _COVERAGE_MIN_STMTS
+            and 100 * f["covered"] / f["stmts"] < _KERNEL_BUILT_PCT
+        ),
+        key=lambda f: f["covered"] / f["stmts"],
+    )
     untested = sorted(
-        (f for f in pure if f["stmts"] - f["covered"] > 0),
-        key=lambda f: f["covered"] - f["stmts"])
+        (f for f in pure if f["stmts"] - f["covered"] > 0), key=lambda f: f["covered"] - f["stmts"]
+    )
 
     ops = [f for f in files if f["path"].startswith("ops/")]
     roofline = [f for f in pure if f["path"].startswith("perf/")]
@@ -820,7 +892,9 @@ def _coverage_signals(files: list[dict]) -> dict:
         "roofline_untested": sum(f["stmts"] - f["covered"] for f in roofline),
         "roofline_worst": min(
             (f for f in roofline if f["stmts"] >= _COVERAGE_MIN_STMTS),
-            key=lambda f: f["covered"] / f["stmts"], default=None),
+            key=lambda f: f["covered"] / f["stmts"],
+            default=None,
+        ),
         "op_untested": sum(f["stmts"] - f["covered"] for f in ops),
         "op_branches_hit": sum(f["branches_hit"] for f in ops),
         "op_branches": sum(f["branches"] for f in ops),
@@ -833,21 +907,29 @@ def _coverage_section(signals: dict, worst_n: int = _COVERAGE_WORST_N) -> list[s
     lines = ["## Coverage", ""]
     lines.append("| Signal | Value | What it means | What a bad number costs |")
     lines.append("| --- | --- | --- | --- |")
-    lines.append(f"| Never-built kernels | {len(s['never_built'])} files "
-                 "| no test constructs these kernels "
-                 "| the kernel stops compiling and nothing says so until someone runs it |")
-    lines.append(f"| Untested roofline math | {s['roofline_untested']} lines in `perf/` "
-                 "| cost-model statements that never executed "
-                 "| benchmarks report wrong TFLOPS while every correctness test passes |")
-    lines.append(f"| Untested op logic | {s['op_untested']} lines in `ops/`, "
-                 f"{_pct(s['op_branches_hit'], s['op_branches'])} of branches "
-                 "| validation and dispatch paths not taken "
-                 "| a reversed shape or dtype check returns a wrong result instead of raising |")
+    lines.append(
+        f"| Never-built kernels | {len(s['never_built'])} files "
+        "| no test constructs these kernels "
+        "| the kernel stops compiling and nothing says so until someone runs it |"
+    )
+    lines.append(
+        f"| Untested roofline math | {s['roofline_untested']} lines in `perf/` "
+        "| cost-model statements that never executed "
+        "| benchmarks report wrong TFLOPS while every correctness test passes |"
+    )
+    lines.append(
+        f"| Untested op logic | {s['op_untested']} lines in `ops/`, "
+        f"{_pct(s['op_branches_hit'], s['op_branches'])} of branches "
+        "| validation and dispatch paths not taken "
+        "| a reversed shape or dtype check returns a wrong result instead of raising |"
+    )
     lines.append("")
-    lines.append(f"Everything outside `kernels/` accounts for {s['untested_lines']} untested "
-                 "lines; the two rows above carry the ones with an owner. Track the "
-                 "direction, not the absolute value. Smoke-only cases run in "
-                 "`gpu-smoke.yml`, so code reached solely by them counts as untested here.")
+    lines.append(
+        f"Everything outside `kernels/` accounts for {s['untested_lines']} untested "
+        "lines; the two rows above carry the ones with an owner. Track the "
+        "direction, not the absolute value. Smoke-only cases run in "
+        "`gpu-smoke.yml`, so code reached solely by them counts as untested here."
+    )
     lines.append("")
 
     if s["never_built"]:
@@ -866,14 +948,17 @@ def _coverage_section(signals: dict, worst_n: int = _COVERAGE_WORST_N) -> list[s
         lines.append("| File | Uncovered | Executed |")
         lines.append("| --- | --- | --- |")
         for f in s["untested"][:worst_n]:
-            lines.append(f"| `{f['path']}` | {f['stmts'] - f['covered']} "
-                         f"| {_pct(f['covered'], f['stmts'])} |")
+            lines.append(
+                f"| `{f['path']}` | {f['stmts'] - f['covered']} "
+                f"| {_pct(f['covered'], f['stmts'])} |"
+            )
         lines.append("")
         lines.append("</details>")
         lines.append("")
 
-    lines.append("Per-line detail is in the `htmlcov/` directory of this run's "
-                 "`tileops_op_test` artifact.")
+    lines.append(
+        "Per-line detail is in the `htmlcov/` directory of this run's `tileops_op_test` artifact."
+    )
     lines.append("")
     return lines
 
@@ -921,9 +1006,16 @@ def main():
     coverage_prev = _previous_coverage(history_runs)
 
     # Generate report
-    report = generate_report(test_ops, bench_ops, bench_failures,
-                             regressions, improvements, baseline_alerts, coverage,
-                             coverage_prev)
+    report = generate_report(
+        test_ops,
+        bench_ops,
+        bench_failures,
+        regressions,
+        improvements,
+        baseline_alerts,
+        coverage,
+        coverage_prev,
+    )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 

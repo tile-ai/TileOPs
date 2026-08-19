@@ -64,10 +64,11 @@ class AllFwdOp(_ReduceOpBase):
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
-
 
     def _noop_output_dtype(self) -> torch.dtype:
         """All returns bool per manifest contract."""
@@ -78,7 +79,6 @@ class AllFwdOp(_ReduceOpBase):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
         return x, None
-
 
 
 class AnyFwdOp(_ReduceOpBase):
@@ -128,10 +128,11 @@ class AnyFwdOp(_ReduceOpBase):
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
-
 
     def _noop_output_dtype(self) -> torch.dtype:
         """Any returns bool per manifest contract."""
@@ -142,7 +143,6 @@ class AnyFwdOp(_ReduceOpBase):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
         return x, None
-
 
 
 class CountNonzeroFwdOp(_ReduceOpBase):
@@ -181,10 +181,11 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     ):
         # count_nonzero never keeps dim (matches torch.count_nonzero)
         super().__init__(
-            dim=dim, keepdim=False,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=False,
+            kernel_map=kernel_map,
+            tune=tune,
         )
-
 
     def _noop_output_dtype(self) -> torch.dtype:
         """count_nonzero returns int64 per manifest contract.

@@ -6,6 +6,7 @@ double-registers and calls abort(). The apache-tvm-ffi range check is the other:
 only when a kernel first compiles under GPU, which no import here reaches. Each failure below
 names its own fix.
 """
+
 import importlib.metadata as md
 import sys
 
@@ -22,13 +23,17 @@ def _torch_pin(name: str) -> Requirement | None:
             return req
     return None
 
+
 # Bump together with the base image's CUDA major.minor.
 EXPECTED_TORCH_CUDA = "13.2"
 
 installed = md.version("apache-tvm-ffi")
 ffi_req = next(
-    (Requirement(r) for r in (md.requires("tilelang") or [])
-     if Requirement(r).name == "apache-tvm-ffi"),
+    (
+        Requirement(r)
+        for r in (md.requires("tilelang") or [])
+        if Requirement(r).name == "apache-tvm-ffi"
+    ),
     None,
 )
 if ffi_req is None:
@@ -48,9 +53,7 @@ if torch.version.cuda != EXPECTED_TORCH_CUDA:
 try:
     cupti_version = md.version("cupti-python")
 except md.PackageNotFoundError:
-    sys.exit(
-        "FAIL: cupti-python is missing; the benchmark layer times kernels through it."
-    )
+    sys.exit("FAIL: cupti-python is missing; the benchmark layer times kernels through it.")
 
 # Not imported: no GPU here, and the check is about the resolver, not the driver.
 bindings_pin = _torch_pin("cuda-bindings")

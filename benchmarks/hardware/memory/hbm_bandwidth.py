@@ -31,9 +31,13 @@ _CU_SRC = Path(__file__).parent / "hbm_saturation.cu"
 def _compile(cu_path, binary_path, arch="sm_90"):
     """Compile the CUDA source. Raises on failure."""
     cmd = [
-        "nvcc", "-O3", f"-arch={arch}",
+        "nvcc",
+        "-O3",
+        f"-arch={arch}",
         "-Wno-deprecated-gpu-targets",
-        "-o", str(binary_path), str(cu_path),
+        "-o",
+        str(binary_path),
+        str(cu_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -105,13 +109,13 @@ def main():
     measured_peak = _parse_triad_peak(lines)
     if measured_peak > 0 and theo_peak_gbs > 0:
         calibration = measured_peak / theo_peak_gbs
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Measured peak (triad vec4): {measured_peak:.2f} GB/s")
         print(f"Theoretical:               {theo_peak_gbs:.1f} GB/s")
         print(f"Calibration:               {calibration:.4f}")
         print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

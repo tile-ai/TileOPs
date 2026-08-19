@@ -23,21 +23,20 @@ def _mean_pooling_kernel(
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
-
     @tilelang.jit(out_idx=[1])
     def _mean_pooling_func(bdim: int, threads: int) -> None:
-
         @T.prim_func
         def _mean_pooling_main(
-                x: T.Tensor((batch_size, seq_len, heads, dim), dtype),
-                o: T.Tensor((batch_size, chunks_per_batch, heads, dim), dtype),
-                offsets: T.Tensor((seq_num + 1,), T.int32),
-                indices: T.Tensor((chunks_per_batch, 2),
-                                  T.int32),  # [chunks_per_batch, 2] (seq_id, chunk_id in sequence)
+            x: T.Tensor((batch_size, seq_len, heads, dim), dtype),
+            o: T.Tensor((batch_size, chunks_per_batch, heads, dim), dtype),
+            offsets: T.Tensor((seq_num + 1,), T.int32),
+            indices: T.Tensor(
+                (chunks_per_batch, 2), T.int32
+            ),  # [chunks_per_batch, 2] (seq_id, chunk_id in sequence)
         ) -> None:
             with T.Kernel(
-                    T.ceildiv(dim, bdim), chunks_per_batch, batch_size * heads,
-                    threads=threads) as (i_d, i_t, i_bh):
+                T.ceildiv(dim, bdim), chunks_per_batch, batch_size * heads, threads=threads
+            ) as (i_d, i_t, i_bh):
                 i_b = i_bh // heads
                 i_h = i_bh % heads
                 # load data [chunk_size, D]
@@ -63,14 +62,17 @@ def _mean_pooling_kernel(
                 T.clear(x_shared)
                 # disable_tma=True: the copy extent is a runtime value
                 # (ragged chunks), which the TMA lowering cannot express.
-                T.copy(x[i_b, start_token:end_token, i_h, start_dim:end_dim],
-                       x_shared[0:end_token - start_token, :end_dim - start_dim],
-                       disable_tma=True)
+                T.copy(
+                    x[i_b, start_token:end_token, i_h, start_dim:end_dim],
+                    x_shared[0 : end_token - start_token, : end_dim - start_dim],
+                    disable_tma=True,
+                )
                 T.copy(x_shared, x_local)
                 T.reduce_sum(x_local, output_local, dim=0)
                 for d_idx in T.Parallel(bdim):
                     o[i_b, i_t, i_h, start_dim + d_idx] = T.cast(
-                        output_local[d_idx] / T.cast(end_token - start_token, accum_dtype), dtype)
+                        output_local[d_idx] / T.cast(end_token - start_token, accum_dtype), dtype
+                    )
 
         return _mean_pooling_main
 
@@ -138,19 +140,21 @@ def _(
 class MeanPoolingFwdKernel(Kernel):
     supported_archs: list[int] = [90]
 
-    def __init__(self,
-                 batch_size: int,
-                 seq_len: int,
-                 heads: int,
-                 dim: int,
-                 chunk_size: int,
-                 chunks_per_batch: int,
-                 seq_num: int,
-                 use_offsets: int,
-                 dtype: torch.dtype,
-                 accum_dtype: torch.dtype,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch_size: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        chunks_per_batch: int,
+        seq_num: int,
+        use_offsets: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
         super().__init__()
         self.batch_size = batch_size
         self.seq_len = seq_len
@@ -164,9 +168,18 @@ class MeanPoolingFwdKernel(Kernel):
         self.accum_dtype = accum_dtype
         self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
 
-        self.kernel = _mean_pooling_kernel(self.batch_size, self.seq_len, self.heads, self.dim,
-                                           self.chunk_size, self.chunks_per_batch, self.seq_num,
-                                           self.use_offsets, self.dtype_str, self.accum_dtype_str)
+        self.kernel = _mean_pooling_kernel(
+            self.batch_size,
+            self.seq_len,
+            self.heads,
+            self.dim,
+            self.chunk_size,
+            self.chunks_per_batch,
+            self.seq_num,
+            self.use_offsets,
+            self.dtype_str,
+            self.accum_dtype_str,
+        )
 
         self.init_config(config, tune)
 
@@ -183,10 +196,23 @@ class MeanPoolingFwdKernel(Kernel):
         bdim = [16, 32, 64, 128]
         return [{"bdim": b, "threads": t} for b in bdim for t in threads]
 
-    def forward(self, x: torch.Tensor, offsets: torch.Tensor,
-                indices: torch.Tensor) -> torch.Tensor:
-        return _mean_pooling_wrapped_kernel(self.batch_size, self.seq_len, self.heads, self.dim,
-                                            self.chunk_size, self.chunks_per_batch, self.seq_num,
-                                            self.use_offsets, self.dtype_str, self.accum_dtype_str,
-                                            self.config["bdim"], self.config["threads"], x, offsets,
-                                            indices)
+    def forward(
+        self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
+    ) -> torch.Tensor:
+        return _mean_pooling_wrapped_kernel(
+            self.batch_size,
+            self.seq_len,
+            self.heads,
+            self.dim,
+            self.chunk_size,
+            self.chunks_per_batch,
+            self.seq_num,
+            self.use_offsets,
+            self.dtype_str,
+            self.accum_dtype_str,
+            self.config["bdim"],
+            self.config["threads"],
+            x,
+            offsets,
+            indices,
+        )

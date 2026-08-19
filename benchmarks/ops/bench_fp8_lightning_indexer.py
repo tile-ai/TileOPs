@@ -20,8 +20,16 @@ _CONFIG = None
 _FP8_LIGHTNING_INDEXER_OP = "FP8LightningIndexerFwdOp"
 
 _SHAPE_KEYS = (
-    "batch", "seq_len", "heads", "index_dim", "seq_len_kv", "kv_group", "clean_logits",
+    "batch",
+    "seq_len",
+    "heads",
+    "index_dim",
+    "seq_len_kv",
+    "kv_group",
+    "clean_logits",
 )
+
+
 def _indexer_params() -> list:
     """Params from manifest workloads, deduped on shape.
 
@@ -34,9 +42,11 @@ def _indexer_params() -> list:
         if args in seen:
             continue
         seen.add(args)
-        params.append(pytest.param(
-            *args, id=w["label"],
-            marks=pytest.mark.smoke if not params else pytest.mark.full))
+        params.append(
+            pytest.param(
+                *args, id=w["label"], marks=pytest.mark.smoke if not params else pytest.mark.full
+            )
+        )
     return params
 
 
@@ -44,14 +54,23 @@ def _indexer_params() -> list:
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits",
     _indexer_params(),
 )
-def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
-                                     seq_len_kv: int, kv_group: int,
-                                     clean_logits: bool) -> None:
-    test = FP8LightningIndexerWorkload(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
-                                       clean_logits, _CONFIG)
+def test_fp8_lightning_indexer_bench(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    index_dim: int,
+    seq_len_kv: int,
+    kv_group: int,
+    clean_logits: bool,
+) -> None:
+    test = FP8LightningIndexerWorkload(
+        batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, _CONFIG
+    )
     inputs = test.gen_inputs()
 
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, config=_CONFIG, tune=_TUNE)
     bm = ManifestBenchmark(_FP8_LIGHTNING_INDEXER_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

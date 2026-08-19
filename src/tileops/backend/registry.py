@@ -153,8 +153,7 @@ def load_failure_suffix() -> str:
     """Append to any error, so a broken wheel is never invisible."""
     if not LOAD_FAILURES:
         return ""
-    return (f" ({len(LOAD_FAILURES)} backend(s) failed to load; "
-            f"see tileops.backend.load_failures())")
+    return f" ({len(LOAD_FAILURES)} backend(s) failed to load; see tileops.backend.load_failures())"
 
 
 class RegistryState(NamedTuple):

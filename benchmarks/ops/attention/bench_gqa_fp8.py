@@ -45,9 +45,7 @@ def _manifest_cases() -> list[GQAFp8TensorCoreBenchCase]:
                     heads=heads,
                     heads_kv=heads_kv,
                     dim=dim,
-                    validate_uniform_cu_seqlens=workload.get(
-                        "validate_uniform_cu_seqlens", True
-                    ),
+                    validate_uniform_cu_seqlens=workload.get("validate_uniform_cu_seqlens", True),
                     out_dtype=out_dtype,
                     label=f"{workload['label']}-{dtype_name}",
                 )

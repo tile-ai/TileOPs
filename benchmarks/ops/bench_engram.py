@@ -32,7 +32,8 @@ _TUNE = True
 
 _ENGRAM_GATE_CONV_FWD_OP = "EngramGateConvFwdOp"
 _ENGRAM_GATE_CONV_FWD_PARAMS = workload_field_params(
-    load_workloads(_ENGRAM_GATE_CONV_FWD_OP), ("M", "seq_len", "d", "dtype"),
+    load_workloads(_ENGRAM_GATE_CONV_FWD_OP),
+    ("M", "seq_len", "d", "dtype"),
 )
 
 
@@ -44,12 +45,15 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     op = EngramGateConvFwdOp(M, seq_len, d, tune=_TUNE)
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 _ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
 _ENGRAM_GATE_CONV_BWD_PARAMS = workload_field_params(
-    load_workloads(_ENGRAM_GATE_CONV_BWD_OP), ("M", "seq_len", "d", "dtype"),
+    load_workloads(_ENGRAM_GATE_CONV_BWD_OP),
+    ("M", "seq_len", "d", "dtype"),
 )
 
 
@@ -84,8 +88,16 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     inputs = test.gen_inputs()
 
     op = EngramDecodeFwdOp(
-        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=_TUNE,
+        batch,
+        d_mem,
+        d,
+        max_conv_len,
+        conv_kernel_size,
+        dilation,
+        tune=_TUNE,
     )
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

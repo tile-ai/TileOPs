@@ -58,9 +58,7 @@ def _run_runner(
 
 def _cases(out_xml: Path) -> dict[str, ET.Element]:
     tree = ET.parse(out_xml)
-    return {
-        f"{tc.attrib['classname']}::{tc.attrib['name']}": tc for tc in tree.iter("testcase")
-    }
+    return {f"{tc.attrib['classname']}::{tc.attrib['name']}": tc for tc in tree.iter("testcase")}
 
 
 @pytest.mark.smoke
@@ -162,9 +160,7 @@ def test_teardown_crash_is_reported(tmp_path):
         tmp_path,
         {
             "bench_teardown_abort.py": (
-                "import atexit, os\n"
-                "atexit.register(os.abort)\n"
-                "def test_ok():\n    pass\n"
+                "import atexit, os\natexit.register(os.abort)\ndef test_ok():\n    pass\n"
             ),
         },
     )
@@ -181,15 +177,15 @@ def test_teardown_deadline_kills_a_stuck_child(tmp_path):
         tmp_path,
         {
             "bench_a_slow_teardown.py": (
-                "import atexit, time\n"
-                "atexit.register(time.sleep, 60)\n"
-                "def test_ok():\n    pass\n"
+                "import atexit, time\natexit.register(time.sleep, 60)\ndef test_ok():\n    pass\n"
             ),
             "bench_b_next.py": "def test_next():\n    pass\n",
         },
     )
     proc, out_xml, _ = _run_runner(
-        tmp_path, bench_dir, stall_timeout="120",
+        tmp_path,
+        bench_dir,
+        stall_timeout="120",
         extra=["--teardown-timeout", "2", "--prewarm", "0"],
     )
 
@@ -217,8 +213,7 @@ def test_next_file_starts_only_after_the_previous_child_exited(tmp_path):
                 "def test_ok():\n    pass\n"
             ),
             "bench_b_next.py": (
-                "import os\n"
-                "def test_next():\n    assert os.path.exists('teardown_done')\n"
+                "import os\ndef test_next():\n    assert os.path.exists('teardown_done')\n"
             ),
         },
     )
@@ -272,7 +267,9 @@ def test_spent_budget_reports_the_files_it_never_reached(tmp_path):
         },
     )
     proc, out_xml, _ = _run_runner(
-        tmp_path, bench_dir, stall_timeout="120",
+        tmp_path,
+        bench_dir,
+        stall_timeout="120",
         extra=["--total-budget", "2", "--prewarm", "0"],
     )
 

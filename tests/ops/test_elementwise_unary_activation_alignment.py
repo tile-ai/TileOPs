@@ -7,16 +7,21 @@ identity, ``approximate`` validation, kernel_map override
 dispatch, and end-to-end correctness against the PyTorch reference.
 """
 
-
 import pytest
 import torch
 
 _INPLACE_PARAM_FREE_OPS = (
-    "ReluFwdOp", "SiluFwdOp", "HardswishFwdOp",
-    "HardsigmoidFwdOp", "MishFwdOp", "SeluFwdOp",
+    "ReluFwdOp",
+    "SiluFwdOp",
+    "HardswishFwdOp",
+    "HardsigmoidFwdOp",
+    "MishFwdOp",
+    "SeluFwdOp",
 )
 _INPLACE_PARAMETRIC_OPS = (
-    "LeakyReluFwdOp", "EluFwdOp", "HardtanhFwdOp",
+    "LeakyReluFwdOp",
+    "EluFwdOp",
+    "HardtanhFwdOp",
 )
 
 _CLAMP_OPS = ("ClampFwdOp", "ClampScalarFwdOp")
@@ -71,7 +76,7 @@ def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
     cls = getattr(mod, op_name)
     pos, kw = _clamp_construct_kwargs(op_name)
     inst = cls(*pos, **kw)
-    (key, default_kernel_cls), = inst.default_kernel_map.items()
+    ((key, default_kernel_cls),) = inst.default_kernel_map.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
@@ -95,7 +100,10 @@ def test_nan_to_num_canonical_kwarg_names() -> None:
     import tileops.ops.elementwise as mod
 
     op = mod.NanToNumFwdOp(
-        N_total=8, nan=0.0, posinf=1.0, neginf=-1.0,
+        N_total=8,
+        nan=0.0,
+        posinf=1.0,
+        neginf=-1.0,
     )
     assert op.nan == 0.0
     assert op.posinf == 1.0
@@ -105,7 +113,8 @@ def test_nan_to_num_canonical_kwarg_names() -> None:
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize(
-    "op_name", _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
+    "op_name",
+    _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
 )
 def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
     """``inplace=True`` must mutate ``input`` and return the same tensor.
@@ -135,7 +144,8 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize(
-    "op_name", _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
+    "op_name",
+    _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
 )
 def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> None:
     """Default ``inplace=False`` must not alias or mutate the input."""
@@ -148,9 +158,7 @@ def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> No
     x_before = x.clone()
     y = op(x)
     assert y is not x, f"{op_name}: inplace=False must return a fresh tensor"
-    assert torch.equal(x, x_before), (
-        f"{op_name}: inplace=False must not mutate the input tensor"
-    )
+    assert torch.equal(x, x_before), f"{op_name}: inplace=False must not mutate the input tensor"
 
 
 @pytest.mark.smoke

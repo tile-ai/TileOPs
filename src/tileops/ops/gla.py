@@ -146,16 +146,14 @@ class GLAFwdOp(Op):
         Returns:
             Tuple of (o, final_state). final_state is None if output_final_state=False.
         """
-        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
-            q, k, v, g, self.chunk_size)
+        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(q, k, v, g, self.chunk_size)
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
         return self.kernel(q, k, v, g, initial_state)
 
 
@@ -266,13 +264,13 @@ class GLABwdOp(Op):
             Tuple of (dq, dk, dv, dg).
         """
         batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
-            q, k, v, g, self.chunk_size, do=do)
+            q, k, v, g, self.chunk_size, do=do
+        )
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
         return self.kernel(q, k, v, g, h, do, dht, has_initial_state)

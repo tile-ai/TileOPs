@@ -51,7 +51,12 @@ class EngramGateConvFwdOp(Op):
             "engram_gate_conv_fwd",
             key=dtype,
             build=lambda: self.kernel_map["engram_gate_conv_fwd"](
-                self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
+                self.M,
+                self.seq_len,
+                self.d,
+                self.eps,
+                dtype,
+                tune=self.tune,
             ),
         )
 
@@ -91,13 +96,9 @@ class EngramGateConvFwdOp(Op):
         self._validate_dtypes(H, k, v, rms_w_h, rms_w_v, conv_w)
         self.dtype = H.dtype
         if H.shape[-1] != self.d:
-            raise ValueError(
-                f"Expected hidden dim {self.d}, got {H.shape[-1]}"
-            )
+            raise ValueError(f"Expected hidden dim {self.d}, got {H.shape[-1]}")
         if conv_w.shape[0] != CONV_KERNEL_SIZE:
-            raise ValueError(
-                f"Expected conv kernel size {CONV_KERNEL_SIZE}, got {conv_w.shape[0]}"
-            )
+            raise ValueError(f"Expected conv kernel size {CONV_KERNEL_SIZE}, got {conv_w.shape[0]}")
 
         H = H.contiguous()
         k = k.contiguous()
@@ -145,7 +146,12 @@ class EngramGateConvBwdOp(Op):
             "engram_gate_conv_bwd",
             key=dtype,
             build=lambda: self.kernel_map["engram_gate_conv_bwd"](
-                self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
+                self.M,
+                self.seq_len,
+                self.d,
+                self.eps,
+                dtype,
+                tune=self.tune,
             ),
         )
 
@@ -195,8 +201,18 @@ class EngramGateConvBwdOp(Op):
         if not dY.is_cuda:
             raise ValueError("dY must be a CUDA tensor")
         self._validate_dtypes(
-            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-            vhat, alpha, rrms_h, rrms_k, rrms_v,
+            dY,
+            H,
+            k,
+            v,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
+            vhat,
+            alpha,
+            rrms_h,
+            rrms_k,
+            rrms_v,
         )
         self.dtype = dY.dtype
 
@@ -207,6 +223,16 @@ class EngramGateConvBwdOp(Op):
         vhat = vhat.contiguous()
 
         return self._get_kernel(dY.dtype)(
-            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-            vhat, alpha, rrms_h, rrms_k, rrms_v,
+            dY,
+            H,
+            k,
+            v,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
+            vhat,
+            alpha,
+            rrms_h,
+            rrms_k,
+            rrms_v,
         )

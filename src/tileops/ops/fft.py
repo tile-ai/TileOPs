@@ -8,7 +8,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ['FFTC2CFwdOp']
+__all__ = ["FFTC2CFwdOp"]
 
 
 class FFTC2CFwdOp(Op):
@@ -29,15 +29,15 @@ class FFTC2CFwdOp(Op):
         kernel_map: Optional custom kernel mapping for testing
     """
 
-    def __init__(self,
-                 tune: bool = False,
-                 kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
+    def __init__(self, tune: bool = False, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
         self.n = None
         self.dtype = None
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._twiddle_cache: Dict[tuple[int, torch.dtype, int | None], tuple[torch.Tensor, torch.Tensor]] = {}
+        self._twiddle_cache: Dict[
+            tuple[int, torch.dtype, int | None], tuple[torch.Tensor, torch.Tensor]
+        ] = {}
         self.kernel = None
 
     def _get_kernel(
@@ -52,7 +52,10 @@ class FFTC2CFwdOp(Op):
             "fft_c2c_kernel",
             key=key,
             build=lambda: self.kernel_map["fft_c2c_kernel"](
-                n, batch_size, dtype, tune=self.tune,
+                n,
+                batch_size,
+                dtype,
+                tune=self.tune,
             ),
         )
 
@@ -80,13 +83,15 @@ class FFTC2CFwdOp(Op):
             half_m = 1 << s
             m = half_m * 2
             k_vals = torch.arange(half_m, dtype=torch.float64)
-            angles[half_m - 1:2 * half_m - 1] = -2.0 * math.pi * k_vals / m
+            angles[half_m - 1 : 2 * half_m - 1] = -2.0 * math.pi * k_vals / m
 
         lut_real = torch.cos(angles).to(real_dtype).to(device)
         lut_imag = torch.sin(angles).to(real_dtype).to(device)
         return lut_real, lut_imag
 
-    def _get_lut(self, n: int, dtype: torch.dtype, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    def _get_lut(
+        self, n: int, dtype: torch.dtype, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         key = (n, dtype, device.index)
         if key not in self._twiddle_cache:
             self._twiddle_cache[key] = self._build_lut(n, dtype, device)

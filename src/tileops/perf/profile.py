@@ -33,9 +33,7 @@ def get_profile_path(gpu_name: str) -> Path:
     path = _PROFILES_DIR / f"{gpu_name}.yaml"
     if not path.exists():
         available = [p.stem for p in _PROFILES_DIR.glob("*.yaml")]
-        raise FileNotFoundError(
-            f"No GPU profile '{gpu_name}'. Available: {available}"
-        )
+        raise FileNotFoundError(f"No GPU profile '{gpu_name}'. Available: {available}")
     return path
 
 

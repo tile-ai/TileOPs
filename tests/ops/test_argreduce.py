@@ -24,6 +24,7 @@ def _call(op, x: torch.Tensor) -> torch.Tensor:
     """
     return cast(torch.Tensor, op(x))
 
+
 # Fixtures
 
 
@@ -439,12 +440,15 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls_path, dim", [
-    ("tileops.ops.reduction.argreduce.ArgmaxFwdOp", [0, 1]),
-    ("tileops.ops.reduction.argreduce.ArgminFwdOp", [0, 1]),
-    ("tileops.ops.reduction.argreduce.ArgmaxFwdOp", (0, 1)),
-    ("tileops.ops.reduction.argreduce.ArgminFwdOp", (0, 1)),
-])
+@pytest.mark.parametrize(
+    "op_cls_path, dim",
+    [
+        ("tileops.ops.reduction.argreduce.ArgmaxFwdOp", [0, 1]),
+        ("tileops.ops.reduction.argreduce.ArgminFwdOp", [0, 1]),
+        ("tileops.ops.reduction.argreduce.ArgmaxFwdOp", (0, 1)),
+        ("tileops.ops.reduction.argreduce.ArgminFwdOp", (0, 1)),
+    ],
+)
 def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
     """Argreduce ops only support scalar dim or None; list/tuple must raise."""
     import importlib
@@ -505,7 +509,9 @@ def test_argmax_dim_none(shape: tuple, dtype: torch.dtype) -> None:
 
     y_keep = _call(ArgmaxFwdOp(dim=None, keepdim=True), x)
     expected_shape = tuple(1 for _ in shape)
-    assert y_keep.shape == expected_shape, f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
+    assert y_keep.shape == expected_shape, (
+        f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
+    )
     assert torch.equal(y_keep.reshape(()), ref_flat), (
         f"dim=None keepdim argmax value mismatch on shape={shape} dtype={dtype}"
     )
@@ -526,7 +532,9 @@ def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
 
     y_keep = _call(ArgminFwdOp(dim=None, keepdim=True), x)
     expected_shape = tuple(1 for _ in shape)
-    assert y_keep.shape == expected_shape, f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
+    assert y_keep.shape == expected_shape, (
+        f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
+    )
     assert torch.equal(y_keep.reshape(()), ref_flat), (
         f"dim=None keepdim argmin value mismatch on shape={shape} dtype={dtype}"
     )
@@ -624,10 +632,13 @@ def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("shape, dim, expect_strided", [
-    ((4, 128, 4096), 0, True),      # short strided axis: read it in place
-    ((1, 32768, 8), 1, False),      # long strided axis: transposing wins
-])
+@pytest.mark.parametrize(
+    "shape, dim, expect_strided",
+    [
+        ((4, 128, 4096), 0, True),  # short strided axis: read it in place
+        ((1, 32768, 8), 1, False),  # long strided axis: transposing wins
+    ],
+)
 def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
     """A strided axis is read in place only while walking it stays cheap.
 
@@ -663,14 +674,20 @@ def test_strided_axis_forward_binds_roofline_state(op_cls_name: str) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("m, n, inner_stride, strategy", [
-    (4, 1024, 1, "warp"),
-    (4, 8192, 1, "cta"),
-    (4, 65536, 1, "multi_cta"),
-    (4096, 4, 4096, "output"),
-])
+@pytest.mark.parametrize(
+    "m, n, inner_stride, strategy",
+    [
+        (4, 1024, 1, "warp"),
+        (4, 8192, 1, "cta"),
+        (4, 65536, 1, "multi_cta"),
+        (4096, 4, 4096, "output"),
+    ],
+)
 def test_argreduce_tuning_space_matches_its_kernel(
-    m: int, n: int, inner_stride: int, strategy: str,
+    m: int,
+    n: int,
+    inner_stride: int,
+    strategy: str,
 ) -> None:
     """A strategy may only offer knobs its own kernel takes.
 

@@ -83,4 +83,5 @@ class FixtureBase(metaclass=FixtureMeta):
     - Single entry with multiple param names -> explicit combinations
     - Multiple entries each with one param name -> cross-product
     """
+
     PARAMS = []

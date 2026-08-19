@@ -67,8 +67,9 @@ def _jit_kwargs() -> dict:
     )
 
 
-def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int,
-                                page_size: int, dtype: str):
+def _mha_decode_paged_ws_kernel(
+    batch: int, heads: int, seqlen_kv: int, dim: int, page_size: int, dtype: str
+):
     """Build the JIT'd (split, combine) pair for one shape specialization."""
     scale = dim**-0.5 * LOG2E
     accum = "float"
@@ -101,10 +102,12 @@ def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int
                 warp_m = T.alloc_shared([CONS_WARPS], accum, scope="shared")
                 warp_l = T.alloc_shared([CONS_WARPS], accum, scope="shared")
                 warp_o = T.alloc_shared([CONS_WARPS, dim], accum, scope="shared")
-                T.annotate_layout({
-                    Ks: make_swizzled_layout(Ks),
-                    Vs: make_swizzled_layout(Vs),
-                })
+                T.annotate_layout(
+                    {
+                        Ks: make_swizzled_layout(Ks),
+                        Vs: make_swizzled_layout(Vs),
+                    }
+                )
 
                 # A ready barrier is completed by whoever announces the tile, an
                 # empty barrier by every consumer thread that finished reading
@@ -122,8 +125,7 @@ def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int
                 tiles_total = T.ceildiv(kv_len, block_N)
                 tiles_per_split = T.ceildiv(tiles_total, num_split)
                 tile_begin = bs * tiles_per_split
-                n_tiles = T.max(
-                    T.min(tile_begin + tiles_per_split, tiles_total) - tile_begin, 0)
+                n_tiles = T.max(T.min(tile_begin + tiles_per_split, tiles_total) - tile_begin, 0)
 
                 if tx >= CONS:
                     with T.ws(1):
@@ -132,15 +134,16 @@ def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int
                             st = t % stages
                             free_parity = ((t // stages) % 2) ^ 1
                             row0 = (tile_begin + t) * block_N
-                            base = (block_table[bb, row0 // page_size] * page_size
-                                    + row0 % page_size)
+                            base = block_table[bb, row0 // page_size] * page_size + row0 % page_size
                             T.mbarrier_wait_parity(k_free[st], free_parity)
-                            T.tma_copy(K[base:base + block_N, bh, :], Ks[st, :, :],
-                                       barrier=k_ready[st])
+                            T.tma_copy(
+                                K[base : base + block_N, bh, :], Ks[st, :, :], barrier=k_ready[st]
+                            )
                             T.mbarrier_arrive(k_ready[st])
                             T.mbarrier_wait_parity(v_free[st], free_parity)
-                            T.tma_copy(V[base:base + block_N, bh, :], Vs[st, :, :],
-                                       barrier=v_ready[st])
+                            T.tma_copy(
+                                V[base : base + block_N, bh, :], Vs[st, :, :], barrier=v_ready[st]
+                            )
                             T.mbarrier_arrive(v_ready[st])
                 else:
                     with T.ws(0):
@@ -189,9 +192,9 @@ def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int
                                 dot[0] += T.shfl_xor(dot[0], 4)
                                 dot[0] += T.shfl_xor(dot[0], 2)
                                 dot[0] += T.shfl_xor(dot[0], 1)
-                                scores[jj] = T.if_then_else(row0 + j < kv_len,
-                                                            dot[0] * scale,
-                                                            -T.infinity(accum))
+                                scores[jj] = T.if_then_else(
+                                    row0 + j < kv_len, dot[0] * scale, -T.infinity(accum)
+                                )
                             T.mbarrier_arrive(k_free[st])
 
                             # The whole online softmax stays inside this warp:
@@ -244,7 +247,8 @@ def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int
                                 O_partial[bb, bh, bs, d0 + c] = acc_o[c] * resc[0]
                             if lane == 0:
                                 glse[bb, bh, bs] = T.if_then_else(
-                                    l_run[0] > 0, T.log2(l_run[0]) + m_new[0], _EMPTY_LSE)
+                                    l_run[0] > 0, T.log2(l_run[0]) + m_new[0], _EMPTY_LSE
+                                )
 
         @T.macro
         def combine(
@@ -308,22 +312,47 @@ def _mha_decode_paged_ws_kernel(batch: int, heads: int, seqlen_kv: int, dim: int
 
 
 @torch.library.custom_op("top::mha_decode_paged_ws_op", mutates_args=())
-def _mha_decode_paged_ws_op(batch: int, heads: int, seqlen_kv: int, dim: int, page_size: int,
-                            dtype: str, block_N: int, num_split: int, stages: int,
-                            Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                            real_seqlen_kv: torch.Tensor, block_table: torch.Tensor,
-                            glse: torch.Tensor,
-                            O_partial: torch.Tensor) -> torch.Tensor:
+def _mha_decode_paged_ws_op(
+    batch: int,
+    heads: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    dtype: str,
+    block_N: int,
+    num_split: int,
+    stages: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    real_seqlen_kv: torch.Tensor,
+    block_table: torch.Tensor,
+    glse: torch.Tensor,
+    O_partial: torch.Tensor,
+) -> torch.Tensor:
     kernel = _mha_decode_paged_ws_kernel(batch, heads, seqlen_kv, dim, page_size, dtype)
-    return kernel(block_N, num_split, stages)(Q, K, V, real_seqlen_kv, block_table, glse,
-                                              O_partial)
+    return kernel(block_N, num_split, stages)(Q, K, V, real_seqlen_kv, block_table, glse, O_partial)
 
 
 @_mha_decode_paged_ws_op.register_fake
-def _(batch: int, heads: int, seqlen_kv: int, dim: int, page_size: int, dtype: str,
-      block_N: int, num_split: int, stages: int, Q: torch.Tensor, K: torch.Tensor,
-      V: torch.Tensor, real_seqlen_kv: torch.Tensor, block_table: torch.Tensor,
-      glse: torch.Tensor, O_partial: torch.Tensor) -> torch.Tensor:
+def _(
+    batch: int,
+    heads: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    dtype: str,
+    block_N: int,
+    num_split: int,
+    stages: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    real_seqlen_kv: torch.Tensor,
+    block_table: torch.Tensor,
+    glse: torch.Tensor,
+    O_partial: torch.Tensor,
+) -> torch.Tensor:
     return torch.empty_like(Q)
 
 
@@ -339,17 +368,19 @@ class MHADecodePagedWsKernel(Kernel):
     def applies(cls, call) -> bool:
         return paged_decode_ws_region(call)
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 seqlen_q: int,
-                 seqlen_kv: int,
-                 dim: int,
-                 page_size: int,
-                 is_causal: bool = False,
-                 dtype: torch.dtype = torch.float16,
-                 config: Optional[dict] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seqlen_q: int,
+        seqlen_kv: int,
+        dim: int,
+        page_size: int,
+        is_causal: bool = False,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -360,8 +391,9 @@ class MHADecodePagedWsKernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.kernel = _mha_decode_paged_ws_kernel(self.batch, self.heads, self.seqlen_kv,
-                                                  self.dim, self.page_size, self.dtype_str)
+        self.kernel = _mha_decode_paged_ws_kernel(
+            self.batch, self.heads, self.seqlen_kv, self.dim, self.page_size, self.dtype_str
+        )
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
 
@@ -375,17 +407,23 @@ class MHADecodePagedWsKernel(Kernel):
         It also splits evenly across the consumer warps.
         """
         return [
-            n for n in (16, 32, 64, 128)
-            if n % CONS_WARPS == 0 and n <= self.page_size and self.page_size % n == 0
+            n
+            for n in (16, 32, 64, 128)
+            if n % CONS_WARPS == 0
+            and n <= self.page_size
+            and self.page_size % n == 0
             and n <= self.seqlen_kv
         ]
 
     def _split_choices(self) -> list[int]:
         work_items = self.batch * self.heads
-        return sorted({
-            s for s in (1, 2, 4, 8, 16, 32, 64)
-            if s <= self.seqlen_kv and s * work_items <= 8 * _TARGET_BLOCKS
-        })
+        return sorted(
+            {
+                s
+                for s in (1, 2, 4, 8, 16, 32, 64)
+                if s <= self.seqlen_kv and s * work_items <= 8 * _TARGET_BLOCKS
+            }
+        )
 
     @property
     def default_config(self) -> dict:
@@ -398,21 +436,25 @@ class MHADecodePagedWsKernel(Kernel):
         """
         work_items = max(1, self.batch * self.heads)
         num_split = max(1, min(_TARGET_BLOCKS // work_items, self.seqlen_kv))
-        num_split = max((s for s in self._split_choices() if s <= num_split),
-                        default=1)
+        num_split = max((s for s in self._split_choices() if s <= num_split), default=1)
         rows_per_split = -(-self.seqlen_kv // num_split)
-        block_N = max((n for n in self._block_n_choices() if n <= rows_per_split),
-                      default=min(self._block_n_choices()))
+        block_N = max(
+            (n for n in self._block_n_choices() if n <= rows_per_split),
+            default=min(self._block_n_choices()),
+        )
         return {"block_N": block_N, "num_split": num_split, "stages": 2}
 
     @property
     def autotune_configs(self) -> list[dict]:
         combos = itertools.product(self._block_n_choices(), self._split_choices(), (2, 3))
-        return [{
-            "block_N": block_N,
-            "num_split": num_split,
-            "stages": stages,
-        } for block_N, num_split, stages in combos]
+        return [
+            {
+                "block_N": block_N,
+                "num_split": num_split,
+                "stages": stages,
+            }
+            for block_N, num_split, stages in combos
+        ]
 
     # -- autotuning inputs ------------------------------------------------
 
@@ -434,8 +476,7 @@ class MHADecodePagedWsKernel(Kernel):
             for param in params:
                 shape = tuple(int(s) for s in param.shape)
                 if str(param.dtype) == "int32" and shape == (batch,):
-                    inputs.append(
-                        torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"))
+                    inputs.append(torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"))
                 elif str(param.dtype) == "int32" and shape == (batch, num_pages):
                     table = torch.arange(num_pages, dtype=torch.int32, device="cuda")
                     inputs.append(table.unsqueeze(0).expand(batch, -1).contiguous())
@@ -451,17 +492,39 @@ class MHADecodePagedWsKernel(Kernel):
 
     # -- execution --------------------------------------------------------
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> torch.Tensor:
         num_split = self.config["num_split"]
         # torch.empty, never zeros: a fill would be one more launch in front of
         # a kernel whose whole cost is launches, and both buffers are written in
         # full before they are read.
-        glse = torch.empty((self.batch, self.heads, num_split),
-                           dtype=torch.float32, device=Q.device)
-        O_partial = torch.empty((self.batch, self.heads, num_split, self.dim),
-                                dtype=torch.float32, device=Q.device)
+        glse = torch.empty(
+            (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
+        )
+        O_partial = torch.empty(
+            (self.batch, self.heads, num_split, self.dim), dtype=torch.float32, device=Q.device
+        )
         return _mha_decode_paged_ws_op(
-            self.batch, self.heads, self.seqlen_kv, self.dim, self.page_size,
-            self.dtype_str, self.config["block_N"], num_split, self.config["stages"],
-            Q, K, V, real_seqlen_kv, block_table, glse, O_partial)
+            self.batch,
+            self.heads,
+            self.seqlen_kv,
+            self.dim,
+            self.page_size,
+            self.dtype_str,
+            self.config["block_N"],
+            num_split,
+            self.config["stages"],
+            Q,
+            K,
+            V,
+            real_seqlen_kv,
+            block_table,
+            glse,
+            O_partial,
+        )

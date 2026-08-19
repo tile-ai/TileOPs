@@ -704,9 +704,7 @@ def test_count_nonzero_returns_int64() -> None:
     op = CountNonzeroFwdOp(dim=-1)
     x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
     out = op(x)
-    assert out.dtype == torch.int64, (
-        f"CountNonzero output dtype {out.dtype} != int64"
-    )
+    assert out.dtype == torch.int64, f"CountNonzero output dtype {out.dtype} != int64"
 
 
 @pytest.mark.smoke

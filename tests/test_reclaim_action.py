@@ -57,12 +57,9 @@ def _run(subcommand: str, *args: str, env: dict | None = None) -> subprocess.Com
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, env=merged_env, check=False
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, env=merged_env, check=False)
     assert result.returncode == 0, (
-        f"{cmd!r} exited {result.returncode}\nstdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        f"{cmd!r} exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     return result
 
@@ -170,7 +167,9 @@ def test_atomic_trim_never_trims_individual_files(tmp_path: Path) -> None:
     _run("atomic-trim", "7", str(root))
 
     assert subdir.exists(), "subdir with at least one fresh file must survive"
-    assert (subdir / "kernel.cu").exists(), "individual files inside atomic root must never be trimmed"
+    assert (subdir / "kernel.cu").exists(), (
+        "individual files inside atomic root must never be trimmed"
+    )
     assert (subdir / "kernel.so").exists()
     assert (subdir / "best_config.json").exists()
 

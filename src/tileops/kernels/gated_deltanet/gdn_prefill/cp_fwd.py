@@ -95,9 +95,7 @@ def get_warmup_chunks(
     fallback_mask = torch.empty(
         [real_batch_size, num_heads], dtype=ht_mask.dtype, device=cu_seqlens.device
     )
-    warmup_chunks_kernel(
-        g, ht_mask, cu_seqlens, num_warmup_chunks, fallback_mask
-    )
+    warmup_chunks_kernel(g, ht_mask, cu_seqlens, num_warmup_chunks, fallback_mask)
 
     return num_warmup_chunks, fallback_mask
 
@@ -146,9 +144,7 @@ def _build_correct_h0_kernel(
             if fallback_mask[seq_start_idx + i_s, bh]:
                 T.copy(h_fragment, hd_shared)
             T.copy(
-                ht_buffer[
-                    seq_start_idx + i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV
-                ],
+                ht_buffer[seq_start_idx + i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
                 h_shared,
             )
             T.copy(h_shared, h_fragment)
@@ -176,9 +172,7 @@ def _build_correct_h0_kernel(
             seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
             cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
         ):
-            with T.Kernel(
-                T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128
-            ) as (bbhv,):
+            with T.Kernel(T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128) as (bbhv,):
                 bbh, bv = (
                     bbhv // T.ceildiv(DV, block_DV),
                     bbhv % T.ceildiv(DV, block_DV),
@@ -220,9 +214,7 @@ def _build_correct_h0_kernel(
             seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
             cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
         ):
-            with T.Kernel(
-                T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128
-            ) as (bbhv,):
+            with T.Kernel(T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128) as (bbhv,):
                 bbh, bv = (
                     bbhv // T.ceildiv(DV, block_DV),
                     bbhv % T.ceildiv(DV, block_DV),

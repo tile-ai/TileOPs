@@ -197,9 +197,7 @@ def make_gqa_decode_bs1_split(
             ss = T.alloc_fragment([block_m], accum_dtype)
             logsum = T.alloc_fragment([block_m], accum_dtype)
 
-            seqlen_kv_b = (
-                real_seqlen_kv[bid] if real_seqlen_is_buffer else real_seqlen_kv
-            )
+            seqlen_kv_b = real_seqlen_kv[bid] if real_seqlen_is_buffer else real_seqlen_kv
             base_len = seqlen_kv_b // (ctx_splits * block_n) * block_n
             this_len = T.if_then_else(
                 sid == ctx_splits - 1,

@@ -79,9 +79,7 @@ class GroupNormFwdOp(Op):
         self.M: Optional[int] = None
         self.dispatch_kernel(kernel_map)
         self.kernel: Optional[Kernel] = None
-        self._last_roofline_spec: Optional[
-            tuple[int, int, int, torch.dtype, bool]
-        ] = None
+        self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype, bool]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -92,9 +90,7 @@ class GroupNormFwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "GroupNormFwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("GroupNormFwdOp.eval_roofline() requires a prior forward() call")
         N, C, spatial_size, dtype, affine = self._last_roofline_spec
         elem_bytes = dtype.itemsize
         return (
@@ -110,16 +106,11 @@ class GroupNormFwdOp(Op):
         if x.ndim < 2:
             raise ValueError("x must have shape (N, C, *spatial)")
         if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(
-                "x.dtype must be float32, float16, or bfloat16, "
-                f"got {x.dtype}"
-            )
+            raise ValueError(f"x.dtype must be float32, float16, or bfloat16, got {x.dtype}")
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
         if C % self.num_groups != 0:
-            raise ValueError(
-                f"C={C} must be divisible by num_groups={self.num_groups}"
-            )
+            raise ValueError(f"C={C} must be divisible by num_groups={self.num_groups}")
         spatial_size = math.prod(spatial)
         cpg = C // self.num_groups
         D = cpg * spatial_size
@@ -163,7 +154,12 @@ class GroupNormFwdOp(Op):
                 "group_norm",
                 key=key,
                 build=lambda: self.kernel_map["group_norm"](
-                    M, D, self.eps, dtype, self.num_groups, cpg,
+                    M,
+                    D,
+                    self.eps,
+                    dtype,
+                    self.num_groups,
+                    cpg,
                     tune=self.tune,
                 ),
             )
@@ -173,7 +169,11 @@ class GroupNormFwdOp(Op):
                 "group_norm_no_affine",
                 key=key,
                 build=lambda: self.kernel_map["group_norm_no_affine"](
-                    M, D, self.eps, dtype, tune=self.tune,
+                    M,
+                    D,
+                    self.eps,
+                    dtype,
+                    tune=self.tune,
                 ),
             )
         self.kernel = kernel
@@ -213,9 +213,7 @@ class GroupNormFwdOp(Op):
         ) = self._resolve_spec(x)
         # weight and bias are a single affine switch.
         if (weight is None) != (bias is None):
-            given, missing = (
-                ("weight", "bias") if bias is None else ("bias", "weight")
-            )
+            given, missing = ("weight", "bias") if bias is None else ("bias", "weight")
             raise ValueError(
                 f"weight and bias are one switch: got {given} without "
                 f"{missing}. Pass both for the affine form, or neither for "
@@ -227,17 +225,11 @@ class GroupNormFwdOp(Op):
                 if not t.is_cuda:
                     raise ValueError(f"{name} must be a CUDA tensor")
                 if t.device != x.device:
-                    raise ValueError(
-                        f"Expected {name} on {x.device}, got {t.device}"
-                    )
+                    raise ValueError(f"Expected {name} on {x.device}, got {t.device}")
                 if t.dtype != dtype:
-                    raise ValueError(
-                        f"Expected {name}.dtype {dtype}, got {t.dtype}"
-                    )
+                    raise ValueError(f"Expected {name}.dtype {dtype}, got {t.dtype}")
                 if t.ndim != 1 or t.shape[0] != C:
-                    raise ValueError(
-                        f"Expected {name} shape ({C},), got {tuple(t.shape)}"
-                    )
+                    raise ValueError(f"Expected {name} shape ({C},), got {tuple(t.shape)}")
 
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype, affine)
         kernel = self._get_kernel(M, D, cpg, dtype, x.device.index, affine)

@@ -22,15 +22,18 @@ class DropoutStatFixture(FixtureBase):
     """
 
     PARAMS = [
-        ("n_total, dtype, p", [
-            # Smoke: basic dropout
-            pytest.param(4_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
-            pytest.param(4_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
-            pytest.param(4_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
-            # Full: required p values and additional dtypes
-            pytest.param(4_000_000, torch.float16, 0.1, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.float16, 0.3, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype, p",
+            [
+                # Smoke: basic dropout
+                pytest.param(4_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
+                pytest.param(4_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
+                pytest.param(4_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
+                # Full: required p values and additional dtypes
+                pytest.param(4_000_000, torch.float16, 0.1, marks=pytest.mark.full),
+                pytest.param(4_000_000, torch.float16, 0.3, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -38,31 +41,40 @@ class DropoutScaleFixture(FixtureBase):
     """Fixture for scale-factor tests (does not need large N)."""
 
     PARAMS = [
-        ("n_total, dtype, p", [
-            pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float16, 0.1, marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float16, 0.3, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype, p",
+            [
+                pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.float16, 0.1, marks=pytest.mark.full),
+                pytest.param(1_000_000, torch.float16, 0.3, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
 class DropoutDeterminismFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype, p", [
-            pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, 0.3, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype, p",
+            [
+                pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.float32, 0.3, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
 class DropoutEdgeCaseFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
+            ],
+        ),
     ]
 
 
@@ -193,17 +205,23 @@ def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
 
 class DropoutCustomConfigFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype, threads, num_per_thread", [
-            pytest.param(8192, torch.float16, 128, 4, marks=pytest.mark.smoke),
-            pytest.param(8192, torch.float32, 128, 1, marks=pytest.mark.smoke),
-            pytest.param(65536, torch.float16, 64, 16, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype, threads, num_per_thread",
+            [
+                pytest.param(8192, torch.float16, 128, 4, marks=pytest.mark.smoke),
+                pytest.param(8192, torch.float32, 128, 1, marks=pytest.mark.smoke),
+                pytest.param(65536, torch.float16, 64, 16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
 @DropoutCustomConfigFixture
 def test_dropout_custom_config_p0_identity(
-    n_total: int, dtype: torch.dtype, threads: int, num_per_thread: int,
+    n_total: int,
+    dtype: torch.dtype,
+    threads: int,
+    num_per_thread: int,
 ) -> None:
     """Non-default kernel config with p=0 must act as identity.
 
@@ -215,7 +233,10 @@ def test_dropout_custom_config_p0_identity(
 
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     kernel = DropoutKernel(
-        n_total, dtype, p=0.0, seed=0,
+        n_total,
+        dtype,
+        p=0.0,
+        seed=0,
         config={"threads": threads, "num_per_thread": num_per_thread},
     )
     y = kernel(x)
@@ -224,7 +245,10 @@ def test_dropout_custom_config_p0_identity(
 
 @DropoutCustomConfigFixture
 def test_dropout_custom_config_correctness(
-    n_total: int, dtype: torch.dtype, threads: int, num_per_thread: int,
+    n_total: int,
+    dtype: torch.dtype,
+    threads: int,
+    num_per_thread: int,
 ) -> None:
     """Non-default kernel config with p=0.5 must still produce valid dropout.
 
@@ -236,7 +260,10 @@ def test_dropout_custom_config_correctness(
     scale = 1.0 / (1.0 - p)
     x = torch.ones(n_total, dtype=dtype, device="cuda")
     kernel = DropoutKernel(
-        n_total, dtype, p=p, seed=42,
+        n_total,
+        dtype,
+        p=p,
+        seed=42,
         config={"threads": threads, "num_per_thread": num_per_thread},
     )
     y = kernel(x)
@@ -246,8 +273,7 @@ def test_dropout_custom_config_correctness(
     is_scaled = torch.isclose(
         y.float(),
         torch.full_like(y, scale, dtype=torch.float32),
-        atol=1e-6, rtol=0,
+        atol=1e-6,
+        rtol=0,
     )
-    assert (is_zero | is_scaled).all(), (
-        "Found elements that are neither zero nor correctly scaled"
-    )
+    assert (is_zero | is_scaled).all(), "Found elements that are neither zero nor correctly scaled"

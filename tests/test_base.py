@@ -36,7 +36,9 @@ def _to_tuple(outputs):
     raise ValueError(f"Unsupported output type: {type(outputs)}")
 
 
-def allclose_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5) -> None:
+def allclose_compare(
+    output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5
+) -> None:
     """Default comparison using torch.allclose."""
     output, output_ref = torch.broadcast_tensors(output, output_ref)
     torch.testing.assert_close(
@@ -61,6 +63,7 @@ class TestBase(WorkloadBase):
     ref_program itself.
     Provides check() for comparing op output against reference.
     """
+
     __test__ = False
 
     @abstractmethod
@@ -73,12 +76,9 @@ class TestBase(WorkloadBase):
         """
         raise NotImplementedError
 
-    def check(self,
-              op,
-              *inputs: torch.Tensor,
-              compare=None,
-              atol: float = 1e-08,
-              rtol: float = 1e-05) -> None:
+    def check(
+        self, op, *inputs: torch.Tensor, compare=None, atol: float = 1e-08, rtol: float = 1e-05
+    ) -> None:
         """Check the correctness of the op against ref_program.
 
         Args:
@@ -110,8 +110,9 @@ class TestBase(WorkloadBase):
 
         outputs = _to_tuple(outputs)
 
-        assert len(outputs) == len(outputs_ref), \
+        assert len(outputs) == len(outputs_ref), (
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
+        )
 
         # Compute error metrics before comparison (so we report even on failure).
         max_abs_err = 0.0
@@ -135,5 +136,6 @@ class TestBase(WorkloadBase):
             if output_ref is not None:
                 cmp(output, output_ref)
 
-        _logger.info("op=%s module=%s status=pass max_abs_err=%.2e",
-                      op_name, op_module, max_abs_err)
+        _logger.info(
+            "op=%s module=%s status=pass max_abs_err=%.2e", op_name, op_module, max_abs_err
+        )

@@ -10,7 +10,6 @@ from workloads.pool import MeanPoolingWorkload
 
 
 class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         # Mean pooling: sum chunk_size elements + divide, per output element
@@ -25,15 +24,33 @@ class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingWorkload]):
 
 
 _MEAN_POOLING_BENCH_PARAMS = [
-    pytest.param(1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-mainstream"),
-    pytest.param(2, 2048, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-batched"),
     pytest.param(
-        1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
+        1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-mainstream"
+    ),
+    pytest.param(
+        2, 2048, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-batched"
+    ),
+    pytest.param(
+        1,
+        8192,
+        64,
+        128,
+        64,
+        torch.float16,
+        torch.float32,
+        True,
         [0, 2048, 4096, 6144, 8192],
         id="varlen-long",
     ),
     pytest.param(
-        1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
+        1,
+        1000,
+        64,
+        128,
+        32,
+        torch.float16,
+        torch.float32,
+        True,
         [0, 100, 300, 600, 1000],
         id="varlen-tail",
     ),
@@ -44,9 +61,17 @@ _MEAN_POOLING_BENCH_PARAMS = [
     "batch_size, seq_len, heads, dim, chunk_size, dtype, accum_dtype, tune, offsets",
     _MEAN_POOLING_BENCH_PARAMS,
 )
-def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
-                            dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool,
-                            offsets: Optional[List[int]]) -> None:
+def test_mean_pooling_bench(
+    batch_size: int,
+    seq_len: int,
+    heads: int,
+    dim: int,
+    chunk_size: int,
+    dtype: torch.dtype,
+    accum_dtype: torch.dtype,
+    tune: bool,
+    offsets: Optional[List[int]],
+) -> None:
     if offsets is not None:
         assert batch_size == 1
         assert offsets[-1] == seq_len
@@ -57,13 +82,15 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
         use_offsets = 1
     else:
         offset_tensor = torch.arange(
-            0, (batch_size + 1) * seq_len,
+            0,
+            (batch_size + 1) * seq_len,
             seq_len,
             dtype=torch.int32,
-            device='cuda',
-            requires_grad=False)
+            device="cuda",
+            requires_grad=False,
+        )
         chunks_per_batch = (seq_len + chunk_size - 1) // chunk_size
-        indices = torch.empty((chunks_per_batch, 2), dtype=torch.int32, device='cuda')
+        indices = torch.empty((chunks_per_batch, 2), dtype=torch.int32, device="cuda")
         seq_num = batch_size
         use_offsets = 0
 
@@ -81,15 +108,25 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
     }
 
     test = MeanPoolingWorkload(
-        batch_size=batch_size, seq_len=seq_len, heads=heads, dim=dim,
-        chunk_size=chunk_size, chunks_per_batch=chunks_per_batch,
-        seq_num=seq_num, use_offsets=use_offsets,
-        dtype=dtype, accum_dtype=accum_dtype,
-        offsets=offset_tensor, indices=indices)
+        batch_size=batch_size,
+        seq_len=seq_len,
+        heads=heads,
+        dim=dim,
+        chunk_size=chunk_size,
+        chunks_per_batch=chunks_per_batch,
+        seq_num=seq_num,
+        use_offsets=use_offsets,
+        dtype=dtype,
+        accum_dtype=accum_dtype,
+        offsets=offset_tensor,
+        indices=indices,
+    )
 
     bm = MeanPoolingBenchmark(test)
     inputs = test.gen_inputs()
 
     op = MeanPoolingForwardOp(**params)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

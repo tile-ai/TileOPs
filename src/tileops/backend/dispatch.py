@@ -73,7 +73,8 @@ def select_target(requested: Target, device: torch.device | None) -> Target:
         if requested is not BUILTIN and requested not in registry.known_targets():
             raise UnknownTargetError(
                 f"no backend registered target {requested!r}; known targets: "
-                f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}")
+                f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
+            )
         return requested
     if registry.default_target is not None:
         return registry.default_target
@@ -106,11 +107,11 @@ def set_default_target(target: Target) -> None:
         UnknownTargetError: *target* is a name no backend registered.
     """
     registry.ensure_loaded()
-    if (target is not None and target is not BUILTIN
-            and target not in registry.known_targets()):
+    if target is not None and target is not BUILTIN and target not in registry.known_targets():
         raise UnknownTargetError(
             f"no backend registered target {target!r}; known targets: "
-            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}")
+            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
+        )
     registry.default_target = target
 
 

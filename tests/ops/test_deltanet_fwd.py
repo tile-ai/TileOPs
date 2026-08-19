@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -13,6 +12,7 @@ class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
 
 # Forward correctness tests
 
+
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         return {"atol": 1e-3, "rtol": 1e-3}
@@ -24,20 +24,33 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
 
 class DeltaNetFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            # chunk_size=64 is where the untuned default takes a tiled width, so
-            # the tuned run has to beat a tiled baseline rather than no tiling.
-            pytest.param(2, 128, 2, 64, 64, 64, torch.bfloat16, True, marks=pytest.mark.full,
-                         id="full-bf16-tuned"),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                # chunk_size=64 is where the untuned default takes a tiled width, so
+                # the tuned run has to beat a tiled baseline rather than no tiling.
+                pytest.param(
+                    2,
+                    128,
+                    2,
+                    64,
+                    64,
+                    64,
+                    torch.bfloat16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-bf16-tuned",
+                ),
+            ],
+        ),
     ]
 
 

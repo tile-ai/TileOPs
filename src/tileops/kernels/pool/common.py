@@ -151,9 +151,7 @@ class AdaptivePool2dKernelBase(Kernel):
     ) -> None:
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16}:
-            raise ValueError(
-                f"{type(self).__name__} supports float16 and bfloat16, got {dtype}"
-            )
+            raise ValueError(f"{type(self).__name__} supports float16 and bfloat16, got {dtype}")
         self.n = n
         self.c_in = c_in
         self.h_in = h_in
@@ -161,9 +159,7 @@ class AdaptivePool2dKernelBase(Kernel):
         self.out_h = out_h
         self.out_w = out_w
         self.dtype = dtype
-        self.kernel = type(self)._build(
-            n, c_in, h_in, w_in, out_h, out_w, self.dtype_str
-        )
+        self.kernel = type(self)._build(n, c_in, h_in, w_in, out_h, out_w, self.dtype_str)
         self.init_config(config, tune)
 
     @property

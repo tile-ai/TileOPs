@@ -168,9 +168,7 @@ class CumulativeWorkload(WorkloadBase):
         self.shape = tuple(shape)
         self.dtype = dtype
         self.op_kind = op_kind
-        self.use_small_range = (
-            op_kind == "cumprod" if use_small_range is None else use_small_range
-        )
+        self.use_small_range = op_kind == "cumprod" if use_small_range is None else use_small_range
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.use_small_range:

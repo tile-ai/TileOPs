@@ -41,7 +41,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
-
         @T.macro
         def _gate_conv_bwd(
             dY: T.Tensor((M, seq_len, d_padded), dtype),
@@ -185,19 +184,13 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 # ⑦ bwd: RMSNorm(vhat) -> d(vhat)
                 # d(vhat) = rrms * w * d_vnorm - rrms^3 * vhat * (1/d) * sum(vhat * w * d_vnorm)
                 for j in T.Parallel(d_padded):
-                    dot_2d[0, j] = (
-                        vhat_local[j]
-                        * T.cast(rms_w_v[j], accum_dtype)
-                        * d_vnorm[j]
-                    )
+                    dot_2d[0, j] = vhat_local[j] * T.cast(rms_w_v[j], accum_dtype) * d_vnorm[j]
                 T.reduce_sum(dot_2d, dot_sum, dim=1)
 
                 for j in T.Parallel(d_padded):
-                    dvhat_local[j] = (
-                        rrms_v_val * T.cast(rms_w_v[j], accum_dtype) * d_vnorm[j]
-                        - rrms_v_val * rrms_v_val * rrms_v_val
-                        * vhat_local[j] * dot_sum[0] / float(d)
-                    )
+                    dvhat_local[j] = rrms_v_val * T.cast(rms_w_v[j], accum_dtype) * d_vnorm[
+                        j
+                    ] - rrms_v_val * rrms_v_val * rrms_v_val * vhat_local[j] * dot_sum[0] / float(d)
 
                 # Add residual gradient from SiLU bypass (dY)
                 for j in T.Parallel(d_padded):
@@ -260,18 +253,15 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 # d(h_norm) = ddot * k_norm
                 for j in T.Parallel(d_padded):
                     dot_h_2d[0, j] = (
-                        h_local[j]
-                        * T.cast(rms_w_h[j], accum_dtype)
-                        * ddot_val * k_norm_local[j]
+                        h_local[j] * T.cast(rms_w_h[j], accum_dtype) * ddot_val * k_norm_local[j]
                     )
                 T.reduce_sum(dot_h_2d, dot_h_sum, dim=1)
                 for j in T.Parallel(d_padded):
-                    dh_local[j] = (
-                        rrms_h_val * T.cast(rms_w_h[j], accum_dtype)
-                        * ddot_val * k_norm_local[j]
-                        - rrms_h_val * rrms_h_val * rrms_h_val
-                        * h_local[j] * dot_h_sum[0] / float(d)
-                    )
+                    dh_local[j] = rrms_h_val * T.cast(
+                        rms_w_h[j], accum_dtype
+                    ) * ddot_val * k_norm_local[j] - rrms_h_val * rrms_h_val * rrms_h_val * h_local[
+                        j
+                    ] * dot_h_sum[0] / float(d)
 
                 # drms_w_h from H
                 for j in T.Parallel(d_padded):
@@ -283,18 +273,15 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 # ④ bwd: RMSNorm(k) -> dk
                 for j in T.Parallel(d_padded):
                     dot_k_2d[0, j] = (
-                        k_local[j]
-                        * T.cast(rms_w_h[j], accum_dtype)
-                        * ddot_val * h_norm_local[j]
+                        k_local[j] * T.cast(rms_w_h[j], accum_dtype) * ddot_val * h_norm_local[j]
                     )
                 T.reduce_sum(dot_k_2d, dot_k_sum, dim=1)
                 for j in T.Parallel(d_padded):
-                    dk_local[j] = (
-                        rrms_k_val * T.cast(rms_w_h[j], accum_dtype)
-                        * ddot_val * h_norm_local[j]
-                        - rrms_k_val * rrms_k_val * rrms_k_val
-                        * k_local[j] * dot_k_sum[0] / float(d)
-                    )
+                    dk_local[j] = rrms_k_val * T.cast(
+                        rms_w_h[j], accum_dtype
+                    ) * ddot_val * h_norm_local[j] - rrms_k_val * rrms_k_val * rrms_k_val * k_local[
+                        j
+                    ] * dot_k_sum[0] / float(d)
 
                 # drms_w_h from k
                 for j in T.Parallel(d_padded):
@@ -333,9 +320,26 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
             dvhat_out: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
             _gate_conv_bwd(
-                dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-                vhat, alpha, rrms_h, rrms_k, rrms_v,
-                dH, dk, dv, drms_w_h, drms_w_v, dconv_w, dvhat_buf, dvhat_out,
+                dY,
+                H,
+                k,
+                v,
+                rms_w_h,
+                rms_w_v,
+                conv_w,
+                vhat,
+                alpha,
+                rrms_h,
+                rrms_k,
+                rrms_v,
+                dH,
+                dk,
+                dv,
+                drms_w_h,
+                drms_w_v,
+                dconv_w,
+                dvhat_buf,
+                dvhat_out,
             )
 
         return main
@@ -366,24 +370,40 @@ def _engram_gate_conv_bwd_wrapped(
 ) -> list[torch.Tensor]:
     results = _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype_str)(
         threads,
-    )(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-      vhat, alpha, rrms_h, rrms_k, rrms_v)
+    )(dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v)
     return list(results)
 
 
 @_engram_gate_conv_bwd_wrapped.register_fake
-def _(M, seq_len, d, eps, dtype_str, threads,
-      dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-      vhat, alpha, rrms_h, rrms_k, rrms_v):
+def _(
+    M,
+    seq_len,
+    d,
+    eps,
+    dtype_str,
+    threads,
+    dY,
+    H,
+    k,
+    v,
+    rms_w_h,
+    rms_w_v,
+    conv_w,
+    vhat,
+    alpha,
+    rrms_h,
+    rrms_k,
+    rrms_v,
+):
     d_padded = align_up(d, ALIGNMENT)
     device = dY.device
     dt = dY.dtype
     return [
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),       # dH
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),       # dk
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),       # dv
-        torch.empty((d_padded,), dtype=torch.float32, device=device),       # drms_w_h
-        torch.empty((d_padded,), dtype=torch.float32, device=device),       # drms_w_v
+        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dH
+        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dk
+        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dv
+        torch.empty((d_padded,), dtype=torch.float32, device=device),  # drms_w_h
+        torch.empty((d_padded,), dtype=torch.float32, device=device),  # drms_w_v
         torch.empty((CONV_KERNEL_SIZE, d_padded), dtype=torch.float32, device=device),  # dconv_w
         torch.empty((M, seq_len, d_padded), dtype=torch.float32, device=device),  # dvhat_buf
         torch.empty((M, seq_len, d_padded), dtype=torch.float32, device=device),  # dvhat_out
@@ -420,7 +440,11 @@ class EngramGateConvBwdKernel(Kernel):
         self.dtype = dtype
         self.d_padded = align_up(d, ALIGNMENT)
         self.kernel = _engram_gate_conv_bwd_kernel(
-            M, seq_len, d, eps, self.dtype_str,
+            M,
+            seq_len,
+            d,
+            eps,
+            self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -479,10 +503,24 @@ class EngramGateConvBwdKernel(Kernel):
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
         results = _engram_gate_conv_bwd_wrapped(
-            self.M, self.seq_len, self.d, self.eps,
-            self.dtype_str, self.config["threads"],
-            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-            vhat, alpha, rrms_h, rrms_k, rrms_v,
+            self.M,
+            self.seq_len,
+            self.d,
+            self.eps,
+            self.dtype_str,
+            self.config["threads"],
+            dY,
+            H,
+            k,
+            v,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
+            vhat,
+            alpha,
+            rrms_h,
+            rrms_k,
+            rrms_v,
         )
         dH, dk, dv, drms_w_h, drms_w_v, dconv_w = results[:6]
         if pad:

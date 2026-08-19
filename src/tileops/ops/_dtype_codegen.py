@@ -48,9 +48,7 @@ def _classify_tokens(
             continue
         dt = getattr(torch, tok, None)
         if not isinstance(dt, torch.dtype):
-            raise ValueError(
-                f"unknown dtype token {tok!r} in manifest signature"
-            )
+            raise ValueError(f"unknown dtype token {tok!r} in manifest signature")
         concrete.append(dt)
     return concrete, refs
 
@@ -80,24 +78,19 @@ def _parse_dtype_combos(
     if combos is None:
         return None
     if not isinstance(combos, list) or not combos:
-        raise ValueError(
-            f"{op_name}: signature.dtype_combos must be a non-empty list "
-            f"when present"
-        )
+        raise ValueError(f"{op_name}: signature.dtype_combos must be a non-empty list when present")
     normalized: list[dict[str, torch.dtype]] = []
     for idx, row in enumerate(combos):
         if not isinstance(row, dict) or not row:
             raise ValueError(
-                f"{op_name}: signature.dtype_combos[{idx}] must be a "
-                f"non-empty mapping"
+                f"{op_name}: signature.dtype_combos[{idx}] must be a non-empty mapping"
             )
         # First pass: type-check entries and capture raw tokens.
         raw: dict[str, str] = {}
         for name, tok in row.items():
             if name not in input_names:
                 raise ValueError(
-                    f"{op_name}: signature.dtype_combos[{idx}] references "
-                    f"unknown input {name!r}"
+                    f"{op_name}: signature.dtype_combos[{idx}] references unknown input {name!r}"
                 )
             if not isinstance(tok, str):
                 raise ValueError(
@@ -123,8 +116,7 @@ def _parse_dtype_combos(
                 if cur in seen:
                     chain = " -> ".join(seen + [cur])
                     raise ValueError(
-                        f"{op_name}: signature.dtype_combos[{idx}] has "
-                        f"a same_as cycle ({chain})"
+                        f"{op_name}: signature.dtype_combos[{idx}] has a same_as cycle ({chain})"
                     )
                 seen.append(cur)
                 tok = raw[cur]
@@ -151,7 +143,8 @@ def _parse_dtype_combos(
 
 
 def synthesize_validate_dtypes(
-    op_name: str, sig: dict[str, Any],
+    op_name: str,
+    sig: dict[str, Any],
 ) -> Callable[..., None]:
     """Build a ``_validate_dtypes`` function from a manifest signature.
 
@@ -173,8 +166,7 @@ def synthesize_validate_dtypes(
     inputs = sig.get("inputs") or {}
     if not isinstance(inputs, dict) or not inputs:
         raise ValueError(
-            f"{op_name}: signature.inputs is missing or empty; cannot "
-            f"synthesize _validate_dtypes"
+            f"{op_name}: signature.inputs is missing or empty; cannot synthesize _validate_dtypes"
         )
 
     # Pre-parse every input's dtype expression so the generated body
@@ -182,15 +174,11 @@ def synthesize_validate_dtypes(
     per_input: dict[str, tuple[list[torch.dtype], list[str], str]] = {}
     for name, attrs in inputs.items():
         if not isinstance(attrs, dict):
-            raise ValueError(
-                f"{op_name}: signature.inputs[{name!r}] must be a mapping"
-            )
+            raise ValueError(f"{op_name}: signature.inputs[{name!r}] must be a mapping")
         dtype_str = attrs.get("dtype", "")
         tokens = parse_tokens(dtype_str)
         if not tokens:
-            raise ValueError(
-                f"{op_name}: signature.inputs[{name!r}].dtype is empty"
-            )
+            raise ValueError(f"{op_name}: signature.inputs[{name!r}].dtype is empty")
         concrete, refs = _classify_tokens(tokens)
         per_input[name] = (concrete, refs, dtype_str)
 
@@ -207,13 +195,16 @@ def synthesize_validate_dtypes(
                     f"declared in signature.inputs"
                 )
     combos = _parse_dtype_combos(
-        op_name, sig.get("dtype_combos"), input_names,
+        op_name,
+        sig.get("dtype_combos"),
+        input_names,
     )
     # Every combo row enumerates every required declared input, so the
     # observed key spans them all, same_as-bound ones resolved. An optional
     # input is never a row's column, so the tuple spans the required ones.
     optional_names = {
-        name for name, attrs in inputs.items()
+        name
+        for name, attrs in inputs.items()
         if isinstance(attrs, dict) and attrs.get("optional") is True
     }
     required_names = [n for n in input_names if n not in optional_names]
@@ -238,9 +229,7 @@ def synthesize_validate_dtypes(
                     f"({detail}); every combo row must enumerate every "
                     f"declared input"
                 )
-        combo_keys = {
-            tuple(row[n] for n in required_names) for row in combos
-        }
+        combo_keys = {tuple(row[n] for n in required_names) for row in combos}
 
     # ``exec`` with explicit named params so ``inspect.signature`` reports the
     # manifest inputs natively. A ``**kwargs`` body would need a per-call
@@ -256,9 +245,7 @@ def synthesize_validate_dtypes(
     # probe binds by keyword either way.
     required_src = [n for n in input_names if n not in optional_names]
     optional_src = [f"{n}=None" for n in input_names if n in optional_names]
-    params_src = ", ".join(
-        required_src + (["*"] + optional_src if optional_src else [])
-    )
+    params_src = ", ".join(required_src + (["*"] + optional_src if optional_src else []))
     # Unrolled per input rather than looping via `locals()`: dynamo cannot
     # trace `locals()`, and this body runs inside `forward()`.
     src_lines = [
@@ -286,7 +273,7 @@ def synthesize_validate_dtypes(
         src_lines += [
             f"{indent}raise ValueError(",
             f'{indent}    f"{{op_name}}: input {name!r} has dtype {{_actual}}, "',
-            f"{indent}    f\"expected {{_dtype_str_{name}!r}}\"",
+            f'{indent}    f"expected {{_dtype_str_{name}!r}}"',
             f"{indent})",
         ]
     if combo_keys is not None:
@@ -295,12 +282,12 @@ def synthesize_validate_dtypes(
         src_lines += [
             f"    _observed = ({observed}{trailing})",
             "    if _observed not in combo_keys:",
-            "        _pairs = \", \".join(",
-            "            f\"{_n}={_d}\" for _n, _d in zip(input_names, _observed)",
+            '        _pairs = ", ".join(',
+            '            f"{_n}={_d}" for _n, _d in zip(input_names, _observed)',
             "        )",
             "        raise ValueError(",
-            "            f\"{op_name}: dtype combination ({_pairs}) is not \"",
-            "            f\"listed in signature.dtype_combos\"",
+            '            f"{op_name}: dtype combination ({_pairs}) is not "',
+            '            f"listed in signature.dtype_combos"',
             "        )",
         ]
     exec("\n".join(src_lines), closure)
@@ -308,8 +295,6 @@ def synthesize_validate_dtypes(
     _validate_dtypes.__name__ = "_validate_dtypes"
     _validate_dtypes.__qualname__ = f"{op_name}._validate_dtypes"
     return _validate_dtypes
-
-
 
 
 def maybe_install_validator(cls: type) -> None:

@@ -28,9 +28,8 @@ def _fa3_mha_decode_paged(test, k, v):
 
     def baseline_fn(q, k, v, real_seqlen_kv, block_table):
         out = flash_attn_with_kvcache(
-            q, k_paged, v_paged,
-            cache_seqlens=real_seqlen_kv.int(),
-            page_table=block_table.int())
+            q, k_paged, v_paged, cache_seqlens=real_seqlen_kv.int(), page_table=block_table.int()
+        )
         return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
@@ -87,15 +86,26 @@ _MHA_DECODE_PAGED_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_d
     "batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune",
     _MHA_DECODE_PAGED_BENCH_PARAMS,
 )
-def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
-                                page_size: int, is_causal: bool, dtype: torch.dtype,
-                                tune: bool) -> None:
-    test = MhaDecodePagedWorkload(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
+def test_mha_decode_paged_bench(
+    batch: int,
+    heads: int,
+    seqlen_q: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    is_causal: bool,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = MhaDecodePagedWorkload(
+        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype
+    )
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, tune=tune)
+        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, tune=tune
+    )
     bm = ManifestBenchmark(_OP_NAME, op, test)
     functors = {"tileops": op}
 

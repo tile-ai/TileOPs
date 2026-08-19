@@ -20,63 +20,121 @@ class BmmFp8Test(BmmFp8Workload, TestBase):
 
 class BmmFixture(FixtureBase):
     PARAMS = [
-        ("batch, m, n, k, dtype, tune", [
-            pytest.param(
-                4, 128, 128, 128, torch.float16, False,
-                marks=[pytest.mark.smoke, pytest.mark.packaging],
-                id="smoke-fp16-b4-128",
-            ),
-            pytest.param(
-                4, 128, 128, 128, torch.bfloat16, False,
-                marks=pytest.mark.smoke,
-                id="smoke-bf16-b4-128",
-            ),
-            pytest.param(
-                8, 512, 512, 512, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-b8-512",
-            ),
-            pytest.param(
-                8, 512, 512, 512, torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-bf16-b8-512",
-            ),
-            pytest.param(
-                16, 256, 256, 256, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-b16-256",
-            ),
-            pytest.param(
-                1, 1024, 1024, 1024, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-b1-1k",
-            ),
-            pytest.param(
-                32, 128, 512, 128, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-b32-mha-qk",
-            ),
-            pytest.param(
-                8, 128, 128, 2048, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-b8-mha-pv",
-            ),
-            pytest.param(
-                8, 128, 128, 2048, torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-bf16-b8-mha-pv",
-            ),
-            pytest.param(
-                32, 256, 256, 1024, torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-bf16-b32-moe",
-            ),
-            pytest.param(
-                4, 200, 300, 128, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-b4-mn-nonaligned",
-            ),
-        ]),
+        (
+            "batch, m, n, k, dtype, tune",
+            [
+                pytest.param(
+                    4,
+                    128,
+                    128,
+                    128,
+                    torch.float16,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    id="smoke-fp16-b4-128",
+                ),
+                pytest.param(
+                    4,
+                    128,
+                    128,
+                    128,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-bf16-b4-128",
+                ),
+                pytest.param(
+                    8,
+                    512,
+                    512,
+                    512,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-b8-512",
+                ),
+                pytest.param(
+                    8,
+                    512,
+                    512,
+                    512,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-b8-512",
+                ),
+                pytest.param(
+                    16,
+                    256,
+                    256,
+                    256,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-b16-256",
+                ),
+                pytest.param(
+                    1,
+                    1024,
+                    1024,
+                    1024,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-b1-1k",
+                ),
+                pytest.param(
+                    32,
+                    128,
+                    512,
+                    128,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-b32-mha-qk",
+                ),
+                pytest.param(
+                    8,
+                    128,
+                    128,
+                    2048,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-b8-mha-pv",
+                ),
+                pytest.param(
+                    8,
+                    128,
+                    128,
+                    2048,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-b8-mha-pv",
+                ),
+                pytest.param(
+                    32,
+                    256,
+                    256,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-b32-moe",
+                ),
+                pytest.param(
+                    4,
+                    200,
+                    300,
+                    128,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-b4-mn-nonaligned",
+                ),
+            ],
+        ),
     ]
 
 
@@ -150,26 +208,41 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 
 class BmmFp8Fixture(FixtureBase):
     PARAMS = [
-        ("batch, m, n, k, dtype, out_dtype", [
-            pytest.param(
-                4, 128, 128, 128, torch.float8_e4m3fn,
-                torch.bfloat16,
-                marks=pytest.mark.smoke,
-                id="smoke-fp8-b4-per-tensor",
-            ),
-            pytest.param(
-                8, 128, 256, 128, torch.float8_e4m3fn,
-                torch.float16,
-                marks=pytest.mark.full,
-                id="full-fp8-b8-per-tensor",
-            ),
-            pytest.param(
-                16, 128, 128, 2048, torch.float8_e4m3fn,
-                torch.bfloat16,
-                marks=pytest.mark.full,
-                id="full-fp8-b16-mha-pv-per-tensor",
-            ),
-        ]),
+        (
+            "batch, m, n, k, dtype, out_dtype",
+            [
+                pytest.param(
+                    4,
+                    128,
+                    128,
+                    128,
+                    torch.float8_e4m3fn,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-fp8-b4-per-tensor",
+                ),
+                pytest.param(
+                    8,
+                    128,
+                    256,
+                    128,
+                    torch.float8_e4m3fn,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-fp8-b8-per-tensor",
+                ),
+                pytest.param(
+                    16,
+                    128,
+                    128,
+                    2048,
+                    torch.float8_e4m3fn,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="full-fp8-b16-mha-pv-per-tensor",
+                ),
+            ],
+        ),
     ]
 
 

@@ -62,16 +62,24 @@ class MoeGroupedGemmNopadFwdOp(Op):
 
     def _get_kernel(self, inputs: tuple, dtype: torch.dtype) -> Kernel:
         call = GroupedGemmCall(
-            numel=self.numel, num_experts=self.num_experts,
-            n=self.n, k=self.k, dtype=dtype,
+            numel=self.numel,
+            num_experts=self.num_experts,
+            n=self.n,
+            k=self.k,
+            dtype=dtype,
         )
         name = self.select_kernel_key(_GEMM_KEYS, call)
         return self.get_or_build_kernel(
-            name, inputs,
+            name,
+            inputs,
             key=(name, dtype),
             build=lambda: self.kernel_map[name](
-                self.numel, self.num_experts, self.n, self.k,
-                dtype=dtype, tune=self.tune,
+                self.numel,
+                self.num_experts,
+                self.n,
+                self.k,
+                dtype=dtype,
+                tune=self.tune,
             ),
         )
 
@@ -94,8 +102,8 @@ class MoeGroupedGemmNopadFwdOp(Op):
 
     def forward(
         self,
-        a: torch.Tensor,           # [numel, K]
-        b: torch.Tensor,           # [num_experts, N, K]
+        a: torch.Tensor,  # [numel, K]
+        b: torch.Tensor,  # [num_experts, N, K]
         true_sizes: torch.Tensor,  # [E] int32
         true_offsets: torch.Tensor,  # [E] int32
     ) -> torch.Tensor:
@@ -110,8 +118,7 @@ class MoeGroupedGemmNopadFwdOp(Op):
         Returns:
             C: [numel, N] GEMM output.
         """
-        return _moe_grouped_gemm_nopad_fwd(
-            a, b, true_sizes, true_offsets, self._instance_key)
+        return _moe_grouped_gemm_nopad_fwd(a, b, true_sizes, true_offsets, self._instance_key)
 
     def _eager_forward(
         self,
@@ -128,8 +135,7 @@ class MoeGroupedGemmNopadFwdOp(Op):
         self._validate_dtypes(a, b, true_sizes, true_offsets)
         for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
             if t.device != a.device:
-                raise ValueError(
-                    f"{name} must be on {a.device}, got {t.device}")
+                raise ValueError(f"{name} must be on {a.device}, got {t.device}")
         self.dtype = a.dtype
         # The op hands over what the manifest declares; how a kernel wants it laid
         # out is its own business.
@@ -158,8 +164,8 @@ def _moe_grouped_gemm_nopad_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(
-        tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape),
-        tuple(true_offsets.shape))
+        tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape), tuple(true_offsets.shape)
+    )
     # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
     # non-contiguous public input's strides must not survive into the fake. Dtype is the
     # manifest's ``same_as(a)``.

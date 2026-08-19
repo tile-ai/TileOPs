@@ -46,8 +46,7 @@ def _imports_tests(tree: ast.AST) -> list[str]:
             hits.append(f"from {node.module} (line {node.lineno})")
         elif isinstance(node, ast.Import):
             hits += [
-                f"import {a.name} (line {node.lineno})"
-                for a in node.names if is_tests(a.name)
+                f"import {a.name} (line {node.lineno})" for a in node.names if is_tests(a.name)
             ]
     return hits
 

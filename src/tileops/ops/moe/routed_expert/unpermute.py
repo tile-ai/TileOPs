@@ -56,7 +56,9 @@ class MoeUnpermuteFwdOp(Op):
         self.total_tokens = total_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
-        self.padded_batch_sum = padded_batch_sum if padded_batch_sum is not None else total_tokens * top_k
+        self.padded_batch_sum = (
+            padded_batch_sum if padded_batch_sum is not None else total_tokens * top_k
+        )
 
         self._routed_scaling_factor = routed_scaling_factor
         self.dispatch_kernel(kernel_map)
@@ -66,8 +68,11 @@ class MoeUnpermuteFwdOp(Op):
             "unpermute_kernel",
             key=dtype,
             build=lambda: self.kernel_map["unpermute_kernel"](
-                self.total_tokens, self.top_k, self.hidden_size,
-                self.padded_batch_sum, scaling=self._routed_scaling_factor,
+                self.total_tokens,
+                self.top_k,
+                self.hidden_size,
+                self.padded_batch_sum,
+                scaling=self._routed_scaling_factor,
                 dtype=dtype,
             ),
         )
@@ -105,10 +110,8 @@ class MoeUnpermuteFwdOp(Op):
             output: [T, H] bf16/fp16 (``out`` if provided).
         """
         if out is None:
-            return _moe_unpermute_fwd(
-                mm2_pad, fwd_idx, topk_weights, self._instance_key)
-        _moe_unpermute_fwd_inplace(
-            mm2_pad, fwd_idx, topk_weights, out, self._instance_key)
+            return _moe_unpermute_fwd(mm2_pad, fwd_idx, topk_weights, self._instance_key)
+        _moe_unpermute_fwd_inplace(mm2_pad, fwd_idx, topk_weights, out, self._instance_key)
         # The in-place operator returns None so its result cannot alias an input; the
         # buffer the caller handed over is what this op returns.
         return out
@@ -149,7 +152,8 @@ def _moe_unpermute_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(
-        tuple(mm2_pad.shape), tuple(fwd_idx.shape), tuple(topk_weights.shape))
+        tuple(mm2_pad.shape), tuple(fwd_idx.shape), tuple(topk_weights.shape)
+    )
     # Manifest dtype: ``same_as(mm2_pad)``.
     return mm2_pad.new_empty(shapes["output"])
 

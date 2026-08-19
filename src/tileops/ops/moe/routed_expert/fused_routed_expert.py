@@ -86,23 +86,31 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         numel = num_tokens * top_k
 
         self._gate_up = MoeGateUpFwdOp(
-            numel=numel, num_experts=num_experts_local,
-            ffn=ffn_size, k=hidden_size, activation=activation,
+            numel=numel,
+            num_experts=num_experts_local,
+            ffn=ffn_size,
+            k=hidden_size,
+            activation=activation,
             kernel_map=kernel_map,
         )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
-            numel=numel, num_experts=num_experts_local,
-            n=hidden_size, k=ffn_size,
+            numel=numel,
+            num_experts=num_experts_local,
+            n=hidden_size,
+            k=ffn_size,
             kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
-            total_tokens=num_tokens, top_k=top_k,
-            hidden_size=hidden_size, padded_batch_sum=numel,
+            total_tokens=num_tokens,
+            top_k=top_k,
+            hidden_size=hidden_size,
+            padded_batch_sum=numel,
             kernel_map=kernel_map,
             routed_scaling_factor=routed_scaling_factor,
         )
         self._permute = MoePermuteNopadFwdOp(
-            num_experts=num_experts, num_experts_local=num_experts_local,
+            num_experts=num_experts,
+            num_experts_local=num_experts_local,
             kernel_map=kernel_map,
         )
 
@@ -113,8 +121,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         """Manifest ``roofline``: three F x H weight planes per local expert."""
         if self.dtype is None:
             raise ValueError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
-                "to bind dtype"
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() to bind dtype"
             )
         flops = self.num_tokens * self.top_k * 6 * self.ffn_size * self.hidden_size
         nbytes = (
@@ -141,16 +148,23 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         self.dtype = hidden_states.dtype
         _validate_fused_moe_experts_dtypes(
             hidden_states.dtype,
-            output, hidden_states, w_gate_up, w_down,
-            topk_weights, topk_ids, workspace1, workspace2,
+            output,
+            hidden_states,
+            w_gate_up,
+            w_down,
+            topk_weights,
+            topk_ids,
+            workspace1,
+            workspace2,
         )
         if expert_map is not None and expert_map.dtype != torch.int32:
-            raise ValueError(
-                f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
+            raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
         self._reject_non_empty_workspaces(workspace1, workspace2)
 
     def _reject_non_empty_workspaces(
-        self, workspace1: Tensor, workspace2: Tensor,
+        self,
+        workspace1: Tensor,
+        workspace2: Tensor,
     ) -> None:
         """workspace_shapes() returns ((0,), (0,)); anything else is a mismatch."""
         if workspace1.numel() != 0 or workspace2.numel() != 0:
@@ -162,7 +176,12 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             )
 
     def workspace_shapes(
-        self, M: int, N: int, K: int, topk: int, num_experts: int,
+        self,
+        M: int,
+        N: int,
+        K: int,
+        topk: int,
+        num_experts: int,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         return ((0,), (0,))
 
@@ -200,12 +219,19 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 local ids.
         """
         self._validate_dtypes(
-            output, hidden_states, w_gate_up, w_down,
-            topk_weights, topk_ids, workspace1, workspace2,
+            output,
+            hidden_states,
+            w_gate_up,
+            w_down,
+            topk_weights,
+            topk_ids,
+            workspace1,
+            workspace2,
             expert_map=expert_map,
         )
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(
-            hidden_states, topk_ids, expert_map)
+            hidden_states, topk_ids, expert_map
+        )
         act = self._gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
         mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
         # Unpermute reduces into ``output`` directly and folds

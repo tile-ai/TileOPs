@@ -56,8 +56,14 @@ class EngramDecodeFwdOp(Op):
             "engram_decode",
             key=dtype,
             build=lambda: self.kernel_map["engram_decode"](
-                self.batch, self.d_mem, self.d, self.max_conv_len,
-                self.conv_kernel_size, self.dilation, self.eps, dtype,
+                self.batch,
+                self.d_mem,
+                self.d,
+                self.max_conv_len,
+                self.conv_kernel_size,
+                self.dilation,
+                self.eps,
+                dtype,
                 tune=self.tune,
             ),
         )
@@ -97,7 +103,14 @@ class EngramDecodeFwdOp(Op):
         if not e_t.is_cuda:
             raise ValueError("e_t must be a CUDA tensor")
         self._validate_dtypes(
-            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+            e_t,
+            h_t,
+            conv_state,
+            W_K,
+            W_V,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
         )
         self.dtype = e_t.dtype
 
@@ -106,5 +119,12 @@ class EngramDecodeFwdOp(Op):
         conv_state = conv_state.contiguous()
 
         return self._get_kernel(e_t.dtype)(
-            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+            e_t,
+            h_t,
+            conv_state,
+            W_K,
+            W_V,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
         )

@@ -131,9 +131,7 @@ class GLADecodeFwdOp(Op):
         )
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
-                raise ValueError(
-                    f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
-        )
+                raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
         if not all(tensor.is_cuda for tensor in (q, k, v, gk, state)):
             raise ValueError("q, k, v, gk, and state must be CUDA tensors")
         self.batch = batch

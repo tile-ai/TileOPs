@@ -53,7 +53,10 @@ class PreluFwdOp(_PerDtypeKernels, Op):
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         kernel = impl(
-            self.N_total, self.num_channels, self.inner_size, ctor_dtype,
+            self.N_total,
+            self.num_channels,
+            self.inner_size,
+            ctor_dtype,
         )
 
         return KernelEntry(
@@ -72,9 +75,14 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = input.shape
-        return self._entry(input.dtype).kernel(
-            input.contiguous().reshape(-1), weight.contiguous().reshape(-1),
-        ).reshape(orig_shape)
+        return (
+            self._entry(input.dtype)
+            .kernel(
+                input.contiguous().reshape(-1),
+                weight.contiguous().reshape(-1),
+            )
+            .reshape(orig_shape)
+        )
 
     def forward(
         self,
@@ -85,22 +93,17 @@ class PreluFwdOp(_PerDtypeKernels, Op):
             raise ValueError("Input must be a CUDA tensor")
         self._validate_dtypes(input, weight)
         if tuple(input.shape) != tuple(self.shape):
-            raise ValueError(
-                f"Expected input.shape {tuple(self.shape)}, got {tuple(input.shape)}"
-            )
+            raise ValueError(f"Expected input.shape {tuple(self.shape)}, got {tuple(input.shape)}")
         # ``weight`` is part of the manifest contract; validate device,
         # dtype, and length so a malformed weight fails fast at the op
         # boundary instead of corrupting the kernel.
         if not weight.is_cuda:
             raise ValueError("Weight must be a CUDA tensor")
         if weight.dtype != input.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {input.dtype}, got {weight.dtype}"
-            )
+            raise ValueError(f"Expected weight.dtype {input.dtype}, got {weight.dtype}")
         if weight.numel() != self.num_channels:
             raise ValueError(
-                f"Expected weight to have {self.num_channels} elements, "
-                f"got {weight.numel()}"
+                f"Expected weight to have {self.num_channels} elements, got {weight.numel()}"
             )
         wrapped = type(self)._wrapped
         if wrapped is not None:

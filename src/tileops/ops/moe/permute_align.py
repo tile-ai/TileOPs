@@ -70,15 +70,15 @@ class MoePermuteAlignFwdOp(Op):
         return max_padded, (max_padded + self.block_size - 1) // self.block_size
 
     def _infer_output_shapes(
-        self, topk_ids_shape: Tuple[int, ...],
+        self,
+        topk_ids_shape: Tuple[int, ...],
     ) -> Dict[str, Tuple[int, ...]]:
         """Manifest ``signature.outputs`` at the extents ``roofline.bytes`` declares.
 
         ``numel`` comes off ``topk_ids``: the manifest states
         ``topk_ids.shape == (total_tokens, top_k)``.
         """
-        max_padded, num_blocks = self._padded_extents(
-            topk_ids_shape[0] * topk_ids_shape[1])
+        max_padded, num_blocks = self._padded_extents(topk_ids_shape[0] * topk_ids_shape[1])
         return {
             "sorted_token_ids": (max_padded,),
             "expert_ids": (num_blocks,),
@@ -92,9 +92,7 @@ class MoePermuteAlignFwdOp(Op):
             self.numel * 4 + max_padded * 4 + num_blocks * 4 + 4,
         )
 
-    def forward(
-        self, topk_ids: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run permute-align.
 
         Args:
@@ -116,14 +114,16 @@ class MoePermuteAlignFwdOp(Op):
 
 @torch.library.custom_op("top::moe_permute_align_fwd", mutates_args=())
 def _moe_permute_align_fwd(
-    topk_ids: torch.Tensor, instance_key: str,
+    topk_ids: torch.Tensor,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return get_instance(instance_key)._eager_forward(topk_ids)
 
 
 @_moe_permute_align_fwd.register_fake
 def _moe_permute_align_fwd_fake(
-    topk_ids: torch.Tensor, instance_key: str,
+    topk_ids: torch.Tensor,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(topk_ids.shape))

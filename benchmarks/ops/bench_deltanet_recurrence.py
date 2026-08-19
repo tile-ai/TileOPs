@@ -40,7 +40,6 @@ def deltanet_decode_torch(
 
 
 class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v

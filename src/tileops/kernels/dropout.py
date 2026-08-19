@@ -108,8 +108,12 @@ class DropoutKernel(Kernel):
     def _build_kernel(self):
         cfg = self.config
         return _make_dropout_kernel(
-            self.N_total, self.dtype_str, self.p, self.seed,
-            threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            self.N_total,
+            self.dtype_str,
+            self.p,
+            self.seed,
+            threads=cfg["threads"],
+            num_per_thread=cfg["num_per_thread"],
         )
 
     @property

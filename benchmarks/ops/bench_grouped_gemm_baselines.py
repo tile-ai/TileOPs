@@ -28,6 +28,7 @@ follow-up.
 Cases are real MoE prefill shapes (GLM-5 744B, Llama-4-17B-128E, qwen3.5 397B);
 see ``CASES`` below for the per-model parameters.
 """
+
 from __future__ import annotations
 
 import os
@@ -95,23 +96,25 @@ def _supports_tma() -> bool:
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "NUM_SM": 84}),
-        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "NUM_SM": 128}),
+        triton.Config(
+            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "NUM_SM": 128}
+        ),
         triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "NUM_SM": 84}),
         triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "NUM_SM": 128}),
-        triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 64, "NUM_SM": 132}),
+        triton.Config(
+            {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 64, "NUM_SM": 132}
+        ),
         triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 64, "NUM_SM": 132}),
     ],
     key=["group_size"],
 )
-
-
 @triton.jit
 def _grouped_matmul_kernel(
     group_a_ptrs,
     group_b_ptrs,
     group_c_ptrs,
     group_gemm_sizes,  # [group_size, 3] = <M, N, K>
-    g_lds,             # [group_size, 3] = <lda, ldb, ldc>
+    g_lds,  # [group_size, 3] = <lda, ldb, ldc>
     group_size,
     NUM_SM: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
@@ -167,7 +170,9 @@ def _grouped_matmul_kernel(
 # representative Hopper configs: the full sweep added minutes of cold-start
 # autotune JIT with no measurable win on these grouped-GEMM shapes.
 _TMA_CONFIGS = [
-    triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": bn, "BLOCK_SIZE_K": 64}, num_stages=s, num_warps=8)
+    triton.Config(
+        {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": bn, "BLOCK_SIZE_K": 64}, num_stages=s, num_warps=8
+    )
     for bn in [128, 256]
     for s in [3, 4]
 ]
@@ -175,14 +180,12 @@ _TMA_CONFIGS = [
 
 @triton.autotune(_TMA_CONFIGS, key=["group_size"])
 @triton.jit
-
-
 def _grouped_matmul_tma_kernel(
     group_a_ptrs,
     group_b_ptrs,
     group_c_ptrs,
     group_gemm_sizes,  # [group_size, 3] = <M, N, K>
-    g_lds,             # [group_size, 3] = <lda, ldb, ldc>
+    g_lds,  # [group_size, 3] = <lda, ldb, ldc>
     group_size,
     NUM_SM: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
@@ -208,11 +211,14 @@ def _grouped_matmul_tma_kernel(
             c_ptr = tl.load(group_c_ptrs + g).to(tl.pointer_type(dtype))
 
             a_desc = tl.make_tensor_descriptor(
-                a_ptr, shape=[gm, gk], strides=[lda, 1], block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_K])
+                a_ptr, shape=[gm, gk], strides=[lda, 1], block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_K]
+            )
             b_desc = tl.make_tensor_descriptor(
-                b_ptr, shape=[gn, gk], strides=[ldb, 1], block_shape=[BLOCK_SIZE_N, BLOCK_SIZE_K])
+                b_ptr, shape=[gn, gk], strides=[ldb, 1], block_shape=[BLOCK_SIZE_N, BLOCK_SIZE_K]
+            )
             c_desc = tl.make_tensor_descriptor(
-                c_ptr, shape=[gm, gn], strides=[ldc, 1], block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N])
+                c_ptr, shape=[gm, gn], strides=[ldc, 1], block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N]
+            )
 
             while tile_idx >= last_problem_end and tile_idx < last_problem_end + num_tiles:
                 k = gk
@@ -333,18 +339,22 @@ _RTOL, _ATOL = 2e-2, 2e-2
 def _assert_close_chunked(actual, expected, *, what, chunk=8192):
     """Row-blocked fp32 ``assert_close`` of two ``[rows, N]`` tensors."""
     for i in range(0, actual.shape[0], chunk):
-        a = actual[i:i + chunk].float()
-        e = expected[i:i + chunk].float()
+        a = actual[i : i + chunk].float()
+        e = expected[i : i + chunk].float()
         torch.testing.assert_close(
-            a, e, rtol=_RTOL, atol=_ATOL,
-            msg=lambda m, i=i: f"{what} disagrees with 3WG at rows [{i}:{i + chunk}]:\n{m}")
+            a,
+            e,
+            rtol=_RTOL,
+            atol=_ATOL,
+            msg=lambda m, i=i: f"{what} disagrees with 3WG at rows [{i}:{i + chunk}]:\n{m}",
+        )
         del a, e
 
 
 def _assert_groups_close(groups, ref, per, *, what):
     """Per-expert compare of a list of ``[per, N]`` outputs against flat ``ref``."""
     for e, g in enumerate(groups):
-        _assert_close_chunked(g, ref[e * per:(e + 1) * per], what=f"{what}[expert {e}]")
+        _assert_close_chunked(g, ref[e * per : (e + 1) * per], what=f"{what}[expert {e}]")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -358,18 +368,18 @@ def _assert_groups_close(groups, ref, per, *, what):
 # ─────────────────────────────────────────────────────────────────────────────
 CASES = [
     # label,                         tokens,  E,   top_k, hidden, moe_inter, M,    N,     K
-    ("GLM-5-744B  up    T=32768",    32768,   256, 8,     6144,   2048,      1024, 4096,  6144),
-    ("GLM-5-744B  up    T=65536",    65536,   256, 8,     6144,   2048,      2048, 4096,  6144),
-    ("GLM-5-744B  up    T=131072",   131072,  256, 8,     6144,   2048,      4096, 4096,  6144),
-    ("GLM-5-744B  up    T=262144",   262144,  256, 8,     6144,   2048,      8192, 4096,  6144),
-    ("Llama4-128E up    T=131072",   131072,  128, 1,     5120,   8192,      1024, 16384, 5120),
-    ("qwen3.5-397B up   T~52429",    52429,   512, 10,    4096,   1024,      1024, 2048,  4096),
-    ("GLM-5-744B  down  T=32768",    32768,   256, 8,     6144,   2048,      1024, 6144,  2048),
-    ("GLM-5-744B  down  T=65536",    65536,   256, 8,     6144,   2048,      2048, 6144,  2048),
-    ("GLM-5-744B  down  T=131072",   131072,  256, 8,     6144,   2048,      4096, 6144,  2048),
-    ("GLM-5-744B  down  T=262144",   262144,  256, 8,     6144,   2048,      8192, 6144,  2048),
-    ("Llama4-128E down  T=131072",   131072,  128, 1,     5120,   8192,      1024, 5120,  8192),
-    ("qwen3.5-397B down  T~52429",   52429,   512, 10,    4096,   1024,      1024, 4096,  1024),
+    ("GLM-5-744B  up    T=32768", 32768, 256, 8, 6144, 2048, 1024, 4096, 6144),
+    ("GLM-5-744B  up    T=65536", 65536, 256, 8, 6144, 2048, 2048, 4096, 6144),
+    ("GLM-5-744B  up    T=131072", 131072, 256, 8, 6144, 2048, 4096, 4096, 6144),
+    ("GLM-5-744B  up    T=262144", 262144, 256, 8, 6144, 2048, 8192, 4096, 6144),
+    ("Llama4-128E up    T=131072", 131072, 128, 1, 5120, 8192, 1024, 16384, 5120),
+    ("qwen3.5-397B up   T~52429", 52429, 512, 10, 4096, 1024, 1024, 2048, 4096),
+    ("GLM-5-744B  down  T=32768", 32768, 256, 8, 6144, 2048, 1024, 6144, 2048),
+    ("GLM-5-744B  down  T=65536", 65536, 256, 8, 6144, 2048, 2048, 6144, 2048),
+    ("GLM-5-744B  down  T=131072", 131072, 256, 8, 6144, 2048, 4096, 6144, 2048),
+    ("GLM-5-744B  down  T=262144", 262144, 256, 8, 6144, 2048, 8192, 6144, 2048),
+    ("Llama4-128E down  T=131072", 131072, 128, 1, 5120, 8192, 1024, 5120, 8192),
+    ("qwen3.5-397B down  T~52429", 52429, 512, 10, 4096, 1024, 1024, 4096, 1024),
 ]
 
 
@@ -382,10 +392,10 @@ CASES = [
 class GroupedGemmBaselineWorkload:
     """Shape carrier for the grouped-GEMM roofline (uniform routing)."""
 
-    numel: int   # total rows = M_per_expert * num_experts
-    E: int       # num_experts
-    N: int       # per-expert output dim
-    K: int       # contraction dim
+    numel: int  # total rows = M_per_expert * num_experts
+    E: int  # num_experts
+    N: int  # per-expert output dim
+    K: int  # contraction dim
     dtype: torch.dtype
     label: str
 
@@ -442,6 +452,7 @@ def _synced(fn):
     copy per call). The sync blocks the host only; it is not counted in the
     CUPTI kernel time.
     """
+
     def _run():
         fn()
         torch.cuda.synchronize()
@@ -477,14 +488,16 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         bm = GroupedGemmBaselinesBenchmark(workload)
 
         # ---- ours: 3-WG persistent (pre-allocated out via out=) ----
-        k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
-                                            dtype=_DTYPE, sm_count=sm)
+        k3 = GroupedGemmPersistent3WGKernel(
+            numel=numel, num_experts=E, N=N, K=K, dtype=_DTYPE, sm_count=sm
+        )
         C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
         # The 3WG kernel zero-fills the last partial tile's A over-read via TMA
         # OOB (no F.pad, no alignment host sync), so the profiled call measures
         # the GEMM alone — the GEMM-only fairness contract this benchmark needs.
-        result = bm.profile(_synced(
-            lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C)))
+        result = bm.profile(
+            _synced(lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C))
+        )
         # Buffer (tag, result) and only commit to the global report once the whole
         # case completes: a later baseline OOM turns into pytest.skip, and we must
         # not leave partial rows in profile_run.log for a case reported as skipped.
@@ -496,16 +509,18 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         # lives in the ``else`` so a real mismatch fails the test instead of being
         # swallowed as a [skip].
         try:
-            r = bm.profile(_synced(
-                lambda A=A, B_KN=B_KN, off=offs_cumsum: torch._grouped_mm(A, B_KN, off)))
+            r = bm.profile(
+                _synced(lambda A=A, B_KN=B_KN, off=offs_cumsum: torch._grouped_mm(A, B_KN, off))
+            )
         except torch.cuda.OutOfMemoryError:
             raise
         except Exception as exc:  # pragma: no cover - env dependent
             print(f"  [skip] torch._grouped_mm: {exc}")
         else:
             # One untimed call to validate the [E, K, N] layout adaptation.
-            _assert_close_chunked(torch._grouped_mm(A, B_KN, offs_cumsum), C_3wg,
-                                  what="torch._grouped_mm")
+            _assert_close_chunked(
+                torch._grouped_mm(A, B_KN, offs_cumsum), C_3wg, what="torch._grouped_mm"
+            )
             records.append(("torch", r))
 
         # ---- deepgemm: contiguous grouped GEMM (pre-allocated D) ----
@@ -513,12 +528,15 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         # of 128. That is a deepgemm-only constraint, so skip just this baseline
         # (not the whole case) when it does not hold.
         if _HAS_DEEP_GEMM and per % 128 != 0:
-            print(f"  [skip] deepgemm: per-expert M={per} not a multiple of 128 (contiguous layout)")
+            print(
+                f"  [skip] deepgemm: per-expert M={per} not a multiple of 128 (contiguous layout)"
+            )
         elif _HAS_DEEP_GEMM:
             D = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
             try:
-                r = bm.profile(_synced(
-                    lambda A=A, B=B, D=D, mi=m_indices: _deepgemm_launch(A, B, D, mi)))
+                r = bm.profile(
+                    _synced(lambda A=A, B=B, D=D, mi=m_indices: _deepgemm_launch(A, B, D, mi))
+                )
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as exc:  # pragma: no cover - DeepGEMM workspace bug
@@ -528,7 +546,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
                 records.append(("deepgemm", r))
 
         # ---- triton 08-grouped-gemm (ported, bf16; pre-allocated group_c) ----
-        group_a = [A[e * per:(e + 1) * per] for e in range(E)]
+        group_a = [A[e * per : (e + 1) * per] for e in range(E)]
         group_c = [torch.empty(per, N, dtype=_DTYPE, device="cuda") for _ in range(E)]
         group_b_kn = [B_KN[e] for e in range(E)]  # non-TMA wants B[e] as [K, N]
         a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds = _build_triton_ptrs(group_a, group_b_kn, group_c)
@@ -543,7 +561,10 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         _grouped_matmul_kernel.cache.clear()
         try:
             r = bm.profile(
-                _synced(lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E)))
+                _synced(
+                    lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E)
+                )
+            )
         except torch.cuda.OutOfMemoryError:
             raise
         except Exception as exc:  # pragma: no cover - env dependent
@@ -564,7 +585,12 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             _grouped_matmul_tma_kernel.cache.clear()
             try:
                 r = bm.profile(
-                    _synced(lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm)))
+                    _synced(
+                        lambda: _grouped_matmul_tma_kernel[grid](
+                            a_p, b_p, c_p, gs, gl, E, NUM_SM=sm
+                        )
+                    )
+                )
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as exc:  # pragma: no cover - env dependent

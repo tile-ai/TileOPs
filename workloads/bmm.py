@@ -59,19 +59,19 @@ class BmmFp8Workload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         a = (
-            torch.randn(self.batch, self.m, self.k, device="cuda") * _FP8_INIT_SCALE
-        ).to(self.dtype).contiguous()
+            (torch.randn(self.batch, self.m, self.k, device="cuda") * _FP8_INIT_SCALE)
+            .to(self.dtype)
+            .contiguous()
+        )
         b = (
-            torch.randn(self.batch, self.k, self.n, device="cuda") * _FP8_INIT_SCALE
-        ).to(self.dtype).contiguous()
+            (torch.randn(self.batch, self.k, self.n, device="cuda") * _FP8_INIT_SCALE)
+            .to(self.dtype)
+            .contiguous()
+        )
         # per_tensor uses 0-D scalars (empty shape); torch.rand accepts an
         # empty size tuple and produces a rank-0 tensor.
-        scale_a = (
-            0.5 + torch.rand((), device="cuda", dtype=torch.float32)
-        ).contiguous()
-        scale_b = (
-            0.5 + torch.rand((), device="cuda", dtype=torch.float32)
-        ).contiguous()
+        scale_a = (0.5 + torch.rand((), device="cuda", dtype=torch.float32)).contiguous()
+        scale_b = (0.5 + torch.rand((), device="cuda", dtype=torch.float32)).contiguous()
         return a, b, scale_a, scale_b
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:

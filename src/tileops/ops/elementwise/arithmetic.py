@@ -105,7 +105,10 @@ class DivFwdOp(BinaryOp):
         # matching ``rounding_mode``.
         self.kernel_cls = _DIV_KERNEL_BY_ROUNDING_MODE[rounding_mode]
         super().__init__(
-            a_shape, b_shape, kernel_map=kernel_map, tune=tune,
+            a_shape,
+            b_shape,
+            kernel_map=kernel_map,
+            tune=tune,
         )
 
 
@@ -224,7 +227,9 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         self.weight_shape = tuple(weight)
         self.out_shape = tuple(
             torch.broadcast_shapes(
-                self.input_shape, self.end_shape, self.weight_shape,
+                self.input_shape,
+                self.end_shape,
+                self.weight_shape,
             )
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
@@ -235,8 +240,7 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         if dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
             raise ValueError(
-                f"LerpTensorFwdOp does not support dtype {dtype}. "
-                f"Supported: [{names}]"
+                f"LerpTensorFwdOp does not support dtype {dtype}. Supported: [{names}]"
             )
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         kernel = impl(self.N_total, ctor_dtype, tune=self.tune)
@@ -285,13 +289,9 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
             ("weight", weight, self.weight_shape),
         ]:
             if t.dtype != input.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype {input.dtype}, got {t.dtype}"
-                )
+                raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
             if tuple(t.shape) != expected:
-                raise ValueError(
-                    f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
-                )
+                raise ValueError(f"Expected {name}.shape {expected}, got {tuple(t.shape)}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, end, weight, self._instance_key)

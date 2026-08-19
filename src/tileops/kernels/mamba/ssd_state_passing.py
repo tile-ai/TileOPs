@@ -96,19 +96,18 @@ def _ssd_state_passing_fwd_kernel(
 
         @T.prim_func
         def main(
-            states: T.Tensor(states_shape, dtype),              # type: ignore
-            dA_chunk_cumsum: T.Tensor(dA_shape, accum_dtype),   # type: ignore
+            states: T.Tensor(states_shape, dtype),  # type: ignore
+            dA_chunk_cumsum: T.Tensor(dA_shape, accum_dtype),  # type: ignore
             initial_states: T.Tensor(init_shape, accum_dtype),  # type: ignore
-            out: T.Tensor(out_shape, accum_dtype),              # type: ignore
-            final_states: T.Tensor(final_shape, accum_dtype),   # type: ignore
+            out: T.Tensor(out_shape, accum_dtype),  # type: ignore
+            final_states: T.Tensor(final_shape, accum_dtype),  # type: ignore
         ):
             with T.Kernel(
                 T.ceildiv(D, block_d),  # tile over d_state
-                B,                      # batch
-                H,                      # head
+                B,  # batch
+                H,  # head
                 threads=threads,
             ) as (bd, bb, bh):
-
                 d0 = bd * block_d
 
                 # Precompute exp(dA) for all chunks in one parallel pass so
@@ -135,9 +134,11 @@ def _ssd_state_passing_fwd_kernel(
                         di_hi = d0 + i + threads
                         if has_initial_states:
                             s_lo[i] = T.if_then_else(
-                                di_lo < D, initial_states[bb, bh, di_lo], T.float32(0.0))
+                                di_lo < D, initial_states[bb, bh, di_lo], T.float32(0.0)
+                            )
                             s_hi[i] = T.if_then_else(
-                                di_hi < D, initial_states[bb, bh, di_hi], T.float32(0.0))
+                                di_hi < D, initial_states[bb, bh, di_hi], T.float32(0.0)
+                            )
                         else:
                             s_lo[i] = T.float32(0.0)
                             s_hi[i] = T.float32(0.0)
@@ -191,7 +192,8 @@ def _ssd_state_passing_fwd_kernel(
                         di = d0 + i
                         if has_initial_states:
                             s_frag[i] = T.if_then_else(
-                                di < D, initial_states[bb, bh, di], T.float32(0.0))
+                                di < D, initial_states[bb, bh, di], T.float32(0.0)
+                            )
                         else:
                             s_frag[i] = T.float32(0.0)
 
@@ -226,7 +228,6 @@ def _ssd_state_passing_fwd_kernel(
     return kernel_func
 
 
-
 @torch.library.custom_op("top::ssd_state_passing_fwd", mutates_args=())
 def _ssd_state_passing_fwd_wrapped(
     batch: int,
@@ -243,7 +244,12 @@ def _ssd_state_passing_fwd_wrapped(
     initial_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return _ssd_state_passing_fwd_kernel(
-        batch, num_chunks, n_heads, d_state, has_initial_states, dtype,
+        batch,
+        num_chunks,
+        n_heads,
+        d_state,
+        has_initial_states,
+        dtype,
     )(block_d, threads, vectorize)(states, dA_chunk_cumsum, initial_states)
 
 
@@ -315,7 +321,12 @@ class SSDStatePassingFwdKernel(Kernel):
         self.has_initial_states = has_initial_states
         self.dtype = dtype
         self.kernel = _ssd_state_passing_fwd_kernel(
-            batch, num_chunks, n_heads, d_state, has_initial_states, self.dtype_str,
+            batch,
+            num_chunks,
+            n_heads,
+            d_state,
+            has_initial_states,
+            self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -340,18 +351,18 @@ class SSDStatePassingFwdKernel(Kernel):
         # Non-vectorized: threads independent of block_d; extra warps improve
         # latency hiding on small grids.
         non_vec = [
-            {"block_d": 32,  "threads": 128, "vectorize": False},
-            {"block_d": 32,  "threads": 256, "vectorize": False},
-            {"block_d": 64,  "threads": 128, "vectorize": False},
-            {"block_d": 64,  "threads": 256, "vectorize": False},
+            {"block_d": 32, "threads": 128, "vectorize": False},
+            {"block_d": 32, "threads": 256, "vectorize": False},
+            {"block_d": 64, "threads": 128, "vectorize": False},
+            {"block_d": 64, "threads": 256, "vectorize": False},
             {"block_d": 128, "threads": 128, "vectorize": False},
             {"block_d": 128, "threads": 256, "vectorize": False},
         ]
         # Vectorized: threads = block_d // 2; halves load count, best on large
         # grids where bandwidth is the bottleneck.
         vec = [
-            {"block_d": 64,  "threads": 32,  "vectorize": True},
-            {"block_d": 128, "threads": 64,  "vectorize": True},
+            {"block_d": 64, "threads": 32, "vectorize": True},
+            {"block_d": 128, "threads": 64, "vectorize": True},
             {"block_d": 256, "threads": 128, "vectorize": True},
         ]
         return non_vec + vec
@@ -363,8 +374,16 @@ class SSDStatePassingFwdKernel(Kernel):
         initial_states: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return _ssd_state_passing_fwd_wrapped(
-            self.batch, self.num_chunks, self.n_heads, self.d_state,
-            self.has_initial_states, self.dtype_str,
-            self.config["block_d"], self.config["threads"], self.config["vectorize"],
-            states, dA_chunk_cumsum, initial_states,
+            self.batch,
+            self.num_chunks,
+            self.n_heads,
+            self.d_state,
+            self.has_initial_states,
+            self.dtype_str,
+            self.config["block_d"],
+            self.config["threads"],
+            self.config["vectorize"],
+            states,
+            dA_chunk_cumsum,
+            initial_states,
         )

@@ -85,8 +85,7 @@ class GemmFp8Workload(WorkloadBase):
             return scale.expand(rows, cols)
         scale_cols = (cols + 127) // 128
         if tuple(scale.shape) != (rows, scale_cols):
-            raise ValueError(
-                f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
+            raise ValueError(f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
         return scale.repeat_interleave(128, dim=1)[:, :cols]
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:

@@ -1,5 +1,3 @@
-
-
 import pytest
 import torch
 
@@ -34,17 +32,20 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
 
 class DeltaNetDecodeFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, dim_k, dim_v, dtype, tune", [
-            pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 128, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 128, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, heads, dim_k, dim_v, dtype, tune",
+            [
+                pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 128, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 128, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -128,9 +129,7 @@ def _skip_unless_raw_cuda_decode_supported() -> None:
     except Exception as exc:
         pytest.skip(f"could not query CUDA architecture: {exc}")
     if sm_version not in DeltaNetDecodeRawCudaFlaStyleKernel.supported_archs:
-        pytest.skip(
-            f"raw DeltaNet decode requires SM90, got SM{sm_version}"
-        )
+        pytest.skip(f"raw DeltaNet decode requires SM90, got SM{sm_version}")
 
 
 @pytest.mark.smoke
@@ -221,11 +220,13 @@ def _dispatch_kernel_map() -> dict:
     }
 
 
-def _stated_call(sm_version: int, dtype: torch.dtype, dim_k: int = 128,
-                 dim_v: int = 128, tune: bool = False) -> DeltaNetDecodeCall:
+def _stated_call(
+    sm_version: int, dtype: torch.dtype, dim_k: int = 128, dim_v: int = 128, tune: bool = False
+) -> DeltaNetDecodeCall:
     """The record for a decode call, with the device stated rather than probed."""
-    return DeltaNetDecodeCall(arch=sm_version, batch=1, heads=32, dim_k=dim_k,
-                              dim_v=dim_v, dtype=dtype, tune=tune)
+    return DeltaNetDecodeCall(
+        arch=sm_version, batch=1, heads=32, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=tune
+    )
 
 
 @pytest.mark.smoke
@@ -240,10 +241,13 @@ def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
     assert op.kernel_map[key] is _RawDispatchKernel
 
 
-@pytest.mark.parametrize("tune", [
-    pytest.param(False, marks=pytest.mark.smoke, id="untuned"),
-    pytest.param(True, marks=pytest.mark.full, id="tuned"),
-])
+@pytest.mark.parametrize(
+    "tune",
+    [
+        pytest.param(False, marks=pytest.mark.smoke, id="untuned"),
+        pytest.param(True, marks=pytest.mark.full, id="tuned"),
+    ],
+)
 def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
     """Whatever selection picks is constructed with the op's autotune setting."""
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map(), tune=tune)
@@ -270,8 +274,7 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
 ) -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
-    key = op.select_kernel_key(
-        DELTANET_DECODE_KEYS, _stated_call(90, torch.bfloat16, dim_k, dim_v))
+    key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(90, torch.bfloat16, dim_k, dim_v))
 
     assert op.kernel_map[key] is _DefaultDispatchKernel
 
