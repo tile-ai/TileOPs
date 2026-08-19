@@ -33,6 +33,10 @@ class PackedPrefillKernel(Kernel):
         softcap: float = 0.0,
         window_size_left: int = -1,
         window_size_right: int = -1,
+        fuse_rope: bool = False,
+        max_position: Optional[int] = None,
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
         accum_dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
         tune: bool = False,
@@ -56,6 +60,10 @@ class PackedPrefillKernel(Kernel):
         self.softcap = softcap
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
+        self.fuse_rope = fuse_rope
+        self.max_position = max_position
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
         self.accum_dtype = accum_dtype
         self._validate_spec()
         self._build_program()
@@ -92,6 +100,8 @@ class PackedPrefillKernel(Kernel):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run packed prefill and return the semantic output only."""
         raise NotImplementedError

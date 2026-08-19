@@ -1,6 +1,6 @@
 """The paged GQA prefill slot: one constructor, one call, one result.
 
-    kernel(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale,
+    kernel(q, k_new, v_new, k_pages, v_pages, q_scale, k_scale, v_scale,
            cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q,
            cos_table, sin_table) -> o
 
@@ -33,8 +33,13 @@ class PagedPrefillKernel(Kernel):
         dtype: torch.dtype,
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        append_kv: bool = True,
+        fuse_rope: bool = False,
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -51,8 +56,13 @@ class PagedPrefillKernel(Kernel):
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.append_kv = append_kv
+        self.fuse_rope = fuse_rope
         self.max_position = max_position
         self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
         self._build_program()
         self.init_config(config, tune)
 
@@ -66,6 +76,7 @@ class PagedPrefillKernel(Kernel):
         v_new: torch.Tensor,
         k_pages: torch.Tensor,
         v_pages: torch.Tensor,
+        q_scale: Optional[torch.Tensor],
         k_scale: Optional[torch.Tensor],
         v_scale: Optional[torch.Tensor],
         cu_seqlens_q: torch.Tensor,

@@ -19,87 +19,19 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.online_softmax import (
-    make_log2e_scale,
+    LOG2E,
+    make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
 
 from .call_spec import uses_sliding_window
 from .packed_prefill import PackedPrefillKernel
+from .prefill_mask import make_bottom_right_attention_mask
 
 __all__ = [
     "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
 ]
-
-
-def _make_apply_mask(
-    is_causal, has_window, window_size_left, window_size_right, accum_dtype, block_m, block_n
-):
-    """Create a masked attention score initialization macro.
-
-    All parameters are compile-time constants baked into the macro via closure.
-    The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
-    conditions, using four compile-time paths:
-
-    - causal + window (left only)
-    - causal only
-    - window only (left and/or right)
-    - no masking (OOB guard only)
-
-    Args:
-        is_causal: Whether causal masking is applied.
-        has_window: Whether any window constraint is active.
-        window_size_left: Left window size (-1 = unlimited).
-        window_size_right: Right window size (-1 = unlimited).
-        accum_dtype: Accumulator data type string (e.g. "float").
-        block_m: Tile size along the Q dimension.
-        block_n: Tile size along the KV dimension.
-
-    Returns:
-        apply_mask: A ``T.macro`` that fills ``acc_s`` with mask values.
-    """
-
-    @T.macro
-    def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
-        if is_causal and has_window:
-            for i, j in T.Parallel(block_m, block_n):
-                causal_mask = k_idx * block_n + j > bx * block_m + i + offset
-                left_mask = (window_size_left >= 0) and (
-                    k_idx * block_n + j < bx * block_m + i + offset - window_size_left
-                )
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    causal_mask or left_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
-        elif is_causal:
-            for i, j in T.Parallel(block_m, block_n):
-                causal_mask = k_idx * block_n + j > bx * block_m + i + offset
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    causal_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
-        elif has_window:
-            for i, j in T.Parallel(block_m, block_n):
-                left_mask = (window_size_left >= 0) and (
-                    k_idx * block_n + j < bx * block_m + i + offset - window_size_left
-                )
-                right_mask = (window_size_right >= 0) and (
-                    k_idx * block_n + j > bx * block_m + i + offset + window_size_right
-                )
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    left_mask or right_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
-        else:
-            for i, j in T.Parallel(block_m, block_n):
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
-
-    return apply_mask
 
 
 class _GQASlidingWindowVarlenFwdKernelBase(PackedPrefillKernel):
@@ -110,7 +42,8 @@ class _GQASlidingWindowVarlenFwdKernelBase(PackedPrefillKernel):
         return (
             uses_sliding_window(call)
             and not call.is_fp8
-            and call.backend in ("auto", "sliding_window")
+            and not call.is_uniform
+            and not call.fuse_rope
         )
 
     def _build_program(self) -> None:
@@ -135,6 +68,8 @@ class _GQASlidingWindowVarlenFwdKernelBase(PackedPrefillKernel):
             self.is_causal,
             self.window_size_left,
             self.window_size_right,
+            self.sm_scale,
+            self.softcap,
             self.dtype_str,
             self._accum_dtype_str,
             self.config["block_m"],
@@ -164,10 +99,14 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     is_causal: bool,
     window_size_left: int,
     window_size_right: int,
+    sm_scale: Optional[float] = None,
+    softcap: float = 0.0,
     dtype: str = "float16",
     accum_dtype: str = "float",
 ) -> Callable:
-    scale = make_log2e_scale(dim)
+    score_scale = dim**-0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
@@ -181,14 +120,18 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     def _gqa_sw_fwd_varlen_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
         q_shape = (total_q, heads, dim)
         kv_shape = (total_k, heads_kv, dim)
-        apply_mask = _make_apply_mask(
+        apply_mask = make_bottom_right_attention_mask(
             is_causal,
-            has_window,
             window_size_left,
             window_size_right,
             accum_dtype,
             block_m,
             block_n,
+        )
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
+            if use_softcap
+            else None
         )
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim)
@@ -293,6 +236,8 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                     mma0(
                         k, q_shared, k_shared, acc_s, k_idx, bx, by, kv_start, q_len, kv_len, offset
                     )
+                    if use_softcap:
+                        apply_softcap(acc_s)
                     online_softmax(
                         acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
                     )
@@ -329,6 +274,8 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel(
     is_causal: bool,
     window_size_left: int,
     window_size_right: int,
+    sm_scale: float,
+    softcap: float,
     dtype: str,
     accum_dtype: str,
     block_m: int,
@@ -352,6 +299,8 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel(
         is_causal,
         window_size_left,
         window_size_right,
+        sm_scale,
+        softcap,
         dtype,
         accum_dtype,
     )(block_m, block_n, num_stages, threads)(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
@@ -368,6 +317,8 @@ def _(
     is_causal,
     window_size_left,
     window_size_right,
+    sm_scale,
+    softcap,
     dtype,
     accum_dtype,
     block_m,
@@ -417,6 +368,8 @@ class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         output, _ = self._call_wrapped(
             _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel, q, k, v, cu_seqlens_q, cu_seqlens_kv
