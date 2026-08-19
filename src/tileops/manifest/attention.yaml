@@ -116,11 +116,11 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       o: {dtype: "float16 | bfloat16"}
     params:
       is_causal: {type: bool, default: true}
-      sm_scale: {type: float, default: null}
-      softcap: {type: float, default: null}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
-      dtype: {type: torch.dtype, default: null}
+      dtype: {type: "torch.dtype | None", default: null}
       pos_encoding_mode: {type: str, default: none}
       rotary_dim: {type: "int | None", default: null}
       rope_layout: {type: str, default: neox}
