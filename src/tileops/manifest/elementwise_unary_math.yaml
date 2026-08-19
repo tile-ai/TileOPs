@@ -420,7 +420,7 @@ RoundFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      decimals: {type: int, default: 0}
+      decimals: {type: int, default: 0, kw_only: true}
     shape_rules:
     - "output.shape == input.shape"
 

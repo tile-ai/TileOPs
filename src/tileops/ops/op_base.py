@@ -358,7 +358,7 @@ class Op(ABC):
     def get_or_build_kernel(
         self,
         name: str,
-        inputs: Sequence[torch.Tensor] = (),
+        inputs: "Sequence[torch.Tensor | None]" = (),
         *,
         key: Hashable = None,
         build: Optional[Callable[[], _Entry]] = None,
@@ -369,8 +369,12 @@ class Op(ABC):
 
         Args:
             name: Which of this op's kernels is being asked for.
-            inputs: The tensors this kernel will be handed, in ``signature.inputs`` order.
-                An external target needs them; omitting them leaves this op in-tree only.
+            inputs: The tensors this kernel will be handed, one slot per
+                ``signature.inputs`` entry, in that order. An ``optional: true`` input the
+                call did not pass occupies its slot as ``None`` — the same value ``forward``
+                was handed, so presence is a fact the builder reads off the slot rather than
+                off how many slots there are. An external target needs *inputs*; omitting
+                them leaves this op in-tree only.
             key: What the *in-tree* kernel specializes on, typically
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
                 path keys on the input signature instead.
@@ -382,7 +386,7 @@ class Op(ABC):
 
         Raises:
             OpNotAvailableError: A target serves this op but the call site handed over no
-                *inputs*; or there is no in-tree implementation and no target.
+                tensor at all; or there is no in-tree implementation and no target.
         """
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo
@@ -428,17 +432,25 @@ class Op(ABC):
 
             # External: this layer cannot know what the target's kernel specializes on, so
             # it keys on every cheap fact it has: the dtype and shape of each input.
-            if not inputs:
+            specs = tuple(None if t is None else TensorSpec.of(t) for t in inputs)
+            present = tuple(spec for spec in specs if spec is not None)
+            if not present:
                 raise OpNotAvailableError(
                     f"target {self._settled_target!r} serves {type(self).__name__}, but its "
                     f"{name!r} call site does not hand over the tensors a builder is "
                     f"described with; that op is not wired to external targets yet"
                 )
-            specs = tuple(TensorSpec.of(t) for t in inputs)
             # The device is part of the key: a kernel built for one of a target's devices
             # may hold resources allocated on it. The op layer has already checked that
             # this call's tensors agree on a device, so the first one speaks for all.
-            signature = (specs[0].device,) + tuple((spec.dtype, spec.shape) for spec in specs)
+            #
+            # An absent optional input keeps its slot as ``None``. Dropping the slot would
+            # make two different calls describe themselves the same way — a clamp with only
+            # a lower bound and one with only an upper bound hand over the same dtypes and
+            # shapes — and the second would be served the first one's kernel.
+            signature = (present[0].device,) + tuple(
+                None if spec is None else (spec.dtype, spec.shape) for spec in specs
+            )
             if signature not in entries:
                 entries[signature] = self._build_external(builder, name, specs)
             return entries[signature]
@@ -453,9 +465,13 @@ class Op(ABC):
         self,
         builder: BuildKernel,
         name: str,
-        specs: tuple[TensorSpec, ...],
+        specs: "tuple[TensorSpec | None, ...]",
     ) -> object:
-        """Ask the target for a kernel and hold it to the one rule this boundary has."""
+        """Ask the target for a kernel and hold it to the one rule this boundary has.
+
+        *specs* carries one slot per ``signature.inputs`` entry; an absent optional input's
+        slot is ``None``.
+        """
         kernel = builder(*specs, **self._manifest_params())
         if not callable(kernel):
             raise OpNotAvailableError(

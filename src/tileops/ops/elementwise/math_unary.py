@@ -1,7 +1,10 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
+from typing import Dict, Optional
+
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.elementwise import (
     AbsFwdKernel,
     CeilFwdKernel,
@@ -21,13 +24,12 @@ from tileops.kernels.elementwise import (
     SqrtFwdKernel,
     TruncFwdKernel,
 )
+from tileops.kernels.kernel_base import Kernel
 
 from ._base import (
     _MANIFEST_INT_DTYPES,
-    KernelEntry,
     UnaryOp,
     _IntIdentityUnaryOp,
-    resolve_output_dtype,
 )
 
 
@@ -78,40 +80,16 @@ class NegFwdOp(_IntIdentityUnaryOp):
 class ReciprocalFwdOp(UnaryOp):
     """Element-wise 1/x.
 
-    Mirrors ``torch.reciprocal`` int-input promotion: integral dtypes
-    (uint8 / int8 / int16 / int32 / int64) are cast to float32 before the
-    float kernel runs, so their entry carries ``compute_dtype`` and
-    ``output_dtype`` of float32 against an integral key. Floating inputs
-    (float16 / bfloat16 / float32) follow the standard same-dtype path.
+    Mirrors ``torch.reciprocal`` int-input promotion: the manifest declares the
+    output as ``promote_int_to_float(input)``, and ``ReciprocalFwdKernel.specialize``
+    names float32 as the compute type for an integral input. The semantic dtype
+    keys the specialization and drives roofline accounting — integer input bytes,
+    float32 output bytes — while the kernel is built for the type it computes in.
+    Floating inputs follow the standard same-dtype path.
     """
 
     _op_name = "reciprocal"
     kernel_cls = ReciprocalFwdKernel
-
-    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """An integer input computes in float32; the entry records both types.
-
-        The semantic dtype keys the entry and drives roofline accounting —
-        integer input bytes, float32 output bytes — while the kernel is built
-        for the compute dtype the float-only kernel requires.
-        """
-        impl, compute = self._selected_kernel_cls().specialize(dtype)
-        return KernelEntry(
-            kernel=self._build_kernel_instance(
-                N_total=self.N_total,
-                dtype=compute,
-                tune=self.tune,
-                impl=impl,
-            ),
-            compute_dtype=compute,
-            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
-        )
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """The kernel converts if its compute type differs from the input's."""
-        entry = self._entry(input.dtype)
-        flat = input.contiguous().reshape(-1)
-        return entry.kernel(flat).reshape(input.shape)
 
 
 class SignFwdOp(_IntIdentityUnaryOp):
@@ -152,38 +130,20 @@ class CeilFwdOp(_IntIdentityUnaryOp):
     kernel_cls = CeilFwdKernel
 
 
-class RoundFwdOp(_IntIdentityUnaryOp):
-    """Element-wise round(x) to ``decimals`` decimal places.
+class _RoundDecimalsCall:
+    """In-tree stand-in for ``round(x, decimals=k)`` with ``k != 0``.
 
-    The underlying kernel performs banker's round-to-nearest-integer, matching
-    ``torch.round`` for ``decimals=0``. Non-zero ``decimals`` is supported at
-    the op layer via the standard decomposition:
-    ``round(x, decimals=k) == round(x * 10**k) / 10**k``.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
+    ``round(x, decimals=k) == round(x * 10**k) / 10**k``, which the shipped
+    round-to-nearest-integer kernel does not do. Only the in-tree path builds one:
+    with a target selected, ``decimals`` is handed over as the manifest param it is
+    and the backend serves every value of it. Not a ``Kernel``, so ``autotune`` walks
+    past it — there is nothing to tune.
     """
 
-    _op_name = "round"
-    kernel_cls = RoundFwdKernel
+    def __init__(self, decimals: int):
+        self._decimals = decimals
 
-    def forward(
-        self,
-        input: torch.Tensor,
-        decimals: int = 0,
-    ) -> torch.Tensor:
-        if decimals == 0:
-            return super().forward(input)
-        # Non-zero decimals path still owes the same input contract as the
-        # ``decimals=0`` fast path (UnaryOp.forward). Run the shared validator
-        # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
-        # numel cannot silently bypass the checks.
-        self._validate_input(input)
-        # This path answers without a kernel, so it binds the call metadata
-        # itself; _entry never runs.
-        self._note_call(input.dtype)
+    def __call__(self, input: torch.Tensor) -> torch.Tensor:
         # Integer dtypes are no-ops regardless of decimals (rounding an int
         # produces the same int). Match the float-path identity contract.
         if input.dtype in _MANIFEST_INT_DTYPES:
@@ -191,11 +151,44 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
         # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
         # ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). The single down-cast
-        # at the end restores the op's contract dtype. The manifest's
-        # ``kernel_map`` continues to describe the round-to-nearest-integer
-        # kernel that handles the ``decimals=0`` fast path above.
-        # Metadata only; the cast target comes from the tensor.
-        return torch.round(input.float(), decimals=decimals).to(input.dtype)
+        # at the end restores the op's contract dtype.
+        return torch.round(input.float(), decimals=self._decimals).to(input.dtype)
+
+
+class RoundFwdOp(_IntIdentityUnaryOp):
+    """Element-wise round(x) to ``decimals`` decimal places.
+
+    The shipped kernel performs banker's round-to-nearest-integer, matching
+    ``torch.round`` for ``decimals=0``. ``decimals`` is a manifest param, so it is
+    fixed for the instance and handed to whichever kernel serves the op; in-tree, a
+    non-zero value selects ``_RoundDecimalsCall``.
+
+    Args:
+        decimals: Number of decimal places to round to (manifest
+            ``params.decimals``, default 0).
+        target: Which set of kernels serves this op.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+    """
+
+    _op_name = "round"
+    kernel_cls = RoundFwdKernel
+
+    def __init__(
+        self,
+        *,
+        decimals: int = 0,
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        self.decimals = int(decimals)
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+
+    def _build(self, dtype: torch.dtype, n_total: int):
+        if self.decimals != 0:
+            return _RoundDecimalsCall(self.decimals)
+        return super()._build(dtype, n_total)
 
 
 class TruncFwdOp(_IntIdentityUnaryOp):

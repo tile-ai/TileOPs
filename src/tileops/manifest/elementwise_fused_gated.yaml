@@ -19,7 +19,7 @@ SiluAndMulFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, 2 * N]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
@@ -62,7 +62,7 @@ GeluAndMulFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, 2 * N]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
@@ -103,7 +103,7 @@ GeluTanhAndMulFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, 2 * N]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:

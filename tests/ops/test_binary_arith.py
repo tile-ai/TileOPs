@@ -122,8 +122,7 @@ class AddSameShapeFixture(FixtureBase):
 @AddSameShapeFixture
 def test_add_same_shape(n_total: int, dtype: torch.dtype) -> None:
     test = AddSameShapeTest(n_total, dtype)
-    shape = (n_total,)
-    op = AddFwdOp(a_shape=shape, b_shape=shape)
+    op = AddFwdOp()
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -172,7 +171,7 @@ class AddBroadcastTest(AddBroadcastWorkload, TestBase):
 @AddBroadcastFixture
 def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
     test = AddBroadcastTest(a_shape, b_shape, dtype)
-    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape)
+    op = AddFwdOp()
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -292,7 +291,7 @@ def test_binary_arith_broadcast(
     dtype = torch.float16
     a = gen_a(a_shape, dtype)
     b = gen_b(b_shape, dtype)
-    op = op_cls(a_shape=a_shape, b_shape=b_shape)
+    op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -413,8 +412,7 @@ class BinaryArithOpFixture(FixtureBase):
 @BinaryArithOpFixture
 def test_binary_arith_op(op_cls, make_test, n_total: int, dtype: torch.dtype) -> None:
     test = make_test(n_total, dtype)
-    shape = (n_total,)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -443,8 +441,7 @@ class FloorDivideTest(PositivePairWorkload, TestBase):
 @FloorDivideFixture
 def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test = FloorDivideTest(n_total, dtype)
-    shape = (n_total,)
-    op = FloorDivideFwdOp(a_shape=shape, b_shape=shape)
+    op = FloorDivideFwdOp()
     # Floor divide in reduced precision can differ by 1; use atol=1.0
     atol = 1.0 if dtype != torch.float32 else 1e-5
     test.check(op, *test.gen_inputs(), atol=atol, rtol=0.0)
@@ -488,8 +485,7 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
         atol, rtol = 1.6e-2, 1.6e-2
     for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
         test = LerpTest(n_total, dtype, weight=weight)
-        shape = (n_total,)
-        op = LerpFwdOp(a_shape=shape, b_shape=shape, weight=weight)
+        op = LerpFwdOp(weight=weight)
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
@@ -522,8 +518,7 @@ def test_max_min_nan_propagation(op_cls, torch_ref, dtype: torch.dtype) -> None:
     nan = float("nan")
     a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
     b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
-    shape = (4,)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = torch_ref(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -570,8 +565,7 @@ def test_max_min_signed_zero(op_cls, torch_ref, dtype: torch.dtype) -> None:
     # All four orderings: (+0,-0), (-0,+0), (+0,+0), (-0,-0)
     a = torch.stack([pos_zero, neg_zero, pos_zero, neg_zero])
     b = torch.stack([neg_zero, pos_zero, pos_zero, neg_zero])
-    shape = (4,)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = torch_ref(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -626,8 +620,7 @@ def test_max_min_signed_zero_with_nan(
     # Mix of NaN pairs and non-NaN signed-zero pairs so both code paths execute
     a = torch.tensor(a_vals, dtype=dtype, device="cuda")
     b = torch.tensor(b_vals, dtype=dtype, device="cuda")
-    shape = (6,)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = torch_ref(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -713,9 +706,8 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
     """L4 edge case tests: fp32, 4K elements."""
     n = 4096
     dtype = torch.float32
-    shape = (n,)
     a, b = gen_fn(n, dtype)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -748,7 +740,7 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
     the manifest dtype gate now fires before the kernel's own check.
     """
     shape = (16,)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     a = torch.ones(shape, device="cuda", dtype=dtype)
     with pytest.raises(ValueError, match="has dtype|does not support dtype"):
         op(a, a)
@@ -757,7 +749,7 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
 @pytest.mark.smoke
 def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should fail fast instead of reaching backend lowering."""
-    op = SubFwdOp(a_shape=(16,), b_shape=(16,))
+    op = SubFwdOp()
     a = torch.randn(16, device="cuda", dtype=torch.float32)
     b = torch.randn(16, device="cuda", dtype=torch.float16)
     # The manifest declares ``other`` as ``same_as(input)``; the synthesized
@@ -775,9 +767,9 @@ def test_binary_kernel_has_autotune_configs() -> None:
 
     shape = (4096,)
     for op_cls in (MaximumFwdOp, MinimumFwdOp, AddFwdOp, SubFwdOp, MulFwdOp):
-        op = op_cls(a_shape=shape, b_shape=shape)
-        # The kernel is built per element type; ask for one.
-        kernel = op._entry(torch.float16).kernel
+        op = op_cls()
+        # The kernel is built per specialization; ask for one.
+        kernel = op._build(torch.float16, shape, shape)
         configs = kernel.autotune_configs
         assert configs is not None, f"{kernel.__class__.__name__} must define autotune_configs"
         assert len(configs) >= 3, (
@@ -793,8 +785,8 @@ def test_binary_kernel_has_autotune_configs() -> None:
 def test_binary_kernel_autotune_configs_distinct() -> None:
     """autotune_configs entries must be distinct (no duplicates)."""
     shape = (4096,)
-    op = AddFwdOp(a_shape=shape, b_shape=shape)
-    configs = op._entry(torch.float16).kernel.autotune_configs
+    op = AddFwdOp()
+    configs = op._build(torch.float16, shape, shape).autotune_configs
     config_tuples = [(c["threads"], c["num_per_thread"]) for c in configs]
     assert len(config_tuples) == len(set(config_tuples)), (
         f"Duplicate configs found: {config_tuples}"
@@ -830,7 +822,7 @@ def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.d
     shape = (n_total,)
     a = torch.randn(*shape, device="cuda", dtype=dtype)
     b = torch.randn(*shape, device="cuda", dtype=dtype)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = torch_ref(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -894,12 +886,12 @@ def test_binary_tune_true_does_not_crash() -> None:
     dtype = torch.float16
 
     for op_cls in (AddFwdOp, MaximumFwdOp, MinimumFwdOp):
-        op = op_cls(a_shape=shape, b_shape=shape, tune=True)
+        op = op_cls(tune=True)
         # The kernel — and so the autotuner — runs on first use, not at
         # construction, so the warning is caught around the entry build.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            op._entry(dtype)
+            op._build(dtype, shape, shape)
         # Should have produced a warning about serialization fallback
         fallback_warnings = [
             w
@@ -944,7 +936,7 @@ def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
     a = torch.randn(shape, device="cuda", dtype=dtype)
     b = torch.randn(shape, device="cuda", dtype=dtype)
     w = torch.rand(shape, device="cuda", dtype=dtype)
-    op = LerpTensorFwdOp(input=shape, end=shape, weight=shape)
+    op = LerpTensorFwdOp()
     out = op(a, b, w)
     ref = torch.lerp(a, b, w)
     torch.testing.assert_close(out, ref, **_lerp_tol(dtype))
@@ -959,11 +951,7 @@ def test_lerp_tensor_broadcast() -> None:
     a = torch.randn(a_shape, device="cuda", dtype=dtype)
     b = torch.randn(b_shape, device="cuda", dtype=dtype)
     w = torch.rand(w_shape, device="cuda", dtype=dtype)
-    op = LerpTensorFwdOp(
-        input=a_shape,
-        end=b_shape,
-        weight=w_shape,
-    )
+    op = LerpTensorFwdOp()
     out = op(a, b, w)
     ref = torch.lerp(a, b, w)
     torch.testing.assert_close(out, ref, atol=1e-6, rtol=1e-6)
@@ -978,7 +966,7 @@ def test_lerp_tensor_broadcast() -> None:
 def test_lerp_tensor_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
     """LerpTensorFwdOp must reject fp8 dtypes (manifest declares no fp8)."""
     shape = (4, 8)
-    op = LerpTensorFwdOp(input=shape, end=shape, weight=shape)
+    op = LerpTensorFwdOp()
     x = torch.zeros(shape, device="cuda").to(bad_dtype)
     with pytest.raises((ValueError, TypeError)):
         op(x, x, x)
@@ -989,11 +977,7 @@ def test_lerp_tensor_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 def test_lerp_tensor_dtype_mismatch_rejected() -> None:
     """forward() must reject operands that disagree with each other."""
     shape = (4, 8)
-    op = LerpTensorFwdOp(
-        input=shape,
-        end=shape,
-        weight=shape,
-    )
+    op = LerpTensorFwdOp()
     a = torch.randn(shape, device="cuda", dtype=torch.float32)
     b = torch.randn(shape, device="cuda", dtype=torch.float32)
     w_bad = torch.rand(shape, device="cuda", dtype=torch.float16)
@@ -1020,11 +1004,7 @@ def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None
     a = torch.randn(*shape, dtype=dtype, device="cuda") * 5.0
     b = torch.randn(*shape, dtype=dtype, device="cuda") * 2.0 + 1.0
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
-    op = DivFwdOp(
-        a_shape=shape,
-        b_shape=shape,
-        rounding_mode=rounding_mode,
-    )
+    op = DivFwdOp(rounding_mode=rounding_mode)
     with torch.no_grad():
         out = op(a, b)
     ref = torch.div(a.float(), b.float(), rounding_mode=rounding_mode).to(dtype)
@@ -1042,13 +1022,8 @@ def test_div_rounding_mode_dispatch() -> None:
     """DivFwdOp wires rounding_mode to the right kernel class and rejects unknown modes."""
     assert _DIV_KERNEL_BY_ROUNDING_MODE["trunc"] is DivTruncFwdKernel
     assert _DIV_KERNEL_BY_ROUNDING_MODE["floor"] is FloorDivideFwdKernel
-    shape = (16,)
     with pytest.raises(ValueError, match="rounding_mode"):
-        DivFwdOp(
-            a_shape=shape,
-            b_shape=shape,
-            rounding_mode="invalid",
-        )
+        DivFwdOp(rounding_mode="invalid")
 
 
 # Per-dtype int / bool correctness for arithmetic ops with manifest int union
@@ -1101,9 +1076,8 @@ class BinaryArithIntDtypeFixture(FixtureBase):
 def test_binary_arith_integer_dtype_add(dtype: torch.dtype) -> None:
     """AddFwdOp matches torch.add on every manifest-declared int dtype."""
     n = 4_096
-    shape = (n,)
     a, b = _gen_int_pair(n, dtype)
-    op = AddFwdOp(a_shape=shape, b_shape=shape)
+    op = AddFwdOp()
     ref = torch.add(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -1131,9 +1105,8 @@ class BinaryArithOpIntFixture(FixtureBase):
 def test_binary_arith_op_int32(op_cls, ref_fn) -> None:
     """Each arithmetic op matches its torch reference on int32 inputs."""
     n = 4_096
-    shape = (n,)
     a, b = _gen_int_pair(n, torch.int32)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -1178,10 +1151,9 @@ def test_binary_arith_bool_dtype(op_cls, ref_fn) -> None:
     SubFwdOp is excluded because torch.sub raises on bool inputs.
     """
     n = 4_096
-    shape = (n,)
     a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
     b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -1197,10 +1169,9 @@ def test_add_bool_is_or_not_xor() -> None:
     OR gives True). Random-bool tests cover both lanes statistically;
     this test pins the contract on a deterministic input.
     """
-    shape = (4,)
     a = torch.tensor([True, True, False, False], device="cuda")
     b = torch.tensor([True, False, True, False], device="cuda")
-    op = AddFwdOp(a_shape=shape, b_shape=shape)
+    op = AddFwdOp()
     expected = torch.tensor([True, True, True, False], device="cuda")
     with torch.no_grad():
         out = op(a, b)
@@ -1211,7 +1182,7 @@ def test_add_bool_is_or_not_xor() -> None:
 def test_sub_rejects_bool_dtype() -> None:
     """torch.sub raises on bool; SubFwdOp must reject it at construction time."""
     shape = (16,)
-    op = SubFwdOp(a_shape=shape, b_shape=shape)
+    op = SubFwdOp()
     x = torch.zeros(shape, device="cuda", dtype=torch.bool)
     with pytest.raises(ValueError, match="has dtype|does not support dtype"):
         op(x, x)
@@ -1244,7 +1215,7 @@ def test_full_union_binary_ops_reject_fp8_dtype(
     so the public ops must refuse fp8 at construction time.
     """
     shape = (16,)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     x = torch.zeros(shape, device="cuda").to(dtype)
     with pytest.raises(ValueError, match="has dtype|does not support dtype"):
         op(x, x)
@@ -1258,7 +1229,7 @@ def test_add_bool_broadcast() -> None:
     b_shape = (1, 16)
     a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
     b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
-    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape)
+    op = AddFwdOp()
     ref = torch.logical_or(a, b)
     with torch.no_grad():
         out = op(a, b)

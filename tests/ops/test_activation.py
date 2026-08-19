@@ -48,7 +48,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @ReluFixture
 def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
     test = ReluTest(n_total, dtype)
-    op = ReluFwdOp(N_total=n_total)
+    op = ReluFwdOp()
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -126,7 +126,7 @@ def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
 def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
     """Build test, instantiate op, and run check."""
     test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
-    op = op_cls(N_total=n_total, **op_kwargs)
+    op = op_cls(**op_kwargs)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
     elif dtype == torch.bfloat16:
@@ -322,7 +322,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
     ref = F.prelu(x.float(), weight.float()).to(dtype)
 
-    op = PreluFwdOp(shape=shape, num_channels=C)
+    op = PreluFwdOp()
     out = op(x, weight)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -340,30 +340,29 @@ def test_prelu_batch_dim() -> None:
 
     dtype = torch.float32
     shape = (2, 4, 8)
-    C = 4
     x = torch.randn(shape, device="cuda", dtype=dtype)
     weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
     ref = F.prelu(x, weight)
-    op = PreluFwdOp(shape=shape, num_channels=C)
+    op = PreluFwdOp()
     out = op(x, weight)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.smoke
-def test_prelu_rejects_mismatched_shape_same_numel() -> None:
-    """PReLU bakes channel position into the kernel via ``inner_size`` at
-    construction; a same-numel tensor with a different layout would silently
-    apply the wrong per-channel weight. Reject before dispatch.
+def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
+    """PReLU applies one weight per channel, so a weight of another length is wrong.
+
+    The channel axis is dim 1 for a rank >= 2 input: a length-4 weight against a
+    ``(2, 8, 4)`` input names 4 channels where the tensor has 8, and the per-channel
+    weight would be applied to the wrong elements.
     """
     from tileops.ops.elementwise import PreluFwdOp
 
     dtype = torch.float32
-    shape = (2, 4, 8)
-    C = 4
-    op = PreluFwdOp(shape=shape, num_channels=C)
+    op = PreluFwdOp()
     weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
     bad = torch.randn((2, 8, 4), device="cuda", dtype=dtype)
-    with pytest.raises(ValueError, match=r"Expected input.shape"):
+    with pytest.raises(ValueError, match=r"weight of length"):
         op(bad, weight)
 
 

@@ -10,6 +10,7 @@ PreluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -106,7 +107,7 @@ MaskedFillScalarFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      value: {type: Number, default: 0.0}
+      value: {type: Number, default: 0.0, kw_only: true}
     shape_rules:
       # Out-of-place masked_fill returns the bidirectional broadcast of
       # input and mask; out shape follows that broadcast (verified against
@@ -359,7 +360,7 @@ LerpFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      weight: {type: float, default: 0.5}
+      weight: {type: float, default: 0.5, kw_only: true}
     shape_rules:
       - "output.shape == broadcast_shapes(input.shape, end.shape)"
 

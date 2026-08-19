@@ -109,7 +109,7 @@ def test_clamp_tensor_bench(
     t_min = bounds.pop(0) if min_shape is not None else None
     t_max = bounds.pop(0) if max_shape is not None else None
 
-    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape)
+    op = ClampFwdOp()
     bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
 
     def baseline_fn(x, t_min, t_max):
@@ -271,10 +271,7 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
     bm = Fp8UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=shape, **extra_kwargs)
-    else:
-        op = op_cls(N_total=n_total, **extra_kwargs)
+    op = op_cls(**extra_kwargs)
 
     # Baseline: PyTorch fp16 compute then cast back to fp8
     def baseline(x):
@@ -346,7 +343,7 @@ def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> 
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0)
+        op = MaskedFillScalarFwdOp(value=-100.0)
 
         def baseline(x, mask):
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)

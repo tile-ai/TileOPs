@@ -27,6 +27,23 @@ Op                          ← L1: thin base, shared by all ops
 | Fixed-rank     | `__init__` (all dims provided)                              | `_infer_output_shapes` runs once at init. |
 | Arbitrary-rank | `__init__` for `static_dims`; `forward` for everything else | `_infer_output_shapes` runs per shape.    |
 
+**Shape is not a constructor parameter when the tensors carry it.** Only what the
+manifest declares belongs in `__init__` — `shape` dim names, `static_dims` keys,
+`params` keys. A dimension the manifest declares nowhere is not construction
+information: it arrives with the call, and passing it twice lets an instance disagree
+with the tensors it is handed. What the kernel is compiled for goes in the memory key
+instead, so a second shape builds a second kernel rather than reusing the first.
+`_infer_output_shapes` therefore reads only its shape arguments — never a shape
+recorded by an earlier call, which the registered fake would read before the write
+that produced it (see [Compile Dispatch Boundary](#compile-dispatch-boundary)).
+
+The elementwise family is the worked example: `UnaryOp`, `BinaryOp` and
+`FusedGatedOp` construct from manifest params alone, learn every dimension in
+`_eager_forward`, and hand their kernel the manifest-declared shapes. Flattening and
+broadcasting happen inside the kernel, so both sides of the boundary speak the shapes
+the manifest declares and an external target sees the same thing the in-tree kernel
+does.
+
 **Dtype is not a constructor parameter when the inputs determine it.** An op reads it from the input tensors in `forward()`: a caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
 
 An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
@@ -325,6 +342,10 @@ satisfy the cold-call contract.
 1. `forward` becomes a single dispatch call:
    `return _family_fwd(input, self._instance_key)`; the previous body is
    renamed `_eager_forward` unchanged.
+1. The op publishes the operator names it registered through
+   `compile_op_names`, so a test can assert the traced graph holds nothing else
+   (`tests/compile_contract.py`'s `assert_op_owns_graph_nodes`). Two registrations —
+   a conditional in-place write — publish two names.
 
 **Constraints.**
 
@@ -341,6 +362,10 @@ satisfy the cold-call contract.
 - An op that builds no kernel in `forward` — every kernel already in its
   cache — does not need the boundary; the invariant still applies to its
   `forward`.
+- Validation and normalization belong on the untraced side, in
+  `_eager_forward`: they run for every target either way, and keeping them out of
+  the traced frame leaves `forward` a single call. An op with no tensor input has no
+  device to detect and no graph node to own, so it registers no boundary.
 
 ## Family-Base Refactoring
 

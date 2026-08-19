@@ -356,7 +356,7 @@ def test_binary_arith_bench(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
 
     bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
 
@@ -402,7 +402,7 @@ def test_comparison_bench(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _CMP_OPS[op_name](a_shape=shape, b_shape=shape)
+    op = _CMP_OPS[op_name]()
 
     bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
 
@@ -464,7 +464,7 @@ def test_logical_bench(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     functors = {"tileops": op}
 
     # Baseline uses bool tensors
@@ -532,7 +532,7 @@ def test_bitwise_bench(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
 
     bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
 
@@ -611,7 +611,7 @@ def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str, par
 @SiluAndMulBenchFixture
 def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
-    op = SiluAndMulFwdOp(M=M, N=N)
+    op = SiluAndMulFwdOp()
     bm = ManifestBenchmark(_SILU_AND_MUL_OP, op, test)
     _profile_fused_gated(bm, op, test, "silu_and_mul", {"M": M, "N": N, "dtype": dtype})
 
@@ -619,7 +619,7 @@ def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
 @GeluAndMulBenchFixture
 def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
-    op = GeluAndMulFwdOp(M=M, N=N)
+    op = GeluAndMulFwdOp()
     bm = ManifestBenchmark(_GELU_AND_MUL_OP, op, test)
     _profile_fused_gated(bm, op, test, "gelu_and_mul", {"M": M, "N": N, "dtype": dtype})
 
@@ -627,7 +627,7 @@ def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
 @GeluTanhAndMulBenchFixture
 def test_gelu_tanh_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
-    op = GeluTanhAndMulFwdOp(M=M, N=N)
+    op = GeluTanhAndMulFwdOp()
     bm = ManifestBenchmark(_GELU_TANH_AND_MUL_OP, op, test)
     _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul", {"M": M, "N": N, "dtype": dtype})
 
@@ -836,7 +836,7 @@ def test_broadcast_bench(
     bm = BroadcastBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(a_shape=a_shape, b_shape=b_shape)
+    op = op_cls()
 
     bm.compare(
         {"tileops": op, "torch": baseline_fn},

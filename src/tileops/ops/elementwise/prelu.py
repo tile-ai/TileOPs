@@ -5,24 +5,27 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import KernelEntry, _PerDtypeKernels, resolve_output_dtype
+from ._base import _PerDtypeKernels, _require_one_device
 
 
 class PreluFwdOp(_PerDtypeKernels, Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
     Channel dimension follows PyTorch convention: dimension 1 for inputs
-    with ndim >= 2, dimension 0 for 1-D inputs.
+    with ndim >= 2, dimension 0 for 1-D inputs. Both the shape and the channel
+    count arrive with the tensors.
 
     Args:
-        shape: Shape of the input tensor (must have a channel dimension).
-        num_channels: Number of channels (weight length).
+        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+            the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+        tune: Whether to autotune.
     """
 
     _op_name = "prelu"
@@ -30,82 +33,94 @@ class PreluFwdOp(_PerDtypeKernels, Op):
 
     def __init__(
         self,
-        shape: tuple,
-        num_channels: int,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
-        self.shape = shape
-        self.num_channels = num_channels
+        self.target = target
+        self.tune = tune
         # Manifest input bindings for the synthesized eval_roofline
-        # (docs/design/roofline.md §4.4.3): each signature.inputs entry
-        # is exposed as self.<name>_shape so the codegen resolver can
-        # reach it without family-specific aliases.
-        self.input_shape = tuple(shape)
-        self.weight_shape = (num_channels,)
-        N_total = prod(shape)
-        self.N_total = N_total
-        # PyTorch PReLU: channel dim is 1 for ndim>=2, else 0
-        inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
-        self.inner_size = inner_size
+        # (docs/design/roofline.md §4.4.3): each signature.inputs entry is exposed as
+        # self.<name>_shape so the codegen resolver can reach it without
+        # family-specific aliases. Both are bound by the first forward.
+        self.input_shape: Optional[tuple] = None
+        self.weight_shape: Optional[tuple] = None
         self.dispatch_kernel(kernel_map)
 
-    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        kernel = impl(
-            self.N_total,
-            self.num_channels,
-            self.inner_size,
-            ctor_dtype,
-        )
+    @staticmethod
+    def _inner_size(shape: tuple) -> int:
+        """Elements per channel per row: PyTorch puts the channel at dim 1."""
+        return (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
 
-        return KernelEntry(
-            kernel=kernel,
-            compute_dtype=ctor_dtype,
-            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
-        )
+    def _build(self, dtype: torch.dtype, n_total: int, num_channels: int, inner_size: int):
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        return impl(n_total, num_channels, inner_size, ctor_dtype)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"prelu": PreluFwdKernel}
+
+    def _infer_output_shapes(self, input_shape: tuple, weight_shape: tuple) -> Dict[str, tuple]:
+        """Manifest ``shape_rules``: ``output.shape == input.shape``."""
+        return {"output": tuple(input_shape)}
+
+    @property
+    def num_channels(self) -> int:
+        """Weight length of the most recent forward."""
+        if self.weight_shape is None:
+            raise RuntimeError(
+                "PreluFwdOp needs a prior forward() call: the channel count arrives with the weight"
+            )
+        return prod(self.weight_shape)
+
+    @property
+    def N_total(self) -> int:
+        """Element count of the most recent forward."""
+        if self.input_shape is None:
+            raise RuntimeError(
+                "PreluFwdOp needs a prior forward() call: the element count arrives with the tensor"
+            )
+        return prod(self.input_shape)
 
     def _eager_forward(
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        orig_shape = input.shape
-        return (
-            self._entry(input.dtype)
-            .kernel(
-                input.contiguous().reshape(-1),
-                weight.contiguous().reshape(-1),
+        _require_one_device("PreluFwdOp", input=input, weight=weight)
+        self._validate_dtypes(input, weight)
+        # ``weight`` is part of the manifest contract: one entry per channel of the
+        # axis PyTorch designates, so its length is what names the channel count.
+        if weight.dtype != input.dtype:
+            raise ValueError(f"Expected weight.dtype {input.dtype}, got {weight.dtype}")
+        # Mirrors the manifest shape rule: a 0-dim or length-1 weight is the shared
+        # slope, and a longer one has to match the channel axis PyTorch designates.
+        if weight.ndim > 1:
+            raise ValueError(f"Expected weight to be 0-D or 1-D, got {weight.ndim}D")
+        shared = weight.ndim == 0 or weight.shape[0] == 1
+        if not shared and (input.ndim < 2 or weight.shape[0] != input.shape[1]):
+            raise ValueError(
+                f"Expected weight of length 1 or input.shape[1], got "
+                f"{weight.shape[0]} for input shape {tuple(input.shape)}"
             )
-            .reshape(orig_shape)
+        input = input.contiguous()
+        weight = weight.contiguous()
+        shapes = dict(input_shape=tuple(input.shape), weight_shape=tuple(weight.shape))
+        kernel = self._kernel(
+            (input, weight),
+            input.dtype,
+            prod(shapes["input_shape"]),
+            prod(shapes["weight_shape"]),
+            self._inner_size(shapes["input_shape"]),
         )
+        result = kernel(input, weight)
+        self._note_call(input.dtype, **shapes)
+        return result
 
     def forward(
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
-        self._validate_dtypes(input, weight)
-        if tuple(input.shape) != tuple(self.shape):
-            raise ValueError(f"Expected input.shape {tuple(self.shape)}, got {tuple(input.shape)}")
-        # ``weight`` is part of the manifest contract; validate device,
-        # dtype, and length so a malformed weight fails fast at the op
-        # boundary instead of corrupting the kernel.
-        if not weight.is_cuda:
-            raise ValueError("Weight must be a CUDA tensor")
-        if weight.dtype != input.dtype:
-            raise ValueError(f"Expected weight.dtype {input.dtype}, got {weight.dtype}")
-        if weight.numel() != self.num_channels:
-            raise ValueError(
-                f"Expected weight to have {self.num_channels} elements, got {weight.numel()}"
-            )
-        wrapped = type(self)._wrapped
-        if wrapped is not None:
-            return wrapped(input, weight, self._instance_key)
-        return self._eager_forward(input, weight)
+        return type(self)._wrapped(input, weight, self._instance_key)
