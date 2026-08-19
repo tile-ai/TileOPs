@@ -329,17 +329,11 @@ def test_gqa_fwd_bench(
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seq_len,
-        dim,
-        causal,
-        sm_scale,
-        softcap,
-        window_size_left,
-        window_size_right,
-        seq_len_kv=seq_len_kv,
+        is_causal=causal,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
         tune=tune,
     )
     bm = ManifestBenchmark(_GQA_FWD_OP, op, test)

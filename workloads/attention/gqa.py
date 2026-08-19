@@ -82,9 +82,7 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device="cuda"
         )
 
-        fwd_op = GroupedQueryAttentionPrefillDenseFwdOp(
-            self.batch, self.heads, self.heads_kv, self.seq_len, self.dim, self.is_causal
-        )
+        fwd_op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=self.is_causal)
         with torch.no_grad():
             o = fwd_op(q, k, v)
             lse = _compute_gqa_square_lse(

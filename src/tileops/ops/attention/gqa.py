@@ -245,72 +245,57 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len: int,
-        dim: int,
+        *,
         is_causal: bool = True,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
         window_size_left: int = -1,
         window_size_right: int = -1,
         dtype: Optional[torch.dtype] = None,
-        seq_len_kv: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
         pos_encoding_mode: str = "none",
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
         rope_base: float = 10000.0,
-        *,
         target: Target = None,
     ) -> None:
-        # Nothing downstream validates these: this op builds its kernel itself,
-        # so a zero heads_kv would surface as ZeroDivisionError inside a region.
-        _validate_gqa_dims(heads, heads_kv, dim)
-        seq_len_kv = seq_len if seq_len_kv is None else seq_len_kv
-        _validate_positive(batch=batch, seq_len=seq_len, seq_len_kv=seq_len_kv)
-        if is_causal and seq_len > seq_len_kv:
-            raise ValueError("causal dense prefill requires seq_len <= seq_len_kv")
-        if pos_encoding_mode == "rope" and seq_len > seq_len_kv:
-            raise ValueError(
-                "fused RoPE uses bottom-right Q positions and requires seq_len <= seq_len_kv"
-            )
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len = seq_len
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
+        # 验证配置参数
+        if pos_encoding_mode not in ("none", "rope"):
+            raise ValueError(f"pos_encoding_mode must be 'none' or 'rope', got {pos_encoding_mode}")
+
+        # 保存配置参数（不保存 shape）
         self.is_causal = is_causal
-        self.sm_scale = _attention_scale(dim, sm_scale)
+        self.sm_scale = sm_scale  # 延迟到 forward 时根据 dim 计算
         self.softcap = _score_softcap(softcap)
+
         if window_size_left < -1:
             raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
         if window_size_right < -1:
             raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
+
         self.pos_encoding_mode = pos_encoding_mode
         self.fuse_rope = pos_encoding_mode == "rope"
-        self.rotary_dim = _validate_rope_config(
-            dim, pos_encoding_mode, rotary_dim, rope_layout, rope_base
-        )
+        self.rotary_dim = rotary_dim  # 延迟到 forward 时验证
         self.rope_layout = rope_layout
         self.rope_base = rope_base
+
         if dtype is not None:
             _validate_attention_dtype(dtype)
         self.dtype = dtype
         self.output_dtype = dtype
         self.input_dtype: Optional[torch.dtype] = None
-        self.max_position: Optional[int] = seq_len_kv if self.fuse_rope else None
+
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
+
+        # 缓存：基于实际输入的 shape 和 device
         self._rope_table_cache: Dict[
-            tuple[torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]
-        ] = {}
+            tuple[int, torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]
+        ] = {}  # key: (seq_len_kv, device, dtype)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -420,8 +405,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
     def _rope_tables(
         self, device: torch.device, dtype: torch.dtype
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return constructor-defined RoPE operands for the in-tree kernel ABI."""
-        key = (device, dtype)
+        """Return RoPE operands for the in-tree kernel ABI, cached by seq_len_kv."""
+        # seq_len_kv is set in _eager_forward before this is called
+        key = (self.seq_len_kv, device, dtype)
         cached = self._rope_table_cache.get(key)
         if cached is None:
             if self.fuse_rope:
@@ -501,16 +487,57 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run fixed-shape GQA prefill."""
-        expected_q = (self.batch, self.seq_len, self.heads, self.dim)
-        expected_kv = (self.batch, self.seq_len_kv, self.heads_kv, self.dim)
-        if tuple(q.shape) != expected_q:
-            raise ValueError(f"q must have shape {expected_q}, got {tuple(q.shape)}")
-        if tuple(k.shape) != expected_kv:
-            raise ValueError(f"k must have shape {expected_kv}, got {tuple(k.shape)}")
-        if tuple(v.shape) != expected_kv:
-            raise ValueError(f"v must have shape {expected_kv}, got {tuple(v.shape)}")
+        """Run GQA prefill with shape inference."""
+        # 从输入推断 shape
+        B, S_q, H, D = q.shape
+        B_k, S_kv, H_kv, D_k = k.shape
+
+        # 验证 shape 一致性
+        if k.shape != v.shape:
+            raise ValueError(f"k and v must have the same shape, got k={k.shape}, v={v.shape}")
+        if B_k != B or D_k != D:
+            raise ValueError(
+                f"q and k must have matching batch and dim, got q=({B}, {S_q}, {H}, {D}), k=({B_k}, {S_kv}, {H_kv}, {D_k})"
+            )
+
+        # 验证 GQA 维度约束
+        _validate_gqa_dims(H, H_kv, D)
+
+        # 验证 causal 约束
+        if self.is_causal and S_q > S_kv:
+            raise ValueError(
+                f"causal dense prefill requires seq_len <= seq_len_kv, got {S_q} > {S_kv}"
+            )
+
+        # 验证 RoPE 约束
+        if self.fuse_rope and S_q > S_kv:
+            raise ValueError(
+                f"fused RoPE uses bottom-right Q positions and requires seq_len <= seq_len_kv, got {S_q} > {S_kv}"
+            )
+
+        # 保存 shape 信息（用于 eval_roofline 和其他方法）
+        self.batch = B
+        self.heads = H
+        self.heads_kv = H_kv
+        self.seq_len = S_q
+        self.seq_len_kv = S_kv
+        self.dim = D
+        self.max_position = S_kv if self.fuse_rope else None
+
+        # 计算 sm_scale（如果未指定）
+        if self.sm_scale is None:
+            self.sm_scale = _attention_scale(D, None)
+
+        # 验证和初始化 RoPE（如果启用）
+        if self.fuse_rope:
+            self.rotary_dim = _validate_rope_config(
+                D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, self.rope_base
+            )
+
+        # 验证 dtype
         self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale)
+
+        # 验证 scales
         has_scales = tuple(scale is not None for scale in (q_scale, k_scale, v_scale))
         if any(has_scales) and not all(has_scales):
             raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
@@ -519,8 +546,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
         if not is_fp8 and all(has_scales):
             raise ValueError("q_scale, k_scale, and v_scale are only valid for FP8 input")
+
         _validate_same_device(q, k=k, v=v)
-        scales = _prepare_group_scales(q, self.batch, self.heads_kv, q_scale, k_scale, v_scale)
+        scales = _prepare_group_scales(q, B, H_kv, q_scale, k_scale, v_scale)
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()

@@ -139,12 +139,6 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
         pytest.skip("requires Hopper FP8 WGMMA")
 
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=case.batch,
-        heads=case.heads,
-        heads_kv=case.heads_kv,
-        seq_len=case.seq_len_q,
-        seq_len_kv=case.seq_len_kv,
-        dim=case.dim,
         is_causal=case.is_causal,
         sm_scale=case.sm_scale,
         softcap=case.softcap,

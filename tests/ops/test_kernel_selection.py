@@ -94,7 +94,12 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     """The BSHD wrapper reaches the same dense candidate the packed op does."""
     if not is_h200():
         pytest.skip("the recorded dispatch table is the H200 one")
-    op = GroupedQueryAttentionPrefillDenseFwdOp(4, 32, 8, 512, 128, True)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=True)
+    # 需要先调用 forward 来设置 shape
+    q = torch.randn(4, 512, 32, 128, device="cuda", dtype=torch.float16)
+    k = torch.randn(4, 512, 8, 128, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    op(q, k, v)
     call = op.attention_call(torch.float16)
     assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
 
@@ -146,6 +151,17 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
 )
 def test_bshd_tail_requests_respect_specialization_safety(ctor: dict, expected: str) -> None:
     op = GroupedQueryAttentionPrefillDenseFwdOp(**ctor)
+    # 需要先调用 forward 来设置 shape
+    batch = ctor.get("batch", 1)
+    heads = ctor.get("heads", 8)
+    heads_kv = ctor.get("heads_kv", 2)
+    seq_len_q = ctor.get("seq_len", 128)
+    seq_len_kv = ctor.get("seq_len_kv", seq_len_q)
+    dim = ctor.get("dim", 128)
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    op(q, k, v)
     call = op.attention_call(torch.float16)
     assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == expected
 

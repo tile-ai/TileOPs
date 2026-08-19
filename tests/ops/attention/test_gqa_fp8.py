@@ -29,11 +29,6 @@ def _run_canonical_fp8_prefill(
     v_scale: torch.Tensor,
 ) -> torch.Tensor:
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        seq_len=seq_len,
-        dim=dim,
         dtype=out_dtype,
         is_causal=False,
     )
@@ -139,11 +134,6 @@ def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
     k_fp8, k_scale = quantize_kv_fa3_descale(k)
     v_fp8, v_scale = quantize_kv_fa3_descale(v)
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        seq_len=seq_len,
-        dim=dim,
         dtype=torch.float16,
         is_causal=False,
     )
@@ -232,12 +222,6 @@ def test_gqa_prefill_fp8_native_general_semantic_matrix(
     k_fp8, k_scale = quantize_kv_fa3_descale(k)
     v_fp8, v_scale = quantize_kv_fa3_descale(v)
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        seq_len=seq_len_q,
-        seq_len_kv=seq_len_kv,
-        dim=dim,
         dtype=out_dtype,
         is_causal=is_causal,
         window_size_left=window_size_left,
@@ -300,12 +284,6 @@ def test_gqa_fp8_general_empty_window_rows_are_zero(sm_scale: float) -> None:
     )
     scales = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        seq_len=seq_len_q,
-        seq_len_kv=seq_len_kv,
-        dim=dim,
         is_causal=False,
         window_size_right=0,
         sm_scale=sm_scale,

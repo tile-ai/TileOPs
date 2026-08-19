@@ -12,11 +12,6 @@ pytestmark = pytest.mark.smoke
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
 def test_gqa_dense_roofline_requires_runtime_inputs(pos_encoding_mode: str) -> None:
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=1,
-        heads=8,
-        heads_kv=2,
-        seq_len=64,
-        dim=128,
         dtype=torch.float16,
         pos_encoding_mode=pos_encoding_mode,
     )

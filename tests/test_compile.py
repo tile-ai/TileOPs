@@ -58,7 +58,7 @@ def test_dense_gqa_traced_graph_holds_only_the_op_node():
     """Changing the Dense target or specialization cannot change graph identity."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch, heads, heads_kv, seq_len, dim, is_causal=False
+        is_causal=False
     )
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
@@ -73,7 +73,7 @@ def test_dense_gqa_non_contiguous_cold_fullgraph_matches_eager():
     """The fake promises manifest shape/dtype while eager normalization fixes strides."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch, heads, heads_kv, seq_len, dim, is_causal=False
+        is_causal=False
     )
     q = torch.randn(
         batch, seq_len, heads, dim * 2, device="cuda", dtype=torch.float16

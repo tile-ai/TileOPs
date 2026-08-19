@@ -101,11 +101,6 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
         "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
     )
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=2,
-        heads=4,
-        heads_kv=2,
-        seq_len=3,
-        dim=8,
         dtype=torch.float16,
         target="gqa_fake",
     )
@@ -157,11 +152,6 @@ def test_dense_gqa_target_gets_rope_as_constructor_configuration():
         "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
     )
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=1,
-        heads=4,
-        heads_kv=2,
-        seq_len=3,
-        dim=8,
         pos_encoding_mode="rope",
         rotary_dim=4,
         rope_layout="interleaved",
@@ -207,11 +197,6 @@ def test_dense_gqa_target_preserves_present_optional_inputs():
         "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
     )
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=1,
-        heads=8,
-        heads_kv=2,
-        seq_len=3,
-        dim=128,
         is_causal=False,
         dtype=torch.float16,
         target="gqa_fake",
@@ -245,11 +230,6 @@ def test_dense_gqa_rejects_fp8_without_output_dtype_before_external_builder():
         "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
     )
     op = GroupedQueryAttentionPrefillDenseFwdOp(
-        batch=1,
-        heads=8,
-        heads_kv=2,
-        seq_len=3,
-        dim=128,
         target="gqa_fake",
     )
     q = torch.empty((1, 3, 8, 128), dtype=torch.float8_e4m3fn)
