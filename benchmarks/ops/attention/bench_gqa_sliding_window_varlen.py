@@ -22,6 +22,8 @@ _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = manifest_params(
     gqa_sliding_window_varlen_args,
     tune=False,
 )
+
+
 def _torch_sliding_window_varlen_fwd(test):
     """Torch SDPA forward baseline: unpack varlen to padded batch, single SDPA call."""
 

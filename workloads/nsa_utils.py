@@ -20,11 +20,13 @@ def prepare_token_indices(offsets: torch.LongTensor) -> torch.LongTensor:
 
 
 def prepare_chunk_offsets(offsets: torch.Tensor, chunk_size: int) -> torch.LongTensor:
-    return torch.cat([offsets.new_tensor([0]),
-                      tilelang.cdiv(prepare_lens(offsets), chunk_size)]).cumsum(-1)
+    return torch.cat(
+        [offsets.new_tensor([0]), tilelang.cdiv(prepare_lens(offsets), chunk_size)]
+    ).cumsum(-1)
 
 
 def prepare_chunk_indices(offsets: torch.LongTensor, chunk_size: int) -> torch.LongTensor:
     indices = torch.cat(
-        [torch.arange(n) for n in tilelang.cdiv(prepare_lens(offsets), chunk_size).tolist()])
+        [torch.arange(n) for n in tilelang.cdiv(prepare_lens(offsets), chunk_size).tolist()]
+    )
     return torch.stack([prepare_sequence_ids(indices), indices], 1).to(offsets)

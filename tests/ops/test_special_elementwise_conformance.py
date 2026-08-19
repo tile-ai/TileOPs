@@ -28,14 +28,16 @@ import torch
 def test_where_broadcast_parity(cond_shape, inp_shape, other_shape, dtype):
     from tileops.ops.elementwise import WhereFwdOp
 
-    cond = torch.randint(0, 2, cond_shape, device="cuda").bool() if cond_shape else \
-        torch.tensor(True, device="cuda")
+    cond = (
+        torch.randint(0, 2, cond_shape, device="cuda").bool()
+        if cond_shape
+        else torch.tensor(True, device="cuda")
+    )
     inp = torch.randn(inp_shape, device="cuda", dtype=dtype)
     other = torch.randn(other_shape, device="cuda", dtype=dtype)
     ref = torch.where(cond, inp, other)
 
-    op = WhereFwdOp(condition=tuple(cond.shape), input=tuple(inp.shape),
-                    other=tuple(other.shape))
+    op = WhereFwdOp(condition=tuple(cond.shape), input=tuple(inp.shape), other=tuple(other.shape))
     out = op(cond, inp, other)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
@@ -43,6 +45,7 @@ def test_where_broadcast_parity(cond_shape, inp_shape, other_shape, dtype):
 @pytest.mark.smoke
 def test_where_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import WhereFwdOp
+
     init_params = list(inspect.signature(WhereFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(WhereFwdOp.forward).parameters.keys())
     # __init__: self, condition, input, other, ... (no dtype: PyTorch has none)
@@ -63,9 +66,7 @@ def test_where_rejects_non_bool_condition(bad_dtype):
     cond = torch.zeros(shape, device="cuda", dtype=bad_dtype)
     inp = torch.randn(shape, device="cuda", dtype=torch.float16)
     other = torch.randn(shape, device="cuda", dtype=torch.float16)
-    op = WhereFwdOp(
-        condition=shape, input=shape, other=shape
-    )
+    op = WhereFwdOp(condition=shape, input=shape, other=shape)
     with pytest.raises(ValueError, match="condition.dtype torch.bool"):
         op(cond, inp, other)
 
@@ -92,8 +93,7 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
     # mismatch but we want a meaningful ref.
     ref = torch.clamp(inp, mn, mx)
 
-    op = ClampFwdOp(input=tuple(inp.shape), min=tuple(mn.shape),
-                    max=tuple(mx.shape))
+    op = ClampFwdOp(input=tuple(inp.shape), min=tuple(mn.shape), max=tuple(mx.shape))
     out = op(inp, mn, mx)
     if dtype == torch.float16:
         atol, rtol = 1e-3, 1e-3
@@ -107,6 +107,7 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
 @pytest.mark.smoke
 def test_clamp_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import ClampFwdOp
+
     init_params = list(inspect.signature(ClampFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(ClampFwdOp.forward).parameters.keys())
     assert init_params[1:4] == ["input", "min", "max"], init_params
@@ -146,6 +147,7 @@ def test_clamp_max_only_none_routing():
 def test_clamp_both_none_rejected():
     """ClampFwdOp must reject min=None and max=None (no-op clamp is invalid)."""
     from tileops.ops.elementwise import ClampFwdOp
+
     with pytest.raises(ValueError, match="at least one of"):
         ClampFwdOp(input=(4,), min=None, max=None)
 
@@ -158,6 +160,7 @@ def test_clamp_scalar_both_none_rejected():
     RuntimeError("At least one of min or max must not be None").
     """
     from tileops.ops.elementwise import ClampScalarFwdOp
+
     with pytest.raises(ValueError, match="at least one of"):
         ClampScalarFwdOp(input=(4,), min=None, max=None)
 
@@ -213,6 +216,7 @@ def test_clamp_scalar_param_names(min_val, max_val):
 @pytest.mark.smoke
 def test_clamp_scalar_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import ClampScalarFwdOp
+
     init_params = list(inspect.signature(ClampScalarFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(ClampScalarFwdOp.forward).parameters.keys())
     # __init__ exposes manifest params (min, max) and the input
@@ -322,10 +326,16 @@ def test_clamp_max_only_nan_propagation(dtype):
 
 
 _MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES = [
-    torch.float16, torch.bfloat16, torch.float32,
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
 ]
 _MASKED_FILL_TENSOR_VALUE_INT_DTYPES = [
-    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
 ]
 
 
@@ -353,8 +363,7 @@ def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
 )
 @pytest.mark.parametrize(
     "dtype",
-    [torch.bool, *_MASKED_FILL_TENSOR_VALUE_INT_DTYPES,
-     *_MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES],
+    [torch.bool, *_MASKED_FILL_TENSOR_VALUE_INT_DTYPES, *_MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES],
 )
 def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
     from tileops.ops.elementwise import MaskedFillFwdOp
@@ -364,8 +373,7 @@ def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
     out_shape = torch.broadcast_shapes(input_shape, mask_shape)
     ref = inp.expand(out_shape).clone().masked_fill(mask.expand(out_shape), value.item())
 
-    op = MaskedFillFwdOp(input=tuple(inp.shape), mask=tuple(mask.shape),
-                        value=tuple(value.shape))
+    op = MaskedFillFwdOp(input=tuple(inp.shape), mask=tuple(mask.shape), value=tuple(value.shape))
     out = op(inp, mask, value)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -381,6 +389,7 @@ def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
 @pytest.mark.smoke
 def test_masked_fill_tensor_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import MaskedFillFwdOp
+
     init_params = list(inspect.signature(MaskedFillFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(MaskedFillFwdOp.forward).parameters.keys())
     assert init_params[1:4] == ["input", "mask", "value"], init_params
@@ -403,6 +412,7 @@ def test_masked_fill_scalar_param_names():
 @pytest.mark.smoke
 def test_masked_fill_scalar_init_signature_pytorch_aligned():
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
     init_params = list(inspect.signature(MaskedFillScalarFwdOp.__init__).parameters.keys())
     fwd_params = list(inspect.signature(MaskedFillScalarFwdOp.forward).parameters.keys())
     assert "input" in init_params
@@ -448,7 +458,10 @@ def test_l1_signature_conformance(op_name, expected_inputs, expected_params):
     manifest_inputs = {n: {} for n in expected_inputs}
     manifest_params = {n: {} for n in expected_params}
     errors = check_l1_signature(
-        op_name, manifest_inputs, manifest_params, forward_params,
+        op_name,
+        manifest_inputs,
+        manifest_params,
+        forward_params,
         init_params=init_params,
     )
     assert errors == [], f"{op_name}: {errors}"

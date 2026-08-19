@@ -4,9 +4,9 @@ from workloads.workload_base import WorkloadBase
 
 
 class FP8QuantWorkload(WorkloadBase):
-
-    def __init__(self, batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
-                 in_dtype: torch.dtype):
+    def __init__(
+        self, batch: int, seq_len_kv: int, kv_group: int, index_dim: int, in_dtype: torch.dtype
+    ):
         self.batch = batch
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
@@ -20,7 +20,8 @@ class FP8QuantWorkload(WorkloadBase):
             self.kv_group,
             self.index_dim,
             dtype=self.in_dtype,
-            device="cuda")
+            device="cuda",
+        )
         return (input_tensor,)
 
     def ref_program(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

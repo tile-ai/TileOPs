@@ -28,13 +28,19 @@ class _ArgreduceOpBase(_ReduceOpBase):
             self._kernel_key,
             key=(M, N, dtype, inner_stride),
             build=lambda: self.kernel_map[self._kernel_key](
-                M, N, self._op_kind, dtype, inner_stride=inner_stride,
-                tune=self.tune, **self._build_kernel_kwargs(),
+                M,
+                N,
+                self._op_kind,
+                dtype,
+                inner_stride=inner_stride,
+                tune=self.tune,
+                **self._build_kernel_kwargs(),
             ),
         )
 
     def _prepare_input(
-        self, x: torch.Tensor,
+        self,
+        x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Size, Union[int, list], object]:
         # Binds self.dtype, which the strided path below never reaches.
         self._validate_input_tensor(x)
@@ -43,7 +49,7 @@ class _ArgreduceOpBase(_ReduceOpBase):
         if self.dim < -x.ndim or self.dim >= x.ndim:
             return super()._prepare_input(x)  # the base raises with the right message
         dim = self.dim % x.ndim
-        inner_stride = prod(x.shape[dim + 1:])
+        inner_stride = prod(x.shape[dim + 1 :])
         if inner_stride == 1:
             return super()._prepare_input(x)
 
@@ -89,8 +95,10 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
         tune: bool = False,
     ):
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
 
     def _validate_dim(self) -> None:
@@ -106,8 +114,6 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
             f"ArgmaxFwdOp only supports scalar dim (int) or None, "
             f"got {type(self.dim).__name__}: {self.dim!r}"
         )
-
-
 
 
 class ArgminFwdOp(_ArgreduceOpBase):
@@ -140,8 +146,10 @@ class ArgminFwdOp(_ArgreduceOpBase):
         tune: bool = False,
     ):
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
 
     def _validate_dim(self) -> None:

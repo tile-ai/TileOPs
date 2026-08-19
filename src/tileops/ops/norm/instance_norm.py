@@ -104,15 +104,13 @@ class InstanceNormFwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "InstanceNormFwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("InstanceNormFwdOp.eval_roofline() requires a prior forward() call")
         N, C, spatial_size, dtype, affine, tracks_stats = self._last_roofline_spec
         elem_bytes = dtype.itemsize
         flops = (5 if affine else 3) * N * C * spatial_size
-        nbytes = (
-            2 * N * C * spatial_size + (2 * C if affine else 0)
-        ) * elem_bytes + (4 * C * 4 if tracks_stats else 0)
+        nbytes = (2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes + (
+            4 * C * 4 if tracks_stats else 0
+        )
         return flops, nbytes
 
     def _validate_dtypes(
@@ -146,19 +144,19 @@ class InstanceNormFwdOp(Op):
             if t is None:
                 continue
             if t.dtype != x.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype == {x.dtype}, got {t.dtype}"
-                )
+                raise ValueError(f"Expected {name}.dtype == {x.dtype}, got {t.dtype}")
         for name, t in (("running_mean", running_mean), ("running_var", running_var)):
             if t is None:
                 continue
             if t.dtype != torch.float32:
-                raise ValueError(
-                    f"Expected {name}.dtype torch.float32, got {t.dtype}"
-                )
+                raise ValueError(f"Expected {name}.dtype torch.float32, got {t.dtype}")
 
     def _validate_affine(
-        self, name: str, t: torch.Tensor, x_device: torch.device, C: int,
+        self,
+        name: str,
+        t: torch.Tensor,
+        x_device: torch.device,
+        C: int,
     ) -> None:
         """Validate device and shape of an affine tensor."""
         if not t.is_cuda:
@@ -169,7 +167,11 @@ class InstanceNormFwdOp(Op):
             raise ValueError(f"Expected {name} shape ({C},), got {tuple(t.shape)}")
 
     def _validate_running_stats(
-        self, name: str, t: torch.Tensor, x_device: torch.device, C: int,
+        self,
+        name: str,
+        t: torch.Tensor,
+        x_device: torch.device,
+        C: int,
     ) -> None:
         """Validate device, dtype, and shape of a running-stats tensor."""
         if not t.is_cuda:
@@ -177,9 +179,7 @@ class InstanceNormFwdOp(Op):
         if t.device != x_device:
             raise ValueError(f"Expected {name} on {x_device}, got {t.device}")
         if t.dtype != torch.float32:
-            raise ValueError(
-                f"Expected {name}.dtype torch.float32, got {t.dtype}"
-            )
+            raise ValueError(f"Expected {name}.dtype torch.float32, got {t.dtype}")
         if t.ndim != 1 or t.shape[0] != C:
             raise ValueError(f"Expected {name} shape ({C},), got {tuple(t.shape)}")
 
@@ -191,10 +191,7 @@ class InstanceNormFwdOp(Op):
         if x.ndim < 2:
             raise ValueError("x must have shape (N, C, *spatial)")
         if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(
-                "x.dtype must be float32, float16, or bfloat16, "
-                f"got {x.dtype}"
-            )
+            raise ValueError(f"x.dtype must be float32, float16, or bfloat16, got {x.dtype}")
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
         spatial_size = math.prod(spatial)
@@ -223,7 +220,12 @@ class InstanceNormFwdOp(Op):
         self._running_stats_broadcast_shape = [1, C] + [1] * len(spatial)
         self.dtype = dtype
         self._last_roofline_spec = (
-            N, C, spatial_size, dtype, affine, tracks_stats,
+            N,
+            C,
+            spatial_size,
+            dtype,
+            affine,
+            tracks_stats,
         )
 
     def _get_kernel(
@@ -243,7 +245,13 @@ class InstanceNormFwdOp(Op):
                 "group_norm",
                 key=key,
                 build=lambda: self.kernel_map["group_norm"](
-                    M, D, self.eps, dtype, C, 1, tune=self.tune,
+                    M,
+                    D,
+                    self.eps,
+                    dtype,
+                    C,
+                    1,
+                    tune=self.tune,
                 ),
             )
         else:
@@ -252,7 +260,11 @@ class InstanceNormFwdOp(Op):
                 "instance_norm_no_affine",
                 key=key,
                 build=lambda: self.kernel_map["instance_norm_no_affine"](
-                    M, D, self.eps, dtype, tune=self.tune,
+                    M,
+                    D,
+                    self.eps,
+                    dtype,
+                    tune=self.tune,
                 ),
             )
         self.kernel = kernel
@@ -290,14 +302,10 @@ class InstanceNormFwdOp(Op):
         """
         if (weight is None) != (bias is None):
             raise ValueError(
-                "weight and bias are one switch: pass both for the affine "
-                "path, or neither"
+                "weight and bias are one switch: pass both for the affine path, or neither"
             )
         if (running_mean is None) != (running_var is None):
-            raise ValueError(
-                "running_mean and running_var are one switch: pass both or "
-                "neither"
-            )
+            raise ValueError("running_mean and running_var are one switch: pass both or neither")
         affine = weight is not None
         tracks_stats = running_mean is not None
         if not self.use_input_stats:
@@ -308,8 +316,7 @@ class InstanceNormFwdOp(Op):
                 )
             if affine:
                 raise NotImplementedError(
-                    "use_input_stats=False is implemented for the affine-free "
-                    "call only"
+                    "use_input_stats=False is implemented for the affine-free call only"
                 )
 
         if self.use_input_stats and running_mean is not None:
@@ -330,7 +337,15 @@ class InstanceNormFwdOp(Op):
             self._validate_running_stats("running_mean", running_mean, x.device, C)
             self._validate_running_stats("running_var", running_var, x.device, C)
         self._bind_spec(
-            N, C, spatial, spatial_size, D, M, dtype, affine, tracks_stats,
+            N,
+            C,
+            spatial,
+            spatial_size,
+            D,
+            M,
+            dtype,
+            affine,
+            tracks_stats,
         )
 
         if not self.use_input_stats:

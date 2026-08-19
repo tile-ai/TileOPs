@@ -50,9 +50,7 @@ class TestUnaryCaching:
     @pytest.mark.parametrize("kernel_cls", [ReluFwdKernel, SigmoidFwdKernel, AbsFwdKernel])
     def test_unary_has_compiled_fn(self, kernel_cls):
         k = kernel_cls(N, torch.float16)
-        assert hasattr(k, "_compiled_fn"), (
-            f"{kernel_cls.__name__} missing _compiled_fn after init"
-        )
+        assert hasattr(k, "_compiled_fn"), f"{kernel_cls.__name__} missing _compiled_fn after init"
         assert k._compiled_fn is not None
 
     @pytest.mark.full
@@ -80,14 +78,17 @@ class TestFusedGatedCaching:
     """FusedGatedKernel subclasses should have _compiled_fn after __init__."""
 
     @pytest.mark.full
-    @pytest.mark.parametrize("kernel_cls", [
-        SiluAndMulFwdKernel, GeluAndMulFwdKernel, GeluTanhAndMulFwdKernel,
-    ])
+    @pytest.mark.parametrize(
+        "kernel_cls",
+        [
+            SiluAndMulFwdKernel,
+            GeluAndMulFwdKernel,
+            GeluTanhAndMulFwdKernel,
+        ],
+    )
     def test_fused_gated_has_compiled_fn(self, kernel_cls):
         k = kernel_cls(32, 64, torch.float16)
-        assert hasattr(k, "_compiled_fn"), (
-            f"{kernel_cls.__name__} missing _compiled_fn after init"
-        )
+        assert hasattr(k, "_compiled_fn"), f"{kernel_cls.__name__} missing _compiled_fn after init"
         assert k._compiled_fn is not None
 
     @pytest.mark.full

@@ -27,7 +27,7 @@ DaCumsumFwdOp:
   # dt_bias, when passed, is added to dt before softplus / clamp.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -40,7 +40,7 @@ DaCumsumFwdOp:
       dA_cumsum: {dtype: "float32", shape: "[B, H, NC, chunk_len]"}
     params:
       chunk_len: {type: int}
-      dtype: {type: torch.dtype}
+      dtype: {type: torch.dtype, default: float32}
       dt_softplus: {type: bool, default: false}
       dt_min: {type: float, default: 0.0}
       dt_max: {type: float, default: .inf}
@@ -65,9 +65,9 @@ DaCumsumFwdOp:
     op: tileops/ops/da_cumsum.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
-CBProducerOp:
+CBProducerFwdOp:
   # Causal C@B coupling-matrix producer:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
   ref_api: "none"
@@ -117,7 +117,7 @@ SSDChunkStateFwdOp:
   # head). seq_idx, when passed, masks cross-sequence state contributions.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -149,7 +149,7 @@ SSDChunkStateFwdOp:
     op: tileops/ops/ssd_chunk_state.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SSDStatePassingFwdOp:
   # Inter-chunk recurrent scan over a flattened state dimension:
@@ -159,7 +159,7 @@ SSDStatePassingFwdOp:
   # caller-provided (B, H, N) state.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -188,14 +188,14 @@ SSDStatePassingFwdOp:
     op: tileops/ops/ssd_state_passing.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SSDChunkScanFwdOp:
   # Fused SSD chunk output: history contribution exp(dA[l]) * (C[l] @
   # prev_states) plus the causal intra-chunk path over cb.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -227,15 +227,15 @@ SSDChunkScanFwdOp:
     op: tileops/ops/ssd_chunk_scan.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
-SSDDecodeOp:
+SSDDecodeFwdOp:
   # Single-token Mamba-2 SSD decode step. state is updated in place (read +
   # write); y_out is the only returned tensor. The D * x skip connection and
   # z-gate are not fused here.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -266,7 +266,7 @@ SSDDecodeOp:
     op: tileops/ops/ssd_decode.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Mamba2FwdOp:
   # End-to-end Mamba-2 SSD forward: DaCumsum -> CBProducer -> SSDChunkState ->
@@ -280,7 +280,7 @@ Mamba2FwdOp:
   # DaCumsum stage, initial_states seeds the inter-chunk scan.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -316,7 +316,15 @@ Mamba2FwdOp:
 
   source:
     kernel: tileops/ops/mamba2_fwd.py
+    # This composite registers no kernel of its own; the five it drives belong
+    # to the sub-ops it builds, and each is a replacement point.
+    kernel_map:
+      da_cumsum_fwd: DaCumsumFwdKernel
+      cb_producer: CBProducerKernel
+      ssd_chunk_state_fwd: SSDChunkStateFwdKernel
+      ssd_state_passing_fwd: SSDStatePassingFwdKernel
+      ssd_chunk_scan_fwd: SSDChunkScanFwdKernel
     op: tileops/ops/mamba2_fwd.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba2_e2e.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

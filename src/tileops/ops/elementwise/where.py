@@ -58,10 +58,7 @@ class WhereFwdOp(_PerDtypeKernels, Op):
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         if dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
-            raise ValueError(
-                f"WhereFwdOp does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
+            raise ValueError(f"WhereFwdOp does not support dtype {dtype}. Supported: [{names}]")
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         kernel = impl(self.N_total, ctor_dtype)
 
@@ -97,18 +94,13 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         other: torch.Tensor,
     ) -> None:
         if condition.dtype != torch.bool:
-            raise ValueError(
-                f"Expected condition.dtype torch.bool, got {condition.dtype}"
-            )
+            raise ValueError(f"Expected condition.dtype torch.bool, got {condition.dtype}")
         if input.dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
-            raise ValueError(
-                f"Expected input.dtype in [{names}], got {input.dtype}"
-            )
+            raise ValueError(f"Expected input.dtype in [{names}], got {input.dtype}")
         if other.dtype != input.dtype:
             raise ValueError(
-                f"Expected other.dtype == input.dtype ({input.dtype}), "
-                f"got {other.dtype}"
+                f"Expected other.dtype == input.dtype ({input.dtype}), got {other.dtype}"
             )
 
     @staticmethod
@@ -119,41 +111,44 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         return t.contiguous().view(-1)
 
     def _eager_forward(
-        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,
+        self,
+        condition: torch.Tensor,
+        input: torch.Tensor,
+        other: torch.Tensor,
     ) -> torch.Tensor:
         out_shape = self.out_shape if self.out_shape else (1,)
         cond_b = condition if condition.dtype == torch.bool else condition.bool()
         cond_flat = self._expand_flat(cond_b, out_shape)
         x_flat = self._expand_flat(input, out_shape)
         y_flat = self._expand_flat(other, out_shape)
-        result = self._entry(x_flat.dtype).kernel(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())
+        result = (
+            self._entry(x_flat.dtype)
+            .kernel(cond_flat, x_flat, y_flat)
+            .view(out_shape if self.out_shape else ())
+        )
         return result
 
     def forward(
-        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,
+        self,
+        condition: torch.Tensor,
+        input: torch.Tensor,
+        other: torch.Tensor,
     ) -> torch.Tensor:
         if not (condition.is_cuda and input.is_cuda and other.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
         if condition.dtype != torch.bool:
-            raise ValueError(
-                f"Expected condition.dtype torch.bool, got {condition.dtype}"
-            )
+            raise ValueError(f"Expected condition.dtype torch.bool, got {condition.dtype}")
         self._validate_dtypes(condition, input, other)
         if other.dtype != input.dtype:
-            raise ValueError(
-                f"Expected other.dtype {input.dtype}, got {other.dtype}")
+            raise ValueError(f"Expected other.dtype {input.dtype}, got {other.dtype}")
         if tuple(condition.shape) != self.condition_shape:
             raise ValueError(
                 f"Expected condition.shape {self.condition_shape}, got {tuple(condition.shape)}"
             )
         if tuple(input.shape) != self.input_shape:
-            raise ValueError(
-                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
-            )
+            raise ValueError(f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}")
         if tuple(other.shape) != self.other_shape:
-            raise ValueError(
-                f"Expected other.shape {self.other_shape}, got {tuple(other.shape)}"
-            )
+            raise ValueError(f"Expected other.shape {self.other_shape}, got {tuple(other.shape)}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(condition, input, other, self._instance_key)

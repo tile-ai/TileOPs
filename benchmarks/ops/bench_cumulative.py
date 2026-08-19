@@ -40,6 +40,7 @@ class CumulativeBenchmarkWorkload(CumulativeWorkload):
             return x_f32.cumprod(dim=-1).to(x.dtype)
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
+
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
 def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = CumulativeBenchmarkWorkload(shape, dtype, "cumsum")

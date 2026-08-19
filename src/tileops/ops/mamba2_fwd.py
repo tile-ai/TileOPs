@@ -25,12 +25,15 @@ Design notes
 * All intermediate tensors remain on-device; no host syncs between sub-ops.
 """
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 
-from .cb_producer import CBProducerOp
+from tileops.kernels.kernel_base import Kernel
+
+from .cb_producer import CBProducerFwdOp
 from .da_cumsum import DaCumsumFwdOp
+from .op_base import Op
 from .ssd_chunk_scan import SSDChunkScanFwdOp
 from .ssd_chunk_state import SSDChunkStateFwdOp
 from .ssd_state_passing import SSDStatePassingFwdOp
@@ -38,7 +41,7 @@ from .ssd_state_passing import SSDStatePassingFwdOp
 __all__ = ["Mamba2FwdOp"]
 
 
-class Mamba2FwdOp:
+class Mamba2FwdOp(Op):
     """Mamba-2 State-Space Dual (SSD) full forward pass operator.
 
     Combines DaCumsum → SSDChunkState → SSDStatePassing → SSDChunkScan into
@@ -48,7 +51,6 @@ class Mamba2FwdOp:
     Args:
         chunk_size:         Tokens per chunk (default 256).
         dt_softplus:        Apply softplus to (dt + dt_bias) before use.
-        has_initial_states: Whether initial_states tensor will be provided at forward time.
         tune:               Whether to autotune tile configs on construction.
     """
 
@@ -56,8 +58,8 @@ class Mamba2FwdOp:
         self,
         chunk_size: int = 256,
         dt_softplus: bool = True,
-        has_initial_states: bool = False,
         tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.batch = None
         self.seqlen = None
@@ -69,32 +71,58 @@ class Mamba2FwdOp:
         self.n_groups = None
         self.dtype = None
         self.dt_softplus = dt_softplus
-        self.has_initial_states = has_initial_states
-        self._heads_per_group = None
         self.tune = tune
+        # This composite owns no kernel; the override reaches the sub-ops that do.
+        self.dispatch_kernel(kernel_map)
+        self._kernel_map_override = kernel_map
 
         self._da_cumsum_ops: dict[torch.dtype, DaCumsumFwdOp] = {}
-        self._chunk_state_op = SSDChunkStateFwdOp(
-            has_seq_idx=False,
-            tune=tune,
-        )
+        self._chunk_state_op = SSDChunkStateFwdOp(tune=tune, kernel_map=kernel_map)
 
         # chunk_states output is float32 (B, C, H, P, N).
         # Flatten P*N into a single state dim so SSDStatePassingFwdOp is used
         # instead of a Python loop, keeping everything on the GPU.
-        self._state_passing_op = SSDStatePassingFwdOp(
-            has_initial_states=has_initial_states,
-            tune=tune,
-        )
+        self._state_passing_op = SSDStatePassingFwdOp(tune=tune, kernel_map=kernel_map)
 
-        self._chunk_scan_op = SSDChunkScanFwdOp(tune=tune)
-        self._cb_producer_ops: dict[tuple, CBProducerOp] = {}
+        self._chunk_scan_op = SSDChunkScanFwdOp(tune=tune, kernel_map=kernel_map)
+        self._cb_producer_ops: dict[tuple, CBProducerFwdOp] = {}
 
-        # Pre-allocated zero tensors — avoids FillFunctor kernel launches on the
-        # hot path for optional inputs that are commonly omitted.
-        self._zero_dt_bias: Optional[torch.Tensor]   = None
-        self._zero_init_flat: Optional[torch.Tensor] = None
-        self._zero_seq_idx: Optional[torch.Tensor]   = None
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        # A composite registers no kernel of its own: the five it drives belong
+        # to the sub-ops it builds, and each of those is a replacement point.
+        return {}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        from tileops.perf.formulas import mamba2_fwd_roofline
+
+        return mamba2_fwd_roofline(self)
+
+    def _validate_dtypes(
+        self,
+        x: torch.Tensor,
+        dt: torch.Tensor,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        C: torch.Tensor,
+        dt_bias: Optional[torch.Tensor] = None,
+        initial_states: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Manifest ``dtype``: x is half, B and C follow it, the rest are float32."""
+        if x.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"x.dtype must be float16 or bfloat16, got {x.dtype}")
+        for name, tensor in (("B", B), ("C", C)):
+            if tensor.dtype != x.dtype:
+                raise ValueError(f"{name}.dtype must be {x.dtype}, got {tensor.dtype}")
+        for name, tensor in (
+            ("dt", dt),
+            ("A", A),
+            ("dt_bias", dt_bias),
+            ("initial_states", initial_states),
+        ):
+            if tensor is not None and tensor.dtype != torch.float32:
+                raise ValueError(f"{name}.dtype must be float32, got {tensor.dtype}")
+        self.dtype = x.dtype
 
     def _get_da_cumsum_op(self, dtype: torch.dtype) -> DaCumsumFwdOp:
         if dtype not in self._da_cumsum_ops:
@@ -102,8 +130,8 @@ class Mamba2FwdOp:
                 chunk_len=self.chunk_size,
                 dtype=dtype,
                 dt_softplus=self.dt_softplus,
-                has_dt_bias=True,
                 tune=self.tune,
+                kernel_map=self._kernel_map_override,
             )
         return self._da_cumsum_ops[dtype]
 
@@ -115,16 +143,26 @@ class Mamba2FwdOp:
         d_state: int,
         dtype: torch.dtype,
         device_index: int | None,
-    ) -> CBProducerOp:
-        key = (batch, num_chunks, n_groups, self.chunk_size, d_state, dtype, device_index, self.tune)
+    ) -> CBProducerFwdOp:
+        key = (
+            batch,
+            num_chunks,
+            n_groups,
+            self.chunk_size,
+            d_state,
+            dtype,
+            device_index,
+            self.tune,
+        )
         if key not in self._cb_producer_ops:
-            self._cb_producer_ops[key] = CBProducerOp(
+            self._cb_producer_ops[key] = CBProducerFwdOp(
                 batch=batch,
                 num_chunks=num_chunks,
                 n_groups=n_groups,
                 chunk_len=self.chunk_size,
                 d_state=d_state,
                 tune=self.tune,
+                kernel_map=self._kernel_map_override,
             )
         return self._cb_producer_ops[key]
 
@@ -139,7 +177,6 @@ class Mamba2FwdOp:
         C: torch.Tensor,
         dt_bias: Optional[torch.Tensor] = None,
         initial_states: Optional[torch.Tensor] = None,
-        return_final_states: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Run the full Mamba-2 SSD forward pass.
 
@@ -151,18 +188,11 @@ class Mamba2FwdOp:
             C:               (batch, seqlen, n_groups, d_state)         dtype
             dt_bias:         (n_heads,) float32, optional
             initial_states:  (batch, n_heads, d_head, d_state) float32, optional
-            return_final_states: Whether to include final chunk states in output.
 
         Returns:
             y:            (batch, seqlen, n_heads, d_head)   float32
             final_states: (batch, n_heads, d_head, d_state)  float32, or None
         """
-        if initial_states is not None and not self.has_initial_states:
-            raise ValueError(
-                "initial_states was provided but this op was constructed with "
-                "has_initial_states=False — the kernel ignores it, which would "
-                "silently produce wrong results.  Reconstruct with has_initial_states=True."
-            )
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.ndim != 4:
@@ -187,11 +217,7 @@ class Mamba2FwdOp:
             raise ValueError("dt_bias must have shape [n_heads]")
         if initial_states is not None and initial_states.shape != (batch, n_heads, d_head, d_state):
             raise ValueError("initial_states must have shape [batch, n_heads, d_head, d_state]")
-        if B.dtype != x.dtype:
-            raise ValueError(f"B.dtype must be {x.dtype}, got {B.dtype}")
-        if C.dtype != x.dtype:
-            raise ValueError(f"C.dtype must be {x.dtype}, got {C.dtype}")
-        dev = x.device
+        self._validate_dtypes(x, dt, A, B, C, dt_bias, initial_states)
 
         self.batch = batch
         self.seqlen = seqlen
@@ -201,28 +227,10 @@ class Mamba2FwdOp:
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = x.dtype
-        self._heads_per_group = n_heads // n_groups
+        self.dt_bias_shape = None if dt_bias is None else tuple(dt_bias.shape)
+        self.initial_states_shape = None if initial_states is None else tuple(initial_states.shape)
 
-        if self._zero_dt_bias is None or self._zero_dt_bias.shape != (n_heads,) or self._zero_dt_bias.device != dev:
-            self._zero_dt_bias = torch.zeros(n_heads, dtype=torch.float32, device=dev)
-        init_shape = (batch, n_heads, d_head * d_state)
-        if (
-            self._zero_init_flat is None
-            or self._zero_init_flat.shape != init_shape
-            or self._zero_init_flat.device != dev
-        ):
-            self._zero_init_flat = torch.zeros(init_shape, dtype=torch.float32, device=dev)
-        seq_idx_shape = (batch, seqlen)
-        if (
-            self._zero_seq_idx is None
-            or self._zero_seq_idx.shape != seq_idx_shape
-            or self._zero_seq_idx.device != dev
-        ):
-            self._zero_seq_idx = torch.zeros(seq_idx_shape, dtype=torch.int32, device=dev)
         # ── 1. DaCumsum ──────────────────────────────────────────────────────
-        if dt_bias is None:
-            dt_bias = self._zero_dt_bias
-
         dt_out, dA_cumsum = self._get_da_cumsum_op(x.dtype).forward(dt, A, dt_bias)
         # dt_out:    (B, H, C, Q)  dtype
         # dA_cumsum: (B, H, C, Q)  float32
@@ -231,14 +239,14 @@ class Mamba2FwdOp:
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T  for s <= l, else 0.
         # Pass contiguous C and B directly to avoid reshape/permute/contiguous overhead
         cb_producer_op = self._get_cb_producer_op(
-            batch, num_chunks, n_groups, d_state, x.dtype, x.device.index)
+            batch, num_chunks, n_groups, d_state, x.dtype, x.device.index
+        )
         cb = cb_producer_op.forward(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
-        # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.
-        # SSDChunkStateFwdOp is constructed with has_seq_idx=False, so the kernel
-        # ignores this tensor entirely — no shape check or data access occurs.
-        chunk_states = self._chunk_state_op.forward(x, B, dt_out, dA_cumsum, self._zero_seq_idx)
+        # No seq_idx: this composite does not segment a chunk, so the kernel is
+        # built without that branch.
+        chunk_states = self._chunk_state_op.forward(x, B, dt_out, dA_cumsum)
         # chunk_states: (B, C, H, P, N)  float32
 
         # ── 4. SSDStatePassing ───────────────────────────────────────────────
@@ -247,23 +255,24 @@ class Mamba2FwdOp:
         # Note: since this is a slice of a 4D tensor, it is non-contiguous and will always copy
         dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].contiguous()  # (B, H, C)
 
-        if initial_states is None:
-            init_flat = self._zero_init_flat
-        else:
-            init_flat = initial_states.reshape(batch, n_heads, d_head * d_state).float()
+        init_flat = (
+            None
+            if initial_states is None
+            else initial_states.reshape(batch, n_heads, d_head * d_state).float()
+        )
 
         prev_states_flat, final_states_flat = self._state_passing_op.forward(
-            chunk_states_flat, dA_chunk_cumsum, init_flat,
+            chunk_states_flat,
+            dA_chunk_cumsum,
+            init_flat,
         )
 
         # Unflatten to (B, C, H, P, N) in float32 (accum_dtype) for chunk_scan.
-        prev_states  = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
+        prev_states = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
         # dt_out is now in dtype (no cast needed) - DaCumsum outputs typed dt directly
 
         # ── 5. SSDChunkScan ──────────────────────────────────────────────────
         y = self._chunk_scan_op.forward(x, cb, dA_cumsum, C, prev_states, dt_out)
         # y: (B, S, H, P)  float32
 
-        if return_final_states:
-            return y, final_states_flat.reshape(batch, n_heads, d_head, d_state)
-        return y, None
+        return y, final_states_flat.reshape(batch, n_heads, d_head, d_state)

@@ -6,11 +6,11 @@ import torch
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GatedDeltaNetDecodeOp
+from tileops.ops import GatedDeltaNetDecodeFwdOp
 from workloads.linear_attention import GatedDeltaNetDecodeWorkload
 from workloads.workload_base import FixtureBase
 
-_OP_NAME = "GatedDeltaNetDecodeOp"
+_OP_NAME = "GatedDeltaNetDecodeFwdOp"
 
 
 def gated_deltanet_decode_torch(
@@ -50,7 +50,6 @@ except ImportError:
 
 
 class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
@@ -93,24 +92,28 @@ def test_gated_deltanet_decode_bench(
     test = GatedDeltaNetDecodeWorkload(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetDecodeOp(tune=tune)
+    op = GatedDeltaNetDecodeFwdOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     functors = {"tileops": op}
 
     if fused_recurrent_gated_delta_rule is not None:
         # --- FLA: fused_recurrent_gated_delta_rule with T=1 ---
         q, k, v, g, beta, state = inputs
-        q_fla = q.unsqueeze(1)       # [B, H, DK] -> [B, 1, H, DK]
+        q_fla = q.unsqueeze(1)  # [B, H, DK] -> [B, 1, H, DK]
         k_fla = k.unsqueeze(1)
         v_fla = v.unsqueeze(1)
-        g_fla = g.unsqueeze(1)       # [B, H] -> [B, 1, H]
+        g_fla = g.unsqueeze(1)  # [B, H] -> [B, 1, H]
         beta_fla = beta.unsqueeze(1)
 
         state_fla = state.contiguous()
 
         def fla_decode():
             return fused_recurrent_gated_delta_rule(
-                q_fla, k_fla, v_fla, g=g_fla, beta=beta_fla,
+                q_fla,
+                k_fla,
+                v_fla,
+                g=g_fla,
+                beta=beta_fla,
                 initial_state=state_fla,
                 output_final_state=True,
             )

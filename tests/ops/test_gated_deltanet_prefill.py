@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GatedDeltaNetPrefillFwdOp
+from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
 from workloads.linear_attention import (
     GatedDeltaNetPrefillFwdWorkload,
@@ -172,9 +172,8 @@ def compose_structured_transition_torch(
     alpha = next_alpha * prev_alpha
     cross = torch.einsum("bhkr,bhks->bhrs", prev_U, next_V)
     prev_V_part = next_alpha.view(*next_alpha.shape, 1, 1) * prev_V
-    next_V_part = (
-        prev_alpha.view(*prev_alpha.shape, 1, 1) * next_V
-        + torch.einsum("bhkr,bhrs->bhks", prev_V, cross)
+    next_V_part = prev_alpha.view(*prev_alpha.shape, 1, 1) * next_V + torch.einsum(
+        "bhkr,bhrs->bhks", prev_V, cross
     )
     U = torch.cat([prev_U, next_U], dim=-1)
     V = torch.cat([prev_V_part, next_V_part], dim=-1)
@@ -196,18 +195,13 @@ def butterfly_prefix_structured_transitions_torch(
 ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Hillis-Steele inclusive scan over structured chunk transitions."""
     num_chunks = alpha.shape[2]
-    prefix = [
-        (alpha[:, :, c], U[:, :, c], V[:, :, c], bias[:, :, c])
-        for c in range(num_chunks)
-    ]
+    prefix = [(alpha[:, :, c], U[:, :, c], V[:, :, c], bias[:, :, c]) for c in range(num_chunks)]
 
     offset = 1
     while offset < num_chunks:
         prev_prefix = prefix.copy()
         for c in range(offset, num_chunks):
-            prefix[c] = compose_structured_transition_torch(
-                prev_prefix[c - offset], prev_prefix[c]
-            )
+            prefix[c] = compose_structured_transition_torch(prev_prefix[c - offset], prev_prefix[c])
         offset *= 2
 
     return prefix
@@ -227,13 +221,16 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
 
 class GatedDeltaNetPrefillFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(1, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(1, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(1, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(1, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -250,7 +247,7 @@ def test_gated_deltanet_prefill_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetPrefillFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, layout="bhtd", tune=tune)
+    op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
     test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
 
 
@@ -263,8 +260,8 @@ def test_gated_deltanet_prefill_bthd_layout_matches_bhtd() -> None:
     test = GatedDeltaNetPrefillFwdTest(B, H, S, DK, DV, BC, dtype)
     q, k, v, g, beta = test.gen_inputs()
 
-    bhtd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, layout="bhtd", tune=False)
-    bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False)
+    bhtd_op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=BC, tune=False)
+    bthd_op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=BC, tune=False)
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
     q_bthd = q.permute(0, 2, 1, 3)
@@ -301,8 +298,8 @@ def test_gated_deltanet_prefill_bthd_blocksolve_path_matches_bhtd(
     test = GatedDeltaNetPrefillFwdTest(B, H, S, DK, DV, BC, dtype)
     q, k, v, g, beta = test.gen_inputs()
 
-    bhtd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, layout="bhtd", tune=False)
-    bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False, layout="bthd")
+    bhtd_op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=BC, tune=False)
+    bthd_op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=BC, tune=False)
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
     o_bthd, state_bthd = bthd_op(
@@ -351,17 +348,15 @@ def test_gated_deltanet_prefill_dense_transition_reference() -> None:
     structured_alpha, structured_U, structured_V, structured_bias = (
         structured_chunk_transitions_torch(k, g_cum, w, u, BC)
     )
-    structured_A = materialize_structured_A_torch(
-        structured_alpha, structured_U, structured_V
-    )
+    structured_A = materialize_structured_A_torch(structured_alpha, structured_U, structured_V)
     structured_prefix = butterfly_prefix_structured_transitions_torch(
         structured_alpha, structured_U, structured_V, structured_bias
     )
     final_alpha, final_U, final_V, final_bias = structured_prefix[-1]
     structured_final_A = materialize_structured_A_torch(final_alpha, final_U, final_V)
-    scan_final_state = torch.einsum(
-        "bhij,bhjv->bhiv", prefix_A[:, :, -1], S_0
-    ) + prefix_bias[:, :, -1]
+    scan_final_state = (
+        torch.einsum("bhij,bhjv->bhiv", prefix_A[:, :, -1], S_0) + prefix_bias[:, :, -1]
+    )
 
     torch.testing.assert_close(structured_A, A, atol=5e-4, rtol=5e-4)
     torch.testing.assert_close(structured_bias, bias, atol=5e-4, rtol=5e-4)
@@ -379,7 +374,6 @@ if __name__ == "__main__":
 # ----------------------------------------------------------------------
 # Cross-layout contract for the Gated DeltaNet prefill roofline.
 # ----------------------------------------------------------------------
-
 
 
 @pytest.mark.smoke

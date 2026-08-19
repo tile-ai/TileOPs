@@ -125,9 +125,7 @@ class BatchNormFwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "BatchNormFwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("BatchNormFwdOp.eval_roofline() requires a prior forward() call")
         C, L, dtype = self._last_roofline_spec
         elem_bytes = dtype.itemsize
         return (
@@ -146,10 +144,7 @@ class BatchNormFwdOp(Op):
         if x.ndim < 2:
             raise ValueError("x must have shape (N, C, *spatial)")
         if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(
-                "x.dtype must be float32, float16, or bfloat16, "
-                f"got {x.dtype}"
-            )
+            raise ValueError(f"x.dtype must be float32, float16, or bfloat16, got {x.dtype}")
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
         L = x.numel() // C
@@ -201,7 +196,12 @@ class BatchNormFwdOp(Op):
                 "fwd_train_kernel",
                 key=key,
                 build=lambda: self.kernel_map["fwd_train_kernel"](
-                    C, L, dtype, self.eps, self.momentum, tune=self.tune,
+                    C,
+                    L,
+                    dtype,
+                    self.eps,
+                    self.momentum,
+                    tune=self.tune,
                 ),
             )
             self.train_kernel = kernel
@@ -210,7 +210,11 @@ class BatchNormFwdOp(Op):
                 "fwd_infer_kernel",
                 key=key,
                 build=lambda: self.kernel_map["fwd_infer_kernel"](
-                    C, L, dtype, self.eps, tune=self.tune,
+                    C,
+                    L,
+                    dtype,
+                    self.eps,
+                    tune=self.tune,
                 ),
             )
             self.infer_kernel = kernel
@@ -236,12 +240,10 @@ class BatchNormFwdOp(Op):
 
         if self.training:
             y_cl, _mean, _rstd = kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
+                x_cl, weight.float(), bias.float(), running_mean, running_var
+            )
         else:
-            y_cl = kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
+            y_cl = kernel(x_cl, weight.float(), bias.float(), running_mean, running_var)
         return _restore_shape(y_cl, orig_shape)
 
     def forward(
@@ -274,7 +276,8 @@ class BatchNormFwdOp(Op):
             Normalized output tensor with the same shape as ``x``.
         """
         return _batch_norm_fwd_wrapped(
-            x, running_mean, running_var, weight, bias, self._instance_key)
+            x, running_mean, running_var, weight, bias, self._instance_key
+        )
 
 
 class BatchNormBwdOp(Op):
@@ -319,9 +322,7 @@ class BatchNormBwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "BatchNormBwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("BatchNormBwdOp.eval_roofline() requires a prior forward() call")
         C, L, dtype = self._last_roofline_spec
         elem_bytes = dtype.itemsize
         return (
@@ -342,21 +343,17 @@ class BatchNormBwdOp(Op):
             raise ValueError("x must be a CUDA tensor")
         if grad_out.device != x.device:
             raise ValueError(
-                f"Expected grad_out and x on the same device, got "
-                f"{grad_out.device} and {x.device}"
+                f"Expected grad_out and x on the same device, got {grad_out.device} and {x.device}"
             )
         if grad_out.shape != x.shape:
             raise ValueError(f"Expected x shape {grad_out.shape}, got {x.shape}")
         if grad_out.dtype != x.dtype:
-            raise ValueError(
-                f"Expected x.dtype {grad_out.dtype}, got {x.dtype}"
-            )
+            raise ValueError(f"Expected x.dtype {grad_out.dtype}, got {x.dtype}")
         if grad_out.ndim < 2:
             raise ValueError("grad_out must have shape (N, C, *spatial)")
         if grad_out.dtype not in (torch.float32, torch.float16, torch.bfloat16):
             raise ValueError(
-                "grad_out.dtype must be float32, float16, or bfloat16, "
-                f"got {grad_out.dtype}"
+                f"grad_out.dtype must be float32, float16, or bfloat16, got {grad_out.dtype}"
             )
         N, C, *spatial_list = grad_out.shape
         spatial = tuple(spatial_list)
@@ -389,7 +386,10 @@ class BatchNormBwdOp(Op):
             "bwd_kernel",
             key=(C, L, dtype, device_index, self.tune),
             build=lambda: self.kernel_map["bwd_kernel"](
-                C, L, dtype, tune=self.tune,
+                C,
+                L,
+                dtype,
+                tune=self.tune,
             ),
         )
         self.kernel = kernel
@@ -431,8 +431,7 @@ class BatchNormBwdOp(Op):
         x_cl = self._prepare(x)
         kernel = self._get_kernel(C, L, dtype, grad_out.device.index)
 
-        grad_x_cl, grad_weight, grad_bias = kernel(
-            go_cl, x_cl, weight.float(), mean, rstd)
+        grad_x_cl, grad_weight, grad_bias = kernel(go_cl, x_cl, weight.float(), mean, rstd)
 
         grad_x = _restore_shape(grad_x_cl, orig_shape)
         return grad_x, grad_weight, grad_bias
@@ -465,8 +464,7 @@ class BatchNormBwdOp(Op):
             has the same shape as ``x``, ``grad_weight`` has shape ``(C,)``,
             and ``grad_bias`` has shape ``(C,)``.
         """
-        return _batch_norm_bwd_wrapped(
-            grad_out, x, weight, mean, rstd, self._instance_key)
+        return _batch_norm_bwd_wrapped(grad_out, x, weight, mean, rstd, self._instance_key)
 
 
 # torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
@@ -485,8 +483,7 @@ def _batch_norm_fwd_wrapped(
     instance_key: str,
 ) -> torch.Tensor:
     instance = get_instance(instance_key)
-    return instance._eager_forward(
-        x, running_mean, running_var, weight, bias)
+    return instance._eager_forward(x, running_mean, running_var, weight, bias)
 
 
 @_batch_norm_fwd_wrapped.register_fake

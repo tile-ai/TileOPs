@@ -86,6 +86,7 @@ def pytest_runtest_teardown(item, nextitem):
         return
     try:
         import torch
+
         if torch.cuda.is_available():
             gc.collect()
             torch.cuda.empty_cache()
@@ -98,6 +99,7 @@ def pytest_unconfigure(config):
     orig_profile = getattr(config, "_warmup_orig_profile", None)
     if orig_profile is not None:
         from benchmarks.benchmark_base import BenchmarkBase
+
         BenchmarkBase.profile = orig_profile
 
     orig_pool = getattr(config, "_warmup_orig_pool", None)
@@ -107,4 +109,5 @@ def pytest_unconfigure(config):
     orig_load = getattr(config, "_validate_orig_load", None)
     if orig_load is not None:
         from tilelang.autotuner.tuner import AutoTuner
+
         AutoTuner._load_result_from_disk = orig_load

@@ -21,18 +21,53 @@ _DSA_DECODE_BENCH_PARAMS = manifest_params(
     "batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start_index_s, sm_scale, dtype, tune",
     _DSA_DECODE_BENCH_PARAMS,
 )
-def test_dsa_decode_bench(batch: int, heads: int, seq_len_q: int, seq_len_kv: int, dim: int,
-                          dim_tail: int, topk: int, stride_kv: int, heads_kv: int,
-                          q_start_index_s: int, sm_scale: float, dtype: torch.dtype,
-                          tune: bool) -> None:
+def test_dsa_decode_bench(
+    batch: int,
+    heads: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    dim: int,
+    dim_tail: int,
+    topk: int,
+    stride_kv: int,
+    heads_kv: int,
+    q_start_index_s: int,
+    sm_scale: float,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
     test = DsaDecodeWorkload(
-        batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
-        q_start_index_s, sm_scale=sm_scale, dtype=dtype)
+        batch,
+        heads,
+        seq_len_q,
+        seq_len_kv,
+        dim,
+        dim_tail,
+        topk,
+        stride_kv,
+        heads_kv,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        dtype=dtype,
+    )
     inputs = test.gen_inputs()
 
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
-        q_start_index_s, sm_scale=sm_scale, tune=tune)
+        batch,
+        heads,
+        seq_len_q,
+        seq_len_kv,
+        dim,
+        dim_tail,
+        topk,
+        stride_kv,
+        heads_kv,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        tune=tune,
+    )
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

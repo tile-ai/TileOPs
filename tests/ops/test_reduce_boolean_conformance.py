@@ -36,7 +36,9 @@ _UNALIGNED_SHAPE = (4, 8, 255)
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES],
+    "op_cls, torch_fn",
+    _OP_CASES,
+    ids=[c[0].__name__ for c in _OP_CASES],
 )
 @pytest.mark.parametrize(
     "dim",
@@ -80,9 +82,7 @@ def test_logical_reduce_conformance(
     else:
         ref = torch_fn(x, dim=dim, keepdim=keepdim)
 
-    assert y.dtype == torch.bool, (
-        f"{op_cls.__name__} output dtype {y.dtype}, expected torch.bool"
-    )
+    assert y.dtype == torch.bool, f"{op_cls.__name__} output dtype {y.dtype}, expected torch.bool"
     assert ref.dtype == torch.bool
     assert y.shape == ref.shape, (
         f"{op_cls.__name__} dim={dim} keepdim={keepdim} dtype={dtype}: "
@@ -93,7 +93,9 @@ def test_logical_reduce_conformance(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES],
+    "op_cls, torch_fn",
+    _OP_CASES,
+    ids=[c[0].__name__ for c in _OP_CASES],
 )
 @pytest.mark.parametrize(
     "dim",
@@ -104,7 +106,9 @@ def test_logical_reduce_conformance(
     ],
 )
 def test_logical_reduce_unaligned_innermost(
-    op_cls: type, torch_fn: Callable, dim,
+    op_cls: type,
+    torch_fn: Callable,
+    dim,
 ) -> None:
     """Unaligned innermost dim must still match PyTorch.
 
@@ -162,13 +166,10 @@ def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
     y = op(x)
     ref = torch.count_nonzero(x, dim=dim)
 
-    assert y.dtype == torch.int64, (
-        f"CountNonzeroFwdOp output dtype {y.dtype}, expected torch.int64"
-    )
+    assert y.dtype == torch.int64, f"CountNonzeroFwdOp output dtype {y.dtype}, expected torch.int64"
     assert ref.dtype == torch.int64
     assert y.shape == ref.shape, (
-        f"CountNonzeroFwdOp dim={dim} dtype={dtype}: "
-        f"shape {y.shape} vs ref {ref.shape}"
+        f"CountNonzeroFwdOp dim={dim} dtype={dtype}: shape {y.shape} vs ref {ref.shape}"
     )
     torch.testing.assert_close(y, ref, atol=0, rtol=0)
 

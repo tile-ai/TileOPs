@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -24,6 +23,7 @@ def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
     loss = (o * do.float()).sum()
     dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
     return dq, dk, dv, dg
+
 
 try:
     from fla.ops.gla import chunk_gla
@@ -64,14 +64,17 @@ def _fla_autograd_bwd(
 
 class GLABwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 64, 2, 64, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 64, 2, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 64, 2, 64, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 2, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -96,19 +99,15 @@ def test_gla_bwd(
     g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
     do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
 
-    scale = K ** -0.5
+    scale = K**-0.5
 
     # --- Torch reference via autograd ---
-    ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(
-        do, q, k, v, g, BC, scale=scale
-    )
+    ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
 
     # --- FLA reference via autograd (if available) ---
     if chunk_gla is not None:
-        fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(
-            do, q, k, v, g, scale=scale
-        )
+        fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(do, q, k, v, g, scale=scale)
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
         # Validate FLA vs torch reference alignment
@@ -138,7 +137,9 @@ def test_gla_bwd(
         cos = cosine_sim(ref_grads[name], op_grads[name])
         print(f"  TileOPs vs ref {name}: cosine={cos:.6f}")
         torch.testing.assert_close(
-            op_grads[name].float(), ref_grads[name].float(), **tols,
+            op_grads[name].float(),
+            ref_grads[name].float(),
+            **tols,
             msg=lambda m, n=name: f"{n}: {m}",
         )
 

@@ -7,7 +7,6 @@ from workloads.workload_base import WorkloadBase
 
 
 class RMSNormWorkload(WorkloadBase):
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m
         self.n = n
@@ -26,7 +25,6 @@ class RMSNormWorkload(WorkloadBase):
 
 
 class LayerNormWorkload(WorkloadBase):
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
         self.n = n
@@ -39,7 +37,9 @@ class LayerNormWorkload(WorkloadBase):
         bias = torch.randn(self.n, dtype=self.dtype, device="cuda")
         return x, weight, bias
 
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+    ) -> torch.Tensor:
         # Reference uses torch.nn.functional.layer_norm
         return F.layer_norm(
             x.float(),
@@ -51,7 +51,6 @@ class LayerNormWorkload(WorkloadBase):
 
 
 class FusedAddRMSNormWorkload(WorkloadBase):
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m
         self.n = n
@@ -78,7 +77,6 @@ class FusedAddRMSNormWorkload(WorkloadBase):
 
 
 class FusedAddLayerNormWorkload(WorkloadBase):
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
         self.n = n
@@ -111,7 +109,6 @@ class FusedAddLayerNormWorkload(WorkloadBase):
 
 
 class AdaLayerNormWorkload(WorkloadBase):
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
         self.n = n
@@ -140,7 +137,6 @@ class AdaLayerNormWorkload(WorkloadBase):
 
 
 class AdaLayerNormZeroWorkload(WorkloadBase):
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
         self.n = n
@@ -174,9 +170,9 @@ class AdaLayerNormZeroWorkload(WorkloadBase):
 
 
 class GroupNormWorkload(WorkloadBase):
-
-    def __init__(self, n: int, c: int, spatial: tuple, g: int,
-                 dtype: torch.dtype, eps: float = 1e-5):
+    def __init__(
+        self, n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype, eps: float = 1e-5
+    ):
         self.n = n
         self.c = c
         self.spatial = spatial
@@ -191,8 +187,9 @@ class GroupNormWorkload(WorkloadBase):
         bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
         return x, weight, bias
 
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
-                    bias: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+    ) -> torch.Tensor:
         return F.group_norm(
             x.float(),
             self.g,
@@ -203,9 +200,7 @@ class GroupNormWorkload(WorkloadBase):
 
 
 class InstanceNormWorkload(WorkloadBase):
-
-    def __init__(self, n: int, c: int, spatial: tuple,
-                 dtype: torch.dtype, eps: float = 1e-5):
+    def __init__(self, n: int, c: int, spatial: tuple, dtype: torch.dtype, eps: float = 1e-5):
         self.n = n
         self.c = c
         self.spatial = spatial
@@ -224,8 +219,9 @@ class InstanceNormWorkload(WorkloadBase):
         bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
         return x, None, None, weight, bias
 
-    def ref_program(self, x: torch.Tensor, running_mean, running_var,
-                    weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, x: torch.Tensor, running_mean, running_var, weight: torch.Tensor, bias: torch.Tensor
+    ) -> torch.Tensor:
         return F.instance_norm(
             x.float(),
             running_mean=running_mean,
@@ -246,20 +242,20 @@ def _make_tensors(N, C, spatial, dtype, device="cuda"):
     return x, weight, bias, running_mean, running_var
 
 
-def batch_norm_fwd_ref(x, weight, bias, running_mean, running_var, training,
-                       momentum=0.1, eps=1e-5):
+def batch_norm_fwd_ref(
+    x, weight, bias, running_mean, running_var, training, momentum=0.1, eps=1e-5
+):
     """Reference: torch.nn.functional.batch_norm (float32 upcast)."""
     x32 = x.float()
     rm = running_mean.clone()
     rv = running_var.clone()
     y32 = torch.nn.functional.batch_norm(
-        x32, rm, rv, weight.float(), bias.float(),
-        training=training, momentum=momentum, eps=eps)
+        x32, rm, rv, weight.float(), bias.float(), training=training, momentum=momentum, eps=eps
+    )
     return y32.to(x.dtype), rm, rv
 
 
 class BatchNormBwdWorkload(WorkloadBase):
-
     def __init__(self, N, C, spatial, dtype):
         self.N = N
         self.C = C
@@ -268,7 +264,8 @@ class BatchNormBwdWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         x, weight, bias, running_mean, running_var = _make_tensors(
-            self.N, self.C, self.spatial, self.dtype)
+            self.N, self.C, self.spatial, self.dtype
+        )
         grad_out = torch.randn_like(x)
         # Need mean/rstd from a forward pass.
         x32 = x.float()
@@ -289,13 +286,13 @@ class BatchNormBwdWorkload(WorkloadBase):
         rm = torch.zeros(self.C, device=x.device, dtype=torch.float32)
         rv = torch.ones(self.C, device=x.device, dtype=torch.float32)
         y32 = torch.nn.functional.batch_norm(
-            x32, rm, rv, w32, b32, training=True, momentum=0.1, eps=1e-5)
+            x32, rm, rv, w32, b32, training=True, momentum=0.1, eps=1e-5
+        )
         y32.backward(grad_out.float())
         return x32.grad.to(x.dtype), w32.grad, b32.grad
 
 
 class BatchNormFwdWorkload(WorkloadBase):
-
     def __init__(self, N, C, spatial, dtype, training):
         self.N = N
         self.C = C
@@ -307,6 +304,7 @@ class BatchNormFwdWorkload(WorkloadBase):
         return _make_tensors(self.N, self.C, self.spatial, self.dtype)
 
     def ref_program(self, x, weight, bias, running_mean, running_var):
-        y, rm, rv = batch_norm_fwd_ref(x, weight, bias, running_mean, running_var,
-                                       training=self.training)
+        y, rm, rv = batch_norm_fwd_ref(
+            x, weight, bias, running_mean, running_var, training=self.training
+        )
         return (y,)

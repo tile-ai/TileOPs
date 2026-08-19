@@ -65,19 +65,25 @@ class WelfordNonAlignedFixture(FixtureBase):
             [
                 # One representative smoke case (one above alignment boundary)
                 pytest.param(
-                    32, 257, torch.float16,
+                    32,
+                    257,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                     id="m32_n257_fp16",
                 ),
                 pytest.param(
-                    32, 257, torch.bfloat16,
+                    32,
+                    257,
+                    torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="m32_n257_bf16",
                 ),
             ]
             + [
                 pytest.param(
-                    32, n, torch.float16,
+                    32,
+                    n,
+                    torch.float16,
                     marks=pytest.mark.full,
                     id=f"m32_n{n}_fp16",
                 )
@@ -86,7 +92,9 @@ class WelfordNonAlignedFixture(FixtureBase):
             ]
             + [
                 pytest.param(
-                    32, n, torch.bfloat16,
+                    32,
+                    n,
+                    torch.bfloat16,
                     marks=pytest.mark.full,
                     id=f"m32_n{n}_bf16",
                 )
@@ -106,19 +114,28 @@ class WelfordNonAligned3DFixture(FixtureBase):
             [
                 # One representative smoke case (one below alignment boundary)
                 pytest.param(
-                    2, 16, 255, torch.float16,
+                    2,
+                    16,
+                    255,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                     id="b2_s16_h255_fp16",
                 ),
                 pytest.param(
-                    2, 16, 255, torch.bfloat16,
+                    2,
+                    16,
+                    255,
+                    torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="b2_s16_h255_bf16",
                 ),
             ]
             + [
                 pytest.param(
-                    2, 16, n, torch.float16,
+                    2,
+                    16,
+                    n,
+                    torch.float16,
                     marks=pytest.mark.full,
                     id=f"b2_s16_h{n}_fp16",
                 )
@@ -126,7 +143,10 @@ class WelfordNonAligned3DFixture(FixtureBase):
             ]
             + [
                 pytest.param(
-                    2, 16, n, torch.bfloat16,
+                    2,
+                    16,
+                    n,
+                    torch.bfloat16,
                     marks=pytest.mark.full,
                     id=f"b2_s16_h{n}_bf16",
                 )
@@ -145,29 +165,44 @@ class WelfordNonAlignedMultiDimFixture(FixtureBase):
             [
                 # One representative smoke case (flattened N = 5*51 = 255)
                 pytest.param(
-                    (2, 5, 51), [1, 2], False, torch.float16,
+                    (2, 5, 51),
+                    [1, 2],
+                    False,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                     id="flat255_fp16",
                 ),
                 pytest.param(
-                    (4, 7, 9), [1, 2], False, torch.bfloat16,
+                    (4, 7, 9),
+                    [1, 2],
+                    False,
+                    torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="flat63_bf16",
                 ),
                 pytest.param(
-                    (4, 7, 9), [1, 2], False, torch.float16,
+                    (4, 7, 9),
+                    [1, 2],
+                    False,
+                    torch.float16,
                     marks=pytest.mark.smoke,
                     id="flat63_fp16",
                 ),
                 # (3, 3, 86): reducing dims [1,2] -> flattened N = 3*86 = 258
                 pytest.param(
-                    (3, 3, 86), [1, 2], False, torch.float16,
+                    (3, 3, 86),
+                    [1, 2],
+                    False,
+                    torch.float16,
                     marks=pytest.mark.full,
                     id="flat258_fp16",
                 ),
                 # keepdim variant
                 pytest.param(
-                    (2, 5, 51), [1, 2], True, torch.float16,
+                    (2, 5, 51),
+                    [1, 2],
+                    True,
+                    torch.float16,
                     marks=pytest.mark.full,
                     id="flat255_keepdim_fp16",
                 ),
@@ -316,7 +351,9 @@ def test_var_mean_multidim_non_aligned(
     var_out, mean_out = op(x)
     tol = _tol(dtype)
     assert var_out.shape == ref_var.shape, f"var shape mismatch: {var_out.shape} vs {ref_var.shape}"
-    assert mean_out.shape == ref_mean.shape, f"mean shape mismatch: {mean_out.shape} vs {ref_mean.shape}"
+    assert mean_out.shape == ref_mean.shape, (
+        f"mean shape mismatch: {mean_out.shape} vs {ref_mean.shape}"
+    )
     assert torch.allclose(var_out, ref_var, **tol), (
         f"var_mean multidim var non-aligned max err: {(var_out - ref_var).abs().max()}"
     )

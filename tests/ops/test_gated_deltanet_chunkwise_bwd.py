@@ -109,9 +109,9 @@ def test_gated_deltanet_bwd(
     beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
 
     # Forward to get S for backward kernel
-    from tileops.ops import GatedDeltaNetFwdOp
+    from tileops.ops import GatedDeltaNetBHTDFwdOp
 
-    fwd_op = GatedDeltaNetFwdOp(chunk_size=BC)
+    fwd_op = GatedDeltaNetBHTDFwdOp(chunk_size=BC)
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
@@ -166,9 +166,9 @@ def test_gated_deltanet_bwd_segmented_carry_matches_sequential_d128(
     beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
-    from tileops.ops import GatedDeltaNetFwdOp
+    from tileops.ops import GatedDeltaNetBHTDFwdOp
 
-    fwd_op = GatedDeltaNetFwdOp(chunk_size=BC)
+    fwd_op = GatedDeltaNetBHTDFwdOp(chunk_size=BC)
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
 
     common_config = {

@@ -107,10 +107,13 @@ def _register_table(table):
 
 class ReluCompileFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -136,10 +139,13 @@ def test_relu_compile(n_total, dtype):
 
 class AddCompileFixture(FixtureBase):
     PARAMS = [
-        ("a_shape, b_shape, dtype", [
-            pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.full),
-            pytest.param((1024, 1024), (1, 1024), torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "a_shape, b_shape, dtype",
+            [
+                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.full),
+                pytest.param((1024, 1024), (1, 1024), torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -164,9 +170,12 @@ def test_add_compile(a_shape, b_shape, dtype):
 
 class EqCompileFixture(FixtureBase):
     PARAMS = [
-        ("a_shape, b_shape, dtype", [
-            pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "a_shape, b_shape, dtype",
+            [
+                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -191,9 +200,12 @@ def test_eq_compile(a_shape, b_shape, dtype):
 
 class SiluAndMulCompileFixture(FixtureBase):
     PARAMS = [
-        ("M, N, dtype", [
-            pytest.param(512, 1024, torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "M, N, dtype",
+            [
+                pytest.param(512, 1024, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -218,9 +230,12 @@ def test_silu_and_mul_compile(M, N, dtype):
 
 class AbsCompileFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -243,9 +258,12 @@ def test_abs_compile(n_total, dtype):
 
 class SignCompileFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -271,9 +289,12 @@ def test_sign_compile(n_total, dtype):
 
 class FakeUnaryFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(1024, torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1024, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -290,9 +311,12 @@ def test_register_fake_unary_shape_dtype(n_total, dtype):
 
 class FakeComparisonFixture(FixtureBase):
     PARAMS = [
-        ("shape, dtype", [
-            pytest.param((256, 256), torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "shape, dtype",
+            [
+                pytest.param((256, 256), torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -309,9 +333,12 @@ def test_register_fake_comparison_bool_dtype(shape, dtype):
 
 class FakeFusedGatedFixture(FixtureBase):
     PARAMS = [
-        ("M, N, dtype", [
-            pytest.param(64, 128, torch.float16, marks=pytest.mark.full),
-        ]),
+        (
+            "M, N, dtype",
+            [
+                pytest.param(64, 128, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -339,6 +366,7 @@ _DTYPE = torch.float16
 
 # --- Remaining unary ops (not covered by detailed tests above) ---
 
+
 def _positive_input(n, dtype):
     """Generate strictly positive inputs for log/sqrt/rsqrt/log1p domains."""
     return torch.rand(n, dtype=dtype, device="cuda").clamp(min=0.01) * 10.0
@@ -346,28 +374,134 @@ def _positive_input(n, dtype):
 
 _UNARY_FLOAT_OPS = [
     pytest.param(ExpFwdOp, torch.exp, None, "exp", marks=pytest.mark.full),
-    pytest.param(LogFwdOp, lambda x: torch.log(x.float()).to(x.dtype), _positive_input, "log", marks=pytest.mark.full),
-    pytest.param(SqrtFwdOp, lambda x: torch.sqrt(x.float()).to(x.dtype), _positive_input, "sqrt", marks=pytest.mark.full),
-    pytest.param(RsqrtFwdOp, lambda x: torch.rsqrt(x.float()).to(x.dtype), _positive_input, "rsqrt", marks=pytest.mark.full),
+    pytest.param(
+        LogFwdOp,
+        lambda x: torch.log(x.float()).to(x.dtype),
+        _positive_input,
+        "log",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        SqrtFwdOp,
+        lambda x: torch.sqrt(x.float()).to(x.dtype),
+        _positive_input,
+        "sqrt",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        RsqrtFwdOp,
+        lambda x: torch.rsqrt(x.float()).to(x.dtype),
+        _positive_input,
+        "rsqrt",
+        marks=pytest.mark.full,
+    ),
     pytest.param(NegFwdOp, torch.neg, None, "neg", marks=pytest.mark.full),
-    pytest.param(ReciprocalFwdOp, lambda x: torch.reciprocal(x.float()).to(x.dtype), None, "reciprocal", marks=pytest.mark.full),
-    pytest.param(SinFwdOp, lambda x: torch.sin(x.float()).to(x.dtype), None, "sin", marks=pytest.mark.full),
-    pytest.param(CosFwdOp, lambda x: torch.cos(x.float()).to(x.dtype), None, "cos", marks=pytest.mark.full),
-    pytest.param(FloorFwdOp, lambda x: torch.floor(x.float()).to(x.dtype), None, "floor", marks=pytest.mark.full),
-    pytest.param(CeilFwdOp, lambda x: torch.ceil(x.float()).to(x.dtype), None, "ceil", marks=pytest.mark.full),
-    pytest.param(RoundFwdOp, lambda x: torch.round(x.float()).to(x.dtype), None, "round", marks=pytest.mark.full),
-    pytest.param(TruncFwdOp, lambda x: torch.trunc(x.float()).to(x.dtype), None, "trunc", marks=pytest.mark.full),
-    pytest.param(ErfFwdOp, lambda x: torch.erf(x.float()).to(x.dtype), None, "erf", marks=pytest.mark.full),
-    pytest.param(Log1pFwdOp, lambda x: torch.log1p(x.float()).to(x.dtype), _positive_input, "log1p", marks=pytest.mark.full),
-    pytest.param(Expm1FwdOp, lambda x: torch.expm1(x.float()).to(x.dtype), None, "expm1", marks=pytest.mark.full),
-    pytest.param(GeluFwdOp, lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype), None, "gelu", marks=pytest.mark.full),
-    pytest.param(SiluFwdOp, lambda x: torch.nn.functional.silu(x.float()).to(x.dtype), None, "silu", marks=pytest.mark.full),
-    pytest.param(SigmoidFwdOp, lambda x: torch.sigmoid(x.float()).to(x.dtype), None, "sigmoid", marks=pytest.mark.full),
-    pytest.param(TanhFwdOp, lambda x: torch.tanh(x.float()).to(x.dtype), None, "tanh", marks=pytest.mark.full),
-    pytest.param(HardswishFwdOp, lambda x: torch.nn.functional.hardswish(x.float()).to(x.dtype), None, "hardswish", marks=pytest.mark.full),
-    pytest.param(HardsigmoidFwdOp, lambda x: torch.nn.functional.hardsigmoid(x.float()).to(x.dtype), None, "hardsigmoid", marks=pytest.mark.full),
-    pytest.param(MishFwdOp, lambda x: torch.nn.functional.mish(x.float()).to(x.dtype), None, "mish", marks=pytest.mark.full),
-    pytest.param(SeluFwdOp, lambda x: torch.nn.functional.selu(x.float()).to(x.dtype), None, "selu", marks=pytest.mark.full),
+    pytest.param(
+        ReciprocalFwdOp,
+        lambda x: torch.reciprocal(x.float()).to(x.dtype),
+        None,
+        "reciprocal",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        SinFwdOp, lambda x: torch.sin(x.float()).to(x.dtype), None, "sin", marks=pytest.mark.full
+    ),
+    pytest.param(
+        CosFwdOp, lambda x: torch.cos(x.float()).to(x.dtype), None, "cos", marks=pytest.mark.full
+    ),
+    pytest.param(
+        FloorFwdOp,
+        lambda x: torch.floor(x.float()).to(x.dtype),
+        None,
+        "floor",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        CeilFwdOp, lambda x: torch.ceil(x.float()).to(x.dtype), None, "ceil", marks=pytest.mark.full
+    ),
+    pytest.param(
+        RoundFwdOp,
+        lambda x: torch.round(x.float()).to(x.dtype),
+        None,
+        "round",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        TruncFwdOp,
+        lambda x: torch.trunc(x.float()).to(x.dtype),
+        None,
+        "trunc",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        ErfFwdOp, lambda x: torch.erf(x.float()).to(x.dtype), None, "erf", marks=pytest.mark.full
+    ),
+    pytest.param(
+        Log1pFwdOp,
+        lambda x: torch.log1p(x.float()).to(x.dtype),
+        _positive_input,
+        "log1p",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        Expm1FwdOp,
+        lambda x: torch.expm1(x.float()).to(x.dtype),
+        None,
+        "expm1",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        GeluFwdOp,
+        lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype),
+        None,
+        "gelu",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        SiluFwdOp,
+        lambda x: torch.nn.functional.silu(x.float()).to(x.dtype),
+        None,
+        "silu",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        SigmoidFwdOp,
+        lambda x: torch.sigmoid(x.float()).to(x.dtype),
+        None,
+        "sigmoid",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        TanhFwdOp, lambda x: torch.tanh(x.float()).to(x.dtype), None, "tanh", marks=pytest.mark.full
+    ),
+    pytest.param(
+        HardswishFwdOp,
+        lambda x: torch.nn.functional.hardswish(x.float()).to(x.dtype),
+        None,
+        "hardswish",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        HardsigmoidFwdOp,
+        lambda x: torch.nn.functional.hardsigmoid(x.float()).to(x.dtype),
+        None,
+        "hardsigmoid",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        MishFwdOp,
+        lambda x: torch.nn.functional.mish(x.float()).to(x.dtype),
+        None,
+        "mish",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        SeluFwdOp,
+        lambda x: torch.nn.functional.selu(x.float()).to(x.dtype),
+        None,
+        "selu",
+        marks=pytest.mark.full,
+    ),
 ]
 
 
@@ -389,8 +523,12 @@ def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
 # --- Unary bool-output ops ---
 
 _UNARY_BOOL_OPS = [
-    pytest.param(LogicalNotFwdOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.full),
-    pytest.param(LogicalNotFwdOp, torch.logical_not, torch.bool, "logical_not_bool", marks=pytest.mark.smoke),
+    pytest.param(
+        LogicalNotFwdOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.full
+    ),
+    pytest.param(
+        LogicalNotFwdOp, torch.logical_not, torch.bool, "logical_not_bool", marks=pytest.mark.smoke
+    ),
     pytest.param(IsnanFwdOp, torch.isnan, torch.float16, "isnan", marks=pytest.mark.full),
     pytest.param(IsinfFwdOp, torch.isinf, torch.float16, "isinf", marks=pytest.mark.full),
     pytest.param(IsfiniteFwdOp, torch.isfinite, torch.float16, "isfinite", marks=pytest.mark.full),
@@ -436,13 +574,39 @@ def test_bitwise_not_compile():
 # --- Remaining binary same-dtype ops ---
 
 _BINARY_ARITH_OPS = [
-    pytest.param(SubFwdOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.full),
-    pytest.param(MulFwdOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.full),
-    pytest.param(DivFwdOp, lambda a, b: (a.float() / b.float()).half(), "div", marks=pytest.mark.full),
-    pytest.param(RemainderFwdOp, lambda a, b: a - torch.floor(a.float() / b.float()).half() * b, "remainder", marks=pytest.mark.full),
-    pytest.param(FloorDivideFwdOp, lambda a, b: torch.floor(a.float() / b.float()).half(), "floor_divide", marks=pytest.mark.full),
-    pytest.param(MaximumFwdOp, lambda a, b: torch.maximum(a.float(), b.float()).half(), "maximum", marks=pytest.mark.full),
-    pytest.param(MinimumFwdOp, lambda a, b: torch.minimum(a.float(), b.float()).half(), "minimum", marks=pytest.mark.full),
+    pytest.param(
+        SubFwdOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.full
+    ),
+    pytest.param(
+        MulFwdOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.full
+    ),
+    pytest.param(
+        DivFwdOp, lambda a, b: (a.float() / b.float()).half(), "div", marks=pytest.mark.full
+    ),
+    pytest.param(
+        RemainderFwdOp,
+        lambda a, b: a - torch.floor(a.float() / b.float()).half() * b,
+        "remainder",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        FloorDivideFwdOp,
+        lambda a, b: torch.floor(a.float() / b.float()).half(),
+        "floor_divide",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        MaximumFwdOp,
+        lambda a, b: torch.maximum(a.float(), b.float()).half(),
+        "maximum",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        MinimumFwdOp,
+        lambda a, b: torch.minimum(a.float(), b.float()).half(),
+        "minimum",
+        marks=pytest.mark.full,
+    ),
 ]
 
 
@@ -548,8 +712,12 @@ def test_comparison_compile(op_cls, ref_fn, name):
 # --- Logical binary ops ---
 
 _LOGICAL_OPS = [
-    pytest.param(LogicalAndFwdOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.full),
-    pytest.param(LogicalOrFwdOp, lambda a, b: (a != 0) | (b != 0), "logical_or", marks=pytest.mark.full),
+    pytest.param(
+        LogicalAndFwdOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.full
+    ),
+    pytest.param(
+        LogicalOrFwdOp, lambda a, b: (a != 0) | (b != 0), "logical_or", marks=pytest.mark.full
+    ),
 ]
 
 
@@ -827,7 +995,9 @@ def test_masked_fill_tensor_compile_broadcast():
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, mask, value)
     ref = torch.where(
-        mask.expand(input_shape), value.expand(input_shape), x,
+        mask.expand(input_shape),
+        value.expand(input_shape),
+        x,
     )
     assert out.shape == ref.shape == input_shape
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
@@ -863,7 +1033,9 @@ def test_masked_fill_scalar_compile_broadcast():
     x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
     mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device="cuda")
     op = MaskedFillScalarFwdOp(
-        input=input_shape, mask=mask_shape, value=-1.0,
+        input=input_shape,
+        mask=mask_shape,
+        value=-1.0,
     )
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, mask)
@@ -890,7 +1062,9 @@ def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> No
     b = torch.randn(shape, dtype=dtype, device="cuda") * 2.0 + 1.0
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
     op = DivFwdOp(
-        a_shape=shape, b_shape=shape, rounding_mode=rounding_mode,
+        a_shape=shape,
+        b_shape=shape,
+        rounding_mode=rounding_mode,
     )
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(a, b)

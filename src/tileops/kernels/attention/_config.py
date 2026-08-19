@@ -13,6 +13,9 @@ def tile_stage_thread_configs() -> list[dict]:
     return [
         {"block_m": bm, "block_n": bn, "num_stages": ns, "threads": th}
         for bm, bn, ns, th in itertools.product(
-            _BLOCK_M, _BLOCK_N, _NUM_STAGES, _THREADS,
+            _BLOCK_M,
+            _BLOCK_N,
+            _NUM_STAGES,
+            _THREADS,
         )
     ]

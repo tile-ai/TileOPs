@@ -68,7 +68,11 @@ class CumulativeOp(Op):
         return (M * N, 2 * M * N * elem_bytes)
 
     def _get_kernel(
-        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
+        self,
+        M: int,
+        N: int,
+        dtype: torch.dtype,
+        device_index: int | None,
     ) -> Kernel:
         """Return a kernel built for (M, N, dtype), caching by specialization.
 
@@ -80,7 +84,11 @@ class CumulativeOp(Op):
             "cumulative_fwd",
             key=key,
             build=lambda: self.kernel_map["cumulative_fwd"](
-                M, N, self._op_kind, dtype, tune=self.tune,
+                M,
+                N,
+                self._op_kind,
+                dtype,
+                tune=self.tune,
             ),
         )
 
@@ -90,9 +98,7 @@ class CumulativeOp(Op):
         self._validate_dtypes(x)
         ndim = x.ndim
         if not (-ndim <= self.dim < ndim):
-            raise ValueError(
-                f"dim={self.dim} out of range for {ndim}-D input"
-            )
+            raise ValueError(f"dim={self.dim} out of range for {ndim}-D input")
         dim_norm = self.dim % ndim
         N = x.shape[dim_norm]
         self.N = N
@@ -128,7 +134,6 @@ class CumulativeOp(Op):
         return y
 
 
-
 class CumsumFwdOp(CumulativeOp):
     """Cumulative sum operator: ``y = cumsum(x, dim)``.
 
@@ -154,7 +159,6 @@ class CumsumFwdOp(CumulativeOp):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self._run(x)
-
 
 
 class CumprodFwdOp(CumulativeOp):

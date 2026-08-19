@@ -34,9 +34,16 @@ SOURCE_PACKAGE_DIR = f"src/{PACKAGE_DIR}"
 SDIST_EXTRA_REQUIRED = ("LICENSE", "README.md")
 SDIST_ALLOWED_DIRS = frozenset({"src"})
 # `PKG-INFO` and `setup.cfg` are written by the build; the rest a build reads.
-SDIST_ALLOWED_FILES = frozenset({
-    "LICENSE", "README.md", "MANIFEST.in", "pyproject.toml", "PKG-INFO", "setup.cfg",
-})
+SDIST_ALLOWED_FILES = frozenset(
+    {
+        "LICENSE",
+        "README.md",
+        "MANIFEST.in",
+        "pyproject.toml",
+        "PKG-INFO",
+        "setup.cfg",
+    }
+)
 # Build residue that lives beside the sources but is not a shipped resource.
 _IGNORED_DIRS = frozenset({"__pycache__", ".egg-info"})
 
@@ -129,7 +136,7 @@ def check_sdist(sdist_path: Path, required: list[str]) -> list[str]:
 def _strip_src(path: str) -> str:
     """Map a repo-relative package path to its position inside the wheel."""
     prefix = f"{SOURCE_PACKAGE_DIR.split('/', 1)[0]}/"
-    return path[len(prefix):] if path.startswith(prefix) else path
+    return path[len(prefix) :] if path.startswith(prefix) else path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,7 +155,9 @@ def main(argv: list[str] | None = None) -> int:
         errors.append(f"no sdist (*.tar.gz) found in {args.dist_dir}")
 
     resources, source = expected_resources(args.repo_root)
-    print(f"expected {len(resources)} shipped resources under {SOURCE_PACKAGE_DIR}/ (from {source})")
+    print(
+        f"expected {len(resources)} shipped resources under {SOURCE_PACKAGE_DIR}/ (from {source})"
+    )
     if not resources:
         errors.append(f"no non-.py resources found under {args.repo_root}/{SOURCE_PACKAGE_DIR}")
 

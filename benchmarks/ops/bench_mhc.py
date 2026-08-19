@@ -5,7 +5,6 @@ manifest; roofline FLOP and byte counts come from each op's
 ``eval_roofline()`` via :class:`ManifestBenchmark`.
 """
 
-
 import pytest
 import torch
 
@@ -15,7 +14,7 @@ from benchmarks.benchmark_base import (
     workload_field_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import MHCPostOp, MHCPreOp
+from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
 from workloads.mhc import MHCPostWorkload, MHCPreWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
@@ -27,11 +26,19 @@ _TUNE = True
 _SINKHORN_EPS = 0.02
 
 
-_MHC_PRE_OP = "MHCPreOp"
+_MHC_PRE_OP = "MHCPreFwdOp"
 _MHC_PRE_PARAMS = workload_field_params(
     load_workloads(_MHC_PRE_OP),
-    ("batch", "n_expand", "c_x", "dtype", "alpha_pre", "alpha_post", "alpha_res",
-     "sinkhorn_repeat"),
+    (
+        "batch",
+        "n_expand",
+        "c_x",
+        "dtype",
+        "alpha_pre",
+        "alpha_post",
+        "alpha_res",
+        "sinkhorn_repeat",
+    ),
 )
 
 
@@ -39,24 +46,34 @@ _MHC_PRE_PARAMS = workload_field_params(
     "batch, n_expand, c_x, dtype, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat",
     _MHC_PRE_PARAMS,
 )
-def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
-                       alpha_pre: float, alpha_post: float, alpha_res: float,
-                       sinkhorn_repeat: int) -> None:
+def test_mhc_pre_bench(
+    batch: int,
+    n_expand: int,
+    c_x: int,
+    dtype: torch.dtype,
+    alpha_pre: float,
+    alpha_post: float,
+    alpha_res: float,
+    sinkhorn_repeat: int,
+) -> None:
     test = MHCPreWorkload(batch, n_expand, c_x, dtype)
     phi, x, b = test.gen_inputs()[:3]
     # The shared workload generator draws its own scaling params; the
     # manifest workload is the authority for them.
     inputs = (phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, _SINKHORN_EPS)
 
-    op = MHCPreOp(tune=_TUNE)
+    op = MHCPreFwdOp(tune=_TUNE)
     bm = ManifestBenchmark(_MHC_PRE_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
-_MHC_POST_OP = "MHCPostOp"
+_MHC_POST_OP = "MHCPostFwdOp"
 _MHC_POST_PARAMS = workload_field_params(
-    load_workloads(_MHC_POST_OP), ("batch", "n_expand", "c_x", "dtype"),
+    load_workloads(_MHC_POST_OP),
+    ("batch", "n_expand", "c_x", "dtype"),
 )
 
 
@@ -65,7 +82,9 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
     test = MHCPostWorkload(batch, n_expand, c_x, dtype)
     inputs = test.gen_inputs()
 
-    op = MHCPostOp(tune=_TUNE)
+    op = MHCPostFwdOp(tune=_TUNE)
     bm = ManifestBenchmark(_MHC_POST_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

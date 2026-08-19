@@ -24,7 +24,8 @@ def resolve_block_v(dim_v: int, block_v: int) -> int:
         raise ValueError(
             f"V-tile width {bv} (dim_v={dim_v}, block_v={block_v}) is below "
             f"the minimum T.gemm N extent ({GEMM_MIN_N}); use block_v >= "
-            f"{GEMM_MIN_N}, or 0 for no tiling with dim_v >= {GEMM_MIN_N}")
+            f"{GEMM_MIN_N}, or 0 for no tiling with dim_v >= {GEMM_MIN_N}"
+        )
     if dim_v % bv != 0:
         raise ValueError(f"dim_v ({dim_v}) must be divisible by block_v ({bv})")
     return bv

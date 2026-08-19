@@ -255,8 +255,7 @@ class _Trace:
         n = n_outputs + 1 if enabled else n_outputs
         return list(range(-n, 0))
 
-    def finalize(self, primfunc, traced: bool | None = None,
-                 max_events: int = MAX_EVENTS_DEFAULT):
+    def finalize(self, primfunc, traced: bool | None = None, max_events: int = MAX_EVENTS_DEFAULT):
         """Lower the markers when traced, else strip them — return either.
 
         The one line a builder returns instead of branching. Pairs with
@@ -368,10 +367,14 @@ class _Trace:
             >>> events = trace.decode(compiled, slots)
         """
         maps = passes.lookup_meta(compiled)
-        return _decode(slots, id_to_name=maps["id_to_name"],
-                       group_id_to_name=maps["group_id_to_name"],
-                       lane_id_to_name=maps["lane_id_to_name"],
-                       max_events=maps["max_events"], num_groups=maps["num_groups"])
+        return _decode(
+            slots,
+            id_to_name=maps["id_to_name"],
+            group_id_to_name=maps["group_id_to_name"],
+            lane_id_to_name=maps["lane_id_to_name"],
+            max_events=maps["max_events"],
+            num_groups=maps["num_groups"],
+        )
 
     def dump(self, events: list, compiled, *, stem: str) -> str:
         """Write events as an HTML timeline under ``output``, never overwriting.
@@ -402,8 +405,9 @@ class _Trace:
         self.export_html(events, f"{base}.html", compiled=compiled)
         return base
 
-    def export_html(self, events: list, path: str, *, compiled,
-                    title: str = "", sm_clock_ghz: float = 1.5) -> None:
+    def export_html(
+        self, events: list, path: str, *, compiled, title: str = "", sm_clock_ghz: float = 1.5
+    ) -> None:
         """Write events as a self-contained Plotly HTML timeline.
 
         Args:
@@ -417,10 +421,15 @@ class _Trace:
             >>> trace.export_html(events, "timeline.html", compiled=compiled)
         """
         maps = passes.lookup_meta(compiled)
-        _export_timeline_html(events, path, group_id_to_name=maps["group_id_to_name"],
-                              lane_id_to_name=maps["lane_id_to_name"],
-                              flows=maps["flows"], title=title,
-                              sm_clock_ghz=sm_clock_ghz)
+        _export_timeline_html(
+            events,
+            path,
+            group_id_to_name=maps["group_id_to_name"],
+            lane_id_to_name=maps["lane_id_to_name"],
+            flows=maps["flows"],
+            title=title,
+            sm_clock_ghz=sm_clock_ghz,
+        )
 
 
 # The singleton namespace: ``from tileops.trace import trace``.

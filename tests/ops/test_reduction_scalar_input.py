@@ -209,9 +209,7 @@ def test_var_mean_scalar_input(dim) -> None:
     with warnings.catch_warnings(record=True) as op_caught:
         warnings.simplefilter("always")
         var_out, mean_out = op(x)
-    var_ref, mean_ref = (
-        torch.var_mean(x, dim=dim) if dim is not None else torch.var_mean(x)
-    )
+    var_ref, mean_ref = torch.var_mean(x, dim=dim) if dim is not None else torch.var_mean(x)
     assert var_out.shape == var_ref.shape == ()
     assert mean_out.shape == mean_ref.shape == ()
     assert torch.isnan(var_out).item()

@@ -77,6 +77,7 @@ def _find_best_block_l(L: int) -> dict:
 
 # Training forward
 
+
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_kernel(
     C: int,
@@ -107,7 +108,6 @@ def _batch_norm_fwd_train_kernel(
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_fwd_train_func(block_l: int, threads: int) -> Callable:
-
         @T.prim_func
         def _bn_fwd_train(
             x: T.Tensor([C, L], dtype),
@@ -156,8 +156,7 @@ def _batch_norm_fwd_train_kernel(
                 # Statistics.
                 mean_val = sum_result[0] / T.cast(L, accum_dtype)
                 var_val = sq_result[0] / T.cast(L, accum_dtype) - mean_val * mean_val
-                rstd_val = T.cast(1.0, accum_dtype) / T.sqrt(
-                    var_val + T.cast(eps, accum_dtype))
+                rstd_val = T.cast(1.0, accum_dtype) / T.sqrt(var_val + T.cast(eps, accum_dtype))
 
                 # Save for backward.
                 mean_out[bc] = mean_val
@@ -167,11 +166,19 @@ def _batch_norm_fwd_train_kernel(
                 # running_var follows PyTorch convention: updated with unbiased variance
                 # (Bessel's correction: biased_var * L / (L - 1)).
                 mom = T.cast(momentum, accum_dtype)
-                unbiased_var = var_val * T.cast(L, accum_dtype) / (T.cast(L, accum_dtype) - T.cast(1.0, accum_dtype))
+                unbiased_var = (
+                    var_val
+                    * T.cast(L, accum_dtype)
+                    / (T.cast(L, accum_dtype) - T.cast(1.0, accum_dtype))
+                )
                 # One writer per block: this running-stat RMW races if every thread runs it.
                 if T.get_thread_binding() == 0:
-                    running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[bc] + mom * mean_val
-                    running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[bc] + mom * unbiased_var
+                    running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[
+                        bc
+                    ] + mom * mean_val
+                    running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[
+                        bc
+                    ] + mom * unbiased_var
 
                 # Pass 2 – normalize.
                 if block_l >= L:
@@ -180,7 +187,8 @@ def _batch_norm_fwd_train_kernel(
                     for _i, j in T.Parallel(1, block_l):
                         xval = T.cast(x_shared[j], accum_dtype)
                         y[bc, j] = T.cast(
-                            weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype)
+                            weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                        )
                 else:
                     # Non-persistent path: direct global memory access avoids async-copy
                     # data race that occurs when T.copy is used inside T.Pipelined.
@@ -188,7 +196,8 @@ def _batch_norm_fwd_train_kernel(
                         for _i, j in T.Parallel(1, block_l):
                             xval = T.cast(x[bc, l_tile * block_l + j], accum_dtype)
                             y[bc, l_tile * block_l + j] = T.cast(
-                                weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype)
+                                weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                            )
 
         return _bn_fwd_train
 
@@ -207,6 +216,7 @@ class BatchNormFwdTrainKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
+
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(
@@ -293,6 +303,7 @@ class BatchNormFwdTrainKernel(Kernel):
 
 # Inference forward
 
+
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_infer_kernel(
     C: int,
@@ -309,7 +320,6 @@ def _batch_norm_fwd_infer_kernel(
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_fwd_infer_func(block_l: int, num_stages: int, threads: int) -> Callable:
-
         @T.prim_func
         def _bn_fwd_infer(
             x: T.Tensor([C, L], dtype),
@@ -321,8 +331,7 @@ def _batch_norm_fwd_infer_kernel(
         ):
             with T.Kernel(C, threads=threads) as (bc):
                 # Fused scale/shift: avoids recomputing per element.
-                scale = weight[bc] / T.sqrt(
-                    running_var[bc] + T.cast(eps, accum_dtype))
+                scale = weight[bc] / T.sqrt(running_var[bc] + T.cast(eps, accum_dtype))
                 shift = bias[bc] - running_mean[bc] * scale
 
                 # Non-persistent: direct global memory access avoids async-copy
@@ -330,7 +339,8 @@ def _batch_norm_fwd_infer_kernel(
                 for l_tile in T.Pipelined(L // block_l, num_stages=0):
                     for _i, j in T.Parallel(1, block_l):
                         y[bc, l_tile * block_l + j] = T.cast(
-                            T.cast(x[bc, l_tile * block_l + j], accum_dtype) * scale + shift, dtype)
+                            T.cast(x[bc, l_tile * block_l + j], accum_dtype) * scale + shift, dtype
+                        )
 
         return _bn_fwd_infer
 
@@ -348,6 +358,7 @@ class BatchNormFwdInferKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
+
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(
@@ -408,6 +419,7 @@ class BatchNormFwdInferKernel(Kernel):
 
 # Backward
 
+
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_kernel(
     C: int,
@@ -438,7 +450,6 @@ def _batch_norm_bwd_kernel(
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_bwd_func(block_l: int, threads: int) -> Callable:
-
         @T.prim_func
         def _bn_bwd(
             grad_out: T.Tensor([C, L], dtype),
@@ -481,7 +492,9 @@ def _batch_norm_bwd_kernel(
                     for l_tile in T.Pipelined(L // block_l, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             go_val = T.cast(grad_out[bc, l_tile * block_l + j], accum_dtype)
-                            x_hat = (T.cast(x[bc, l_tile * block_l + j], accum_dtype) - mean_val) * rstd_val
+                            x_hat = (
+                                T.cast(x[bc, l_tile * block_l + j], accum_dtype) - mean_val
+                            ) * rstd_val
                             do_frag[_i, j] += go_val
                             do_xhat_frag[_i, j] += go_val * x_hat
 
@@ -506,9 +519,7 @@ def _batch_norm_bwd_kernel(
                         go_val = T.cast(go_shared[j], accum_dtype)
                         x_hat = (T.cast(x_shared[j], accum_dtype) - mean_val) * rstd_val
                         gx = w_rstd_over_L * (
-                            T.cast(L, accum_dtype) * go_val
-                            - sum_do[0]
-                            - x_hat * sum_do_xhat[0]
+                            T.cast(L, accum_dtype) * go_val - sum_do[0] - x_hat * sum_do_xhat[0]
                         )
                         grad_x[bc, j] = T.cast(gx, dtype)
                 else:
@@ -517,11 +528,11 @@ def _batch_norm_bwd_kernel(
                     for l_tile in T.Pipelined(L // block_l, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             go_val = T.cast(grad_out[bc, l_tile * block_l + j], accum_dtype)
-                            x_hat = (T.cast(x[bc, l_tile * block_l + j], accum_dtype) - mean_val) * rstd_val
+                            x_hat = (
+                                T.cast(x[bc, l_tile * block_l + j], accum_dtype) - mean_val
+                            ) * rstd_val
                             gx = w_rstd_over_L * (
-                                T.cast(L, accum_dtype) * go_val
-                                - sum_do[0]
-                                - x_hat * sum_do_xhat[0]
+                                T.cast(L, accum_dtype) * go_val - sum_do[0] - x_hat * sum_do_xhat[0]
                             )
                             grad_x[bc, l_tile * block_l + j] = T.cast(gx, dtype)
 
@@ -540,6 +551,7 @@ class BatchNormBwdKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
+
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(

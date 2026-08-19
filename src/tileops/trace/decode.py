@@ -129,9 +129,16 @@ def _to_numpy(arr):
     return arr
 
 
-def decode(slots, *, id_to_name: dict[int, str], group_id_to_name: dict[int, str] | None = None,
-           lane_id_to_name: dict[int, str] | None = None, max_events: int, num_groups: int,
-           sm_clock_ghz: float = 1.5) -> list:
+def decode(
+    slots,
+    *,
+    id_to_name: dict[int, str],
+    group_id_to_name: dict[int, str] | None = None,
+    lane_id_to_name: dict[int, str] | None = None,
+    max_events: int,
+    num_groups: int,
+    sm_clock_ghz: float = 1.5,
+) -> list:
     """Decode the ``slots`` buffer into a flat list of ``Slice`` / ``Instant``.
 
     Walks every ``(cta, gid)`` slot, reads the header count, unpacks each event's
@@ -231,11 +238,13 @@ def decode(slots, *, id_to_name: dict[int, str], group_id_to_name: dict[int, str
                             ts_cy=ts0,
                             dur_cy=ts - ts0,
                             payload=begin_payload,
-                        ))
+                        )
+                    )
 
                 elif kind == EventKind.INSTANT:
                     events.append(
-                        Instant(track=(cta, gid, lane), name=name, ts_cy=ts, payload=payload))
+                        Instant(track=(cta, gid, lane), name=name, ts_cy=ts, payload=payload)
+                    )
 
             # Begins still open at slot end (e.g. clamped RANGE_END) are dropped.
 
@@ -267,10 +276,14 @@ def compute_flows(events: list, flows: list) -> list:
     edges: list = []
     for src_name, dst_name in flows:
         for cta in ctas:
-            srcs = sorted((s for s in slices if s.track[0] == cta and s.name == src_name),
-                          key=lambda s: s.ts_cy)
-            dsts = sorted((s for s in slices if s.track[0] == cta and s.name == dst_name),
-                          key=lambda s: s.ts_cy)
+            srcs = sorted(
+                (s for s in slices if s.track[0] == cta and s.name == src_name),
+                key=lambda s: s.ts_cy,
+            )
+            dsts = sorted(
+                (s for s in slices if s.track[0] == cta and s.name == dst_name),
+                key=lambda s: s.ts_cy,
+            )
             for src, dst in zip(srcs, dsts, strict=False):
                 edges.append(
                     FlowEdge(
@@ -280,5 +293,6 @@ def compute_flows(events: list, flows: list) -> list:
                         dst_ts_cy=dst.ts_cy,
                         src_name=src_name,
                         dst_name=dst_name,
-                    ))
+                    )
+                )
     return edges

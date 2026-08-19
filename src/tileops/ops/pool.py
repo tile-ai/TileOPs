@@ -48,7 +48,6 @@ __all__ = [
 
 
 class MeanPoolingForwardOp(Op):
-
     def __init__(
         self,
         batch_size: int,
@@ -63,7 +62,7 @@ class MeanPoolingForwardOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
-        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
+        params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map")}
         for key, value in params.items():
             setattr(self, key, value)
 
@@ -75,7 +74,8 @@ class MeanPoolingForwardOp(Op):
             "mean_pooling_fwd_kernel",
             key=dtype,
             build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
-                **self._kernel_params, dtype=dtype,
+                **self._kernel_params,
+                dtype=dtype,
             ),
         )
 
@@ -113,9 +113,7 @@ _MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
 def _validate_pool_input_dtypes(self, input: torch.Tensor) -> None:
     """Shared pool-family dtype validator (bound per concrete class)."""
     if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-        raise ValueError(
-            f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
-        )
+        raise ValueError(f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}")
 
 
 class _AvgPoolFwdOpBase(Op):
@@ -162,10 +160,7 @@ class _AvgPoolFwdOpBase(Op):
             divisor_override=divisor_override,
         )
         self.dispatch_kernel(kernel_map)
-        if (
-            self._generic_slot not in self.kernel_map
-            and self._spatial_slot not in self.kernel_map
-        ):
+        if self._generic_slot not in self.kernel_map and self._spatial_slot not in self.kernel_map:
             raise NotImplementedError(
                 f"{type(self).__name__} requires {self._generic_slot!r} or "
                 f"{self._spatial_slot!r} in kernel_map"
@@ -206,8 +201,7 @@ class _AvgPoolFwdOpBase(Op):
         nd = self.ndim
         if input.ndim != nd + 2:
             raise ValueError(
-                f"{type(self).__name__} expects input to be a "
-                f"{nd + 2}D {_POOL_LAYOUTS[nd]} tensor"
+                f"{type(self).__name__} expects input to be a {nd + 2}D {_POOL_LAYOUTS[nd]} tensor"
             )
         n, c_in, *in_dims = input.shape
         if not input.is_cuda:
@@ -274,8 +268,7 @@ class _AvgPoolFwdOpBase(Op):
         nd = self.ndim
         if len(input_shape) != nd + 2:
             raise ValueError(
-                f"{type(self).__name__} expects input_shape to be "
-                f"{nd + 2}D {_POOL_LAYOUTS[nd]}"
+                f"{type(self).__name__} expects input_shape to be {nd + 2}D {_POOL_LAYOUTS[nd]}"
             )
         n, c_in, *in_dims = input_shape
         kernel_size = getattr(self, "kernel_size", None)
@@ -286,8 +279,7 @@ class _AvgPoolFwdOpBase(Op):
             return {"output": (n, c_in) + (0,) * nd}
         ks, st, pd = self._param_tuples()
         out_dims = tuple(
-            pool_output_dim(size, ks[k], st[k], pd[k], ceil_mode)
-            for k, size in enumerate(in_dims)
+            pool_output_dim(size, ks[k], st[k], pd[k], ceil_mode) for k, size in enumerate(in_dims)
         )
         return {"output": (n, c_in, *out_dims)}
 
@@ -299,8 +291,8 @@ class _AvgPoolFwdOpBase(Op):
         input = input.contiguous()
         nd = self.ndim
         n, c_in = resolved[0], resolved[1]
-        in_dims = resolved[2:2 + nd]
-        out_dims = resolved[2 + nd:2 + 2 * nd]
+        in_dims = resolved[2 : 2 + nd]
+        out_dims = resolved[2 + nd : 2 + 2 * nd]
         dtype = resolved[-1]
         kernel = self._get_kernel(n, c_in, in_dims, dtype, _device_index(input))
         self.kernel = kernel
@@ -394,7 +386,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
             tune=tune,
         )
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -425,8 +416,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         return flops, bytes_
 
 
-
-
 def _max_pool_roofline(op: "_MaxPoolFwdOpBase", *, indices: bool) -> tuple[int, int]:
     """Shared max-pool roofline: flops = out_elems * prod(kernel); bytes in+out."""
     if op._last_roofline_spec is None:
@@ -437,8 +426,8 @@ def _max_pool_roofline(op: "_MaxPoolFwdOpBase", *, indices: bool) -> tuple[int, 
     spec = op._last_roofline_spec
     nd = op.ndim
     n, c_in = spec[0], spec[1]
-    in_dims = spec[2:2 + nd]
-    out_dims = spec[2 + nd:2 + 2 * nd]
+    in_dims = spec[2 : 2 + nd]
+    out_dims = spec[2 + nd : 2 + 2 * nd]
     dtype = spec[-1]
     elem_bytes = torch.empty((), dtype=dtype).element_size()
     in_elems = n * c_in
@@ -562,7 +551,11 @@ class _MaxPoolFwdOpBase(Op):
 
         def build() -> Kernel:
             kernel_kwargs: Dict[str, object] = dict(
-                n=n, c_in=c_in, ceil_mode=self.ceil_mode, dtype=dtype, tune=self.tune,
+                n=n,
+                c_in=c_in,
+                ceil_mode=self.ceil_mode,
+                dtype=dtype,
+                tune=self.tune,
             )
             for k, name in enumerate(_POOL_DIM_NAMES[self.ndim]):
                 kernel_kwargs[f"{name}_in"] = in_dims[k]
@@ -579,8 +572,7 @@ class _MaxPoolFwdOpBase(Op):
         nd = self.ndim
         if len(input_shape) != nd + 2:
             raise ValueError(
-                f"{self.__class__.__name__} expects input_shape to be "
-                f"{nd + 2}D {_POOL_LAYOUTS[nd]}"
+                f"{self.__class__.__name__} expects input_shape to be {nd + 2}D {_POOL_LAYOUTS[nd]}"
             )
         n, c_in, *in_dims = input_shape
         kernel_size = getattr(self, "kernel_size", None)
@@ -610,8 +602,8 @@ class _MaxPoolFwdOpBase(Op):
         input = input.contiguous()
         nd = self.ndim
         n, c_in = resolved[0], resolved[1]
-        in_dims = resolved[2:2 + nd]
-        out_dims = resolved[2 + nd:2 + 2 * nd]
+        in_dims = resolved[2 : 2 + nd]
+        out_dims = resolved[2 + nd : 2 + 2 * nd]
         dtype = resolved[-1]
         kernel = self._get_kernel(n, c_in, in_dims, dtype, _device_index(input))
         self.kernel = kernel
@@ -653,7 +645,6 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
             tune=tune,
         )
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -691,7 +682,6 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
             kernel_map=kernel_map,
             tune=tune,
         )
-
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -733,7 +723,6 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
             tune=tune,
         )
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -771,7 +760,6 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
             kernel_map=kernel_map,
             tune=tune,
         )
-
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -813,7 +801,6 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
             tune=tune,
         )
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -851,7 +838,6 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
             kernel_map=kernel_map,
             tune=tune,
         )
-
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -894,7 +880,6 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
             tune=tune,
         )
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -936,22 +921,17 @@ def _normalize_output_size(
     if output_size is None:
         return (None, None)
     if isinstance(output_size, bool):
-        raise TypeError(
-            "output_size must be None, an int, or a tuple of (int | None, int | None)"
-        )
+        raise TypeError("output_size must be None, an int, or a tuple of (int | None, int | None)")
     if isinstance(output_size, int):
         output_size = (output_size, output_size)
     if (
         not isinstance(output_size, (tuple, list))
         or len(output_size) != 2
         or any(
-            isinstance(v, bool) or (v is not None and not isinstance(v, int))
-            for v in output_size
+            isinstance(v, bool) or (v is not None and not isinstance(v, int)) for v in output_size
         )
     ):
-        raise TypeError(
-            "output_size must be None, an int, or a tuple of (int | None, int | None)"
-        )
+        raise TypeError("output_size must be None, an int, or a tuple of (int | None, int | None)")
     if any(v is not None and v <= 0 for v in output_size):
         raise ValueError("output_size entries must be positive or None")
     return tuple(output_size)
@@ -960,9 +940,7 @@ def _normalize_output_size(
 def _validate_adaptive_pool_input_dtypes(self, input: torch.Tensor) -> None:
     """Adaptive-pool dtype validator: FP16/BF16 only (bound per concrete class)."""
     if input.dtype not in {torch.float16, torch.bfloat16}:
-        raise ValueError(
-            f"input.dtype must be float16 or bfloat16, got {input.dtype}"
-        )
+        raise ValueError(f"input.dtype must be float16 or bfloat16, got {input.dtype}")
 
 
 def _adaptive_pool2d_roofline(op: "_AdaptivePool2dFwdOpBase", *, indices: bool) -> tuple[int, int]:
@@ -1036,9 +1014,7 @@ class _AdaptivePool2dFwdOpBase(Op):
             out_h, out_w = self._resolve_out_dims(h_in, w_in)
             full = (n, c_in, out_h, out_w)
         else:
-            raise ValueError(
-                f"{type(self).__name__} expects input_shape to be 3D CHW or 4D NCHW"
-            )
+            raise ValueError(f"{type(self).__name__} expects input_shape to be 3D CHW or 4D NCHW")
         if self._returns_indices:
             return {"output": full, "indices": full}
         return {"output": full}
@@ -1192,14 +1168,16 @@ def _pool_fwd_fake(input: torch.Tensor, instance_key: str) -> torch.Tensor:
 
 @torch.library.custom_op("top::pool_fwd_with_indices", mutates_args=())
 def _pool_fwd_with_indices(
-    input: torch.Tensor, instance_key: str,
+    input: torch.Tensor,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return get_instance(instance_key)._eager_forward(input)
 
 
 @_pool_fwd_with_indices.register_fake
 def _pool_fwd_with_indices_fake(
-    input: torch.Tensor, instance_key: str,
+    input: torch.Tensor,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(input.shape))

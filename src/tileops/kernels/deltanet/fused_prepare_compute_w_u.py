@@ -11,6 +11,7 @@ Into a single kernel where Aw/Au stay in shared memory:
 This eliminates the Aw/Au global memory round-trip between the two kernels.
 Unlike gated DeltaNet, there is no gate parameter g and no Gamma decay matrix.
 """
+
 import functools
 import math
 
@@ -69,9 +70,15 @@ def fused_prepare_compute_w_u_tl(
                 u_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
 
                 # Load inputs
-                T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_shared, disable_tma=True)
-                T.copy(v[bid, hid, by * block_C : (by + 1) * block_C, :], v_shared, disable_tma=True)
-                T.copy(beta[bid, hid, by * block_C : (by + 1) * block_C], beta_shared, disable_tma=True)
+                T.copy(
+                    k[bid, hid, by * block_C : (by + 1) * block_C, :], k_shared, disable_tma=True
+                )
+                T.copy(
+                    v[bid, hid, by * block_C : (by + 1) * block_C, :], v_shared, disable_tma=True
+                )
+                T.copy(
+                    beta[bid, hid, by * block_C : (by + 1) * block_C], beta_shared, disable_tma=True
+                )
 
                 # KKT = k @ k^T
                 T.clear(gram_frag)
@@ -81,12 +88,10 @@ def fused_prepare_compute_w_u_tl(
                 # No gate: P = -strictLower(diag(beta) * KK^T)
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(
-                        i > j,
-                        -gram_frag[i, j] * beta_shared[i],
-                        T.float32(0.0))
+                        i > j, -gram_frag[i, j] * beta_shared[i], T.float32(0.0)
+                    )
                 for i, j in T.Parallel(block_C, block_C):
-                    S_shared[i, j] = T.if_then_else(
-                        i == j, T.float32(1.0), T.float32(0.0))
+                    S_shared[i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
 
                 for _r in T.Serial(num_rounds):
                     T.clear(temp_frag)
@@ -99,8 +104,12 @@ def fused_prepare_compute_w_u_tl(
 
                 # S_shared = A^{-1}; write to both Aw and Au (same matrix)
                 T.copy(S_shared, temp_frag)
-                T.copy(temp_frag, Aw[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
-                T.copy(temp_frag, Au[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
+                T.copy(
+                    temp_frag, Aw[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True
+                )
+                T.copy(
+                    temp_frag, Au[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True
+                )
 
                 # k_beta = k * beta
                 for i_s, i_k in T.Parallel(block_C, dim_k):

@@ -194,10 +194,32 @@ __all__ = [
 for _cls in [
     ReluFwdOp,
     # math (17)
-    ExpFwdOp, LogFwdOp, SqrtFwdOp, RsqrtFwdOp, AbsFwdOp, NegFwdOp, ReciprocalFwdOp, SignFwdOp,
-    SinFwdOp, CosFwdOp, FloorFwdOp, CeilFwdOp, RoundFwdOp, TruncFwdOp, ErfFwdOp, Log1pFwdOp, Expm1FwdOp,
+    ExpFwdOp,
+    LogFwdOp,
+    SqrtFwdOp,
+    RsqrtFwdOp,
+    AbsFwdOp,
+    NegFwdOp,
+    ReciprocalFwdOp,
+    SignFwdOp,
+    SinFwdOp,
+    CosFwdOp,
+    FloorFwdOp,
+    CeilFwdOp,
+    RoundFwdOp,
+    TruncFwdOp,
+    ErfFwdOp,
+    Log1pFwdOp,
+    Expm1FwdOp,
     # activations (8)
-    GeluFwdOp, SiluFwdOp, SigmoidFwdOp, TanhFwdOp, HardswishFwdOp, HardsigmoidFwdOp, MishFwdOp, SeluFwdOp,
+    GeluFwdOp,
+    SiluFwdOp,
+    SigmoidFwdOp,
+    TanhFwdOp,
+    HardswishFwdOp,
+    HardsigmoidFwdOp,
+    MishFwdOp,
+    SeluFwdOp,
     # bitwise (1) -- output same dtype as input
     BitwiseNotFwdOp,
 ]:
@@ -211,11 +233,27 @@ for _cls in [LogicalNotFwdOp, IsnanFwdOp, IsinfFwdOp, IsfiniteFwdOp]:
 # Output dtype comes from each op's manifest entry, so comparison and logical
 # ops need no separate registration group.
 for _cls in [
-    AddFwdOp, SubFwdOp, MulFwdOp, DivFwdOp, RemainderFwdOp, PowFwdOp, FloorDivideFwdOp,
-    LerpFwdOp, MaximumFwdOp, MinimumFwdOp,
-    BitwiseAndFwdOp, BitwiseOrFwdOp, BitwiseXorFwdOp,
-    EqFwdOp, NeFwdOp, GtFwdOp, LtFwdOp, GeFwdOp, LeFwdOp,
-    LogicalAndFwdOp, LogicalOrFwdOp,
+    AddFwdOp,
+    SubFwdOp,
+    MulFwdOp,
+    DivFwdOp,
+    RemainderFwdOp,
+    PowFwdOp,
+    FloorDivideFwdOp,
+    LerpFwdOp,
+    MaximumFwdOp,
+    MinimumFwdOp,
+    BitwiseAndFwdOp,
+    BitwiseOrFwdOp,
+    BitwiseXorFwdOp,
+    EqFwdOp,
+    NeFwdOp,
+    GtFwdOp,
+    LtFwdOp,
+    GeFwdOp,
+    LeFwdOp,
+    LogicalAndFwdOp,
+    LogicalOrFwdOp,
 ]:
     _register_binary_custom_op(_cls)
 
@@ -228,7 +266,11 @@ for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
 # baked into __init__). The Tensor-bound ClampFwdOp registers its own
 # multi-input custom_op below.
 for _cls in [
-    LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp, SoftplusFwdOp, ClampScalarFwdOp,
+    LeakyReluFwdOp,
+    EluFwdOp,
+    HardtanhFwdOp,
+    SoftplusFwdOp,
+    ClampScalarFwdOp,
     NanToNumFwdOp,
 ]:
     _register_unary_custom_op(_cls)
@@ -239,8 +281,15 @@ for _cls in [
 # so ``forward(input)`` with ``self.inplace=True`` traces correctly
 # under ``torch.compile``.
 for _cls in [
-    ReluFwdOp, SiluFwdOp, HardswishFwdOp, HardsigmoidFwdOp, MishFwdOp,
-    SeluFwdOp, LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp,
+    ReluFwdOp,
+    SiluFwdOp,
+    HardswishFwdOp,
+    HardsigmoidFwdOp,
+    MishFwdOp,
+    SeluFwdOp,
+    LeakyReluFwdOp,
+    EluFwdOp,
+    HardtanhFwdOp,
 ]:
     _register_unary_inplace_custom_op(_cls)
 

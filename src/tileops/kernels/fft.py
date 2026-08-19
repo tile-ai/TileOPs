@@ -13,7 +13,7 @@ _PI = 3.14159265358979323846
 
 
 @functools.lru_cache(maxsize=32)
-def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Callable:
+def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Callable:
     """
     Batched 1D Complex-to-Complex FFT kernel with pre-computed twiddle LUT
     and shared-memory (SMEM) stage fusion.
@@ -50,10 +50,10 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         (x_real, x_imag, lut_real, lut_imag), split scratch outputs, and an
         interleaved real/imaginary output with shape (batch_size, n, 2).
     """
-    if dtype == 'complex64':
-        real_dtype = 'float32'
-    elif dtype == 'complex128':
-        real_dtype = 'float64'
+    if dtype == "complex64":
+        real_dtype = "float32"
+    elif dtype == "complex128":
+        real_dtype = "float64"
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
@@ -70,7 +70,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3"]
+        compile_flags=["-O3"],
     )
     def _fft_lut_func(block_size: int, threads: int) -> Callable:
         # --------------- compile-time constants --------------------------------
@@ -78,8 +78,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         # Butterfly pairs for stages s satisfy stride = 2^s < smem_per_block,
         # so all pairs fit within one block for s in 0..smem_stages-1.
         smem_per_block = min(n, 2 * threads)
-        smem_blocks = n // smem_per_block       # >= 1 (both are powers of 2)
-        smem_stages = int(math.log2(smem_per_block))   # stages handled in SMEM
+        smem_blocks = n // smem_per_block  # >= 1 (both are powers of 2)
+        smem_stages = int(math.log2(smem_per_block))  # stages handled in SMEM
         # remaining stages (stride >= smem_per_block) use the LUT
         lut_stage_start = smem_stages
         lut_stage_count = log2n - smem_stages
@@ -162,8 +162,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
 
                 # ---- butterfly stages (Python-level loop → compile-time unroll) ----
                 for s in range(smem_stages):
-                    m_s = 1 << (s + 1)    # compile-time constant
-                    half_m_s = 1 << s     # compile-time constant
+                    m_s = 1 << (s + 1)  # compile-time constant
+                    half_m_s = 1 << s  # compile-time constant
 
                     for i in T.Parallel(threads):
                         if i < smem_per_block // 2:
@@ -172,11 +172,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                             j_idx = group * m_s + k
                             l_idx = j_idx + half_m_s
 
-                            angle = (
-                                -2.0 * _PI
-                                * T.cast(k, "float64")
-                                / T.cast(m_s, "float64")
-                            )
+                            angle = -2.0 * _PI * T.cast(k, "float64") / T.cast(m_s, "float64")
                             tw_r = T.cos(T.cast(angle, accum_dtype))
                             tw_i = T.sin(T.cast(angle, accum_dtype))
 
@@ -269,12 +265,24 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         t_i = v_r * tw_i + v_i * tw_r
 
                         store_complex(
-                            y_real, y_imag, y_pair, bb, j_idx,
-                            u_r + t_r, u_i + t_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            j_idx,
+                            u_r + t_r,
+                            u_i + t_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, l_idx,
-                            u_r - t_r, u_i - t_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            l_idx,
+                            u_r - t_r,
+                            u_i - t_i,
+                            write_pair,
                         )
 
         def _butterfly(u_r, u_i, v_r, v_i, tw_r, tw_i):
@@ -341,20 +349,44 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
                         td2_i = dp_r * (-w2_r) + dp_i * w2_i
 
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base,
-                            ap_r + tc_r, ap_i + tc_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base,
+                            ap_r + tc_r,
+                            ap_i + tc_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 2 * q,
-                            ap_r - tc_r, ap_i - tc_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 2 * q,
+                            ap_r - tc_r,
+                            ap_i - tc_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + q,
-                            bp_r + td2_r, bp_i + td2_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + q,
+                            bp_r + td2_r,
+                            bp_i + td2_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 3 * q,
-                            bp_r - td2_r, bp_i - td2_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 3 * q,
+                            bp_r - td2_r,
+                            bp_i - td2_i,
+                            write_pair,
                         )
 
         @T.macro
@@ -445,38 +477,87 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
 
                         store_complex(y_real, y_imag, y_pair, bb, base, c0_r, c0_i, write_pair)
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + q, c1_r, c1_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + q,
+                            c1_r,
+                            c1_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 2 * q, c2_r, c2_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 2 * q,
+                            c2_r,
+                            c2_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 3 * q, c3_r, c3_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 3 * q,
+                            c3_r,
+                            c3_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 4 * q, c4_r, c4_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 4 * q,
+                            c4_r,
+                            c4_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 5 * q, c5_r, c5_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 5 * q,
+                            c5_r,
+                            c5_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 6 * q, c6_r, c6_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 6 * q,
+                            c6_r,
+                            c6_i,
+                            write_pair,
                         )
                         store_complex(
-                            y_real, y_imag, y_pair, bb, base + 7 * q, c7_r, c7_i, write_pair,
+                            y_real,
+                            y_imag,
+                            y_pair,
+                            bb,
+                            base + 7 * q,
+                            c7_r,
+                            c7_i,
+                            write_pair,
                         )
 
         @T.prim_func
         def _fft_lut_main(
-            x_real: T.Tensor((B, n), real_dtype),         # type: ignore
-            x_imag: T.Tensor((B, n), real_dtype),         # type: ignore
+            x_real: T.Tensor((B, n), real_dtype),  # type: ignore
+            x_imag: T.Tensor((B, n), real_dtype),  # type: ignore
             lut_real: T.Tensor((lut_size,), real_dtype),  # type: ignore
             lut_imag: T.Tensor((lut_size,), real_dtype),  # type: ignore
             # Split outputs are global scratch for non-final LUT stages. The
             # wrapper exposes only y_pair, written by the final stage.
-            y_real: T.Tensor((B, n), real_dtype),         # type: ignore
-            y_imag: T.Tensor((B, n), real_dtype),         # type: ignore
-            y_pair: T.Tensor((B, n, 2), real_dtype),      # type: ignore
+            y_real: T.Tensor((B, n), real_dtype),  # type: ignore
+            y_imag: T.Tensor((B, n), real_dtype),  # type: ignore
+            y_pair: T.Tensor((B, n, 2), real_dtype),  # type: ignore
         ) -> None:
             # Fused bit-reversal + SMEM butterfly stages: single kernel launch,
             # one global-memory read of x, one write of y for all SMEM stages.
@@ -488,19 +569,31 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
             remainder = lut_stage_count - r8_count
             for s in range(0, r8_count, 3):
                 lut_butterfly_radix8(
-                    y_real, y_imag, y_pair, lut_real, lut_imag,
+                    y_real,
+                    y_imag,
+                    y_pair,
+                    lut_real,
+                    lut_imag,
                     s + lut_stage_start,
                     remainder == 0 and s + 3 == r8_count,
                 )
             if remainder == 2:
                 lut_butterfly_radix4(
-                    y_real, y_imag, y_pair, lut_real, lut_imag,
+                    y_real,
+                    y_imag,
+                    y_pair,
+                    lut_real,
+                    lut_imag,
                     r8_count + lut_stage_start,
                     True,
                 )
             elif remainder == 1:
                 lut_butterfly_stage(
-                    y_real, y_imag, y_pair, lut_real, lut_imag,
+                    y_real,
+                    y_imag,
+                    y_pair,
+                    lut_real,
+                    lut_imag,
                     r8_count + lut_stage_start,
                     True,
                 )
@@ -535,7 +628,7 @@ def _(
     dtype: str,
     block_size: int,
     threads: int,
-    *inputs: tuple[torch.Tensor, ...]
+    *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
     real_dtype = inputs[0].dtype
     device = inputs[0].device
@@ -555,7 +648,7 @@ class FFTC2CKernel(Kernel):
        stages.
 
     2. Pre-computed twiddle LUT: the remaining large-stride stages look up
-       twiddle factors from a GPU-resident LUT (built by FFTC2COp at
+       twiddle factors from a GPU-resident LUT (built by FFTC2CFwdOp at
        construction time), eliminating repeated sin/cos evaluation.
 
     Together these match cuFFT-level performance on modern NVIDIA GPUs.
@@ -568,19 +661,21 @@ class FFTC2CKernel(Kernel):
 
     Note:
         n must be a power of 2.
-        The LUT tensors are managed and passed by FFTC2COp, not this class.
+        The LUT tensors are managed and passed by FFTC2CFwdOp, not this class.
 
     Optimization notes and benchmark results: https://github.com/tile-ai/TileOPs/issues/310
     """
 
     supported_archs = [75, 80, 86, 89, 90]
 
-    def __init__(self,
-                 n: int,
-                 batch_size: int = 1,
-                 dtype: torch.dtype = torch.complex64,
-                 config: Optional[Dict[str, Any]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        n: int,
+        batch_size: int = 1,
+        dtype: torch.dtype = torch.complex64,
+        config: Optional[Dict[str, Any]] = None,
+        tune: bool = False,
+    ) -> None:
         super().__init__()
         self.n = n
         self.batch_size = batch_size
@@ -601,10 +696,7 @@ class FFTC2CKernel(Kernel):
         # block_size controls LUT-stage work per block (higher → better ILP).
         # threads controls SMEM coverage (2*threads elements per block).
         # Decoupled search: threads for SMEM depth, block_size for LUT throughput.
-        configs = [
-            {"block_size": bs, "threads": bs}
-            for bs in [128, 256, 512, 1024]
-        ]
+        configs = [{"block_size": bs, "threads": bs} for bs in [128, 256, 512, 1024]]
         configs += [
             {"block_size": 1024, "threads": 256},
             {"block_size": 1024, "threads": 512},

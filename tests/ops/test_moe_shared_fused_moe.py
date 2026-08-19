@@ -30,14 +30,21 @@ def test_shared_fused_moe_basic():
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
     op = SharedFusedMoE(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
-        scoring_func="softmax", renormalize=False,
+        num_tokens=T,
+        num_experts=E,
+        top_k=K,
+        hidden_size=H,
+        ffn_size=F,
+        scoring_func="softmax",
+        renormalize=False,
         shared_ffn_size=F_s,
     )
 
     shared_out, routed_out = op(
-        hidden, gating, w_gate_up, w_down,
+        hidden,
+        gating,
+        w_gate_up,
+        w_down,
         shared_w_gate_up=shared_w_gate_up,
         shared_w_down=shared_w_down,
     )
@@ -56,13 +63,16 @@ def test_shared_fused_moe_basic():
 
     # routed_out matches FusedMoe
     op_routed = FusedMoe(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
-        scoring_func="softmax", renormalize=False,
+        num_tokens=T,
+        num_experts=E,
+        top_k=K,
+        hidden_size=H,
+        ffn_size=F,
+        scoring_func="softmax",
+        renormalize=False,
     )
     routed_ref = op_routed(hidden, gating, w_gate_up, w_down)
     torch.testing.assert_close(routed_out, routed_ref, rtol=1e-5, atol=1e-5)
-
 
 
 @pytest.mark.smoke
@@ -79,8 +89,11 @@ def test_shared_fused_moe_none():
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
     op = SharedFusedMoE(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
+        num_tokens=T,
+        num_experts=E,
+        top_k=K,
+        hidden_size=H,
+        ffn_size=F,
     )
 
     shared_out, routed_out = op(hidden, gating, w_gate_up, w_down)
@@ -114,21 +127,32 @@ def test_shared_fused_moe_tp():
     shard_size = F_s // tp_size
     partial_sum_ref = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):
-        gate_up_shard = torch.cat([
-            shared_w_gate_up[tp_rank * shard_size : (tp_rank + 1) * shard_size],          # gate shard
-            shared_w_gate_up[F_s + tp_rank * shard_size : F_s + (tp_rank + 1) * shard_size],  # up shard
-        ], dim=0)  # [2*shard, H]
-        down_shard = shared_w_down[:, tp_rank * shard_size: (tp_rank + 1) * shard_size]              # [H, shard]
-        gate_up_out = hidden.float() @ gate_up_shard.float().T     # [T, 2*shard]
+        gate_up_shard = torch.cat(
+            [
+                shared_w_gate_up[tp_rank * shard_size : (tp_rank + 1) * shard_size],  # gate shard
+                shared_w_gate_up[
+                    F_s + tp_rank * shard_size : F_s + (tp_rank + 1) * shard_size
+                ],  # up shard
+            ],
+            dim=0,
+        )  # [2*shard, H]
+        down_shard = shared_w_down[
+            :, tp_rank * shard_size : (tp_rank + 1) * shard_size
+        ]  # [H, shard]
+        gate_up_out = hidden.float() @ gate_up_shard.float().T  # [T, 2*shard]
         gate, up = gate_up_out.chunk(2, dim=1)
-        act = gate * torch.sigmoid(gate) * up                       # [T, shard]
-        partial_sum_ref += act @ down_shard.float().T               # [T, H]
+        act = gate * torch.sigmoid(gate) * up  # [T, shard]
+        partial_sum_ref += act @ down_shard.float().T  # [T, H]
 
     # routed reference (not affected by TP)
     op_routed = FusedMoe(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
-        scoring_func="softmax", renormalize=False,
+        num_tokens=T,
+        num_experts=E,
+        top_k=K,
+        hidden_size=H,
+        ffn_size=F,
+        scoring_func="softmax",
+        renormalize=False,
     )
     routed_ref = op_routed(hidden, gating, w_gate_up, w_down)
 
@@ -136,14 +160,22 @@ def test_shared_fused_moe_tp():
     partial_sum = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):
         op_tp = SharedFusedMoE(
-            num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
-            scoring_func="softmax", renormalize=False,
+            num_tokens=T,
+            num_experts=E,
+            top_k=K,
+            hidden_size=H,
+            ffn_size=F,
+            scoring_func="softmax",
+            renormalize=False,
             shared_ffn_size=F_s,
-            tp_size=tp_size, tp_rank=tp_rank,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
         )
         shared_partial, routed_out = op_tp(
-            hidden, gating, w_gate_up, w_down,
+            hidden,
+            gating,
+            w_gate_up,
+            w_down,
             shared_w_gate_up=shared_w_gate_up,
             shared_w_down=shared_w_down,
         )
@@ -155,7 +187,6 @@ def test_shared_fused_moe_tp():
 
     # partial_sum vs per-shard float32 math reference (same computation path)
     torch.testing.assert_close(partial_sum, partial_sum_ref, rtol=1e-2, atol=1e-2)
-
 
 
 @pytest.mark.smoke
@@ -171,11 +202,16 @@ def test_shared_fused_moe_tp_rejects_local_shards():
     dev = "cuda"
 
     op = SharedFusedMoE(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
-        scoring_func="softmax", renormalize=False,
+        num_tokens=T,
+        num_experts=E,
+        top_k=K,
+        hidden_size=H,
+        ffn_size=F,
+        scoring_func="softmax",
+        renormalize=False,
         shared_ffn_size=F_s,
-        tp_size=tp_size, tp_rank=0,
+        tp_size=tp_size,
+        tp_rank=0,
     )
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
@@ -189,15 +225,27 @@ def test_shared_fused_moe_tp_rejects_local_shards():
     bad_gate_up = torch.randn(2 * shard_size, H, dtype=dtype, device=dev)
     good_w_down = torch.randn(H, F_s, dtype=dtype, device=dev)
     with pytest.raises(ValueError, match="full weights"):
-        op(hidden, gating, w_gate_up, w_down,
-           shared_w_gate_up=bad_gate_up, shared_w_down=good_w_down)
+        op(
+            hidden,
+            gating,
+            w_gate_up,
+            w_down,
+            shared_w_gate_up=bad_gate_up,
+            shared_w_down=good_w_down,
+        )
 
     # Pass TP-local down shard instead of full weights → must raise
     good_gate_up = torch.randn(2 * F_s, H, dtype=dtype, device=dev)
     bad_w_down = torch.randn(H, shard_size, dtype=dtype, device=dev)
     with pytest.raises(ValueError, match="full weights"):
-        op(hidden, gating, w_gate_up, w_down,
-           shared_w_gate_up=good_gate_up, shared_w_down=bad_w_down)
+        op(
+            hidden,
+            gating,
+            w_gate_up,
+            w_down,
+            shared_w_gate_up=good_gate_up,
+            shared_w_down=bad_w_down,
+        )
 
 
 @pytest.mark.smoke
@@ -214,8 +262,12 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
 
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
     op = SharedFusedMoE(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F, shared_ffn_size=F_s,
+        num_tokens=T,
+        num_experts=E,
+        top_k=K,
+        hidden_size=H,
+        ffn_size=F,
+        shared_ffn_size=F_s,
         kernel_map={"shared_expert_mlp": Replacement},
     )
     assert op.kernel_map["shared_expert_mlp"] is Replacement

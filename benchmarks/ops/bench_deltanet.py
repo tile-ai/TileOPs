@@ -36,8 +36,8 @@ def _to_fla_layout(q, k, v, beta):
 
 # Forward benchmark
 
-class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
+class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
@@ -52,15 +52,20 @@ class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
 class DeltaNetVsFlaFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 4096, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4096, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 4096, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 2048, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 32768, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.nightly),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 4096, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 4096, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 4096, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 2048, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(
+                    2, 32768, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.nightly
+                ),
+            ],
+        ),
     ]
 
 
@@ -85,7 +90,7 @@ def test_deltanet_vs_fla_fwd(
 
     # --- FLA (BTHK) ---
     q, k, v, beta = inputs
-    scale = dim_k ** -0.5
+    scale = dim_k**-0.5
     q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(q, k, v, beta)
 
     def fla_fwd():
@@ -98,8 +103,8 @@ def test_deltanet_vs_fla_fwd(
 
 # Backward benchmark
 
-class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
+class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
@@ -114,14 +119,17 @@ class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
 class DeltaNetVsFlaBwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 4096, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4096, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 4096, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 2048, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                pytest.param(2, 4096, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 4096, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 4096, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 2048, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -154,7 +162,7 @@ def test_deltanet_vs_fla_bwd(
     functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---
-    scale = DK ** -0.5
+    scale = DK**-0.5
     q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(q, k, v, beta)
     do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
 
@@ -171,5 +179,6 @@ def test_deltanet_vs_fla_bwd(
 
     functors["fla"] = (fla_bwd, ())
 
-    bm.compare(functors, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd,
-               record_as=bwd_op, params=locals())
+    bm.compare(
+        functors, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd, record_as=bwd_op, params=locals()
+    )

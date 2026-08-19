@@ -29,7 +29,6 @@ def _rms_norm_kernel(M, N, eps, dtype):
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
-
         @T.prim_func
         def main(
             x: T.Tensor[(M, N_padded), dtype],
@@ -49,8 +48,8 @@ def _rms_norm_kernel(M, N, eps, dtype):
 
                 # Compute x^2 in fp32
                 for i, j in T.Parallel(block_m, N_padded):
-                    xsq_f32[i, j] = (
-                        T.cast(x_local[i, j], "float32") * T.cast(x_local[i, j], "float32")
+                    xsq_f32[i, j] = T.cast(x_local[i, j], "float32") * T.cast(
+                        x_local[i, j], "float32"
                     )
 
                 # Sum of squares along hidden dim
@@ -133,7 +132,8 @@ class RMSNormKernel(Kernel):
         if not (x.is_cuda and weight.is_cuda):
             raise ValueError(
                 f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
-                f"{weight.device}. Another target's backend serves other devices.")
+                f"{weight.device}. Another target's backend serves other devices."
+            )
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

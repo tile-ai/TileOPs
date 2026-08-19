@@ -16,45 +16,101 @@ class MeanPoolingTest(MeanPoolingWorkload, TestBase):
 class MeanPoolingFixture(FixtureBase):
     PARAMS = [
         # because of using warp reduction, the chunk_size must be divisible by 32
-        ("batch_size, seq_len, heads, dim, chunk_size, dtype, accum_dtype, tune, offsets", [
-            pytest.param(
-                1, 8192, 64, 128, 64, torch.float16, torch.float32, False, None,
-                marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None,
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                2, 2048, 64, 128, 64, torch.float16, torch.float32, False, None,
-                marks=pytest.mark.full,
-            ),
-            # varlen case: lengths [256, 512, 256] -> offsets [0, 256, 768, 1024]
-            pytest.param(
-                1, 1024, 64, 128, 64, torch.float16, torch.float32, False,
-                torch.tensor([0, 256, 768, 1024], dtype=torch.int32, device='cuda'),
-                marks=pytest.mark.full,
-            ),
-            # varlen case: lengths [2048, 2048, 2048, 2048] -> offsets [0, 2048, 4096, 6144, 8192]
-            pytest.param(
-                1, 8192, 64, 128, 64, torch.float16, torch.float32, False,
-                torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device='cuda'),
-                marks=pytest.mark.full,
-            ),
-            # varlen case: lengths [100, 200, 300, 400] -> offsets [0, 100, 300, 600, 1000]
-            pytest.param(
-                1, 1000, 64, 128, 32, torch.float16, torch.float32, False,
-                torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device='cuda'),
-                marks=pytest.mark.full,
-            ),
-        ]),
+        (
+            "batch_size, seq_len, heads, dim, chunk_size, dtype, accum_dtype, tune, offsets",
+            [
+                pytest.param(
+                    1,
+                    8192,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    None,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    1,
+                    8192,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    torch.float32,
+                    True,
+                    None,
+                    marks=pytest.mark.full,
+                ),
+                pytest.param(
+                    2,
+                    2048,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    None,
+                    marks=pytest.mark.full,
+                ),
+                # varlen case: lengths [256, 512, 256] -> offsets [0, 256, 768, 1024]
+                pytest.param(
+                    1,
+                    1024,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    torch.tensor([0, 256, 768, 1024], dtype=torch.int32, device="cuda"),
+                    marks=pytest.mark.full,
+                ),
+                # varlen case: lengths [2048, 2048, 2048, 2048] -> offsets [0, 2048, 4096, 6144, 8192]
+                pytest.param(
+                    1,
+                    8192,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device="cuda"),
+                    marks=pytest.mark.full,
+                ),
+                # varlen case: lengths [100, 200, 300, 400] -> offsets [0, 100, 300, 600, 1000]
+                pytest.param(
+                    1,
+                    1000,
+                    64,
+                    128,
+                    32,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device="cuda"),
+                    marks=pytest.mark.full,
+                ),
+            ],
+        ),
     ]
 
 
 @MeanPoolingFixture
-def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
-                         dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool,
-                         offsets: Optional[torch.Tensor]) -> None:
+def test_mean_pooling_op(
+    batch_size: int,
+    seq_len: int,
+    heads: int,
+    dim: int,
+    chunk_size: int,
+    dtype: torch.dtype,
+    accum_dtype: torch.dtype,
+    tune: bool,
+    offsets: Optional[torch.Tensor],
+) -> None:
     if offsets is not None:
         assert batch_size == 1
         assert offsets[-1] == seq_len
@@ -64,13 +120,15 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
         use_offsets = 1
     else:
         offsets = torch.arange(
-            0, (batch_size + 1) * seq_len,
+            0,
+            (batch_size + 1) * seq_len,
             seq_len,
             dtype=torch.int32,
-            device='cuda',
-            requires_grad=False)
+            device="cuda",
+            requires_grad=False,
+        )
         chunks_per_batch = (seq_len + chunk_size - 1) // chunk_size  # integer ceil
-        indices = torch.randint(0, seq_len, (chunks_per_batch, 2), dtype=torch.int32, device='cuda')
+        indices = torch.randint(0, seq_len, (chunks_per_batch, 2), dtype=torch.int32, device="cuda")
         seq_num = batch_size
         use_offsets = 0
 
@@ -88,11 +146,19 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
     }
 
     test = MeanPoolingTest(
-        batch_size=batch_size, seq_len=seq_len, heads=heads, dim=dim,
-        chunk_size=chunk_size, chunks_per_batch=chunks_per_batch,
-        seq_num=seq_num, use_offsets=use_offsets,
-        dtype=dtype, accum_dtype=accum_dtype,
-        offsets=offsets, indices=indices)
+        batch_size=batch_size,
+        seq_len=seq_len,
+        heads=heads,
+        dim=dim,
+        chunk_size=chunk_size,
+        chunks_per_batch=chunks_per_batch,
+        seq_num=seq_num,
+        use_offsets=use_offsets,
+        dtype=dtype,
+        accum_dtype=accum_dtype,
+        offsets=offsets,
+        indices=indices,
+    )
 
     op = MeanPoolingForwardOp(**params)
     inputs = test.gen_inputs()

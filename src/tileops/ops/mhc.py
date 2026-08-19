@@ -8,15 +8,13 @@ from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
 
 from .op_base import Op
 
-__all__ = ["MHCPostOp", "MHCPreOp"]
+__all__ = ["MHCPostFwdOp", "MHCPreFwdOp"]
 
 
-class MHCPreOp(Op):
+class MHCPreFwdOp(Op):
     """Layout: BSHD"""
 
-    def __init__(self,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
         self.batch = None
         self.n_expand = None
         self.c_x = None
@@ -35,9 +33,7 @@ class MHCPreOp(Op):
     def _n_expand_from_phi_dim(phi_dim: int) -> int:
         n_expand = int(math.isqrt(phi_dim + 1) - 1)
         if n_expand <= 0 or n_expand * n_expand + 2 * n_expand != phi_dim:
-            raise ValueError(
-                "phi.shape[1] must equal n_expand * n_expand + 2 * n_expand"
-            )
+            raise ValueError("phi.shape[1] must equal n_expand * n_expand + 2 * n_expand")
         return n_expand
 
     def _get_kernel(
@@ -53,22 +49,27 @@ class MHCPreOp(Op):
             "mhc_pre_kernel",
             key=key,
             build=lambda: self.kernel_map["mhc_pre_kernel"](
-                batch, n_expand, c_x, dtype, tune=self.tune,
+                batch,
+                n_expand,
+                c_x,
+                dtype,
+                tune=self.tune,
             ),
         )
 
-    def forward(self,
-                phi: torch.Tensor,
-                x: torch.Tensor,
-                b: torch.Tensor,
-                alpha_pre: float,
-                alpha_post: float,
-                alpha_res: float,
-                sinkhorn_repeat: int,
-                sinkhorn_eps: float = 0.02) -> torch.Tensor:
-
+    def forward(
+        self,
+        phi: torch.Tensor,
+        x: torch.Tensor,
+        b: torch.Tensor,
+        alpha_pre: float,
+        alpha_post: float,
+        alpha_res: float,
+        sinkhorn_repeat: int,
+        sinkhorn_eps: float = 0.02,
+    ) -> torch.Tensor:
         if phi.ndim != 2 or x.ndim != 2 or b.ndim != 1:
-            raise ValueError("MHCPreOp expects phi/x/b shapes [D, P], [B, D], [P]")
+            raise ValueError("MHCPreFwdOp expects phi/x/b shapes [D, P], [B, D], [P]")
         batch, x_dim = x.shape
         if phi.shape[0] != x_dim:
             raise ValueError(f"phi.shape[0] must match x.shape[1]={x_dim}, got {phi.shape[0]}")
@@ -83,16 +84,15 @@ class MHCPreOp(Op):
         self.c_x = c_x
         self.dtype = x.dtype
         self.kernel = self._get_kernel(batch, n_expand, c_x, x.dtype, x.device.index)
-        return self.kernel(phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat,
-                           sinkhorn_eps)
+        return self.kernel(
+            phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, sinkhorn_eps
+        )
 
 
-class MHCPostOp(Op):
+class MHCPostFwdOp(Op):
     """Layout: BSHD"""
 
-    def __init__(self,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
         self.batch = None
         self.n_expand = None
         self.c_x = None
@@ -120,18 +120,22 @@ class MHCPostOp(Op):
             "mhc_post_kernel",
             key=key,
             build=lambda: self.kernel_map["mhc_post_kernel"](
-                batch, n_expand, c_x, dtype, tune=self.tune,
+                batch,
+                n_expand,
+                c_x,
+                dtype,
+                tune=self.tune,
             ),
         )
 
-    def forward(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
-                x_res: torch.Tensor) -> torch.Tensor:
-
+    def forward(
+        self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
+    ) -> torch.Tensor:
         if x_layer_out.ndim != 2 or h_post.ndim != 2 or x_res.ndim != 2:
-            raise ValueError("MHCPostOp expects x_layer_out/h_post/x_res to be 2D tensors")
+            raise ValueError("MHCPostFwdOp expects x_layer_out/h_post/x_res to be 2D tensors")
         batch, c_x = x_layer_out.shape
         if h_post.shape[0] != batch or x_res.shape[0] != batch:
-            raise ValueError("MHCPostOp inputs must have matching batch dimensions")
+            raise ValueError("MHCPostFwdOp inputs must have matching batch dimensions")
         n_expand = h_post.shape[1]
         if x_res.shape[1] != n_expand * c_x:
             raise ValueError(
@@ -145,5 +149,7 @@ class MHCPostOp(Op):
         self.n_expand = n_expand
         self.c_x = c_x
         self.dtype = x_layer_out.dtype
-        self.kernel = self._get_kernel(batch, n_expand, c_x, x_layer_out.dtype, x_layer_out.device.index)
+        self.kernel = self._get_kernel(
+            batch, n_expand, c_x, x_layer_out.dtype, x_layer_out.device.index
+        )
         return self.kernel(x_layer_out, h_post, x_res)

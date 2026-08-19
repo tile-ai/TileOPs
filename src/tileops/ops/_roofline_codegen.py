@@ -63,7 +63,11 @@ class _ShapeProxy:
 
 
 def _resolve_tensor_binding(
-    op: Any, name: str, op_name: str, *, optional: bool = False,
+    op: Any,
+    name: str,
+    op_name: str,
+    *,
+    optional: bool = False,
 ) -> Any:
     """Bind ``name`` for inline-mode synthesis from op-instance state.
 
@@ -95,8 +99,10 @@ def _resolve_tensor_binding(
     # conformant object (e.g. exposes ``.shape`` only) does not slip
     # past and die later when the generated body reads ``.ndim``.
     if (
-        direct is not _unset and direct is not None
-        and hasattr(direct, "shape") and hasattr(direct, "ndim")
+        direct is not _unset
+        and direct is not None
+        and hasattr(direct, "shape")
+        and hasattr(direct, "ndim")
     ):
         return direct
     shape_attr = getattr(op, f"{name}_shape", _unset)
@@ -147,28 +153,25 @@ def _resolve_func_path(path: str) -> Callable[..., Any]:
     (``docs/design/roofline.md`` §4.4).
     """
     if not isinstance(path, str) or "." not in path:
-        raise ValueError(
-            f"roofline.func must be a dotted module.attr path, got {path!r}"
-        )
+        raise ValueError(f"roofline.func must be a dotted module.attr path, got {path!r}")
     mod_path, _, attr = path.rpartition(".")
     try:
         mod = importlib.import_module(mod_path)
     except Exception as exc:
         raise ValueError(
-            f"cannot resolve roofline.func {path!r}: import {mod_path!r} "
-            f"failed ({exc})"
+            f"cannot resolve roofline.func {path!r}: import {mod_path!r} failed ({exc})"
         ) from exc
     fn = getattr(mod, attr, None)
     if not callable(fn):
         raise ValueError(
-            f"cannot resolve roofline.func {path!r}: {attr!r} is not a "
-            f"callable on {mod_path!r}"
+            f"cannot resolve roofline.func {path!r}: {attr!r} is not a callable on {mod_path!r}"
         )
     return fn
 
 
 def _synthesize_func_mode(
-    op_name: str, func_path: str,
+    op_name: str,
+    func_path: str,
 ) -> Callable[..., tuple[int, int]]:
     """Build an ``eval_roofline`` that delegates to a human-authored func.
 
@@ -186,15 +189,19 @@ def _synthesize_func_mode(
 
     eval_roofline.__name__ = "eval_roofline"
     eval_roofline.__qualname__ = f"{op_name}.eval_roofline"
-    eval_roofline.__doc__ = (
-        f"Synthesized from manifest roofline.func={func_path!r}."
-    )
+    eval_roofline.__doc__ = f"Synthesized from manifest roofline.func={func_path!r}."
     return eval_roofline
 
 
 _VARS_FORBIDDEN_NODES = (
-    ast.Lambda, ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Await,
-    ast.AsyncFunctionDef, ast.FunctionDef, ast.ClassDef,
+    ast.Lambda,
+    ast.NamedExpr,
+    ast.Yield,
+    ast.YieldFrom,
+    ast.Await,
+    ast.AsyncFunctionDef,
+    ast.FunctionDef,
+    ast.ClassDef,
 )
 _VARS_ATTR_WHITELIST = frozenset({"shape", "ndim"})
 
@@ -427,11 +434,14 @@ def _validate_vars_expr(
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
         raise ValueError(
-            f"{op_name}: roofline.vars[{var_name!r}] is not a valid Python "
-            f"expression ({exc})"
+            f"{op_name}: roofline.vars[{var_name!r}] is not a valid Python expression ({exc})"
         ) from exc
     _VarsExprValidator(
-        op_name, var_name, allowed_names, input_names, optional_names,
+        op_name,
+        var_name,
+        allowed_names,
+        input_names,
+        optional_names,
     ).visit(tree)
     return tree
 
@@ -443,16 +453,39 @@ def _validate_vars_expr(
 # from drifting as new AST node kinds appear in future Python versions.
 _ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
     ast.Expression,
-    ast.BinOp, ast.UnaryOp, ast.BoolOp,
-    ast.IfExp, ast.Compare,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.BoolOp,
+    ast.IfExp,
+    ast.Compare,
     ast.Call,
     ast.Constant,
-    ast.Name, ast.Load,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
-    ast.LShift, ast.RShift, ast.BitAnd, ast.BitOr, ast.BitXor,
-    ast.USub, ast.UAdd, ast.Invert, ast.Not,
-    ast.And, ast.Or,
-    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.Name,
+    ast.Load,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.LShift,
+    ast.RShift,
+    ast.BitAnd,
+    ast.BitOr,
+    ast.BitXor,
+    ast.USub,
+    ast.UAdd,
+    ast.Invert,
+    ast.Not,
+    ast.And,
+    ast.Or,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
 )
 
 
@@ -473,8 +506,7 @@ def _validate_arithmetic_expr(
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
         raise ValueError(
-            f"{op_name}: roofline.{label} is not a valid Python "
-            f"expression ({exc})"
+            f"{op_name}: roofline.{label} is not a valid Python expression ({exc})"
         ) from exc
 
     for node in ast.walk(tree):
@@ -531,14 +563,11 @@ def _synthesize_inline_mode(
     bytes_expr = roofline.get("bytes")
     if not isinstance(flops_expr, str) or not isinstance(bytes_expr, str):
         raise ValueError(
-            f"{op_name}: inline-mode roofline must declare both "
-            f"flops and bytes as strings"
+            f"{op_name}: inline-mode roofline must declare both flops and bytes as strings"
         )
     vars_block = roofline.get("vars") or {}
     if not isinstance(vars_block, dict):
-        raise ValueError(
-            f"{op_name}: roofline.vars must be a mapping when present"
-        )
+        raise ValueError(f"{op_name}: roofline.vars must be a mapping when present")
 
     sig = signature or {}
     inputs = sig.get("inputs") or {}
@@ -554,21 +583,22 @@ def _synthesize_inline_mode(
     vars_allowed.update(_VARS_HELPERS.keys())
 
     input_name_set = set(input_names)
-    optional_name_set = {
-        name for name, attrs in inputs.items()
-        if isinstance(attrs, dict) and attrs.get("optional") is True
-    } if isinstance(inputs, dict) else set()
+    optional_name_set = (
+        {
+            name
+            for name, attrs in inputs.items()
+            if isinstance(attrs, dict) and attrs.get("optional") is True
+        }
+        if isinstance(inputs, dict)
+        else set()
+    )
     for name, expr in vars_block.items():
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(
-                f"{op_name}: roofline.vars key {name!r} is not a valid "
-                f"Python identifier"
+                f"{op_name}: roofline.vars key {name!r} is not a valid Python identifier"
             )
         if not isinstance(expr, str):
-            raise ValueError(
-                f"{op_name}: roofline.vars[{name!r}] must be a string "
-                f"expression"
-            )
+            raise ValueError(f"{op_name}: roofline.vars[{name!r}] must be a string expression")
         # Reject keys that collide with names already in scope (inputs,
         # params, helpers, ``elem_bytes``, or an earlier vars entry).
         # The emitted body assigns ``<name> = <expr>`` and would shadow
@@ -581,7 +611,11 @@ def _synthesize_inline_mode(
                 f"earlier var)"
             )
         _validate_vars_expr(
-            op_name, name, expr, vars_allowed, input_name_set,
+            op_name,
+            name,
+            expr,
+            vars_allowed,
+            input_name_set,
             optional_name_set,
         )
         vars_allowed.add(name)
@@ -614,7 +648,9 @@ def _synthesize_inline_mode(
     # every Op even when the roofline does not need it", which is more
     # than the design requires.
     referenced = _referenced_names(
-        *vars_block.values(), flops_expr, bytes_expr,
+        *vars_block.values(),
+        flops_expr,
+        bytes_expr,
     )
     for n in input_names:
         if n not in referenced:
@@ -659,8 +695,7 @@ def _synthesize_inline_mode(
         code = compile(src, f"<{op_name}.eval_roofline>", "exec")
     except SyntaxError as exc:  # pragma: no cover - validated above
         raise ValueError(
-            f"{op_name}: synthesized eval_roofline body did not compile "
-            f"({exc})"
+            f"{op_name}: synthesized eval_roofline body did not compile ({exc})"
         ) from exc
     local_ns: dict[str, Any] = {}
     exec(code, globs, local_ns)
@@ -695,20 +730,15 @@ def synthesize_eval_roofline(
     """
     if not isinstance(roofline, dict) or not roofline:
         raise ValueError(
-            f"{op_name}: manifest roofline is missing or empty; cannot "
-            f"synthesize eval_roofline"
+            f"{op_name}: manifest roofline is missing or empty; cannot synthesize eval_roofline"
         )
     has_func = "func" in roofline
     has_inline = "flops" in roofline or "bytes" in roofline or "vars" in roofline
     if has_func and has_inline:
-        raise ValueError(
-            f"{op_name}: roofline cannot mix func and inline modes"
-        )
+        raise ValueError(f"{op_name}: roofline cannot mix func and inline modes")
     if has_func:
         return _synthesize_func_mode(op_name, roofline["func"])
     return _synthesize_inline_mode(op_name, roofline, signature)
-
-
 
 
 def maybe_install_eval_roofline(cls: type) -> None:
@@ -760,7 +790,9 @@ def maybe_install_eval_roofline(cls: type) -> None:
         return
     try:
         fn = synthesize_eval_roofline(
-            cls.__name__, roofline=roofline, signature=sig,
+            cls.__name__,
+            roofline=roofline,
+            signature=sig,
         )
     except ValueError:
         return

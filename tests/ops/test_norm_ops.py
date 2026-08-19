@@ -10,13 +10,12 @@ import torch
 
 # BatchNormFwdOp input validation
 
+
 @pytest.mark.smoke
-
-
 class TestBatchNormFwdValidation:
-
     def _make_op(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
         return BatchNormFwdOp()
 
     def _make_inputs(self, device="cuda", dtype=torch.float16):
@@ -36,6 +35,7 @@ class TestBatchNormFwdValidation:
 
     def test_rejects_wrong_dtype(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
         op = BatchNormFwdOp()
         x_wrong = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float64)
         _, weight, bias, rm, rv = self._make_inputs()
@@ -52,12 +52,13 @@ class TestBatchNormFwdValidation:
 
 # BatchNorm torch.compile smoke tests
 
+
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 class TestBatchNormCustomOp:
-
     def test_fwd_torch_compile_smoke(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
         op = BatchNormFwdOp(training=True)
         x = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float16)
         weight = torch.randn(8, device="cuda", dtype=torch.float32)
@@ -72,6 +73,7 @@ class TestBatchNormCustomOp:
 
     def test_bwd_torch_compile_smoke(self):
         from tileops.ops.norm.batch_norm import BatchNormBwdOp
+
         N, C, H, W = 4, 8, 4, 4
         op = BatchNormBwdOp()
         grad_out = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)

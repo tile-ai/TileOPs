@@ -20,8 +20,7 @@ def _fa3_gqa_decode_fwd(test):
     except ImportError:
         return None
 
-    cache_seqlens = torch.full(
-        (test.batch,), test.seq_len_kv, dtype=torch.int32, device="cuda")
+    cache_seqlens = torch.full((test.batch,), test.seq_len_kv, dtype=torch.int32, device="cuda")
 
     def baseline_fn(q, k, v):
         # Q is (B, H, D); FA3 KV-cache decode expects (B, S_q, H, D).
@@ -65,7 +64,11 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
 
         def run_fn(q, k, v):
             return single_decode_with_kv_cache(
-                q_s, k_s, v_s, kv_layout="NHD", use_tensor_cores=True,
+                q_s,
+                k_s,
+                v_s,
+                kv_layout="NHD",
+                use_tensor_cores=True,
             )
 
         return run_fn
@@ -97,8 +100,12 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD")
     wrapper.plan(
-        indptr=indptr, indices=indices, last_page_len=last_page_len,
-        num_qo_heads=H, num_kv_heads=Hkv, head_dim=D,
+        indptr=indptr,
+        indices=indices,
+        last_page_len=last_page_len,
+        num_qo_heads=H,
+        num_kv_heads=Hkv,
+        head_dim=D,
         page_size=page_size,
         q_data_type=q.dtype,
     )
@@ -116,11 +123,20 @@ _GQA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), gqa_decode_
     "batch, heads, heads_kv, seq_len_kv, dim, sm_scale, softcap, dtype, tune",
     _GQA_DECODE_BENCH_PARAMS,
 )
-def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
-                          sm_scale: float | None, softcap: float | None, dtype: torch.dtype,
-                          tune: bool) -> None:
+def test_gqa_decode_bench(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_kv: int,
+    dim: int,
+    sm_scale: float | None,
+    softcap: float | None,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
     test = GroupedQueryAttentionDecodeWorkload(
-        batch, heads, heads_kv, seq_len_kv, dim, dtype, sm_scale=sm_scale, softcap=softcap)
+        batch, heads, heads_kv, seq_len_kv, dim, dtype, sm_scale=sm_scale, softcap=softcap
+    )
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(

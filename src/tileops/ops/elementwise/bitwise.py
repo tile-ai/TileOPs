@@ -1,6 +1,5 @@
 """Element-wise bitwise ops."""
 
-
 from tileops.kernels.elementwise import (
     BitwiseAndFwdKernel,
     BitwiseNotFwdKernel,

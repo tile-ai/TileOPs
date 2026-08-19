@@ -14,10 +14,13 @@ register_compile_contract(MultiHeadAttentionFwdOp)
 
 class MhaCompileFixture(FixtureBase):
     PARAMS = [
-        ("B, S, H, D, causal, dtype", [
-            (8, 1024, 32, 128, False, torch.float16),
-            (4, 512, 16, 64, True, torch.bfloat16),
-        ]),
+        (
+            "B, S, H, D, causal, dtype",
+            [
+                (8, 1024, 32, 128, False, torch.float16),
+                (4, 512, 16, 64, True, torch.bfloat16),
+            ],
+        ),
     ]
 
 

@@ -33,8 +33,12 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     def baseline_fn(x):
         return x.argmax(dim=dim)
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op,
-                params={"shape": shape, "dtype": dtype, "dim": dim})
+    bm.compare(
+        {"tileops": op, "torch": baseline_fn},
+        *inputs,
+        record_as=op,
+        params={"shape": shape, "dtype": dtype, "dim": dim},
+    )
 
 
 # Argmin benchmarks
@@ -53,5 +57,9 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     def baseline_fn(x):
         return x.argmin(dim=dim)
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op,
-                params={"shape": shape, "dtype": dtype, "dim": dim})
+    bm.compare(
+        {"tileops": op, "torch": baseline_fn},
+        *inputs,
+        record_as=op,
+        params={"shape": shape, "dtype": dtype, "dim": dim},
+    )

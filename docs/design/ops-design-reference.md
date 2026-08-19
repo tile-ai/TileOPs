@@ -89,7 +89,7 @@ class RMSNormFwdOp(Op):
 
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
-- **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](#slot-s6).
+- **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](#slot-s6).
 - **Kernel class:** `{PascalCaseName}{Direction}Kernel`. Same direction-suffix rule.
 - **`kernel_map` keys:** `snake_case`, decoupled from Kernel class names. Values must match the Kernel `cls.__name__`. The table does not describe dispatch strategy. Slot [S14](#slot-s14).
 - **Builder functions:** `snake_case`, e.g. `def rms_norm_fwd(M, N, dtype, ...): ...`.

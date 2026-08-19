@@ -38,21 +38,23 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         tune (bool, default=False): Whether to enable kernel tuning.
     """
 
-    def __init__(self,
-                 batch: int,
-                 heads: int,
-                 seq_len: int,
-                 seq_len_kv: int,
-                 dim: int,
-                 dim_tail: int,
-                 topk: int,
-                 stride_kv: int,
-                 heads_kv: int,
-                 q_start_index_s: int,
-                 sm_scale: Optional[float] = None,
-                 is_causal: bool = True,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        seq_len_kv: int,
+        dim: int,
+        dim_tail: int,
+        topk: int,
+        stride_kv: int,
+        heads_kv: int,
+        q_start_index_s: int,
+        sm_scale: Optional[float] = None,
+        is_causal: bool = True,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -66,11 +68,13 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         self.is_causal = is_causal
 
         if q_start_index_s != 0 and q_start_index_s <= stride_kv:
-            raise ValueError(f"Invalid q_start_index_s={q_start_index_s}:"
-                             f"must be > stride_kv={stride_kv}. "
-                             "This indicates incorrect cp0 masking."
-                             "Ensure queries with pos < stride_kv are masked "
-                             "to avoid NaNs in early outputs.")
+            raise ValueError(
+                f"Invalid q_start_index_s={q_start_index_s}:"
+                f"must be > stride_kv={stride_kv}. "
+                "This indicates incorrect cp0 masking."
+                "Ensure queries with pos < stride_kv are masked "
+                "to avoid NaNs in early outputs."
+            )
 
         cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
@@ -98,7 +102,8 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
                 self.sm_scale,
                 self.is_causal,
                 self._cp0,
-                tune=self.tune),
+                tune=self.tune,
+            ),
         )
 
     @property

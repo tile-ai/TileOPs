@@ -5,11 +5,11 @@ forward time (on the same device as the input tensor) and delegates the
 actual rotation to the corresponding kernel.
 
 Variants and frequency computation:
-- **RopeNeoxOp**: standard theta = 10000^(-2k/d) frequencies
-- **RopeNonNeoxOp**: same frequencies, different rotation pattern (adjacent pairs)
-- **RopeLlama31Op**: piecewise-scaled frequencies for Llama 3.1
-- **RopeYarnOp**: YaRN linear-ramp interpolated frequencies
-- **RopeLongRopeOp**: per-dimension rescaled frequencies
+- **RopeNeoxFwdOp**: standard theta = 10000^(-2k/d) frequencies
+- **RopeNonNeoxFwdOp**: same frequencies, different rotation pattern (adjacent pairs)
+- **RopeLlama31FwdOp**: piecewise-scaled frequencies for Llama 3.1
+- **RopeYarnFwdOp**: YaRN linear-ramp interpolated frequencies
+- **RopeLongRopeFwdOp**: per-dimension rescaled frequencies
 
 Layouts:
 - ``"1d"``: input shape ``(seq_len, head_dim)``
@@ -44,7 +44,6 @@ from .op_base import Op
 # register_fake pair per RoPE op (see module docstring).
 
 
-
 def _register_rope_custom_op(op_cls):
     """Register a RoPE op for torch.compile.
 
@@ -70,8 +69,7 @@ def _register_rope_position_ids_custom_op(op_cls):
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
-    def _wrapped(x: torch.Tensor, position_ids: torch.Tensor,
-                 instance_key: str) -> torch.Tensor:
+    def _wrapped(x: torch.Tensor, position_ids: torch.Tensor, instance_key: str) -> torch.Tensor:
         instance = get_instance(instance_key)
         return instance._eager_forward(x, position_ids)
 
@@ -83,21 +81,25 @@ def _register_rope_position_ids_custom_op(op_cls):
 
 
 __all__ = [
-    "RopeLlama31Op",
-    "RopeLongRopeOp",
-    "RopeNeoxOp",
-    "RopeNeoxPositionIdsOp",
-    "RopeNonNeoxOp",
-    "RopeYarnOp",
+    "RopeLlama31FwdOp",
+    "RopeLongRopeFwdOp",
+    "RopeNeoxFwdOp",
+    "RopeNeoxPositionIdsFwdOp",
+    "RopeNonNeoxFwdOp",
+    "RopeYarnFwdOp",
 ]
 
 
 # Frequency computation helpers (pure Python / PyTorch, run on host)
 
 
-def _base_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
-                dtype: torch.dtype = torch.float32,
-                device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
+def _base_freqs(
+    head_dim: int,
+    seq_len: int,
+    base: float = 10000.0,
+    dtype: torch.dtype = torch.float32,
+    device: str = "cuda",
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Standard RoPE cos/sin tables.
 
     Args:
@@ -117,12 +119,17 @@ def _base_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
     return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
 
 
-def _llama31_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
-                   scale_factor: float = 8.0, low_freq_factor: float = 1.0,
-                   high_freq_factor: float = 4.0,
-                   original_max_position: int = 8192,
-                   dtype: torch.dtype = torch.float32,
-                   device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
+def _llama31_freqs(
+    head_dim: int,
+    seq_len: int,
+    base: float = 10000.0,
+    scale_factor: float = 8.0,
+    low_freq_factor: float = 1.0,
+    high_freq_factor: float = 4.0,
+    original_max_position: int = 8192,
+    dtype: torch.dtype = torch.float32,
+    device: str = "cuda",
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Llama 3.1 piecewise-scaled frequency computation.
 
     Args:
@@ -154,7 +161,8 @@ def _llama31_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
             scaled_freqs.append(freq / scale_factor)
         else:
             smooth = (original_max_position / wavelen - low_freq_factor) / (
-                high_freq_factor - low_freq_factor)
+                high_freq_factor - low_freq_factor
+            )
             scaled_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
 
     freqs = torch.stack(scaled_freqs)
@@ -163,36 +171,41 @@ def _llama31_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
     return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
 
 
-def _yarn_find_correction_dim(num_rotations: float, dim: int, base: float,
-                              max_position_embeddings: int) -> float:
+def _yarn_find_correction_dim(
+    num_rotations: float, dim: int, base: float, max_position_embeddings: int
+) -> float:
     """Inverse dim formula to find dim based on number of rotations.
 
     Matches the canonical TVM/vLLM ``yarn_find_correction_dim`` formula.
     """
-    return dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi)) / (
-        2 * math.log(base)
+    return (
+        dim
+        * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))
+        / (2 * math.log(base))
     )
 
 
-def _yarn_find_correction_range(beta_fast: float, beta_slow: float, dim: int,
-                                base: float,
-                                max_position_embeddings: int) -> tuple[int, int]:
+def _yarn_find_correction_range(
+    beta_fast: float, beta_slow: float, dim: int, base: float, max_position_embeddings: int
+) -> tuple[int, int]:
     """Find low/high correction dims from rotation boundary parameters."""
-    low = math.floor(
-        _yarn_find_correction_dim(beta_fast, dim, base, max_position_embeddings)
-    )
-    high = math.ceil(
-        _yarn_find_correction_dim(beta_slow, dim, base, max_position_embeddings)
-    )
+    low = math.floor(_yarn_find_correction_dim(beta_fast, dim, base, max_position_embeddings))
+    high = math.ceil(_yarn_find_correction_dim(beta_slow, dim, base, max_position_embeddings))
     return max(low, 0), min(high, dim - 1)
 
 
-def _yarn_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
-                scale: float = 16.0, original_max_position: int = 4096,
-                beta_fast: float = 32.0, beta_slow: float = 1.0,
-                attn_factor: float = 1.0,
-                dtype: torch.dtype = torch.float32,
-                device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
+def _yarn_freqs(
+    head_dim: int,
+    seq_len: int,
+    base: float = 10000.0,
+    scale: float = 16.0,
+    original_max_position: int = 4096,
+    beta_fast: float = 32.0,
+    beta_slow: float = 1.0,
+    attn_factor: float = 1.0,
+    dtype: torch.dtype = torch.float32,
+    device: str = "cuda",
+) -> tuple[torch.Tensor, torch.Tensor]:
     """YaRN frequency computation with NTK-aware interpolation.
 
     Implements the canonical YaRN formula:
@@ -232,7 +245,11 @@ def _yarn_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 
     # Find correction range
     low, high = _yarn_find_correction_range(
-        beta_fast, beta_slow, half, base, original_max_position,
+        beta_fast,
+        beta_slow,
+        half,
+        base,
+        original_max_position,
     )
     # Avoid division by zero when low == high
     if low == high:
@@ -240,7 +257,9 @@ def _yarn_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 
     # Linear ramp mask: 1 near low dims (extrapolation), 0 near high dims (interpolation)
     inv_freq_mask = 1.0 - torch.clamp(
-        (dim_indices - low) / (high - low), 0.0, 1.0,
+        (dim_indices - low) / (high - low),
+        0.0,
+        1.0,
     )
 
     # Blend: mask=1 -> freq_extra, mask=0 -> freq_inter
@@ -251,12 +270,16 @@ def _yarn_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
     return (torch.cos(angles) * attn_factor).to(dtype), (torch.sin(angles) * attn_factor).to(dtype)
 
 
-def _longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
-                    rescale_factors: Optional[torch.Tensor] = None,
-                    max_position_embeddings: int = 4096,
-                    original_max_position_embeddings: int = 4096,
-                    dtype: torch.dtype = torch.float32,
-                    device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
+def _longrope_freqs(
+    head_dim: int,
+    seq_len: int,
+    base: float = 10000.0,
+    rescale_factors: Optional[torch.Tensor] = None,
+    max_position_embeddings: int = 4096,
+    original_max_position_embeddings: int = 4096,
+    dtype: torch.dtype = torch.float32,
+    device: str = "cuda",
+) -> tuple[torch.Tensor, torch.Tensor]:
     """LongRoPE per-dimension rescaled frequency computation.
 
     Implements the canonical LongRoPE formula:
@@ -355,7 +378,6 @@ class _RopeOpBase(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-
     def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Return cached cos/sin tables, recomputing if device changed."""
         key = (self.seq_len, self.head_dim, self.dtype, device)
@@ -375,9 +397,7 @@ class _RopeOpBase(Op):
         Returns:
             (cos, sin) each of shape (seq_len, head_dim // 2).
         """
-        raise NotImplementedError(
-            "Subclass must implement _compute_cos_sin(device)"
-        )
+        raise NotImplementedError("Subclass must implement _compute_cos_sin(device)")
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -480,7 +500,7 @@ class _RopeOpBase(Op):
 # Concrete Op classes (5 variants)
 
 
-class RopeNeoxOp(_RopeOpBase):
+class RopeNeoxFwdOp(_RopeOpBase):
     """GPT-NeoX style RoPE op with standard theta frequencies.
 
     Computes cos/sin tables at construction using standard theta = base^(-2k/d).
@@ -497,19 +517,23 @@ class RopeNeoxOp(_RopeOpBase):
     _op_name = "rope_neox"
     kernel_cls = RopeNeoxKernel
 
-    def __init__(self, layout: str = "1d",
-                 base: float = 10000.0,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        layout: str = "1d",
+        base: float = 10000.0,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         self.base = base
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _base_freqs(self.head_dim, self.seq_len, base=self.base,
-                           dtype=self.dtype, device=device)
+        return _base_freqs(
+            self.head_dim, self.seq_len, base=self.base, dtype=self.dtype, device=device
+        )
 
 
-class RopeNeoxPositionIdsOp(Op):
+class RopeNeoxPositionIdsFwdOp(Op):
     """GPT-NeoX style RoPE for packed THD tensors with explicit positions."""
 
     _op_name = "rope_neox_position_ids"
@@ -540,7 +564,6 @@ class RopeNeoxPositionIdsOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -607,12 +630,12 @@ class RopeNeoxPositionIdsOp(Op):
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if x.ndim != 3:
-            raise ValueError("RopeNeoxPositionIdsOp expects input shape [tokens, heads, head_dim]")
+            raise ValueError(
+                "RopeNeoxPositionIdsFwdOp expects input shape [tokens, heads, head_dim]"
+            )
         self.num_tokens, self.num_heads, self.head_dim = x.shape
         rotary_dim = (
-            self.head_dim
-            if self._requested_rotary_dim is None
-            else self._requested_rotary_dim
+            self.head_dim if self._requested_rotary_dim is None else self._requested_rotary_dim
         )
         if rotary_dim % 2 != 0:
             raise ValueError("rotary_dim (or head_dim if rotary_dim is None) must be even")
@@ -624,8 +647,7 @@ class RopeNeoxPositionIdsOp(Op):
             raise ValueError("position_ids must be a CUDA tensor")
         if tuple(position_ids.shape) != (self.num_tokens,):
             raise ValueError(
-                f"Expected position_ids shape {(self.num_tokens,)}, "
-                f"got {tuple(position_ids.shape)}"
+                f"Expected position_ids shape {(self.num_tokens,)}, got {tuple(position_ids.shape)}"
             )
         if position_ids.dtype not in (torch.int32, torch.int64):
             raise ValueError(
@@ -651,7 +673,7 @@ class RopeNeoxPositionIdsOp(Op):
         return self._eager_forward(x, position_ids)
 
 
-class RopeNonNeoxOp(_RopeOpBase):
+class RopeNonNeoxFwdOp(_RopeOpBase):
     """Original RoFormer RoPE op with adjacent-pair rotation.
 
     Computes cos/sin tables at construction using standard theta = base^(-2k/d).
@@ -668,19 +690,23 @@ class RopeNonNeoxOp(_RopeOpBase):
     _op_name = "rope_non_neox"
     kernel_cls = RopeNonNeoxKernel
 
-    def __init__(self, layout: str = "1d",
-                 base: float = 10000.0,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        layout: str = "1d",
+        base: float = 10000.0,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         self.base = base
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _base_freqs(self.head_dim, self.seq_len, base=self.base,
-                           dtype=self.dtype, device=device)
+        return _base_freqs(
+            self.head_dim, self.seq_len, base=self.base, dtype=self.dtype, device=device
+        )
 
 
-class RopeLlama31Op(_RopeOpBase):
+class RopeLlama31FwdOp(_RopeOpBase):
     """Llama 3.1 RoPE op with piecewise frequency scaling.
 
     Computes cos/sin tables at construction using Llama 3.1 piecewise-scaled
@@ -702,12 +728,17 @@ class RopeLlama31Op(_RopeOpBase):
     _op_name = "rope_llama31"
     kernel_cls = RopeLlama31Kernel
 
-    def __init__(self, layout: str = "1d",
-                 base: float = 10000.0, scale_factor: float = 8.0,
-                 low_freq_factor: float = 1.0, high_freq_factor: float = 4.0,
-                 original_max_position: int = 8192,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        layout: str = "1d",
+        base: float = 10000.0,
+        scale_factor: float = 8.0,
+        low_freq_factor: float = 1.0,
+        high_freq_factor: float = 4.0,
+        original_max_position: int = 8192,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         self.base = base
         self.scale_factor = scale_factor
         self.low_freq_factor = low_freq_factor
@@ -717,16 +748,19 @@ class RopeLlama31Op(_RopeOpBase):
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _llama31_freqs(
-            self.head_dim, self.seq_len, base=self.base,
+            self.head_dim,
+            self.seq_len,
+            base=self.base,
             scale_factor=self.scale_factor,
             low_freq_factor=self.low_freq_factor,
             high_freq_factor=self.high_freq_factor,
             original_max_position=self.original_max_position,
-            dtype=self.dtype, device=device,
+            dtype=self.dtype,
+            device=device,
         )
 
 
-class RopeYarnOp(_RopeOpBase):
+class RopeYarnFwdOp(_RopeOpBase):
     """YaRN RoPE op with linear-ramp frequency interpolation.
 
     Computes cos/sin tables at construction using YaRN linear-ramp
@@ -749,13 +783,18 @@ class RopeYarnOp(_RopeOpBase):
     _op_name = "rope_yarn"
     kernel_cls = RopeYarnKernel
 
-    def __init__(self, layout: str = "1d",
-                 base: float = 10000.0, scale: float = 16.0,
-                 original_max_position: int = 4096,
-                 beta_fast: float = 32.0, beta_slow: float = 1.0,
-                 attn_factor: float = 1.0,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        layout: str = "1d",
+        base: float = 10000.0,
+        scale: float = 16.0,
+        original_max_position: int = 4096,
+        beta_fast: float = 32.0,
+        beta_slow: float = 1.0,
+        attn_factor: float = 1.0,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         self.base = base
         self.scale = scale
         self.original_max_position = original_max_position
@@ -766,14 +805,20 @@ class RopeYarnOp(_RopeOpBase):
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _yarn_freqs(
-            self.head_dim, self.seq_len, base=self.base,
-            scale=self.scale, original_max_position=self.original_max_position,
-            beta_fast=self.beta_fast, beta_slow=self.beta_slow,
-            attn_factor=self.attn_factor, dtype=self.dtype, device=device,
+            self.head_dim,
+            self.seq_len,
+            base=self.base,
+            scale=self.scale,
+            original_max_position=self.original_max_position,
+            beta_fast=self.beta_fast,
+            beta_slow=self.beta_slow,
+            attn_factor=self.attn_factor,
+            dtype=self.dtype,
+            device=device,
         )
 
 
-class RopeLongRopeOp(_RopeOpBase):
+class RopeLongRopeFwdOp(_RopeOpBase):
     """LongRoPE op with per-dimension frequency rescaling.
 
     Computes cos/sin tables at construction using per-dimension rescale
@@ -798,13 +843,16 @@ class RopeLongRopeOp(_RopeOpBase):
     _op_name = "rope_longrope"
     kernel_cls = RopeLongRopeKernel
 
-    def __init__(self, layout: str = "1d",
-                 base: float = 10000.0,
-                 rescale_factors: Optional[torch.Tensor] = None,
-                 max_position_embeddings: int = 4096,
-                 original_max_position_embeddings: int = 4096,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        layout: str = "1d",
+        base: float = 10000.0,
+        rescale_factors: Optional[torch.Tensor] = None,
+        max_position_embeddings: int = 4096,
+        original_max_position_embeddings: int = 4096,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         self.base = base
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
@@ -813,20 +861,23 @@ class RopeLongRopeOp(_RopeOpBase):
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _longrope_freqs(
-            self.head_dim, self.seq_len, base=self.base,
+            self.head_dim,
+            self.seq_len,
+            base=self.base,
             rescale_factors=self.rescale_factors,
             max_position_embeddings=self.max_position_embeddings,
             original_max_position_embeddings=self.original_max_position_embeddings,
-            dtype=self.dtype, device=device,
+            dtype=self.dtype,
+            device=device,
         )
 
 
 # torch.compile registration for all 5 RoPE ops
 
-for _cls in [RopeNeoxOp, RopeNonNeoxOp, RopeLlama31Op, RopeYarnOp, RopeLongRopeOp]:
+for _cls in [RopeNeoxFwdOp, RopeNonNeoxFwdOp, RopeLlama31FwdOp, RopeYarnFwdOp, RopeLongRopeFwdOp]:
     _register_rope_custom_op(_cls)
 
-_register_rope_position_ids_custom_op(RopeNeoxPositionIdsOp)
+_register_rope_position_ids_custom_op(RopeNeoxPositionIdsFwdOp)
 
 # Clean up loop variable
 del _cls

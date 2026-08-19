@@ -74,9 +74,11 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
     if isinstance(entry, (tuple, list)):
         return [k for item in entry for k in _entry_kernels(item)]
     if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
-        return [k for f in dataclasses.fields(entry)
-                for k in _entry_kernels(getattr(entry, f.name))]
+        return [
+            k for f in dataclasses.fields(entry) for k in _entry_kernels(getattr(entry, f.name))
+        ]
     return []
+
 
 class Op(ABC):
     """Base class for TileOPs operations.
@@ -127,7 +129,7 @@ class Op(ABC):
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
     dtype: Optional[torch.dtype] = None
-    device: Optional[Union[torch.device, str]] = 'cuda'
+    device: Optional[Union[torch.device, str]] = "cuda"
     input_shapes: Optional[list[tuple]] = None
     # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
     # that offer one, and what ``autotune()`` sets; a factory reads it when it
@@ -156,6 +158,7 @@ class Op(ABC):
         from tileops.ops._dtype_codegen import maybe_install_validator
         from tileops.ops._params_codegen import maybe_install_param_names
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+
         maybe_install_validator(cls)
         maybe_install_eval_roofline(cls)
         maybe_install_param_names(cls)
@@ -206,7 +209,8 @@ class Op(ABC):
         """
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "
-            "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)")
+            "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)"
+        )
 
     def _validate_dtypes(self, *args: torch.Tensor) -> None:
         """Validate dtypes of input tensors passed to ``forward``.
@@ -217,7 +221,8 @@ class Op(ABC):
         """
         raise NotImplementedError(
             "_validate_dtypes must be implemented by the concrete Op subclass; "
-            "see docs/design/ops-design.md §`_validate_dtypes` (codegen)")
+            "see docs/design/ops-design.md §`_validate_dtypes` (codegen)"
+        )
 
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance.
@@ -232,7 +237,8 @@ class Op(ABC):
             "eval_roofline must be implemented by the concrete Op subclass, "
             "emitted per docs/design/roofline.md §4.4 (codegen); the L1 base "
             "intentionally does not provide a generic evaluator — see "
-            "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)")
+            "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
+        )
 
     def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``.
@@ -317,21 +323,29 @@ class Op(ABC):
         if len(chosen) == 1:
             if refused_overrides and chosen[0] not in self._overridden_keys:
                 raise ValueError(
-                    "the kernel supplied for " + "; ".join(refused_overrides)
+                    "the kernel supplied for "
+                    + "; ".join(refused_overrides)
                     + f" — selection does not fall back to the shipped '{chosen[0]}' "
-                    f"when a replacement is in force. Call: {call}")
+                    f"when a replacement is in force. Call: {call}"
+                )
             return chosen[0]
         if not chosen:
-            lead = ("the kernel supplied for " + "; ".join(refused_overrides) + ", and "
-                    if refused_overrides else "")
+            lead = (
+                "the kernel supplied for " + "; ".join(refused_overrides) + ", and "
+                if refused_overrides
+                else ""
+            )
             raise ValueError(
-                lead + "no implementation serves this call: "
+                lead
+                + "no implementation serves this call: "
                 + "; ".join(rejected or ["no implementation is installed"])
-                + f". Call: {call}")
+                + f". Call: {call}"
+            )
         raise ValueError(
             f"dispatch is ambiguous: {', '.join(chosen)} all serve this call, so none "
             f"is the answer. Implementations of one key must serve disjoint regions, "
-            f"and at most one of them may be general. Call: {call}")
+            f"and at most one of them may be general. Call: {call}"
+        )
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
@@ -406,7 +420,8 @@ class Op(ABC):
                     raise OpNotAvailableError(
                         f"{type(self).__name__} has no in-tree implementation for {name!r}, "
                         f"so it needs a target that registers one; known targets for this "
-                        f"op: {registered_targets(type(self).__name__)}")
+                        f"op: {registered_targets(type(self).__name__)}"
+                    )
                 if key not in entries:
                     entries[key] = build()
                 return entries[key]
@@ -417,7 +432,8 @@ class Op(ABC):
                 raise OpNotAvailableError(
                     f"target {self._settled_target!r} serves {type(self).__name__}, but its "
                     f"{name!r} call site does not hand over the tensors a builder is "
-                    f"described with; that op is not wired to external targets yet")
+                    f"described with; that op is not wired to external targets yet"
+                )
             specs = tuple(TensorSpec.of(t) for t in inputs)
             # The device is part of the key: a kernel built for one of a target's devices
             # may hold resources allocated on it. The op layer has already checked that
@@ -434,7 +450,10 @@ class Op(ABC):
             raise
 
     def _build_external(
-        self, builder: BuildKernel, name: str, specs: tuple[TensorSpec, ...],
+        self,
+        builder: BuildKernel,
+        name: str,
+        specs: tuple[TensorSpec, ...],
     ) -> object:
         """Ask the target for a kernel and hold it to the one rule this boundary has."""
         kernel = builder(*specs, **self._manifest_params())
@@ -442,7 +461,8 @@ class Op(ABC):
             raise OpNotAvailableError(
                 f"target {self._settled_target!r} built {kernel!r} for "
                 f"{type(self).__name__}.{name}, which is not callable; a builder returns "
-                f"something the op can call with the tensors it was described")
+                f"something the op can call with the tensors it was described"
+            )
         return kernel
 
     def _manifest_params(self) -> dict[str, object]:
@@ -467,7 +487,8 @@ class Op(ABC):
                 raise AttributeError(
                     f"{type(self).__name__} declares manifest param {param!r} but keeps no "
                     f"attribute of that name; a backend is called with the manifest's "
-                    f"names, so this op has to store it under one") from None
+                    f"names, so this op has to store it under one"
+                ) from None
         return values
 
     def built_kernels(self, role: str) -> Mapping[Hashable, object]:
@@ -600,7 +621,8 @@ class Op(ABC):
                 f"{type(self).__name__}; targets that do: "
                 f"{registered_targets(type(self).__name__)}. There is no fall back to the "
                 f"in-tree implementation: those kernels do not run on this target's "
-                f"devices.")
+                f"devices."
+            )
         self._settled_target = target
         self._builder = builder
 

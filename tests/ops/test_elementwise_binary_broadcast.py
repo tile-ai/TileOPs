@@ -47,31 +47,36 @@ _F16 = torch.float16
 _I32 = torch.int32
 
 _BROADCAST_OPS = [
-    ("AddFwdOp",         _F16, _randn,     _randn,     lambda a, b: a + b),
-    ("SubFwdOp",         _F16, _randn,     _randn,     lambda a, b: a - b),
-    ("MulFwdOp",         _F16, _randn,     _randn,     lambda a, b: a * b),
-    ("DivFwdOp",         _F16, _rand_pos,  _rand_pos,  lambda a, b: a / b),
-    ("RemainderFwdOp",   _F16, _rand_pos,  _rand_pos,  lambda a, b: torch.remainder(a, b)),
-    ("PowFwdOp",         _F16, _pow_base,  _pow_exp,   lambda a, b: torch.pow(a, b)),
+    ("AddFwdOp", _F16, _randn, _randn, lambda a, b: a + b),
+    ("SubFwdOp", _F16, _randn, _randn, lambda a, b: a - b),
+    ("MulFwdOp", _F16, _randn, _randn, lambda a, b: a * b),
+    ("DivFwdOp", _F16, _rand_pos, _rand_pos, lambda a, b: a / b),
+    ("RemainderFwdOp", _F16, _rand_pos, _rand_pos, lambda a, b: torch.remainder(a, b)),
+    ("PowFwdOp", _F16, _pow_base, _pow_exp, lambda a, b: torch.pow(a, b)),
     # floor_divide reference computed in fp32 to match the kernel's internal
     # path; tolerance widened to 1.0 because rounding boundaries flip the
     # quotient by ±1 around exact integer ratios — see test_binary_arith.py.
-    ("FloorDivideFwdOp", _F16, _rand_pos,  _rand_pos,
-     lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype)),
-    ("LerpFwdOp",        _F16, _randn,     _randn,     lambda a, b: torch.lerp(a, b, 0.5)),
-    ("MaximumFwdOp",     _F16, _randn,     _randn,     lambda a, b: torch.maximum(a, b)),
-    ("MinimumFwdOp",     _F16, _randn,     _randn,     lambda a, b: torch.minimum(a, b)),
-    ("EqFwdOp",          _F16, _rand_bool, _rand_bool, lambda a, b: a == b),
-    ("NeFwdOp",          _F16, _rand_bool, _rand_bool, lambda a, b: a != b),
-    ("GtFwdOp",          _F16, _randn,     _randn,     lambda a, b: a > b),
-    ("LtFwdOp",          _F16, _randn,     _randn,     lambda a, b: a < b),
-    ("GeFwdOp",          _F16, _randn,     _randn,     lambda a, b: a >= b),
-    ("LeFwdOp",          _F16, _randn,     _randn,     lambda a, b: a <= b),
-    ("LogicalAndFwdOp",  _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_and(a, b)),
-    ("LogicalOrFwdOp",   _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_or(a, b)),
-    ("BitwiseAndFwdOp",  _I32, _randint,   _randint,   lambda a, b: torch.bitwise_and(a, b)),
-    ("BitwiseOrFwdOp",   _I32, _randint,   _randint,   lambda a, b: torch.bitwise_or(a, b)),
-    ("BitwiseXorFwdOp",  _I32, _randint,   _randint,   lambda a, b: torch.bitwise_xor(a, b)),
+    (
+        "FloorDivideFwdOp",
+        _F16,
+        _rand_pos,
+        _rand_pos,
+        lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
+    ),
+    ("LerpFwdOp", _F16, _randn, _randn, lambda a, b: torch.lerp(a, b, 0.5)),
+    ("MaximumFwdOp", _F16, _randn, _randn, lambda a, b: torch.maximum(a, b)),
+    ("MinimumFwdOp", _F16, _randn, _randn, lambda a, b: torch.minimum(a, b)),
+    ("EqFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: a == b),
+    ("NeFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: a != b),
+    ("GtFwdOp", _F16, _randn, _randn, lambda a, b: a > b),
+    ("LtFwdOp", _F16, _randn, _randn, lambda a, b: a < b),
+    ("GeFwdOp", _F16, _randn, _randn, lambda a, b: a >= b),
+    ("LeFwdOp", _F16, _randn, _randn, lambda a, b: a <= b),
+    ("LogicalAndFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_and(a, b)),
+    ("LogicalOrFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_or(a, b)),
+    ("BitwiseAndFwdOp", _I32, _randint, _randint, lambda a, b: torch.bitwise_and(a, b)),
+    ("BitwiseOrFwdOp", _I32, _randint, _randint, lambda a, b: torch.bitwise_or(a, b)),
+    ("BitwiseXorFwdOp", _I32, _randint, _randint, lambda a, b: torch.bitwise_xor(a, b)),
 ]
 
 
@@ -83,7 +88,11 @@ _BROADCAST_OPS = [
     ids=[entry[0] for entry in _BROADCAST_OPS],
 )
 def test_binary_op_bidirectional_broadcast(
-    op_name: str, dtype: torch.dtype, gen_a, gen_b, ref_fn,
+    op_name: str,
+    dtype: torch.dtype,
+    gen_a,
+    gen_b,
+    ref_fn,
 ) -> None:
     """Bidirectional broadcast: (3,1) x (1,4) -> (3,4)."""
     cls = getattr(elementwise_mod, op_name)

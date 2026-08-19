@@ -1,6 +1,5 @@
 """Test GroupedQueryAttentionDecodePagedWithKVCacheFwdOp (paged GQA decode with dynamic KV cache)."""
 
-
 import math
 
 import pytest
@@ -15,27 +14,34 @@ from workloads.attention.gqa import (
 
 
 class GroupedQueryAttentionDecodePagedTest(GroupedQueryAttentionDecodePagedWorkload, TestBase):
-
-    def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
+    def _maxdiff_cosine_compare(
+        self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001
+    ) -> None:
         """Compare using max-diff and cosine similarity."""
         if isinstance(output, (tuple, list)):
             output = output[0]
         max_diff = (output - output_ref).abs().max().item()
-        assert max_diff < atol, (
-            f"max diff {max_diff} too large (atol={atol})")
+        assert max_diff < atol, f"max diff {max_diff} too large (atol={atol})"
         cos_sim = F.cosine_similarity(
-            output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8)
+            output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8
+        )
         assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                    real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> torch.Tensor:
         """Reassemble paged K/V to logical layout per batch, then GQA (expand to heads) + SDPA."""
         batch, _, dim = q.shape
         seqlen_kv, _, _ = k.shape
         kv_group_num = self.heads // self.heads_kv
         out_list = []
         for i_b in range(batch):
-            q_b = q[i_b:i_b + 1, :, :]
+            q_b = q[i_b : i_b + 1, :, :]
             k_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
             v_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
             num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
@@ -43,12 +49,14 @@ class GroupedQueryAttentionDecodePagedTest(GroupedQueryAttentionDecodePagedWorkl
                 start_pos = block_table[i_b, i_paged].item() * self.page_size
                 end_pos = min(start_pos + self.page_size, seqlen_kv)
                 page_len = end_pos - start_pos
-                k_logical[i_paged * self.page_size:i_paged * self.page_size +
-                          page_len, :, :] = k[start_pos:end_pos, :, :]
-                v_logical[i_paged * self.page_size:i_paged * self.page_size +
-                          page_len, :, :] = v[start_pos:end_pos, :, :]
-            k_logical = k_logical[:real_seqlen_kv[i_b].item(), :, :]
-            v_logical = v_logical[:real_seqlen_kv[i_b].item(), :, :]
+                k_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = k[
+                    start_pos:end_pos, :, :
+                ]
+                v_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = v[
+                    start_pos:end_pos, :, :
+                ]
+            k_logical = k_logical[: real_seqlen_kv[i_b].item(), :, :]
+            v_logical = v_logical[: real_seqlen_kv[i_b].item(), :, :]
             group_id = torch.arange(self.heads, dtype=torch.long, device=q.device) // kv_group_num
             k_bhsd = k_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
             v_bhsd = v_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
@@ -66,15 +74,22 @@ class GroupedQueryAttentionDecodePagedTest(GroupedQueryAttentionDecodePagedWorkl
 
 class GroupedQueryAttentionDecodePagedFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune", [
-            pytest.param(1, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 32, 8, 256, 128, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 16, 4, 2048, 128, 512, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 32, 16, 512, 64, 128, torch.float16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune",
+            [
+                pytest.param(
+                    1, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 32, 8, 256, 128, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(
+                    1, 16, 4, 2048, 128, 512, torch.float16, False, marks=pytest.mark.full
+                ),
+                pytest.param(1, 32, 16, 512, 64, 128, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -89,7 +104,9 @@ def test_gqa_decode_paged_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
+    test = GroupedQueryAttentionDecodePagedTest(
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype
+    )
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         batch=batch,
         heads=heads,
@@ -107,19 +124,20 @@ def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
     """page_size=192 uses 64-token tiles without skipping page tails."""
     batch, heads, heads_kv, seqlen_kv, dim, page_size = 1, 16, 4, 3072, 128, 192
     test = GroupedQueryAttentionDecodePagedTest(
-        batch, heads, heads_kv, seqlen_kv, dim, page_size, torch.float16)
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, torch.float16
+    )
     q, k, v, real_seqlen_kv, block_table = test.gen_inputs()
     real_seqlen_kv.fill_(seqlen_kv)
-    block_table.copy_(torch.arange(
-        seqlen_kv // page_size, device="cuda", dtype=torch.int32).flip(0).unsqueeze(0))
+    block_table.copy_(
+        torch.arange(seqlen_kv // page_size, device="cuda", dtype=torch.int32).flip(0).unsqueeze(0)
+    )
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, heads_kv, seqlen_kv, dim, page_size)
+        batch, heads, heads_kv, seqlen_kv, dim, page_size
+    )
     kernel = op._get_kernel(torch.float16)
     assert page_size % kernel.config["block_N"] == 0
     assert {config["block_N"] for config in kernel.autotune_configs} == {64}
-    test.check(
-        op, q, k, v, real_seqlen_kv, block_table,
-        compare=test._maxdiff_cosine_compare)
+    test.check(op, q, k, v, real_seqlen_kv, block_table, compare=test._maxdiff_cosine_compare)
 
 
 @pytest.mark.smoke
@@ -127,18 +145,20 @@ def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
 def test_gqa_decode_paged_rejects_unsupported_page_tile(page_size: int) -> None:
     """Reject page layouts that no supported generic N tile can cover exactly."""
     seqlen_kv = page_size * 16
-    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        1, 16, 4, seqlen_kv, 128, page_size)
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(1, 16, 4, seqlen_kv, 128, page_size)
     # The page layout is rejected by the kernel, which is built on first use.
     with pytest.raises(ValueError, match="matches no supported block_N"):
         op._get_kernel(torch.float16)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("sm_scale, softcap", [
-    pytest.param(0.25, None, id="custom-sm-scale"),
-    pytest.param(None, 2.0, id="softcap"),
-])
+@pytest.mark.parametrize(
+    "sm_scale, softcap",
+    [
+        pytest.param(0.25, None, id="custom-sm-scale"),
+        pytest.param(None, 2.0, id="softcap"),
+    ],
+)
 def test_gqa_decode_paged_op_softmax_controls(
     sm_scale: float | None,
     softcap: float | None,
@@ -215,8 +235,7 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
 @pytest.mark.smoke
 def test_gqa_decode_paged_bs1_dispatch() -> None:
     """Eligible Hopper requests select the paged TMA/WGMMA kernel."""
-    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        1, 32, 4, 8192, 128, 256)
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(1, 32, 4, 8192, 128, 256)
     kernel = op._get_kernel(torch.float16)
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
     assert kernel._select_tier(1024) == "ctx"
@@ -248,8 +267,10 @@ def test_gqa_decode_paged_bs1_dispatch_fallbacks(
     """Unsupported shapes and features stay on the generic paged kernel."""
     seqlen_kv = 8064 if page_size == 192 else 8192
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch, 32, 4, seqlen_kv, dim, page_size, softcap=softcap)
+        batch, 32, 4, seqlen_kv, dim, page_size, softcap=softcap
+    )
     assert op._get_kernel(dtype).__class__.__name__ == "GQADecodePagedKernel"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

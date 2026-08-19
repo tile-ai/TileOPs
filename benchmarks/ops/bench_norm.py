@@ -28,8 +28,7 @@ def _rms_params():
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
     return params
 
 
@@ -41,7 +40,9 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     op = RMSNormFwdOp(normalized_shape=(n,), tune=tune)
     bm = ManifestBenchmark(_RMS_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )
 
 
 _FUSED_RMS_OP_NAME = "FusedAddRMSNormFwdOp"
@@ -59,11 +60,9 @@ def _fused_rms_params():
             marks = ()
             if label in _XFAIL_LABELS:
                 marks = pytest.mark.xfail(
-                    reason="autotune has no valid configs for N=16384",
-                    strict=False)
-            params.append(pytest.param(m, n, dtype, True,
-                                       id=f"{label}-{dtype_str}",
-                                       marks=marks))
+                    reason="autotune has no valid configs for N=16384", strict=False
+                )
+            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}", marks=marks))
     return params
 
 
@@ -95,8 +94,7 @@ def _ln_params():
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
     return params
 
 
@@ -125,8 +123,7 @@ def _fused_ln_params():
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
     return params
 
 

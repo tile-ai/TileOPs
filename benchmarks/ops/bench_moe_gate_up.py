@@ -38,10 +38,16 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["numel"], w["num_experts"], w["ffn"], w["k"], dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["numel"],
+                    w["num_experts"],
+                    w["ffn"],
+                    w["k"],
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -50,7 +56,11 @@ def _manifest_params():
     _manifest_params(),
 )
 def test_moe_gate_up_bench(
-    numel: int, num_experts: int, ffn: int, k: int, dtype_str: str,
+    numel: int,
+    num_experts: int,
+    ffn: int,
+    k: int,
+    dtype_str: str,
 ) -> None:
     cap = torch.cuda.get_device_capability()
     if cap[0] < 9:
@@ -77,8 +87,8 @@ def test_moe_gate_up_bench(
             if size_e == 0:
                 continue
             off_e = offsets_l[e]
-            gate_up = a[off_e:off_e + size_e] @ b[e].T
-            out[off_e:off_e + size_e] = F.silu(gate_up[:, :ffn]) * gate_up[:, ffn:]
+            gate_up = a[off_e : off_e + size_e] @ b[e].T
+            out[off_e : off_e + size_e] = F.silu(gate_up[:, :ffn]) * gate_up[:, ffn:]
         return out
 
     _torch_fn(a, b, true_sizes, true_offsets)  # warmup
@@ -86,12 +96,21 @@ def test_moe_gate_up_bench(
 
     # Both implementations of this role, so the region between them stays measurable.
     forced = {}
-    for tag, cls in (("tileops-fused-act", MoeGroupedGemmPersistent3WGFusedActKernel),
-                     ("tileops-separate-act", MoeGroupedGemmSeparateActKernel)):
+    for tag, cls in (
+        ("tileops-fused-act", MoeGroupedGemmPersistent3WGFusedActKernel),
+        ("tileops-separate-act", MoeGroupedGemmSeparateActKernel),
+    ):
         kernel = cls(numel, num_experts, ffn, k, dtype=dtype, activation="silu_and_mul")
         kernel(a, b, true_sizes, true_offsets)  # warmup
         torch.cuda.synchronize()
         forced[tag] = kernel
 
-    bm.compare({"tileops": op, **forced, "torch-ref": _torch_fn},
-               a, b, true_sizes, true_offsets, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, **forced, "torch-ref": _torch_fn},
+        a,
+        b,
+        true_sizes,
+        true_offsets,
+        record_as=op,
+        params=locals(),
+    )

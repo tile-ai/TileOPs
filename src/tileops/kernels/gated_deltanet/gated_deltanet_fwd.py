@@ -90,45 +90,43 @@ def _h_recurrence_tl(
                 ws_frag = T.alloc_fragment([block_C, BV], accum_dtype)
                 h_next_frag = T.alloc_fragment([dim_k, BV], accum_dtype)
 
-
                 v_offset = vid * BV
 
                 # Initialise h tile from S_0
-                T.copy(S_0[bid, hid, :, v_offset : v_offset + BV], h_c,
-                       disable_tma=True)
+                T.copy(S_0[bid, hid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
                 for i, j in T.Parallel(dim_k, BV):
                     S[bid, hid, 0, i, v_offset + j] = h_c[i, j]
 
                 for t in T.Pipelined(num_chunks, num_stages=num_stages):
-                    T.copy(k[bid, hid, t * block_C : (t + 1) * block_C, :], k_c,
-                           disable_tma=True)
-                    T.copy(g[bid, hid, t * block_C : (t + 1) * block_C], g_c,
-                           disable_tma=True)
-                    T.copy(w[bid, hid, t * block_C : (t + 1) * block_C, :], w_c,
-                           disable_tma=True)
-                    T.copy(u[bid, hid, t * block_C : (t + 1) * block_C,
-                             v_offset : v_offset + BV], u_c, disable_tma=True)
+                    T.copy(k[bid, hid, t * block_C : (t + 1) * block_C, :], k_c, disable_tma=True)
+                    T.copy(g[bid, hid, t * block_C : (t + 1) * block_C], g_c, disable_tma=True)
+                    T.copy(w[bid, hid, t * block_C : (t + 1) * block_C, :], w_c, disable_tma=True)
+                    T.copy(
+                        u[bid, hid, t * block_C : (t + 1) * block_C, v_offset : v_offset + BV],
+                        u_c,
+                        disable_tma=True,
+                    )
 
                     # v_new_tile = u_tile - (w @ h_tile) * exp(g + g_last)
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_c[block_C - 1]) * _LOG2E)
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                        )
 
                     # Store v_new tile
-                    T.copy(v_new_c,
-                           v_new[bid, hid, t * block_C : (t + 1) * block_C,
-                                 v_offset : v_offset + BV],
-                           disable_tma=True)
+                    T.copy(
+                        v_new_c,
+                        v_new[bid, hid, t * block_C : (t + 1) * block_C, v_offset : v_offset + BV],
+                        disable_tma=True,
+                    )
 
                     # h_tile_next = h_tile * exp(g_last) + k^T @ scaled_v_new_tile
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_c[block_C - 1] - g_c[n]) * _LOG2E)
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
-                            g_c[block_C - 1] * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -195,15 +193,15 @@ def _output_o_tl(
                 o_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
 
-                T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c,
-                       disable_tma=True)
-                T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c,
-                       disable_tma=True)
-                T.copy(g[bid, hid, tid * block_C : (tid + 1) * block_C], g_c,
-                       disable_tma=True)
+                T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
+                T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True)
+                T.copy(g[bid, hid, tid * block_C : (tid + 1) * block_C], g_c, disable_tma=True)
                 T.copy(S[bid, hid, tid, :, :], h_c, disable_tma=True)
-                T.copy(v_new[bid, hid, tid * block_C : (tid + 1) * block_C, :], v_new_c,
-                       disable_tma=True)
+                T.copy(
+                    v_new[bid, hid, tid * block_C : (tid + 1) * block_C, :],
+                    v_new_c,
+                    disable_tma=True,
+                )
 
                 # o = (q @ h) * exp(g)
                 T.clear(o_frag)
@@ -216,14 +214,14 @@ def _output_o_tl(
                 T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(
-                        i >= j,
-                        attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E),
-                        T.float32(0.0))
+                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E), T.float32(0.0)
+                    )
 
                 # o += attn @ v_new
                 T.gemm(attn, v_new_c, o_frag)
-                T.copy(o_frag, o[bid, hid, tid * block_C : (tid + 1) * block_C, :],
-                       disable_tma=True)
+                T.copy(
+                    o_frag, o[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
+                )
 
         return output_o_kernel
 
@@ -238,24 +236,53 @@ def _chunk_local_cumsum(g: torch.Tensor, chunk_size: int) -> torch.Tensor:
 
 @torch.library.custom_op("tileops::gated_deltanet_fwd_kernel", mutates_args=())
 def _gated_deltanet_fwd_wrapped_kernel(
-    batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
     dtype: str,
-    fused_num_stages: int, fused_threads: int,
-    h_num_stages: int, h_threads: int, h_block_v: int,
+    fused_num_stages: int,
+    fused_threads: int,
+    h_num_stages: int,
+    h_threads: int,
+    h_block_v: int,
     o_threads: int,
-    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-    g: torch.Tensor, beta: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     g_cum = _chunk_local_cumsum(g.float(), chunk_size).to(g.dtype)
     fused_fn = fused_prepare_compute_w_u_tl(
-        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+        batch,
+        head,
+        seq_len,
+        chunk_size,
+        dim_k,
+        dim_v,
+        dtype,
     )(fused_num_stages, fused_threads)
     h_fn = _h_recurrence_tl(
-        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+        batch,
+        head,
+        seq_len,
+        chunk_size,
+        dim_k,
+        dim_v,
+        dtype,
         block_v=h_block_v,
     )(h_num_stages, h_threads)
     o_fn = _output_o_tl(
-        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+        batch,
+        head,
+        seq_len,
+        chunk_size,
+        dim_k,
+        dim_v,
+        dtype,
     )(o_threads)
     S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
     Aw, Au, w, u = fused_fn(k, v, g_cum, beta)
@@ -266,13 +293,24 @@ def _gated_deltanet_fwd_wrapped_kernel(
 
 @_gated_deltanet_fwd_wrapped_kernel.register_fake
 def _gated_deltanet_fwd_wrapped_kernel_fake(
-    batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
     dtype: str,
-    fused_num_stages: int, fused_threads: int,
-    h_num_stages: int, h_threads: int, h_block_v: int,
+    fused_num_stages: int,
+    fused_threads: int,
+    h_num_stages: int,
+    h_threads: int,
+    h_block_v: int,
     o_threads: int,
-    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-    g: torch.Tensor, beta: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     num_chunks = seq_len // chunk_size
     o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
@@ -342,13 +380,24 @@ class GatedDeltaNetFwdKernel(Kernel):
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return _gated_deltanet_fwd_wrapped_kernel(
-            self.batch, self.head, self.seq_len, self.chunk_size,
-            self.dim_k, self.dim_v, self.dtype_str,
-            self.config["fused_num_stages"], self.config["fused_threads"],
-            self.config["h_num_stages"], self.config["h_threads"],
+            self.batch,
+            self.head,
+            self.seq_len,
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            self.dtype_str,
+            self.config["fused_num_stages"],
+            self.config["fused_threads"],
+            self.config["h_num_stages"],
+            self.config["h_threads"],
             self.config.get("h_block_v", 0),
             self.config["o_threads"],
-            q, k, v, g, beta,
+            q,
+            k,
+            v,
+            g,
+            beta,
         )
 
 

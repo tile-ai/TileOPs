@@ -12,7 +12,14 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SharedExpertMLPKernel"]
 
-_DEFAULT_CONFIG = {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 3, "threads": 256, "enable_rasterization": True}
+_DEFAULT_CONFIG = {
+    "block_m": 128,
+    "block_n": 256,
+    "block_k": 64,
+    "num_stages": 3,
+    "threads": 256,
+    "enable_rasterization": True,
+}
 
 
 @functools.lru_cache(maxsize=16)
@@ -75,8 +82,15 @@ class SharedExpertMLPKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    def __init__(self, num_tokens: int, hidden_size: int, ffn_size: int,
-                 dtype: torch.dtype = torch.bfloat16, config=None, tune: bool = False):
+    def __init__(
+        self,
+        num_tokens: int,
+        hidden_size: int,
+        ffn_size: int,
+        dtype: torch.dtype = torch.bfloat16,
+        config=None,
+        tune: bool = False,
+    ):
         super().__init__()
         self.num_tokens = num_tokens
         self.hidden_size = hidden_size
@@ -85,12 +99,20 @@ class SharedExpertMLPKernel(Kernel):
         self.init_config(config, tune)
 
         self._gemm_gate_up = GemmKernel(
-            m=num_tokens, n=ffn_size * 2, k=hidden_size,
-            dtype=dtype, trans_b=True, config=self.config,
+            m=num_tokens,
+            n=ffn_size * 2,
+            k=hidden_size,
+            dtype=dtype,
+            trans_b=True,
+            config=self.config,
         )
         self._gemm_down = GemmKernel(
-            m=num_tokens, n=hidden_size, k=ffn_size,
-            dtype=dtype, trans_b=True, config=self.config,
+            m=num_tokens,
+            n=hidden_size,
+            k=ffn_size,
+            dtype=dtype,
+            trans_b=True,
+            config=self.config,
         )
 
     @property
@@ -101,8 +123,9 @@ class SharedExpertMLPKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, hidden: torch.Tensor, w_gate_up: torch.Tensor,
-                w_down: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, hidden: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
+    ) -> torch.Tensor:
         T_dim = self.num_tokens
         F = self.ffn_size
 
@@ -112,7 +135,8 @@ class SharedExpertMLPKernel(Kernel):
         # SiLU + Mul in FP32: kernel reads gate=[:, :F] and up=[:, F:] via index offset,
         # avoiding intermediate buffer allocations for the split.
         silu_mul_fn = _silu_mul_fused_kernel(T_dim, F, self.dtype_str)(
-            self.config["block_m"], self.config["block_n"], self.config["threads"])
+            self.config["block_m"], self.config["block_n"], self.config["threads"]
+        )
         gate_up = silu_mul_fn(gate_up_out)
 
         # [T, F] @ [H, F]^T -> [T, H]

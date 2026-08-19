@@ -1,11 +1,9 @@
-
-
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import FP8QuantOp
+from tileops.ops import FP8QuantFwdOp
 from workloads.fp8_quant import FP8QuantWorkload
 
 
@@ -15,13 +13,16 @@ class FP8QuantTest(FP8QuantWorkload, TestBase):
 
 class FP8QuantFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len_kv, kv_group, index_dim, in_dtype, tune", [
-            pytest.param(1, 8192, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 8192, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(1, 4096, 1, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 16384, 1, 32, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 1024, 4, 64, torch.float16, False, marks=pytest.mark.full),
-        ]),
+        (
+            "batch, seq_len_kv, kv_group, index_dim, in_dtype, tune",
+            [
+                pytest.param(1, 8192, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 8192, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1, 4096, 1, 128, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 16384, 1, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 1024, 4, 64, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
     ]
 
 
@@ -30,15 +31,15 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     output = output.to(torch.float32)
     output_ref = output_ref.to(torch.float32)
     cos_sim = F.cosine_similarity(output.flatten(), output_ref.flatten(), dim=0)
-    assert cos_sim >= 0.99, \
-        f"Cosine similarity too low: {cos_sim.item()}"
+    assert cos_sim >= 0.99, f"Cosine similarity too low: {cos_sim.item()}"
 
 
 @FP8QuantFixture
-def test_fp8_quant_op(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
-                      in_dtype: torch.dtype, tune: bool) -> None:
+def test_fp8_quant_op(
+    batch: int, seq_len_kv: int, kv_group: int, index_dim: int, in_dtype: torch.dtype, tune: bool
+) -> None:
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
-    op = FP8QuantOp(tune=tune)
+    op = FP8QuantFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

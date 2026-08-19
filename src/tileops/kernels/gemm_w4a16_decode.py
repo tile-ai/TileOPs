@@ -22,7 +22,6 @@ __all__ = ["GemmW4A16DecodeKernel"]
 
 @functools.lru_cache(maxsize=32)
 def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
-
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={

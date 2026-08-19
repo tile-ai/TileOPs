@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -13,18 +12,32 @@ class MlaDecodeTest(MlaDecodeWorkload, TestBase):
 
 class MlaDecodeFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
-            pytest.param(32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke),
-        ]),
+        (
+            "batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune",
+            [
+                pytest.param(
+                    32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke
+                ),
+            ],
+        ),
     ]
 
 
 @MlaDecodeFixture
-def test_mla_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
-                    dim_pe: int, dtype: torch.dtype, tune: bool):
+def test_mla_decode(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_kv: int,
+    dim: int,
+    dim_pe: int,
+    dtype: torch.dtype,
+    tune: bool,
+):
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune)
+        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune
+    )
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
 
 

@@ -6,16 +6,17 @@ from workloads.workload_base import WorkloadBase
 
 
 class FP8LightningIndexerWorkload(WorkloadBase):
-
-    def __init__(self,
-                 batch: int,
-                 seq_len: int,
-                 heads: int,
-                 index_dim: int,
-                 seq_len_kv: int,
-                 kv_group: int,
-                 clean_logits: bool = True,
-                 config: Optional[dict] = None):
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        index_dim: int,
+        seq_len_kv: int,
+        kv_group: int,
+        clean_logits: bool = True,
+        config: Optional[dict] = None,
+    ):
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
@@ -28,8 +29,9 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         self.accum_dtype = torch.float32
         self.index_dtype = torch.int32
 
-    def cal_seq_idx_for_q(self, cu_seqlens_qs: torch.LongTensor, cu_seqlens_qe: torch.LongTensor,
-                          seq_len: int) -> torch.IntTensor:
+    def cal_seq_idx_for_q(
+        self, cu_seqlens_qs: torch.LongTensor, cu_seqlens_qe: torch.LongTensor, seq_len: int
+    ) -> torch.IntTensor:
         seq_idx_for_q = torch.zeros(seq_len, dtype=torch.int32, device=cu_seqlens_qs.device)
         if len(cu_seqlens_qs) > 1:
             seq_idx_for_q[cu_seqlens_qs[1:]] = 1
@@ -47,23 +49,29 @@ class FP8LightningIndexerWorkload(WorkloadBase):
     ) -> torch.IntTensor:
         cu_seqlen_ke_for_each_q = torch.gather(
             input=torch.cat(
-                [cu_seqlens_ke,
-                 torch.zeros(1, dtype=torch.int32, device=cu_seqlens_qs.device)]),
+                [cu_seqlens_ke, torch.zeros(1, dtype=torch.int32, device=cu_seqlens_qs.device)]
+            ),
             dim=0,
             index=self.cal_seq_idx_for_q(
-                cu_seqlens_qs=cu_seqlens_qs, cu_seqlens_qe=cu_seqlens_qe, seq_len=seq_len).long(),
+                cu_seqlens_qs=cu_seqlens_qs, cu_seqlens_qe=cu_seqlens_qe, seq_len=seq_len
+            ).long(),
         )
-        casual_cu_seqlen_ke_for_each_q = torch.zeros((seq_len,),
-                                                     dtype=torch.int32,
-                                                     device=cu_seqlens_qs.device)
+        casual_cu_seqlen_ke_for_each_q = torch.zeros(
+            (seq_len,), dtype=torch.int32, device=cu_seqlens_qs.device
+        )
         for i in range(len(cu_seqlens_qs)):
-            casual_cu_seqlen_ke_for_each_q[cu_seqlens_qs[i]:cu_seqlens_qe[i]] = (torch.arange(
-                q_start_idxs[i],
-                q_start_idxs[i] + cu_seqlens_qe[i] - cu_seqlens_qs[i],
-                dtype=torch.int32,
-                device=cu_seqlens_qs.device) + 1) // kv_stride + cu_seqlens_ks[i]
-        cu_seqlen_ke_for_each_q = torch.minimum(casual_cu_seqlen_ke_for_each_q,
-                                                cu_seqlen_ke_for_each_q)
+            casual_cu_seqlen_ke_for_each_q[cu_seqlens_qs[i] : cu_seqlens_qe[i]] = (
+                torch.arange(
+                    q_start_idxs[i],
+                    q_start_idxs[i] + cu_seqlens_qe[i] - cu_seqlens_qs[i],
+                    dtype=torch.int32,
+                    device=cu_seqlens_qs.device,
+                )
+                + 1
+            ) // kv_stride + cu_seqlens_ks[i]
+        cu_seqlen_ke_for_each_q = torch.minimum(
+            casual_cu_seqlen_ke_for_each_q, cu_seqlen_ke_for_each_q
+        )
         return cu_seqlen_ke_for_each_q.int()
 
     def cal_cu_seqlen_ks_for_q(
@@ -74,34 +82,39 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         seq_len: int,
     ) -> torch.IntTensor:
         cu_seqlen_ks_for_each_q = torch.gather(
-            input=torch.cat([
-                cu_seqlens_ks,
-                torch.full((1,),
-                           torch.iinfo(torch.int32).max,
-                           dtype=torch.int32,
-                           device=cu_seqlens_qs.device)
-            ]),
+            input=torch.cat(
+                [
+                    cu_seqlens_ks,
+                    torch.full(
+                        (1,),
+                        torch.iinfo(torch.int32).max,
+                        dtype=torch.int32,
+                        device=cu_seqlens_qs.device,
+                    ),
+                ]
+            ),
             dim=0,
             index=self.cal_seq_idx_for_q(
-                cu_seqlens_qs=cu_seqlens_qs, cu_seqlens_qe=cu_seqlens_qe, seq_len=seq_len).long(),
+                cu_seqlens_qs=cu_seqlens_qs, cu_seqlens_qe=cu_seqlens_qe, seq_len=seq_len
+            ).long(),
         )
         return cu_seqlen_ks_for_each_q.int()
 
-    def generate_random_cu_seqlens(self,
-                                   cp_size: int = 4,
-                                   cp_rank: int = 3,
-                                   kv_stride: int = 1,
-                                   average_q_len: int = 512):
+    def generate_random_cu_seqlens(
+        self, cp_size: int = 4, cp_rank: int = 3, kv_stride: int = 1, average_q_len: int = 512
+    ):
         total_seqlen = self.seq_len * cp_size
 
-        cu_seqlens = torch.randint(0, average_q_len * 2,
-                                   (total_seqlen // average_q_len * 2,)).cuda()
+        cu_seqlens = torch.randint(
+            0, average_q_len * 2, (total_seqlen // average_q_len * 2,)
+        ).cuda()
         last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen)[0][0]
         cu_seqlens = cu_seqlens[:last_seq_id]
 
         if cu_seqlens.sum() < total_seqlen:
             cu_seqlens = torch.cat(
-                [cu_seqlens, torch.tensor([total_seqlen - cu_seqlens.sum()]).cuda()])
+                [cu_seqlens, torch.tensor([total_seqlen - cu_seqlens.sum()]).cuda()]
+            )
 
         cu_seqlens_cumsum = torch.cumsum(cu_seqlens, dim=0)
         cu_seqlens_k_cumsum = torch.cumsum(cu_seqlens // kv_stride, dim=0)
@@ -135,42 +148,54 @@ class FP8LightningIndexerWorkload(WorkloadBase):
             total_seqlen - cp_rank * per_chunk_seqlen,
         )
 
-        ks = torch.cat([
-            cu_seqlens_ks_for_each_q[slice_short],
-            cu_seqlens_ks_for_each_q[slice_long],
-        ])
-        ke = torch.cat([
-            cu_seqlens_ke_for_each_q[slice_short],
-            cu_seqlens_ke_for_each_q[slice_long],
-        ])
+        ks = torch.cat(
+            [
+                cu_seqlens_ks_for_each_q[slice_short],
+                cu_seqlens_ks_for_each_q[slice_long],
+            ]
+        )
+        ke = torch.cat(
+            [
+                cu_seqlens_ke_for_each_q[slice_short],
+                cu_seqlens_ke_for_each_q[slice_long],
+            ]
+        )
         assert len(ks) == len(ke) == self.seq_len
         return ks, ke
 
     def gen_inputs(
-            self,
-            params=None
+        self, params=None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         IndexQ = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
             self.index_dim,
-            device='cuda',
-            dtype=torch.bfloat16)
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
         IndexK = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
             self.index_dim,
-            device='cuda',
-            dtype=torch.bfloat16)
-        Weights = torch.randn(self.seq_len, self.heads, device='cuda', dtype=self.accum_dtype)
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        Weights = torch.randn(self.seq_len, self.heads, device="cuda", dtype=self.accum_dtype)
         CuSeqLenKS, CuSeqLenKE = self.generate_random_cu_seqlens(
-            cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048)
+            cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048
+        )
         return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE
 
-    def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
-                    cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> tuple[torch.Tensor]:
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        weights: torch.Tensor,
+        cu_seqlen_ks: torch.Tensor,
+        cu_seqlen_ke: torch.Tensor,
+    ) -> tuple[torch.Tensor]:
         k = kv
         q = q.float()
         k = k.float()

@@ -277,9 +277,7 @@ def _logical_reduce_tiled_fwd_wrapped(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    out_raw = _logical_reduce_kernel_tiled(
-        M, N, op_kind, dtype_str, tile_n
-    )(block_m, threads)(x)
+    out_raw = _logical_reduce_kernel_tiled(M, N, op_kind, dtype_str, tile_n)(block_m, threads)(x)
     if op_kind == "count_nonzero":
         return out_raw.to(torch.int64)
     return out_raw.bool()
@@ -356,7 +354,9 @@ class LogicalReduceKernel(Kernel):
         self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
         self._smem_budget = device_smem_budget()
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget,
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
         )
         self._needs_tiling = self._planner.needs_tiling
         self.kernel = None

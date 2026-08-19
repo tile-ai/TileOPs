@@ -7,14 +7,11 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["FP8QuantOp"]
+__all__ = ["FP8QuantFwdOp"]
 
 
-class FP8QuantOp(Op):
-
-    def __init__(self,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+class FP8QuantFwdOp(Op):
+    def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False):
         self.batch = None
         self.seq_len_kv = None
         self.kv_group = None
@@ -42,20 +39,21 @@ class FP8QuantOp(Op):
             "fp8_quant_kernel",
             key=key,
             build=lambda: self.kernel_map["fp8_quant_kernel"](
-                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune),
+                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
+            ),
         )
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if not input_tensor.is_cuda:
-            raise ValueError("FP8QuantOp expects a CUDA input tensor")
+            raise ValueError("FP8QuantFwdOp expects a CUDA input tensor")
         if input_tensor.ndim != 4:
-            raise ValueError("FP8QuantOp expects input_tensor shape [B, S, G, D]")
+            raise ValueError("FP8QuantFwdOp expects input_tensor shape [B, S, G, D]")
         if input_tensor.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(f"FP8QuantOp does not support dtype {input_tensor.dtype}")
+            raise ValueError(f"FP8QuantFwdOp does not support dtype {input_tensor.dtype}")
 
         batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
         if min(batch, seq_len_kv, kv_group, index_dim) <= 0:
-            raise ValueError("FP8QuantOp input dimensions must be positive")
+            raise ValueError("FP8QuantFwdOp input dimensions must be positive")
 
         self.batch = batch
         self.seq_len_kv = seq_len_kv
@@ -63,5 +61,6 @@ class FP8QuantOp(Op):
         self.index_dim = index_dim
         self.in_dtype = input_tensor.dtype
         self.kernel = self._get_kernel(
-            batch, seq_len_kv, kv_group, index_dim, input_tensor.dtype, input_tensor.device.index)
+            batch, seq_len_kv, kv_group, index_dim, input_tensor.dtype, input_tensor.device.index
+        )
         return self.kernel(input_tensor)

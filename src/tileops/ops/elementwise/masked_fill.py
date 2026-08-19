@@ -63,8 +63,7 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         if supported is not None and compute not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
             raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
+                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
             )
         return KernelEntry(
             kernel=impl(self.N_total, compute),
@@ -83,7 +82,10 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         return t.contiguous().view(-1)
 
     def _eager_forward(
-        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,
+        self,
+        input: torch.Tensor,
+        mask: torch.Tensor,
+        value: torch.Tensor,
     ) -> torch.Tensor:
         # Broadcast input/mask to out_shape; the kernel owns how it represents
         # the predicate and the scalar.
@@ -96,23 +98,21 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
-        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,
+        self,
+        input: torch.Tensor,
+        mask: torch.Tensor,
+        value: torch.Tensor,
     ) -> torch.Tensor:
         if not (input.is_cuda and mask.is_cuda and value.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
         if mask.dtype != torch.bool:
             raise ValueError(f"Expected mask.dtype torch.bool, got {mask.dtype}")
         if value.dtype != input.dtype:
-            raise ValueError(
-                f"Expected value.dtype {input.dtype}, got {value.dtype}")
+            raise ValueError(f"Expected value.dtype {input.dtype}, got {value.dtype}")
         if tuple(input.shape) != self.input_shape:
-            raise ValueError(
-                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
-            )
+            raise ValueError(f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}")
         if tuple(mask.shape) != self.mask_shape:
-            raise ValueError(
-                f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}"
-            )
+            raise ValueError(f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}")
         if tuple(value.shape) != ():
             raise ValueError(f"Expected value.shape (), got {tuple(value.shape)}")
         wrapped = type(self)._wrapped
@@ -172,11 +172,13 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         if supported is not None and compute not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
             raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
+                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
             )
         _validate_scalar_param_repr(
-            "value", self.value, dtype, self._op_name,
+            "value",
+            self.value,
+            dtype,
+            self._op_name,
             allow_nonfinite_float=True,
         )
         # The scalar is baked in, so it is normalized to the semantic dtype's
@@ -211,17 +213,13 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if tuple(input.shape) != self.input_shape:
-            raise ValueError(
-                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
-            )
+            raise ValueError(f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}")
         if not mask.is_cuda:
             raise ValueError("Mask must be a CUDA tensor")
         if mask.dtype != torch.bool:
             raise ValueError(f"Expected mask.dtype torch.bool, got {mask.dtype}")
         if tuple(mask.shape) != self.mask_shape:
-            raise ValueError(
-                f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}"
-            )
+            raise ValueError(f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, mask, self._instance_key)

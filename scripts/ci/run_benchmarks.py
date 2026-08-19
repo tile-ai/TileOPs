@@ -69,6 +69,7 @@ os.write(int(sys.argv[1]), str(rc).encode())
 sys.exit(rc)
 """
 
+
 class Child:
     """One bench child process plus its status pipe."""
 
@@ -373,8 +374,10 @@ def main() -> int:
                 last_beat = 0.0
                 out_of_budget = False
                 while True:
-                    limit = stall_deadline if run_deadline is None else min(
-                        stall_deadline, run_deadline
+                    limit = (
+                        stall_deadline
+                        if run_deadline is None
+                        else min(stall_deadline, run_deadline)
                     )
                     rc = child.wait_result(min(1.0, max(0.0, limit - time.monotonic())))
                     if rc is not None:
@@ -467,7 +470,8 @@ def main() -> int:
 
     if collect_failed:
         scope = (
-            "every file" if len(collect_failed) == len(bench_files)
+            "every file"
+            if len(collect_failed) == len(bench_files)
             else f"{len(collect_failed)} of {len(bench_files)} files"
         )
         print(f"\ncollection did not complete cleanly for {scope}:", flush=True)

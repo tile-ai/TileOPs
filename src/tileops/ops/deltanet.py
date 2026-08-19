@@ -118,7 +118,8 @@ class DeltaNetFwdOp(Op):
         self.dim_v = v.shape[-1]
         self.dtype = dtype
         self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index)
+            batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index
+        )
 
     def forward(
         self,
@@ -241,8 +242,7 @@ class DeltaNetBwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
 
     def forward(
         self,
@@ -382,11 +382,25 @@ class DeltaNetOp(Op):
             key=key,
             build=lambda: (
                 self.kernel_map["DeltaNetFwdKernel"](
-                    batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
-                    dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+                    batch,
+                    heads,
+                    seq_len,
+                    self.chunk_size,
+                    dim_k,
+                    self.dim_v,
+                    dtype=Kernel.dtype_to_str(dtype),
+                    tune=self.tune,
+                ),
                 self.kernel_map["DeltaNetBwdKernel"](
-                    batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
-                    dtype=Kernel.dtype_to_str(dtype), tune=self.tune),
+                    batch,
+                    heads,
+                    seq_len,
+                    self.chunk_size,
+                    dim_k,
+                    self.dim_v,
+                    dtype=Kernel.dtype_to_str(dtype),
+                    tune=self.tune,
+                ),
             ),
         )
 

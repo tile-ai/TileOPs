@@ -7,16 +7,17 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["FP8LightningIndexerOp"]
+__all__ = ["FP8LightningIndexerFwdOp"]
 
 
-class FP8LightningIndexerOp(Op):
-
-    def __init__(self,
-                 clean_logits=True,
-                 config: Optional[dict] = None,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False) -> None:
+class FP8LightningIndexerFwdOp(Op):
+    def __init__(
+        self,
+        clean_logits=True,
+        config: Optional[dict] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune=False,
+    ) -> None:
         self.batch = None
         self.seq_len = None
         self.heads = None
@@ -74,7 +75,8 @@ class FP8LightningIndexerOp(Op):
                 kv_group,
                 self.clean_logits,
                 config=self.config,
-                tune=self.tune),
+                tune=self.tune,
+            ),
         )
 
     def _resolve_and_bind(
@@ -87,9 +89,9 @@ class FP8LightningIndexerOp(Op):
         index_k_scale: Optional[torch.Tensor],
     ) -> None:
         if not index_q.is_cuda or not index_k.is_cuda:
-            raise ValueError("FP8LightningIndexerOp expects CUDA inputs")
+            raise ValueError("FP8LightningIndexerFwdOp expects CUDA inputs")
         if index_q.ndim != 4 or index_k.ndim != 4:
-            raise ValueError("FP8LightningIndexerOp expects index_q/index_k to be 4D tensors")
+            raise ValueError("FP8LightningIndexerFwdOp expects index_q/index_k to be 4D tensors")
         batch, seq_len, heads, index_dim = index_q.shape
         k_batch, seq_len_kv, kv_group, k_dim = index_k.shape
         if k_batch != batch or k_dim != index_dim:
@@ -121,37 +123,52 @@ class FP8LightningIndexerOp(Op):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.kernel = self._get_kernel(
-            batch, seq_len, heads, index_dim, seq_len_kv, kv_group, index_q.device.index)
+            batch, seq_len, heads, index_dim, seq_len_kv, kv_group, index_q.device.index
+        )
 
-    def torch_quant_forward(self, index_q: torch.Tensor, index_k: torch.Tensor,
-                            weights: torch.Tensor, cu_seqlen_ks: torch.Tensor,
-                            cu_seqlen_ke: torch.Tensor) -> torch.Tensor:
+    def torch_quant_forward(
+        self,
+        index_q: torch.Tensor,
+        index_k: torch.Tensor,
+        weights: torch.Tensor,
+        cu_seqlen_ks: torch.Tensor,
+        cu_seqlen_ke: torch.Tensor,
+    ) -> torch.Tensor:
         index_q = index_q.to(torch.float8_e4m3fn)
         index_k, index_k_scale = self.per_custom_dims_cast_to_fp8(index_k, (0,), False)
 
         return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
 
-    def tl_quant_forward(self, index_q: torch.Tensor, index_k: torch.Tensor,
-                         index_k_scale: torch.Tensor, weights: torch.Tensor,
-                         cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> torch.Tensor:
+    def tl_quant_forward(
+        self,
+        index_q: torch.Tensor,
+        index_k: torch.Tensor,
+        index_k_scale: torch.Tensor,
+        weights: torch.Tensor,
+        cu_seqlen_ks: torch.Tensor,
+        cu_seqlen_ke: torch.Tensor,
+    ) -> torch.Tensor:
         return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
 
-    def forward(self,
-                index_q: torch.Tensor,
-                index_k: torch.Tensor,
-                weights: torch.Tensor,
-                cu_seqlen_ks: torch.Tensor,
-                cu_seqlen_ke: torch.Tensor,
-                index_k_scale: Optional[torch.Tensor] = None) -> torch.Tensor:
-        self._resolve_and_bind(
-            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
+    def forward(
+        self,
+        index_q: torch.Tensor,
+        index_k: torch.Tensor,
+        weights: torch.Tensor,
+        cu_seqlen_ks: torch.Tensor,
+        cu_seqlen_ke: torch.Tensor,
+        index_k_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        self._resolve_and_bind(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
         if index_k_scale is None:
             return self.torch_quant_forward(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
-        return self.tl_quant_forward(index_q, index_k, index_k_scale, weights, cu_seqlen_ks,
-                                     cu_seqlen_ke)
+        return self.tl_quant_forward(
+            index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke
+        )
 
-    def per_custom_dims_cast_to_fp8(self, x: torch.Tensor, dims: Tuple[int],
-                                    use_ue8m0: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+    def per_custom_dims_cast_to_fp8(
+        self, x: torch.Tensor, dims: Tuple[int], use_ue8m0: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         x_absmax = x.to(torch.float32).abs().amax(dim=-1, keepdim=True).clamp(1e-4)
         sf = x_absmax / 448.0
         if use_ue8m0:

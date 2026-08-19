@@ -83,7 +83,7 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
 
     out = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(x, weight)
 
-    (inputs, params), = recorder.calls
+    ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
     # eps is optional; whether it was passed or defaulted, a backend gets the number.
     assert params == {"normalized_shape": NORMALIZED_SHAPE, "eps": 1e-6}
@@ -102,8 +102,10 @@ def test_the_op_layer_still_does_its_half():
     with pytest.raises(ValueError, match="Expected x trailing shape"):
         op(torch.randn(4, 999, dtype=DTYPE), torch.randn(*NORMALIZED_SHAPE, dtype=DTYPE))
     with pytest.raises(ValueError, match="same_as"):
-        op(torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
-           torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16))
+        op(
+            torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
+            torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16),
+        )
     assert recorder.calls == [], "a rejected call never reaches the backend"
 
 
@@ -116,7 +118,7 @@ def test_a_non_contiguous_input_reaches_the_kernel_contiguous():
 
     RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(strided, weight)
 
-    (inputs, _), = recorder.calls
+    ((inputs, _),) = recorder.calls
     assert inputs[0].shape == (4, *NORMALIZED_SHAPE)  # the kernel asserts contiguity itself
 
 
@@ -220,6 +222,7 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
     op(*_inputs())
     assert op._settled_target == "acme", "the first call with a tensor decides"
 
+
 def test_a_build_that_fails_pins_nothing():
     """The next call resolves again rather than being stuck on a target that could not."""
     attempts = []
@@ -262,6 +265,7 @@ def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
     assert Untyped.__manifest_param_names__ == ()
     assert RMSNormFwdOp.__manifest_param_names__ == ("normalized_shape", "eps")
 
+
 def test_a_call_that_fails_validation_pins_nothing():
     """One invalid call must not aim the instance for good.
 
@@ -274,8 +278,10 @@ def test_a_call_that_fails_validation_pins_nothing():
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     with pytest.raises(ValueError):
-        op(torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
-           torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16))
+        op(
+            torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
+            torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16),
+        )
 
     assert op._settled_target is None and not op.built_kernels("rms_norm")
     op(*_inputs())

@@ -1,11 +1,11 @@
 # Dense GEMM family.
 #
-# GemmOp is input-inferred: m/n/k and the dtype are derived from the forward
+# GemmFwdOp is input-inferred: m/n/k and the dtype are derived from the forward
 # inputs, so nothing is committed at construction. Roofline binds m/n/k and
 # dtype during forward() and therefore uses func mode (the callable reads
 # op.m/op.n/op.k/op.dtype), which stays correct across all trans_a/trans_b
 # layouts where a single static `vars` expression could not.
-GemmOp:
+GemmFwdOp:
   ref_api: "torch.matmul"
   family: gemm
   status: implemented
@@ -58,7 +58,7 @@ GemmOp:
       gemm_kernel: GemmKernel
       gemv_kernel: GemvKernel
 
-GemmFp8Op:
+GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"
   family: gemm
   status: implemented
@@ -109,7 +109,7 @@ GemmFp8Op:
       gemm_fp8_epilogue_kernel: GemmFp8EpilogueKernel
       gemm_fp8_block_scaled_kernel: GemmFp8BlockScaledKernel
 
-GemmW4A16Op:
+GemmW4A16FwdOp:
   ref_api: "none"
   family: gemm
   status: implemented
@@ -154,20 +154,20 @@ GemmW4A16Op:
       gemm_w4a16_kernel: GemmW4A16Kernel
       gemm_w4a16_decode_kernel: GemmW4A16DecodeKernel
 
-GroupedGemmOp:
+GroupedGemmFwdOp:
   ref_api: "none"
   family: gemm
   status: implemented
 
   signature:
     inputs:
-      a: {dtype: "float16 | bfloat16", shape: "[batch_sum, K] | [batch_sum, N]"}
-      b: {dtype: "same_as(a)", shape: "[batch_count, N, K] | [batch_count, K, N] | [K, batch_sum] | [batch_sum, K]"}
+      a: {dtype: "float16 | bfloat16"}
+      b: {dtype: "same_as(a)"}
       batch_sizes: {dtype: "int32", shape: "[batch_count]"}
       batch_offsets: {dtype: "int32", shape: "[batch_count]"}
       batch_padded_offsets: {dtype: "int32", shape: "[batch_count]"}
     outputs:
-      output: {dtype: "same_as(a)", shape: "[batch_sum, N] | [batch_count, N, K]"}
+      output: {dtype: "same_as(a)"}
     params:
       transpose_a: {type: bool, default: false}
       transpose_b: {type: bool, default: true}
@@ -181,6 +181,10 @@ GroupedGemmOp:
     - "b.shape[0] == batch_sizes.shape[0] if (not transpose_a) else True"
     - "b.shape[2 if transpose_b else 1] == a.shape[1] if (not transpose_a) else True"
     - "b.shape[1 if transpose_b else 0] == a.shape[0] if transpose_a else True"
+    # The output rank and extents follow transpose_a, which also decides b's rank.
+    - "output.ndim == (3 if transpose_a else 2)"
+    - "transpose_a or output.shape == (a.shape[0], b.shape[1 if transpose_b else 2])"
+    - "not transpose_a or output.shape == (batch_sizes.shape[0], a.shape[1], b.shape[0 if transpose_b else 1])"
 
   workloads:
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096-fp16"}

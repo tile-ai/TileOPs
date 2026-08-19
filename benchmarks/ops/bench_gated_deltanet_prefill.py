@@ -8,6 +8,7 @@ The benchmark measures the serving-oriented BTHD layout because that is the
 production fast path used by FLA/Qwen-style inference prefill.
 """
 
+import functools
 import inspect
 from typing import Any, Sequence
 
@@ -18,10 +19,13 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GatedDeltaNetPrefillFwdOp
+from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
 
-_OP_NAME = "GatedDeltaNetPrefillFwdOp"
+_OP_NAME = "GatedDeltaNetPrefillBTHDFwdOp"
+_BHTD_OP_NAME = "GatedDeltaNetPrefillBHTDFwdOp"
+
+
 def _fla_prefill_fwd():
     """Return the FLA prefill baseline callable."""
     signature = inspect.signature(chunk_gated_delta_rule)
@@ -77,8 +81,9 @@ def convert_gdn_prefill_layout(
 
 def _gdn_prefill_args(
     workload: dict[str, Any],
+    layout: str = "bthd",
 ) -> tuple[int, int, int, int, int, int, str]:
-    layout = workload.get("layout", "bthd").lower()
+    """Constructor arguments for one workload row, read in *layout*'s order."""
     if layout == "bthd":
         batch, seq_len, heads, dim_k = workload["q_shape"]
         _, v_seq_len, v_heads, dim_v = workload["v_shape"]
@@ -101,6 +106,35 @@ def _gdn_prefill_args(
 
 
 _BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), _gdn_prefill_args, tune=False)
+_BHTD_BENCH_PARAMS = manifest_params(
+    load_workloads(_BHTD_OP_NAME),
+    functools.partial(_gdn_prefill_args, layout="bhtd"),
+    tune=False,
+)
+
+
+@pytest.mark.parametrize(
+    "batch, heads, seq_len, dim_k, dim_v, chunk_size, layout, dtype, tune",
+    _BHTD_BENCH_PARAMS,
+)
+def test_gated_deltanet_prefill_bhtd_bench(
+    batch: int,
+    heads: int,
+    seq_len: int,
+    dim_k: int,
+    dim_v: int,
+    chunk_size: int,
+    layout: str,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    """Head-major prefill. No FLA row: FLA takes token-major only."""
+    test = GatedDeltaNetPrefillFwdWorkload(
+        batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, layout=layout
+    )
+    op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
+    bm = ManifestBenchmark(_BHTD_OP_NAME, op, test)
+    bm.compare({"tileops": op}, *test.gen_inputs(), record_as=op, params=locals())
 
 
 @pytest.mark.parametrize(
@@ -124,7 +158,7 @@ def test_gated_deltanet_prefill_fwd_bench(
     )
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, tune=tune, layout=layout)
+    op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=chunk_size, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}

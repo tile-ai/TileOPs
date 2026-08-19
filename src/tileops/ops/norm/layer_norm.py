@@ -80,7 +80,10 @@ class LayerNormFwdOp(Op):
         )
 
     def forward(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor,
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
     ) -> torch.Tensor:
         """Apply layer normalization.
 
@@ -107,13 +110,9 @@ class LayerNormFwdOp(Op):
         self._validate_dtypes(x, weight, bias)
         self.dtype = x.dtype
         if weight.dtype != x.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {x.dtype}, got {weight.dtype}"
-            )
+            raise ValueError(f"Expected weight.dtype {x.dtype}, got {weight.dtype}")
         if bias.dtype != x.dtype:
-            raise ValueError(
-                f"Expected bias.dtype {x.dtype}, got {bias.dtype}"
-            )
+            raise ValueError(f"Expected bias.dtype {x.dtype}, got {bias.dtype}")
 
         ns = self.normalized_shape
         k = len(ns)
@@ -123,13 +122,9 @@ class LayerNormFwdOp(Op):
                 f"got {tuple(x.shape[-k:]) if x.ndim >= k else tuple(x.shape)}"
             )
         if tuple(weight.shape) != ns:
-            raise ValueError(
-                f"Expected weight shape {ns}, got {tuple(weight.shape)}"
-            )
+            raise ValueError(f"Expected weight shape {ns}, got {tuple(weight.shape)}")
         if tuple(bias.shape) != ns:
-            raise ValueError(
-                f"Expected bias shape {ns}, got {tuple(bias.shape)}"
-            )
+            raise ValueError(f"Expected bias shape {ns}, got {tuple(bias.shape)}")
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, self.N)
@@ -141,7 +136,11 @@ class LayerNormFwdOp(Op):
             "layer_norm",
             key=key,
             build=lambda: self.kernel_map["layer_norm"](
-                m_actual, self.N, self.eps, x.dtype, tune=self.tune,
+                m_actual,
+                self.N,
+                self.eps,
+                x.dtype,
+                tune=self.tune,
             ),
         )
         self._last_m = m_actual

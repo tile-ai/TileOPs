@@ -13,6 +13,7 @@ Optimization:
   - Native dtype: bf16/fp16 halve state bandwidth vs fp32
   - K-tiling: small shared memory footprint → high occupancy
 """
+
 import functools
 from typing import Optional, Tuple
 
@@ -30,6 +31,7 @@ _DEFAULT_K_TILE = 16
 
 # Low-precision decode kernel — bf16 / fp16, fp32 accumulation
 
+
 @functools.lru_cache(maxsize=32)
 def _gla_decode_tl(
     batch: int,
@@ -45,7 +47,7 @@ def _gla_decode_tl(
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
 
     if scale <= 0:
-        scale = dim_k ** -0.5
+        scale = dim_k**-0.5
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -55,7 +57,6 @@ def _gla_decode_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _decode_func(num_stages, threads=128):
-
         @T.prim_func
         def gla_decode(
             q: T.Tensor([batch, head, dim_k], dtype),
@@ -101,10 +102,7 @@ def _gla_decode_tl(
                         alpha_i = T.exp2(gk_val * _LOG2E)
                         q_gated = q_shared[kt * k_tile + kk] * alpha_i
                         for j in T.Parallel(dim_v):
-                            sq_frag[j] = (
-                                sq_frag[j]
-                                + q_gated * T.cast(h_tile_o[kk, j], accum_dtype)
-                            )
+                            sq_frag[j] = sq_frag[j] + q_gated * T.cast(h_tile_o[kk, j], accum_dtype)
 
                 # Keep this scalar reduction separate from the matvec's
                 # dim_v-parallel inner loop.
@@ -126,7 +124,8 @@ def _gla_decode_tl(
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
-                            T.exp2(gk_shared[kt * k_tile + kk] * _LOG2E) * T.cast(h_tile[kk, j], accum_dtype)
+                            T.exp2(gk_shared[kt * k_tile + kk] * _LOG2E)
+                            * T.cast(h_tile[kk, j], accum_dtype)
                             + k_shared[kt * k_tile + kk] * v_shared[j],
                             dtype,
                         )
@@ -154,7 +153,13 @@ def _gla_decode_wrapped_kernel(
     state: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     kernel_fn = _gla_decode_tl(
-        batch, head, dim_k, dim_v, k_tile, dtype, scale,
+        batch,
+        head,
+        dim_k,
+        dim_v,
+        k_tile,
+        dtype,
+        scale,
     )(num_stages, threads)
     return kernel_fn(q, k, v, gk, state)
 
@@ -208,7 +213,7 @@ class GLADecodeKernel(Kernel):
         self.head = head
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.scale = scale if scale > 0 else dim_k ** -0.5
+        self.scale = scale if scale > 0 else dim_k**-0.5
         self.dtype = dtype
 
         if tune:
@@ -220,8 +225,13 @@ class GLADecodeKernel(Kernel):
         # on every forward call (_gla_decode_wrapped_kernel is kept
         # for torch.compile compatibility).
         self._kernel_fn = _gla_decode_tl(
-            batch, head, dim_k, dim_v,
-            self.config["k_tile"], self.dtype_str, self.scale,
+            batch,
+            head,
+            dim_k,
+            dim_v,
+            self.config["k_tile"],
+            self.dtype_str,
+            self.scale,
         )(self.config["num_stages"], self.config["threads"])
 
     def _autotune_with_k_tile(self) -> None:
@@ -232,8 +242,11 @@ class GLADecodeKernel(Kernel):
         best_config = self.default_config
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
-        torch_dtype = {"float32": torch.float32, "float16": torch.float16,
-                       "bfloat16": torch.bfloat16}[self.dtype_str]
+        torch_dtype = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }[self.dtype_str]
         q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
         k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
         v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
@@ -248,14 +261,22 @@ class GLADecodeKernel(Kernel):
                 for threads in [128, 256]:
                     try:
                         fn = _gla_decode_tl(
-                            B, H, DK, DV, k_tile, self.dtype_str, self.scale,
+                            B,
+                            H,
+                            DK,
+                            DV,
+                            k_tile,
+                            self.dtype_str,
+                            self.scale,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state),
-                                     warmup=10, rep=20)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=10, rep=20)
                         if t < best_time:
                             best_time = t
-                            best_config = {"num_stages": num_stages,
-                                           "threads": threads, "k_tile": k_tile}
+                            best_config = {
+                                "num_stages": num_stages,
+                                "threads": threads,
+                                "k_tile": k_tile,
+                            }
                     except Exception:
                         continue
 
@@ -283,6 +304,7 @@ class GLADecodeKernel(Kernel):
 
 # FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
 
+
 @functools.lru_cache(maxsize=32)
 def _gla_decode_fp32_tl(
     batch: int,
@@ -305,7 +327,7 @@ def _gla_decode_fp32_tl(
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
 
     if scale <= 0:
-        scale = dim_k ** -0.5
+        scale = dim_k**-0.5
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -315,7 +337,6 @@ def _gla_decode_fp32_tl(
         compile_flags=["-O3"],
     )
     def _decode_func(num_stages, threads=128):
-
         @T.prim_func
         def gla_decode_fp32(
             q: T.Tensor([batch, head, dim_k], dtype),
@@ -365,10 +386,7 @@ def _gla_decode_fp32_tl(
 
                 # o = scale * (S @ q_gated) + scale * (q . k) * v
                 for j in T.Parallel(dim_v):
-                    o[bid, hid, j] = (
-                        scale * sq_frag[j]
-                        + scale * qk_dot[0] * v_shared[j]
-                    )
+                    o[bid, hid, j] = scale * sq_frag[j] + scale * qk_dot[0] * v_shared[j]
 
                 # === Pass 2: State update with async prefetch ===
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
@@ -403,7 +421,12 @@ def _gla_decode_fp32_wrapped_kernel(
     state: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     kernel_fn = _gla_decode_fp32_tl(
-        batch, head, dim_k, dim_v, k_tile, scale,
+        batch,
+        head,
+        dim_k,
+        dim_v,
+        k_tile,
+        scale,
     )(num_stages, threads)
     return kernel_fn(q, k, v, gk, state)
 
@@ -457,7 +480,7 @@ class GLADecodeFP32Kernel(Kernel):
         self.head = head
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.scale = scale if scale > 0 else dim_k ** -0.5
+        self.scale = scale if scale > 0 else dim_k**-0.5
 
         if tune:
             self._autotune_with_k_tile()
@@ -466,8 +489,12 @@ class GLADecodeFP32Kernel(Kernel):
 
         # Cache the JIT-compiled kernel
         self._kernel_fn = _gla_decode_fp32_tl(
-            batch, head, dim_k, dim_v,
-            self.config["k_tile"], self.scale,
+            batch,
+            head,
+            dim_k,
+            dim_v,
+            self.config["k_tile"],
+            self.scale,
         )(self.config["num_stages"], self.config["threads"])
 
     def _autotune_with_k_tile(self) -> None:
@@ -491,14 +518,21 @@ class GLADecodeFP32Kernel(Kernel):
                 for threads in [128, 256]:
                     try:
                         fn = _gla_decode_fp32_tl(
-                            B, H, DK, DV, k_tile, self.scale,
+                            B,
+                            H,
+                            DK,
+                            DV,
+                            k_tile,
+                            self.scale,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state),
-                                     warmup=10, rep=20)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=10, rep=20)
                         if t < best_time:
                             best_time = t
-                            best_config = {"num_stages": num_stages,
-                                           "threads": threads, "k_tile": k_tile}
+                            best_config = {
+                                "num_stages": num_stages,
+                                "threads": threads,
+                                "k_tile": k_tile,
+                            }
                     except Exception:
                         continue
 

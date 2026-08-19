@@ -800,13 +800,11 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(PackedPrefillKernel):
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel expects q/k/v to be torch.float8_e4m3fn."
             )
         if q_scale is None or k_scale is None or v_scale is None:
-            raise ValueError(
-                "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires q/k/v descales."
-            )
+            raise ValueError("GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel requires q/k/v descales.")
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         q_expanded, k_expanded, v_expanded = _expand_fa3_gqa_descales(
-            q_scale, k_scale, v_scale, self.batch, self.heads, self.heads_kv,
-            self.max_seqlen_q)
+            q_scale, k_scale, v_scale, self.batch, self.heads, self.heads_kv, self.max_seqlen_q
+        )
         output, _ = _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
             self.batch,
             self.heads,

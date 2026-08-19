@@ -10,10 +10,10 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.ops.op_base import Op
 
-__all__ = ["CBProducerOp"]
+__all__ = ["CBProducerFwdOp"]
 
 
-class CBProducerOp(Op):
+class CBProducerFwdOp(Op):
     """CB (C@B) matrix producer operator.
 
     Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
@@ -54,17 +54,20 @@ class CBProducerOp(Op):
             "cb_producer",
             key=dtype,
             build=lambda: self.kernel_map["cb_producer"](
-                self.batch, self.num_chunks, self.n_groups, self.chunk_len,
-                self.d_state, dtype, tune=self.tune,
+                self.batch,
+                self.num_chunks,
+                self.n_groups,
+                self.chunk_len,
+                self.d_state,
+                dtype,
+                tune=self.tune,
             ),
         )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         """Default kernel map - returns kernel class, not instance."""
-        return {
-            "cb_producer": CBProducerKernel
-        }
+        return {"cb_producer": CBProducerKernel}
 
     def forward(
         self,
@@ -84,9 +87,7 @@ class CBProducerOp(Op):
         self.dtype = C_mat.dtype
         for name, t in (("C_mat", C_mat), ("B_mat", B_mat)):
             if t.dtype != C_mat.dtype:
-                raise ValueError(
-                    f"{name}.dtype={t.dtype} does not match C_mat.dtype={C_mat.dtype}"
-                )
+                raise ValueError(f"{name}.dtype={t.dtype} does not match C_mat.dtype={C_mat.dtype}")
             if t.shape != torch.Size(expected_shape):
                 raise ValueError(
                     f"{name}.shape={tuple(t.shape)} does not match expected {expected_shape}"

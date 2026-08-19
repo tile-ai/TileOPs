@@ -25,9 +25,7 @@ _COUNT_NONZERO_OP = "CountNonzeroFwdOp"
     "shape, dtype, op_params",
     workloads_to_params(_ANY_OP, include_extra=True),
 )
-def test_any_bench(
-    shape: tuple, dtype: torch.dtype, op_params: dict
-) -> None:
+def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = AnyWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -41,8 +39,7 @@ def test_any_bench(
         return x.bool().any(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-                   record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -56,9 +53,7 @@ def test_any_bench(
     "shape, dtype, op_params",
     workloads_to_params(_ALL_OP, include_extra=True),
 )
-def test_all_bench(
-    shape: tuple, dtype: torch.dtype, op_params: dict
-) -> None:
+def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = AllWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -72,8 +67,7 @@ def test_all_bench(
         return x.bool().all(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-                   record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -87,9 +81,7 @@ def test_all_bench(
     "shape, dtype, op_params",
     workloads_to_params(_COUNT_NONZERO_OP, include_extra=True),
 )
-def test_count_nonzero_bench(
-    shape: tuple, dtype: torch.dtype, op_params: dict
-) -> None:
+def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = CountNonzeroWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -102,8 +94,7 @@ def test_count_nonzero_bench(
         return torch.count_nonzero(x, dim=dim).to(torch.int64)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-                   record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

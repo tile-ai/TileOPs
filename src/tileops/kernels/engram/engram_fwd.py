@@ -44,7 +44,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
-
         @T.macro
         def _gate_fwd(
             H: T.Tensor((M, seq_len, d_padded), dtype),
@@ -175,8 +174,18 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
             rrms_v_buf: T.Tensor((M, seq_len), accum_dtype),
         ):
             _gate_fwd(
-                H, k, v, rms_w_h, rms_w_v, conv_w,
-                Y, vhat_buf, alpha_buf, rrms_h_buf, rrms_k_buf, rrms_v_buf,
+                H,
+                k,
+                v,
+                rms_w_h,
+                rms_w_v,
+                conv_w,
+                Y,
+                vhat_buf,
+                alpha_buf,
+                rrms_h_buf,
+                rrms_k_buf,
+                rrms_v_buf,
             )
 
         return main
@@ -211,12 +220,12 @@ def _(M, seq_len, d, eps, dtype_str, threads, H, k, v, rms_w_h, rms_w_v, conv_w)
     device = H.device
     dt = H.dtype
     return [
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),     # Y
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),     # vhat_buf
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),    # alpha
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),    # rrms_h
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),    # rrms_k
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),    # rrms_v
+        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # Y
+        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # vhat_buf
+        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # alpha
+        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_h
+        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_k
+        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_v
     ]
 
 
@@ -250,7 +259,11 @@ class EngramGateConvFwdKernel(Kernel):
         self.dtype = dtype
         self.d_padded = align_up(d, ALIGNMENT)
         self.kernel = _engram_gate_conv_fwd_kernel(
-            M, seq_len, d, eps, self.dtype_str,
+            M,
+            seq_len,
+            d,
+            eps,
+            self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -295,9 +308,18 @@ class EngramGateConvFwdKernel(Kernel):
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
         results = _engram_gate_conv_fwd_wrapped(
-            self.M, self.seq_len, self.d, self.eps,
-            self.dtype_str, self.config["threads"],
-            H, k, v, rms_w_h, rms_w_v, conv_w,
+            self.M,
+            self.seq_len,
+            self.d,
+            self.eps,
+            self.dtype_str,
+            self.config["threads"],
+            H,
+            k,
+            v,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
         )
         if pad:
             results[0] = results[0][:, :, : self.d]

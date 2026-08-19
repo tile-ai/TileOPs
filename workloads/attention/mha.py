@@ -12,9 +12,9 @@ from workloads.workload_base import WorkloadBase
 
 
 class MhaBwdWorkload(WorkloadBase):
-
-    def __init__(self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
-                 dtype: torch.dtype):
+    def __init__(
+        self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool, dtype: torch.dtype
+    ):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -23,7 +23,7 @@ class MhaBwdWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(
-        self
+        self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
             self.batch,
@@ -31,29 +31,34 @@ class MhaBwdWorkload(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
-            requires_grad=True)
+            device="cuda",
+            requires_grad=True,
+        )
         k = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
-            requires_grad=True)
+            device="cuda",
+            requires_grad=True,
+        )
         v = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
-            requires_grad=True)
+            device="cuda",
+            requires_grad=True,
+        )
         grad_output = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
+            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device="cuda"
+        )
 
-        fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
-                                         self.is_causal)
+        fwd_op = MultiHeadAttentionFwdOp(
+            self.batch, self.heads, self.seq_len, self.dim, self.is_causal
+        )
         with torch.no_grad():
             o = fwd_op(q, k, v)
             lse = _compute_gqa_square_lse(
@@ -67,15 +72,22 @@ class MhaBwdWorkload(WorkloadBase):
 
         return q, k, v, o, grad_output, lse
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                    grad_output: torch.Tensor,
-                    lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        grad_output: torch.Tensor,
+        lse: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
-                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal
+            )
         output = output_bhsd.transpose(1, 2).contiguous()
 
         output.backward(grad_output)
@@ -83,9 +95,9 @@ class MhaBwdWorkload(WorkloadBase):
 
 
 class MhaFwdWorkload(WorkloadBase):
-
-    def __init__(self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
-                 dtype: torch.dtype):
+    def __init__(
+        self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool, dtype: torch.dtype
+    ):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -95,29 +107,32 @@ class MhaFwdWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         k = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         v = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         return q, k, v
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
-                    v: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
-                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal
+            )
         output = output_bhsd.transpose(1, 2).contiguous()
         return output
 
 
 class MhaDecodeWorkload(WorkloadBase):
-
-    def __init__(self, batch: int, heads: int, seq_len_q: int, seq_len_kv: int, dim: int,
-                 dtype: torch.dtype) -> None:
+    def __init__(
+        self, batch: int, heads: int, seq_len_q: int, seq_len_kv: int, dim: int, dtype: torch.dtype
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len_q = seq_len_q
@@ -127,11 +142,14 @@ class MhaDecodeWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
-            self.batch, self.seq_len_q, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_q, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         K = torch.randn(
-            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_kv, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         V = torch.randn(
-            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_kv, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         return Q, K, V
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -145,9 +163,17 @@ class MhaDecodeWorkload(WorkloadBase):
 
 
 class MhaDecodePagedWorkload(WorkloadBase):
-
-    def __init__(self, batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
-                 page_size: int, is_causal: bool, dtype: torch.dtype) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seqlen_q: int,
+        seqlen_kv: int,
+        dim: int,
+        page_size: int,
+        is_causal: bool,
+        dtype: torch.dtype,
+    ) -> None:
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -158,17 +184,23 @@ class MhaDecodePagedWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(
-            self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
-        real_seqlen_kv = torch.ones(
-            (self.batch,), dtype=torch.int32, device="cuda") * self.seqlen_kv
+        real_seqlen_kv = (
+            torch.ones((self.batch,), dtype=torch.int32, device="cuda") * self.seqlen_kv
+        )
         q = torch.randn(
-            self.batch, self.seqlen_q, self.heads, self.dim, device="cuda", dtype=self.dtype)
+            self.batch, self.seqlen_q, self.heads, self.dim, device="cuda", dtype=self.dtype
+        )
         k = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
         v = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
         # Identity block_table: logical page i -> physical page i (contiguous layout)
-        block_table = torch.arange(
-            num_pages, dtype=torch.int32, device="cuda").unsqueeze(0).expand(self.batch, -1)
+        block_table = (
+            torch.arange(num_pages, dtype=torch.int32, device="cuda")
+            .unsqueeze(0)
+            .expand(self.batch, -1)
+        )
 
         q = q.contiguous()
         k = k.contiguous()
@@ -178,14 +210,20 @@ class MhaDecodePagedWorkload(WorkloadBase):
 
         return q, k, v, real_seqlen_kv, block_table
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                    real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> torch.Tensor:
         """Reassemble paged K/V to logical layout per batch, then SDPA."""
         batch, seqlen_q, heads, dim = q.shape
         seqlen_kv = k.shape[0]
         out_list = []
         for i_b in range(batch):
-            q_b = q[i_b:i_b + 1, :, :, :]
+            q_b = q[i_b : i_b + 1, :, :, :]
             k_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
             v_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
             num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
@@ -193,12 +231,14 @@ class MhaDecodePagedWorkload(WorkloadBase):
                 start_pos = block_table[i_b, i_paged].item() * self.page_size
                 end_pos = min(start_pos + self.page_size, seqlen_kv)
                 page_len = end_pos - start_pos
-                k_logical[i_paged * self.page_size:i_paged * self.page_size +
-                          page_len, :, :] = k[start_pos:end_pos, :, :]
-                v_logical[i_paged * self.page_size:i_paged * self.page_size +
-                          page_len, :, :] = v[start_pos:end_pos, :, :]
-            k_logical = k_logical[:real_seqlen_kv[i_b].item(), :, :]
-            v_logical = v_logical[:real_seqlen_kv[i_b].item(), :, :]
+                k_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = k[
+                    start_pos:end_pos, :, :
+                ]
+                v_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = v[
+                    start_pos:end_pos, :, :
+                ]
+            k_logical = k_logical[: real_seqlen_kv[i_b].item(), :, :]
+            v_logical = v_logical[: real_seqlen_kv[i_b].item(), :, :]
             k_b = k_logical.unsqueeze(0)
             v_b = v_logical.unsqueeze(0)
             q_bhsd = q_b.transpose(1, 2)

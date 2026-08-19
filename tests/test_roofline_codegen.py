@@ -18,6 +18,7 @@ class TestRealOpSmoke:
         op.dtype = torch.float16
 
         from math import prod as _prod
+
         N = _prod(op.input_shape)
         W = op.weight_shape[0]
         elem = op.dtype.itemsize
@@ -65,7 +66,9 @@ class TestRealOpSmoke:
                 synthesize_eval_roofline(
                     "FakeOp",
                     roofline={
-                        "vars": {"n": expr}, "flops": "n", "bytes": "n",
+                        "vars": {"n": expr},
+                        "flops": "n",
+                        "bytes": "n",
                     },
                     signature={
                         "inputs": {

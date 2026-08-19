@@ -81,8 +81,12 @@ def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:
     if not 0 <= payload <= _PAYLOAD_MASK:
         raise ValueError(f"payload {payload} does not fit {_PAYLOAD_BITS} bits")
 
-    return ((event_id << _EVENT_ID_SHIFT) | (kind << _KIND_SHIFT) | (lane << _LANE_SHIFT) |
-            (payload << _PAYLOAD_SHIFT))
+    return (
+        (event_id << _EVENT_ID_SHIFT)
+        | (kind << _KIND_SHIFT)
+        | (lane << _LANE_SHIFT)
+        | (payload << _PAYLOAD_SHIFT)
+    )
 
 
 def unpack_w1(w1: int) -> tuple[int, int, int, int]:

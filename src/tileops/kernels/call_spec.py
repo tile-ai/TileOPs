@@ -23,6 +23,7 @@ class CallSpec:
     def __post_init__(self) -> None:
         if self.arch < 0:
             from tileops.utils import get_sm_version, is_h200
+
             object.__setattr__(self, "arch", get_sm_version())
             object.__setattr__(self, "h200", is_h200())
 
@@ -36,7 +37,6 @@ class CallSpec:
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.name not in ("arch", "h200")
-            and getattr(self, f.name) != getattr(default, f.name)
+            if f.name not in ("arch", "h200") and getattr(self, f.name) != getattr(default, f.name)
         ]
         return ", ".join([f"arch={self.arch}", f"h200={self.h200}", *stated])

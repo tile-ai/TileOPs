@@ -390,8 +390,10 @@ def test_every_error_can_still_blame_a_wheel_that_failed_to_load(installed):
         ),
     )
 
-    with (pytest.warns(RuntimeWarning),
-          pytest.raises(BackendError, match="detector for target 'rude'") as excinfo):
+    with (
+        pytest.warns(RuntimeWarning),
+        pytest.raises(BackendError, match="detector for target 'rude'") as excinfo,
+    ):
         detect_target(torch.device("cpu"))
     assert "1 backend(s) failed to load" in str(excinfo.value)
 

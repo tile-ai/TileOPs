@@ -6,22 +6,31 @@ from workloads.workload_base import WorkloadBase
 
 
 class MHCPreWorkload(WorkloadBase):
-
     def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
         self.batch = batch
         self.n_expand = n_expand
         self.c_x = c_x
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-                                  torch.Tensor, torch.Tensor, torch.Tensor, int, float]:
+    def gen_inputs(
+        self,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        int,
+        float,
+    ]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x
 
-        phi = torch.randn([n_expand * c_x, n_expand * n_expand + 2 * n_expand],
-                          device="cuda",
-                          dtype=torch.float32)
+        phi = torch.randn(
+            [n_expand * c_x, n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32
+        )
         x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
         b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
         alpha_pre = torch.randn(())
@@ -31,17 +40,33 @@ class MHCPreWorkload(WorkloadBase):
         eps = 0.02
         return phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, eps
 
-    def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
-                    alpha_pre, alpha_post, alpha_res,
-                    sinkhorn_repeat: int, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
+    def ref_program(
+        self,
+        phi: torch.Tensor,
+        x: torch.Tensor,
+        b: torch.Tensor,
+        alpha_pre,
+        alpha_post,
+        alpha_res,
+        sinkhorn_repeat: int,
+        eps: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return mhc_pre_ref(
-            self.batch, self.n_expand, self.c_x,
-            phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, eps,
+            self.batch,
+            self.n_expand,
+            self.c_x,
+            phi,
+            x,
+            b,
+            alpha_pre,
+            alpha_post,
+            alpha_res,
+            sinkhorn_repeat,
+            eps,
         )
 
 
 class MHCPostWorkload(WorkloadBase):
-
     def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
         self.batch = batch
         self.n_expand = n_expand
@@ -58,10 +83,12 @@ class MHCPostWorkload(WorkloadBase):
         x_res = torch.randn([batch, n_expand * c_x], device="cuda", dtype=self.dtype)
         return x_layer_out, h_post, x_res
 
-    def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
-                    x_res: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
+    ) -> torch.Tensor:
         x_out_ref = (h_post.unsqueeze(2).float() @ x_layer_out.unsqueeze(1).float()).reshape(
-            self.batch, self.n_expand * self.c_x) + x_res.float()
+            self.batch, self.n_expand * self.c_x
+        ) + x_res.float()
         return x_out_ref.bfloat16()
 
 
@@ -87,17 +114,16 @@ def mhc_pre_ref(
     xsqr = x * x
     norm_eps = 0.0001
     r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x) + norm_eps
-    H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand],
-                    device=x.device, dtype=torch.float)
+    H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand], device=x.device, dtype=torch.float)
     for i in range(batch):
         H[i, :] = x[i, :].float() @ phi
 
     H_pre_ref = H[:, :n_expand]
-    H_res_ref = H[:, 2 * n_expand:]
+    H_res_ref = H[:, 2 * n_expand :]
     H_res_ref = H_res_ref.reshape(batch, n_expand, n_expand)
 
     b_pre_ref = b[:n_expand]
-    b_res_ref = b[2 * n_expand:]
+    b_res_ref = b[2 * n_expand :]
     b_res_ref = b_res_ref.reshape([n_expand, n_expand])
 
     H_pre_ref = torch.sigmoid(alpha_pre * H_pre_ref / r_ref.unsqueeze(-1) + b_pre_ref)

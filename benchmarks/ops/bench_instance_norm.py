@@ -23,16 +23,18 @@ def _build_params(workloads):
         affine = "weight_shape" in w
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(n, c, spatial, dtype, True, affine,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(
+                pytest.param(n, c, spatial, dtype, True, affine, id=f"{label}-{dtype_str}")
+            )
     return params
 
 
-@pytest.mark.parametrize("n, c, spatial, dtype, tune, affine",
-                         _build_params(load_workloads(_OP_NAME)))
-def test_instance_norm_bench(n: int, c: int, spatial: tuple,
-                             dtype: torch.dtype, tune: bool,
-                             affine: bool) -> None:
+@pytest.mark.parametrize(
+    "n, c, spatial, dtype, tune, affine", _build_params(load_workloads(_OP_NAME))
+)
+def test_instance_norm_bench(
+    n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool, affine: bool
+) -> None:
     test = InstanceNormWorkload(n, c, spatial, dtype)
     x, _, _, weight, bias = test.gen_inputs()
     if not affine:
@@ -46,6 +48,12 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
         return F.instance_norm(x, weight=weight, bias=bias, eps=1e-5)
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, x, None, None, weight, bias,
-        record_as=op, params=locals(),
+        {"tileops": op, "torch": baseline_fn},
+        x,
+        None,
+        None,
+        weight,
+        bias,
+        record_as=op,
+        params=locals(),
     )

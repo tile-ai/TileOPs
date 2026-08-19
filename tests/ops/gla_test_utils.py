@@ -26,7 +26,7 @@ def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
     NC = T // BC
 
     if scale is None:
-        scale = K ** -0.5
+        scale = K**-0.5
 
     q = q.float() * scale
     k = k.float()

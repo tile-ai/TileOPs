@@ -31,9 +31,9 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, 
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _func(block_H, block_N, num_stages, threads):
-
         shape_q = [batch, heads, dim]
         shape_k = [batch, seqlen_kv, groups, dim]
         shape_v = [batch, seqlen_kv, groups, dim]
@@ -43,21 +43,22 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, 
         valid_block_H = min(block_H, kv_group_num)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
-        apply_softcap = make_apply_softcap(
-            score_scale, softcap, accum_dtype, block_H, block_N) if use_softcap else None
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_H, block_N)
+            if use_softcap
+            else None
+        )
         rescale = make_rescale(block_H, dim)
 
         @T.prim_func
         def gqa_decode_no_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_k, dtype),
-                V: T.Tensor(shape_v, dtype),
-                real_seqlen_kv: T.int32,
-                Output: T.Tensor(shape_o, dtype),
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_k, dtype),
+            V: T.Tensor(shape_v, dtype),
+            real_seqlen_kv: T.int32,
+            Output: T.Tensor(shape_o, dtype),
         ):
-            with T.Kernel(
-                    batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
-
+            with T.Kernel(batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -75,30 +76,32 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, 
                 hid = by
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
 
-                T.copy(Q[bid, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
+                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv(real_seqlen_kv, block_N)
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
-                    T.copy(K[bid, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_shared)
+                    T.copy(K[bid, k * block_N : (k + 1) * block_N, cur_kv_head, :], K_shared)
                     T.clear(acc_s)
                     T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                        Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                    )
                     for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.if_then_else((k * block_N + j < real_seqlen_kv),
-                                                     acc_s[i, j], -T.infinity(accum_dtype))
+                        acc_s[i, j] = T.if_then_else(
+                            (k * block_N + j < real_seqlen_kv),
+                            acc_s[i, j],
+                            -T.infinity(accum_dtype),
+                        )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
+                    online_softmax(
+                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                    )
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
-                    T.copy(V[bid, k * block_N:(k + 1) * block_N, cur_kv_head, :], V_shared)
+                    T.copy(V[bid, k * block_N : (k + 1) * block_N, cur_kv_head, :], V_shared)
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
@@ -106,7 +109,7 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, 
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
 
                 T.copy(acc_o[:valid_block_H, :], O_shared)
-                T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
+                T.copy(O_shared, Output[bid, hid * valid_block_H : (hid + 1) * valid_block_H, :])
 
         return gqa_decode_no_split
 
@@ -128,9 +131,9 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _func(block_H, block_N, num_split, num_stages, threads):
-
         shape_q = [batch, heads, dim]
         shape_k = [batch, seqlen_kv, groups, dim]
         shape_v = [batch, seqlen_kv, groups, dim]
@@ -142,22 +145,28 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
         valid_block_N = min(block_N, seqlen_kv // num_split)
 
         online_softmax_split = make_online_softmax(scale, accum_dtype, block_H, valid_block_N)
-        apply_softcap = make_apply_softcap(
-            score_scale, softcap, accum_dtype, block_H, valid_block_N) if use_softcap else None
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_H, valid_block_N)
+            if use_softcap
+            else None
+        )
         rescale = make_rescale(block_H, dim)
 
         @T.macro
         def _gqa_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_k, dtype),
-                V: T.Tensor(shape_v, dtype),
-                real_seqlen_kv: T.int32,
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                split_length: T.Tensor(num_split, "int32"),
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_k, dtype),
+            V: T.Tensor(shape_v, dtype),
+            real_seqlen_kv: T.int32,
+            glse: T.Tensor([batch, heads, num_split], dtype),
+            Output_partial: T.Tensor(part_shape, dtype),
+            split_length: T.Tensor(num_split, "int32"),
         ):
-            with T.Kernel(
-                    batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
+            with T.Kernel(batch, heads // valid_block_H, num_split, threads=threads) as (
+                bx,
+                by,
+                bz,
+            ):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([valid_block_N, dim], dtype)
                 V_shared = T.alloc_shared([valid_block_N, dim], dtype)
@@ -181,7 +190,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
                 sid = bz
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
 
-                T.copy(Q[bid, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
+                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -191,28 +200,46 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
-                        K[bid, (seqlen_kv // (num_split * block_N) * block_N) * sid +
-                          k * valid_block_N:(seqlen_kv // (num_split * block_N) * block_N) * sid +
-                          (k + 1) * valid_block_N, cur_kv_head, :], K_shared)
+                        K[
+                            bid,
+                            (seqlen_kv // (num_split * block_N) * block_N) * sid
+                            + k * valid_block_N : (seqlen_kv // (num_split * block_N) * block_N)
+                            * sid
+                            + (k + 1) * valid_block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        K_shared,
+                    )
                     T.clear(acc_s)
                     T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                        Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                    )
                     for i, j in T.Parallel(block_H, valid_block_N):
-                        acc_s[i, j] = T.if_then_else((k * block_N + j < split_length[sid]),
-                                                     acc_s[i, j], -T.infinity(accum_dtype))
+                        acc_s[i, j] = T.if_then_else(
+                            (k * block_N + j < split_length[sid]),
+                            acc_s[i, j],
+                            -T.infinity(accum_dtype),
+                        )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax_split(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
+                    online_softmax_split(
+                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                    )
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.copy(
-                        V[bid, (seqlen_kv // (num_split * block_N) * block_N) * sid +
-                          k * valid_block_N:(seqlen_kv // (num_split * block_N) * block_N) * sid +
-                          (k + 1) * valid_block_N, cur_kv_head, :], V_shared)
+                        V[
+                            bid,
+                            (seqlen_kv // (num_split * block_N) * block_N) * sid
+                            + k * valid_block_N : (seqlen_kv // (num_split * block_N) * block_N)
+                            * sid
+                            + (k + 1) * valid_block_N,
+                            cur_kv_head,
+                            :,
+                        ],
+                        V_shared,
+                    )
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
@@ -223,14 +250,16 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
                     if i < valid_block_H:
                         glse[bid, hid * valid_block_H + i, sid] = logsum[i]
                 T.copy(acc_o[:valid_block_H, :], O_shared)
-                T.copy(O_shared, Output_partial[bid, hid * valid_block_H:(hid + 1) * valid_block_H,
-                                                sid, :])
+                T.copy(
+                    O_shared,
+                    Output_partial[bid, hid * valid_block_H : (hid + 1) * valid_block_H, sid, :],
+                )
 
         @T.macro
         def combine(
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                Output: T.Tensor(shape_o, dtype),
+            glse: T.Tensor([batch, heads, num_split], dtype),
+            Output_partial: T.Tensor(part_shape, dtype),
+            Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
                 #
@@ -260,14 +289,14 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
 
         @T.prim_func
         def gqa_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_k, dtype),
-                V: T.Tensor(shape_v, dtype),
-                real_seqlen_kv: T.int32,
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                split_length: T.Tensor(num_split, "int32"),
-                Output: T.Tensor(shape_o, dtype),
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_k, dtype),
+            V: T.Tensor(shape_v, dtype),
+            real_seqlen_kv: T.int32,
+            glse: T.Tensor([batch, heads, num_split], dtype),
+            Output_partial: T.Tensor(part_shape, dtype),
+            split_length: T.Tensor(num_split, "int32"),
+            Output: T.Tensor(shape_o, dtype),
         ):
             _gqa_decode_split(Q, K, V, real_seqlen_kv, glse, Output_partial, split_length)
             combine(glse, Output_partial, Output)
@@ -281,42 +310,102 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
 
 
 @torch.library.custom_op("top::gqa_decode_no_split_op", mutates_args=())
-def _gqa_decode_no_split_op(batch: int, heads: int, groups: int, seqlen_kv: int,
-                             real_seqlen_kv: int, dim: int, sm_scale: float, softcap: float,
-                             dtype: str, block_H: int, block_N: int, num_stages: int,
-                             threads: int, Q: torch.Tensor, K: torch.Tensor,
-                             V: torch.Tensor) -> torch.Tensor:
-    return _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, softcap,
-                                       dtype)(block_H, block_N, num_stages, threads)(
-                                           Q, K, V, real_seqlen_kv)
+def _gqa_decode_no_split_op(
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    real_seqlen_kv: int,
+    dim: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+) -> torch.Tensor:
+    return _gqa_decode_no_split_kernel(
+        batch, heads, groups, seqlen_kv, dim, sm_scale, softcap, dtype
+    )(block_H, block_N, num_stages, threads)(Q, K, V, real_seqlen_kv)
 
 
 @_gqa_decode_no_split_op.register_fake
-def _(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
-      sm_scale: float, softcap: float, dtype: str, block_H: int, block_N: int, num_stages: int,
-      threads: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+def _(
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    real_seqlen_kv: int,
+    dim: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+) -> torch.Tensor:
     return torch.empty_like(Q)
 
 
 @torch.library.custom_op("top::gqa_decode_split_op", mutates_args=())
-def _gqa_decode_split_op(batch: int, heads: int, groups: int, seqlen_kv: int,
-                          real_seqlen_kv: int, dim: int, sm_scale: float, softcap: float,
-                          dtype: str, block_H: int, block_N: int, num_stages: int,
-                          threads: int, num_split: int, Q: torch.Tensor, K: torch.Tensor,
-                          V: torch.Tensor, glse: torch.Tensor,
-                          Output_partial: torch.Tensor,
-                          split_length: torch.Tensor) -> torch.Tensor:
-    return _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, softcap,
-                                    dtype)(block_H, block_N, num_split, num_stages, threads)(
-                                        Q, K, V, real_seqlen_kv, glse, Output_partial,
-                                        split_length)
+def _gqa_decode_split_op(
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    real_seqlen_kv: int,
+    dim: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    num_split: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    glse: torch.Tensor,
+    Output_partial: torch.Tensor,
+    split_length: torch.Tensor,
+) -> torch.Tensor:
+    return _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, softcap, dtype)(
+        block_H, block_N, num_split, num_stages, threads
+    )(Q, K, V, real_seqlen_kv, glse, Output_partial, split_length)
 
 
 @_gqa_decode_split_op.register_fake
-def _(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
-      sm_scale: float, softcap: float, dtype: str, block_H: int, block_N: int, num_stages: int,
-      threads: int, num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
-      Output_partial: torch.Tensor, split_length: torch.Tensor) -> torch.Tensor:
+def _(
+    batch: int,
+    heads: int,
+    groups: int,
+    seqlen_kv: int,
+    real_seqlen_kv: int,
+    dim: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    num_split: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    glse: torch.Tensor,
+    Output_partial: torch.Tensor,
+    split_length: torch.Tensor,
+) -> torch.Tensor:
     return torch.empty_like(Q)
 
 
@@ -334,17 +423,19 @@ class GQADecodeKernel(Kernel):
         # states the narrower one it serves and wins wherever it applies.
         return True
 
-    def __init__(self,
-                 batch,
-                 heads,
-                 groups,
-                 seqlen_kv,
-                 dim,
-                 dtype="float16",
-                 sm_scale: Optional[float] = None,
-                 softcap: float = 0.0,
-                 config: Optional[dict] = None,
-                 tune=False):
+    def __init__(
+        self,
+        batch,
+        heads,
+        groups,
+        seqlen_kv,
+        dim,
+        dtype="float16",
+        sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
+        config: Optional[dict] = None,
+        tune=False,
+    ):
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -362,11 +453,25 @@ class GQADecodeKernel(Kernel):
             raise ValueError("seqlen_kv must be positive")
 
         self.no_split_jit = _gqa_decode_no_split_kernel(
-            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.sm_scale,
-            self.softcap, self.dtype_str)
+            self.batch,
+            self.heads,
+            self.groups,
+            self.seqlen_kv,
+            self.dim,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )
         self.split_jit = _gqa_decode_split_kernel(
-            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.sm_scale,
-            self.softcap, self.dtype_str)
+            self.batch,
+            self.heads,
+            self.groups,
+            self.seqlen_kv,
+            self.dim,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )
 
         # autotune targets the split kernel
         self.kernel = self.split_jit
@@ -435,13 +540,16 @@ class GQADecodeKernel(Kernel):
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
-        configs = [{
-            'block_N': c[0],
-            'block_H': c[1],
-            'num_split': c[2],
-            'num_stages': c[3],
-            'threads': c[4]
-        } for c in _configs]
+        configs = [
+            {
+                "block_N": c[0],
+                "block_H": c[1],
+                "num_split": c[2],
+                "num_stages": c[3],
+                "threads": c[4],
+            }
+            for c in _configs
+        ]
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
@@ -454,24 +562,54 @@ class GQADecodeKernel(Kernel):
         # Dispatch: use no-split for short sequences where splitting is not beneficial
         threshold = num_split * block_N
         if real_seqlen_kv < threshold:
-            return _gqa_decode_no_split_op(self.batch, self.heads, self.groups, self.seqlen_kv,
-                                           real_seqlen_kv, self.dim, self.sm_scale, self.softcap,
-                                           self.dtype_str, block_H, block_N, num_stages, threads,
-                                           Q, K, V)
+            return _gqa_decode_no_split_op(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.seqlen_kv,
+                real_seqlen_kv,
+                self.dim,
+                self.sm_scale,
+                self.softcap,
+                self.dtype_str,
+                block_H,
+                block_N,
+                num_stages,
+                threads,
+                Q,
+                K,
+                V,
+            )
 
         # Split path: compute per-split lengths
         base_len = real_seqlen_kv // (num_split * block_N) * block_N
         split_length = torch.full((num_split,), base_len, dtype=torch.int32, device=Q.device)
         split_length[-1] = real_seqlen_kv - (num_split - 1) * base_len
 
-        glse = torch.empty((self.batch, self.heads, num_split),
-                           dtype=self.dtype,
-                           device=Q.device)
-        Output_partial = torch.empty((self.batch, self.heads, num_split, self.dim),
-                                     dtype=self.dtype,
-                                     device=Q.device)
+        glse = torch.empty((self.batch, self.heads, num_split), dtype=self.dtype, device=Q.device)
+        Output_partial = torch.empty(
+            (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
+        )
 
-        return _gqa_decode_split_op(self.batch, self.heads, self.groups, self.seqlen_kv,
-                                    real_seqlen_kv, self.dim, self.sm_scale, self.softcap,
-                                    self.dtype_str, block_H, block_N, num_stages, threads,
-                                    num_split, Q, K, V, glse, Output_partial, split_length)
+        return _gqa_decode_split_op(
+            self.batch,
+            self.heads,
+            self.groups,
+            self.seqlen_kv,
+            real_seqlen_kv,
+            self.dim,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+            block_H,
+            block_N,
+            num_stages,
+            threads,
+            num_split,
+            Q,
+            K,
+            V,
+            glse,
+            Output_partial,
+            split_length,
+        )

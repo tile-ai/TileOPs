@@ -39,7 +39,6 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 
-
 def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
     """Return the channel owning element ``(row, col)`` of the (M, D) reshape.
 
@@ -93,9 +92,7 @@ def _make_row_reduce(block_m, D, D_padded, eps):
         T.reduce_sum(x_f32, acc, dim=1)
         for i in T.Parallel(block_m):
             rstd[i] = T.rsqrt(
-                (acc[i] - float(pad_count) * mean_val[i] * mean_val[i])
-                / float(D)
-                + eps
+                (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(D) + eps
             )
 
     return row_reduce
@@ -166,29 +163,29 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
                     for i, j in T.Parallel(block_m, D_padded):
                         if T.And(pid_m * block_m + i < M, j < D):
                             c = _channel_of(
-                                pid_m * block_m + i, j,
-                                num_groups, channels_per_group, spatial_size,
+                                pid_m * block_m + i,
+                                j,
+                                num_groups,
+                                channels_per_group,
+                                spatial_size,
                             )
                             y[pid_m * block_m + i, j] = (
-                                (T.cast(shared_buf[i, j], "float32") - mean_val[i])
-                                * rstd[i]
-                                * T.cast(weight[c], "float32")
-                                + T.cast(bias[c], "float32")
-                            )
+                                T.cast(shared_buf[i, j], "float32") - mean_val[i]
+                            ) * rstd[i] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
                 else:
                     # Re-cast from x_local (original dtype) to avoid a second
                     # fp32 buffer.
                     for i, j in T.Parallel(block_m, D_padded):
                         c = _channel_of(
-                            pid_m * block_m + i, j,
-                            num_groups, channels_per_group, spatial_size,
+                            pid_m * block_m + i,
+                            j,
+                            num_groups,
+                            channels_per_group,
+                            spatial_size,
                         )
-                        x_local[i, j] = (
-                            (T.cast(x_local[i, j], "float32") - mean_val[i])
-                            * rstd[i]
-                            * T.cast(weight[c], "float32")
-                            + T.cast(bias[c], "float32")
-                        )
+                        x_local[i, j] = (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[
+                            i
+                        ] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
                     T.copy(x_local, shared_buf)
                     T.copy(shared_buf, y[pid_m * block_m, 0])
 
@@ -212,7 +209,12 @@ def _group_norm_wrapped(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _group_norm_kernel(
-        M, D, eps, dtype_str, num_groups, channels_per_group,
+        M,
+        D,
+        eps,
+        dtype_str,
+        num_groups,
+        channels_per_group,
     )(block_m, threads)(x, weight, bias)
 
 
@@ -268,8 +270,12 @@ class GroupNormKernel(Kernel):
         self.channels_per_group = channels_per_group
         self.D_padded = align_up(D, ALIGNMENT)
         self.kernel = _group_norm_kernel(
-            self.M, self.D, self.eps, self.dtype_str,
-            self.num_groups, self.channels_per_group,
+            self.M,
+            self.D,
+            self.eps,
+            self.dtype_str,
+            self.num_groups,
+            self.channels_per_group,
         )
         self.init_config(config, tune)
 
@@ -370,8 +376,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
                     for i, j in T.Parallel(block_m, D_padded):
                         if T.And(pid_m * block_m + i < M, j < D):
                             y[pid_m * block_m + i, j] = T.cast(
-                                (T.cast(shared_buf[i, j], "float32") - mean_val[i])
-                                * rstd[i],
+                                (T.cast(shared_buf[i, j], "float32") - mean_val[i]) * rstd[i],
                                 dtype,
                             )
                 else:
@@ -442,7 +447,10 @@ class GroupNormNoAffineKernel(Kernel):
         self.dtype = dtype
         self.D_padded = align_up(D, ALIGNMENT)
         self.kernel = _group_norm_no_affine_kernel(
-            self.M, self.D, self.eps, self.dtype_str,
+            self.M,
+            self.D,
+            self.eps,
+            self.dtype_str,
         )
         self.init_config(config, tune)
 

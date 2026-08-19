@@ -1,5 +1,3 @@
-
-
 import pytest
 import torch
 
@@ -14,13 +12,27 @@ class NsaCmpFwdTest(NsaCmpFwdWorkload, TestBase):
 
 class NsaCmpFwdFixture(FixtureBase):
     PARAMS = [
-        ("seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, "
-         "dtype, accum_dtype, tune", [
-             pytest.param(
-                 9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, torch.float16,
-                 torch.float32, False, marks=pytest.mark.smoke,
-             ),
-         ]),
+        (
+            "seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, "
+            "dtype, accum_dtype, tune",
+            [
+                pytest.param(
+                    9,
+                    8192,
+                    32,
+                    128,
+                    128,
+                    16,
+                    128**-0.5,
+                    32,
+                    32,
+                    torch.float16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                ),
+            ],
+        ),
     ]
 
 
@@ -41,14 +53,25 @@ def test_nsa_cmp_fwd_varlen_op(
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs,
-                         dtype, accum_dtype)
+    test = NsaCmpFwdTest(
+        seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, dtype, accum_dtype
+    )
     inputs = test.gen_inputs()
 
     op = NSACmpFwdVarlenOp(
-        seq_num=seq_num, c_seq_len=c_seq_len, heads=heads, dim_k=dim_k, dim_v=dim_v, group=group,
-        scale=scale, bc=bc, bs=bs, accum_dtype=accum_dtype, tune=tune,
-        chunk_num=test.chunk_num)
+        seq_num=seq_num,
+        c_seq_len=c_seq_len,
+        heads=heads,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        group=group,
+        scale=scale,
+        bc=bc,
+        bs=bs,
+        accum_dtype=accum_dtype,
+        tune=tune,
+        chunk_num=test.chunk_num,
+    )
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)
 
 

@@ -74,8 +74,9 @@ def make_online_softmax_with_score_scale(scale, accum_dtype, block_rows, block_c
     """
 
     @T.macro
-    def online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
-                       logsum, score_scale):
+    def online_softmax(
+        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum, score_scale
+    ):
         score_scale_softmax = score_scale * scale
         T.copy(scores_max, scores_max_prev)
         T.fill(scores_max, -T.infinity(accum_dtype))
@@ -85,8 +86,7 @@ def make_online_softmax_with_score_scale(scale, accum_dtype, block_rows, block_c
         for i in T.Parallel(block_rows):
             scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
         for i, j in T.Parallel(block_rows, block_cols):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax -
-                                  scores_max[i] * scale)
+            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
         T.reduce_sum(acc_s, scores_sum, dim=1)
         for i in T.Parallel(block_rows):
             logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
@@ -152,7 +152,8 @@ def make_apply_softcap(score_scale, softcap, accum_dtype, block_rows, block_cols
     def apply_softcap(acc_s):
         for i, j in T.Parallel(block_rows, block_cols):
             capped = T.cast(softcap, accum_dtype) * T.tanh(
-                acc_s[i, j] * T.cast(score_scale / softcap, accum_dtype))
+                acc_s[i, j] * T.cast(score_scale / softcap, accum_dtype)
+            )
             acc_s[i, j] = T.if_then_else(
                 acc_s[i, j] == -T.infinity(accum_dtype),
                 -T.infinity(accum_dtype),

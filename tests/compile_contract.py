@@ -53,9 +53,13 @@ def traced_call_targets(op, *inputs, **kwargs) -> set:
     traced: list[list[object]] = []
 
     def capture(gm, example_inputs):
-        traced.append([node.target for node in gm.graph.nodes
-                       if node.op == "call_function"
-                       and node.target is not operator.getitem])
+        traced.append(
+            [
+                node.target
+                for node in gm.graph.nodes
+                if node.op == "call_function" and node.target is not operator.getitem
+            ]
+        )
         return gm.forward
 
     torch.compile(op, backend=capture, fullgraph=True)(*inputs, **kwargs)
@@ -79,7 +83,8 @@ def assert_op_owns_graph_nodes(op, *inputs, **kwargs) -> None:
     assert calls <= declared, (
         f"graph holds nodes this op does not own: "
         f"{sorted(str(c) for c in calls - declared)}; "
-        f"declared: {sorted(str(d) for d in declared)}")
+        f"declared: {sorted(str(d) for d in declared)}"
+    )
 
 
 def compile_contract_ops() -> frozenset[str]:

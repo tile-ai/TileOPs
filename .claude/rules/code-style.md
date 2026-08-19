@@ -26,7 +26,7 @@
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-- PascalCase abbreviations stay fully uppercase: `RMSNormKernel`, `SSDDecodeOp`, `FusedAddRMSNormFwdOp`.
+- PascalCase abbreviations stay fully uppercase: `RMSNormKernel`, `SSDDecodeFwdOp`, `FusedAddRMSNormFwdOp`.
 
 - Filenames: all-lowercase with underscores. Multi-letter abbreviations stay lowercase (`rms_norm.py`, `ssd_decode.py`); never capitalize a single letter. Never contract norm names (`rms_norm`, not `rmsnorm`).
 

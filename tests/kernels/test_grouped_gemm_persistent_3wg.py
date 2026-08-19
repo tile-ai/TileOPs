@@ -2,6 +2,7 @@
 
 Verifies 3WG matches a PyTorch grouped-GEMM oracle.
 """
+
 import pytest
 import torch
 
@@ -46,8 +47,8 @@ def torch_grouped_gemm(A, B, sizes, offsets):
         start, count = int(offsets[e]), int(sizes[e])
         if count == 0:
             continue
-        rows = A[start:start + count].float()
-        out[start:start + count] = (rows @ B[e].float().T).to(A.dtype)
+        rows = A[start : start + count].float()
+        out[start : start + count] = (rows @ B[e].float().T).to(A.dtype)
     return out
 
 
@@ -58,7 +59,8 @@ def test_output_shape():
     A, B, sizes, offsets, _ = make_inputs(T, E, top_k, N, K, torch.bfloat16)
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     kernel = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm
+    )
     C = kernel(A, B, sizes, offsets)
     assert C.shape == (numel, N)
 
@@ -71,7 +73,8 @@ def test_against_torch_reference(dist):
     A, B, sizes, offsets, _ = make_inputs(T, E, top_k, N, K, torch.bfloat16, dist)
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     v2 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm
+    )
     C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
@@ -84,10 +87,17 @@ def test_correctness_stages(num_stages):
     numel = T_count * top_k
     A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, "uniform")
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    cfg = {"block_m": 64, "block_n": 128, "block_k": 64,    # block_n reduced from 256 to fit num_stages>=3
-           "num_stages": num_stages, "threads": 384, "group_size_m": 1}
+    cfg = {
+        "block_m": 64,
+        "block_n": 128,
+        "block_k": 64,  # block_n reduced from 256 to fit num_stages>=3
+        "num_stages": num_stages,
+        "threads": 384,
+        "group_size_m": 1,
+    }
     v2 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg
+    )
     C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
@@ -114,7 +124,8 @@ def test_partial_m_tile():
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
     B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
     v2 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm
+    )
     C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
@@ -135,7 +146,8 @@ def test_max_waves_edge_case():
     T_count = numel
     A, B, sizes, offsets, _ = make_inputs(T_count, E, 1, N, K, torch.bfloat16, "uniform")
     v2 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm
+    )
     C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
@@ -146,15 +158,45 @@ def test_max_waves_edge_case():
 # ════════════════════════════════════════════════════════════════════════
 
 _COOP_CFGS = [
-    {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 2, "threads": 384, "group_size_m": 1},
-    {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 3, "threads": 384, "group_size_m": 1},
-    {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 384, "group_size_m": 1},
-    {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 3, "threads": 384, "group_size_m": 1},
+    {
+        "block_m": 128,
+        "block_n": 128,
+        "block_k": 64,
+        "num_stages": 2,
+        "threads": 384,
+        "group_size_m": 1,
+    },
+    {
+        "block_m": 128,
+        "block_n": 128,
+        "block_k": 64,
+        "num_stages": 3,
+        "threads": 384,
+        "group_size_m": 1,
+    },
+    {
+        "block_m": 128,
+        "block_n": 256,
+        "block_k": 64,
+        "num_stages": 2,
+        "threads": 384,
+        "group_size_m": 1,
+    },
+    {
+        "block_m": 128,
+        "block_n": 256,
+        "block_k": 64,
+        "num_stages": 3,
+        "threads": 384,
+        "group_size_m": 1,
+    },
 ]
 
 
 @pytest.mark.nightly
-@pytest.mark.parametrize("cfg", _COOP_CFGS, ids=lambda c: f"bm{c['block_m']}_bn{c['block_n']}_ns{c['num_stages']}")
+@pytest.mark.parametrize(
+    "cfg", _COOP_CFGS, ids=lambda c: f"bm{c['block_m']}_bn{c['block_n']}_ns{c['num_stages']}"
+)
 @pytest.mark.parametrize("dist", ["uniform", "skewed"])
 def test_cooperative_correctness(cfg, dist):
     """Cooperative path (bm>=128, split-A) vs 2WG reference across the
@@ -167,7 +209,8 @@ def test_cooperative_correctness(cfg, dist):
     A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, dist)
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     v2 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg
+    )
     C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
@@ -190,8 +233,14 @@ def test_cooperative_partial_m_tile():
                                  (WG0 full 64, WG1 partial 8)
     """
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    cfg = {"block_m": 128, "block_n": 128, "block_k": 64,
-           "num_stages": 2, "threads": 384, "group_size_m": 1}
+    cfg = {
+        "block_m": 128,
+        "block_n": 128,
+        "block_k": 64,
+        "num_stages": 2,
+        "threads": 384,
+        "group_size_m": 1,
+    }
     sizes = torch.tensor([40, 90, 128, 200], dtype=torch.int32, device="cuda")
     numel = int(sizes.sum().item())
     offsets = torch.zeros(4, dtype=torch.int32, device="cuda")
@@ -201,7 +250,8 @@ def test_cooperative_partial_m_tile():
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
     B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
     v2 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg
+    )
     C_ref = torch_grouped_gemm(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
@@ -231,7 +281,8 @@ def test_out_param_reuse():
     A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     k3 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm
+    )
     C_alloc = k3(A, B, sizes, offsets)
     out = torch.empty(numel, N, dtype=torch.bfloat16, device="cuda")
     C_out = k3(A, B, sizes, offsets, out=out)
@@ -247,27 +298,24 @@ def test_out_buffer_validation():
     A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     k3 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm
+    )
 
     with pytest.raises(ValueError, match="out shape"):
-        k3(A, B, sizes, offsets,
-           out=torch.empty(numel, N + 1, dtype=torch.bfloat16, device="cuda"))
+        k3(A, B, sizes, offsets, out=torch.empty(numel, N + 1, dtype=torch.bfloat16, device="cuda"))
     with pytest.raises(ValueError, match="out dtype"):
-        k3(A, B, sizes, offsets,
-           out=torch.empty(numel, N, dtype=torch.float16, device="cuda"))
+        k3(A, B, sizes, offsets, out=torch.empty(numel, N, dtype=torch.float16, device="cuda"))
     with pytest.raises(ValueError, match="out device"):
-        k3(A, B, sizes, offsets,
-           out=torch.empty(numel, N, dtype=torch.bfloat16, device="cpu"))
+        k3(A, B, sizes, offsets, out=torch.empty(numel, N, dtype=torch.bfloat16, device="cpu"))
     # Non-contiguous view with the right logical shape (transpose of [N, numel]):
     # passes shape/dtype/device but must be rejected on layout.
     with pytest.raises(ValueError, match="contiguous"):
-        k3(A, B, sizes, offsets,
-           out=torch.empty(N, numel, dtype=torch.bfloat16, device="cuda").t())
+        k3(A, B, sizes, offsets, out=torch.empty(N, numel, dtype=torch.bfloat16, device="cuda").t())
     # out overlapping the input: A and out are the same storage region. Passes
     # shape/dtype/device/contiguity but must be rejected (read/write race).
     shared = torch.empty(numel * max(N, K), dtype=torch.bfloat16, device="cuda")
-    a_alias = shared[:numel * K].view(numel, K)
-    out_alias = shared[:numel * N].view(numel, N)  # overlaps a_alias from byte 0
+    a_alias = shared[: numel * K].view(numel, K)
+    out_alias = shared[: numel * N].view(numel, N)  # overlaps a_alias from byte 0
     with pytest.raises(ValueError, match="overlap"):
         k3(a_alias, B, sizes, offsets, out=out_alias)
 
@@ -275,8 +323,8 @@ def test_out_buffer_validation():
     # out_ws share storage but their byte intervals do not overlap.
     C_ref = k3(A, B, sizes, offsets)
     ws = torch.empty(numel * K + numel * N, dtype=torch.bfloat16, device="cuda")
-    a_ws = ws[:numel * K].view(numel, K)
-    out_ws = ws[numel * K:].view(numel, N)
+    a_ws = ws[: numel * K].view(numel, K)
+    out_ws = ws[numel * K :].view(numel, N)
     a_ws.copy_(A)
     res = k3(a_ws, B, sizes, offsets, out=out_ws)
     torch.testing.assert_close(res, C_ref, rtol=2e-2, atol=2e-2)
@@ -290,7 +338,7 @@ def test_no_host_pad_on_unaligned(monkeypatch):
     zero-filled (TMA globalDim=numel), so no physical guard rows are needed.
     """
     torch.manual_seed(0)
-    num_experts, N, K = 4, 256, 128          # default block_m=128 (cooperative)
+    num_experts, N, K = 4, 256, 128  # default block_m=128 (cooperative)
     sizes = torch.tensor([130, 70, 200, 33], dtype=torch.int32, device="cuda")
     numel = int(sizes.sum())
     offsets = torch.zeros(num_experts, dtype=torch.int32, device="cuda")

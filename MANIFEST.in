@@ -17,3 +17,4 @@ exclude CLAUDE.md
 exclude constraints.txt
 exclude constraints-runner-lock.txt
 exclude .gitattributes
+exclude .git-blame-ignore-revs

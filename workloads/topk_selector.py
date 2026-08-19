@@ -4,9 +4,16 @@ from workloads.workload_base import WorkloadBase
 
 
 class TopkSelectorWorkload(WorkloadBase):
-
-    def __init__(self, batch: int, seq_len: int, seq_len_kv: int, kv_group: int, topk: int,
-                 in_dtype: torch.dtype, out_dtype: torch.dtype):
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        seq_len_kv: int,
+        kv_group: int,
+        topk: int,
+        in_dtype: torch.dtype,
+        out_dtype: torch.dtype,
+    ):
         self.batch = batch
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
@@ -22,14 +29,18 @@ class TopkSelectorWorkload(WorkloadBase):
             self.seq_len_kv,
             self.kv_group,
             dtype=self.in_dtype,
-            device="cuda")
+            device="cuda",
+        )
         starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
-        ends = torch.ones(self.batch, self.seq_len, dtype=self.out_dtype,
-                          device="cuda") * self.seq_len_kv
+        ends = (
+            torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
+            * self.seq_len_kv
+        )
         return index_score, starts, ends
 
-    def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
-                    ends: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
+    ) -> torch.Tensor:
         # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
         indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
         # Match kernel/output layout: (batch, seq_len, kv_group, topk)

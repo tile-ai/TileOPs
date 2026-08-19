@@ -25,7 +25,6 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["LayerNormKernel"]
 
 
-
 @functools.lru_cache(maxsize=32)
 def _layer_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
@@ -34,7 +33,6 @@ def _layer_norm_kernel(M, N, eps, dtype):
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
-
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -81,9 +79,7 @@ def _layer_norm_kernel(M, N, eps, dtype):
                 T.reduce_sum(x_f32, acc, dim=1)
                 for i in T.Parallel(block_m):
                     rstd[i] = T.rsqrt(
-                        (acc[i] - float(pad_count) * mean_val[i] * mean_val[i])
-                        / float(N)
-                        + eps
+                        (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
                     )
 
                 # --- Output: y = (x - mean) * rstd * weight + bias ---
@@ -94,21 +90,15 @@ def _layer_norm_kernel(M, N, eps, dtype):
                     for i, j in T.Parallel(block_m, N_padded):
                         if T.And(pid_m * block_m + i < M, j < N):
                             y[pid_m * block_m + i, j] = (
-                                (T.cast(shared_buf[i, j], "float32") - mean_val[i])
-                                * rstd[i]
-                                * T.cast(weight[j], "float32")
-                                + T.cast(bias[j], "float32")
-                            )
+                                T.cast(shared_buf[i, j], "float32") - mean_val[i]
+                            ) * rstd[i] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
                 else:
                     # Re-cast from x_local (original dtype) to avoid a second
                     # fp32 buffer, then retain the vectorized copy fast path.
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_local[i, j] = (
-                            (T.cast(x_local[i, j], "float32") - mean_val[i])
-                            * rstd[i]
-                            * T.cast(weight[j], "float32")
-                            + T.cast(bias[j], "float32")
-                        )
+                        x_local[i, j] = (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[
+                            i
+                        ] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
                     T.copy(x_local, shared_buf)
                     T.copy(shared_buf, y[pid_m * block_m, 0])
 

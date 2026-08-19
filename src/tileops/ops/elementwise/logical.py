@@ -1,6 +1,5 @@
 """Element-wise logical ops (output bool)."""
 
-
 from tileops.kernels.elementwise import (
     LogicalAndFwdKernel,
     LogicalNotFwdKernel,

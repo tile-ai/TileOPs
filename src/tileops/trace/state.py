@@ -143,7 +143,8 @@ class TraceState:
                 raise ValueError(
                     f"too many distinct lanes: the packed lane field holds at most "
                     f"{MAX_LANES}; cannot intern {name!r} (have "
-                    f"{sorted(self._lane_to_id)})")
+                    f"{sorted(self._lane_to_id)})"
+                )
             lane_id = len(self._lane_to_id)
             self._lane_to_id[name] = lane_id
             self.lane_id_to_name[lane_id] = name

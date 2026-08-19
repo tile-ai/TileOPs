@@ -179,7 +179,8 @@ def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
 def test_gqa_prefill_fp8_tensor_core_rejects_unaligned_q_tiles(seq_len: int) -> None:
     with pytest.raises(ValueError, match="max_seqlen_q % 128 == 0"):
         GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(
-            1, 8, 2, seq_len, seq_len, 128, False, torch.float16)
+            1, 8, 2, seq_len, seq_len, 128, False, torch.float16
+        )
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
@@ -233,4 +234,5 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     ref = torch.stack(ref_heads, dim=1).unsqueeze(0)
 
     torch.testing.assert_close(
-        out.reshape(batch, seq_len, heads, dim).float(), ref, atol=5e-2, rtol=5e-2)
+        out.reshape(batch, seq_len, heads, dim).float(), ref, atol=5e-2, rtol=5e-2
+    )

@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GroupedGemmOp"]
+__all__ = ["GroupedGemmFwdOp"]
 
 
-class GroupedGemmOp(Op):
+class GroupedGemmFwdOp(Op):
     """
     Grouped GEMM with configurable transpose modes.
 
@@ -21,11 +21,13 @@ class GroupedGemmOp(Op):
       - (True,  True)  TT: A^T @ B^T -> C
     """
 
-    def __init__(self,
-                 transpose_a: bool = False,
-                 transpose_b: bool = True,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False):
+    def __init__(
+        self,
+        transpose_a: bool = False,
+        transpose_b: bool = True,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         self.batch_sum = None
         self.batch_count = None
         self.N = None
@@ -60,24 +62,30 @@ class GroupedGemmOp(Op):
         batch_count = batch_sizes.shape[0]
         if batch_offsets.shape[0] != batch_count or batch_padded_offsets.shape[0] != batch_count:
             raise ValueError("batch metadata tensors must have matching lengths")
-        if batch_sizes.dtype != torch.int32 or batch_offsets.dtype != torch.int32 or batch_padded_offsets.dtype != torch.int32:
+        if (
+            batch_sizes.dtype != torch.int32
+            or batch_offsets.dtype != torch.int32
+            or batch_padded_offsets.dtype != torch.int32
+        ):
             raise ValueError("batch metadata tensors must use int32 dtype")
 
         if not self.transpose_a:
             if a.ndim != 2 or b.ndim != 3:
-                raise ValueError("GroupedGemmOp expects 2D a and 3D b when transpose_a=False")
+                raise ValueError("GroupedGemmFwdOp expects 2D a and 3D b when transpose_a=False")
             batch_sum, k = a.shape
             if b.shape[0] != batch_count:
-                raise ValueError(f"b.shape[0] must match batch_count={batch_count}, got {b.shape[0]}")
+                raise ValueError(
+                    f"b.shape[0] must match batch_count={batch_count}, got {b.shape[0]}"
+                )
             if self.transpose_b:
                 n, b_k = b.shape[1], b.shape[2]
             else:
                 b_k, n = b.shape[1], b.shape[2]
             if b_k != k:
-                raise ValueError(f"GroupedGemmOp expected K={k}, got b K dimension {b_k}")
+                raise ValueError(f"GroupedGemmFwdOp expected K={k}, got b K dimension {b_k}")
         else:
             if a.ndim != 2 or b.ndim != 2:
-                raise ValueError("GroupedGemmOp expects 2D a and b when transpose_a=True")
+                raise ValueError("GroupedGemmFwdOp expects 2D a and b when transpose_a=True")
             batch_sum, n = a.shape
             if self.transpose_b:
                 k, b_batch_sum = b.shape
@@ -85,7 +93,7 @@ class GroupedGemmOp(Op):
                 b_batch_sum, k = b.shape
             if b_batch_sum != batch_sum:
                 raise ValueError(
-                    f"GroupedGemmOp expected b batch_sum dimension {batch_sum}, got {b_batch_sum}"
+                    f"GroupedGemmFwdOp expected b batch_sum dimension {batch_sum}, got {b_batch_sum}"
                 )
         return batch_sum, batch_count, n, k, a.dtype, a.device.index
 
@@ -120,13 +128,24 @@ class GroupedGemmOp(Op):
                 dtype=dtype,
                 transpose_a=self.transpose_a,
                 transpose_b=self.transpose_b,
-                tune=self.tune),
+                tune=self.tune,
+            ),
         )
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor,
-                batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,
+        batch_padded_offsets: torch.Tensor,
+    ) -> torch.Tensor:
         batch_sum, batch_count, n, k, dtype, device_index = self._resolve_spec(
-            a, b, batch_sizes, batch_offsets, batch_padded_offsets,
+            a,
+            b,
+            batch_sizes,
+            batch_offsets,
+            batch_padded_offsets,
         )
         self.batch_sum = batch_sum
         self.batch_count = batch_count

@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -8,24 +10,43 @@ class DaCumsumFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
+
         return [
-            ("batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune", [
-                # feature: no bias, no softplus (baseline path)
-                pytest.param(1, 2,  64,  4, False, False, torch.float16, False, marks=pytest.mark.smoke),
-                # feature: bias only (has_dt_bias branch, no softplus)
-                pytest.param(1, 2,  64,  4, True,  False, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # feature: softplus only (no bias, dt_softplus branch)
-                pytest.param(1, 2,  64,  4, False, True,  torch.float16, False, marks=pytest.mark.smoke),
-                # feature: bias + softplus (full pipeline)
-                pytest.param(1, 2,  64,  4, True,  True,  torch.bfloat16, False, marks=pytest.mark.full),
-                # shape: larger batch and chunk count
-                pytest.param(2, 4,  64,  8, False, False, torch.float16, False, marks=pytest.mark.full),
-                # shape: larger chunk_len tile
-                pytest.param(1, 2, 128,  4, False, False, torch.bfloat16, False, marks=pytest.mark.full),
-                # shape + feature: large shape with full pipeline
-                pytest.param(2, 4, 128, 16, True,  True,  torch.float16, False, marks=pytest.mark.full),
-            ]),
+            (
+                "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune",
+                [
+                    # feature: no bias, no softplus (baseline path)
+                    pytest.param(
+                        1, 2, 64, 4, False, False, torch.float16, False, marks=pytest.mark.smoke
+                    ),
+                    # feature: bias only (has_dt_bias branch, no softplus)
+                    pytest.param(
+                        1, 2, 64, 4, True, False, torch.bfloat16, False, marks=pytest.mark.smoke
+                    ),
+                    # feature: softplus only (no bias, dt_softplus branch)
+                    pytest.param(
+                        1, 2, 64, 4, False, True, torch.float16, False, marks=pytest.mark.smoke
+                    ),
+                    # feature: bias + softplus (full pipeline)
+                    pytest.param(
+                        1, 2, 64, 4, True, True, torch.bfloat16, False, marks=pytest.mark.full
+                    ),
+                    # shape: larger batch and chunk count
+                    pytest.param(
+                        2, 4, 64, 8, False, False, torch.float16, False, marks=pytest.mark.full
+                    ),
+                    # shape: larger chunk_len tile
+                    pytest.param(
+                        1, 2, 128, 4, False, False, torch.bfloat16, False, marks=pytest.mark.full
+                    ),
+                    # shape + feature: large shape with full pipeline
+                    pytest.param(
+                        2, 4, 128, 16, True, True, torch.float16, False, marks=pytest.mark.full
+                    ),
+                ],
+            ),
         ]
+
 
 class DaCumsumFwdWorkload(WorkloadBase):
     def __init__(
@@ -57,16 +78,19 @@ class DaCumsumFwdWorkload(WorkloadBase):
         # A <= 0 (negative decay)
         dt_raw = torch.randn(b, seq_len, h, dtype=torch.float32, device="cuda")
         A = -torch.rand(h, dtype=torch.float32, device="cuda")
-        # dt_bias is random when used; zeros when not (kernel ignores it in that case).
-        if self.has_dt_bias:
-            dt_bias = torch.randn(h, dtype=torch.float32, device="cuda") * 0.5
-        else:
-            dt_bias = torch.zeros(h, dtype=torch.float32, device="cuda")
+        # Absent means None: the op builds the kernel without that branch, and a
+        # zero tensor would instead build the one that reads it.
+        dt_bias = (
+            torch.randn(h, dtype=torch.float32, device="cuda") * 0.5 if self.has_dt_bias else None
+        )
         return dt_raw, A, dt_bias
 
     def ref_program(self, dt, A, dt_bias):
         return da_cumsum_fwd_ref(
-            dt, A, self.num_chunks, self.chunk_len,
+            dt,
+            A,
+            self.num_chunks,
+            self.chunk_len,
             dt_bias=dt_bias if self.has_dt_bias else None,
             dt_softplus=self.dt_softplus,
             dt_min=self.dt_min,
@@ -79,13 +103,25 @@ class SSDChunkScanFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
+
         return [
-            ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune", [
-                pytest.param(1, 2,  64, 4, 64,  32, 1, torch.float16,  False, marks=pytest.mark.smoke),
-                pytest.param(1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(2, 4,  64, 8, 64,  64, 2, torch.float16,  False, marks=pytest.mark.full),
-                pytest.param(2, 2,  64, 4, 64,  32, 2, torch.bfloat16, False, marks=pytest.mark.full),
-            ]),
+            (
+                "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune",
+                [
+                    pytest.param(
+                        1, 2, 64, 4, 64, 32, 1, torch.float16, False, marks=pytest.mark.smoke
+                    ),
+                    pytest.param(
+                        1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, marks=pytest.mark.smoke
+                    ),
+                    pytest.param(
+                        2, 4, 64, 8, 64, 64, 2, torch.float16, False, marks=pytest.mark.full
+                    ),
+                    pytest.param(
+                        2, 2, 64, 4, 64, 32, 2, torch.bfloat16, False, marks=pytest.mark.full
+                    ),
+                ],
+            ),
         ]
 
 
@@ -112,18 +148,23 @@ class SSDChunkScanFwdWorkload(WorkloadBase):
 
     def gen_inputs(self):
         b, c, L, h, p, n, g = (
-            self.batch, self.num_chunks, self.chunk_len,
-            self.n_heads, self.d_head, self.d_state, self.n_groups,
+            self.batch,
+            self.num_chunks,
+            self.chunk_len,
+            self.n_heads,
+            self.d_head,
+            self.d_state,
+            self.n_groups,
         )
         S = c * L
 
         # Official layouts (aligned with _chunk_scan_fwd in mamba_ssm)
-        x           = torch.randn(b, S, h, p,    dtype=self.dtype,    device="cuda") * 0.1
-        cb          = torch.randn(b, c, g, L, L, dtype=self.dtype,    device="cuda") * 0.1
-        dA_cumsum   = -torch.rand(b, h, c, L,    dtype=torch.float32, device="cuda").cumsum(-1)
-        C           = torch.randn(b, S, g, n,    dtype=self.dtype,    device="cuda") * 0.1
-        prev_states = torch.randn(b, c, h, p, n, dtype=torch.float32,  device="cuda") * 0.1
-        dt          = torch.rand( b, h, c, L,    dtype=self.dtype,    device="cuda") * 0.1 + 0.01
+        x = torch.randn(b, S, h, p, dtype=self.dtype, device="cuda") * 0.1
+        cb = torch.randn(b, c, g, L, L, dtype=self.dtype, device="cuda") * 0.1
+        dA_cumsum = -torch.rand(b, h, c, L, dtype=torch.float32, device="cuda").cumsum(-1)
+        C = torch.randn(b, S, g, n, dtype=self.dtype, device="cuda") * 0.1
+        prev_states = torch.randn(b, c, h, p, n, dtype=torch.float32, device="cuda") * 0.1
+        dt = torch.rand(b, h, c, L, dtype=self.dtype, device="cuda") * 0.1 + 0.01
         return x, cb, dA_cumsum, C, prev_states, dt
 
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
@@ -134,25 +175,80 @@ class SSDChunkStateFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
+
         return [
-            ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx", [
-                pytest.param(
-                    1, 2, 64, 4, 64, 32, 1, torch.float16, False, False, marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, False, marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    2, 4, 64, 8, 64, 64, 2, torch.float16, False, False, marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    2, 2, 64, 4, 64, 32, 2, torch.bfloat16, False, False, marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    2, 4, 64, 8, 64, 64, 2, torch.float16, False, True, marks=pytest.mark.full,
-                ),
-            ]),
+            (
+                "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx",
+                [
+                    pytest.param(
+                        1,
+                        2,
+                        64,
+                        4,
+                        64,
+                        32,
+                        1,
+                        torch.float16,
+                        False,
+                        False,
+                        marks=pytest.mark.smoke,
+                    ),
+                    pytest.param(
+                        1,
+                        2,
+                        128,
+                        4,
+                        128,
+                        32,
+                        1,
+                        torch.bfloat16,
+                        False,
+                        False,
+                        marks=pytest.mark.smoke,
+                    ),
+                    pytest.param(
+                        2,
+                        4,
+                        64,
+                        8,
+                        64,
+                        64,
+                        2,
+                        torch.float16,
+                        False,
+                        False,
+                        marks=pytest.mark.full,
+                    ),
+                    pytest.param(
+                        2,
+                        2,
+                        64,
+                        4,
+                        64,
+                        32,
+                        2,
+                        torch.bfloat16,
+                        False,
+                        False,
+                        marks=pytest.mark.full,
+                    ),
+                    pytest.param(
+                        2,
+                        4,
+                        64,
+                        8,
+                        64,
+                        64,
+                        2,
+                        torch.float16,
+                        False,
+                        True,
+                        marks=pytest.mark.full,
+                    ),
+                ],
+            ),
         ]
+
 
 class SSDChunkStateFwdWorkload(WorkloadBase):
     def __init__(
@@ -179,8 +275,13 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
 
     def gen_inputs(self):
         b, c, Q, h, p, n, g = (
-            self.batch, self.num_chunks, self.chunk_len,
-            self.n_heads, self.d_head, self.d_state, self.n_groups,
+            self.batch,
+            self.num_chunks,
+            self.chunk_len,
+            self.n_heads,
+            self.d_head,
+            self.d_state,
+            self.n_groups,
         )
         seq_len = c * Q
         x = torch.randn(b, seq_len, h, p, dtype=self.dtype, device="cuda") * 0.1
@@ -192,7 +293,7 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
         if self.has_seq_idx:
             # simulate two packed sequences per batch row, split at midpoint
             seq_idx = torch.zeros(b, seq_len, dtype=torch.int32, device="cuda")
-            seq_idx[:, seq_len // 2:] = 1
+            seq_idx[:, seq_len // 2 :] = 1
         return x, Bmat, dt, dA_cumsum, seq_idx
 
     def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
@@ -203,22 +304,55 @@ class SSDDecodeFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
+
         return [
-            ("batch, n_heads, d_head, d_state, n_groups, dtype, tune", [
-                pytest.param(
-                    1, 4, 64, 16, 1, torch.float16, False, marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    1, 4, 64, 16, 1, torch.bfloat16, False, marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    2, 8, 64, 32, 2, torch.float16, False, marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    2, 8, 128, 64, 4, torch.bfloat16, False, marks=pytest.mark.full,
-                ),
-            ]),
+            (
+                "batch, n_heads, d_head, d_state, n_groups, dtype, tune",
+                [
+                    pytest.param(
+                        1,
+                        4,
+                        64,
+                        16,
+                        1,
+                        torch.float16,
+                        False,
+                        marks=pytest.mark.smoke,
+                    ),
+                    pytest.param(
+                        1,
+                        4,
+                        64,
+                        16,
+                        1,
+                        torch.bfloat16,
+                        False,
+                        marks=pytest.mark.smoke,
+                    ),
+                    pytest.param(
+                        2,
+                        8,
+                        64,
+                        32,
+                        2,
+                        torch.float16,
+                        False,
+                        marks=pytest.mark.full,
+                    ),
+                    pytest.param(
+                        2,
+                        8,
+                        128,
+                        64,
+                        4,
+                        torch.bfloat16,
+                        False,
+                        marks=pytest.mark.full,
+                    ),
+                ],
+            ),
         ]
+
 
 class SSDDecodeWorkload(WorkloadBase):
     def __init__(
@@ -239,7 +373,11 @@ class SSDDecodeWorkload(WorkloadBase):
 
     def gen_inputs(self):
         b, h, p, n, g = (
-            self.batch, self.n_heads, self.d_head, self.d_state, self.n_groups,
+            self.batch,
+            self.n_heads,
+            self.d_head,
+            self.d_state,
+            self.n_groups,
         )
         # A <= 0 (negative decay), dt > 0 (post-softplus)
         A = -torch.rand(h, p, n, dtype=torch.float32, device="cuda")
@@ -258,14 +396,19 @@ class SSDStatePassingFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
+
         return [
-            ("batch, num_chunks, n_heads, d_state, dtype, tune", [
-                pytest.param(1, 2,  4,  32, torch.float16,  False, marks=pytest.mark.smoke),
-                pytest.param(1, 2,  4,  32, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(2, 4,  8,  64, torch.float16,  False, marks=pytest.mark.full),
-                pytest.param(2, 4,  8,  64, torch.bfloat16, False, marks=pytest.mark.full),
-            ]),
+            (
+                "batch, num_chunks, n_heads, d_state, dtype, tune",
+                [
+                    pytest.param(1, 2, 4, 32, torch.float16, False, marks=pytest.mark.smoke),
+                    pytest.param(1, 2, 4, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                    pytest.param(2, 4, 8, 64, torch.float16, False, marks=pytest.mark.full),
+                    pytest.param(2, 4, 8, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                ],
+            ),
         ]
+
 
 class SSDStatePassingFwdWorkload(WorkloadBase):
     def __init__(
@@ -275,7 +418,9 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         n_heads: int,
         d_state: int,
         dtype: torch.dtype,
+        has_initial_states: bool = True,
     ):
+        self.has_initial_states = has_initial_states
         self.batch = batch
         self.num_chunks = num_chunks
         self.n_heads = n_heads
@@ -286,7 +431,12 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
         states = torch.randn(b, c, h, d, dtype=self.dtype, device="cuda") * 0.1
         dA_chunk_cumsum = -torch.rand(b, h, c, dtype=torch.float32, device="cuda").cumsum(-1)
-        initial_states = torch.randn(b, h, d, dtype=torch.float32, device="cuda") * 0.1
+        # Absent means None: the op then builds the kernel that starts from zero.
+        initial_states = (
+            torch.randn(b, h, d, dtype=torch.float32, device="cuda") * 0.1
+            if self.has_initial_states
+            else None
+        )
         return states, dA_chunk_cumsum, initial_states
 
     def ref_program(self, states, dA_chunk_cumsum, initial_states):
@@ -322,11 +472,12 @@ def da_cumsum_fwd_ref(
     if dt_softplus:
         dt_val = F.softplus(dt_val)
     dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
-    dt_chunked = dt_val.reshape(b, C, Q, h)           # (b, C, Q, h)
+    dt_chunked = dt_val.reshape(b, C, Q, h)  # (b, C, Q, h)
     dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous().to(dtype)  # (b, h, C, Q) in target dtype
-    dA = dt_chunked * A.float()                        # (b, C, Q, h)
+    dA = dt_chunked * A.float()  # (b, C, Q, h)
     dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
     return dt_out, dA_cumsum
+
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     """Official-aligned PyTorch reference for chunk scan.
@@ -347,8 +498,8 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     g = n_groups
     heads_per_group = h // g
 
-    x_chunked = x.float().reshape(b, c, L, h, p)             # [B, C, L, H, P]
-    C_chunked = C.float().reshape(b, c, L, g, n)              # [B, C, L, G, N]
+    x_chunked = x.float().reshape(b, c, L, h, p)  # [B, C, L, H, P]
+    C_chunked = C.float().reshape(b, c, L, g, n)  # [B, C, L, G, N]
     # broadcast C from groups to heads: [B, C, L, H, N]
     C_heads = C_chunked[:, :, :, torch.arange(h, device=x.device) // heads_per_group, :]
 
@@ -369,12 +520,12 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     # decay[b,c,h,l,s] = exp(dA_cumsum[l] - dA_cumsum[s])
     dA_l = dA_cumsum.float().unsqueeze(-1)  # [B, H, C, L, 1]
     dA_s = dA_cumsum.float().unsqueeze(-2)  # [B, H, C, 1, L]
-    decay = torch.exp(dA_l - dA_s)         # [B, H, C, L, L]
+    decay = torch.exp(dA_l - dA_s)  # [B, H, C, L, L]
 
     # causal mask
     mask = torch.tril(torch.ones(L, L, device=x.device, dtype=torch.bool))
     decay = decay.masked_fill(~mask.unsqueeze(0).unsqueeze(0).unsqueeze(0), 0.0)
-    decay = decay.permute(0, 2, 1, 3, 4)   # [B, C, H, L, L]
+    decay = decay.permute(0, 2, 1, 3, 4)  # [B, C, H, L, L]
 
     # dt: [B, H, C, L] -> [B, C, H, 1, L]
     dt_s = dt.float().permute(0, 2, 1, 3).unsqueeze(-2)  # [B, C, H, 1, L]
@@ -388,6 +539,7 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     # combine and reshape to [B, S, H, P]
     out = (y_off + y_diag).reshape(b, S, h, p)
     return out
+
 
 def ssd_chunk_state_fwd_ref(
     x: torch.Tensor,
@@ -425,10 +577,11 @@ def ssd_chunk_state_fwd_ref(
     out = contrib.sum(dim=2)
     return out.permute(0, 1, 2, 4, 3)
 
+
 def ssd_state_passing_fwd_ref(
     states: torch.Tensor,
     dA_chunk_cumsum: torch.Tensor,
-    initial_states: torch.Tensor,
+    initial_states: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """PyTorch reference for the inter-chunk recurrent scan.
 
@@ -436,9 +589,13 @@ def ssd_state_passing_fwd_ref(
     so out[:,0] = initial_states and final_states = state after chunk C-1.
     """
     b, c, h, d = states.shape
-    # out[:,0] = s_{-1} = initial_states (state before chunk 0)
-    out = [initial_states.float().clone()]
-    s = initial_states.float()
+    # out[:,0] = s_{-1} = initial_states, or zero when the call omits it.
+    s = (
+        torch.zeros(b, h, d, dtype=torch.float32, device=states.device)
+        if initial_states is None
+        else initial_states.float()
+    )
+    out = [s.clone()]
 
     for ci in range(c):
         scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
@@ -449,12 +606,13 @@ def ssd_state_passing_fwd_ref(
 
     return torch.stack(out, dim=1), s
 
+
 def ssd_decode_ref(
-    A: torch.Tensor,      # (H, P, N)     float32
-    dt: torch.Tensor,     # (B, H, P)     float32
-    x: torch.Tensor,      # (B, H, P)     any dtype
-    B_in: torch.Tensor,   # (B, G, N)     any dtype
-    C_in: torch.Tensor,   # (B, G, N)     any dtype
+    A: torch.Tensor,  # (H, P, N)     float32
+    dt: torch.Tensor,  # (B, H, P)     float32
+    x: torch.Tensor,  # (B, H, P)     any dtype
+    B_in: torch.Tensor,  # (B, G, N)     any dtype
+    C_in: torch.Tensor,  # (B, G, N)     any dtype
     state: torch.Tensor,  # (B, H, P, N)  float32  -- updated in-place
 ) -> torch.Tensor:
     """PyTorch reference for ssd_decode.
@@ -479,19 +637,15 @@ def ssd_decode_ref(
 
     # Expand B/C from groups to heads: (B, H, N)
     head_idx = torch.arange(H, device=B_in.device) // heads_per_group
-    B_heads = B_in.float()[:, head_idx, :]   # (B, H, N)
-    C_heads = C_in.float()[:, head_idx, :]   # (B, H, N)
+    B_heads = B_in.float()[:, head_idx, :]  # (B, H, N)
+    C_heads = C_in.float()[:, head_idx, :]  # (B, H, N)
 
     # dA[b, h, p, n] = exp(dt[b,h,p] * A[h,p,n])
-    dA = torch.exp(
-        dt.float()[:, :, :, None] * A.float()[None, :, :, :]
-    )  # (B, H, P, N)
+    dA = torch.exp(dt.float()[:, :, :, None] * A.float()[None, :, :, :])  # (B, H, P, N)
 
     # dBx[b, h, p, n] = dt[b,h,p] * B[b,h,n] * x[b,h,p]
     dBx = (
-        dt.float()[:, :, :, None]
-        * x.float()[:, :, :, None]
-        * B_heads[:, :, None, :]
+        dt.float()[:, :, :, None] * x.float()[:, :, :, None] * B_heads[:, :, None, :]
     )  # (B, H, P, N)
 
     # Update state in-place

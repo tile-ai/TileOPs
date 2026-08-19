@@ -74,7 +74,8 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
         kernel = impl(
-            self.N_total, ctor_dtype,
+            self.N_total,
+            ctor_dtype,
             has_min=self.min_shape is not None,
             has_max=self.max_shape is not None,
             tune=self.tune,
@@ -138,9 +139,7 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
             if t.dtype != input.dtype:
                 raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
             if tuple(t.shape) != expected:
-                raise ValueError(
-                    f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
-                )
+                raise ValueError(f"Expected {name}.shape {expected}, got {tuple(t.shape)}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, min, max, self._instance_key)
@@ -188,7 +187,10 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
             _validate_scalar_param_repr("max", self.max, dtype, self._op_name)
         impl, ctor_dtype = self._selected_kernel_cls("clamp").specialize(dtype)
         kernel = impl(
-            self.N_total, ctor_dtype, min_val=self.min, max_val=self.max,
+            self.N_total,
+            ctor_dtype,
+            min_val=self.min,
+            max_val=self.max,
             tune=self.tune,
         )
 
@@ -204,18 +206,14 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        return self._entry(input.dtype).kernel(
-            input.contiguous().reshape(-1)
-        ).reshape(orig_shape)
+        return self._entry(input.dtype).kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         self._validate_dtypes(input)
         if tuple(input.shape) != self.input_shape:
-            raise ValueError(
-                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
-            )
+            raise ValueError(f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, self._instance_key)

@@ -6,11 +6,11 @@ import torch
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import DeltaNetDecodeOp
+from tileops.ops import DeltaNetDecodeFwdOp
 from workloads.linear_attention import DeltaNetDecodeWorkload
 from workloads.workload_base import FixtureBase
 
-_OP_NAME = "DeltaNetDecodeOp"
+_OP_NAME = "DeltaNetDecodeFwdOp"
 
 
 def deltanet_decode_torch(
@@ -40,7 +40,6 @@ def deltanet_decode_torch(
 
 
 class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeWorkload]):
-
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
@@ -83,7 +82,7 @@ def test_deltanet_decode_bench(
     test = DeltaNetDecodeWorkload(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
-    op = DeltaNetDecodeOp(tune=tune)
+    op = DeltaNetDecodeFwdOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
     bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())

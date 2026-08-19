@@ -50,15 +50,15 @@ class L1NormFwdOp(_ReduceOpBase):
     ):
         if ord != self._required_ord:
             raise ValueError(
-                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
-                f"got ord={ord!r}"
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, got ord={ord!r}"
             )
         self.ord = ord
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
-
 
 
 class L2NormFwdOp(_ReduceOpBase):
@@ -97,15 +97,15 @@ class L2NormFwdOp(_ReduceOpBase):
     ):
         if ord != self._required_ord:
             raise ValueError(
-                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
-                f"got ord={ord!r}"
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, got ord={ord!r}"
             )
         self.ord = ord
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
-
 
 
 class InfNormFwdOp(_ReduceOpBase):
@@ -147,13 +147,14 @@ class InfNormFwdOp(_ReduceOpBase):
     ):
         if ord != self._required_ord:
             raise ValueError(
-                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
-                f"got ord={ord!r}"
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, got ord={ord!r}"
             )
         self.ord = ord
         super().__init__(
-            dim=dim, keepdim=keepdim,
-            kernel_map=kernel_map, tune=tune,
+            dim=dim,
+            keepdim=keepdim,
+            kernel_map=kernel_map,
+            tune=tune,
         )
 
     def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:

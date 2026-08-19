@@ -499,8 +499,6 @@ def _(
     )
 
 
-
-
 class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase):
     """Max pooling forward-with-indices kernel."""
 

@@ -99,9 +99,7 @@ def generate_report(results: list[dict[str, str]], target: str) -> str:
     failed_cases = [result for result in results if result["outcome"] == "failed"]
     passed_count = sum(1 for result in results if result["outcome"] == "passed")
     skipped_count = sum(1 for result in results if result["outcome"] == "skipped")
-    failed_ops = list(
-        OrderedDict.fromkeys(result["op"] for result in failed_cases if result["op"])
-    )
+    failed_ops = list(OrderedDict.fromkeys(result["op"] for result in failed_cases if result["op"]))
 
     correctness = f"{_PASS} Pass" if not failed_cases else f"{_FAIL} {len(failed_cases)} failed"
     failures_ops_str = (

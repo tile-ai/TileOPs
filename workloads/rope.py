@@ -6,9 +6,17 @@ from workloads.workload_base import WorkloadBase  # noqa: F401
 
 
 class RopeWorkload(WorkloadBase):
-    def __init__(self, variant: str, layout: str, batch: int, seq_len: int,
-                 num_heads: int, head_dim: int, dtype: torch.dtype,
-                 extra_kwargs: dict | None = None):
+    def __init__(
+        self,
+        variant: str,
+        layout: str,
+        batch: int,
+        seq_len: int,
+        num_heads: int,
+        head_dim: int,
+        dtype: torch.dtype,
+        extra_kwargs: dict | None = None,
+    ):
         self.variant = variant
         self.layout = layout
         self.batch = batch
@@ -23,6 +31,12 @@ class RopeWorkload(WorkloadBase):
         if self.layout == "1d":
             x = torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype)
         else:
-            x = torch.randn(self.batch, self.seq_len, self.num_heads, self.head_dim,
-                             device="cuda", dtype=self.dtype)
+            x = torch.randn(
+                self.batch,
+                self.seq_len,
+                self.num_heads,
+                self.head_dim,
+                device="cuda",
+                dtype=self.dtype,
+            )
         return (x,)

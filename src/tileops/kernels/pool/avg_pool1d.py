@@ -45,9 +45,7 @@ def _avg_pool1d_kernel(
                 tile_input_start = tile_ol_start * stride_l - pad_l
                 tile_input_end = tile_ol_end * stride_l + kernel_l - 1 - pad_l
                 tile_spatial_full = (
-                    tile_same_row
-                    & (tile_input_start >= 0)
-                    & (tile_input_end < l_in)
+                    tile_same_row & (tile_input_start >= 0) & (tile_input_end < l_in)
                 )
                 for i in T.Parallel(block_m):
                     out_idx = bx * block_m + i
@@ -127,9 +125,7 @@ def _avg_pool1d_spatial_kernel(
                 tile_input_start = tile_ol_start * stride_l - pad_l
                 tile_input_end = tile_ol_end * stride_l + kernel_l - 1 - pad_l
                 tile_spatial_full = (
-                    tile_same_row
-                    & (tile_input_start >= 0)
-                    & (tile_input_end < l_in)
+                    tile_same_row & (tile_input_start >= 0) & (tile_input_end < l_in)
                 )
                 for i in T.Parallel(block_m):
                     out_idx = bx * block_m + i

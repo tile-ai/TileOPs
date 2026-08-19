@@ -40,8 +40,7 @@ class _FakeBatchNormFwdInferKernel(Kernel):
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
     ) -> torch.Tensor:
-        y = (x_cl.float() - running_mean[:, None]) * torch.rsqrt(
-            running_var[:, None] + self.eps)
+        y = (x_cl.float() - running_mean[:, None]) * torch.rsqrt(running_var[:, None] + self.eps)
         y = y * weight[:, None] + bias[:, None]
         return y.to(self.dtype)
 
@@ -122,7 +121,8 @@ def _batch_norm_infer_ref(
 ) -> torch.Tensor:
     affine_shape = (1, x.shape[1]) + (1,) * (x.ndim - 2)
     y = (x.float() - running_mean.reshape(affine_shape)) * torch.rsqrt(
-        running_var.reshape(affine_shape) + eps)
+        running_var.reshape(affine_shape) + eps
+    )
     y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
     return y.to(x.dtype)
 
@@ -178,8 +178,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
         running_var = torch.ones(C, device="cuda", dtype=torch.float32)
 
         y = op(x, running_mean, running_var, weight, bias)
-        ref_y = _batch_norm_infer_ref(
-            x, running_mean, running_var, weight, bias, op.eps)
+        ref_y = _batch_norm_infer_ref(x, running_mean, running_var, weight, bias, op.eps)
         assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
 
     run_case(2, 8, (4, 4), torch.float16)
@@ -263,11 +262,13 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
         grad_out = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
         weight = torch.randn(C, device="cuda", dtype=torch.float32)
         _y, mean, rstd = _batch_norm_train_ref(
-            x, torch.ones_like(weight), torch.zeros_like(weight), eps)
+            x, torch.ones_like(weight), torch.zeros_like(weight), eps
+        )
 
         grad_x, grad_weight, grad_bias = op(grad_out, x, weight, mean, rstd)
         ref_grad_x, ref_grad_weight, ref_grad_bias = _batch_norm_bwd_ref(
-            grad_out, x, weight, mean, rstd)
+            grad_out, x, weight, mean, rstd
+        )
         assert torch.allclose(grad_x.float(), ref_grad_x.float(), atol=0.0, rtol=0.0)
         assert torch.allclose(grad_weight, ref_grad_weight, atol=0.0, rtol=0.0)
         assert torch.allclose(grad_bias, ref_grad_bias, atol=0.0, rtol=0.0)

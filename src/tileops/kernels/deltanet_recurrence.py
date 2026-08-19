@@ -14,6 +14,7 @@ Optimization:
   - Native dtype: bf16/fp16 halve state bandwidth vs fp32
   - K-tiling: small shared memory footprint -> high occupancy
 """
+
 import functools
 from typing import Optional, Tuple
 
@@ -192,22 +193,17 @@ def _deltanet_decode_tl(
                 # matvec loop whose inner work is parallelized over dim_v.
                 qk_dot[0] = T.float32(0.0)
                 for kk in T.Serial(dim_k):
-                    qk_dot[0] += (
-                        T.cast(q[bid, hid, kk], accum_dtype)
-                        * T.cast(k[bid, hid, kk], accum_dtype)
+                    qk_dot[0] += T.cast(q[bid, hid, kk], accum_dtype) * T.cast(
+                        k[bid, hid, kk], accum_dtype
                     )
 
                 # v_new = beta * (v - S @ k) (no alpha)
                 for j in T.Parallel(dim_v):
-                    v_new[j] = (
-                        beta_val * (T.cast(v[bid, hid, j], accum_dtype) - sk_frag[j])
-                    )
+                    v_new[j] = beta_val * (T.cast(v[bid, hid, j], accum_dtype) - sk_frag[j])
 
                 # o = S @ q + (q . k) * v_new (no alpha scaling)
                 for j in T.Parallel(dim_v):
-                    o[bid, hid, j] = T.cast(
-                        sq_frag[j] + qk_dot[0] * v_new[j], dtype
-                    )
+                    o[bid, hid, j] = T.cast(sq_frag[j] + qk_dot[0] * v_new[j], dtype)
 
                 # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
@@ -216,8 +212,7 @@ def _deltanet_decode_tl(
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.cast(h_tile[kk, j], accum_dtype)
-                            + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
-                            * v_new[j],
+                            + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype) * v_new[j],
                             dtype,
                         )
 
@@ -254,9 +249,7 @@ def _deltanet_decode_wrapped_kernel(
     beta: torch.Tensor,
     state: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel_fn = _deltanet_decode_tl(
-        batch, head, dim_k, dim_v, k_tile, dtype
-    )(num_stages, threads)
+    kernel_fn = _deltanet_decode_tl(batch, head, dim_k, dim_v, k_tile, dtype)(num_stages, threads)
     return kernel_fn(q, k, v, beta, state)
 
 
@@ -316,8 +309,12 @@ class DeltaNetDecodeKernel(Kernel):
             self.init_config(config, tune=False)
 
         self._kernel_fn = _deltanet_decode_tl(
-            batch, head, dim_k, dim_v,
-            self.config["k_tile"], self.dtype_str,
+            batch,
+            head,
+            dim_k,
+            dim_v,
+            self.config["k_tile"],
+            self.dtype_str,
         )(self.config["num_stages"], self.config["threads"])
 
     def _autotune_with_k_tile(self) -> None:
@@ -328,8 +325,11 @@ class DeltaNetDecodeKernel(Kernel):
         best_config = self.default_config
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
-        torch_dtype = {"float32": torch.float32, "float16": torch.float16,
-                       "bfloat16": torch.bfloat16}[self.dtype_str]
+        torch_dtype = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }[self.dtype_str]
         q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
         k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
         v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
@@ -344,14 +344,21 @@ class DeltaNetDecodeKernel(Kernel):
                 for threads in [128, 256]:
                     try:
                         fn = _deltanet_decode_tl(
-                            B, H, DK, DV, k_tile, self.dtype_str,
+                            B,
+                            H,
+                            DK,
+                            DV,
+                            k_tile,
+                            self.dtype_str,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state),
-                                     warmup=10, rep=20)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=10, rep=20)
                         if t < best_time:
                             best_time = t
-                            best_config = {"num_stages": num_stages,
-                                           "threads": threads, "k_tile": k_tile}
+                            best_config = {
+                                "num_stages": num_stages,
+                                "threads": threads,
+                                "k_tile": k_tile,
+                            }
                     except Exception:
                         continue
 
@@ -492,9 +499,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
                     best_time = t
                     best_config = config
             except Exception as exc:
-                failures.append(
-                    f"{config}: {type(exc).__name__}: {exc}"
-                )
+                failures.append(f"{config}: {type(exc).__name__}: {exc}")
                 continue
 
         if failures:
@@ -525,6 +530,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
 
 # FP32-precision decode kernel (no T.gemm -> avoids TF32 mantissa truncation)
 
+
 @functools.lru_cache(maxsize=32)
 def _deltanet_decode_fp32_tl(
     batch: int,
@@ -553,7 +559,6 @@ def _deltanet_decode_fp32_tl(
         compile_flags=["-O3"],
     )
     def _decode_func(num_stages, threads=128):
-
         @T.prim_func
         def deltanet_decode_fp32(
             q: T.Tensor([batch, head, dim_k], dtype),
@@ -606,8 +611,7 @@ def _deltanet_decode_fp32_tl(
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
-                            h_tile[kk, j]
-                            + k[bid, hid, kt * k_tile + kk] * v_new[j]
+                            h_tile[kk, j] + k[bid, hid, kt * k_tile + kk] * v_new[j]
                         )
 
         return deltanet_decode_fp32
@@ -653,7 +657,10 @@ class DeltaNetDecodeFP32Kernel(Kernel):
             self.init_config(config, tune=False)
 
         self._kernel_fn = _deltanet_decode_fp32_tl(
-            batch, head, dim_k, dim_v,
+            batch,
+            head,
+            dim_k,
+            dim_v,
             self.config["k_tile"],
         )(self.config["num_stages"], self.config["threads"])
 
@@ -678,14 +685,20 @@ class DeltaNetDecodeFP32Kernel(Kernel):
                 for threads in [128, 256]:
                     try:
                         fn = _deltanet_decode_fp32_tl(
-                            B, H, DK, DV, k_tile,
+                            B,
+                            H,
+                            DK,
+                            DV,
+                            k_tile,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state),
-                                     warmup=10, rep=20)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=10, rep=20)
                         if t < best_time:
                             best_time = t
-                            best_config = {"num_stages": num_stages,
-                                           "threads": threads, "k_tile": k_tile}
+                            best_config = {
+                                "num_stages": num_stages,
+                                "threads": threads,
+                                "k_tile": k_tile,
+                            }
                     except Exception:
                         continue
 

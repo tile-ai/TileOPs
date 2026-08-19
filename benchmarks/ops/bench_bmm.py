@@ -3,11 +3,12 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops import BmmFp8Op, BmmFwdOp
+from tileops.ops import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
 _OP_NAME = "BmmFwdOp"
-_FP8_OP_NAME = "BmmFp8Op"
+_FP8_KN_OP_NAME = "BmmFp8KNFwdOp"
+_FP8_NK_OP_NAME = "BmmFp8NKFwdOp"
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -31,26 +32,30 @@ class BmmFp8BenchmarkWorkload(BmmFp8Workload):
 
 
 def _flashinfer_bmm_fp8_per_tensor_ref(
-    workload: BmmFp8BenchmarkWorkload, a: torch.Tensor, b_kmajor: torch.Tensor,
-    scale_a: torch.Tensor, scale_b: torch.Tensor,
+    workload: BmmFp8BenchmarkWorkload,
+    a: torch.Tensor,
+    b_kmajor: torch.Tensor,
+    scale_a: torch.Tensor,
+    scale_b: torch.Tensor,
 ) -> torch.Tensor:
-
     import flashinfer
 
     if a.dtype != torch.float8_e4m3fn or b_kmajor.dtype != torch.float8_e4m3fn:
-        raise ValueError(
-            "FlashInfer bmm_fp8 baseline requires float8_e4m3fn.")
+        raise ValueError("FlashInfer bmm_fp8 baseline requires float8_e4m3fn.")
     if workload.out_dtype not in (torch.bfloat16, torch.float16):
-        raise ValueError(
-            "FlashInfer bmm_fp8 baseline requires bfloat16 / float16 output.")
+        raise ValueError("FlashInfer bmm_fp8 baseline requires bfloat16 / float16 output.")
     if scale_a.dim() != 0 or scale_b.dim() != 0:
         raise ValueError(
             "FlashInfer bmm_fp8 baseline requires 0-D per-tensor scales, "
             f"got {tuple(scale_a.shape)} / {tuple(scale_b.shape)}"
         )
     return flashinfer.bmm_fp8(
-        a, b_kmajor, scale_a, scale_b,
-        dtype=workload.out_dtype, backend="cudnn",
+        a,
+        b_kmajor,
+        scale_a,
+        scale_b,
+        dtype=workload.out_dtype,
+        backend="cudnn",
     )
 
 
@@ -60,22 +65,34 @@ def _manifest_params() -> list:
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["b"], w["m"], w["n"], w["k"], dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["b"],
+                    w["m"],
+                    w["n"],
+                    w["k"],
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
-def _manifest_fp8_params() -> list:
+def _fp8_params(workloads) -> list:
     params = []
-    for w in load_workloads(_FP8_OP_NAME):
+    for w in workloads:
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["b"], w["m"], w["n"], w["k"], dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["b"],
+                    w["m"],
+                    w["n"],
+                    w["k"],
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -94,20 +111,47 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     bm.compare({"tileops": op, "torch-cublas": torch.bmm}, a, b, record_as=op, params=locals())
 
 
-@pytest.mark.parametrize("batch, m, n, k, dtype_str", _manifest_fp8_params())
-def test_bmm_fp8_bench(
-    batch: int, m: int, n: int, k: int, dtype_str: str,
+@pytest.mark.parametrize("batch, m, n, k, dtype_str", _fp8_params(load_workloads(_FP8_KN_OP_NAME)))
+def test_bmm_fp8_kn_bench(
+    batch: int,
+    m: int,
+    n: int,
+    k: int,
+    dtype_str: str,
+) -> None:
+    """The [B, K, N] order, which the kernel reaches through a transpose."""
+    dtype = _DTYPE_MAP[dtype_str]
+    out_dtype = torch.bfloat16
+    workload = BmmFp8BenchmarkWorkload(batch, m, n, k, dtype, out_dtype=out_dtype)
+    a, b_kn, scale_a, scale_b = workload.gen_inputs()
+
+    op = BmmFp8KNFwdOp(out_dtype=out_dtype, tune=True)
+    bm = ManifestBenchmark(_FP8_KN_OP_NAME, op, workload)
+    bm.compare(
+        {"tileops": (op, (a, b_kn, scale_a, scale_b))},
+        record_as=op,
+        params=locals(),
+    )
+
+
+@pytest.mark.parametrize("batch, m, n, k, dtype_str", _fp8_params(load_workloads(_FP8_NK_OP_NAME)))
+def test_bmm_fp8_nk_bench(
+    batch: int,
+    m: int,
+    n: int,
+    k: int,
+    dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
     workload = BmmFp8BenchmarkWorkload(batch, m, n, k, dtype, out_dtype=out_dtype)
     a, b_kn, scale_a, scale_b = workload.gen_inputs()
-    b_nk = b_kn.transpose(-2, -1).contiguous()      # [B, N, K], K-innermost
-    b_kmajor = b_nk.transpose(-2, -1)               # [B, K, N] view, zero-copy
+    b_nk = b_kn.transpose(-2, -1).contiguous()  # [B, N, K], K-innermost
+    b_kmajor = b_nk.transpose(-2, -1)  # [B, K, N] view, zero-copy
 
-    # Fast path: feed [B, N, K] (K-innermost) via explicit b_layout='nk'.
-    op = BmmFp8Op(out_dtype=out_dtype, tune=True, b_layout="nk")
-    bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
+    # Fast path: feed [B, N, K] (K-innermost) using BmmFp8NKFwdOp.
+    op = BmmFp8NKFwdOp(out_dtype=out_dtype, tune=True)
+    bm = ManifestBenchmark(_FP8_NK_OP_NAME, op, workload)
     functors = {
         "tileops": (op, (a, b_nk, scale_a, scale_b)),
         "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),

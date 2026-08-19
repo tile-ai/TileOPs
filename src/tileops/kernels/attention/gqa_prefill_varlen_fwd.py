@@ -63,12 +63,12 @@ def _gqa_prefill_varlen_fwd_kernel(
     ) -> Callable:
         q_shape = (total_q, heads, dim)
         kv_shape = (total_kv, heads_kv, dim)
-        online_softmax = make_online_softmax_with_mask_guard(
-            scale, accum_dtype, block_m, block_n
+        online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
+            if use_softcap
+            else None
         )
-        apply_softcap = make_apply_softcap(
-            score_scale, softcap, accum_dtype, block_m, block_n
-        ) if use_softcap else None
         rescale = make_rescale(block_m, dim)
 
         @T.prim_func
@@ -83,9 +83,11 @@ def _gqa_prefill_varlen_fwd_kernel(
             output: T.Tensor(q_shape, dtype),  # type: ignore
             lse: T.Tensor([heads, total_q], accum_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(
-                T.ceildiv(max_seqlen_q, block_m), heads, batch, threads=threads
-            ) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(max_seqlen_q, block_m), heads, batch, threads=threads) as (
+                bx,
+                by,
+                bz,
+            ):
                 q_shared = T.alloc_shared([block_m, dim], dtype)
                 k_shared = T.alloc_shared([block_n, dim], dtype)
                 v_shared = T.alloc_shared([block_n, dim], dtype)
@@ -108,7 +110,7 @@ def _gqa_prefill_varlen_fwd_kernel(
 
                 if (bx + 1) * block_m <= q_len:
                     T.copy(
-                        q[q_start + bx * block_m:q_start + (bx + 1) * block_m, by, :],
+                        q[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
                         q_shared,
                         disable_tma=True,
                     )
@@ -135,12 +137,12 @@ def _gqa_prefill_varlen_fwd_kernel(
                     tile_end = (k_idx + 1) * block_n
                     if tile_end <= kv_len:
                         T.copy(
-                            k[kv_start + tile_start:kv_start + tile_end, cur_kv_head, :],
+                            k[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
                             k_shared,
                             disable_tma=True,
                         )
                         T.copy(
-                            v[kv_start + tile_start:kv_start + tile_end, cur_kv_head, :],
+                            v[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
                             v_shared,
                             disable_tma=True,
                         )
@@ -163,14 +165,10 @@ def _gqa_prefill_varlen_fwd_kernel(
                                 & (kv_pos < kv_len)
                                 & (kv_pos <= q_pos + causal_offset)
                             )
-                            acc_s[i, j] = T.if_then_else(
-                                valid, 0, -T.infinity(acc_s.dtype)
-                            )
+                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
                         else:
                             valid = (q_pos < q_len) & (kv_pos < kv_len)
-                            acc_s[i, j] = T.if_then_else(
-                                valid, 0, -T.infinity(acc_s.dtype)
-                            )
+                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
                     T.gemm(
                         q_shared,
                         k_shared,
@@ -199,14 +197,14 @@ def _gqa_prefill_varlen_fwd_kernel(
                         acc_o[i, j] *= inv_logsum[i]
                     T.copy(
                         acc_o,
-                        output[q_start + bx * block_m:q_start + (bx + 1) * block_m, by, :],
+                        output[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
                         disable_tma=True,
                     )
                     for i in T.Parallel(block_m):
                         logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                     T.copy(
                         logsum,
-                        lse[by, q_start + bx * block_m:q_start + (bx + 1) * block_m],
+                        lse[by, q_start + bx * block_m : q_start + (bx + 1) * block_m],
                         disable_tma=True,
                     )
                 else:
@@ -221,9 +219,7 @@ def _gqa_prefill_varlen_fwd_kernel(
                     for i in T.Parallel(block_m):
                         q_pos = bx * block_m + i
                         if q_pos < q_len:
-                            lse[by, q_start + q_pos] = (
-                                T.log2(logsum[i]) + scores_max[i] * scale
-                            )
+                            lse[by, q_start + q_pos] = T.log2(logsum[i]) + scores_max[i] * scale
 
         return _gqa_prefill_varlen_fwd_main
 
@@ -324,12 +320,9 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        configs = list(
-            itertools.product([32, 64, 128], [32, 64, 128], [1, 2, 3], [128, 256])
-        )
+        configs = list(itertools.product([32, 64, 128], [32, 64, 128], [1, 2, 3], [128, 256]))
         return [
-            {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]}
-            for c in configs
+            {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs
         ]
 
     def forward(

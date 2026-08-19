@@ -1,4 +1,3 @@
-
 import dataclasses
 
 import pytest
@@ -38,8 +37,16 @@ class _FakeSquareDenseKernel(Kernel):
 
 
 class _FakeLegacyMhaBwdKernel(Kernel):
-    def __init__(self, batch: int, heads: int, seq_len: int, dim: int,
-                 is_causal: bool, dtype: torch.dtype, tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim: int,
+        is_causal: bool,
+        dtype: torch.dtype,
+        tune: bool = False,
+    ) -> None:
         super().__init__()
 
     def forward(self, *args: object, **kwargs: object) -> object:
@@ -56,61 +63,116 @@ class MhaFwdTest(MhaFwdWorkload, TestBase):
 
 class MhaFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim, causal, dtype, tune", [
-            pytest.param(
-                1, 1024, 8, 64, False, torch.float16, False,
-                marks=[pytest.mark.smoke, pytest.mark.packaging],
-                id="smoke-fwd-fp16",
-            ),
-            pytest.param(
-                1, 1024, 8, 64, False, torch.bfloat16, False,
-                marks=pytest.mark.smoke,
-                id="smoke-fwd-bf16",
-            ),
-            pytest.param(
-                16, 2048, 16, 128, False, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fwd-fp16",
-            ),
-            pytest.param(
-                4, 4096, 16, 128, False, torch.bfloat16, True,
-                marks=pytest.mark.full,
-                id="full-fwd-bf16-tuned",
-            ),
-        ]),
+        (
+            "batch, seq_len, heads, dim, causal, dtype, tune",
+            [
+                pytest.param(
+                    1,
+                    1024,
+                    8,
+                    64,
+                    False,
+                    torch.float16,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    id="smoke-fwd-fp16",
+                ),
+                pytest.param(
+                    1,
+                    1024,
+                    8,
+                    64,
+                    False,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-fwd-bf16",
+                ),
+                pytest.param(
+                    16,
+                    2048,
+                    16,
+                    128,
+                    False,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fwd-fp16",
+                ),
+                pytest.param(
+                    4,
+                    4096,
+                    16,
+                    128,
+                    False,
+                    torch.bfloat16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-fwd-bf16-tuned",
+                ),
+            ],
+        ),
     ]
 
 
 class MhaBwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim, causal, dtype, tune", [
-            pytest.param(
-                1, 1024, 8, 64, False, torch.float16, False,
-                marks=pytest.mark.smoke,
-                id="smoke-bwd-fp16",
-            ),
-            pytest.param(
-                1, 1024, 8, 64, False, torch.bfloat16, False,
-                marks=pytest.mark.smoke,
-                id="smoke-bwd-bf16",
-            ),
-            pytest.param(
-                16, 2048, 16, 128, False, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-bwd-fp16-large",
-            ),
-            pytest.param(
-                4, 4096, 16, 128, False, torch.bfloat16, True,
-                marks=pytest.mark.full,
-                id="full-bwd-bf16-tuned",
-            ),
-        ]),
+        (
+            "batch, seq_len, heads, dim, causal, dtype, tune",
+            [
+                pytest.param(
+                    1,
+                    1024,
+                    8,
+                    64,
+                    False,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-bwd-fp16",
+                ),
+                pytest.param(
+                    1,
+                    1024,
+                    8,
+                    64,
+                    False,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-bwd-bf16",
+                ),
+                pytest.param(
+                    16,
+                    2048,
+                    16,
+                    128,
+                    False,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bwd-fp16-large",
+                ),
+                pytest.param(
+                    4,
+                    4096,
+                    16,
+                    128,
+                    False,
+                    torch.bfloat16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-bwd-bf16-tuned",
+                ),
+            ],
+        ),
     ]
 
 
 @MhaFwdFixture
-def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
-                 tune: bool) -> None:
+def test_mha_fwd(
+    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
+) -> None:
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
@@ -140,9 +202,8 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path() -> None:
             "gqa_prefill_square_fwd_kernel": _FakeSquareDenseKernel,
         },
     )
-    delegate, = op.kernel_delegates()
-    stated = dataclasses.replace(
-        delegate.attention_call(torch.float16), arch=90, h200=True)
+    (delegate,) = op.kernel_delegates()
+    stated = dataclasses.replace(delegate.attention_call(torch.float16), arch=90, h200=True)
 
     key = delegate.select_kernel_key(DENSE_PREFILL_KEYS, stated)
 
@@ -164,8 +225,9 @@ def test_mha_bwd_rejects_legacy_kernel_map_keys() -> None:
 
 
 @MhaBwdFixture
-def test_mha_bwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
-                 tune: bool) -> None:
+def test_mha_bwd(
+    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
+) -> None:
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)

@@ -1,5 +1,5 @@
 import functools
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -20,12 +20,13 @@ from tileops.kernels.kernel_base import Kernel
 from .op_base import Op
 
 __all__ = [
+    "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
-    "GatedDeltaNetDecodeOp",
-    "GatedDeltaNetFwdOp",
+    "GatedDeltaNetDecodeFwdOp",
     "GatedDeltaNetOp",
-    "GatedDeltaNetPrefillFwdOp",
+    "GatedDeltaNetPrefillBHTDFwdOp",
+    "GatedDeltaNetPrefillBTHDFwdOp",
 ]
 
 #: Implementations of the gated DeltaNet decode slot.
@@ -146,13 +147,11 @@ def _normalize_layout(layout: str) -> str:
     """Lower-case *layout* and reject anything outside the two this file serves."""
     normalized = layout.lower()
     if normalized not in _LAYOUTS:
-        raise ValueError(
-            f"layout must be one of {_LAYOUTS}, got {layout!r}"
-        )
+        raise ValueError(f"layout must be one of {_LAYOUTS}, got {layout!r}")
     return normalized
 
 
-class GatedDeltaNetFwdOp(Op):
+class GatedDeltaNetBHTDFwdOp(Op):
     """Gated DeltaNet forward operator.
 
     Pipeline: prepare_wy_repr(k, g, beta) -> (Aw, Au) -> gated_deltanet_fwd(q, k, v, g, beta, Aw, Au) -> o.
@@ -257,15 +256,15 @@ class GatedDeltaNetFwdOp(Op):
         g = g.contiguous()
         beta = beta.contiguous()
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size)
+            q, k, v, g, beta, self.chunk_size
+        )
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
@@ -273,7 +272,7 @@ class GatedDeltaNetFwdOp(Op):
 class GatedDeltaNetBTHDFwdOp(Op):
     """Gated DeltaNet forward over token-major (BTHD) inputs.
 
-    Same operator as ``GatedDeltaNetFwdOp`` and the same four outputs, over the
+    Same operator as ``GatedDeltaNetBHTDFwdOp`` and the same four outputs, over the
     token-major memory order the FLA reference uses: ``q/k [B, S, H, DK]``,
     ``v [B, S, H, DV]``, ``g/beta [B, S, H]``. A separate entry because the
     memory order is part of the signature, not a mode of one signature.
@@ -320,12 +319,10 @@ class GatedDeltaNetBTHDFwdOp(Op):
     ) -> None:
         """Manifest ``dtype``: every input carries q's dtype, which must be half."""
         if q.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(
-                f"Expected q.dtype float16 or bfloat16, got {q.dtype}")
+            raise ValueError(f"Expected q.dtype float16 or bfloat16, got {q.dtype}")
         for name, tensor in (("k", k), ("v", v), ("g", g), ("beta", beta)):
             if tensor.dtype != q.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
+                raise ValueError(f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
         self.dtype = q.dtype
 
     def _infer_output_shapes(
@@ -365,11 +362,9 @@ class GatedDeltaNetBTHDFwdOp(Op):
         gaps = _bthd_production_gaps(self.chunk_size, dim_k, dim_v, dtype, device_index)
         if gaps:
             raise ValueError(
-                "BTHD GatedDeltaNet forward has no kernel for this call: "
-                + "; ".join(gaps)
+                "BTHD GatedDeltaNet forward has no kernel for this call: " + "; ".join(gaps)
             )
-        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype,
-               device_index, self.tune)
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "GatedDeltaNetFwdProductionKernel",
             key=key,
@@ -411,42 +406,41 @@ class GatedDeltaNetBTHDFwdOp(Op):
         g = g.contiguous()
         beta = beta.contiguous()
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bthd(
-            q, k, v, g, beta, self.chunk_size)
+            q, k, v, g, beta, self.chunk_size
+        )
         self._validate_dtypes(q, k, v, g, beta)
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
 
-class GatedDeltaNetPrefillFwdOp(Op):
+class GatedDeltaNetPrefillBTHDFwdOp(Op):
     """Gated DeltaNet inference prefill operator.
 
     This is the serving-oriented zero-state prefill interface:
     ``(q, k, v, g, beta) -> (o, final_state)``. It intentionally does not
     expose backward-only training artifacts such as ``Aw`` and ``Au``.
-    ``layout="bthd"`` follows the official FLA/Qwen convention
-    (``q/k/v/o [B, T, H, D]``, ``g/beta [B, T, H]``). ``layout="bhtd"``
-    selects the TileOps head-major convention (``q/k/v/o [B, H, T, D]``,
-    ``g/beta [B, H, T]``).
+    Token-major (BTHD) inputs, the FLA/Qwen convention: ``q/k/v/o [B, T, H, D]``,
+    ``g/beta [B, T, H]``. Head-major callers want ``GatedDeltaNetPrefillBHTDFwdOp``.
     When ``chunk_size`` is not specified, the op uses a small-stream serving
     default: 128 for ``batch * heads <= 8`` when the sequence length allows it,
     otherwise 64.
     """
+
+    #: The memory order this op takes; one order per entry (R19).
+    LAYOUT: ClassVar[str] = "bthd"
 
     def __init__(
         self,
         chunk_size: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        layout: str = "bthd",
     ) -> None:
-        layout = _normalize_layout(layout)
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -455,7 +449,6 @@ class GatedDeltaNetPrefillFwdOp(Op):
         self._requested_chunk_size = chunk_size
         self.chunk_size = chunk_size
         self.dtype = None
-        self.layout = layout
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -477,7 +470,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         beta_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         del k_shape, g_shape, beta_shape
-        layout = _normalize_layout(getattr(self, "layout", "bthd"))
+        layout = self.LAYOUT
         if layout == "bthd":
             return {
                 "o": (q_shape[0], q_shape[1], q_shape[2], v_shape[-1]),
@@ -532,7 +525,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
             dim_k,
             dim_v,
             dtype,
-            self.layout,
+            self.LAYOUT,
             device_index,
             self.tune,
         )
@@ -547,7 +540,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
                 dim_k,
                 dim_v,
                 dtype=Kernel.dtype_to_str(dtype),
-                layout=self.layout,
+                layout=self.LAYOUT,
                 tune=self.tune,
             ),
         )
@@ -560,7 +553,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> None:
-        if self.layout == "bthd":
+        if self.LAYOUT == "bthd":
             if q.ndim != 4:
                 raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
             batch, seq_len, heads, dim_k = q.shape
@@ -591,9 +584,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
             streams = batch * heads
             chunk_size = 128 if streams <= 8 and seq_len % 128 == 0 else 64
         if seq_len % chunk_size != 0:
-            raise ValueError(
-                f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-            )
+            raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -602,7 +593,8 @@ class GatedDeltaNetPrefillFwdOp(Op):
         self.chunk_size = chunk_size
         self.dtype = q.dtype
         self.kernel = self._get_kernel(
-            batch, heads, seq_len, chunk_size, dim_k, self.dim_v, q.dtype, q.device.index)
+            batch, heads, seq_len, chunk_size, dim_k, self.dim_v, q.dtype, q.device.index
+        )
 
     def eval_roofline(self) -> tuple[int, int]:
         from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
@@ -638,7 +630,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
             v.device,
             g.device,
             beta.device,
-            self.layout,
+            self.LAYOUT,
             self._requested_chunk_size,
             getattr(self, "tune", None),
         )
@@ -647,6 +639,18 @@ class GatedDeltaNetPrefillFwdOp(Op):
             self._validate_shapes(q, k, v, g, beta)
             self._active_sig = sig
         return self.kernel(q, k, v, g, beta)
+
+
+class GatedDeltaNetPrefillBHTDFwdOp(GatedDeltaNetPrefillBTHDFwdOp):
+    """Gated DeltaNet inference prefill over head-major (BHTD) inputs.
+
+    ``q/k/v/o [B, H, T, D]``, ``g/beta [B, H, T]`` — the TileOps convention.
+    Same kernel and same arithmetic as ``GatedDeltaNetPrefillBTHDFwdOp``; only the
+    memory order the tensors arrive in differs, and memory order is part of the
+    signature, so it is its own entry.
+    """
+
+    LAYOUT: ClassVar[str] = "bhtd"
 
 
 class GatedDeltaNetBwdOp(Op):
@@ -735,15 +739,15 @@ class GatedDeltaNetBwdOp(Op):
             Tuple of (dq, dk, dv, dg, dbeta).
         """
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size, do=do)
+            q, k, v, g, beta, self.chunk_size, do=do
+        )
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
         dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, S)
         return dq, dk, dv, dg, dbeta
 
@@ -819,7 +823,8 @@ class GatedDeltaNetOp(Op):
         beta: torch.Tensor,
     ) -> Tuple[Kernel, Kernel]:
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size)
+            q, k, v, g, beta, self.chunk_size
+        )
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -888,7 +893,7 @@ class GatedDeltaNetOp(Op):
         return _GatedDeltaNetFunction.apply(q, k, v, g, beta, fwd_kernel, bwd_kernel)
 
 
-class GatedDeltaNetDecodeOp(Op):
+class GatedDeltaNetDecodeFwdOp(Op):
     """Gated DeltaNet decode (single-step recurrence).
 
     Computes one step of the gated delta rule:

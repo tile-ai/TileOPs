@@ -60,8 +60,7 @@ class MoePermuteNopadFwdOp(Op):
     ) -> None:
         if not 0 < num_experts_local <= num_experts:
             raise ValueError(
-                f"num_experts_local must be in (0, {num_experts}], "
-                f"got {num_experts_local}"
+                f"num_experts_local must be in (0, {num_experts}], got {num_experts_local}"
             )
         self.total_tokens = total_tokens
         self.top_k = top_k
@@ -92,11 +91,9 @@ class MoePermuteNopadFwdOp(Op):
                 f"torch.bfloat16, got {hidden_states.dtype}"
             )
         if topk_ids.dtype != torch.int32:
-            raise ValueError(
-                f"Expected topk_ids.dtype torch.int32, got {topk_ids.dtype}")
+            raise ValueError(f"Expected topk_ids.dtype torch.int32, got {topk_ids.dtype}")
         if expert_map is not None and expert_map.dtype != torch.int32:
-            raise ValueError(
-                f"Expected expert_map.dtype torch.int32, got {expert_map.dtype}")
+            raise ValueError(f"Expected expert_map.dtype torch.int32, got {expert_map.dtype}")
 
     def _infer_output_shapes(
         self,
@@ -121,6 +118,7 @@ class MoePermuteNopadFwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         from tileops.perf.formulas import moe_permute_nopad_fwd_roofline
+
         return moe_permute_nopad_fwd_roofline(self)
 
     @property
@@ -138,20 +136,32 @@ class MoePermuteNopadFwdOp(Op):
         num_experts_local: Optional[int],
     ) -> Kernel:
         key = (
-            total_tokens, top_k, self.num_experts, hidden_size, dtype, device_index,
+            total_tokens,
+            top_k,
+            self.num_experts,
+            hidden_size,
+            dtype,
+            device_index,
             num_experts_local,
         )
         return self.get_or_build_kernel(
-            "permute_nopad_kernel", inputs,
+            "permute_nopad_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["permute_nopad_kernel"](
-                total_tokens, top_k, self.num_experts, hidden_size, dtype,
+                total_tokens,
+                top_k,
+                self.num_experts,
+                hidden_size,
+                dtype,
                 num_experts_local=num_experts_local,
             ),
         )
 
     def _validate_routing_shapes(
-        self, hidden_states: torch.Tensor, topk_ids: torch.Tensor,
+        self,
+        hidden_states: torch.Tensor,
+        topk_ids: torch.Tensor,
     ) -> Tuple[int, int, int]:
         """Check devices and shapes of the two routing tensors; return ``(T, K, H)``."""
         if not hidden_states.is_cuda:
@@ -164,13 +174,9 @@ class MoePermuteNopadFwdOp(Op):
                 f"got {hidden_states.device} and {topk_ids.device}"
             )
         if hidden_states.ndim != 2:
-            raise ValueError(
-                f"Expected hidden_states to be 2D [T, H], got {hidden_states.ndim}D"
-            )
+            raise ValueError(f"Expected hidden_states to be 2D [T, H], got {hidden_states.ndim}D")
         if topk_ids.ndim != 2:
-            raise ValueError(
-                f"Expected topk_ids to be 2D [T, K], got {topk_ids.ndim}D"
-            )
+            raise ValueError(f"Expected topk_ids to be 2D [T, K], got {topk_ids.ndim}D")
         total_tokens, hidden_size = hidden_states.shape
         topk_tokens, top_k = topk_ids.shape
         if topk_tokens != total_tokens:
@@ -187,10 +193,7 @@ class MoePermuteNopadFwdOp(Op):
             )
         if self._committed_top_k is not None and top_k != self._committed_top_k:
             raise ValueError(f"Expected top_k={self._committed_top_k}, got {top_k}")
-        if (
-            self._committed_hidden_size is not None
-            and hidden_size != self._committed_hidden_size
-        ):
+        if self._committed_hidden_size is not None and hidden_size != self._committed_hidden_size:
             raise ValueError(
                 f"Expected hidden_size={self._committed_hidden_size}, got {hidden_size}"
             )
@@ -207,17 +210,13 @@ class MoePermuteNopadFwdOp(Op):
         """
         if tuple(expert_map.shape) != (self.num_experts,):
             raise ValueError(
-                f"Expected expert_map.shape ({self.num_experts},), "
-                f"got {tuple(expert_map.shape)}")
+                f"Expected expert_map.shape ({self.num_experts},), got {tuple(expert_map.shape)}"
+            )
         if not expert_map.is_cuda:
             raise ValueError("expert_map must be a CUDA tensor")
 
         checked = self._checked_map
-        if (
-            checked is not None
-            and checked[0]() is expert_map
-            and checked[1] == expert_map._version
-        ):
+        if checked is not None and checked[0]() is expert_map and checked[1] == expert_map._version:
             return
 
         local = sorted(expert_map[expert_map >= 0].tolist())
@@ -256,8 +255,7 @@ class MoePermuteNopadFwdOp(Op):
             fwd_idx:                   [T*K] int32 forward mapping: flat_idx -> tight
                                        slot, -1 for a non-local pair
         """
-        return _moe_permute_nopad_fwd(
-            hidden_states, topk_ids, expert_map, self._instance_key)
+        return _moe_permute_nopad_fwd(hidden_states, topk_ids, expert_map, self._instance_key)
 
     def _eager_forward(
         self,
@@ -270,8 +268,7 @@ class MoePermuteNopadFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder, which dynamo
         cannot follow.
         """
-        total_tokens, top_k, hidden_size = self._validate_routing_shapes(
-            hidden_states, topk_ids)
+        total_tokens, top_k, hidden_size = self._validate_routing_shapes(hidden_states, topk_ids)
         self._validate_dtypes(hidden_states, topk_ids, expert_map)
         if expert_map is None:
             # A map is the only thing that can name which experts are local, so
@@ -285,8 +282,8 @@ class MoePermuteNopadFwdOp(Op):
         else:
             if expert_map.device != hidden_states.device:
                 raise ValueError(
-                    f"Expected expert_map on {hidden_states.device}, "
-                    f"got {expert_map.device}")
+                    f"Expected expert_map on {hidden_states.device}, got {expert_map.device}"
+                )
             self._validate_expert_map(expert_map)
 
         self.dtype = hidden_states.dtype
@@ -300,9 +297,13 @@ class MoePermuteNopadFwdOp(Op):
         # A map-free kernel and a map-reading one are two different scans, so the
         # argument's presence — not the local expert count — picks between them.
         kernel = self._get_kernel(
-            (hidden_states, topk_ids) if expert_map is None
+            (hidden_states, topk_ids)
+            if expert_map is None
             else (hidden_states, topk_ids, expert_map),
-            total_tokens, top_k, hidden_size, hidden_states.dtype,
+            total_tokens,
+            top_k,
+            hidden_size,
+            hidden_states.dtype,
             hidden_states.device.index,
             self.num_experts_local if expert_map is not None else None,
         )
@@ -318,8 +319,7 @@ def _moe_permute_nopad_fwd(
     expert_map: Optional[torch.Tensor],
     instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    return get_instance(instance_key)._eager_forward(
-        hidden_states, topk_ids, expert_map)
+    return get_instance(instance_key)._eager_forward(hidden_states, topk_ids, expert_map)
 
 
 @_moe_permute_nopad_fwd.register_fake
@@ -331,7 +331,8 @@ def _moe_permute_nopad_fwd_fake(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(
-        tuple(hidden_states.shape), tuple(topk_ids.shape),
+        tuple(hidden_states.shape),
+        tuple(topk_ids.shape),
         None if expert_map is None else tuple(expert_map.shape),
     )
     device = hidden_states.device

@@ -113,9 +113,7 @@ class BlockConfigPlanner:
     @property
     def needs_tiling(self) -> bool:
         """Whether one padded row exceeds the column cap or the smem budget."""
-        return (
-            self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
-        )
+        return self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
 
     def _column_alignment(self, block_m: int, threads: int) -> int:
         """Column granularity a tile must respect for this pair.
@@ -139,16 +137,19 @@ class BlockConfigPlanner:
         # the row in fragments and allocate no second shared copy.
         if self.N_padded <= MAX_SINGLE_TILE_COLS:
             single = compute_tile_n(
-                block_m, self.elem_bytes, self.N_padded, budget=self.smem_budget,
+                block_m,
+                self.elem_bytes,
+                self.N_padded,
+                budget=self.smem_budget,
             )
             if single == self.N_padded:
                 return 0
 
-        col_budget = (
-            MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
-        )
+        col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         return compute_tile_n(
-            block_m, self.elem_bytes, self.N_padded,
+            block_m,
+            self.elem_bytes,
+            self.N_padded,
             alignment=self._column_alignment(block_m, threads),
             budget=min(self.smem_budget, col_budget),
             num_buffers=self.num_buffers,
@@ -241,7 +242,8 @@ class BlockConfigPlanner:
         """
         max_block_m = (budget or self.smem_budget) // self._row_bytes
         return [
-            bm for bm in self._BLOCK_MS
+            bm
+            for bm in self._BLOCK_MS
             if bm <= max_block_m and self.layout_ok(bm, self.N_padded, threads)
         ]
 
@@ -252,7 +254,8 @@ class BlockConfigPlanner:
         """Return the config used when no candidate sweep runs."""
         if not self.needs_tiling:
             block_ms = self._untiled_block_ms(
-                DEFAULT_THREADS, budget=SHARED_MEMORY_BUDGET_BYTES,
+                DEFAULT_THREADS,
+                budget=SHARED_MEMORY_BUDGET_BYTES,
             )
             return {
                 "block_m": block_ms[-1] if block_ms else 1,
@@ -428,7 +431,6 @@ _SOFTMAX_KINDS = {"softmax", "log_softmax"}
 _SCAN_KINDS = {"sum", "prod"}
 
 
-
 def tune_by_forward(kernel, *probe_inputs, warmup: int = 10, rep: int = 10) -> None:
     """Select the fastest candidate config by timing ``kernel.forward``.
 
@@ -443,8 +445,8 @@ def tune_by_forward(kernel, *probe_inputs, warmup: int = 10, rep: int = 10) -> N
         kernel.config = kernel.default_config
         return
 
-    print(f'Start autotuning {kernel.__class__.__name__} (tiled path)...')
-    best_config, best_time = configs[0], float('inf')
+    print(f"Start autotuning {kernel.__class__.__name__} (tiled path)...")
+    best_config, best_time = configs[0], float("inf")
     for cfg in configs:
         kernel.config = cfg
         for _ in range(warmup):
@@ -464,7 +466,8 @@ def tune_by_forward(kernel, *probe_inputs, warmup: int = 10, rep: int = 10) -> N
             best_time, best_config = elapsed, cfg
 
     kernel.config = best_config
-    print(f'Best config: {kernel.config}')
+    print(f"Best config: {kernel.config}")
+
 
 def make_reduce_epilogue(op_kind: str):
     """Create a post-reduce processing T.macro.

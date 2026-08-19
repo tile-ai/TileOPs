@@ -74,19 +74,31 @@ class AdaLayerNormFwdOp(Op):
         return 5 * M * N, 4 * M * N * elem_bytes
 
     def _get_kernel(
-        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
+        self,
+        M: int,
+        N: int,
+        dtype: torch.dtype,
+        device_index: int | None,
     ) -> Kernel:
         key = (M, N, dtype, device_index)
         return self.get_or_build_kernel(
             "ada_layer_norm",
             key=key,
             build=lambda: self.kernel_map["ada_layer_norm"](
-                M, N, self.eps, dtype, has_gate=False, tune=self.tune,
+                M,
+                N,
+                self.eps,
+                dtype,
+                has_gate=False,
+                tune=self.tune,
             ),
         )
 
     def forward(
-        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor,
+        self,
+        x: torch.Tensor,
+        scale: torch.Tensor,
+        shift: torch.Tensor,
     ) -> torch.Tensor:
         """Apply adaptive layer normalization.
 
@@ -110,22 +122,16 @@ class AdaLayerNormFwdOp(Op):
             raise ValueError("shift must be a CUDA tensor")
         expected_dtype = x.dtype
         if scale.dtype != expected_dtype:
-            raise ValueError(
-                f"Expected scale.dtype {expected_dtype}, got {scale.dtype}"
-            )
+            raise ValueError(f"Expected scale.dtype {expected_dtype}, got {scale.dtype}")
         if shift.dtype != expected_dtype:
-            raise ValueError(
-                f"Expected shift.dtype {expected_dtype}, got {shift.dtype}"
-            )
+            raise ValueError(f"Expected shift.dtype {expected_dtype}, got {shift.dtype}")
         if scale.shape != x.shape:
             raise ValueError(f"Expected scale shape {x.shape}, got {scale.shape}")
         if shift.shape != x.shape:
             raise ValueError(f"Expected shift shape {x.shape}, got {shift.shape}")
         N = x.shape[-1]
         if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(
-                f"Expected hidden dim {self._committed_N}, got {N}"
-            )
+            raise ValueError(f"Expected hidden dim {self._committed_N}, got {N}")
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, N)

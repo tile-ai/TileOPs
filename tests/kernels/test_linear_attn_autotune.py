@@ -91,8 +91,9 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
 
     config = _run(kernel)
 
-    swept = {(name, build["block_v"] if build else 0): configs
-             for name, build, configs in kernel.sweeps}
+    swept = {
+        (name, build["block_v"] if build else 0): configs for name, build, configs in kernel.sweeps
+    }
     assert swept[("fused", 0)] == la.PIPELINE_CONFIGS
     assert swept[("h", 0)] == la.PIPELINE_CONFIGS
     assert swept[("h", 32)] == la.PIPELINE_CONFIGS
@@ -168,8 +169,12 @@ def test_selected_config_is_always_a_declared_candidate() -> None:
     declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v)
 
     assert _run(kernel) in declared
-    kernel.results = {("fused", 0): (None, None), ("h", 0): (None, None),
-                      ("h", 32): (None, None), ("o", 0): (None, None)}
+    kernel.results = {
+        ("fused", 0): (None, None),
+        ("h", 0): (None, None),
+        ("h", 32): (None, None),
+        ("o", 0): (None, None),
+    }
     assert _run(kernel) in declared
 
 
@@ -194,8 +199,7 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
     stay out of the returned config even when no candidate could be tuned.
     """
     kernel = _StubKernel(chunk_size=64, dim_v=48)
-    kernel.results = {("fused", 0): (None, None), ("h", 0): (None, None),
-                      ("o", 0): (None, None)}
+    kernel.results = {("fused", 0): (None, None), ("h", 0): (None, None), ("o", 0): (None, None)}
 
     config = _run(kernel)
 
@@ -369,7 +373,12 @@ def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
     on the helper; this checks the kernels are wired to them.
     """
     kernel = kernel_cls(
-        batch=1, head=1, seq_len=128, chunk_size=64, dim_k=64, dim_v=48,
+        batch=1,
+        head=1,
+        seq_len=128,
+        chunk_size=64,
+        dim_k=64,
+        dim_v=48,
         dtype="bfloat16",
     )
 
@@ -391,8 +400,14 @@ def test_tune_true_reaches_the_sweep(monkeypatch, kernel_cls) -> None:
     )
 
     kernel = kernel_cls(
-        batch=1, head=1, seq_len=128, chunk_size=64, dim_k=64, dim_v=64,
-        dtype="bfloat16", tune=True,
+        batch=1,
+        head=1,
+        seq_len=128,
+        chunk_size=64,
+        dim_k=64,
+        dim_v=64,
+        dtype="bfloat16",
+        tune=True,
     )
 
     assert calls == [kernel_cls.__name__]

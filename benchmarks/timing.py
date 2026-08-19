@@ -69,8 +69,7 @@ _PREPARE_ID = 1 << 32
 _l2_flush_cache: Optional[torch.Tensor] = None
 
 
-def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS,
-                 min_iters: int = _MIN_ITERS) -> int:
+def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
     return max(min_iters, min(max_iters, int(raw)))
 
 
@@ -124,7 +123,8 @@ def _read_dropped() -> Optional[int]:
             _DROPPED_COUNT_UNREADABLE = True
             _logger.warning(
                 "CUPTI dropped-record count is unreadable (%s); an unmeasured iteration "
-                "can no longer be told apart from a lost record.", exc,
+                "can no longer be told apart from a lost record.",
+                exc,
             )
         return None
     return int(dropped.value)
@@ -153,7 +153,9 @@ def _drop_counter_is_live() -> bool:
         _logger.warning(
             "CUPTI reported %s dropped records after discarding %d on purpose; the "
             "counter cannot be trusted, so an unmeasured iteration will not be blamed "
-            "on the call.", dropped, probe_kernels,
+            "on the call.",
+            dropped,
+            probe_kernels,
         )
     return _DROP_COUNTER_LIVE
 
@@ -166,12 +168,14 @@ def _buffer_completed(records) -> None:
     for record in records:
         kind = int(record.kind)
         if kind == int(cupti.ActivityKind.CONCURRENT_KERNEL):
-            _KERNELS.append({
-                "name": str(record.name),
-                "start_ns": int(record.start),
-                "end_ns": int(record.end),
-                "correlation_id": int(record.correlation_id),
-            })
+            _KERNELS.append(
+                {
+                    "name": str(record.name),
+                    "start_ns": int(record.start),
+                    "end_ns": int(record.end),
+                    "correlation_id": int(record.correlation_id),
+                }
+            )
         elif kind == int(cupti.ActivityKind.EXTERNAL_CORRELATION):
             _ITERATION_OF[int(record.correlation_id)] = int(record.external_id)
         # Launch-API records are collected only so CUPTI emits the correlation above.
@@ -333,9 +337,7 @@ def _kernel_busy_us(kernels: list[dict]) -> float:
     """Total time the device spent executing these kernels, overlaps counted once."""
     if not kernels:
         return 0.0
-    intervals = sorted(
-        (int(k["start_ns"]), int(k["end_ns"])) for k in kernels
-    )
+    intervals = sorted((int(k["start_ns"]), int(k["end_ns"])) for k in kernels)
     total = 0
     current_start, current_end = intervals[0]
     for start, end in intervals[1:]:
@@ -378,8 +380,10 @@ def _attributed_samples(
 
     unmeasured = [i for i in range(n_repeat) if i not in claimed]
     if orphans or unmeasured:
-        short = (f"{len(unmeasured)} of {n_repeat} iterations have no kernel of their "
-                 f"own and {len(orphans)} kernels belong to no iteration")
+        short = (
+            f"{len(unmeasured)} of {n_repeat} iterations have no kernel of their "
+            f"own and {len(orphans)} kernels belong to no iteration"
+        )
         if dropped:
             raise _CUPTIRecordsLostError(
                 f"{short}; CUPTI discarded {dropped} activity records for want of "
@@ -428,7 +432,10 @@ def _collect_attributed(
         trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes)
         try:
             return _attributed_samples(
-                trace.kernels, trace.iteration_of, n_repeat, trace.dropped,
+                trace.kernels,
+                trace.iteration_of,
+                n_repeat,
+                trace.dropped,
             )
         except _CUPTIRecordsLostError as exc:
             _bench_meta.attribution_retries = attempt + 1
@@ -437,7 +444,10 @@ def _collect_attributed(
             buffer_bytes *= 4
             _logger.warning(
                 "%s; re-measuring with a %d KB buffer (attempt %d of %d).",
-                exc, buffer_bytes // 1024, attempt + 2, _ATTRIBUTION_ATTEMPTS,
+                exc,
+                buffer_bytes // 1024,
+                attempt + 2,
+                _ATTRIBUTION_ATTEMPTS,
             )
     raise AssertionError("the loop returns or raises on its last attempt")
 
@@ -476,8 +486,8 @@ def _get_l2_flush_cache() -> torch.Tensor:
         l2_bytes = torch.cuda.get_device_properties(0).L2_cache_size
         if l2_bytes <= 0:
             _logger.warning(
-                "L2 cache size query returned %d; flushing a 256 MB buffer "
-                "instead", l2_bytes,
+                "L2 cache size query returned %d; flushing a 256 MB buffer instead",
+                l2_bytes,
             )
             l2_bytes = int(256e6)
         _l2_flush_cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device="cuda")
@@ -501,6 +511,7 @@ def _native_output_suppressor():
     if not native:
         return contextlib.nullcontext()
     from tilelang.profiler.bench import suppress_stdout_stderr
+
     return suppress_stdout_stderr()
 
 
@@ -604,9 +615,7 @@ def bench_kernel(
         # between kernels. Both fields carry the same number and `timing` says why.
         samples = [
             Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)
-            for elapsed in (
-                s.elapsed_time(e) for s, e in zip(starts, ends, strict=True)
-            )
+            for elapsed in (s.elapsed_time(e) for s, e in zip(starts, ends, strict=True))
         ]
 
     torch.cuda.empty_cache()

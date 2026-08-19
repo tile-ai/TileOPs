@@ -96,6 +96,8 @@ def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdWorkload):
         return backward_of(outputs[0])(grad_output, *(None,) * (len(outputs) - 1))
 
     return baseline_fn
+
+
 def _flashinfer_gqa_fwd(test, q, k, v):
     """FlashInfer ragged-prefill baseline. Handles seq_len_q != seq_len_kv (square is
     the seq_len_q == seq_len_kv case). Returns callable or None."""
@@ -337,7 +339,11 @@ def test_gqa_bwd_bench(
 
 
 _GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
-    [workload for workload in load_workloads(_GQA_PREFILL_FWD_OP) if workload.get("backend") != "fp8"],
+    [
+        workload
+        for workload in load_workloads(_GQA_PREFILL_FWD_OP)
+        if workload.get("backend") != "fp8"
+    ],
     gqa_prefill_args,
     tune=False,
 )
@@ -387,11 +393,11 @@ def test_gqa_prefill_fwd_bench(
     bm = ManifestBenchmark(_GQA_PREFILL_FWD_OP, op, test)
     functors = {"tileops": op}
 
-    functors["torch-ref"] = (_torch_gqa_prefill_ref(test), (*inputs, ))
+    functors["torch-ref"] = (_torch_gqa_prefill_ref(test), (*inputs,))
 
     fi_fn = _flashinfer_gqa_fwd(test, *inputs)
     if fi_fn is not None:
-        functors["flashinfer"] = (fi_fn, (*inputs, ))
+        functors["flashinfer"] = (fi_fn, (*inputs,))
 
     bm.compare(functors, *packed_inputs, record_as=op, params=locals())
 
@@ -459,7 +465,12 @@ def test_gqa_prefill_varlen_fwd_bench(
     )
     bm = GQAPrefillVarlenFwdBenchmark(test)
 
-    bm.compare({"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 def _fp8_paged_cache_inputs(
@@ -539,9 +550,17 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     if cache_dtype == fp8_dtype and fp8_dtype is not None:
         inputs = _fp8_paged_cache_inputs(test)
     else:
-        q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q = (
-            test.gen_inputs()
-        )
+        (
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+            max_seqlen_q,
+        ) = test.gen_inputs()
         k_scale = torch.ones((1,), dtype=torch.float32, device=q.device)
         v_scale = torch.ones((1,), dtype=torch.float32, device=q.device)
         inputs = (

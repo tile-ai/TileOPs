@@ -1,4 +1,4 @@
-"""Benchmarks for DropoutOp.
+"""Benchmarks for DropoutFwdOp.
 
 Profiles TileOPs dropout vs torch.nn.functional.dropout on DNN-realistic shapes.
 Uses p=0.5 (default) as representative drop rate.
@@ -11,10 +11,10 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
-from tileops.ops.dropout import DropoutOp
+from tileops.ops.dropout import DropoutFwdOp
 from workloads.elementwise import ShapedRandnWorkload
 
-_OP_NAME = "DropoutOp"
+_OP_NAME = "DropoutFwdOp"
 
 
 class DropoutBenchmarkWorkload(ShapedRandnWorkload):
@@ -25,12 +25,13 @@ class DropoutBenchmarkWorkload(ShapedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.dropout(x, p=self.p, training=True)
 
+
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
 def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = DropoutBenchmarkWorkload(shape, dtype)
     (x,) = test.gen_inputs()
 
-    op = DropoutOp(p=test.p, seed=42)
+    op = DropoutFwdOp(p=test.p, seed=42)
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
     bm.compare({"tileops": op, "torch": test.ref_program}, x, record_as=op, params=locals())

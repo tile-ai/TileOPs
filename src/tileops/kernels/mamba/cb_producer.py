@@ -71,17 +71,16 @@ def _cb_producer_kernel(
 
         @T.prim_func
         def main(
-            C_mat: T.Tensor(C_shape, dtype),      # type: ignore
-            B_mat: T.Tensor(B_shape, dtype),      # type: ignore
-            cb: T.Tensor(cb_shape, dtype),        # type: ignore  OUTPUT in dtype, not accum_dtype
+            C_mat: T.Tensor(C_shape, dtype),  # type: ignore
+            B_mat: T.Tensor(B_shape, dtype),  # type: ignore
+            cb: T.Tensor(cb_shape, dtype),  # type: ignore  OUTPUT in dtype, not accum_dtype
         ):
             with T.Kernel(
                 T.ceildiv(Q, block_l),  # l tiles
                 T.ceildiv(Q, block_s),  # s tiles
-                B * C * G,              # batch * chunks * groups
+                B * C * G,  # batch * chunks * groups
                 threads=threads,
             ) as (bl, bs, bcg):
-
                 # Decode indices
                 bcg_tmp = bcg
                 bb = bcg_tmp // (C * G)
@@ -100,10 +99,12 @@ def _cb_producer_kernel(
                     B_tile = T.alloc_shared((block_s, block_n), dtype)
 
                     # Swizzled layout for better memory coalescing
-                    T.annotate_layout({
-                        C_tile: tilelang.layout.make_swizzled_layout(C_tile),
-                        B_tile: tilelang.layout.make_swizzled_layout(B_tile),
-                    })
+                    T.annotate_layout(
+                        {
+                            C_tile: tilelang.layout.make_swizzled_layout(C_tile),
+                            B_tile: tilelang.layout.make_swizzled_layout(B_tile),
+                        }
+                    )
 
                     # Accumulator for this tile
                     acc = T.alloc_fragment((block_l, block_s), accum_dtype)
@@ -172,6 +173,7 @@ def _cb_producer_kernel(
 
 # PyTorch custom op registration
 
+
 @torch.library.custom_op("top::cb_producer", mutates_args=())
 def _cb_producer_wrapped(
     batch: int,
@@ -187,9 +189,7 @@ def _cb_producer_wrapped(
     C_mat: torch.Tensor,
     B_mat: torch.Tensor,
 ) -> torch.Tensor:
-    kernel_func = _cb_producer_kernel(
-        batch, num_chunks, n_groups, chunk_len, d_state, dtype
-    )
+    kernel_func = _cb_producer_kernel(batch, num_chunks, n_groups, chunk_len, d_state, dtype)
     kernel = kernel_func(block_l, block_s, block_n, threads)
 
     # TileLang with out_idx=[-1] returns the output directly
@@ -213,11 +213,14 @@ def _(
 ) -> torch.Tensor:
     return C_mat.new_empty(
         (batch, num_chunks, n_groups, chunk_len, chunk_len),
-        dtype={"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}.get(dtype, torch.float16),
+        dtype={"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}.get(
+            dtype, torch.float16
+        ),
     )
 
 
 # High-level Kernel wrapper
+
 
 class CBProducerKernel(Kernel):
     """CB (C@B) matrix producer kernel.
@@ -282,12 +285,14 @@ class CBProducerKernel(Kernel):
                     for threads in [128, 256]:
                         # Reasonable constraints
                         if block_l <= self.chunk_len and block_s <= self.chunk_len:
-                            configs.append({
-                                "block_l": block_l,
-                                "block_s": block_s,
-                                "block_n": block_n,
-                                "threads": threads,
-                            })
+                            configs.append(
+                                {
+                                    "block_l": block_l,
+                                    "block_s": block_s,
+                                    "block_n": block_n,
+                                    "threads": threads,
+                                }
+                            )
         return configs
 
     def forward(
@@ -306,9 +311,16 @@ class CBProducerKernel(Kernel):
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         return _cb_producer_wrapped(
-            self.batch, self.num_chunks, self.n_groups, self.chunk_len, self.d_state,
+            self.batch,
+            self.num_chunks,
+            self.n_groups,
+            self.chunk_len,
+            self.d_state,
             self.dtype_str,
-            self.config["block_l"], self.config["block_s"],
-            self.config["block_n"], self.config["threads"],
-            C_mat, B_mat,
+            self.config["block_l"],
+            self.config["block_s"],
+            self.config["block_n"],
+            self.config["threads"],
+            C_mat,
+            B_mat,
         )

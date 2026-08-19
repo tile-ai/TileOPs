@@ -164,8 +164,7 @@ def render_text(stats: dict[str, Any]) -> str:
     lines.append("=" * 60)
     lines.append(f"Total ops:    {total}")
     lines.append(
-        f"Implemented:  {by_status.get('implemented', 0):4d}  "
-        f"[{_bar(pct)}] {pct * 100:5.1f}%"
+        f"Implemented:  {by_status.get('implemented', 0):4d}  [{_bar(pct)}] {pct * 100:5.1f}%"
     )
     lines.append(f"Spec-only:    {by_status.get('spec-only', 0):4d}")
     if by_status.get("deprecated"):
@@ -194,20 +193,16 @@ def render_text(stats: dict[str, Any]) -> str:
         p = n / total if total else 0
         lines.append(f"  {label:<32} {n:4d}/{total}  {p * 100:5.1f}%")
     lines.append("")
-    lines.append(f"Workloads total: {stats['workloads_total']}  "
-                 f"(avg {stats['workloads_avg_per_implemented']:.2f} per implemented op)")
+    lines.append(
+        f"Workloads total: {stats['workloads_total']}  "
+        f"(avg {stats['workloads_avg_per_implemented']:.2f} per implemented op)"
+    )
     lines.append("")
     gaps = stats["conformance_gaps"]
     lines.append("Conformance gaps")
     lines.append("-" * 60)
-    lines.append(
-        f"  implemented without kernel_map: "
-        f"{len(gaps['implemented_without_kernel_map'])}"
-    )
-    lines.append(
-        f"  implemented without roofline:   "
-        f"{len(gaps['implemented_without_roofline'])}"
-    )
+    lines.append(f"  implemented without kernel_map: {len(gaps['implemented_without_kernel_map'])}")
+    lines.append(f"  implemented without roofline:   {len(gaps['implemented_without_roofline'])}")
     lines.append(
         f"  implemented without bench:      "
         f"{len(gaps['implemented_without_bench_manifest_driven'])}"
@@ -272,12 +267,10 @@ def render_markdown(stats: dict[str, Any]) -> str:
     lines.append("### Conformance gaps")
     lines.append("")
     lines.append(
-        f"- Implemented ops without `kernel_map`: "
-        f"**{len(gaps['implemented_without_kernel_map'])}**"
+        f"- Implemented ops without `kernel_map`: **{len(gaps['implemented_without_kernel_map'])}**"
     )
     lines.append(
-        f"- Implemented ops without `roofline`: "
-        f"**{len(gaps['implemented_without_roofline'])}**"
+        f"- Implemented ops without `roofline`: **{len(gaps['implemented_without_roofline'])}**"
     )
     lines.append(
         f"- Implemented ops without `source.bench_manifest_driven`: "
@@ -290,8 +283,7 @@ def render_markdown(stats: dict[str, Any]) -> str:
     spec_list = gaps["spec_only_ops"]
     if spec_list:
         lines.append("")
-        lines.append("<details><summary>Spec-only ops "
-                     f"({len(spec_list)})</summary>")
+        lines.append(f"<details><summary>Spec-only ops ({len(spec_list)})</summary>")
         lines.append("")
         lines.append("| | | |")
         lines.append("| --- | --- | --- |")
@@ -321,9 +313,7 @@ def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     impl = stats["by_status"].get("implemented", 0)
     pct_impl = (impl / total * 100) if total else 0.0
 
-    missing_bench = len(
-        stats["conformance_gaps"]["implemented_without_bench_manifest_driven"]
-    )
+    missing_bench = len(stats["conformance_gaps"]["implemented_without_bench_manifest_driven"])
     impl_benched = impl - missing_bench
     pct_bench = (impl_benched / impl * 100) if impl else 0.0
 
@@ -360,11 +350,8 @@ def render_diff(current: dict[str, Any], baseline: dict[str, Any]) -> str:
     d_impl = current["by_status"].get("implemented", 0) - baseline["by_status"].get(
         "implemented", 0
     )
-    d_spec = current["by_status"].get("spec-only", 0) - baseline["by_status"].get(
-        "spec-only", 0
-    )
-    lines.append(f"- Total ops: {baseline['total_ops']} → {current['total_ops']} "
-                 f"({d_total:+d})")
+    d_spec = current["by_status"].get("spec-only", 0) - baseline["by_status"].get("spec-only", 0)
+    lines.append(f"- Total ops: {baseline['total_ops']} → {current['total_ops']} ({d_total:+d})")
     lines.append(
         f"- Implemented: {baseline['by_status'].get('implemented', 0)} → "
         f"{current['by_status'].get('implemented', 0)} ({d_impl:+d})"
@@ -435,9 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         args.badge_output.mkdir(parents=True, exist_ok=True)
         for slug, payload in badges.items():
             fname = f"manifest-{slug.replace('_', '-')}.json"
-            (args.badge_output / fname).write_text(
-                json.dumps(payload, indent=2) + "\n"
-            )
+            (args.badge_output / fname).write_text(json.dumps(payload, indent=2) + "\n")
     return 0
 
 

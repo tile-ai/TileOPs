@@ -124,9 +124,13 @@ class SSDChunkScanFwdOp(Op):
         if n_heads % n_groups != 0:
             raise ValueError("n_heads must be divisible by n_groups")
         if cb.shape != (batch, num_chunks, n_groups, chunk_len, chunk_len):
-            raise ValueError("cb must have shape [batch, num_chunks, n_groups, chunk_len, chunk_len]")
+            raise ValueError(
+                "cb must have shape [batch, num_chunks, n_groups, chunk_len, chunk_len]"
+            )
         if prev_states.shape != (batch, num_chunks, n_heads, d_head, d_state):
-            raise ValueError("prev_states must have shape [batch, num_chunks, n_heads, d_head, d_state]")
+            raise ValueError(
+                "prev_states must have shape [batch, num_chunks, n_heads, d_head, d_state]"
+            )
         if dt.shape != (batch, n_heads, num_chunks, chunk_len):
             raise ValueError("dt must have shape [batch, n_heads, num_chunks, chunk_len]")
 
@@ -139,8 +143,16 @@ class SSDChunkScanFwdOp(Op):
         self.n_groups = n_groups
         self.dtype = x.dtype
         self.kernel = self._get_kernel(
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, x.dtype,
-            x.device.index)
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            x.dtype,
+            x.device.index,
+        )
 
         x = x.contiguous()
         cb = cb.contiguous()

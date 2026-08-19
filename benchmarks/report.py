@@ -47,12 +47,12 @@ def _get_env_metadata() -> list[str]:
                 f"--query-gpu={','.join(gpu_query_fields)}",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
-            gpu_query_values = [
-                part.strip() for part in result.stdout.splitlines()[0].split(",")
-            ]
+            gpu_query_values = [part.strip() for part in result.stdout.splitlines()[0].split(",")]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
@@ -120,6 +120,7 @@ class BenchmarkReport:
     All methods are static — use as BenchmarkReport.record(...).
     Call clear() at session start, dump() at session end.
     """
+
     _records: dict = {}
 
     @staticmethod
@@ -154,9 +155,9 @@ class BenchmarkReport:
             return False
 
         filtered_params = {
-            k: v for k, v in params.items()
-            if k not in ("test", "bm", "op", "inputs", "result", "result_bl",
-                         "baseline_fn", "tune")
+            k: v
+            for k, v in params.items()
+            if k not in ("test", "bm", "op", "inputs", "result", "result_bl", "baseline_fn", "tune")
             and not k.startswith("_")
             and _is_serializable(v)
         }
@@ -180,10 +181,14 @@ class BenchmarkReport:
             entry["dtype"] = str(dtype).removeprefix("torch.")
         _bench_results.entries.append(entry)
 
-        _logger.info("op=%s module=%s tag=%s device_busy_ms=%.4f tflops=%.2f",
-                      name, op_module or "N/A", tag,
-                      result.get("device_busy_ms", 0),
-                      result.get("tflops", 0))
+        _logger.info(
+            "op=%s module=%s tag=%s device_busy_ms=%.4f tflops=%.2f",
+            name,
+            op_module or "N/A",
+            tag,
+            result.get("device_busy_ms", 0),
+            result.get("tflops", 0),
+        )
 
     @staticmethod
     def dump(path: str) -> None:
@@ -203,8 +208,12 @@ class BenchmarkReport:
 
         # device_busy_ms leads: it is the column implementations are compared on.
         default_result_keys = [
-            "device_busy_ms", "latency_ms", "gap_ms", "n_kernels",
-            "tflops", "bandwidth_tbs",
+            "device_busy_ms",
+            "latency_ms",
+            "gap_ms",
+            "n_kernels",
+            "tflops",
+            "bandwidth_tbs",
         ]
 
         for name, entries in BenchmarkReport._records.items():

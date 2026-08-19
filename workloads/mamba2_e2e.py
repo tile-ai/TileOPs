@@ -13,16 +13,17 @@ from workloads.workload_base import FixtureBase, WorkloadBase
 # ---------------------------------------------------------------------------
 MAMBA2_MODELS = {
     # label: (n_heads, d_head, d_state, n_groups)
-    "130m": (24,   64, 128, 1),
-    "370m": (48,   64, 128, 1),
-    "780m": (64,   64, 128, 1),
-    "1.3b": (80,   64, 128, 1),
-    "2.7b": (128,  64, 128, 1),
+    "130m": (24, 64, 128, 1),
+    "370m": (48, 64, 128, 1),
+    "780m": (64, 64, 128, 1),
+    "1.3b": (80, 64, 128, 1),
+    "2.7b": (128, 64, 128, 1),
 }
 
 # ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
+
 
 class Mamba2FwdFixture(FixtureBase):
     """pytest parametrize fixture for Mamba2FwdOp benchmarks."""
@@ -37,12 +38,30 @@ class Mamba2FwdFixture(FixtureBase):
         # Smoke: small configs to verify correctness quickly
         smoke_params += [
             pytest.param(
-                1, 256, 4, 64, 128, 1, torch.bfloat16, 256, True, False,
+                1,
+                256,
+                4,
+                64,
+                128,
+                1,
+                torch.bfloat16,
+                256,
+                True,
+                False,
                 id="smoke-b1-s256-4h",
                 marks=pytest.mark.smoke,
             ),
             pytest.param(
-                2, 512, 8, 64, 128, 1, torch.bfloat16, 256, True, False,
+                2,
+                512,
+                8,
+                64,
+                128,
+                1,
+                torch.bfloat16,
+                256,
+                True,
+                False,
                 id="smoke-b2-s512-8h",
                 marks=pytest.mark.smoke,
             ),
@@ -51,17 +70,25 @@ class Mamba2FwdFixture(FixtureBase):
         # Full: model-scale workloads
         workloads = [
             # (batch, seqlen, label)
-            (1,  2048,  "latency"),
-            (8,  2048,  "serving"),
-            (32, 2048,  "throughput"),
-            (4,  32768, "long-ctx"),
+            (1, 2048, "latency"),
+            (8, 2048, "serving"),
+            (32, 2048, "throughput"),
+            (4, 32768, "long-ctx"),
         ]
         for model_label, (n_heads, d_head, d_state, n_groups) in MAMBA2_MODELS.items():
             for batch, seqlen, wl_label in workloads:
                 full_params.append(
                     pytest.param(
-                        batch, seqlen, n_heads, d_head, d_state, n_groups,
-                        torch.bfloat16, 256, True, False,
+                        batch,
+                        seqlen,
+                        n_heads,
+                        d_head,
+                        d_state,
+                        n_groups,
+                        torch.bfloat16,
+                        256,
+                        True,
+                        False,
                         id=f"full-{model_label}-{wl_label}",
                         marks=pytest.mark.full,
                     )
@@ -79,6 +106,7 @@ class Mamba2FwdFixture(FixtureBase):
 # ---------------------------------------------------------------------------
 # WorkloadBase subclass — generates all required input tensors
 # ---------------------------------------------------------------------------
+
 
 class Mamba2FwdWorkload(WorkloadBase):
     """Input generator for the Mamba-2 SSD end-to-end forward pass.
@@ -121,20 +149,20 @@ class Mamba2FwdWorkload(WorkloadBase):
             C:       (batch, seqlen, n_groups, d_state)         dtype
             dt_bias: (n_heads,)                                 float32
         """
-        b   = self.batch
-        S   = self.seqlen
-        h   = self.n_heads
-        p   = self.d_head
-        n   = self.d_state
-        g   = self.n_groups
+        b = self.batch
+        S = self.seqlen
+        h = self.n_heads
+        p = self.d_head
+        n = self.d_state
+        g = self.n_groups
         dev = "cuda"
-        dt  = self.dtype
+        dt = self.dtype
 
-        x       = torch.randn(b, S, h, p, dtype=dt,            device=dev) * 0.1
-        dt_raw  = torch.randn(b, S, h,    dtype=torch.float32, device=dev) * 0.5
-        A       = -torch.rand(h,           dtype=torch.float32, device=dev)        # negative decay
-        B       = torch.randn(b, S, g, n, dtype=dt,            device=dev) * 0.1
-        C       = torch.randn(b, S, g, n, dtype=dt,            device=dev) * 0.1
-        dt_bias = torch.randn(h,           dtype=torch.float32, device=dev) * 0.1
+        x = torch.randn(b, S, h, p, dtype=dt, device=dev) * 0.1
+        dt_raw = torch.randn(b, S, h, dtype=torch.float32, device=dev) * 0.5
+        A = -torch.rand(h, dtype=torch.float32, device=dev)  # negative decay
+        B = torch.randn(b, S, g, n, dtype=dt, device=dev) * 0.1
+        C = torch.randn(b, S, g, n, dtype=dt, device=dev) * 0.1
+        dt_bias = torch.randn(h, dtype=torch.float32, device=dev) * 0.1
 
         return x, dt_raw, A, B, C, dt_bias

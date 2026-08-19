@@ -19,7 +19,6 @@ __all__ = [
 
 
 class NSATopkVarlenOp(Op):
-
     def __init__(
         self,
         seq_num: int,
@@ -36,7 +35,7 @@ class NSATopkVarlenOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
-        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
+        params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map")}
         for key, value in params.items():
             setattr(self, key, value)
 
@@ -48,7 +47,8 @@ class NSATopkVarlenOp(Op):
             "nsa_topk_varlen_kernel",
             key=dtype,
             build=lambda: self.kernel_map["nsa_topk_varlen_kernel"](
-                **self._kernel_params, dtype=dtype,
+                **self._kernel_params,
+                dtype=dtype,
             ),
         )
 
@@ -56,15 +56,20 @@ class NSATopkVarlenOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"nsa_topk_varlen_kernel": NSATopkVarlenKernel}
 
-    def forward(self, q: torch.Tensor, k_cmp: torch.Tensor, lse_in: torch.Tensor,
-                offsets: torch.Tensor, chunk_offsets: torch.Tensor,
-                token_indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        lse_in: torch.Tensor,
+        offsets: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
 
 
 class NSAFwdVarlenOp(Op):
-
     def __init__(
         self,
         batch: int,
@@ -80,7 +85,7 @@ class NSAFwdVarlenOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
-        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
+        params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map")}
         for key, value in params.items():
             setattr(self, key, value)
 
@@ -92,7 +97,8 @@ class NSAFwdVarlenOp(Op):
             "nsa_fwd_varlen_kernel",
             key=dtype,
             build=lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
-                **self._kernel_params, dtype=dtype,
+                **self._kernel_params,
+                dtype=dtype,
             ),
         )
 
@@ -100,15 +106,23 @@ class NSAFwdVarlenOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"nsa_fwd_varlen_kernel": NSAFwdVarlenKernel}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                block_indices: torch.Tensor, block_counts: torch.Tensor, offsets: torch.Tensor,
-                token_indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_counts: torch.Tensor,
+        offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, k, v, block_indices, block_counts, offsets, token_indices)
+        return self._get_kernel(q.dtype)(
+            q, k, v, block_indices, block_counts, offsets, token_indices
+        )
 
 
 class NSACmpFwdVarlenOp(Op):
-
     def __init__(
         self,
         seq_num: int,
@@ -150,7 +164,8 @@ class NSACmpFwdVarlenOp(Op):
             "nsa_cmp_fwd_varlen_kernel",
             key=dtype,
             build=lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
-                **self._kernel_params, dtype=dtype,
+                **self._kernel_params,
+                dtype=dtype,
             ),
         )
 
@@ -158,8 +173,14 @@ class NSACmpFwdVarlenOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"nsa_cmp_fwd_varlen_kernel": NSACmpFwdVarlenKernel}
 
-    def forward(self, q: torch.Tensor, k_cmp: torch.Tensor, v_cmp: torch.Tensor,
-                offsets: torch.Tensor, chunk_offsets: torch.Tensor,
-                token_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)

@@ -1,6 +1,5 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
-
 import torch
 
 from tileops.kernels.elementwise import (
@@ -99,7 +98,10 @@ class ReciprocalFwdOp(UnaryOp):
         impl, compute = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
             kernel=self._build_kernel_instance(
-                N_total=self.N_total, dtype=compute, tune=self.tune, impl=impl,
+                N_total=self.N_total,
+                dtype=compute,
+                tune=self.tune,
+                impl=impl,
             ),
             compute_dtype=compute,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
@@ -168,7 +170,9 @@ class RoundFwdOp(_IntIdentityUnaryOp):
     kernel_cls = RoundFwdKernel
 
     def forward(
-        self, input: torch.Tensor, decimals: int = 0,
+        self,
+        input: torch.Tensor,
+        decimals: int = 0,
     ) -> torch.Tensor:
         if decimals == 0:
             return super().forward(input)

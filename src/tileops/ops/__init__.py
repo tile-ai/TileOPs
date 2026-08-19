@@ -18,7 +18,7 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .bmm import BmmFp8Op, BmmFwdOp
+from .bmm import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
 from .convolution import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -26,26 +26,27 @@ from .convolution import (
 )
 from .da_cumsum import DaCumsumFwdOp
 from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
-from .deltanet_recurrence import DeltaNetDecodeOp
-from .dropout import DropoutOp
+from .deltanet_recurrence import DeltaNetDecodeFwdOp
+from .dropout import DropoutFwdOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
-from .fft import FFTC2COp
-from .fp8_lightning_indexer import FP8LightningIndexerOp
-from .fp8_quant import FP8QuantOp
+from .fft import FFTC2CFwdOp
+from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from .fp8_quant import FP8QuantFwdOp
 from .gated_deltanet import (
+    GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
-    GatedDeltaNetDecodeOp,
-    GatedDeltaNetFwdOp,
+    GatedDeltaNetDecodeFwdOp,
     GatedDeltaNetOp,
-    GatedDeltaNetPrefillFwdOp,
+    GatedDeltaNetPrefillBHTDFwdOp,
+    GatedDeltaNetPrefillBTHDFwdOp,
 )
-from .gated_linear_attn import GLADecodeOp
-from .gemm import GemmFp8Op, GemmOp, GemmW4A16Op
+from .gated_linear_attn import GLADecodeFwdOp
+from .gemm import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from .gla import GLABwdOp, GLAFwdOp
-from .grouped_gemm import GroupedGemmOp
+from .grouped_gemm import GroupedGemmFwdOp
 from .mamba2_fwd import Mamba2FwdOp
-from .mhc import MHCPostOp, MHCPreOp
+from .mhc import MHCPostFwdOp, MHCPreFwdOp
 from .moe import MoePermuteAlignFwdOp
 from .norm import (
     AdaLayerNormFwdOp,
@@ -103,18 +104,18 @@ from .reduction import (
     VarMeanFwdOp,
 )
 from .rope import (
-    RopeLlama31Op,
-    RopeLongRopeOp,
-    RopeNeoxOp,
-    RopeNeoxPositionIdsOp,
-    RopeNonNeoxOp,
-    RopeYarnOp,
+    RopeLlama31FwdOp,
+    RopeLongRopeFwdOp,
+    RopeNeoxFwdOp,
+    RopeNeoxPositionIdsFwdOp,
+    RopeNonNeoxFwdOp,
+    RopeYarnFwdOp,
 )
 from .ssd_chunk_scan import SSDChunkScanFwdOp
 from .ssd_chunk_state import SSDChunkStateFwdOp
-from .ssd_decode import SSDDecodeOp
+from .ssd_decode import SSDDecodeFwdOp
 from .ssd_state_passing import SSDStatePassingFwdOp
-from .topk_selector import TopkSelectorOp
+from .topk_selector import TopkSelectorFwdOp
 
 __all__ = [
     "BinaryOp",
@@ -128,36 +129,38 @@ __all__ = [
     "AdaptiveMaxPool2dIndicesFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
-    "BmmFp8Op",
+    "BmmFp8KNFwdOp",
+    "BmmFp8NKFwdOp",
     "BmmFwdOp",
     "Conv1dFwdOp",
     "Conv2dFwdOp",
     "Conv3dFwdOp",
     "DaCumsumFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-    "DropoutOp",
-    "FFTC2COp",
-    "FP8LightningIndexerOp",
-    "FP8QuantOp",
+    "DropoutFwdOp",
+    "FFTC2CFwdOp",
+    "FP8LightningIndexerFwdOp",
+    "FP8QuantFwdOp",
     "FusedAddLayerNormFwdOp",
     "FusedAddRMSNormFwdOp",
     "FusedGatedOp",
     "DeltaNetBwdOp",
-    "DeltaNetDecodeOp",
+    "DeltaNetDecodeFwdOp",
     "DeltaNetFwdOp",
     "DeltaNetOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
-    "GatedDeltaNetDecodeOp",
-    "GatedDeltaNetFwdOp",
+    "GatedDeltaNetDecodeFwdOp",
+    "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetOp",
-    "GatedDeltaNetPrefillFwdOp",
+    "GatedDeltaNetPrefillBHTDFwdOp",
+    "GatedDeltaNetPrefillBTHDFwdOp",
     "GLABwdOp",
-    "GLADecodeOp",
+    "GLADecodeFwdOp",
     "GLAFwdOp",
-    "GemmFp8Op",
-    "GemmOp",
-    "GemmW4A16Op",
+    "GemmFp8FwdOp",
+    "GemmFwdOp",
+    "GemmW4A16FwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionBwdOp",
@@ -168,11 +171,11 @@ __all__ = [
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupNormFwdOp",
-    "GroupedGemmOp",
+    "GroupedGemmFwdOp",
     "InstanceNormFwdOp",
     "LayerNormFwdOp",
-    "MHCPostOp",
-    "MHCPreOp",
+    "MHCPostFwdOp",
+    "MHCPreFwdOp",
     "MaxPool1dFwdOp",
     "MaxPool1dIndicesFwdOp",
     "MaxPool2dFwdOp",
@@ -194,16 +197,16 @@ __all__ = [
     "Mamba2FwdOp",
     "SSDChunkScanFwdOp",
     "SSDChunkStateFwdOp",
-    "SSDDecodeOp",
+    "SSDDecodeFwdOp",
     "SSDStatePassingFwdOp",
-    "RopeLlama31Op",
-    "RopeLongRopeOp",
-    "RopeNeoxOp",
-    "RopeNeoxPositionIdsOp",
-    "RopeNonNeoxOp",
-    "RopeYarnOp",
+    "RopeLlama31FwdOp",
+    "RopeLongRopeFwdOp",
+    "RopeNeoxFwdOp",
+    "RopeNeoxPositionIdsFwdOp",
+    "RopeNonNeoxFwdOp",
+    "RopeYarnFwdOp",
     "UnaryOp",
-    "TopkSelectorOp",
+    "TopkSelectorFwdOp",
     # --- Reduction ops (uncomment as sub-category PRs land) ---
     "AllFwdOp",
     "AmaxFwdOp",

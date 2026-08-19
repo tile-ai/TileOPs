@@ -96,14 +96,30 @@ def compute_w_u_bwd_tl(
                 T.copy(Aw[bid, hid, by * block_C : (by + 1) * block_C, :], Aw_s, disable_tma=True)
                 T.copy(Au[bid, hid, by * block_C : (by + 1) * block_C, :], Au_s, disable_tma=True)
                 T.copy(dw[bid, hid, by * block_C : (by + 1) * block_C, :], dw_s, disable_tma=True)
-                T.copy(du_partial[bid, hid, by * block_C : (by + 1) * block_C, :], du_s, disable_tma=True)
-                T.copy(du_corr[bid, hid, by * block_C : (by + 1) * block_C, :], du_corr_s, disable_tma=True)
+                T.copy(
+                    du_partial[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    du_s,
+                    disable_tma=True,
+                )
+                T.copy(
+                    du_corr[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    du_corr_s,
+                    disable_tma=True,
+                )
                 T.copy(S[bid, hid, by, :, :], S_s, disable_tma=True)
                 T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_s, disable_tma=True)
                 T.copy(v[bid, hid, by * block_C : (by + 1) * block_C, :], v_s, disable_tma=True)
                 T.copy(beta[bid, hid, by * block_C : (by + 1) * block_C], beta_s, disable_tma=True)
-                T.copy(dk_partial[bid, hid, by * block_C : (by + 1) * block_C, :], dk_partial_s, disable_tma=True)
-                T.copy(dk_corr[bid, hid, by * block_C : (by + 1) * block_C, :], dk_corr_s, disable_tma=True)
+                T.copy(
+                    dk_partial[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    dk_partial_s,
+                    disable_tma=True,
+                )
+                T.copy(
+                    dk_corr[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    dk_corr_s,
+                    disable_tma=True,
+                )
 
                 # Step 1: du = du_partial + du_corr
                 for i, j in T.Parallel(block_C, dim_v):
@@ -189,7 +205,8 @@ def compute_w_u_bwd_tl(
                 # dk = dk_partial + dk_corr + dk_direct*beta + dk_A
                 for i, j in T.Parallel(block_C, dim_k):
                     dk[bid, hid, by * block_C + i, j] = (
-                        dk_partial_s[i, j] + dk_corr_s[i, j]
+                        dk_partial_s[i, j]
+                        + dk_corr_s[i, j]
                         + d_k_beta_frag[i, j] * beta_s[i]
                         + dk_A_frag2[i, j]
                     )

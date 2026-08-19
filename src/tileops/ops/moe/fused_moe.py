@@ -89,9 +89,7 @@ class FusedMoe(Op):
         self.renormalize = renormalize
         self.routed_scaling_factor = routed_scaling_factor
         self.expert_map = expert_map
-        self.num_experts_local = (
-            num_experts if num_experts_local is None else num_experts_local
-        )
+        self.num_experts_local = num_experts if num_experts_local is None else num_experts_local
 
         self.dispatch_kernel(kernel_map)
 
@@ -103,8 +101,7 @@ class FusedMoe(Op):
         )
 
         self._prepare: FusedMoEPrepareAndFinalize = (
-            prepare_finalize if prepare_finalize is not None
-            else MoEPrepareAndFinalizeNoDPEP()
+            prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
         )
 
         if prepare_finalize is not None and experts is None:
@@ -162,12 +159,12 @@ class FusedMoe(Op):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,                    # [T, H]
-        gating_output: torch.Tensor,                    # [T, E]
-        w_gate_up: torch.Tensor,                        # [E, 2*F, H]
-        w_down: torch.Tensor,                           # [E, H, F]
-        correction_bias: Optional[torch.Tensor] = None, # [E] float32
-    ) -> torch.Tensor:                                  # [T, H]
+        hidden_states: torch.Tensor,  # [T, H]
+        gating_output: torch.Tensor,  # [T, E]
+        w_gate_up: torch.Tensor,  # [E, 2*F, H]
+        w_down: torch.Tensor,  # [E, H, F]
+        correction_bias: Optional[torch.Tensor] = None,  # [E] float32
+    ) -> torch.Tensor:  # [T, H]
         topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
         # The roofline counts the bias bytes of the call that ran, so this is
         # set once routing succeeded. Keep the shape, not the tensor: the op
@@ -177,32 +174,49 @@ class FusedMoe(Op):
         )
 
         r = self._prepare.prepare(
-            hidden_states, topk_weights, topk_ids,
-            self.num_experts, expert_map=self.expert_map,
+            hidden_states,
+            topk_weights,
+            topk_ids,
+            self.num_experts,
+            expert_map=self.expert_map,
         )
 
         T_prime = r.hidden_q.shape[0]
         ws1_shape, ws2_shape = self._experts.workspace_shapes(
-            T_prime, self.ffn_size, self.hidden_size,
-            self.top_k, self.num_experts,
+            T_prime,
+            self.ffn_size,
+            self.hidden_size,
+            self.top_k,
+            self.num_experts,
         )
         ws1 = hidden_states.new_empty(ws1_shape)
         ws2 = hidden_states.new_empty(ws2_shape)
 
         output = hidden_states.new_empty(hidden_states.shape)
         expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
-        expert_out = output if expert_out_shape == tuple(hidden_states.shape) else hidden_states.new_empty(expert_out_shape)
+        expert_out = (
+            output
+            if expert_out_shape == tuple(hidden_states.shape)
+            else hidden_states.new_empty(expert_out_shape)
+        )
         self._experts.forward(
-            expert_out, r.hidden_q, w_gate_up, w_down,
-            r.topk_weights, r.topk_ids,
+            expert_out,
+            r.hidden_q,
+            w_gate_up,
+            w_down,
+            r.topk_weights,
+            r.topk_ids,
             expert_map=self.expert_map,
-            workspace1=ws1, workspace2=ws2,
+            workspace1=ws1,
+            workspace2=ws2,
             num_experts=self.num_experts,
         )
 
         self._prepare.finalize(
-            output, expert_out,
-            r.topk_weights, r.topk_ids,
+            output,
+            expert_out,
+            r.topk_weights,
+            r.topk_ids,
             self._experts.make_weighted_reduce(),
         )
         return output

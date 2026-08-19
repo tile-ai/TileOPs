@@ -113,12 +113,12 @@ def _ssd_chunk_state_fwd_kernel(
     ):
         @T.prim_func
         def main(
-            x: T.Tensor((B, S, H, P), dtype),                # type: ignore
-            Bmat: T.Tensor((B, S, G, N), dtype),              # type: ignore
-            dt: T.Tensor((B, H, C, Q), dt_dtype),             # type: ignore
-            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),   # type: ignore
-            seq_idx: T.Tensor((B, S), "int32"),               # type: ignore
-            out: T.Tensor((B, C, H, P, N), accum_dtype),      # type: ignore
+            x: T.Tensor((B, S, H, P), dtype),  # type: ignore
+            Bmat: T.Tensor((B, S, G, N), dtype),  # type: ignore
+            dt: T.Tensor((B, H, C, Q), dt_dtype),  # type: ignore
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore
+            seq_idx: T.Tensor((B, S), "int32"),  # type: ignore
+            out: T.Tensor((B, C, H, P, N), accum_dtype),  # type: ignore
         ):
             # Grid layout:
             #   axis-0: fused (batch, head, chunk)  -> B*H*C blocks
@@ -130,7 +130,6 @@ def _ssd_chunk_state_fwd_kernel(
                 T.ceildiv(N, block_n),
                 threads=threads,
             ) as (bhc, bp, bn):
-
                 # Decode fused axis as (batch, chunk, head), with head fastest.
                 bz = bhc // (C * H)
                 bc = (bhc % (C * H)) // H
@@ -178,13 +177,14 @@ def _ssd_chunk_state_fwd_kernel(
                 #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
                 #           i.e. (block_l x block_p)^T @ (block_l x block_n)
                 #                = (block_p x block_l) @ (block_l x block_n)
-                w_tile   = T.alloc_shared((block_l,), accum_dtype)
+                w_tile = T.alloc_shared((block_l,), accum_dtype)
                 x_scaled = T.alloc_shared((block_l, block_p), dtype)
-                b_tile   = T.alloc_shared((block_l, block_n), dtype)
+                b_tile = T.alloc_shared((block_l, block_n), dtype)
 
                 # 5. Reduce over chunk positions in L-tiles
                 for l_blk in T.Pipelined(
-                    T.ceildiv(Q, block_l), num_stages=num_stages,
+                    T.ceildiv(Q, block_l),
+                    num_stages=num_stages,
                 ):
                     l0 = l_blk * block_l
 
@@ -205,7 +205,8 @@ def _ssd_chunk_state_fwd_kernel(
                         if has_seq_idx:
                             same_seq = T.if_then_else(
                                 l_idx < Q,
-                                (seq_end >= T.int32(0)) and (seq_idx[bz, chunk_start + l_idx] == seq_end),
+                                (seq_end >= T.int32(0))
+                                and (seq_idx[bz, chunk_start + l_idx] == seq_end),
                                 T.bool(False),
                             )
                             w_tile[ll] = T.if_then_else(
@@ -282,10 +283,22 @@ def _ssd_chunk_state_fwd_wrapped(
     seq_idx: torch.Tensor,
 ) -> torch.Tensor:
     return _ssd_chunk_state_fwd_kernel(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups,
-        has_seq_idx, dtype, dt_dtype,
+        batch,
+        num_chunks,
+        chunk_len,
+        n_heads,
+        d_head,
+        d_state,
+        n_groups,
+        has_seq_idx,
+        dtype,
+        dt_dtype,
     )(
-        block_n, block_p, block_l, threads, num_stages,
+        block_n,
+        block_p,
+        block_l,
+        threads,
+        num_stages,
     )(x, Bmat, dt, dA_cumsum, seq_idx)
 
 
@@ -371,8 +384,16 @@ class SSDChunkStateFwdKernel(Kernel):
         self.dt_dtype = dt_dtype or dtype
         self.has_seq_idx = has_seq_idx
         self.kernel = _ssd_chunk_state_fwd_kernel(
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups,
-            has_seq_idx, self.dtype_str, self.dtype_to_str(self.dt_dtype),
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            has_seq_idx,
+            self.dtype_str,
+            self.dtype_to_str(self.dt_dtype),
         )
         self.init_config(config, tune)
 
@@ -382,11 +403,7 @@ class SSDChunkStateFwdKernel(Kernel):
         # The primary Mamba geometry benefits from fewer reduction-loop syncs.
         # Small grids split N for more CTAs; saturated grids avoid reloading X.
         grid_size = self.batch * self.num_chunks * self.n_heads
-        primary_mamba_geometry = (
-            self.chunk_len == 256
-            and self.d_head == 64
-            and self.d_state == 128
-        )
+        primary_mamba_geometry = self.chunk_len == 256 and self.d_head == 64 and self.d_state == 128
         if primary_mamba_geometry:
             small_grid = grid_size <= 640
             launch_shape = (self.batch, self.num_chunks, self.n_heads)
@@ -438,13 +455,16 @@ class SSDChunkStateFwdKernel(Kernel):
         block_l = [32, 64, 128]
         threads = [128, 256]
         _configs = list(itertools.product(block_n, block_p, block_l, threads))
-        return [{
-            "block_n": c[0],
-            "block_p": c[1],
-            "block_l": c[2],
-            "threads": c[3],
-            "num_stages": 2,
-        } for c in _configs]
+        return [
+            {
+                "block_n": c[0],
+                "block_p": c[1],
+                "block_l": c[2],
+                "threads": c[3],
+                "num_stages": 2,
+            }
+            for c in _configs
+        ]
 
     def forward(
         self,
@@ -470,10 +490,24 @@ class SSDChunkStateFwdKernel(Kernel):
         float32 during accumulation.
         """
         return _ssd_chunk_state_fwd_wrapped(
-            self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.d_head,
-            self.d_state, self.n_groups, self.has_seq_idx, self.dtype_str,
+            self.batch,
+            self.num_chunks,
+            self.chunk_len,
+            self.n_heads,
+            self.d_head,
+            self.d_state,
+            self.n_groups,
+            self.has_seq_idx,
+            self.dtype_str,
             self.dtype_to_str(self.dt_dtype),
-            self.config["block_n"], self.config["block_p"], self.config["block_l"],
-            self.config["threads"], self.config.get("num_stages", 2),
-            x, Bmat, dt, dA_cumsum, seq_idx,
+            self.config["block_n"],
+            self.config["block_p"],
+            self.config["block_l"],
+            self.config["threads"],
+            self.config.get("num_stages", 2),
+            x,
+            Bmat,
+            dt,
+            dA_cumsum,
+            seq_idx,
         )

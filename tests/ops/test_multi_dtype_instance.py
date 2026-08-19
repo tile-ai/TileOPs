@@ -152,10 +152,10 @@ def test_moe_unpermute_serves_two_dtypes_from_one_instance():
 
 @pytest.mark.smoke
 def test_cb_producer_serves_two_dtypes_from_one_instance():
-    from tileops.ops.cb_producer import CBProducerOp
+    from tileops.ops.cb_producer import CBProducerFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
-    op = CBProducerOp(batch, chunks, groups, chunk_len, d_state)
+    op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state)
     s = chunks * chunk_len
     for dtype in _DTYPES:
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
@@ -285,8 +285,14 @@ def test_enumeration_still_sees_the_family():
     assert len(_SINGLE_TENSOR_OPS) >= 24, (
         f"only {len(_SINGLE_TENSOR_OPS)} single-tensor ops found; the filter broke"
     )
-    for expected in ("AbsFwdOp", "ReciprocalFwdOp", "RoundFwdOp", "IsnanFwdOp",
-                     "LogicalNotFwdOp", "BitwiseNotFwdOp"):
+    for expected in (
+        "AbsFwdOp",
+        "ReciprocalFwdOp",
+        "RoundFwdOp",
+        "IsnanFwdOp",
+        "LogicalNotFwdOp",
+        "BitwiseNotFwdOp",
+    ):
         assert expected in _SINGLE_TENSOR_OPS, f"{expected} dropped out of the sweep"
 
 

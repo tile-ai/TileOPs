@@ -40,13 +40,21 @@ from ..op_base import Op
 
 
 _MANIFEST_INT_SCALAR_DTYPES = (
-    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
 )
 
 
 def _validate_scalar_param_repr(
-    param_name: str, value, dtype: torch.dtype, op_name: str,
-    *, allow_nonfinite_float: bool = False,
+    param_name: str,
+    value,
+    dtype: torch.dtype,
+    op_name: str,
+    *,
+    allow_nonfinite_float: bool = False,
 ) -> None:
     """Reject scalar params that cannot be represented in the user dtype.
 
@@ -71,7 +79,9 @@ def _validate_scalar_param_repr(
         # range checks below operate on the integer/float branch.
         return
     if not isinstance(value, (int, float)):
-        raise TypeError(f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}")
+        raise TypeError(
+            f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}"
+        )
 
     if dtype == torch.bool:
         return
@@ -153,7 +163,8 @@ def _register_unary_custom_op(op_cls):
         # contiguous storage, so a non-contiguous input's strides must not
         # survive into the fake or the compiled graph asserts on the mismatch.
         return x.new_empty(
-            x.shape, dtype=resolve_output_dtype(op_cls.__name__, x.dtype),
+            x.shape,
+            dtype=resolve_output_dtype(op_cls.__name__, x.dtype),
         )
 
     op_cls._wrapped = _wrapped
@@ -172,7 +183,8 @@ def _register_unary_inplace_custom_op(op_cls):
     op_name = op_cls._op_name
 
     @torch.library.custom_op(
-        f"top::elementwise_unary_{op_name}_inplace", mutates_args=("x",),
+        f"top::elementwise_unary_{op_name}_inplace",
+        mutates_args=("x",),
     )
     def _wrapped_inplace(x: torch.Tensor, instance_key: str) -> None:
         instance = get_instance(instance_key)
@@ -207,9 +219,7 @@ def _register_binary_custom_op(op_cls):
         out_shape: List[int],
         instance_key: str,
     ) -> torch.Tensor:
-        return a.new_empty(
-            out_shape, dtype=resolve_output_dtype(op_cls.__name__, a.dtype)
-        )
+        return a.new_empty(out_shape, dtype=resolve_output_dtype(op_cls.__name__, a.dtype))
 
     op_cls._wrapped = _wrapped
 
@@ -345,7 +355,8 @@ def _register_masked_fill_tensor_value_custom_op(op_cls):
     op_name = op_cls._op_name
 
     @torch.library.custom_op(
-        f"top::elementwise_{op_name}_tensor_value", mutates_args=(),
+        f"top::elementwise_{op_name}_tensor_value",
+        mutates_args=(),
     )
     def _wrapped(
         input: torch.Tensor,
@@ -383,7 +394,8 @@ def _register_clamp_tensor_custom_op(op_cls):
     op_name = op_cls._op_name
 
     @torch.library.custom_op(
-        f"top::elementwise_{op_name}_tensor", mutates_args=(),
+        f"top::elementwise_{op_name}_tensor",
+        mutates_args=(),
     )
     def _wrapped(
         input: torch.Tensor,
@@ -516,9 +528,7 @@ def resolve_output_dtype(op_class_name: str, input_dtype: torch.dtype) -> torch.
         return _PROMOTED_FLOAT_DTYPE
     resolved = getattr(torch, expr, None)
     if not isinstance(resolved, torch.dtype):
-        raise ValueError(
-            f"{op_class_name}: manifest output dtype {expr!r} is not a torch dtype"
-        )
+        raise ValueError(f"{op_class_name}: manifest output dtype {expr!r} is not a torch dtype")
     return resolved
 
 
@@ -597,8 +607,7 @@ class _PerDtypeKernels:
         return entry
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> "KernelEntry":
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _build_entry")
+        raise NotImplementedError(f"{type(self).__name__} must implement _build_entry")
 
 
 class UnaryOp(_PerDtypeKernels, Op):
@@ -638,7 +647,10 @@ class UnaryOp(_PerDtypeKernels, Op):
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
             kernel=self._build_kernel_instance(
-                N_total=self.N_total, dtype=ctor_dtype, tune=self.tune, impl=impl,
+                N_total=self.N_total,
+                dtype=ctor_dtype,
+                tune=self.tune,
+                impl=impl,
             ),
             compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
@@ -665,7 +677,8 @@ class UnaryOp(_PerDtypeKernels, Op):
         if self.dtype is None:
             raise RuntimeError(
                 f"{type(self).__name__}.total_memory requires a prior forward() "
-                "call to bind the element type")
+                "call to bind the element type"
+            )
         out = self._entry(self.dtype).output_dtype
         return self.N_total * (self.dtype.itemsize + out.itemsize)
 
@@ -696,9 +709,7 @@ class UnaryOp(_PerDtypeKernels, Op):
             raise ValueError("Input must be a CUDA tensor")
         self._validate_dtypes(input)
         if input.numel() != self.N_total:
-            raise ValueError(
-                f"Expected {self.N_total} elements, got {input.numel()}"
-            )
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         self._validate_input(input)
@@ -742,8 +753,7 @@ class BinaryOp(_PerDtypeKernels, Op):
         except (ValueError, TypeError):
             return
         new_params = [
-            p.replace(name=other_name) if p.name == "other" else p
-            for p in sig.parameters.values()
+            p.replace(name=other_name) if p.name == "other" else p for p in sig.parameters.values()
         ]
         new_sig = sig.replace(parameters=new_params)
 
@@ -782,8 +792,7 @@ class BinaryOp(_PerDtypeKernels, Op):
         if supported is not None and ctor_dtype not in supported:
             names = ", ".join(str(dt) for dt in supported)
             raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
+                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
             )
         return KernelEntry(
             kernel=self._build_kernel_instance(self.tune, ctor_dtype, impl=impl),
@@ -805,10 +814,10 @@ class BinaryOp(_PerDtypeKernels, Op):
         if self.dtype is None:
             raise RuntimeError(
                 f"{type(self).__name__}.total_memory requires a prior forward() "
-                "call to bind the element type")
+                "call to bind the element type"
+            )
         out_elem = self._entry(self.dtype).output_dtype.itemsize
-        return ((self.a_numel + self.b_numel) * self.dtype.itemsize
-                + self.N_total * out_elem)
+        return (self.a_numel + self.b_numel) * self.dtype.itemsize + self.N_total * out_elem
 
     def _eager_forward(
         self,
@@ -816,9 +825,14 @@ class BinaryOp(_PerDtypeKernels, Op):
         other: torch.Tensor,
     ) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
-        return self._entry(input.dtype).kernel(
-            input.contiguous().view(-1), other.contiguous().view(-1),
-        ).reshape(self.out_shape)
+        return (
+            self._entry(input.dtype)
+            .kernel(
+                input.contiguous().view(-1),
+                other.contiguous().view(-1),
+            )
+            .reshape(self.out_shape)
+        )
 
     def forward(
         self,
@@ -831,8 +845,7 @@ class BinaryOp(_PerDtypeKernels, Op):
             raise ValueError("Inputs must be CUDA tensors")
         self._validate_dtypes(input, other)
         if other.dtype != input.dtype:
-            raise ValueError(
-                f"Expected {b_name}.dtype {input.dtype}, got {other.dtype}")
+            raise ValueError(f"Expected {b_name}.dtype {input.dtype}, got {other.dtype}")
         if input.numel() != self.a_numel:
             raise ValueError(
                 f"Expected {a_name} to have {self.a_numel} elements, got {input.numel()}"
@@ -893,18 +906,13 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     def total_memory(self) -> float:
         """Read x (M*2N) + write y (M*N)."""
         if self.M is None or self.N is None or self.dtype is None:
-            raise RuntimeError(
-                "Fused gated dimensions are available after first forward"
-            )
+            raise RuntimeError("Fused gated dimensions are available after first forward")
         out_elem = self._entry(self.dtype, self.M, self.N).output_dtype.itemsize
-        return (self.M * 2 * self.N * self.dtype.itemsize
-                + self.M * self.N * out_elem)
+        return self.M * 2 * self.N * self.dtype.itemsize + self.M * self.N * out_elem
 
     def eval_roofline(self) -> tuple[int, int]:
         if self.M is None or self.N is None or self.dtype is None:
-            raise RuntimeError(
-                "Fused gated roofline is available after first forward"
-            )
+            raise RuntimeError("Fused gated roofline is available after first forward")
         flops = self.FLOPS_PER_ELEM * self.M * self.N
         return flops, int(self.total_memory)
 
@@ -915,8 +923,7 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         if supported is not None and ctor_dtype not in supported:
             names = ", ".join(str(dt) for dt in supported)
             raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
+                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
             )
         return KernelEntry(
             kernel=impl(M, N, ctor_dtype, tune=self.tune),
@@ -934,9 +941,7 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         M = x.shape[0]
         N = x.shape[1] // 2
         if self._explicit_shape and (M, N) != (self.M, self.N):
-            raise ValueError(
-                f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
-            )
+            raise ValueError(f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}")
         return M, N
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1112,7 +1117,11 @@ class _BoolOutputBinaryOp(BinaryOp):
 
 
 _MANIFEST_INT_DTYPES = (
-    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
 )
 
 
@@ -1145,8 +1154,7 @@ class _IntIdentityUnaryOp(UnaryOp):
     kernel's dtype check.
     """
 
-    _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(
-        _int_identity)
+    _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(_int_identity)
     _int_output_dtype: Optional[torch.dtype] = None
     # Subclasses may extend the fallback dtype set when the manifest
     # signature includes additional non-float dtypes (e.g. torch.bool for
@@ -1206,8 +1214,7 @@ class _GeluApproximateBase(UnaryOp):
     ):
         if approximate not in ("none", "tanh"):
             raise ValueError(
-                f"{type(self).__name__}: approximate must be 'none' or "
-                f"'tanh', got {approximate!r}"
+                f"{type(self).__name__}: approximate must be 'none' or 'tanh', got {approximate!r}"
             )
         self.approximate = approximate
         super().__init__(N_total, kernel_map=kernel_map, tune=tune)

@@ -127,7 +127,10 @@ def _validate_conv_params(
         raise ValueError(f"{op_name} kernel_size must be greater than zero")
     if any(v <= 0 for v in stride):
         raise ValueError(f"{op_name} stride must be greater than zero")
-    if any(any(axis_pad < 0 for axis_pad in pad) if isinstance(pad, tuple) else pad < 0 for pad in padding):
+    if any(
+        any(axis_pad < 0 for axis_pad in pad) if isinstance(pad, tuple) else pad < 0
+        for pad in padding
+    ):
         raise ValueError(f"{op_name} padding must be non-negative")
     if any(v <= 0 for v in dilation):
         raise ValueError(f"{op_name} dilation must be greater than zero")
@@ -138,7 +141,9 @@ def _validate_conv_params(
             + (sum(pad) if isinstance(pad, tuple) else 2 * pad)
             - dilation_dim * (kernel_dim - 1)
             - 1
-        ) // stride_dim + 1
+        )
+        // stride_dim
+        + 1
         for input_dim, kernel_dim, stride_dim, pad, dilation_dim in zip(
             input_size, kernel_size, stride, padding, dilation, strict=True
         )
@@ -171,10 +176,7 @@ def _conv1d_padding_pair_and_l_out(
         padding, stride_tuple, kernel_size_tuple, "Conv1d", dilation_tuple
     )
     l_out = (
-        l_in
-        + 2 * padding_tuple[0]
-        - dilation_tuple[0] * (kernel_size_tuple[0] - 1)
-        - 1
+        l_in + 2 * padding_tuple[0] - dilation_tuple[0] * (kernel_size_tuple[0] - 1) - 1
     ) // stride_tuple[0] + 1
     return padding_tuple[0], padding_tuple[0], l_out
 
@@ -197,7 +199,6 @@ def _conv1d_l_out(
 
 
 class Conv1dFwdOp(Op):
-
     def __init__(
         self,
         stride: int | Tuple[int] = 1,
@@ -247,9 +248,7 @@ class Conv1dFwdOp(Op):
         if c_out % self.groups != 0:
             raise ValueError("Conv1d c_out must be divisible by groups")
         if c_in_g != c_in // self.groups:
-            raise ValueError(
-                f"Conv1d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}"
-            )
+            raise ValueError(f"Conv1d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}")
         pad_left, pad_right, out_l = _conv1d_padding_pair_and_l_out(
             l_in,
             kernel_l,
@@ -328,9 +327,7 @@ class Conv1dFwdOp(Op):
                 tune=self.tune,
             )
             if use_pointwise:
-                return self.kernel_map["conv1d_pointwise_kernel"](
-                    **kernel_kwargs
-                )
+                return self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
             elif use_group:
                 return self.kernel_map["group_conv1d_kernel"](
                     **kernel_kwargs,
@@ -373,9 +370,7 @@ class Conv1dFwdOp(Op):
             dtype,
         ) = self._resolve_spec_1d(input, weight)
         if bias is not None and tuple(bias.shape) != (c_out,):
-            raise ValueError(
-                f"Conv1d expects bias shape ({c_out},), got {tuple(bias.shape)}"
-            )
+            raise ValueError(f"Conv1d expects bias shape ({c_out},), got {tuple(bias.shape)}")
         kernel = self._get_kernel_1d(
             n,
             c_in,
@@ -445,25 +440,28 @@ class Conv1dFwdOp(Op):
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
         if bias is not None and bias.dtype != input.dtype:
-            raise ValueError(
-                f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}"
-            )
+            raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "Conv1dFwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("Conv1dFwdOp.eval_roofline() requires a prior forward() call")
         (
-            n, c_in, l_in, c_out, c_in_g, kernel_l, out_l, dtype, has_bias,
+            n,
+            c_in,
+            l_in,
+            c_out,
+            c_in_g,
+            kernel_l,
+            out_l,
+            dtype,
+            has_bias,
         ) = self._last_roofline_spec
         out_elems = n * c_out * out_l
         # bias adds one addition per output element and one read per channel.
         flops = 2 * out_elems * c_in_g * kernel_l + (out_elems if has_bias else 0)
         elem_bytes = torch.tensor([], dtype=dtype).element_size()
         bytes_ = (
-            n * c_in * l_in + c_out * c_in_g * kernel_l + out_elems
-            + (c_out if has_bias else 0)
+            n * c_in * l_in + c_out * c_in_g * kernel_l + out_elems + (c_out if has_bias else 0)
         ) * elem_bytes
         return int(flops), int(bytes_)
 
@@ -483,7 +481,6 @@ def _conv_out_dim(
 
 
 class Conv2dFwdOp(Op):
-
     def __init__(
         self,
         stride: int | Tuple[int, int] = 1,
@@ -549,9 +546,7 @@ class Conv2dFwdOp(Op):
         if c_out % self.groups != 0:
             raise ValueError("Conv2d c_out must be divisible by groups")
         if c_in_g != c_in // self.groups:
-            raise ValueError(
-                f"Conv2d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}"
-            )
+            raise ValueError(f"Conv2d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}")
         padding = _conv_padding_to_tuple(
             self.padding, self.stride, (kernel_h, kernel_w), "Conv2d", self.dilation
         )
@@ -666,9 +661,7 @@ class Conv2dFwdOp(Op):
                 tune=self.tune,
             )
             if use_pointwise:
-                return self.kernel_map["conv2d_1x1_kernel"](
-                    **kernel_kwargs
-                )
+                return self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
             elif use_symmetric:
                 return self.kernel_map["conv2d_symmetric_kernel"](
                     n=n,
@@ -729,9 +722,7 @@ class Conv2dFwdOp(Op):
             dtype,
         ) = self._resolve_spec_2d(input, weight)
         if bias is not None and tuple(bias.shape) != (c_out,):
-            raise ValueError(
-                f"Conv2d expects bias shape ({c_out},), got {tuple(bias.shape)}"
-            )
+            raise ValueError(f"Conv2d expects bias shape ({c_out},), got {tuple(bias.shape)}")
         kernel = self._get_kernel_2d(
             n,
             c_in,
@@ -810,15 +801,11 @@ class Conv2dFwdOp(Op):
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
         if bias is not None and bias.dtype != input.dtype:
-            raise ValueError(
-                f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}"
-            )
+            raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "Conv2dFwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("Conv2dFwdOp.eval_roofline() requires a prior forward() call")
         (
             n,
             c_in,
@@ -835,10 +822,7 @@ class Conv2dFwdOp(Op):
         ) = self._last_roofline_spec
         out_elems = n * c_out * out_h * out_w
         # bias adds one addition per output element and one read per channel.
-        flops = (
-            2 * out_elems * c_in_g * kernel_h * kernel_w
-            + (out_elems if has_bias else 0)
-        )
+        flops = 2 * out_elems * c_in_g * kernel_h * kernel_w + (out_elems if has_bias else 0)
         elem_bytes = torch.tensor([], dtype=dtype).element_size()
         bytes_ = (
             n * c_in * h * w
@@ -854,7 +838,6 @@ def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
 
 
 class Conv3dFwdOp(Op):
-
     def __init__(
         self,
         stride: int | Tuple[int, int, int] = 1,
@@ -921,9 +904,7 @@ class Conv3dFwdOp(Op):
         if c_out % self.groups != 0:
             raise ValueError("Conv3d c_out must be divisible by groups")
         if c_in_g != c_in // self.groups:
-            raise ValueError(
-                f"Conv3d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}"
-            )
+            raise ValueError(f"Conv3d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}")
         padding = _conv_padding_to_tuple(
             self.padding,
             self.stride,
@@ -1040,9 +1021,7 @@ class Conv3dFwdOp(Op):
                     c_out_g=c_out // self.groups,
                 )
             else:
-                return self.kernel_map["conv3d_kernel"](
-                    **kernel_kwargs
-                )
+                return self.kernel_map["conv3d_kernel"](**kernel_kwargs)
 
         return self.get_or_build_kernel("conv3d_kernel", key=key, build=build)
 
@@ -1073,9 +1052,7 @@ class Conv3dFwdOp(Op):
             dtype,
         ) = self._resolve_spec_3d(input, weight)
         if bias is not None and tuple(bias.shape) != (c_out,):
-            raise ValueError(
-                f"Conv3d expects bias shape ({c_out},), got {tuple(bias.shape)}"
-            )
+            raise ValueError(f"Conv3d expects bias shape ({c_out},), got {tuple(bias.shape)}")
         kernel = self._get_kernel_3d(
             n,
             c_in,
@@ -1164,15 +1141,11 @@ class Conv3dFwdOp(Op):
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
         if bias is not None and bias.dtype != input.dtype:
-            raise ValueError(
-                f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}"
-            )
+            raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "Conv3dFwdOp.eval_roofline() requires a prior forward() call"
-            )
+            raise RuntimeError("Conv3dFwdOp.eval_roofline() requires a prior forward() call")
         (
             n,
             c_in,
@@ -1192,9 +1165,8 @@ class Conv3dFwdOp(Op):
         ) = self._last_roofline_spec
         out_elems = n * c_out * out_d * out_h * out_w
         # bias adds one addition per output element and one read per channel.
-        flops = (
-            2 * out_elems * c_in_g * kernel_d * kernel_h * kernel_w
-            + (out_elems if has_bias else 0)
+        flops = 2 * out_elems * c_in_g * kernel_d * kernel_h * kernel_w + (
+            out_elems if has_bias else 0
         )
         elem_bytes = torch.tensor([], dtype=dtype).element_size()
         bytes_ = (

@@ -25,9 +25,7 @@ _INF_NORM_OP = "InfNormFwdOp"
     "shape, dtype, op_params",
     workloads_to_params(_L1_NORM_OP, include_extra=True),
 )
-def test_l1_norm_bench(
-    shape: tuple, dtype: torch.dtype, op_params: dict
-) -> None:
+def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = L1NormWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -39,12 +37,14 @@ def test_l1_norm_bench(
 
     def baseline_fn(x):
         return torch.linalg.vector_norm(
-            x.float(), ord=1, dim=dim, keepdim=keepdim,
+            x.float(),
+            ord=1,
+            dim=dim,
+            keepdim=keepdim,
         ).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-                   record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -58,9 +58,7 @@ def test_l1_norm_bench(
     "shape, dtype, op_params",
     workloads_to_params(_L2_NORM_OP, include_extra=True),
 )
-def test_l2_norm_bench(
-    shape: tuple, dtype: torch.dtype, op_params: dict
-) -> None:
+def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = L2NormWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -72,12 +70,14 @@ def test_l2_norm_bench(
 
     def baseline_fn(x):
         return torch.linalg.vector_norm(
-            x.float(), ord=2, dim=dim, keepdim=keepdim,
+            x.float(),
+            ord=2,
+            dim=dim,
+            keepdim=keepdim,
         ).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-                   record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -91,9 +91,7 @@ def test_l2_norm_bench(
     "shape, dtype, op_params",
     workloads_to_params(_INF_NORM_OP, include_extra=True),
 )
-def test_inf_norm_bench(
-    shape: tuple, dtype: torch.dtype, op_params: dict
-) -> None:
+def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = InfNormWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -105,12 +103,14 @@ def test_inf_norm_bench(
 
     def baseline_fn(x):
         return torch.linalg.vector_norm(
-            x.float(), ord=float("inf"), dim=dim, keepdim=keepdim,
+            x.float(),
+            ord=float("inf"),
+            dim=dim,
+            keepdim=keepdim,
         ).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs,
-                   record_as=op, params=locals())
+        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

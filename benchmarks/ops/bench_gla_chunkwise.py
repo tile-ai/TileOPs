@@ -22,8 +22,8 @@ from workloads.workload_base import FixtureBase
 
 # Forward benchmark
 
-class GLAFwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
+class GLAFwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
@@ -38,13 +38,16 @@ class GLAFwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
 class GLAFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                (2, 2048, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.float16, False),
+                (2, 8192, 4, 64, 64, 64, torch.float16, False),
+                (2, 16384, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
+            ],
+        ),
     ]
 
 
@@ -64,7 +67,7 @@ def test_gla_fwd_bench(
     inputs = test.gen_inputs()
 
     # --- TileOPs ---
-    scale = dim_k ** -0.5
+    scale = dim_k**-0.5
     op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
     functors = {"tileops": op.forward}
 
@@ -81,8 +84,8 @@ def test_gla_fwd_bench(
 
 # Backward benchmark
 
-class GLABwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
+class GLABwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
@@ -97,19 +100,22 @@ class GLABwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
 class GLABwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            (2, 2048, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.float16, False),
-            (2, 8192, 4, 64, 64, 64, torch.float16, False),
-            (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-        ]),
+        (
+            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+            [
+                (2, 2048, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.float16, False),
+                (2, 8192, 4, 64, 64, 64, torch.float16, False),
+                (2, 16384, 4, 64, 64, 64, torch.float16, False),
+                (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
+            ],
+        ),
     ]
 
 
 @pytest.mark.xfail(
     reason="TileLang emits a WGMMA descriptor for a B operand whose layout the "
-           "assert rejects: 'Not a canonical GMMA_MN layout'. Fails on main too.",
+    "assert rejects: 'Not a canonical GMMA_MN layout'. Fails on main too.",
     strict=False,
 )
 @GLABwdFixture
@@ -127,7 +133,7 @@ def test_gla_bwd_bench(
     bm = GLABwdBenchmark(test)
 
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
-    scale = K ** -0.5
+    scale = K**-0.5
 
     q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
     k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1

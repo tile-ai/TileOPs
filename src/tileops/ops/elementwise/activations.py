@@ -67,9 +67,7 @@ class GeluFwdOp(_GeluApproximateBase):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel_cls = (
-            GeluTanhFwdKernel if self.approximate == "tanh" else GeluFwdKernel
-        )
+        kernel_cls = GeluTanhFwdKernel if self.approximate == "tanh" else GeluFwdKernel
         return {self._op_name: kernel_cls}
 
 

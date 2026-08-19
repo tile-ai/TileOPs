@@ -12,7 +12,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["DeltaNetDecodeOp"]
+__all__ = ["DeltaNetDecodeFwdOp"]
 
 #: Implementations of the DeltaNet decode slot.
 DELTANET_DECODE_KEYS = (
@@ -22,7 +22,7 @@ DELTANET_DECODE_KEYS = (
 )
 
 
-class DeltaNetDecodeOp(Op):
+class DeltaNetDecodeFwdOp(Op):
     """DeltaNet decode (single-step recurrence, ungated).
 
     Computes one step of the delta rule (no gate):
@@ -71,8 +71,9 @@ class DeltaNetDecodeOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
-        call = DeltaNetDecodeCall(batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v,
-                                  dtype=dtype, tune=self.tune)
+        call = DeltaNetDecodeCall(
+            batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=self.tune
+        )
         chosen = self.select_kernel_key(DELTANET_DECODE_KEYS, call)
 
         def build() -> Kernel:
@@ -143,9 +144,7 @@ class DeltaNetDecodeOp(Op):
         )
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
-                raise ValueError(
-                    f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
-        )
+                raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
         if not all(tensor.is_cuda for tensor in (q, k, v, beta, state)):
             raise ValueError("q, k, v, beta, and state must be CUDA tensors")
         self.batch = batch

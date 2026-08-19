@@ -37,7 +37,9 @@ def test_binary_bitwise_kernel_rejects_fp8():
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         BitwiseAndFwdKernel(
-            a_shape=(_N,), b_shape=(_N,), dtype=torch.float8_e4m3fn,
+            a_shape=(_N,),
+            b_shape=(_N,),
+            dtype=torch.float8_e4m3fn,
         )
 
 
@@ -52,7 +54,9 @@ def test_binary_arith_kernel_rejects_fp8():
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         MulFwdKernel(
-            a_shape=(_N,), b_shape=(_N,), dtype=torch.float8_e4m3fn,
+            a_shape=(_N,),
+            b_shape=(_N,),
+            dtype=torch.float8_e4m3fn,
         )
 
 
@@ -99,18 +103,12 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
         leaked = [dt for dt in supported if dt in fp8_dtypes]
         if leaked:
             fp8_offenders.append((cls.__name__, leaked))
-    assert not none_offenders, (
-        f"Concrete kernels with SUPPORTED_DTYPES=None: {none_offenders}"
-    )
-    assert not type_offenders, (
-        f"Concrete kernels with non-tuple SUPPORTED_DTYPES: {type_offenders}"
-    )
+    assert not none_offenders, f"Concrete kernels with SUPPORTED_DTYPES=None: {none_offenders}"
+    assert not type_offenders, f"Concrete kernels with non-tuple SUPPORTED_DTYPES: {type_offenders}"
     assert not empty_offenders, (
         f"Concrete kernels with empty SUPPORTED_DTYPES tuple: {empty_offenders}"
     )
-    assert not fp8_offenders, (
-        f"Concrete kernels admitting fp8 in SUPPORTED_DTYPES: {fp8_offenders}"
-    )
+    assert not fp8_offenders, f"Concrete kernels admitting fp8 in SUPPORTED_DTYPES: {fp8_offenders}"
 
 
 def _binary_kwargs(dtype):

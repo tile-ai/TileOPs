@@ -39,14 +39,19 @@ def _flashinfer_mha_decode_fwd(test, q, k, v):
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
     wrapper.plan(
-        qo_indptr=cu_seqlens_q, kv_indptr=cu_seqlens_k,
-        num_qo_heads=H, num_kv_heads=H, head_dim_qk=D,
+        qo_indptr=cu_seqlens_q,
+        kv_indptr=cu_seqlens_k,
+        num_qo_heads=H,
+        num_kv_heads=H,
+        head_dim_qk=D,
         q_data_type=q.dtype,
     )
 
     def run_fn(q, k, v):
         return wrapper.run(
-            q.reshape(-1, H, D), k.reshape(-1, H, D), v.reshape(-1, H, D),
+            q.reshape(-1, H, D),
+            k.reshape(-1, H, D),
+            v.reshape(-1, H, D),
         ).reshape(B, Sq, H, D)
 
     return run_fn
@@ -56,8 +61,9 @@ _MHA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_decode_
 
 
 @pytest.mark.parametrize("b, h, s_q, s_kv, d, dtype, tune", _MHA_DECODE_BENCH_PARAMS)
-def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
-                          tune: bool) -> None:
+def test_mha_decode_bench(
+    b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype, tune: bool
+) -> None:
     test = MhaDecodeWorkload(b, h, s_q, s_kv, d, dtype)
     inputs = test.gen_inputs()
 

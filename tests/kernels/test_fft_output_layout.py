@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tileops.kernels.fft import FFTC2CKernel
-from tileops.ops import FFTC2COp
+from tileops.ops import FFTC2CFwdOp
 
 
 @pytest.mark.full
@@ -38,7 +38,7 @@ def test_fft_final_stage_writes_interleaved_output(
     n = 4096
     batch_size = 2
     x = torch.randn(batch_size, n, device="cuda", dtype=dtype)
-    lut_real, lut_imag = FFTC2COp._build_lut(n, dtype, x.device)
+    lut_real, lut_imag = FFTC2CFwdOp._build_lut(n, dtype, x.device)
     kernel = FFTC2CKernel(n, batch_size, dtype, config=config)
 
     output_pair = kernel(

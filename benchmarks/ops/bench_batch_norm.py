@@ -21,6 +21,7 @@ _BWD_OP_NAME = "BatchNormBwdOp"
 
 # Benchmark helpers
 
+
 def _make_inputs(N, C, spatial, dtype, device="cuda"):
     shape = (N, C, *spatial)
     x = torch.randn(*shape, device=device, dtype=dtype)
@@ -44,8 +45,13 @@ def _make_bwd_inputs(N, C, spatial, dtype, device="cuda"):
 
 def _torch_bn_fwd(x, weight, bias, running_mean, running_var):
     return torch.nn.functional.batch_norm(
-        x.float(), running_mean.clone(), running_var.clone(),
-        weight.float(), bias.float(), training=True)
+        x.float(),
+        running_mean.clone(),
+        running_var.clone(),
+        weight.float(),
+        bias.float(),
+        training=True,
+    )
 
 
 def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
@@ -56,12 +62,12 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
         b32 = torch.zeros(x.shape[1], device=x.device, dtype=torch.float32, requires_grad=True)
         rm = torch.zeros(x.shape[1], device=x.device, dtype=torch.float32)
         rv = torch.ones(x.shape[1], device=x.device, dtype=torch.float32)
-        y = torch.nn.functional.batch_norm(
-            x32, rm, rv, w32, b32, training=True, eps=1e-5)
+        y = torch.nn.functional.batch_norm(x32, rm, rv, w32, b32, training=True, eps=1e-5)
     return backward_of(y)(grad_out.float())
 
 
 # Manifest-driven params
+
 
 def _manifest_fwd_params():
     params = []
@@ -71,8 +77,9 @@ def _manifest_fwd_params():
         label = w.get("label", f"{N}x{C}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(N, C, spatial, dtype, True, False,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(
+                pytest.param(N, C, spatial, dtype, True, False, id=f"{label}-{dtype_str}")
+            )
     return params
 
 
@@ -84,12 +91,12 @@ def _manifest_bwd_params():
         label = w.get("label", f"{N}x{C}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(N, C, spatial, dtype,
-                                       id=f"{label}-{dtype_str}"))
+            params.append(pytest.param(N, C, spatial, dtype, id=f"{label}-{dtype_str}"))
     return params
 
 
 # Benchmark tests
+
 
 @pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _manifest_fwd_params())
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
@@ -104,7 +111,15 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
-    bm.compare({"tileops": lambda *a: op(*a), "torch-cudnn": lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv)}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": lambda *a: op(*a),
+            "torch-cudnn": lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("N, C, spatial, dtype", _manifest_bwd_params())
@@ -118,4 +133,6 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
-    bm.compare({"tileops": op, "torch-autograd": _torch_bn_bwd}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-autograd": _torch_bn_bwd}, *inputs, record_as=op, params=locals()
+    )

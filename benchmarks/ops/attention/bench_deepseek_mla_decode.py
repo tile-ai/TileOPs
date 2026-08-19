@@ -17,13 +17,24 @@ _MLA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mla_decode_
     "batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune",
     _MLA_DECODE_BENCH_PARAMS,
 )
-def test_mla_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
-                          dim_pe: int, dtype: torch.dtype, tune: bool) -> None:
+def test_mla_decode_bench(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_kv: int,
+    dim: int,
+    dim_pe: int,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
     test = MlaDecodeWorkload(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     inputs = test.gen_inputs()
 
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune)
+        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune
+    )
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+    )

@@ -4,14 +4,14 @@
 # current runtime surface as source of truth: construction binds RoPE variant
 # config, while forward infers tensor dimensions from input metadata.
 
-RopeNeoxOp:
+RopeNeoxFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -39,14 +39,14 @@ RopeNeoxOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeNonNeoxOp:
+RopeNonNeoxFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -73,14 +73,14 @@ RopeNonNeoxOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeLlama31Op:
+RopeLlama31FwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -111,14 +111,14 @@ RopeLlama31Op:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeYarnOp:
+RopeYarnFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -150,14 +150,14 @@ RopeYarnOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeLongRopeOp:
+RopeLongRopeFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -187,7 +187,7 @@ RopeLongRopeOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeNeoxPositionIdsOp:
+RopeNeoxPositionIdsFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented

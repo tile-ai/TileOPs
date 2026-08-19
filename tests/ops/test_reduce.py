@@ -22,7 +22,9 @@ class ReduceBasicFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(128, 512, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                pytest.param(
+                    128, 512, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]
+                ),
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
@@ -124,7 +126,11 @@ class ReduceTest(SumWorkload, TestBase):
     """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
 
     def __init__(
-        self, m: int, n: int, dtype: torch.dtype, op_kind: str,
+        self,
+        m: int,
+        n: int,
+        dtype: torch.dtype,
+        op_kind: str,
     ):
         super().__init__((m, n), dtype)
         self.op_kind = op_kind
@@ -235,7 +241,11 @@ def test_reduce_caller_tile_n_validated() -> None:
 
     def run(tile_n: int, block_m: int = 2) -> None:
         kernel = ReduceKernel(
-            M=m, N=n, op_kind="sum", dtype=dtype, tune=False,
+            M=m,
+            N=n,
+            op_kind="sum",
+            dtype=dtype,
+            tune=False,
             config={"block_m": block_m, "threads": 128, "tile_n": tile_n},
         )
         kernel.forward(x)  # construction defers the build; forward triggers it
@@ -716,8 +726,12 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
     tol = _tol(dtype)
     assert var_out.shape == ref_var.shape, f"var shape mismatch: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, "mean shape mismatch"
-    assert torch.allclose(var_out, ref_var, **tol), f"var_mean spec var err: {(var_out - ref_var).abs().max()}"
-    assert torch.allclose(mean_out, ref_mean, **tol), f"var_mean spec mean err: {(mean_out - ref_mean).abs().max()}"
+    assert torch.allclose(var_out, ref_var, **tol), (
+        f"var_mean spec var err: {(var_out - ref_var).abs().max()}"
+    )
+    assert torch.allclose(mean_out, ref_mean, **tol), (
+        f"var_mean spec mean err: {(mean_out - ref_mean).abs().max()}"
+    )
 
 
 if __name__ == "__main__":

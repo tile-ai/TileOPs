@@ -29,6 +29,7 @@ try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
         fused_experts as _vllm_fused_experts,
     )
+
     _VLLM_TRITON_AVAILABLE = True
 except ImportError:
     _VLLM_TRITON_AVAILABLE = False
@@ -37,12 +38,14 @@ try:
     from vllm.model_executor.layers.fused_moe.cutlass_moe import (
         cutlass_moe_fp16 as _vllm_cutlass_moe,
     )
+
     _VLLM_CUTLASS_AVAILABLE = True
 except ImportError:
     try:
         from vllm.model_executor.layers.fused_moe.cutlass_moe import (
             cutlass_moe as _vllm_cutlass_moe,
         )
+
         _VLLM_CUTLASS_AVAILABLE = True
     except ImportError as _cutlass_import_err:
         _VLLM_CUTLASS_AVAILABLE = False
@@ -76,11 +79,18 @@ def _manifest_params():
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(
-                w["num_tokens"], w["num_experts"], w["num_experts_local"],
-                w["top_k"], w["hidden_size"], w["ffn_size"], dtype,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["num_tokens"],
+                    w["num_experts"],
+                    w["num_experts_local"],
+                    w["top_k"],
+                    w["hidden_size"],
+                    w["ffn_size"],
+                    dtype,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -92,8 +102,13 @@ def _manifest_params():
     _manifest_params(),
 )
 def test_moe_experts_nopad_bench(
-    num_tokens: int, num_experts: int, num_experts_local: int, top_k: int,
-    hidden_size: int, ffn_size: int, dtype: torch.dtype,
+    num_tokens: int,
+    num_experts: int,
+    num_experts_local: int,
+    top_k: int,
+    hidden_size: int,
+    ffn_size: int,
+    dtype: torch.dtype,
 ) -> None:
     # Routing always draws from the global expert table. Under expert parallelism
     # the weights are this rank's slice of it and expert_map names that slice.
@@ -103,10 +118,10 @@ def test_moe_experts_nopad_bench(
     expert_map = None
     if num_experts_local < num_experts:
         w1, w2 = w1[:num_experts_local].contiguous(), w2[:num_experts_local].contiguous()
-        expert_map = torch.full(
-            (num_experts,), -1, dtype=torch.int32, device=hidden.device)
+        expert_map = torch.full((num_experts,), -1, dtype=torch.int32, device=hidden.device)
         expert_map[:num_experts_local] = torch.arange(
-            num_experts_local, dtype=torch.int32, device=hidden.device)
+            num_experts_local, dtype=torch.int32, device=hidden.device
+        )
 
     output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
     ws1 = torch.empty(0, dtype=dtype, device="cuda")
@@ -114,16 +129,26 @@ def test_moe_experts_nopad_bench(
 
     # -- TileOPs nopad (3WG persistent) --------------------------------------
     nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(
-        num_tokens=num_tokens, num_experts=num_experts,
-        num_experts_local=num_experts_local, top_k=top_k,
-        hidden_size=hidden_size, ffn_size=ffn_size,
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        num_experts_local=num_experts_local,
+        top_k=top_k,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
     )
     bm = ManifestBenchmark(_OP_NAME, nopad, test)
 
     def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
         nopad.forward(
-            output, hidden, w1, w2, topk_weights, topk_ids,
-            expert_map=expert_map, workspace1=ws1, workspace2=ws2,
+            output,
+            hidden,
+            w1,
+            w2,
+            topk_weights,
+            topk_ids,
+            expert_map=expert_map,
+            workspace1=ws1,
+            workspace2=ws2,
             num_experts=num_experts,
         )
         return output
@@ -137,13 +162,20 @@ def test_moe_experts_nopad_bench(
         # No vLLM column: its fused_experts takes the full weight table, so the
         # two would not measure the same work.
         bm.compare(
-            functors, hidden, w1, w2, topk_weights, topk_ids,
-            record_as=nopad, params=locals(),
+            functors,
+            hidden,
+            w1,
+            w2,
+            topk_weights,
+            topk_ids,
+            record_as=nopad,
+            params=locals(),
         )
         return
 
     # -- vLLM Triton baseline -------------------------------------------------
     if _VLLM_TRITON_AVAILABLE:
+
         def _vllm_triton_fn(hidden, w1, w2, topk_weights, topk_ids):
             return _vllm_fused_experts(hidden, w1, w2, topk_weights, topk_ids)
 
@@ -155,6 +187,7 @@ def test_moe_experts_nopad_bench(
     # -- vLLM CUTLASS baseline ------------------------------------------------
     if _VLLM_CUTLASS_AVAILABLE:
         try:
+
             def _vllm_cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
                 return _vllm_cutlass_moe(hidden, w1, w2, topk_weights, topk_ids)
 
@@ -173,7 +206,7 @@ def test_moe_experts_nopad_bench(
         def _torch_fn(hidden, w1, w2, topk_weights, topk_ids):
             output_buf.zero_()
             for e in range(num_experts):
-                mask = (ids_i64 == e)
+                mask = ids_i64 == e
                 if not mask.any():
                     continue
                 t_idx, k_idx = mask.nonzero(as_tuple=True)
@@ -182,7 +215,9 @@ def test_moe_experts_nopad_bench(
                 ffn_dim = w1.shape[1] // 2
                 act = F.silu(gate_up[:, :ffn_dim]) * gate_up[:, ffn_dim:]
                 down = act @ w2[e].float().t()
-                output_buf.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
+                output_buf.index_add_(
+                    0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1)
+                )
             return output_buf.to(hidden.dtype)
 
         _torch_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup

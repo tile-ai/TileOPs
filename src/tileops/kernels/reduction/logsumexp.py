@@ -190,9 +190,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                     T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                     for i in T.Parallel(block_m):
-                        row_sum[i] = (
-                            row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
-                        )
+                        row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
 
                 # logsumexp = max + log(sum)
                 out_local = T.alloc_fragment((block_m,), dtype)
@@ -303,7 +301,9 @@ class LogSumExpKernel(Kernel):
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget,
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
         )
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
@@ -333,7 +333,8 @@ class LogSumExpKernel(Kernel):
                 caller_tile_n = None
             if caller_tile_n is not None:
                 reason = self._planner.reject_tile_n(
-                    self.config["block_m"], caller_tile_n,
+                    self.config["block_m"],
+                    caller_tile_n,
                     self.config.get("threads", _DEFAULT_TUNE_THREADS),
                 )
                 if reason:
@@ -396,8 +397,7 @@ class LogSumExpKernel(Kernel):
                     best_bm = bm
                     best_tile_n = tn
 
-        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS,
-                "tile_n": best_tile_n}
+        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS, "tile_n": best_tile_n}
 
     def _tile_n_candidates(self) -> list[int]:
         """Return candidate tile_n values for autotune exploration.
@@ -441,13 +441,14 @@ class LogSumExpKernel(Kernel):
         # search point when block_m exploration didn't yield alternatives.
         if len(candidates) < 2:
             from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
+
             half_tn = (default_tn // 2 // DEFAULT_ALIGNMENT) * DEFAULT_ALIGNMENT
             if half_tn > 0 and half_tn != default_tn:
                 candidates.add(half_tn)
 
         # Cap to avoid excessive compilation time.
         sorted_candidates = sorted(candidates, reverse=True)
-        return sorted_candidates[:self._MAX_TILE_N_CANDIDATES]
+        return sorted_candidates[: self._MAX_TILE_N_CANDIDATES]
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -517,10 +518,15 @@ class LogSumExpKernel(Kernel):
 
         for tile_n, group_cfgs in by_tile_n.items():
             kernel = _logsumexp_kernel(
-                self.M, self.N, self.dtype_str, tile_n,
+                self.M,
+                self.N,
+                self.dtype_str,
+                tile_n,
             )
             autotune_kwargs: dict = dict(
-                configs=group_cfgs, warmup=warmup, rep=rep,
+                configs=group_cfgs,
+                warmup=warmup,
+                rep=rep,
             )
             tunable_params = list(self._autotune_initial_kwargs(kernel, group_cfgs[0]).keys())
             if tunable_params:
@@ -541,7 +547,10 @@ class LogSumExpKernel(Kernel):
             if winning_tile_n != self._tile_n:
                 self._tile_n = winning_tile_n
                 self.kernel = _logsumexp_kernel(
-                    self.M, self.N, self.dtype_str, self._tile_n,
+                    self.M,
+                    self.N,
+                    self.dtype_str,
+                    self._tile_n,
                 )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GLADecodeOp"]
+__all__ = ["GLADecodeFwdOp"]
 
 
-class GLADecodeOp(Op):
+class GLADecodeFwdOp(Op):
     """GLA (Gated Linear Attention) decode (single-step recurrence).
 
     Computes one step of the gated linear attention recurrence:
@@ -131,9 +131,7 @@ class GLADecodeOp(Op):
         )
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
-                raise ValueError(
-                    f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
-        )
+                raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
         if not all(tensor.is_cuda for tensor in (q, k, v, gk, state)):
             raise ValueError("q, k, v, gk, and state must be CUDA tensors")
         self.batch = batch

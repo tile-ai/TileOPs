@@ -20,11 +20,10 @@ from tileops.kernels.kernel_base import Kernel
 from .compile_boundary import get_instance
 from .op_base import Op
 
-__all__ = ["DropoutOp"]
+__all__ = ["DropoutFwdOp"]
 
 
-
-class DropoutOp(Op):
+class DropoutFwdOp(Op):
     """Dropout operation with deterministic replay via TileLang RNG.
 
     Compatible with PyTorch dropout semantics:
@@ -73,7 +72,6 @@ class DropoutOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._op_name: self.kernel_cls}
@@ -83,7 +81,7 @@ class DropoutOp(Op):
         """Read x + write y."""
         if self.N_total is None or self.dtype is None:
             raise RuntimeError(
-                "DropoutOp.total_memory requires a prior forward() call to bind input shape and dtype"
+                "DropoutFwdOp.total_memory requires a prior forward() call to bind input shape and dtype"
             )
         return self.N_total * self.dtype.itemsize * 2
 
@@ -92,7 +90,11 @@ class DropoutOp(Op):
             self._op_name,
             key=(x.numel(), x.dtype, x.device.index),
             build=lambda: self.kernel_map[self._op_name](
-                x.numel(), x.dtype, p=self.p, seed=self.seed, tune=self.tune,
+                x.numel(),
+                x.dtype,
+                p=self.p,
+                seed=self.seed,
+                tune=self.tune,
             ),
         )
 
@@ -113,7 +115,9 @@ class DropoutOp(Op):
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}")
+            raise ValueError(
+                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, self._instance_key)
@@ -123,6 +127,7 @@ class DropoutOp(Op):
 
 
 # torch.compile registration
+
 
 @torch.library.custom_op("top::dropout", mutates_args=())
 def _wrapped_dropout(x: torch.Tensor, instance_key: str) -> torch.Tensor:
@@ -135,4 +140,4 @@ def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
     return torch.empty_like(x)
 
 
-DropoutOp._wrapped = _wrapped_dropout
+DropoutFwdOp._wrapped = _wrapped_dropout

@@ -65,8 +65,12 @@ class FusedTopKOp(Op):
         return {"fused_topk_kernel": FusedTopKKernel}
 
     def _get_kernel(
-        self, num_tokens: int, num_experts: int, top_k: int,
-        device_index: int | None, with_correction_bias: bool,
+        self,
+        num_tokens: int,
+        num_experts: int,
+        top_k: int,
+        device_index: int | None,
+        with_correction_bias: bool,
     ) -> Kernel:
         key = (num_tokens, num_experts, top_k, device_index, with_correction_bias)
         return self.get_or_build_kernel(
@@ -109,40 +113,27 @@ class FusedTopKOp(Op):
                 f"got {gating_output.device} and {correction_bias.device}"
             )
         if gating_output.ndim != 2:
-            raise ValueError(
-                f"Expected gating_output to be 2D [T, E], got {gating_output.ndim}D"
-            )
+            raise ValueError(f"Expected gating_output to be 2D [T, E], got {gating_output.ndim}D")
         if gating_output.dtype not in (torch.float16, torch.bfloat16, torch.float32):
             raise ValueError(
                 "Expected gating_output.dtype to be torch.float16, "
                 f"torch.bfloat16, or torch.float32, got {gating_output.dtype}"
             )
         num_tokens, num_experts = gating_output.shape
-        if (
-            self._committed_num_tokens is not None
-            and num_tokens != self._committed_num_tokens
-        ):
-            raise ValueError(
-                f"Expected num_tokens={self._committed_num_tokens}, got {num_tokens}"
-            )
-        if (
-            self._committed_num_experts is not None
-            and num_experts != self._committed_num_experts
-        ):
+        if self._committed_num_tokens is not None and num_tokens != self._committed_num_tokens:
+            raise ValueError(f"Expected num_tokens={self._committed_num_tokens}, got {num_tokens}")
+        if self._committed_num_experts is not None and num_experts != self._committed_num_experts:
             raise ValueError(
                 f"Expected num_experts={self._committed_num_experts}, got {num_experts}"
             )
         if self.top_k is None:
             raise ValueError("top_k must be provided at construction time")
         if self.top_k > num_experts:
-            raise ValueError(
-                f"top_k={self.top_k} cannot exceed num_experts={num_experts}"
-            )
+            raise ValueError(f"top_k={self.top_k} cannot exceed num_experts={num_experts}")
         if correction_bias is not None:
             if self.scoring_func != "sigmoid":
                 raise ValueError(
-                    "correction_bias requires scoring_func='sigmoid', got "
-                    f"{self.scoring_func!r}"
+                    f"correction_bias requires scoring_func='sigmoid', got {self.scoring_func!r}"
                 )
             if correction_bias.shape != (num_experts,):
                 raise ValueError(
@@ -158,7 +149,10 @@ class FusedTopKOp(Op):
         self.num_experts = num_experts
         self.dtype = gating_output.dtype
         kernel = self._get_kernel(
-            num_tokens, num_experts, self.top_k, gating_output.device.index,
+            num_tokens,
+            num_experts,
+            self.top_k,
+            gating_output.device.index,
             correction_bias is not None,
         )
         return kernel(gating_output, correction_bias)

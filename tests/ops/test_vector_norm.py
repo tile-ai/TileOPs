@@ -538,7 +538,10 @@ def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
     x = torch.randn(32, 256, dtype=dtype, device="cuda")
     op = _make_op(op_kind, dim=[], keepdim=keepdim)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=keepdim,
+        x.float(),
+        ord=_ORD_MAP[op_kind],
+        dim=[],
+        keepdim=keepdim,
     ).to(dtype)
     y = op(x)
     assert y.shape == ref.shape
@@ -549,15 +552,20 @@ def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
 @pytest.mark.parametrize(
-    "dtype", [torch.float16, torch.bfloat16, torch.float32],
+    "dtype",
+    [torch.float16, torch.bfloat16, torch.float32],
 )
 def test_empty_dim_full_reduction_3d_dtypes(
-    op_kind: str, dtype: torch.dtype,
+    op_kind: str,
+    dtype: torch.dtype,
 ) -> None:
     x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
     op = _make_op(op_kind, dim=[], keepdim=False)
     ref = torch.linalg.vector_norm(
-        x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=False,
+        x.float(),
+        ord=_ORD_MAP[op_kind],
+        dim=[],
+        keepdim=False,
     ).to(dtype)
     y = op(x)
     assert y.shape == ref.shape
@@ -571,7 +579,8 @@ def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
     """Exercise the N-tiled path with a tail-M block."""
     dtype = torch.bfloat16
     test = VectorNormTest(3, 33024, dtype, op_kind)
-    op = _make_op(op_kind,
+    op = _make_op(
+        op_kind,
         kernel_map={"vector_norm": _TailBlockVectorNormKernel},
     )
     atol, rtol = _get_tolerances(dtype)

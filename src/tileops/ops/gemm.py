@@ -15,10 +15,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GemmFp8Op", "GemmOp", "GemmW4A16Op"]
+__all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
 
-class GemmOp(Op):
+class GemmFwdOp(Op):
     """Dense GEMM, input-inferred and aligned to DeepGEMM's call-time JIT.
 
     The logical dims ``m, n, k`` and the dtype are derived from the ``forward``
@@ -39,7 +39,7 @@ class GemmOp(Op):
         tune: Whether to autotune (applied when a kernel is first built).
 
     Example:
-        >>> op = GemmOp()                       # NT by default
+        >>> op = GemmFwdOp()                       # NT by default
         >>> d = op(a, b)                         # a=[M,K], b=[N,K] -> d=[M,N]
         >>> flops, nbytes = op.eval_roofline()   # valid after the forward
     """
@@ -100,8 +100,7 @@ class GemmOp(Op):
         ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
         covering all four ``(trans_a, trans_b)`` layouts.
         """
-        call = GemmCall(m=m, n=n, k=k, dtype=dtype,
-                        trans_a=self.trans_a, trans_b=self.trans_b)
+        call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
         if self.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == "gemv_kernel":
             # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
             mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
@@ -150,7 +149,7 @@ class GemmOp(Op):
         return kernel(a, b)
 
 
-class GemmFp8Op(Op):
+class GemmFp8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred.
 
     Public layout is ``a=[M, K]`` and ``b=[N, K]``. ``scale_a`` and
@@ -167,7 +166,9 @@ class GemmFp8Op(Op):
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(f"GemmFp8Op outputs torch.float16 or torch.bfloat16, got {out_dtype}")
+            raise ValueError(
+                f"GemmFp8FwdOp outputs torch.float16 or torch.bfloat16, got {out_dtype}"
+            )
         self.out_dtype = out_dtype
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -195,20 +196,20 @@ class GemmFp8Op(Op):
         bias: Optional[torch.Tensor] = None,
     ) -> None:
         if a.dtype != torch.float8_e4m3fn:
-            raise ValueError(f"GemmFp8Op only supports torch.float8_e4m3fn, got {a.dtype}")
+            raise ValueError(f"GemmFp8FwdOp only supports torch.float8_e4m3fn, got {a.dtype}")
         if b.dtype != a.dtype:
-            raise ValueError(f"GemmFp8Op expects b dtype {a.dtype}, got {b.dtype}")
+            raise ValueError(f"GemmFp8FwdOp expects b dtype {a.dtype}, got {b.dtype}")
         if scale_a.dtype != torch.float32 or scale_b.dtype != torch.float32:
-            raise ValueError("GemmFp8Op expects scale_a and scale_b to be torch.float32")
+            raise ValueError("GemmFp8FwdOp expects scale_a and scale_b to be torch.float32")
         out_dtype = (
             getattr(torch, self.out_dtype) if isinstance(self.out_dtype, str) else self.out_dtype
         )
         if bias is not None and bias.dtype != out_dtype:
-            raise ValueError(f"GemmFp8Op expects bias dtype {out_dtype}, got {bias.dtype}")
+            raise ValueError(f"GemmFp8FwdOp expects bias dtype {out_dtype}, got {bias.dtype}")
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
         if a.ndim != 2 or b.ndim != 2:
-            raise ValueError(f"GemmFp8Op expects 2D a/b, got a.ndim={a.ndim}, b.ndim={b.ndim}")
+            raise ValueError(f"GemmFp8FwdOp expects 2D a/b, got a.ndim={a.ndim}, b.ndim={b.ndim}")
         m, k = a.shape
         n, k_b = b.shape
         if k != k_b:
@@ -239,7 +240,7 @@ class GemmFp8Op(Op):
         m, n, k = self._infer_mnk(a, b)
         if scale_a.ndim != 2 or scale_b.ndim != 2:
             raise ValueError(
-                f"GemmFp8Op expects 2D scales, got {tuple(scale_a.shape)} and "
+                f"GemmFp8FwdOp expects 2D scales, got {tuple(scale_a.shape)} and "
                 f"{tuple(scale_b.shape)}"
             )
         per_tensor = (tuple(scale_a.shape), tuple(scale_b.shape)) == ((1, 1), (1, 1))
@@ -247,12 +248,12 @@ class GemmFp8Op(Op):
         block128 = tuple(scale_a.shape) == (m, scale_k) and tuple(scale_b.shape) == (n, scale_k)
         if not per_tensor and not block128:
             raise ValueError(
-                "GemmFp8Op supports scale shapes (1, 1)/(1, 1) or "
+                "GemmFp8FwdOp supports scale shapes (1, 1)/(1, 1) or "
                 f"{(m, scale_k)}/{(n, scale_k)}, got "
                 f"{tuple(scale_a.shape)}/{tuple(scale_b.shape)}"
             )
         if bias is not None and tuple(bias.shape) != (n,):
-            raise ValueError(f"GemmFp8Op bias must have shape {(n,)}, got {tuple(bias.shape)}")
+            raise ValueError(f"GemmFp8FwdOp bias must have shape {(n,)}, got {tuple(bias.shape)}")
         return m, n, k
 
     def _select_kernel_name(
@@ -269,7 +270,7 @@ class GemmFp8Op(Op):
         if tuple(scale_a.shape) == (m, scale_k) and tuple(scale_b.shape) == (n, scale_k):
             return "gemm_fp8_block_scaled_kernel"
         raise ValueError(
-            "GemmFp8Op supports scale shapes (1, 1)/(1, 1) or "
+            "GemmFp8FwdOp supports scale shapes (1, 1)/(1, 1) or "
             f"{(m, scale_k)}/{(n, scale_k)}, got "
             f"{tuple(scale_a.shape)}/{tuple(scale_b.shape)}"
         )
@@ -288,7 +289,8 @@ class GemmFp8Op(Op):
             kernel_name,
             key=(m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
             build=lambda: self.kernel_map[kernel_name](
-                m, n, k, dtype, self.out_dtype, tune=self.tune),
+                m, n, k, dtype, self.out_dtype, tune=self.tune
+            ),
         )
 
     def forward(
@@ -330,7 +332,7 @@ class GemmFp8Op(Op):
         return self._active(a, b, scale_a, scale_b, bias)
 
 
-class GemmW4A16Op(Op):
+class GemmW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
 
     Public layout is ``activation=[M, K]`` and ``packed_weight=[N, K / 2]``.
@@ -348,7 +350,7 @@ class GemmW4A16Op(Op):
     ) -> None:
         if group_size != GROUP_SIZE:
             raise ValueError(
-                f"GemmW4A16Op currently supports group_size={GROUP_SIZE}, got {group_size}"
+                f"GemmW4A16FwdOp currently supports group_size={GROUP_SIZE}, got {group_size}"
             )
         self.group_size = group_size
         self.tune = tune
@@ -376,14 +378,18 @@ class GemmW4A16Op(Op):
     ) -> None:
         if activation.dtype != torch.float16:
             raise ValueError(
-                f"GemmW4A16Op currently supports float16 activation, got {activation.dtype}"
+                f"GemmW4A16FwdOp currently supports float16 activation, got {activation.dtype}"
             )
         if packed_weight.dtype != torch.uint8:
-            raise ValueError(f"GemmW4A16Op expects uint8 packed_weight, got {packed_weight.dtype}")
+            raise ValueError(
+                f"GemmW4A16FwdOp expects uint8 packed_weight, got {packed_weight.dtype}"
+            )
         if weight_scale.dtype != torch.float32:
-            raise ValueError(f"GemmW4A16Op expects float32 weight_scale, got {weight_scale.dtype}")
+            raise ValueError(
+                f"GemmW4A16FwdOp expects float32 weight_scale, got {weight_scale.dtype}"
+            )
         if weight_zero.dtype != torch.uint8:
-            raise ValueError(f"GemmW4A16Op expects uint8 weight_zero, got {weight_zero.dtype}")
+            raise ValueError(f"GemmW4A16FwdOp expects uint8 weight_zero, got {weight_zero.dtype}")
 
     def _infer_mnk(
         self,
@@ -392,21 +398,21 @@ class GemmW4A16Op(Op):
     ) -> Tuple[int, int, int]:
         if activation.ndim != 2 or packed_weight.ndim != 2:
             raise ValueError(
-                "GemmW4A16Op expects rank-2 activation and packed_weight, got "
+                "GemmW4A16FwdOp expects rank-2 activation and packed_weight, got "
                 f"{activation.ndim} and {packed_weight.ndim}"
             )
         m, k = activation.shape
         n, packed_k = packed_weight.shape
         if k % 2 != 0:
-            raise ValueError(f"GemmW4A16Op expects even K for W4 packing, got {k}")
+            raise ValueError(f"GemmW4A16FwdOp expects even K for W4 packing, got {k}")
         if packed_k != k // 2:
             raise ValueError(
-                "GemmW4A16Op packed_weight shape mismatch: expected second dim "
+                "GemmW4A16FwdOp packed_weight shape mismatch: expected second dim "
                 f"{k // 2}, got {packed_k}"
             )
         if k % self.group_size != 0:
             raise ValueError(
-                f"GemmW4A16Op expects K divisible by group_size={self.group_size}, got {k}"
+                f"GemmW4A16FwdOp expects K divisible by group_size={self.group_size}, got {k}"
             )
         return m, n, k
 
@@ -431,12 +437,12 @@ class GemmW4A16Op(Op):
         metadata_shape = (n, groups)
         if tuple(weight_scale.shape) != metadata_shape:
             raise ValueError(
-                f"GemmW4A16Op weight_scale must have shape {metadata_shape}, "
+                f"GemmW4A16FwdOp weight_scale must have shape {metadata_shape}, "
                 f"got {tuple(weight_scale.shape)}"
             )
         if tuple(weight_zero.shape) != metadata_shape:
             raise ValueError(
-                f"GemmW4A16Op weight_zero must have shape {metadata_shape}, "
+                f"GemmW4A16FwdOp weight_zero must have shape {metadata_shape}, "
                 f"got {tuple(weight_zero.shape)}"
             )
         return m, n, k
@@ -449,9 +455,7 @@ class GemmW4A16Op(Op):
         dtype: torch.dtype,
     ) -> Kernel:
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_b=True)
-        key_name = self.select_kernel_key(
-            ("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call
-        )
+        key_name = self.select_kernel_key(("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call)
         return self.get_or_build_kernel(
             key_name,
             key=(m, n, k, dtype, self.group_size),

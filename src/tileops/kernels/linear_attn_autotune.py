@@ -79,7 +79,8 @@ def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     if not candidates:
         raise ValueError(
             f"no admissible recurrence V-tile width for dim_v={dim_v}; "
-            f"widths are {H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v")
+            f"widths are {H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v"
+        )
     return candidates
 
 
@@ -176,7 +177,8 @@ def _tune_sub_kernel(
         # silently tie.
         warnings.warn(  # noqa: B028
             f"{label} tuned to {config} but reported no latency, "
-            "so this sweep's result cannot be compared against any other")
+            "so this sweep's result cannot be compared against any other"
+        )
     print(f"  Best: {config}")
     return config, latency
 
@@ -275,14 +277,15 @@ def tune_delta_rule_fwd(
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
         try:
             config, latency = _tune_sub_kernel(
-                kernel, label, h_builder(*shape, block_v=block_v),
-                PIPELINE_CONFIGS, warmup, rep)
+                kernel, label, h_builder(*shape, block_v=block_v), PIPELINE_CONFIGS, warmup, rep
+            )
         except Exception as exc:  # noqa: BLE001 - one width must not sink the rest
             # The builder only wraps the kernel; the compile is inside the
             # autotuner, which raises when no candidate of this width survives.
             failures.append((label, exc))
             warnings.warn(  # noqa: B028
-                f"{label} unavailable, dropping it from the sweep: {_summarize(exc)}")
+                f"{label} unavailable, dropping it from the sweep: {_summarize(exc)}"
+            )
             continue
         compiled.append(block_v)
         if config is None or latency is None:
@@ -308,8 +311,7 @@ def tune_delta_rule_fwd(
     )
 
     config = {
-        "fused_num_stages": _tuned_value(
-            fused_config, "num_stages", default["fused_num_stages"]),
+        "fused_num_stages": _tuned_value(fused_config, "num_stages", default["fused_num_stages"]),
         "fused_threads": _tuned_value(fused_config, "threads", default["fused_threads"]),
         "h_num_stages": _tuned_value(h_config, "num_stages", default["h_num_stages"]),
         "h_threads": _tuned_value(h_config, "threads", default["h_threads"]),

@@ -6,7 +6,6 @@ from workloads.workload_base import WorkloadBase
 
 
 class DeltaNetFwdWorkload(WorkloadBase):
-
     def __init__(
         self,
         batch: int,
@@ -50,7 +49,6 @@ class DeltaNetFwdWorkload(WorkloadBase):
 
 
 class DeltaNetDecodeWorkload(WorkloadBase):
-
     def __init__(
         self,
         batch: int,
@@ -87,7 +85,6 @@ class DeltaNetDecodeWorkload(WorkloadBase):
 
 
 class GLADecodeWorkload(WorkloadBase):
-
     def __init__(
         self,
         batch: int,
@@ -126,7 +123,6 @@ class GLADecodeWorkload(WorkloadBase):
 
 
 class GatedDeltaNetFwdWorkload(WorkloadBase):
-
     def __init__(
         self,
         batch: int,
@@ -239,7 +235,6 @@ class GatedDeltaNetPrefillFwdWorkload(GatedDeltaNetFwdWorkload):
 
 
 class GatedDeltaNetDecodeWorkload(WorkloadBase):
-
     def __init__(
         self,
         batch: int,
@@ -311,6 +306,7 @@ def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
     u = torch.einsum("bhcij,bhcjd->bhcid", Au_, v_beta_).reshape(B, H, S, DV)
     return w, u
 
+
 def kernel2_deltanet_torch(q, k, w, u, S_0, chunk_size):
     """DeltaNet kernel2 reference (ungated)."""
     B, H, S_len, DK = q.shape
@@ -336,6 +332,7 @@ def kernel2_deltanet_torch(q, k, w, u, S_0, chunk_size):
         o[:, :, i0:i1, :] = o_c
         h = h + torch.einsum("bhnk,bhnv->bhkv", k_c, v_new_c)
     return h, o
+
 
 def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
     B, H, S, DK = k.shape
@@ -394,6 +391,7 @@ def kernel2_gated_deltanet_torch(q, k, g, w, u, S_0, chunk_size):
         h = h * torch.exp(g_last).view(B, H, 1, 1)
         h = h + torch.einsum("bhnk,bhnv->bhkv", k_scaled, v_new_c)
     return h, o
+
 
 def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
     B, H, S, DK = k.shape
@@ -487,7 +485,7 @@ def gla_decode_torch(
     """Pure-PyTorch reference for single-step GLA recurrence."""
     DK = q.shape[-1]
     if scale <= 0:
-        scale = DK ** -0.5
+        scale = DK**-0.5
 
     q, k, v = q.float(), k.float(), v.float()
     gk = gk.float()

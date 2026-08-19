@@ -77,10 +77,7 @@ def prepare_chunk_indices(
 ) -> torch.LongTensor:
     # TODO: tilelang kernel
     indices = torch.cat(
-        [
-            torch.arange(n)
-            for n in tilelang.cdiv(prepare_lens(cu_seqlens), chunk_size).tolist()
-        ]
+        [torch.arange(n) for n in tilelang.cdiv(prepare_lens(cu_seqlens), chunk_size).tolist()]
     )
     return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
 
@@ -111,12 +108,8 @@ def _build_prepare_chunk_offsets_kernel(
             T.copy(cu_seqlens[1:], seqlen_end_fragment)
 
             for i in T.Parallel(block_size):
-                chunk_offset_fragment[i] = (
-                    seqlen_end_fragment[i] - seqlen_start_fragment[i]
-                )
-                chunk_offset_fragment[i] = (
-                    chunk_offset_fragment[i] + chunk_size - 1
-                ) // chunk_size
+                chunk_offset_fragment[i] = seqlen_end_fragment[i] - seqlen_start_fragment[i]
+                chunk_offset_fragment[i] = (chunk_offset_fragment[i] + chunk_size - 1) // chunk_size
             T.cumsum(src=chunk_offset_fragment, dim=0)
 
             chunk_offsets[0] = 0
