@@ -1766,11 +1766,23 @@ def _gemm_wrapped_kernel(
     so this wrapper is not on the eager forward path.
     """
     if split_k > 1:
+        mainloop, reduce_ = _splitk_pair(
+            m,
+            n,
+            k,
+            trans_a,
+            trans_b,
+            dtype,
+            False,
+            block_m,
+            block_n,
+            block_k,
+            num_stages,
+            panel_size,
+            split_k,
+        )
         c = torch.empty((m, n), dtype=a.dtype, device=a.device)
-        w = _gemm_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
-            block_m, block_n, block_k, num_stages, panel_size, split_k
-        )(a, b)
-        _splitk_reduce_kernel(split_k, m, n, dtype)()(w, c)
+        reduce_(mainloop(a, b), c)
         return c
     return _gemm_kernel(m, n, k, trans_a, trans_b, dtype, sm_count=get_sm_count())(
         block_m, block_n, block_k, num_stages, panel_size
@@ -1804,8 +1816,8 @@ class GemmKernel(Kernel):
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
     over K. Structure flags in ``config`` select the coop2 / coop2s /
     coop2_splitk / simple / split-K variants instead (see ``forward``).
-    fp16 / bf16 inputs,
-    fp32 accumulation. Hopper-only — TMA + WGMMA require SM90.
+    fp16 / bf16 inputs, fp32 accumulation. Hopper-only — TMA + WGMMA
+    require SM90.
     """
 
     supported_archs: list[int] = [90]
