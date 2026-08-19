@@ -32,9 +32,9 @@ from .fft import FFTC2CFwdOp
 from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from .fp8_quant import FP8QuantFwdOp
 from .gated_deltanet import (
+    GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeFwdOp,
-    GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetOp,
     GatedDeltaNetPrefillBHTDFwdOp,
     GatedDeltaNetPrefillBTHDFwdOp,

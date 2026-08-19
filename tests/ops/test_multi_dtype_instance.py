@@ -124,8 +124,7 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         output = op(q, k, v)
         assert output.dtype == dtype
         assert (
-            op._get_kernel(dtype, device=q.device).__class__.__name__
-            == "GQAPrefillDenseFwdKernel"
+            op._get_kernel(dtype, device=q.device).__class__.__name__ == "GQAPrefillDenseFwdKernel"
         )
     _assert_two_entries(op._gqa_op)
 

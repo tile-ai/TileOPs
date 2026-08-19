@@ -166,12 +166,8 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     is_causal = bool(data.get("is_causal", True))
     window_size_left = int(data.get("window_size_left", -1))
     window_size_right = int(data.get("window_size_right", -1))
-    input_dtype = data.get("input_dtype") or data.get(
-        "dtype", data.get("dtypes", "float16")
-    )
-    output_dtype = data.get("output_dtype") or data.get("dtype") or data.get(
-        "dtypes", input_dtype
-    )
+    input_dtype = data.get("input_dtype") or data.get("dtype", data.get("dtypes", "float16"))
+    output_dtype = data.get("output_dtype") or data.get("dtype") or data.get("dtypes", input_dtype)
     input_bytes = _dtype_itemsize(input_dtype)
     output_bytes = _dtype_itemsize(output_dtype)
 
@@ -193,9 +189,7 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
         max_position = int(data.get("max_position") or seq_len_kv)
         # Each rotated Q/K scalar performs two multiplies and one add. Cosine
         # and sine tables each contain max_position * rotary_dim / 2 values.
-        flops += 3 * batch * (
-            seq_len_q * heads + seq_len_kv * heads_kv
-        ) * rotary_dim
+        flops += 3 * batch * (seq_len_q * heads + seq_len_kv * heads_kv) * rotary_dim
         nbytes += max_position * rotary_dim * output_bytes
     return int(flops), int(nbytes)
 

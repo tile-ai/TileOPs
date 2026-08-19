@@ -177,9 +177,7 @@ def test_dense_gqa_target_gets_rope_as_constructor_configuration():
     assert specs[0].dtype == torch.float16
 
 
-@pytest.mark.skipif(
-    not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable"
-)
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
 def test_dense_gqa_target_preserves_present_optional_inputs():
     builds = []
     runs = []
@@ -216,9 +214,7 @@ def test_dense_gqa_target_preserves_present_optional_inputs():
     assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
 
 
-@pytest.mark.skipif(
-    not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable"
-)
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
 def test_dense_gqa_rejects_fp8_without_output_dtype_before_external_builder():
     builds = []
 

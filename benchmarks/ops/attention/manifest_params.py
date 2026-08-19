@@ -58,9 +58,8 @@ def gqa_fwd_args(
     # Fused RoPE needs a full-envelope baseline that rotates Q/K inside the
     # measured callable. Do not silently benchmark the non-fused operator when
     # such a workload is added; the current Dense manifest has no RoPE case.
-    if (
-        workload.get("pos_encoding_mode", "none") != "none"
-        and not workload.get("bench_skip_reason")
+    if workload.get("pos_encoding_mode", "none") != "none" and not workload.get(
+        "bench_skip_reason"
     ):
         raise ValueError("Dense fused-RoPE benchmark adapter is not implemented")
     batch, seq_len_q, heads, dim = workload["q_shape"]

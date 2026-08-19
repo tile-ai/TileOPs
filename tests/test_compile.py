@@ -57,9 +57,7 @@ def test_mha_cold_fullgraph_trace_matches_eager():
 def test_dense_gqa_traced_graph_holds_only_the_op_node():
     """Changing the Dense target or specialization cannot change graph identity."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
-        is_causal=False
-    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False)
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
@@ -72,12 +70,8 @@ def test_dense_gqa_traced_graph_holds_only_the_op_node():
 def test_dense_gqa_non_contiguous_cold_fullgraph_matches_eager():
     """The fake promises manifest shape/dtype while eager normalization fixes strides."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
-        is_causal=False
-    )
-    q = torch.randn(
-        batch, seq_len, heads, dim * 2, device="cuda", dtype=torch.float16
-    )[..., ::2]
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False)
+    q = torch.randn(batch, seq_len, heads, dim * 2, device="cuda", dtype=torch.float16)[..., ::2]
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
     assert not q.is_contiguous()
@@ -122,9 +116,7 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(
-    not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable"
-)
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
 def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     """The Op-owned fake, not an internal kernel fake, defines graph metadata."""
     batch, seq_len, heads, heads_kv, dim = 1, 7, 8, 2, 128
@@ -141,9 +133,7 @@ def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float8_e4m3fn)
     v = torch.empty_like(k)
 
-    output = _gqa_prefill_dense_fwd_fake(
-        q, k, v, None, None, None, op._instance_key
-    )
+    output = _gqa_prefill_dense_fwd_fake(q, k, v, None, None, None, op._instance_key)
 
     assert output.shape == q.shape
     assert output.dtype == torch.bfloat16
