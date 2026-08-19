@@ -151,7 +151,6 @@ GemmW4A16FwdOp:
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
     kernel_map:
-      gemm_w4a16_decode_kernel: GemmW4A16DecodeKernel
       gemm_w4a16_kernel: GemmW4A16Kernel
       gemm_w4a16_decode_kernel: GemmW4A16DecodeKernel
 

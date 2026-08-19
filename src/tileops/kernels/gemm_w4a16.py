@@ -722,9 +722,7 @@ class GemmW4A16DecodeKernel(Kernel):
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
         factory = (
-            _gemm_w4a16_decode_tma_kernel
-            if self.use_tma
-            else _gemm_w4a16_decode_direct_kernel
+            _gemm_w4a16_decode_tma_kernel if self.use_tma else _gemm_w4a16_decode_direct_kernel
         )
         compiled = factory(self.m, self.n, self.k, self.dtype_str, self.group_size)(**self.config)
         return compiled(activation, packed_weight, weight_scale, weight_zero)
