@@ -175,9 +175,7 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     is_causal = bool(data.get("is_causal", True))
     window_size_left = int(data.get("window_size_left", -1))
     window_size_right = int(data.get("window_size_right", -1))
-    input_dtype = data.get(
-        "dtype", data.get("input_dtype", data.get("dtypes", "float16"))
-    )
+    input_dtype = data.get("dtype", data.get("input_dtype", data.get("dtypes", "float16")))
     output_dtype = data.get("output_dtype") or data.get("dtypes") or input_dtype
     input_bytes = _dtype_itemsize(input_dtype)
     output_bytes = _dtype_itemsize(output_dtype)
@@ -473,10 +471,7 @@ def gqa_prefill_varlen_fwd_roofline(
     cu_bytes = 2 * (batch + 1) * 4
     scale_bytes = 3 * batch * heads_kv * 4
     nbytes = (
-        (q_elems + 2 * kv_elems) * input_bytes
-        + o_elems * output_bytes
-        + cu_bytes
-        + scale_bytes
+        (q_elems + 2 * kv_elems) * input_bytes + o_elems * output_bytes + cu_bytes + scale_bytes
     )
     return int(flops), int(nbytes)
 

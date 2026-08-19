@@ -47,9 +47,7 @@ def make_bottom_right_attention_mask(
                 q_pos = bx * block_m + i
                 kv_pos = k_idx * block_n + j
                 center = q_pos + offset
-                masked = (
-                    (q_pos >= q_len) or (kv_pos >= kv_len) or (kv_pos > center)
-                )
+                masked = (q_pos >= q_len) or (kv_pos >= kv_len) or (kv_pos > center)
                 acc_s[i, j] = T.if_then_else(
                     masked,
                     -T.infinity(accum_dtype),
@@ -77,9 +75,7 @@ def make_bottom_right_attention_mask(
                 kv_pos = k_idx * block_n + j
                 center = q_pos + offset
                 masked = (
-                    (q_pos >= q_len)
-                    or (kv_pos >= kv_len)
-                    or (kv_pos < center - window_size_left)
+                    (q_pos >= q_len) or (kv_pos >= kv_len) or (kv_pos < center - window_size_left)
                 )
                 acc_s[i, j] = T.if_then_else(
                     masked,
@@ -92,9 +88,7 @@ def make_bottom_right_attention_mask(
                 kv_pos = k_idx * block_n + j
                 center = q_pos + offset
                 masked = (
-                    (q_pos >= q_len)
-                    or (kv_pos >= kv_len)
-                    or (kv_pos > center + window_size_right)
+                    (q_pos >= q_len) or (kv_pos >= kv_len) or (kv_pos > center + window_size_right)
                 )
                 acc_s[i, j] = T.if_then_else(
                     masked,

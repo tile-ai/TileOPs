@@ -309,8 +309,7 @@ def test_paged_prefill_gqa_target_gets_the_manifest_abi(monkeypatch):
     block_table = torch.arange(8, dtype=torch.int32).view(2, 4)
     recorder = _assert_gqa_seam(
         op,
-        (q, k_new, v_new, k_pages, v_pages, None, None, None,
-         cu_q, cache_lens, block_table),
+        (q, k_new, v_new, k_pages, v_pages, None, None, None, cu_q, cache_lens, block_table),
         monkeypatch,
     )
 
@@ -352,9 +351,7 @@ def test_paged_decode_gqa_target_gets_the_manifest_abi(monkeypatch):
     v = torch.randn_like(k)
     real_lens = torch.tensor([7, 11], dtype=torch.int32)
     block_table = torch.arange(16, dtype=torch.int32).view(2, 8)
-    recorder = _assert_gqa_seam(
-        op, (q, k, v, real_lens, block_table), monkeypatch
-    )
+    recorder = _assert_gqa_seam(op, (q, k, v, real_lens, block_table), monkeypatch)
 
     assert len(recorder.runs[0]) == 5
 

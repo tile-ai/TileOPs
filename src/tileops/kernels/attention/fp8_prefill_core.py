@@ -63,13 +63,9 @@ def make_native_fp8_prefill_tile_update(
         preserve_valid=True,
     )
     apply_softcap = (
-        make_apply_softcap(1.0, softcap, accum_dtype, block_m, block_n)
-        if use_softcap
-        else None
+        make_apply_softcap(1.0, softcap, accum_dtype, block_m, block_n) if use_softcap else None
     )
-    online_softmax = make_online_softmax_with_mask_guard(
-        LOG2E, accum_dtype, block_m, block_n
-    )
+    online_softmax = make_online_softmax_with_mask_guard(LOG2E, accum_dtype, block_m, block_n)
     rescale = make_rescale(block_m, dim)
 
     @T.macro

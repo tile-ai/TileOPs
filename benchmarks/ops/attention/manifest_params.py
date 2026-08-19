@@ -42,8 +42,9 @@ def mha_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, bool]:
 
 def gqa_fwd_args(
     workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, int, bool, float | None, float | None, int, int,
-           bool, int | None, str]:
+) -> tuple[
+    int, int, int, int, int, int, bool, float | None, float | None, int, int, bool, int | None, str
+]:
     batch, seq_len, heads, dim = workload["q_shape"]
     _, kv_seq_len, heads_kv, _ = workload["kv_shape"]
     return (
@@ -74,8 +75,23 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
 
 def gqa_prefill_varlen_args(
     workload: dict[str, Any],
-) -> tuple[int, list[int], list[int], int, int, int, bool, float | None, float | None,
-           int, int, bool, int | None, str, torch.dtype | None]:
+) -> tuple[
+    int,
+    list[int],
+    list[int],
+    int,
+    int,
+    int,
+    bool,
+    float | None,
+    float | None,
+    int,
+    int,
+    bool,
+    int | None,
+    str,
+    torch.dtype | None,
+]:
     return (
         workload["batch"],
         list(workload["q_lens"]),

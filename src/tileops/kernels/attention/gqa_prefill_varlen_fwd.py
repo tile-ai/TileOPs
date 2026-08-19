@@ -61,9 +61,7 @@ def _gqa_prefill_varlen_fwd_kernel(
     softmax_scale = LOG2E if native_fp8 or use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if fuse_rope and (
-        rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim
-    ):
+    if fuse_rope and (rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim):
         raise ValueError("rotary_dim must be positive, even, and <= dim")
     if rope_layout not in ("neox", "interleaved"):
         raise ValueError("rope_layout must be 'neox' or 'interleaved'")
@@ -83,8 +81,7 @@ def _gqa_prefill_varlen_fwd_kernel(
         q_shape = (total_q, heads, dim)
         kv_shape = (total_kv, heads_kv, dim)
         scale_shape = (batch, heads_kv)
-        rope_cols, paired_dim, rotate = make_prefill_rope_policy(
-            fuse_rope, rotary_dim, rope_layout)
+        rope_cols, paired_dim, rotate = make_prefill_rope_policy(fuse_rope, rotary_dim, rope_layout)
         rope_shape = (max_position if fuse_rope else 1, rope_cols)
         online_softmax = make_online_softmax_with_mask_guard(
             softmax_scale, accum_dtype, block_m, block_n
@@ -188,8 +185,8 @@ def _gqa_prefill_varlen_fwd_kernel(
                             value = q[q_start + q_pos, by, d]
                             paired_value = q[q_start + q_pos, by, paired_d]
                             q_shared[i, d] = rotate(
-                                value, paired_value, causal_offset + q_pos, d,
-                                cos_table, sin_table)
+                                value, paired_value, causal_offset + q_pos, d, cos_table, sin_table
+                            )
                         else:
                             q_shared[i, d] = T.cast(0, input_dtype)
                 elif (bx + 1) * block_m <= q_len:
@@ -241,8 +238,8 @@ def _gqa_prefill_varlen_fwd_kernel(
                                 value = k[kv_start + kv_pos, cur_kv_head, d]
                                 paired_value = k[kv_start + kv_pos, cur_kv_head, paired_d]
                                 k_shared[j, d] = rotate(
-                                    value, paired_value, kv_pos, d,
-                                    cos_table, sin_table)
+                                    value, paired_value, kv_pos, d, cos_table, sin_table
+                                )
                                 v_shared[j, d] = v[kv_start + kv_pos, cur_kv_head, d]
                             else:
                                 k_shared[j, d] = T.cast(0, input_dtype)

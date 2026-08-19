@@ -97,7 +97,9 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
     from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillDenseFwdOp
 
     batch, heads, heads_kv, seq_len, dim = 1, 8, 2, 256, 128
-    op = GroupedQueryAttentionPrefillDenseFwdOp(batch, heads, heads_kv, seq_len, dim, is_causal=True)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        batch, heads, heads_kv, seq_len, dim, is_causal=True
+    )
     for dtype in _DTYPES:
         q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
         k = torch.randn(batch, seq_len, heads_kv, dim, dtype=dtype, device="cuda")
