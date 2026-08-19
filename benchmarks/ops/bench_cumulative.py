@@ -50,7 +50,12 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = _make_op(shape, dtype, "cumsum")
     bm = ManifestBenchmark(_CUMSUM_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-inductor": torch_inductor_baseline(test.ref_program)}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(test.ref_program)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
@@ -61,4 +66,9 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = _make_op(shape, dtype, "cumprod")
     bm = ManifestBenchmark(_CUMPROD_OP, op, test)
 
-    bm.compare({"tileops": op, "torch-inductor": torch_inductor_baseline(test.ref_program)}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(test.ref_program)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )

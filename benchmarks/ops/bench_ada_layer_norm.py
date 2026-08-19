@@ -36,7 +36,12 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return scale * normed + shift
 
-    bm.compare({"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_ZERO_OP_NAME)))
@@ -52,4 +57,9 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return gate * (scale * normed + shift)
 
-    bm.compare({"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
