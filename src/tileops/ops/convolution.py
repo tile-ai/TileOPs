@@ -154,6 +154,33 @@ def _validate_conv_params(
         raise ValueError(f"{op_name} output spatial dimensions must be greater than zero")
 
 
+def _validate_same_device(
+    op_name: str,
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+) -> None:
+    """Reject a call whose tensors are not all on one device.
+
+    The kernel memo keys on the first input's device and lets it speak for the rest, so
+    disagreement has to be an error here rather than a wrong lookup there.
+
+    Args:
+        op_name: Name used in the message.
+        input: The call's input tensor, whose device the others must match.
+        weight: The call's weight.
+        bias: The call's bias, or ``None``.
+
+    Raises:
+        ValueError: Some input is on another device.
+    """
+    for name, tensor in (("weight", weight), ("bias", bias)):
+        if tensor is not None and tensor.device != input.device:
+            raise ValueError(
+                f"{op_name} expects every input on {input.device}, got {name} on {tensor.device}"
+            )
+
+
 def _device_index(tensor: torch.Tensor) -> int | None:
     return tensor.device.index
 
@@ -393,6 +420,7 @@ class Conv1dFwdOp(Op):
         follow.
         """
         self._validate_dtypes(input, weight, bias)
+        _validate_same_device("Conv1d", input, weight, bias)
         (
             n,
             c_in,
@@ -787,6 +815,7 @@ class Conv2dFwdOp(Op):
         follow.
         """
         self._validate_dtypes(input, weight, bias)
+        _validate_same_device("Conv2d", input, weight, bias)
         (
             n,
             c_in,
@@ -805,14 +834,10 @@ class Conv2dFwdOp(Op):
         if bias is not None and tuple(bias.shape) != (c_out,):
             raise ValueError(f"Conv2d expects bias shape ({c_out},), got {tuple(bias.shape)}")
 
-        # Normalization is the op layer's job for every target: a kernel is handed
-        # contiguous tensors, in the manifest's ``signature.inputs`` order.
         input = input.contiguous()
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        # Only the tensors this call carries: a missing optional input is absent from the
-        # hand-over, not a placeholder.
         inputs = (input, weight) if bias is None else (input, weight, bias)
         kernel = self._get_kernel_2d(
             n,
@@ -1158,6 +1183,7 @@ class Conv3dFwdOp(Op):
         follow.
         """
         self._validate_dtypes(input, weight, bias)
+        _validate_same_device("Conv3d", input, weight, bias)
         (
             n,
             c_in,
@@ -1180,14 +1206,10 @@ class Conv3dFwdOp(Op):
         if bias is not None and tuple(bias.shape) != (c_out,):
             raise ValueError(f"Conv3d expects bias shape ({c_out},), got {tuple(bias.shape)}")
 
-        # Normalization is the op layer's job for every target: a kernel is handed
-        # contiguous tensors, in the manifest's ``signature.inputs`` order.
         input = input.contiguous()
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        # Only the tensors this call carries: a missing optional input is absent from the
-        # hand-over, not a placeholder.
         inputs = (input, weight) if bias is None else (input, weight, bias)
         kernel = self._get_kernel_3d(
             n,
@@ -1319,6 +1341,10 @@ class Conv3dFwdOp(Op):
 # per qualified name at import time and the schema is read off the annotations, so ``self``
 # cannot appear; the instance comes back from the string key. See
 # src/tileops/ops/compile_boundary.py.
+#
+# Each fake returns ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes
+# contiguity, so a non-contiguous public input's strides must not survive into the fake.
+# The dtype is the manifest's ``same_as(input)``.
 
 
 @torch.library.custom_op("top::conv_conv1d_fwd", mutates_args=())
@@ -1344,9 +1370,6 @@ def _conv1d_fwd_fake(
         tuple(weight.shape),
         None if bias is None else tuple(bias.shape),
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(input)``.
     return input.new_empty(shapes["output"])
 
 
@@ -1373,9 +1396,6 @@ def _conv2d_fwd_fake(
         tuple(weight.shape),
         None if bias is None else tuple(bias.shape),
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(input)``.
     return input.new_empty(shapes["output"])
 
 
@@ -1402,7 +1422,4 @@ def _conv3d_fwd_fake(
         tuple(weight.shape),
         None if bias is None else tuple(bias.shape),
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(input)``.
     return input.new_empty(shapes["output"])

@@ -114,7 +114,7 @@ def _conv1d_kernel(
         enable_rasterization: bool,
     ):
         @T.macro
-        def _conv1d_body(x, weight_flat, out, bias):
+        def _conv1d_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(out_l, block_n),
                 T.ceildiv(c_out, block_m),
@@ -125,6 +125,11 @@ def _conv1d_kernel(
                 data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                # k runs over (c_in, kernel_l) in that order, which is how the weight is
+                # already laid out, so the kernel takes it as it comes and stages it with a
+                # tile copy.
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
 
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
@@ -143,8 +148,8 @@ def _conv1d_kernel(
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         ol = bx * block_n + j
-                        kw = k_idx // c_in
-                        ci = k_idx % c_in
+                        ci = k_idx // kernel_l
+                        kw = k_idx % kernel_l
                         il = ol * stride_l + kw * dilation_l - pad_left
                         if tile_spatial_full & ((k_iter + 1) * block_k <= k_total):
                             data_shared[i, j] = x[bz, ci, il]
@@ -174,32 +179,28 @@ def _conv1d_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc = by * block_m + i
-                    ol = bx * block_n + j
-                    if oc < c_out and ol < out_l:
-                        out[bz, oc, ol] = out_shared[i, j]
+                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
         if has_bias:
 
             @T.prim_func
             def _conv1d_bias_main(
                 x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
                 out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
                 bias: T.Tensor((c_out,), dtype),  # type: ignore
             ):
-                _conv1d_body(x, weight_flat, out, bias)
+                _conv1d_body(x, weight, out, bias)
 
             return _conv1d_bias_main
 
         @T.prim_func
         def _conv1d_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-            weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
         ):
-            _conv1d_body(x, weight_flat, out, None)
+            _conv1d_body(x, weight, out, None)
 
         return _conv1d_main
 
@@ -340,31 +341,30 @@ def _conv1d_group_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
+                # k runs over (c_in_g, kernel_l) in that order, which is how the weight is
+                # already laid out, so staging it is a tile copy rather than a gather. The
+                # rows past this group's c_out_g read the next group's weights; the
+                # epilogue masks the accumulator rows they feed.
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
                 group_id = bz % groups
+                oc_base = group_id * c_out_g + by * block_m
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    for i, k in T.Parallel(block_m, block_k):
-                        oc_g = by * block_m + i
-                        oc = group_id * c_out_g + oc_g
-                        k_idx = k_iter * block_k + k
-                        kw = k_idx // c_in_g
-                        ci_g = k_idx % c_in_g
-                        weight_shared[i, k] = T.if_then_else(
-                            (oc_g < c_out_g) & (k_idx < k_total),
-                            weight[oc, ci_g, kw],
-                            T.cast(0.0, dtype),
-                        )
+                    T.copy(weight_flat[oc_base, k_iter * block_k], weight_shared)
 
                     for k, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + k
                         ol = bx * block_n + j
-                        kw = k_idx // c_in_g
-                        ci_g = k_idx % c_in_g
+                        ci_g = k_idx // kernel_l
+                        kw = k_idx % kernel_l
                         il = ol * stride_l + kw * dilation_l - pad_left
+                        # k past k_total is zeroed here, which is what keeps the weight
+                        # tile's own tail out of the product.
                         data_shared[k, j] = T.if_then_else(
                             (k_idx < k_total) & (ol < out_l) & (il >= 0) & (il < l_in),
                             x[batch_id, group_id * c_in_g + ci_g, il],
@@ -390,12 +390,17 @@ def _conv1d_group_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc_g = by * block_m + i
-                    oc = group_id * c_out_g + oc_g
-                    ol = bx * block_n + j
-                    if oc_g < c_out_g and ol < out_l:
-                        out[batch_id, oc, ol] = out_shared[i, j]
+                if c_out_g % block_m == 0:
+                    # The tile ends on this group's last channel, so the copy cannot spill
+                    # into the next group's rows.
+                    T.copy(out_shared, out[batch_id, oc_base, bx * block_n])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        ol = bx * block_n + j
+                        if oc_g < c_out_g and ol < out_l:
+                            out[batch_id, oc, ol] = out_shared[i, j]
 
         if has_bias:
 
@@ -665,9 +670,6 @@ class Conv1dKernel(Kernel):
         self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
-        self._weight_flat_cache_source: Optional[torch.Tensor] = None
-        self._weight_flat_cache_version: Optional[int] = None
-        self._weight_flat_cache: Optional[torch.Tensor] = None
         self.kernel = _conv1d_kernel(
             n,
             c_in,
@@ -708,29 +710,13 @@ class Conv1dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(self.dtype)
 
-    def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
-        weight_version = weight._version
-        if (
-            self._weight_flat_cache_source is weight
-            and self._weight_flat_cache_version == weight_version
-            and self._weight_flat_cache is not None
-        ):
-            return self._weight_flat_cache
-
-        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
-        self._weight_flat_cache_source = weight
-        self._weight_flat_cache_version = weight_version
-        self._weight_flat_cache = weight_flat
-        return weight_flat
-
     def forward(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        weight_flat = self._get_weight_flat(weight)
-        return _launch(self, x, weight_flat, bias=bias)
+        return _launch(self, x, weight, bias=bias)
 
 
 class GroupConv1dKernel(Kernel):
@@ -1170,26 +1156,22 @@ def _conv2d_group_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
+                # k runs over (c_in_g, kernel_h, kernel_w) in that order, which is how the
+                # weight is already laid out, so staging it is a tile copy rather than a
+                # gather. The rows past this group's c_out_g read the next group's weights;
+                # the epilogue masks the accumulator rows they feed.
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
+
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
                 group_id = bz % groups
+                oc_base = group_id * c_out_g + by * block_m
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    for i, k in T.Parallel(block_m, block_k):
-                        oc_g = by * block_m + i
-                        oc = group_id * c_out_g + oc_g
-                        k_idx = k_iter * block_k + k
-                        ci_g = k_idx // (kernel_h * kernel_w)
-                        kernel_idx = k_idx % (kernel_h * kernel_w)
-                        kh = kernel_idx // kernel_w
-                        kw = kernel_idx % kernel_w
-                        weight_shared[i, k] = T.if_then_else(
-                            (oc_g < c_out_g) & (k_idx < k_total),
-                            weight[oc, ci_g, kh, kw],
-                            T.cast(0.0, dtype),
-                        )
+                    T.copy(weight_flat[oc_base, k_iter * block_k], weight_shared)
 
                     for k, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + k
@@ -1233,14 +1215,19 @@ def _conv2d_group_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc_g = by * block_m + i
-                    oc = group_id * c_out_g + oc_g
-                    spatial_idx = bx * block_n + j
-                    oh = spatial_idx // out_w
-                    ow = spatial_idx % out_w
-                    if oc_g < c_out_g and spatial_idx < out_hw:
-                        out[batch_id, oc, oh, ow] = out_shared[i, j]
+                if c_out_g % block_m == 0:
+                    # The tile ends on this group's last channel, so the copy cannot spill
+                    # into the next group's rows.
+                    T.copy(out_shared, out_flat[batch_id, oc_base, bx * block_n])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        spatial_idx = bx * block_n + j
+                        oh = spatial_idx // out_w
+                        ow = spatial_idx % out_w
+                        if oc_g < c_out_g and spatial_idx < out_hw:
+                            out[batch_id, oc, oh, ow] = out_shared[i, j]
 
         if has_bias:
 
@@ -1266,6 +1253,118 @@ def _conv2d_group_kernel(
         return _conv2d_group_main
 
     return _conv2d_group_func
+
+
+@functools.lru_cache(maxsize=32)
+def _conv2d_depthwise_kernel(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    dilation_h: int,
+    dilation_w: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    """Build the depthwise Conv2d program: one input channel feeds one output channel.
+
+    The grouped kernel reaches this shape with a GEMM whose M is the group's one output
+    channel, so a tile of ``block_m`` rows carries one useful row. This one multiplies and
+    accumulates directly instead, the way the Conv1d depthwise path does.
+    """
+    accum_dtype = "float"
+    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_hw = out_h * out_w
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _conv2d_depthwise_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.macro
+        def _conv2d_depthwise_body(x, weight, out, bias):
+            out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
+            with T.Kernel(
+                T.ceildiv(out_hw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for kh, kw in T.grid(kernel_h, kernel_w):
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc = by * block_m + i
+                        spatial_idx = bx * block_n + j
+                        oh = spatial_idx // out_w
+                        ow = spatial_idx % out_w
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
+                        valid = (
+                            (oc < c_out)
+                            & (spatial_idx < out_hw)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (ih < h)
+                            & (iw < w)
+                        )
+                        out_local[i, j] += T.if_then_else(
+                            valid,
+                            T.cast(x[bz, oc, ih, iw], accum_dtype)
+                            * T.cast(weight[oc, 0, kh, kw], accum_dtype),
+                            T.cast(0.0, accum_dtype),
+                        )
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    spatial_idx = bx * block_n + j
+                    if oc < c_out and spatial_idx < out_hw:
+                        if has_bias:
+                            out_flat[bz, oc, spatial_idx] = T.cast(
+                                out_local[i, j] + T.cast(bias[oc], accum_dtype),
+                                dtype,
+                            )
+                        else:
+                            out_flat[bz, oc, spatial_idx] = T.cast(out_local[i, j], dtype)
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv2d_depthwise_bias_main(
+                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+                weight: T.Tensor((c_out, 1, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv2d_depthwise_body(x, weight, out, bias)
+
+            return _conv2d_depthwise_bias_main
+
+        @T.prim_func
+        def _conv2d_depthwise_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, 1, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv2d_depthwise_body(x, weight, out, None)
+
+        return _conv2d_depthwise_main
+
+    return _conv2d_depthwise_func
 
 
 @functools.lru_cache(maxsize=8)
@@ -1726,28 +1825,48 @@ class GroupConv2dKernel(Kernel):
         self.out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.groups * self.out_h * self.out_w
         self.k_total = self.c_in_g * kernel_h * kernel_w
+        self.use_direct = self.c_in_g == 1 and self.c_out_g == 1
         self._validate_group_shape()
 
-        self.kernel = _conv2d_group_kernel(
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            has_bias,
-            self.dtype_str,
-            groups,
-            self.c_in_g,
-            self.c_out_g,
-        )
+        if self.use_direct:
+            self.kernel = _conv2d_depthwise_kernel(
+                n,
+                c_in,
+                h,
+                w,
+                c_out,
+                kernel_h,
+                kernel_w,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                has_bias,
+                self.dtype_str,
+            )
+        else:
+            self.kernel = _conv2d_group_kernel(
+                n,
+                c_in,
+                h,
+                w,
+                c_out,
+                kernel_h,
+                kernel_w,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                has_bias,
+                self.dtype_str,
+                groups,
+                self.c_in_g,
+                self.c_out_g,
+            )
         self.init_config(config, tune)
 
     def _validate_group_shape(self) -> None:
@@ -1761,6 +1880,17 @@ class GroupConv2dKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if self.use_direct:
+            # No GEMM here, so block_k and num_stages carry nothing: one channel per block
+            # row, a strip of outputs per block column.
+            return {
+                "block_m": 1,
+                "block_n": 128,
+                "block_k": 1,
+                "num_stages": 1,
+                "threads": 128,
+                "enable_rasterization": True,
+            }
         sm_version = get_sm_version()
         if sm_version in {90}:
             return {
@@ -1782,6 +1912,8 @@ class GroupConv2dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self.use_direct:
+            return [self.default_config]
         return conv_autotune_configs(self.dtype)
 
     def forward(
@@ -2094,27 +2226,22 @@ def _conv3d_group_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
+                # k runs over (c_in_g, kernel_d, kernel_h, kernel_w) in that order, which is
+                # how the weight is already laid out, so staging it is a tile copy rather
+                # than a gather. The rows past this group's c_out_g read the next group's
+                # weights; the epilogue masks the accumulator rows they feed.
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
+
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
                 group_id = bz % groups
+                oc_base = group_id * c_out_g + by * block_m
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    for i, k in T.Parallel(block_m, block_k):
-                        oc_g = by * block_m + i
-                        oc = group_id * c_out_g + oc_g
-                        k_idx = k_iter * block_k + k
-                        ci_g = k_idx // (kernel_d * kernel_h * kernel_w)
-                        kernel_idx = k_idx % (kernel_d * kernel_h * kernel_w)
-                        kd = kernel_idx // (kernel_h * kernel_w)
-                        kh = (kernel_idx // kernel_w) % kernel_h
-                        kw = kernel_idx % kernel_w
-                        weight_shared[i, k] = T.if_then_else(
-                            (oc_g < c_out_g) & (k_idx < k_total),
-                            weight[oc, ci_g, kd, kh, kw],
-                            T.cast(0.0, dtype),
-                        )
+                    T.copy(weight_flat[oc_base, k_iter * block_k], weight_shared)
 
                     for k, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + k
@@ -2163,15 +2290,20 @@ def _conv3d_group_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc_g = by * block_m + i
-                    oc = group_id * c_out_g + oc_g
-                    spatial_idx = bx * block_n + j
-                    od = spatial_idx // (out_h * out_w)
-                    oh = (spatial_idx // out_w) % out_h
-                    ow = spatial_idx % out_w
-                    if oc_g < c_out_g and spatial_idx < out_dhw:
-                        out[batch_id, oc, od, oh, ow] = out_shared[i, j]
+                if c_out_g % block_m == 0:
+                    # The tile ends on this group's last channel, so the copy cannot spill
+                    # into the next group's rows.
+                    T.copy(out_shared, out_flat[batch_id, oc_base, bx * block_n])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        spatial_idx = bx * block_n + j
+                        od = spatial_idx // (out_h * out_w)
+                        oh = (spatial_idx // out_w) % out_h
+                        ow = spatial_idx % out_w
+                        if oc_g < c_out_g and spatial_idx < out_dhw:
+                            out[batch_id, oc, od, oh, ow] = out_shared[i, j]
 
         if has_bias:
 
