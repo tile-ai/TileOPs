@@ -2218,9 +2218,8 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
     The epilogue write is N-tail guarded, which is load-bearing rather than
     defensive: ``gemv_config`` selects ``block_n = 2`` for ``k >= 12288``, and
     without the guard an odd ``n`` writes one element past ``c[.., n-1]``. The K
-    tail needs no explicit mask — the partial-tile ``T.copy`` zero-fills the
-    out-of-bounds ``b_shared`` and the ``x * 0`` product masks the
-    (unpredicated) out-of-bounds ``a`` read.
+    tail needs no mask written here — both tail loads are predicated by the
+    buffer extents in the emitted code (see the mainloop comment).
 
     Args:
         m: Batch rows (``1`` for the GEMV case, else the dispatched small ``m``).
@@ -2269,7 +2268,9 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
                     # ``cp_async_gs_conditional`` for b and a
                     # ``threadIdx.x < (k - bk * block_k) / tile_k`` branch for a.
                     # Verified at k=3000 with block_k=1024: an ``a`` whose tail
-                    # is filled with NaN leaves the result unchanged.
+                    # is filled with NaN leaves the result unchanged, and
+                    # ``compute-sanitizer --tool memcheck`` reports 0 errors at
+                    # m in {1, 2}.
                     for mi in T.serial(m):
                         for _k in T.vectorized(tile_k):
                             a_local[mi, _k] = a[mi, bk * block_k + tk * tile_k + _k]
