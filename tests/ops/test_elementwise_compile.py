@@ -1221,44 +1221,77 @@ def test_prelu_compile():
 
 
 def _graph_ownership_cases():
-    """One case per registration shape: (op, positional inputs)."""
-    from tileops.ops.elementwise import (
-        AddFwdOp,
-        ClampFwdOp,
-        ClampScalarFwdOp,
-        LerpTensorFwdOp,
-        MaskedFillFwdOp,
-        MaskedFillScalarFwdOp,
-        ReluFwdOp,
-        SiluAndMulFwdOp,
-        WhereFwdOp,
-    )
+    """One case per registration shape: (id, builder returning (op, inputs)).
 
-    d = dict(device="cuda", dtype=_DTYPE)
-    x = torch.randn(8, 16, **d)
-    other = torch.randn(16, **d)
-    mask = torch.zeros(8, 16, device="cuda", dtype=torch.bool)
-    bound = torch.zeros(8, 16, **d)
+    The builder runs inside the test, not here: this module is imported on the CPU-only
+    runner that enforces the compile-contract gate, and a CUDA tensor built at import
+    time would fail there before any test is selected.
+    """
+
+    def unary():
+        return ReluFwdOp(), (_x(8, 16),)
+
+    def unary_inplace():
+        return ReluFwdOp(inplace=True), (_x(8, 16),)
+
+    def binary():
+        return AddFwdOp(), (_x(8, 16), _x(16))
+
+    def fused_gated():
+        return SiluAndMulFwdOp(), (_x(8, 32),)
+
+    def clamp_scalar():
+        return ClampScalarFwdOp(min=-1.0, max=1.0), (_x(8, 16),)
+
+    def prelu():
+        return PreluFwdOp(), (_x(2, 4, 8), _x(4))
+
+    def where():
+        return WhereFwdOp(), (_mask(8, 16), _x(8, 16), _x(8, 16))
+
+    def lerp_tensor():
+        return LerpTensorFwdOp(), (_x(8, 16), _x(8, 16), _x(8, 16))
+
+    def clamp_tensor():
+        return ClampFwdOp(), (_x(8, 16), _x(8, 16), None)
+
+    def masked_fill_scalar():
+        return MaskedFillScalarFwdOp(value=-1.0), (_x(8, 16), _mask(8, 16))
+
+    def masked_fill_tensor():
+        value = torch.tensor(-1.0, dtype=_DTYPE, device="cuda")
+        return MaskedFillFwdOp(), (_x(8, 16), _mask(8, 16), value)
+
     return [
-        pytest.param(ReluFwdOp(), (x,), id="unary"),
-        pytest.param(ReluFwdOp(inplace=True), (x.clone(),), id="unary-inplace"),
-        pytest.param(AddFwdOp(), (x, other), id="binary"),
-        pytest.param(SiluAndMulFwdOp(), (torch.randn(8, 32, **d),), id="fused-gated"),
-        pytest.param(ClampScalarFwdOp(min=-1.0, max=1.0), (x,), id="clamp-scalar"),
-        pytest.param(PreluFwdOp(), (torch.randn(2, 4, 8, **d), torch.randn(4, **d)), id="prelu"),
-        pytest.param(WhereFwdOp(), (mask, x, x), id="where"),
-        pytest.param(LerpTensorFwdOp(), (x, x, torch.rand(8, 16, **d)), id="lerp-tensor"),
-        pytest.param(ClampFwdOp(), (x, bound, None), id="clamp-tensor"),
-        pytest.param(MaskedFillScalarFwdOp(value=-1.0), (x, mask), id="masked-fill-scalar"),
-        pytest.param(
-            MaskedFillFwdOp(), (x, mask, torch.tensor(-1.0, **d)), id="masked-fill-tensor"
-        ),
+        pytest.param(builder, id=name)
+        for name, builder in (
+            ("unary", unary),
+            ("unary-inplace", unary_inplace),
+            ("binary", binary),
+            ("fused-gated", fused_gated),
+            ("clamp-scalar", clamp_scalar),
+            ("prelu", prelu),
+            ("where", where),
+            ("lerp-tensor", lerp_tensor),
+            ("clamp-tensor", clamp_tensor),
+            ("masked-fill-scalar", masked_fill_scalar),
+            ("masked-fill-tensor", masked_fill_tensor),
+        )
     ]
 
 
+def _x(*shape):
+    return torch.randn(*shape, dtype=_DTYPE, device="cuda")
+
+
+def _mask(*shape):
+    return torch.zeros(*shape, dtype=torch.bool, device="cuda")
+
+
 @pytest.mark.smoke
-@pytest.mark.parametrize("op, inputs", _graph_ownership_cases())
-def test_the_traced_graph_holds_only_this_ops_operators(op, inputs):
+@pytest.mark.parametrize("build_case", _graph_ownership_cases())
+def test_the_traced_graph_holds_only_this_ops_operators(build_case):
+    op, inputs = build_case()
     assert_op_owns_graph_nodes(op, *inputs)
 
 
