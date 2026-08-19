@@ -111,9 +111,7 @@ def test_silu_and_mul_device_bounded_rows(strategy: str) -> None:
     reference = F.silu(x[:valid, :n].float()) * x[:valid, n:].float()
 
     assert torch.isfinite(output[:valid]).all()
-    assert torch.allclose(
-        output[:valid].float(), reference, atol=1.6e-2, rtol=1.6e-2
-    )
+    assert torch.allclose(output[:valid].float(), reference, atol=1.6e-2, rtol=1.6e-2)
 
 
 # ---------------------------------------------------------------------------

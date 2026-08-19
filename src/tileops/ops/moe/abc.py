@@ -56,25 +56,20 @@ class ExpertBatch:
 
     def __post_init__(self) -> None:
         if self.hidden.ndim != 2:
-            raise ValueError(
-                f"hidden must be rank 2 [capacity, H], got {self.hidden.shape}"
-            )
+            raise ValueError(f"hidden must be rank 2 [capacity, H], got {self.hidden.shape}")
         if self.expert_offsets.ndim != 1:
             raise ValueError(
-                "expert_offsets must be rank 1 [E_local + 1], got "
-                f"{self.expert_offsets.shape}"
+                f"expert_offsets must be rank 1 [E_local + 1], got {self.expert_offsets.shape}"
             )
         if self.expert_offsets.dtype != torch.int32:
             raise ValueError(
-                "expert_offsets must use torch.int32, got "
-                f"{self.expert_offsets.dtype}"
+                f"expert_offsets must use torch.int32, got {self.expert_offsets.dtype}"
             )
         if self.hidden.device != self.expert_offsets.device:
             raise ValueError("hidden and expert_offsets must be on the same device")
         if self.layout != "tight":
-            raise ValueError(
-                f"only layout='tight' is supported, got {self.layout!r}"
-            )
+            raise ValueError(f"only layout='tight' is supported, got {self.layout!r}")
+
     @property
     def capacity(self) -> int:
         return self.hidden.shape[0]

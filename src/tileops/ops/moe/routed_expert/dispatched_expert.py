@@ -115,21 +115,25 @@ class DispatchedExpertMLPFwdOp(Op):
             if kernel_cls is not GroupedGemmPersistent3WGKernel:
                 raise ValueError(
                     "use_fused_activation=True requires the 3WG persistent gate_up GEMM, "
-                    f"got {kernel_cls.__name__}")
+                    f"got {kernel_cls.__name__}"
+                )
             if gemm_override is not None and gemm_override is not GroupedGemmPersistent3WGKernel:
                 raise ValueError(
                     "use_fused_activation=True cannot honour a moe_grouped_gemm_kernel "
                     f"override ({gemm_override.__name__}): the fused gate_up wrapper keys off "
                     "moe_grouped_gemm_fused_act_kernel, so the override would reach the down "
-                    "GEMM alone and leave the pipeline inconsistent")
+                    "GEMM alone and leave the pipeline inconsistent"
+                )
             if activation not in ("silu_and_mul", "gelu_and_mul"):
                 raise ValueError(
                     "use_fused_activation=True supports activation in "
-                    f"{{silu_and_mul, gelu_and_mul}}, got {activation!r}")
+                    f"{{silu_and_mul, gelu_and_mul}}, got {activation!r}"
+                )
             if ffn_size % fused_block_n != 0:
                 raise ValueError(
                     f"use_fused_activation=True requires ffn_size % {fused_block_n} == 0, "
-                    f"got ffn_size={ffn_size}")
+                    f"got ffn_size={ffn_size}"
+                )
 
         if self.use_fused_activation:
             from .moe_grouped_gemm_nopad_fused_act import (
