@@ -762,7 +762,7 @@ def test_gemm_revalidates_cached_signature_dtypes() -> None:
     """
     a = torch.randn(256, 128, dtype=torch.float16, device="cuda")
     b = torch.randn(512, 128, dtype=torch.float16, device="cuda")
-    op = GemmOp()
+    op = GemmFwdOp()
     op(a, b)
 
     with pytest.raises(ValueError, match=r"input 'b' has dtype torch.bfloat16"):
