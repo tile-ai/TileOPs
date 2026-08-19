@@ -4,7 +4,7 @@
 # current runtime surface as source of truth: construction binds RoPE variant
 # config, while forward infers tensor dimensions from input metadata.
 
-RopeNeoxOp:
+RopeNeoxFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
@@ -39,7 +39,7 @@ RopeNeoxOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeNonNeoxOp:
+RopeNonNeoxFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
@@ -73,7 +73,7 @@ RopeNonNeoxOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeLlama31Op:
+RopeLlama31FwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
@@ -111,7 +111,7 @@ RopeLlama31Op:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeYarnOp:
+RopeYarnFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
@@ -150,7 +150,7 @@ RopeYarnOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeLongRopeOp:
+RopeLongRopeFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented
@@ -187,7 +187,7 @@ RopeLongRopeOp:
     bench: benchmarks/ops/bench_rope.py
     bench_manifest_driven: true
 
-RopeNeoxPositionIdsOp:
+RopeNeoxPositionIdsFwdOp:
   ref_api: "none"
   family: position_encoding
   status: implemented

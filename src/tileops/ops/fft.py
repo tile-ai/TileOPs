@@ -8,10 +8,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ['FFTC2COp']
+__all__ = ['FFTC2CFwdOp']
 
 
-class FFTC2COp(Op):
+class FFTC2CFwdOp(Op):
     """
     1D Complex-to-Complex Fast Fourier Transform operation.
 

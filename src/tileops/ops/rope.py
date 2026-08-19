@@ -5,11 +5,11 @@ forward time (on the same device as the input tensor) and delegates the
 actual rotation to the corresponding kernel.
 
 Variants and frequency computation:
-- **RopeNeoxOp**: standard theta = 10000^(-2k/d) frequencies
-- **RopeNonNeoxOp**: same frequencies, different rotation pattern (adjacent pairs)
-- **RopeLlama31Op**: piecewise-scaled frequencies for Llama 3.1
-- **RopeYarnOp**: YaRN linear-ramp interpolated frequencies
-- **RopeLongRopeOp**: per-dimension rescaled frequencies
+- **RopeNeoxFwdOp**: standard theta = 10000^(-2k/d) frequencies
+- **RopeNonNeoxFwdOp**: same frequencies, different rotation pattern (adjacent pairs)
+- **RopeLlama31FwdOp**: piecewise-scaled frequencies for Llama 3.1
+- **RopeYarnFwdOp**: YaRN linear-ramp interpolated frequencies
+- **RopeLongRopeFwdOp**: per-dimension rescaled frequencies
 
 Layouts:
 - ``"1d"``: input shape ``(seq_len, head_dim)``
@@ -83,12 +83,12 @@ def _register_rope_position_ids_custom_op(op_cls):
 
 
 __all__ = [
-    "RopeLlama31Op",
-    "RopeLongRopeOp",
-    "RopeNeoxOp",
-    "RopeNeoxPositionIdsOp",
-    "RopeNonNeoxOp",
-    "RopeYarnOp",
+    "RopeLlama31FwdOp",
+    "RopeLongRopeFwdOp",
+    "RopeNeoxFwdOp",
+    "RopeNeoxPositionIdsFwdOp",
+    "RopeNonNeoxFwdOp",
+    "RopeYarnFwdOp",
 ]
 
 
@@ -480,7 +480,7 @@ class _RopeOpBase(Op):
 # Concrete Op classes (5 variants)
 
 
-class RopeNeoxOp(_RopeOpBase):
+class RopeNeoxFwdOp(_RopeOpBase):
     """GPT-NeoX style RoPE op with standard theta frequencies.
 
     Computes cos/sin tables at construction using standard theta = base^(-2k/d).
@@ -509,7 +509,7 @@ class RopeNeoxOp(_RopeOpBase):
                            dtype=self.dtype, device=device)
 
 
-class RopeNeoxPositionIdsOp(Op):
+class RopeNeoxPositionIdsFwdOp(Op):
     """GPT-NeoX style RoPE for packed THD tensors with explicit positions."""
 
     _op_name = "rope_neox_position_ids"
@@ -607,7 +607,7 @@ class RopeNeoxPositionIdsOp(Op):
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if x.ndim != 3:
-            raise ValueError("RopeNeoxPositionIdsOp expects input shape [tokens, heads, head_dim]")
+            raise ValueError("RopeNeoxPositionIdsFwdOp expects input shape [tokens, heads, head_dim]")
         self.num_tokens, self.num_heads, self.head_dim = x.shape
         rotary_dim = (
             self.head_dim
@@ -651,7 +651,7 @@ class RopeNeoxPositionIdsOp(Op):
         return self._eager_forward(x, position_ids)
 
 
-class RopeNonNeoxOp(_RopeOpBase):
+class RopeNonNeoxFwdOp(_RopeOpBase):
     """Original RoFormer RoPE op with adjacent-pair rotation.
 
     Computes cos/sin tables at construction using standard theta = base^(-2k/d).
@@ -680,7 +680,7 @@ class RopeNonNeoxOp(_RopeOpBase):
                            dtype=self.dtype, device=device)
 
 
-class RopeLlama31Op(_RopeOpBase):
+class RopeLlama31FwdOp(_RopeOpBase):
     """Llama 3.1 RoPE op with piecewise frequency scaling.
 
     Computes cos/sin tables at construction using Llama 3.1 piecewise-scaled
@@ -726,7 +726,7 @@ class RopeLlama31Op(_RopeOpBase):
         )
 
 
-class RopeYarnOp(_RopeOpBase):
+class RopeYarnFwdOp(_RopeOpBase):
     """YaRN RoPE op with linear-ramp frequency interpolation.
 
     Computes cos/sin tables at construction using YaRN linear-ramp
@@ -773,7 +773,7 @@ class RopeYarnOp(_RopeOpBase):
         )
 
 
-class RopeLongRopeOp(_RopeOpBase):
+class RopeLongRopeFwdOp(_RopeOpBase):
     """LongRoPE op with per-dimension frequency rescaling.
 
     Computes cos/sin tables at construction using per-dimension rescale
@@ -823,10 +823,10 @@ class RopeLongRopeOp(_RopeOpBase):
 
 # torch.compile registration for all 5 RoPE ops
 
-for _cls in [RopeNeoxOp, RopeNonNeoxOp, RopeLlama31Op, RopeYarnOp, RopeLongRopeOp]:
+for _cls in [RopeNeoxFwdOp, RopeNonNeoxFwdOp, RopeLlama31FwdOp, RopeYarnFwdOp, RopeLongRopeFwdOp]:
     _register_rope_custom_op(_cls)
 
-_register_rope_position_ids_custom_op(RopeNeoxPositionIdsOp)
+_register_rope_position_ids_custom_op(RopeNeoxPositionIdsFwdOp)
 
 # Clean up loop variable
 del _cls

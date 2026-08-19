@@ -13,9 +13,9 @@ import torch
 
 from tileops.kernels.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.gemm_call import GemmCall
-from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS, DeltaNetDecodeOp
-from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS, GatedDeltaNetDecodeOp
-from tileops.ops.gemm import GemmOp
+from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS, DeltaNetDecodeFwdOp
+from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS, GatedDeltaNetDecodeFwdOp
+from tileops.ops.gemm import GemmFwdOp
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="selection reads the device architecture")
@@ -41,7 +41,7 @@ _SM80 = 80
 ])
 def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool,
                        expected: str) -> None:
-    op = GemmOp(trans_a=trans_a, trans_b=trans_b)
+    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
     call = GemmCall(arch=_SM90, m=m, n=n, k=64, dtype=torch.float16,
                     trans_a=trans_a, trans_b=trans_b)
 
@@ -51,7 +51,7 @@ def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool,
 @pytest.mark.smoke
 def test_gemm_is_refused_where_neither_implementation_runs() -> None:
     """Both are SM90-only, so an older architecture has nothing to fall back to."""
-    op = GemmOp()
+    op = GemmFwdOp()
     call = GemmCall(arch=_SM80, m=1, n=8, k=64, dtype=torch.float16, trans_b=True)
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
@@ -79,7 +79,7 @@ _DELTANET_ROWS = [
 )
 def test_deltanet_decode_dispatch(dtype: torch.dtype, dim_k: int, dim_v: int,
                                   arch: int, expected: str) -> None:
-    op = DeltaNetDecodeOp()
+    op = DeltaNetDecodeFwdOp()
     call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v,
                               dtype=dtype)
 
@@ -107,7 +107,7 @@ _GATED_ROWS = [
 )
 def test_gated_deltanet_decode_dispatch(dtype: torch.dtype, dim_k: int, dim_v: int,
                                         arch: int, expected: str) -> None:
-    op = GatedDeltaNetDecodeOp()
+    op = GatedDeltaNetDecodeFwdOp()
     call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v,
                               dtype=dtype)
 
@@ -120,7 +120,7 @@ def test_gated_deltanet_raw_cuda_declines_when_asked_to_autotune() -> None:
 
     Nothing is autotuned here: only the key is resolved.
     """
-    op = GatedDeltaNetDecodeOp(tune=True)
+    op = GatedDeltaNetDecodeFwdOp(tune=True)
     call = DeltaNetDecodeCall(arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128,
                               dtype=torch.bfloat16, tune=True)
 

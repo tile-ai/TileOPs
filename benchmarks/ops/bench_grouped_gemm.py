@@ -19,7 +19,7 @@ from benchmarks.benchmark_base import (
     workload_field_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import GroupedGemmOp
+from tileops.ops import GroupedGemmFwdOp
 from workloads.grouped_gemm import (
     GroupedGemmWorkload,
 )
@@ -31,7 +31,7 @@ _TUNE = True
 
 # Test functions
 
-_GROUPED_GEMM_OP = "GroupedGemmOp"
+_GROUPED_GEMM_OP = "GroupedGemmFwdOp"
 _GROUPED_GEMM_PARAMS = workload_field_params(
     load_workloads(_GROUPED_GEMM_OP),
     ("batch_sum", "batch_count", "n", "k", "dtype", "transpose_a", "transpose_b"),
@@ -51,7 +51,7 @@ def test_grouped_gemm_bench(batch_sum: int, batch_count: int, N: int, K: int,
     test = GroupedGemmWorkload(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
     inputs = test.gen_inputs()
 
-    op = GroupedGemmOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)
+    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)
     bm = ManifestBenchmark(_GROUPED_GEMM_OP, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=name, params=locals())

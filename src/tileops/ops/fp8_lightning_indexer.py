@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["FP8LightningIndexerOp"]
+__all__ = ["FP8LightningIndexerFwdOp"]
 
 
-class FP8LightningIndexerOp(Op):
+class FP8LightningIndexerFwdOp(Op):
 
     def __init__(self,
                  clean_logits=True,
@@ -87,9 +87,9 @@ class FP8LightningIndexerOp(Op):
         index_k_scale: Optional[torch.Tensor],
     ) -> None:
         if not index_q.is_cuda or not index_k.is_cuda:
-            raise ValueError("FP8LightningIndexerOp expects CUDA inputs")
+            raise ValueError("FP8LightningIndexerFwdOp expects CUDA inputs")
         if index_q.ndim != 4 or index_k.ndim != 4:
-            raise ValueError("FP8LightningIndexerOp expects index_q/index_k to be 4D tensors")
+            raise ValueError("FP8LightningIndexerFwdOp expects index_q/index_k to be 4D tensors")
         batch, seq_len, heads, index_dim = index_q.shape
         k_batch, seq_len_kv, kv_group, k_dim = index_k.shape
         if k_batch != batch or k_dim != index_dim:

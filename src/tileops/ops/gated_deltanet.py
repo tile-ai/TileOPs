@@ -23,7 +23,7 @@ __all__ = [
     "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
-    "GatedDeltaNetDecodeOp",
+    "GatedDeltaNetDecodeFwdOp",
     "GatedDeltaNetOp",
     "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillBTHDFwdOp",
@@ -899,7 +899,7 @@ class GatedDeltaNetOp(Op):
         return _GatedDeltaNetFunction.apply(q, k, v, g, beta, fwd_kernel, bwd_kernel)
 
 
-class GatedDeltaNetDecodeOp(Op):
+class GatedDeltaNetDecodeFwdOp(Op):
     """Gated DeltaNet decode (single-step recurrence).
 
     Computes one step of the gated delta rule:

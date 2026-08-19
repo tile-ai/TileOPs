@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["FP8QuantOp"]
+__all__ = ["FP8QuantFwdOp"]
 
 
-class FP8QuantOp(Op):
+class FP8QuantFwdOp(Op):
 
     def __init__(self,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -47,15 +47,15 @@ class FP8QuantOp(Op):
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if not input_tensor.is_cuda:
-            raise ValueError("FP8QuantOp expects a CUDA input tensor")
+            raise ValueError("FP8QuantFwdOp expects a CUDA input tensor")
         if input_tensor.ndim != 4:
-            raise ValueError("FP8QuantOp expects input_tensor shape [B, S, G, D]")
+            raise ValueError("FP8QuantFwdOp expects input_tensor shape [B, S, G, D]")
         if input_tensor.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(f"FP8QuantOp does not support dtype {input_tensor.dtype}")
+            raise ValueError(f"FP8QuantFwdOp does not support dtype {input_tensor.dtype}")
 
         batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
         if min(batch, seq_len_kv, kv_group, index_dim) <= 0:
-            raise ValueError("FP8QuantOp input dimensions must be positive")
+            raise ValueError("FP8QuantFwdOp input dimensions must be positive")
 
         self.batch = batch
         self.seq_len_kv = seq_len_kv

@@ -8,7 +8,7 @@ import torch
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    RopeNeoxPositionIdsOp,
+    RopeNeoxPositionIdsFwdOp,
 )
 from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 
@@ -65,7 +65,7 @@ def _apply_neox_rope_position_ids(
     max_position: int,
     rotary_dim: int | None = None,
 ) -> torch.Tensor:
-    op = RopeNeoxPositionIdsOp(
+    op = RopeNeoxPositionIdsFwdOp(
         max_position=max_position,
         rotary_dim=rotary_dim,
     )

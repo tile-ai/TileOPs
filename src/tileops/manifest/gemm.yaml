@@ -1,11 +1,11 @@
 # Dense GEMM family.
 #
-# GemmOp is input-inferred: m/n/k and the dtype are derived from the forward
+# GemmFwdOp is input-inferred: m/n/k and the dtype are derived from the forward
 # inputs, so nothing is committed at construction. Roofline binds m/n/k and
 # dtype during forward() and therefore uses func mode (the callable reads
 # op.m/op.n/op.k/op.dtype), which stays correct across all trans_a/trans_b
 # layouts where a single static `vars` expression could not.
-GemmOp:
+GemmFwdOp:
   ref_api: "torch.matmul"
   family: gemm
   status: implemented
@@ -58,7 +58,7 @@ GemmOp:
       gemm_kernel: GemmKernel
       gemv_kernel: GemvKernel
 
-GemmFp8Op:
+GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"
   family: gemm
   status: implemented
@@ -109,7 +109,7 @@ GemmFp8Op:
       gemm_fp8_epilogue_kernel: GemmFp8EpilogueKernel
       gemm_fp8_block_scaled_kernel: GemmFp8BlockScaledKernel
 
-GemmW4A16Op:
+GemmW4A16FwdOp:
   ref_api: "none"
   family: gemm
   status: implemented
@@ -154,7 +154,7 @@ GemmW4A16Op:
       gemm_w4a16_kernel: GemmW4A16Kernel
       gemm_w4a16_decode_kernel: GemmW4A16DecodeKernel
 
-GroupedGemmOp:
+GroupedGemmFwdOp:
   ref_api: "none"
   family: gemm
   status: implemented

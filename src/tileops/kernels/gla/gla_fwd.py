@@ -565,9 +565,8 @@ class GLAFwdKernel(Kernel):
             h_out,
         )
 
-        # Store h_out and g_cumsum for backward access
+        # Store h_out for backward access
         self._h_out = h_out
-        self._g_cumsum = g_cumsum
 
         final_state = h_out[:, -1] if self.output_final_state else None
         return o, final_state

@@ -11,7 +11,7 @@ from tileops.kernels.deltanet_recurrence import (
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
-from tileops.ops import DeltaNetDecodeOp
+from tileops.ops import DeltaNetDecodeFwdOp
 from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS
 from workloads.linear_attention import DeltaNetDecodeWorkload, deltanet_decode_torch
 
@@ -59,7 +59,7 @@ def test_deltanet_decode(
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = DeltaNetDecodeOp(tune=tune)
+    op = DeltaNetDecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), **tols)
 
@@ -78,7 +78,7 @@ def test_deltanet_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = DeltaNetDecodeOp(tune=tune)
+    op = DeltaNetDecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -103,7 +103,7 @@ def test_deltanet_decode_multi_step(
 
 @pytest.mark.smoke
 def test_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
-    op = object.__new__(DeltaNetDecodeOp)
+    op = object.__new__(DeltaNetDecodeFwdOp)
     op.batch = 2
     op.heads = 3
     op.dim_k = 4
@@ -141,7 +141,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
 
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(2, 4, 128, 128, dtype)
-    op = DeltaNetDecodeOp(tune=False)
+    op = DeltaNetDecodeFwdOp(tune=False)
     inputs = test.gen_inputs()
     op(*inputs)
     assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
@@ -159,7 +159,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     torch.manual_seed(42)
     num_steps = 8
     B, H, DK, DV = 2, 4, 128, 128
-    op = DeltaNetDecodeOp(tune=False)
+    op = DeltaNetDecodeFwdOp(tune=False)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -233,7 +233,7 @@ def _stated_call(sm_version: int, dtype: torch.dtype, dim_k: int = 128,
 def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
     dtype: torch.dtype,
 ) -> None:
-    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map())
+    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
     key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(90, dtype))
 
@@ -246,7 +246,7 @@ def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
 ])
 def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
     """Whatever selection picks is constructed with the op's autotune setting."""
-    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map(), tune=tune)
+    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map(), tune=tune)
 
     kernel = op._get_kernel(1, 32, 128, 128, torch.bfloat16, device_index=None)
 
@@ -255,7 +255,7 @@ def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
 
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_unsupported_sm() -> None:
-    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map())
+    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
     key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(80, torch.bfloat16))
 
@@ -268,7 +268,7 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
     dim_k: int,
     dim_v: int,
 ) -> None:
-    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map())
+    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
     key = op.select_kernel_key(
         DELTANET_DECODE_KEYS, _stated_call(90, torch.bfloat16, dim_k, dim_v))
@@ -278,7 +278,7 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
 
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32() -> None:
-    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map())
+    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
     key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(90, torch.float32))
 

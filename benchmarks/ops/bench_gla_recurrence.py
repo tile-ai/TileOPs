@@ -13,11 +13,11 @@ import torch
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GLADecodeOp
+from tileops.ops import GLADecodeFwdOp
 from workloads.linear_attention import GLADecodeWorkload
 from workloads.workload_base import FixtureBase
 
-_OP_NAME = "GLADecodeOp"
+_OP_NAME = "GLADecodeFwdOp"
 
 
 def gla_decode_torch(
@@ -102,7 +102,7 @@ def test_gla_decode_bench(
     inputs = test.gen_inputs()
 
     # --- TileOPs ---
-    op = GLADecodeOp(scale=scale, tune=tune)
+    op = GLADecodeFwdOp(scale=scale, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     functors = {"tileops": op}
 

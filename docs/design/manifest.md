@@ -233,7 +233,7 @@ Each top-level entry is keyed by the **Python class name** of the Op — PascalC
 - **Direction** — `Fwd` or `Bwd`. REQUIRED when the manifest carries both directions of the same op (a direction sibling exists); single-direction ops MAY omit it.
 - **Op** — literal suffix.
 
-Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `DropoutOp`.
+Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `DropoutFwdOp`.
 
 Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resolution or case conversion.
 

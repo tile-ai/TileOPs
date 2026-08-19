@@ -961,9 +961,9 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
 
 
 def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense ``GemmOp`` (``d = a @ b``, fp16/bf16).
+    """Roofline for dense ``GemmFwdOp`` (``d = a @ b``, fp16/bf16).
 
-    ``GemmOp`` is input-inferred, so the logical dims ``m/n/k`` and the dtype
+    ``GemmFwdOp`` is input-inferred, so the logical dims ``m/n/k`` and the dtype
     are bound on the op during ``forward()``; this reads them directly, which
     stays correct across all ``trans_a``/``trans_b`` layouts (the logical dims
     are transpose-independent). Valid only after the first ``forward()``.
@@ -973,7 +973,7 @@ def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
     """
     if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
         raise RuntimeError(
-            "GemmOp.eval_roofline() is valid only after the first forward(); "
+            "GemmFwdOp.eval_roofline() is valid only after the first forward(); "
             "m/n/k and dtype are inferred from the inputs."
         )
     m, n, k = op.m, op.n, op.k
@@ -984,10 +984,10 @@ def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def gemm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense FP8 ``GemmFp8Op``."""
+    """Roofline for dense FP8 ``GemmFp8FwdOp``."""
     if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
         raise RuntimeError(
-            "GemmFp8Op.eval_roofline() is valid only after the first forward(); "
+            "GemmFp8FwdOp.eval_roofline() is valid only after the first forward(); "
             "m/n/k and dtype are inferred from the inputs."
         )
     m, n, k = op.m, op.n, op.k
@@ -1004,10 +1004,10 @@ def gemm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense W4A16 ``GemmW4A16Op``."""
+    """Roofline for dense W4A16 ``GemmW4A16FwdOp``."""
     if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
         raise RuntimeError(
-            "GemmW4A16Op.eval_roofline() is valid only after the first forward(); "
+            "GemmW4A16FwdOp.eval_roofline() is valid only after the first forward(); "
             "m/n/k and dtype are inferred from the inputs."
         )
     m, n, k = op.m, op.n, op.k

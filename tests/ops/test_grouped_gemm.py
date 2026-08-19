@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.grouped_gemm import GroupedGemmOp
+from tileops.ops.grouped_gemm import GroupedGemmFwdOp
 from workloads.grouped_gemm import (
     GroupedGemmWorkload,
 )
@@ -45,7 +45,7 @@ class GroupedGemmFixture(FixtureBase):
 def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
                       transpose_a: bool, transpose_b: bool, tune: bool) -> None:
     test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
-    op = GroupedGemmOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=tune)
+    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=tune)
     test.check(op, *test.gen_inputs())
 
 

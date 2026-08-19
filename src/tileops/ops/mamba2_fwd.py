@@ -31,7 +31,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-from .cb_producer import CBProducerOp
+from .cb_producer import CBProducerFwdOp
 from .da_cumsum import DaCumsumFwdOp
 from .op_base import Op
 from .ssd_chunk_scan import SSDChunkScanFwdOp
@@ -71,7 +71,6 @@ class Mamba2FwdOp(Op):
         self.n_groups = None
         self.dtype = None
         self.dt_softplus = dt_softplus
-        self._heads_per_group = None
         self.tune = tune
         # This composite owns no kernel; the override reaches the sub-ops that do.
         self.dispatch_kernel(kernel_map)
@@ -86,7 +85,7 @@ class Mamba2FwdOp(Op):
         self._state_passing_op = SSDStatePassingFwdOp(tune=tune, kernel_map=kernel_map)
 
         self._chunk_scan_op = SSDChunkScanFwdOp(tune=tune, kernel_map=kernel_map)
-        self._cb_producer_ops: dict[tuple, CBProducerOp] = {}
+        self._cb_producer_ops: dict[tuple, CBProducerFwdOp] = {}
 
 
     @property
@@ -141,10 +140,10 @@ class Mamba2FwdOp(Op):
         d_state: int,
         dtype: torch.dtype,
         device_index: int | None,
-    ) -> CBProducerOp:
+    ) -> CBProducerFwdOp:
         key = (batch, num_chunks, n_groups, self.chunk_size, d_state, dtype, device_index, self.tune)
         if key not in self._cb_producer_ops:
-            self._cb_producer_ops[key] = CBProducerOp(
+            self._cb_producer_ops[key] = CBProducerFwdOp(
                 batch=batch,
                 num_chunks=num_chunks,
                 n_groups=n_groups,
@@ -216,7 +215,6 @@ class Mamba2FwdOp(Op):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = x.dtype
-        self._heads_per_group = n_heads // n_groups
         self.dt_bias_shape = None if dt_bias is None else tuple(dt_bias.shape)
         self.initial_states_shape = (
             None if initial_states is None else tuple(initial_states.shape)

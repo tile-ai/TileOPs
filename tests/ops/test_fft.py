@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import FFTC2COp
+from tileops.ops import FFTC2CFwdOp
 from workloads.fft import FFTWorkload
 
 
@@ -30,7 +30,7 @@ class FFTFixture(FixtureBase):
 @FFTFixture
 def test_fft_c2c(n: int, dtype: torch.dtype, tune: bool, batch_shape: tuple) -> None:
     test = FFTTest(n, dtype, batch_shape=batch_shape)
-    op = FFTC2COp(tune=tune)
+    op = FFTC2CFwdOp(tune=tune)
     if dtype == torch.complex64:
         tolerances = {"atol": 1e-4, "rtol": 1e-4}
     else:

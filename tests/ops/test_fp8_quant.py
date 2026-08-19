@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import FP8QuantOp
+from tileops.ops import FP8QuantFwdOp
 from workloads.fp8_quant import FP8QuantWorkload
 
 
@@ -38,7 +38,7 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 def test_fp8_quant_op(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                       in_dtype: torch.dtype, tune: bool) -> None:
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
-    op = FP8QuantOp(tune=tune)
+    op = FP8QuantFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.engram_decode import EngramDecodeOp
+from tileops.ops.engram_decode import EngramDecodeFwdOp
 from workloads.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
@@ -97,7 +97,7 @@ class EngramDecodeFixture(FixtureBase):
 @EngramDecodeFixture
 def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune):
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
-    op = EngramDecodeOp(
+    op = EngramDecodeFwdOp(
         batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=tune,
     )
     inputs = test.gen_inputs()
@@ -123,7 +123,7 @@ def test_engram_decode_multi_step():
     rms_w_v = torch.ones(d, dtype=dtype, device="cuda")
     conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device="cuda") * 0.02
 
-    op = EngramDecodeOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation)
+    op = EngramDecodeFwdOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation)
 
     # Start with empty conv_state (like empty KV cache)
     conv_state = torch.zeros(B, 0, d, dtype=dtype, device="cuda")

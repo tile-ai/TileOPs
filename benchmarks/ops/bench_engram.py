@@ -18,7 +18,7 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.engram_decode import EngramDecodeOp
+from tileops.ops.engram_decode import EngramDecodeFwdOp
 from workloads.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
@@ -68,7 +68,7 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     bm.compare({"tileops": op, "torch": ref_with_grad}, *inputs, record_as=op, params=locals())
 
 
-_ENGRAM_DECODE_OP = "EngramDecodeOp"
+_ENGRAM_DECODE_OP = "EngramDecodeFwdOp"
 _ENGRAM_DECODE_PARAMS = workload_field_params(
     load_workloads(_ENGRAM_DECODE_OP),
     ("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
@@ -83,7 +83,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     test = EngramDecodeWorkload(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
     inputs = test.gen_inputs()
 
-    op = EngramDecodeOp(
+    op = EngramDecodeFwdOp(
         batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=_TUNE,
     )
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)

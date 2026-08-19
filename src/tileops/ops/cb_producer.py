@@ -10,10 +10,10 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.ops.op_base import Op
 
-__all__ = ["CBProducerOp"]
+__all__ = ["CBProducerFwdOp"]
 
 
-class CBProducerOp(Op):
+class CBProducerFwdOp(Op):
     """CB (C@B) matrix producer operator.
 
     Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]

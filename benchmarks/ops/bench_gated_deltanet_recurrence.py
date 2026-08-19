@@ -6,11 +6,11 @@ import torch
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GatedDeltaNetDecodeOp
+from tileops.ops import GatedDeltaNetDecodeFwdOp
 from workloads.linear_attention import GatedDeltaNetDecodeWorkload
 from workloads.workload_base import FixtureBase
 
-_OP_NAME = "GatedDeltaNetDecodeOp"
+_OP_NAME = "GatedDeltaNetDecodeFwdOp"
 
 
 def gated_deltanet_decode_torch(
@@ -93,7 +93,7 @@ def test_gated_deltanet_decode_bench(
     test = GatedDeltaNetDecodeWorkload(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetDecodeOp(tune=tune)
+    op = GatedDeltaNetDecodeFwdOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     functors = {"tileops": op}
 

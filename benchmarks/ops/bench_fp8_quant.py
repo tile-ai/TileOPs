@@ -14,7 +14,7 @@ from benchmarks.benchmark_base import (
     workload_field_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import FP8QuantOp
+from tileops.ops import FP8QuantFwdOp
 from workloads.fp8_quant import FP8QuantWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
@@ -22,7 +22,7 @@ from workloads.fp8_quant import FP8QuantWorkload
 _TUNE = True
 
 
-_FP8_QUANT_OP = "FP8QuantOp"
+_FP8_QUANT_OP = "FP8QuantFwdOp"
 _FP8_QUANT_PARAMS = workload_field_params(
     load_workloads(_FP8_QUANT_OP),
     ("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
@@ -35,7 +35,7 @@ def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: 
     test = FP8QuantWorkload(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     inputs = test.gen_inputs()
 
-    op = FP8QuantOp(tune=_TUNE)
+    op = FP8QuantFwdOp(tune=_TUNE)
     bm = ManifestBenchmark(_FP8_QUANT_OP, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())

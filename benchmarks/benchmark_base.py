@@ -270,12 +270,13 @@ class ManifestBenchmark(BenchmarkBase[Any]):
 
     def __init__(
         self,
+        # Nothing reads it at run time; validate_manifest parses this argument to
+        # tie the benchmark file to a manifest entry, so it must stay a literal.
         op_name: str,
         op: Any,
         workload: Any,
     ):
         super().__init__(workload)
-        self._op_name = op_name
         self._op = op
         self._roofline_cache: Optional[tuple[float, float]] = None
 

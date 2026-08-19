@@ -5,12 +5,12 @@ import torch
 
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
+from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
 
-_OP_NAME = "GemmOp"
-_FP8_OP_NAME = "GemmFp8Op"
-_W4A16_OP_NAME = "GemmW4A16Op"
+_OP_NAME = "GemmFwdOp"
+_FP8_OP_NAME = "GemmFp8FwdOp"
+_W4A16_OP_NAME = "GemmW4A16FwdOp"
 _W4A16_GROUP_SIZE = 128
 
 _DTYPE_MAP = {
@@ -286,7 +286,7 @@ def test_gemm_bench(
     workload = GemmBenchmarkWorkload(m, n, k, dtype, trans_a, trans_b)
     a, b = workload.gen_inputs()
 
-    op = GemmOp(trans_a=trans_a, trans_b=trans_b)
+    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
     bm = ManifestBenchmark(_OP_NAME, op, workload)
 
     # The benchmark framework warms up internally; eval_roofline() is read
@@ -308,7 +308,7 @@ def test_gemm_fp8_bench(
     workload = GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
     inputs = workload.gen_inputs()
 
-    op = GemmFp8Op(out_dtype=out_dtype)
+    op = GemmFp8FwdOp(out_dtype=out_dtype)
     bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
 
     if scale_mode not in ("per_tensor", "block128"):
@@ -361,7 +361,7 @@ def test_gemm_w4a16_bench(
     workload = GemmW4A16BenchmarkWorkload(m, n, k, dtype, group_size=group_size)
     inputs = workload.gen_inputs()
 
-    op = GemmW4A16Op(group_size=group_size)
+    op = GemmW4A16FwdOp(group_size=group_size)
     bm = ManifestBenchmark(_W4A16_OP_NAME, op, workload)
 
     expected = workload.ref_program(*inputs)

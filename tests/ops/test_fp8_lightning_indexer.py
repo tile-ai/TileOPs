@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import FP8LightningIndexerOp
+from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 
@@ -57,13 +57,13 @@ def test_indexer(batch: int, seq_len: int, heads: int, index_dim: int, seq_len_k
                  kv_group: int, clean_logits: bool, config: Optional[dict], tune: bool) -> None:
     test = FP8LightningIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
-    op = FP8LightningIndexerOp(clean_logits=clean_logits, config=config, tune=tune)
+    op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, config=config, tune=tune)
     test.check(op, *test.gen_inputs(), compare=FP8LightningIndexerTest._validate_tensor_match)
 
 
 @pytest.mark.smoke
 def test_indexer_rejects_bf16_inputs_with_external_scale() -> None:
-    op = FP8LightningIndexerOp()
+    op = FP8LightningIndexerFwdOp()
     batch, seq_len, heads, index_dim, seq_len_kv, kv_group = 1, 8, 4, 16, 16, 1
     index_q = torch.randn(
         batch, seq_len, heads, index_dim, device="cuda", dtype=torch.bfloat16)

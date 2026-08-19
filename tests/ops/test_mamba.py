@@ -5,12 +5,12 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
-from tileops.ops.cb_producer import CBProducerOp
+from tileops.ops.cb_producer import CBProducerFwdOp
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.ssd_decode import SSDDecodeOp
+from tileops.ops.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from tileops.perf import formulas
 from workloads.mamba import (
@@ -66,7 +66,7 @@ def cb_producer_fwd_ref(
     pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
 ])
 def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
-    op = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
+    op = CBProducerFwdOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
     seq_len = num_chunks * chunk_len
     C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
@@ -77,7 +77,7 @@ def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype,
 
 @pytest.mark.smoke
 def test_cb_producer_fwd_noncontiguous():
-    """CBProducerOp must handle non-contiguous inputs."""
+    """CBProducerFwdOp must handle non-contiguous inputs."""
     batch, num_chunks, chunk_len, n_groups, d_state = 1, 2, 64, 1, 64
     dtype = torch.float16
     seq_len = num_chunks * chunk_len
@@ -88,7 +88,7 @@ def test_cb_producer_fwd_noncontiguous():
     assert not C_mat.is_contiguous()
     assert not B_mat.is_contiguous()
     ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
-    out = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state)(C_mat, B_mat)
+    out = CBProducerFwdOp(batch, num_chunks, n_groups, chunk_len, d_state)(C_mat, B_mat)
     allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -270,7 +270,7 @@ class SSDDecodeTest(SSDDecodeWorkload, TestBase):
 @SSDDecodeFixture
 def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
-    op = SSDDecodeOp(tune=tune)
+    op = SSDDecodeFwdOp(tune=tune)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
     # Run reference on a clone of state so the two runs start from the same point.

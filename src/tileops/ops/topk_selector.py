@@ -7,10 +7,10 @@ from tileops.kernels.topk_selector import TopkSelectorKernel
 
 from .op_base import Op
 
-__all__ = ["TopkSelectorOp"]
+__all__ = ["TopkSelectorFwdOp"]
 
 
-class TopkSelectorOp(Op):
+class TopkSelectorFwdOp(Op):
 
     def __init__(self,
                  topk: int,
@@ -58,19 +58,19 @@ class TopkSelectorOp(Op):
 
     def forward(self, index_score, starts, ends) -> torch.Tensor:
         if not index_score.is_cuda:
-            raise ValueError("TopkSelectorOp expects CUDA inputs")
+            raise ValueError("TopkSelectorFwdOp expects CUDA inputs")
         if index_score.ndim != 4:
-            raise ValueError("TopkSelectorOp expects index_score shape [B, S, S_kv, G]")
+            raise ValueError("TopkSelectorFwdOp expects index_score shape [B, S, S_kv, G]")
         if starts.ndim != 2 or ends.ndim != 2:
-            raise ValueError("TopkSelectorOp expects starts/ends shape [B, S]")
+            raise ValueError("TopkSelectorFwdOp expects starts/ends shape [B, S]")
         if not starts.is_cuda or not ends.is_cuda:
             raise ValueError("starts and ends must be CUDA tensors")
         if starts.dtype != torch.int32 or ends.dtype != torch.int32:
-            raise ValueError("TopkSelectorOp expects int32 starts/ends tensors")
+            raise ValueError("TopkSelectorFwdOp expects int32 starts/ends tensors")
 
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
         if starts.shape != (batch, seq_len) or ends.shape != (batch, seq_len):
-            raise ValueError("TopkSelectorOp starts/ends must match index_score batch/seq_len")
+            raise ValueError("TopkSelectorFwdOp starts/ends must match index_score batch/seq_len")
         if not 0 < self.topk <= seq_len_kv:
             raise ValueError(f"topk must satisfy 0 < topk <= seq_len_kv={seq_len_kv}")
 

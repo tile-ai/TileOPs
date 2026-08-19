@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["EngramDecodeOp"]
+__all__ = ["EngramDecodeFwdOp"]
 
 
-class EngramDecodeOp(Op):
+class EngramDecodeFwdOp(Op):
     """Engram fused decode operator — single-token inference.
 
     Fuses GEMV projection + gating + dilated conv + SiLU into one kernel call.

@@ -325,10 +325,10 @@ class RopeEdgeFixture(FixtureBase):
 @RopeBasicFixture
 def test_rope_neox_1d(batch: int, seq_len: int, num_heads: int,
                       head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeNeoxOp
+    from tileops.ops.rope import RopeNeoxFwdOp
 
     test = RopeTest("neox", "1d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNeoxOp(layout="1d")
+    op = RopeNeoxFwdOp(layout="1d")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -336,10 +336,10 @@ def test_rope_neox_1d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_neox_2d(batch: int, seq_len: int, num_heads: int,
                       head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeNeoxOp
+    from tileops.ops.rope import RopeNeoxFwdOp
 
     test = RopeTest("neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNeoxOp(layout="2d")
+    op = RopeNeoxFwdOp(layout="2d")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -347,7 +347,7 @@ def test_rope_neox_2d(batch: int, seq_len: int, num_heads: int,
 @pytest.mark.smoke
 @pytest.mark.parametrize("rotary_dim", [None, 32])
 def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
-    from tileops.ops.rope import RopeNeoxPositionIdsOp
+    from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
     num_tokens, num_heads, head_dim, max_position = 96, 8, 64, 512
     table_dim = head_dim if rotary_dim is None else rotary_dim
@@ -359,7 +359,7 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
     cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device="cuda")
     ref = ref_rope_neox_position_ids(x, cos, sin, position_ids.long(), rotary_dim=rotary_dim)
 
-    op = RopeNeoxPositionIdsOp(
+    op = RopeNeoxPositionIdsFwdOp(
         max_position=max_position,
         rotary_dim=rotary_dim,
     )
@@ -369,9 +369,9 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
 
 @pytest.mark.smoke
 def test_rope_neox_position_ids_validates_range() -> None:
-    from tileops.ops.rope import RopeNeoxPositionIdsOp
+    from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
-    op = RopeNeoxPositionIdsOp(max_position=8)
+    op = RopeNeoxPositionIdsFwdOp(max_position=8)
     x = torch.randn(2, 1, 16, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="position_ids"):
         op(x, torch.tensor([0, 8], device="cuda", dtype=torch.int32))
@@ -379,11 +379,11 @@ def test_rope_neox_position_ids_validates_range() -> None:
 
 @pytest.mark.smoke
 def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
-    from tileops.ops.rope import RopeNeoxPositionIdsOp
+    from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
     max_position = 64
     position_ids = torch.arange(8, device="cuda", dtype=torch.int32)
-    op = RopeNeoxPositionIdsOp(max_position=max_position, rotary_dim=None)
+    op = RopeNeoxPositionIdsFwdOp(max_position=max_position, rotary_dim=None)
 
     x1 = torch.randn(8, 2, 16, device="cuda", dtype=torch.float16)
     cos1, sin1 = _compute_freqs_cis_base(16, max_position, dtype=x1.dtype, device="cuda")
@@ -405,10 +405,10 @@ def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
 @RopeBasicFixture
 def test_rope_non_neox_1d(batch: int, seq_len: int, num_heads: int,
                           head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeNonNeoxOp
+    from tileops.ops.rope import RopeNonNeoxFwdOp
 
     test = RopeTest("non_neox", "1d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNonNeoxOp(layout="1d")
+    op = RopeNonNeoxFwdOp(layout="1d")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -416,10 +416,10 @@ def test_rope_non_neox_1d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int,
                           head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeNonNeoxOp
+    from tileops.ops.rope import RopeNonNeoxFwdOp
 
     test = RopeTest("non_neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNonNeoxOp(layout="2d")
+    op = RopeNonNeoxFwdOp(layout="2d")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -430,13 +430,13 @@ def test_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_llama31_1d(batch: int, seq_len: int, num_heads: int,
                          head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeLlama31Op
+    from tileops.ops.rope import RopeLlama31FwdOp
 
     extra = {"scale_factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
              "original_max_position": 8192}
     test = RopeTest("rope_llama31", "1d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
-    op = RopeLlama31Op(layout="1d", **extra)
+    op = RopeLlama31FwdOp(layout="1d", **extra)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -444,13 +444,13 @@ def test_rope_llama31_1d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_llama31_2d(batch: int, seq_len: int, num_heads: int,
                          head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeLlama31Op
+    from tileops.ops.rope import RopeLlama31FwdOp
 
     extra = {"scale_factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
              "original_max_position": 8192}
     test = RopeTest("rope_llama31", "2d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
-    op = RopeLlama31Op(layout="2d", **extra)
+    op = RopeLlama31FwdOp(layout="2d", **extra)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -461,13 +461,13 @@ def test_rope_llama31_2d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_yarn_1d(batch: int, seq_len: int, num_heads: int,
                       head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeYarnOp
+    from tileops.ops.rope import RopeYarnFwdOp
 
     extra = {"scale": 16.0, "original_max_position": 4096,
              "beta_fast": 32.0, "beta_slow": 1.0, "attn_factor": 1.0}
     test = RopeTest("yarn_rope", "1d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
-    op = RopeYarnOp(layout="1d", **extra)
+    op = RopeYarnFwdOp(layout="1d", **extra)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -475,13 +475,13 @@ def test_rope_yarn_1d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_yarn_2d(batch: int, seq_len: int, num_heads: int,
                       head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeYarnOp
+    from tileops.ops.rope import RopeYarnFwdOp
 
     extra = {"scale": 16.0, "original_max_position": 4096,
              "beta_fast": 32.0, "beta_slow": 1.0, "attn_factor": 1.0}
     test = RopeTest("yarn_rope", "2d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
-    op = RopeYarnOp(layout="2d", **extra)
+    op = RopeYarnFwdOp(layout="2d", **extra)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -492,7 +492,7 @@ def test_rope_yarn_2d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_longrope_1d(batch: int, seq_len: int, num_heads: int,
                           head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeLongRopeOp
+    from tileops.ops.rope import RopeLongRopeFwdOp
 
     half = head_dim // 2
     rescale = torch.linspace(1.0, 2.0, half, device="cuda")
@@ -503,7 +503,7 @@ def test_rope_longrope_1d(batch: int, seq_len: int, num_heads: int,
              "original_max_position_embeddings": orig_max_pos}
     test = RopeTest("longrope", "1d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
-    op = RopeLongRopeOp(layout="1d", rescale_factors=rescale,
+    op = RopeLongRopeFwdOp(layout="1d", rescale_factors=rescale,
                         max_position_embeddings=max_pos,
                         original_max_position_embeddings=orig_max_pos)
     atol, rtol = _get_tolerances(dtype)
@@ -513,7 +513,7 @@ def test_rope_longrope_1d(batch: int, seq_len: int, num_heads: int,
 @RopeBasicFixture
 def test_rope_longrope_2d(batch: int, seq_len: int, num_heads: int,
                           head_dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.rope import RopeLongRopeOp
+    from tileops.ops.rope import RopeLongRopeFwdOp
 
     half = head_dim // 2
     rescale = torch.linspace(1.0, 2.0, half, device="cuda")
@@ -524,7 +524,7 @@ def test_rope_longrope_2d(batch: int, seq_len: int, num_heads: int,
              "original_max_position_embeddings": orig_max_pos}
     test = RopeTest("longrope", "2d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
-    op = RopeLongRopeOp(layout="2d", rescale_factors=rescale,
+    op = RopeLongRopeFwdOp(layout="2d", rescale_factors=rescale,
                         max_position_embeddings=max_pos,
                         original_max_position_embeddings=orig_max_pos)
     atol, rtol = _get_tolerances(dtype)
@@ -538,10 +538,10 @@ def test_rope_longrope_2d(batch: int, seq_len: int, num_heads: int,
 def test_rope_neox_edge(batch: int, seq_len: int, num_heads: int,
                         head_dim: int, dtype: torch.dtype) -> None:
     """Edge cases: seq_len=1 and longer sequences."""
-    from tileops.ops.rope import RopeNeoxOp
+    from tileops.ops.rope import RopeNeoxFwdOp
 
     test = RopeTest("neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNeoxOp(layout="2d")
+    op = RopeNeoxFwdOp(layout="2d")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -550,10 +550,10 @@ def test_rope_neox_edge(batch: int, seq_len: int, num_heads: int,
 def test_rope_non_neox_edge(batch: int, seq_len: int, num_heads: int,
                             head_dim: int, dtype: torch.dtype) -> None:
     """Edge cases: seq_len=1 and longer sequences."""
-    from tileops.ops.rope import RopeNonNeoxOp
+    from tileops.ops.rope import RopeNonNeoxFwdOp
 
     test = RopeTest("non_neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNonNeoxOp(layout="2d")
+    op = RopeNonNeoxFwdOp(layout="2d")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -564,9 +564,9 @@ def test_rope_non_neox_edge(batch: int, seq_len: int, num_heads: int,
 @pytest.mark.smoke
 def test_rope_rejects_wrong_rank_2d() -> None:
     """A tensor with the wrong rank for 2D layout must be rejected."""
-    from tileops.ops.rope import RopeNeoxOp
+    from tileops.ops.rope import RopeNeoxFwdOp
 
-    op = RopeNeoxOp(layout="2d")
+    op = RopeNeoxFwdOp(layout="2d")
     x = torch.randn(4, 4, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="2d layout expects"):
         op(x)
@@ -575,10 +575,10 @@ def test_rope_rejects_wrong_rank_2d() -> None:
 @pytest.mark.smoke
 def test_rope_noncontiguous_1d_works() -> None:
     """A non-contiguous 1D view must produce correct results after contiguity normalization."""
-    from tileops.ops.rope import RopeNeoxOp
+    from tileops.ops.rope import RopeNeoxFwdOp
 
     seq_len, head_dim = 4, 8
-    op = RopeNeoxOp(layout="1d")
+    op = RopeNeoxFwdOp(layout="1d")
 
     # Create a non-contiguous view: transpose makes it non-contiguous
     base = torch.randn(head_dim, seq_len, device="cuda", dtype=torch.float32)

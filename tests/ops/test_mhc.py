@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import MHCPostOp, MHCPreOp
+from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
 from workloads.mhc import MHCPostWorkload, MHCPreWorkload
 
 
@@ -36,7 +36,7 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                     tune: bool) -> None:
     test = MHCPreTest(batch, n_expand, c_x, dtype)
-    op = MHCPreOp(tune=tune)
+    op = MHCPreFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 
@@ -61,7 +61,7 @@ class MHCPostFixture(FixtureBase):
 def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                      tune: bool) -> None:
     test = MHCPostTest(batch, n_expand, c_x, dtype)
-    op = MHCPostOp(tune=tune)
+    op = MHCPostFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

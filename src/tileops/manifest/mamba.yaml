@@ -67,7 +67,7 @@ DaCumsumFwdOp:
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
 
-CBProducerOp:
+CBProducerFwdOp:
   # Causal C@B coupling-matrix producer:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
   ref_api: "none"
@@ -229,7 +229,7 @@ SSDChunkScanFwdOp:
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
 
-SSDDecodeOp:
+SSDDecodeFwdOp:
   # Single-token Mamba-2 SSD decode step. state is updated in place (read +
   # write); y_out is the only returned tensor. The D * x skip connection and
   # z-gate are not fused here.

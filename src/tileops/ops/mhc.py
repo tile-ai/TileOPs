@@ -8,10 +8,10 @@ from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
 
 from .op_base import Op
 
-__all__ = ["MHCPostOp", "MHCPreOp"]
+__all__ = ["MHCPostFwdOp", "MHCPreFwdOp"]
 
 
-class MHCPreOp(Op):
+class MHCPreFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -68,7 +68,7 @@ class MHCPreOp(Op):
                 sinkhorn_eps: float = 0.02) -> torch.Tensor:
 
         if phi.ndim != 2 or x.ndim != 2 or b.ndim != 1:
-            raise ValueError("MHCPreOp expects phi/x/b shapes [D, P], [B, D], [P]")
+            raise ValueError("MHCPreFwdOp expects phi/x/b shapes [D, P], [B, D], [P]")
         batch, x_dim = x.shape
         if phi.shape[0] != x_dim:
             raise ValueError(f"phi.shape[0] must match x.shape[1]={x_dim}, got {phi.shape[0]}")
@@ -87,7 +87,7 @@ class MHCPreOp(Op):
                            sinkhorn_eps)
 
 
-class MHCPostOp(Op):
+class MHCPostFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -128,10 +128,10 @@ class MHCPostOp(Op):
                 x_res: torch.Tensor) -> torch.Tensor:
 
         if x_layer_out.ndim != 2 or h_post.ndim != 2 or x_res.ndim != 2:
-            raise ValueError("MHCPostOp expects x_layer_out/h_post/x_res to be 2D tensors")
+            raise ValueError("MHCPostFwdOp expects x_layer_out/h_post/x_res to be 2D tensors")
         batch, c_x = x_layer_out.shape
         if h_post.shape[0] != batch or x_res.shape[0] != batch:
-            raise ValueError("MHCPostOp inputs must have matching batch dimensions")
+            raise ValueError("MHCPostFwdOp inputs must have matching batch dimensions")
         n_expand = h_post.shape[1]
         if x_res.shape[1] != n_expand * c_x:
             raise ValueError(

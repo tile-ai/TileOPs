@@ -6,10 +6,10 @@ from benchmarks.benchmark_base import (
     ManifestBenchmark,
     workloads_to_params,
 )
-from tileops.ops import FFTC2COp
+from tileops.ops import FFTC2CFwdOp
 from workloads.fft import FFTWorkload
 
-_OP_NAME = "FFTC2COp"
+_OP_NAME = "FFTC2CFwdOp"
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
@@ -19,7 +19,7 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = FFTWorkload(n, dtype, batch_shape=batch_shape)
     inputs = test.gen_inputs()
 
-    op = FFTC2COp(tune=True)
+    op = FFTC2CFwdOp(tune=True)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

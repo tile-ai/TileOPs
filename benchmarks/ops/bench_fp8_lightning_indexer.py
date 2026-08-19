@@ -8,7 +8,7 @@ import pytest
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops import FP8LightningIndexerOp
+from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 # Autotuning and the kernel-config override are bench-run policy, not
@@ -17,7 +17,7 @@ _TUNE = False
 _CONFIG = None
 
 
-_FP8_LIGHTNING_INDEXER_OP = "FP8LightningIndexerOp"
+_FP8_LIGHTNING_INDEXER_OP = "FP8LightningIndexerFwdOp"
 
 _SHAPE_KEYS = (
     "batch", "seq_len", "heads", "index_dim", "seq_len_kv", "kv_group", "clean_logits",
@@ -51,7 +51,7 @@ def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index
                                        clean_logits, _CONFIG)
     inputs = test.gen_inputs()
 
-    op = FP8LightningIndexerOp(clean_logits=clean_logits, config=_CONFIG, tune=_TUNE)
+    op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, config=_CONFIG, tune=_TUNE)
     bm = ManifestBenchmark(_FP8_LIGHTNING_INDEXER_OP, op, test)
 
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals())

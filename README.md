@@ -26,9 +26,9 @@
 
 ```python
 import torch
-from tileops.ops import GemmOp
+from tileops.ops import GemmFwdOp
 
-gemm = GemmOp()  # shapes and dtype are inferred at call time
+gemm = GemmFwdOp()  # shapes and dtype are inferred at call time
 
 a = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
@@ -60,7 +60,7 @@ Each operator is declared in [`src/tileops/manifest/`](src/tileops/manifest/) be
 The entry drives code generation, testing, and benchmarking:
 
 ```yaml
-GemmOp:
+GemmFwdOp:
   ref_api: "torch.matmul"
   signature: {inputs: {a: {dtype: "float16 | bfloat16"}, b: {dtype: "same_as(a)"}}, ...}
   workloads: [{m: 1024, n: 1024, k: 1024, dtypes: [float16, bfloat16]}]

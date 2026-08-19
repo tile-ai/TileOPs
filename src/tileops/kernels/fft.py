@@ -555,7 +555,7 @@ class FFTC2CKernel(Kernel):
        stages.
 
     2. Pre-computed twiddle LUT: the remaining large-stride stages look up
-       twiddle factors from a GPU-resident LUT (built by FFTC2COp at
+       twiddle factors from a GPU-resident LUT (built by FFTC2CFwdOp at
        construction time), eliminating repeated sin/cos evaluation.
 
     Together these match cuFFT-level performance on modern NVIDIA GPUs.
@@ -568,7 +568,7 @@ class FFTC2CKernel(Kernel):
 
     Note:
         n must be a power of 2.
-        The LUT tensors are managed and passed by FFTC2COp, not this class.
+        The LUT tensors are managed and passed by FFTC2CFwdOp, not this class.
 
     Optimization notes and benchmark results: https://github.com/tile-ai/TileOPs/issues/310
     """

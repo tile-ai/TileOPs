@@ -152,10 +152,10 @@ def test_moe_unpermute_serves_two_dtypes_from_one_instance():
 
 @pytest.mark.smoke
 def test_cb_producer_serves_two_dtypes_from_one_instance():
-    from tileops.ops.cb_producer import CBProducerOp
+    from tileops.ops.cb_producer import CBProducerFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
-    op = CBProducerOp(batch, chunks, groups, chunk_len, d_state)
+    op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state)
     s = chunks * chunk_len
     for dtype in _DTYPES:
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")

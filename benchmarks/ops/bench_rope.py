@@ -17,12 +17,12 @@ import torch
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.rope import (
-    RopeLlama31Op,
-    RopeLongRopeOp,
-    RopeNeoxOp,
-    RopeNeoxPositionIdsOp,
-    RopeNonNeoxOp,
-    RopeYarnOp,
+    RopeLlama31FwdOp,
+    RopeLongRopeFwdOp,
+    RopeNeoxFwdOp,
+    RopeNeoxPositionIdsFwdOp,
+    RopeNonNeoxFwdOp,
+    RopeYarnFwdOp,
 )
 
 # Bench-local: manifest workload entries carry no ``base``; the ops and the
@@ -121,7 +121,7 @@ def _profile_rope(op, bm: ManifestBenchmark, shape: tuple[int, ...],
 
 # Per-op tests — one block per manifest entry.
 
-_NEOX_OP = "RopeNeoxOp"
+_NEOX_OP = "RopeNeoxFwdOp"
 
 
 @pytest.mark.parametrize(
@@ -130,12 +130,12 @@ _NEOX_OP = "RopeNeoxOp"
 def test_rope_neox_bench(
     shape: tuple[int, ...], dtype: torch.dtype, layout: str,
 ) -> None:
-    op = RopeNeoxOp(layout=layout, base=_BASE)
+    op = RopeNeoxFwdOp(layout=layout, base=_BASE)
     bm = ManifestBenchmark(_NEOX_OP, op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_NON_NEOX_OP = "RopeNonNeoxOp"
+_NON_NEOX_OP = "RopeNonNeoxFwdOp"
 
 
 @pytest.mark.parametrize(
@@ -144,12 +144,12 @@ _NON_NEOX_OP = "RopeNonNeoxOp"
 def test_rope_non_neox_bench(
     shape: tuple[int, ...], dtype: torch.dtype, layout: str,
 ) -> None:
-    op = RopeNonNeoxOp(layout=layout, base=_BASE)
+    op = RopeNonNeoxFwdOp(layout=layout, base=_BASE)
     bm = ManifestBenchmark(_NON_NEOX_OP, op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_LLAMA31_OP = "RopeLlama31Op"
+_LLAMA31_OP = "RopeLlama31FwdOp"
 
 
 @pytest.mark.parametrize(
@@ -158,12 +158,12 @@ _LLAMA31_OP = "RopeLlama31Op"
 def test_rope_llama31_bench(
     shape: tuple[int, ...], dtype: torch.dtype, layout: str,
 ) -> None:
-    op = RopeLlama31Op(layout=layout, base=_BASE)
+    op = RopeLlama31FwdOp(layout=layout, base=_BASE)
     bm = ManifestBenchmark(_LLAMA31_OP, op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_YARN_OP = "RopeYarnOp"
+_YARN_OP = "RopeYarnFwdOp"
 
 
 @pytest.mark.parametrize(
@@ -172,12 +172,12 @@ _YARN_OP = "RopeYarnOp"
 def test_rope_yarn_bench(
     shape: tuple[int, ...], dtype: torch.dtype, layout: str,
 ) -> None:
-    op = RopeYarnOp(layout=layout, base=_BASE)
+    op = RopeYarnFwdOp(layout=layout, base=_BASE)
     bm = ManifestBenchmark(_YARN_OP, op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_LONGROPE_OP = "RopeLongRopeOp"
+_LONGROPE_OP = "RopeLongRopeFwdOp"
 
 
 @pytest.mark.parametrize(
@@ -186,12 +186,12 @@ _LONGROPE_OP = "RopeLongRopeOp"
 def test_rope_longrope_bench(
     shape: tuple[int, ...], dtype: torch.dtype, layout: str,
 ) -> None:
-    op = RopeLongRopeOp(layout=layout, base=_BASE)
+    op = RopeLongRopeFwdOp(layout=layout, base=_BASE)
     bm = ManifestBenchmark(_LONGROPE_OP, op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_POSITION_IDS_OP = "RopeNeoxPositionIdsOp"
+_POSITION_IDS_OP = "RopeNeoxPositionIdsFwdOp"
 
 
 @pytest.mark.parametrize(
@@ -207,7 +207,7 @@ def test_rope_neox_position_ids_bench(
         num_tokens, device="cuda", dtype=torch.int32,
     ) % max_position
 
-    op = RopeNeoxPositionIdsOp(max_position=max_position, base=_BASE)
+    op = RopeNeoxPositionIdsFwdOp(max_position=max_position, base=_BASE)
     bm = ManifestBenchmark(_POSITION_IDS_OP, op, RopeWorkload(shape, dtype))
     params = {"shape": shape, "dtype": dtype, "max_position": max_position}
 

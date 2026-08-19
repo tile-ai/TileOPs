@@ -6,7 +6,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.gated_deltanet_recurrence import GatedDeltaNetDecodeRawCudaFlaStyleKernel
-from tileops.ops import GatedDeltaNetDecodeOp
+from tileops.ops import GatedDeltaNetDecodeFwdOp
 from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS
 from workloads.linear_attention import (
     GatedDeltaNetDecodeWorkload,
@@ -59,7 +59,7 @@ def test_gated_deltanet_decode(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = GatedDeltaNetDecodeOp(tune=tune)
+    op = GatedDeltaNetDecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), **tols)
 
@@ -78,7 +78,7 @@ def test_gated_deltanet_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = GatedDeltaNetDecodeOp(tune=tune)
+    op = GatedDeltaNetDecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -146,7 +146,7 @@ def test_gated_deltanet_decode_raw_cuda_dispatch_rejects_unsupported_sm100() -> 
     than run on any of them — and the refusal names the raw kernel as one that
     declined for its architecture, which is what this pins.
     """
-    op = GatedDeltaNetDecodeOp()
+    op = GatedDeltaNetDecodeFwdOp()
     call = DeltaNetDecodeCall(arch=100, batch=1, heads=4, dim_k=128, dim_v=128,
                               dtype=torch.bfloat16)
 
@@ -158,7 +158,7 @@ def test_gated_deltanet_decode_raw_cuda_dispatch_rejects_unsupported_sm100() -> 
 
 @pytest.mark.smoke
 def test_gated_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
-    op = object.__new__(GatedDeltaNetDecodeOp)
+    op = object.__new__(GatedDeltaNetDecodeFwdOp)
     op.batch = 2
     op.heads = 3
     op.dim_k = 4

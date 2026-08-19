@@ -112,7 +112,7 @@ EngramGateConvBwdOp:
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
 
-EngramDecodeOp:
+EngramDecodeFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
@@ -164,7 +164,7 @@ EngramDecodeOp:
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
 
-FFTC2COp:
+FFTC2CFwdOp:
   ref_api: "torch.fft.fft"
   family: spectral
   status: implemented
@@ -195,7 +195,7 @@ FFTC2COp:
     bench: benchmarks/ops/bench_fft.py
     bench_manifest_driven: true
 
-MHCPreOp:
+MHCPreFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
@@ -238,7 +238,7 @@ MHCPreOp:
     bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: true
 
-MHCPostOp:
+MHCPostFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented

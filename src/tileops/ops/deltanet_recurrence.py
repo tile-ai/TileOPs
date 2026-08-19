@@ -12,7 +12,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["DeltaNetDecodeOp"]
+__all__ = ["DeltaNetDecodeFwdOp"]
 
 #: Implementations of the DeltaNet decode slot.
 DELTANET_DECODE_KEYS = (
@@ -22,7 +22,7 @@ DELTANET_DECODE_KEYS = (
 )
 
 
-class DeltaNetDecodeOp(Op):
+class DeltaNetDecodeFwdOp(Op):
     """DeltaNet decode (single-step recurrence, ungated).
 
     Computes one step of the delta rule (no gate):

@@ -110,7 +110,7 @@ GatedDeltaNetPrefillBHTDFwdOp:
     bench_manifest_driven: true
 
 
-GatedDeltaNetDecodeOp:
+GatedDeltaNetDecodeFwdOp:
   # Single-token serving decode. The input state is read-only from the public
   # contract perspective; the op returns a fresh new_state tensor.
   ref_api: "none"
@@ -165,7 +165,7 @@ GatedDeltaNetDecodeOp:
     bench: benchmarks/ops/bench_gated_deltanet_recurrence.py
     bench_manifest_driven: true
 
-DeltaNetDecodeOp:
+DeltaNetDecodeFwdOp:
   # Single-token ungated DeltaNet decode. Like GDN decode, state ownership is
   # functional: state is read and new_state is returned.
   ref_api: "none"
@@ -216,7 +216,7 @@ DeltaNetDecodeOp:
     bench: benchmarks/ops/bench_deltanet_recurrence.py
     bench_manifest_driven: true
 
-GLADecodeOp:
+GLADecodeFwdOp:
   # Single-token GLA decode. The scale parameter is semantic and fixed at op
   # construction; state is returned functionally as new_state.
   ref_api: "none"

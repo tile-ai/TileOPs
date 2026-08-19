@@ -3,7 +3,7 @@
 # These entries describe existing helper surfaces only. They do not claim the
 # full INT8/INT4/NF4/FP8 quantization family from the older release plan.
 
-FP8QuantOp:
+FP8QuantFwdOp:
   ref_api: "none"
   family: quantization
   status: implemented

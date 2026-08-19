@@ -14,7 +14,7 @@ from benchmarks.benchmark_base import (
     workload_field_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import TopkSelectorOp
+from tileops.ops import TopkSelectorFwdOp
 from workloads.topk_selector import TopkSelectorWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
@@ -22,7 +22,7 @@ from workloads.topk_selector import TopkSelectorWorkload
 _TUNE = True
 
 
-_TOPK_SELECTOR_OP = "TopkSelectorOp"
+_TOPK_SELECTOR_OP = "TopkSelectorFwdOp"
 _TOPK_SELECTOR_PARAMS = workload_field_params(
     load_workloads(_TOPK_SELECTOR_OP),
     ("batch", "seq_len", "seq_len_kv", "kv_group", "topk", "in_dtype", "out_dtype"),
@@ -39,7 +39,7 @@ def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group
                                 out_dtype)
     inputs = test.gen_inputs()
 
-    op = TopkSelectorOp(topk=topk, tune=_TUNE)
+    op = TopkSelectorFwdOp(topk=topk, tune=_TUNE)
     bm = ManifestBenchmark(_TOPK_SELECTOR_OP, op, test)
 
     bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())

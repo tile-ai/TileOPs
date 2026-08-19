@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GroupedGemmOp"]
+__all__ = ["GroupedGemmFwdOp"]
 
 
-class GroupedGemmOp(Op):
+class GroupedGemmFwdOp(Op):
     """
     Grouped GEMM with configurable transpose modes.
 
@@ -65,7 +65,7 @@ class GroupedGemmOp(Op):
 
         if not self.transpose_a:
             if a.ndim != 2 or b.ndim != 3:
-                raise ValueError("GroupedGemmOp expects 2D a and 3D b when transpose_a=False")
+                raise ValueError("GroupedGemmFwdOp expects 2D a and 3D b when transpose_a=False")
             batch_sum, k = a.shape
             if b.shape[0] != batch_count:
                 raise ValueError(f"b.shape[0] must match batch_count={batch_count}, got {b.shape[0]}")
@@ -74,10 +74,10 @@ class GroupedGemmOp(Op):
             else:
                 b_k, n = b.shape[1], b.shape[2]
             if b_k != k:
-                raise ValueError(f"GroupedGemmOp expected K={k}, got b K dimension {b_k}")
+                raise ValueError(f"GroupedGemmFwdOp expected K={k}, got b K dimension {b_k}")
         else:
             if a.ndim != 2 or b.ndim != 2:
-                raise ValueError("GroupedGemmOp expects 2D a and b when transpose_a=True")
+                raise ValueError("GroupedGemmFwdOp expects 2D a and b when transpose_a=True")
             batch_sum, n = a.shape
             if self.transpose_b:
                 k, b_batch_sum = b.shape
@@ -85,7 +85,7 @@ class GroupedGemmOp(Op):
                 b_batch_sum, k = b.shape
             if b_batch_sum != batch_sum:
                 raise ValueError(
-                    f"GroupedGemmOp expected b batch_sum dimension {batch_sum}, got {b_batch_sum}"
+                    f"GroupedGemmFwdOp expected b batch_sum dimension {batch_sum}, got {b_batch_sum}"
                 )
         return batch_sum, batch_count, n, k, a.dtype, a.device.index
 

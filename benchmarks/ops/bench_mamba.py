@@ -9,7 +9,7 @@ from tileops.manifest import load_workloads
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.ssd_decode import SSDDecodeOp
+from tileops.ops.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     DaCumsumFwdWorkload,
@@ -24,7 +24,7 @@ _DA_CUMSUM_OP_NAME = "DaCumsumFwdOp"
 _CHUNK_STATE_OP_NAME = "SSDChunkStateFwdOp"
 _CHUNK_SCAN_OP_NAME = "SSDChunkScanFwdOp"
 _STATE_PASSING_OP_NAME = "SSDStatePassingFwdOp"
-_DECODE_OP_NAME = "SSDDecodeOp"
+_DECODE_OP_NAME = "SSDDecodeFwdOp"
 
 
 def _da_cumsum_args(w: dict) -> tuple:
@@ -475,7 +475,7 @@ def test_ssd_decode_bench(
     state_for_op = state.clone()
     state_bl = state.clone()
 
-    op = SSDDecodeOp(tune=tune)
+    op = SSDDecodeFwdOp(tune=tune)
     bm = ManifestBenchmark(_DECODE_OP_NAME, op, test)
     functors = {"tileops": op}
 

@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GLADecodeOp"]
+__all__ = ["GLADecodeFwdOp"]
 
 
-class GLADecodeOp(Op):
+class GLADecodeFwdOp(Op):
     """GLA (Gated Linear Attention) decode (single-step recurrence).
 
     Computes one step of the gated linear attention recurrence:

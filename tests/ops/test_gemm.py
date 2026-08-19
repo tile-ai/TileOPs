@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
+from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
 
@@ -183,7 +183,7 @@ class GemmW4A16Fixture(FixtureBase):
 def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool,
               tune: bool) -> None:
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
-    op = GemmOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
+    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
     if dtype == torch.float16:
         # Only GEMV sums in a different order than cuBLAS; there cancellation
         # leaves atol alone to carry the reduction error, 3.3e-3 at K=16384.
@@ -205,7 +205,7 @@ def test_gemm_fp8(
     bias: bool,
 ) -> None:
     test = GemmFp8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
-    op = GemmFp8Op(out_dtype=out_dtype)
+    op = GemmFp8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
     if dtype != torch.float8_e4m3fn:
         with pytest.raises(ValueError, match="only supports torch.float8_e4m3fn"):
@@ -217,7 +217,7 @@ def test_gemm_fp8(
 @GemmW4A16Fixture
 def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
-    op = GemmW4A16Op()
+    op = GemmW4A16FwdOp()
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
     expected = "GemmW4A16DecodeKernel" if m == 1 else "GemmW4A16Kernel"
     assert op.kernel.__class__.__name__ == expected
@@ -244,7 +244,7 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
-    op = GemmFp8Op()
+    op = GemmFp8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
     assert op.kernel.__class__.__name__ == "GemmFp8BlockScaledKernel"
 
@@ -254,7 +254,7 @@ def test_gemm_fp8_rejects_unsupported_scale_grids() -> None:
     m, n, k = 128, 256, 256
     test = GemmFp8Test(m, n, k, torch.float8_e4m3fn, "per_tensor")
     a, b, _, _ = test.gen_inputs()
-    op = GemmFp8Op()
+    op = GemmFp8FwdOp()
 
     with pytest.raises(ValueError, match="supports scale shapes"):
         op(
@@ -285,7 +285,7 @@ def test_gemm_fp8_revalidates_cached_signature_dtypes() -> None:
         bias=True,
     )
     a, b, scale_a, scale_b, bias = test.gen_inputs()
-    op = GemmFp8Op(out_dtype=torch.bfloat16)
+    op = GemmFp8FwdOp(out_dtype=torch.bfloat16)
     op(a, b, scale_a, scale_b, bias)
 
     with pytest.raises(ValueError, match="expects b dtype"):
@@ -302,7 +302,7 @@ def test_gemm_fp8_revalidates_cached_signature_dtypes() -> None:
 def test_gemm_w4a16_rejects_invalid_metadata_shapes() -> None:
     test = GemmW4A16Test(64, 64, 128, torch.float16)
     activation, packed_weight, weight_scale, weight_zero = test.gen_inputs()
-    op = GemmW4A16Op()
+    op = GemmW4A16FwdOp()
 
     with pytest.raises(ValueError, match="weight_scale must have shape"):
         op(activation, packed_weight, weight_scale[:, :0], weight_zero)
@@ -315,7 +315,7 @@ def test_gemm_w4a16_rejects_invalid_metadata_shapes() -> None:
 def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     """GEMV lhs_row path (m=1, trans_b=True) with non-aligned n or k."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
-    op = GemmOp(trans_a=False, trans_b=True, tune=tune)
+    op = GemmFwdOp(trans_a=False, trans_b=True, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
 
@@ -325,7 +325,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     """GEMV rhs_col path (n=1, no transpose) with non-aligned m or k."""
     m = n  # reuse fixture's n as the non-aligned m dimension
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
-    op = GemmOp(trans_a=False, trans_b=False, tune=tune)
+    op = GemmFwdOp(trans_a=False, trans_b=False, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
 

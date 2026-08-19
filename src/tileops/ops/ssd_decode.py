@@ -7,10 +7,10 @@ from tileops.kernels.mamba import SSDDecodeKernel
 
 from .op_base import Op
 
-__all__ = ["SSDDecodeOp"]
+__all__ = ["SSDDecodeFwdOp"]
 
 
-class SSDDecodeOp(Op):
+class SSDDecodeFwdOp(Op):
     """Mamba-2 State-Space Dual (SSD) recurrent decode (step) operator.
 
     Performs a single decode step of the Mamba-2 State Space Model (SSM) core: updates the

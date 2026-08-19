@@ -20,11 +20,11 @@ from tileops.kernels.kernel_base import Kernel
 from .compile_boundary import get_instance
 from .op_base import Op
 
-__all__ = ["DropoutOp"]
+__all__ = ["DropoutFwdOp"]
 
 
 
-class DropoutOp(Op):
+class DropoutFwdOp(Op):
     """Dropout operation with deterministic replay via TileLang RNG.
 
     Compatible with PyTorch dropout semantics:
@@ -83,7 +83,7 @@ class DropoutOp(Op):
         """Read x + write y."""
         if self.N_total is None or self.dtype is None:
             raise RuntimeError(
-                "DropoutOp.total_memory requires a prior forward() call to bind input shape and dtype"
+                "DropoutFwdOp.total_memory requires a prior forward() call to bind input shape and dtype"
             )
         return self.N_total * self.dtype.itemsize * 2
 
@@ -135,4 +135,4 @@ def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
     return torch.empty_like(x)
 
 
-DropoutOp._wrapped = _wrapped_dropout
+DropoutFwdOp._wrapped = _wrapped_dropout

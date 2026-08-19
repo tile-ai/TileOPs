@@ -1,6 +1,6 @@
 # Attention indexing and sparse selection operators.
 
-FP8LightningIndexerOp:
+FP8LightningIndexerFwdOp:
   ref_api: "none"
   family: attention_indexing
   status: implemented
@@ -47,7 +47,7 @@ FP8LightningIndexerOp:
     bench: benchmarks/ops/bench_fp8_lightning_indexer.py
     bench_manifest_driven: true
 
-TopkSelectorOp:
+TopkSelectorFwdOp:
   ref_api: "torch.topk"
   family: attention_indexing
   status: implemented
