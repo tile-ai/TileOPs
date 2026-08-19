@@ -1,7 +1,8 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
@@ -15,6 +16,7 @@ from tileops.kernels.convolution import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from .compile_boundary import get_instance
 from .op_base import Op
 
 __all__ = [
@@ -199,12 +201,17 @@ def _conv1d_l_out(
 
 
 class Conv1dFwdOp(Op):
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::conv_conv1d_fwd",)
+
     def __init__(
         self,
         stride: int | Tuple[int] = 1,
         padding: int | Tuple[int] | str = 0,
         dilation: int | Tuple[int] = 1,
         groups: int = 1,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -219,6 +226,7 @@ class Conv1dFwdOp(Op):
         self.padding = padding
         self.groups = groups
         self.dtype = None
+        self.target = target
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -280,6 +288,7 @@ class Conv1dFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
         has_bias: bool,
+        inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
         use_pointwise = (
             self.groups == 1
@@ -348,7 +357,7 @@ class Conv1dFwdOp(Op):
                     dilation_l=self.dilation,
                 )
 
-        return self.get_or_build_kernel("conv1d_kernel", key=key, build=build)
+        return self.get_or_build_kernel("conv1d_kernel", inputs, key=key, build=build)
 
     def forward(
         self,
@@ -356,6 +365,33 @@ class Conv1dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Apply the convolution. One call to this op's operator, nothing else.
+
+        Args:
+            input: Input tensor in the manifest's layout.
+            weight: Convolution weight.
+            bias: Per-output-channel bias, or ``None``.
+
+        Returns:
+            The convolution result.
+
+        Raises:
+            ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
+                operator, by :meth:`_eager_forward`.
+        """
+        return _conv1d_fwd(input, weight, bias, self._instance_key)
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Validate, normalize, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
+        follow.
+        """
         self._validate_dtypes(input, weight, bias)
         (
             n,
@@ -371,6 +407,16 @@ class Conv1dFwdOp(Op):
         ) = self._resolve_spec_1d(input, weight)
         if bias is not None and tuple(bias.shape) != (c_out,):
             raise ValueError(f"Conv1d expects bias shape ({c_out},), got {tuple(bias.shape)}")
+
+        # Normalization is the op layer's job for every target: a kernel is handed
+        # contiguous tensors, in the manifest's ``signature.inputs`` order.
+        input = input.contiguous()
+        weight = weight.contiguous()
+        if bias is not None:
+            bias = bias.contiguous()
+        # Only the tensors this call carries: a missing optional input is absent from the
+        # hand-over, not a placeholder.
+        inputs = (input, weight) if bias is None else (input, weight, bias)
         kernel = self._get_kernel_1d(
             n,
             c_in,
@@ -384,6 +430,7 @@ class Conv1dFwdOp(Op):
             dtype,
             _device_index(input),
             bias is not None,
+            inputs,
         )
         self.kernel = kernel
         self.n = n
@@ -481,12 +528,17 @@ def _conv_out_dim(
 
 
 class Conv2dFwdOp(Op):
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::conv_conv2d_fwd",)
+
     def __init__(
         self,
         stride: int | Tuple[int, int] = 1,
         padding: int | Tuple[int, int] | str = 0,
         dilation: int | Tuple[int, int] = 1,
         groups: int = 1,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -502,6 +554,7 @@ class Conv2dFwdOp(Op):
         self.padding = padding
         self.groups = groups
         self.dtype = None
+        self.target = target
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -593,6 +646,7 @@ class Conv2dFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
         has_bias: bool,
+        inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
         is_symmetric = (
             kernel_h == kernel_w
@@ -697,7 +751,7 @@ class Conv2dFwdOp(Op):
                     dilation_w=self.dilation[1],
                 )
 
-        return self.get_or_build_kernel("conv2d_kernel", key=key, build=build)
+        return self.get_or_build_kernel("conv2d_kernel", inputs, key=key, build=build)
 
     def forward(
         self,
@@ -705,6 +759,33 @@ class Conv2dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Apply the convolution. One call to this op's operator, nothing else.
+
+        Args:
+            input: Input tensor in the manifest's layout.
+            weight: Convolution weight.
+            bias: Per-output-channel bias, or ``None``.
+
+        Returns:
+            The convolution result.
+
+        Raises:
+            ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
+                operator, by :meth:`_eager_forward`.
+        """
+        return _conv2d_fwd(input, weight, bias, self._instance_key)
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Validate, normalize, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
+        follow.
+        """
         self._validate_dtypes(input, weight, bias)
         (
             n,
@@ -723,6 +804,16 @@ class Conv2dFwdOp(Op):
         ) = self._resolve_spec_2d(input, weight)
         if bias is not None and tuple(bias.shape) != (c_out,):
             raise ValueError(f"Conv2d expects bias shape ({c_out},), got {tuple(bias.shape)}")
+
+        # Normalization is the op layer's job for every target: a kernel is handed
+        # contiguous tensors, in the manifest's ``signature.inputs`` order.
+        input = input.contiguous()
+        weight = weight.contiguous()
+        if bias is not None:
+            bias = bias.contiguous()
+        # Only the tensors this call carries: a missing optional input is absent from the
+        # hand-over, not a placeholder.
+        inputs = (input, weight) if bias is None else (input, weight, bias)
         kernel = self._get_kernel_2d(
             n,
             c_in,
@@ -739,6 +830,7 @@ class Conv2dFwdOp(Op):
             dtype,
             _device_index(input),
             bias is not None,
+            inputs,
         )
         self.kernel = kernel
         self.n = n
@@ -838,12 +930,17 @@ def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
 
 
 class Conv3dFwdOp(Op):
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::conv_conv3d_fwd",)
+
     def __init__(
         self,
         stride: int | Tuple[int, int, int] = 1,
         padding: int | Tuple[int, int, int] | str = 0,
         dilation: int | Tuple[int, int, int] = 1,
         groups: int = 1,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -860,6 +957,7 @@ class Conv3dFwdOp(Op):
         self.padding = padding
         self.groups = groups
         self.dtype = None
+        self.target = target
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -964,6 +1062,7 @@ class Conv3dFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
         has_bias: bool,
+        inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
         use_group = self.groups > 1 and "group_conv3d_kernel" in self.kernel_map
         variant = "group" if use_group else "general"
@@ -1023,7 +1122,7 @@ class Conv3dFwdOp(Op):
             else:
                 return self.kernel_map["conv3d_kernel"](**kernel_kwargs)
 
-        return self.get_or_build_kernel("conv3d_kernel", key=key, build=build)
+        return self.get_or_build_kernel("conv3d_kernel", inputs, key=key, build=build)
 
     def forward(
         self,
@@ -1031,6 +1130,33 @@ class Conv3dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Apply the convolution. One call to this op's operator, nothing else.
+
+        Args:
+            input: Input tensor in the manifest's layout.
+            weight: Convolution weight.
+            bias: Per-output-channel bias, or ``None``.
+
+        Returns:
+            The convolution result.
+
+        Raises:
+            ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
+                operator, by :meth:`_eager_forward`.
+        """
+        return _conv3d_fwd(input, weight, bias, self._instance_key)
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Validate, normalize, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
+        follow.
+        """
         self._validate_dtypes(input, weight, bias)
         (
             n,
@@ -1053,6 +1179,16 @@ class Conv3dFwdOp(Op):
         ) = self._resolve_spec_3d(input, weight)
         if bias is not None and tuple(bias.shape) != (c_out,):
             raise ValueError(f"Conv3d expects bias shape ({c_out},), got {tuple(bias.shape)}")
+
+        # Normalization is the op layer's job for every target: a kernel is handed
+        # contiguous tensors, in the manifest's ``signature.inputs`` order.
+        input = input.contiguous()
+        weight = weight.contiguous()
+        if bias is not None:
+            bias = bias.contiguous()
+        # Only the tensors this call carries: a missing optional input is absent from the
+        # hand-over, not a placeholder.
+        inputs = (input, weight) if bias is None else (input, weight, bias)
         kernel = self._get_kernel_3d(
             n,
             c_in,
@@ -1073,6 +1209,7 @@ class Conv3dFwdOp(Op):
             dtype,
             _device_index(input),
             bias is not None,
+            inputs,
         )
         self.kernel = kernel
         self.n = n
@@ -1176,3 +1313,96 @@ class Conv3dFwdOp(Op):
             + (c_out if has_bias else 0)
         ) * elem_bytes
         return int(flops), int(bytes_)
+
+
+# The compile boundary, one operator per op. Module-level because registration happens once
+# per qualified name at import time and the schema is read off the annotations, so ``self``
+# cannot appear; the instance comes back from the string key. See
+# src/tileops/ops/compile_boundary.py.
+
+
+@torch.library.custom_op("top::conv_conv1d_fwd", mutates_args=())
+def _conv1d_fwd(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, weight, bias)
+
+
+@_conv1d_fwd.register_fake
+def _conv1d_fwd_fake(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(input.shape),
+        tuple(weight.shape),
+        None if bias is None else tuple(bias.shape),
+    )
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake. Dtype is the
+    # manifest's ``same_as(input)``.
+    return input.new_empty(shapes["output"])
+
+
+@torch.library.custom_op("top::conv_conv2d_fwd", mutates_args=())
+def _conv2d_fwd(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, weight, bias)
+
+
+@_conv2d_fwd.register_fake
+def _conv2d_fwd_fake(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(input.shape),
+        tuple(weight.shape),
+        None if bias is None else tuple(bias.shape),
+    )
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake. Dtype is the
+    # manifest's ``same_as(input)``.
+    return input.new_empty(shapes["output"])
+
+
+@torch.library.custom_op("top::conv_conv3d_fwd", mutates_args=())
+def _conv3d_fwd(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, weight, bias)
+
+
+@_conv3d_fwd.register_fake
+def _conv3d_fwd_fake(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(input.shape),
+        tuple(weight.shape),
+        None if bias is None else tuple(bias.shape),
+    )
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake. Dtype is the
+    # manifest's ``same_as(input)``.
+    return input.new_empty(shapes["output"])

@@ -113,13 +113,8 @@ def _conv1d_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv1d_main(
-            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-            weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv1d_body(x, weight_flat, out, bias):
             with T.Kernel(
                 T.ceildiv(out_l, block_n),
                 T.ceildiv(c_out, block_m),
@@ -185,6 +180,27 @@ def _conv1d_kernel(
                     if oc < c_out and ol < out_l:
                         out[bz, oc, ol] = out_shared[i, j]
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv1d_bias_main(
+                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+                weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv1d_body(x, weight_flat, out, bias)
+
+            return _conv1d_bias_main
+
+        @T.prim_func
+        def _conv1d_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+        ):
+            _conv1d_body(x, weight_flat, out, None)
+
         return _conv1d_main
 
     return _conv1d_func
@@ -216,13 +232,8 @@ def _conv1d_direct_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv1d_direct_main(
-            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-            weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv1d_direct_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(out_l, block_n),
                 T.ceildiv(c_out, block_m),
@@ -257,6 +268,27 @@ def _conv1d_direct_kernel(
                             )
                         else:
                             out[bz, oc, ol] = T.cast(out_local[i, j], dtype)
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv1d_direct_bias_main(
+                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv1d_direct_body(x, weight, out, bias)
+
+            return _conv1d_direct_bias_main
+
+        @T.prim_func
+        def _conv1d_direct_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+        ):
+            _conv1d_direct_body(x, weight, out, None)
 
         return _conv1d_direct_main
 
@@ -295,13 +327,8 @@ def _conv1d_group_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv1d_group_main(
-            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in_g, kernel_l), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv1d_group_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(out_l, block_n),
                 T.ceildiv(c_out_g, block_m),
@@ -370,6 +397,27 @@ def _conv1d_group_kernel(
                     if oc_g < c_out_g and ol < out_l:
                         out[batch_id, oc, ol] = out_shared[i, j]
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv1d_group_bias_main(
+                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in_g, kernel_l), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv1d_group_body(x, weight, out, bias)
+
+            return _conv1d_group_bias_main
+
+        @T.prim_func
+        def _conv1d_group_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in_g, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+        ):
+            _conv1d_group_body(x, weight, out, None)
+
         return _conv1d_group_main
 
     return _conv1d_group_func
@@ -395,13 +443,8 @@ def _conv1d_pointwise_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv1d_pointwise_main(
-            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, l_in), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv1d_pointwise_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(l_in, block_n),
                 T.ceildiv(c_out, block_m),
@@ -453,229 +496,72 @@ def _conv1d_pointwise_kernel(
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv1d_pointwise_bias_main(
+                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, l_in), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv1d_pointwise_body(x, weight, out, bias)
+
+            return _conv1d_pointwise_bias_main
+
+        @T.prim_func
+        def _conv1d_pointwise_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, l_in), dtype),  # type: ignore
+        ):
+            _conv1d_pointwise_body(x, weight, out, None)
+
         return _conv1d_pointwise_main
 
     return _conv1d_pointwise_func
 
 
-@torch.library.custom_op("top::conv1d_wrapped_kernel", mutates_args=())
-def _conv1d_wrapped_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
+def _launch(
+    kernel: Kernel,
+    *tensors: torch.Tensor,
+    bias: Optional[torch.Tensor],
 ) -> torch.Tensor:
-    return _conv1d_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_left, pad_right, dilation_l, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+    """Run *kernel*'s compiled program, passing *bias* only when the call carries one.
 
+    The program was traced for one side of ``has_bias``: the no-bias variant has no bias
+    parameter at all, so what the call carries has to agree with what was built.
 
-@torch.library.custom_op("top::conv1d_direct_wrapped_kernel", mutates_args=())
-def _conv1d_direct_wrapped_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv1d_direct_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_left, pad_right, dilation_l, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+    Args:
+        kernel: The kernel whose ``self.kernel`` builder and ``self.config`` are used.
+        *tensors: The program's inputs in prim_func order, bias excluded.
+        bias: The bias this call carries, or ``None``.
 
+    Returns:
+        The output tensor the program allocated.
 
-@torch.library.custom_op("top::conv1d_group_wrapped_kernel", mutates_args=())
-def _conv1d_group_wrapped_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    has_bias: bool,
-    dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv1d_group_kernel(
-        n,
-        c_in,
-        l_in,
-        c_out,
-        kernel_l,
-        stride_l,
-        pad_left,
-        pad_right,
-        dilation_l,
-        has_bias,
-        dtype,
-        groups,
-        c_in_g,
-        c_out_g,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
-
-
-@torch.library.custom_op("top::conv1d_pointwise_wrapped_kernel", mutates_args=())
-def _conv1d_pointwise_wrapped_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv1d_pointwise_kernel(n, c_in, l_in, c_out, has_bias, dtype)(
-        block_m, block_n, block_k, num_stages, threads, enable_rasterization
-    )(x, weight, bias)
-
-
-@_conv1d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
-@_conv1d_direct_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
-@_conv1d_group_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    has_bias: bool,
-    dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
-@_conv1d_pointwise_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    return torch.empty((n, c_out, l_in), dtype=inputs[0].dtype, device=inputs[0].device)
+    Raises:
+        ValueError: The call's bias presence differs from the one the kernel was built for.
+    """
+    if (bias is not None) != kernel.has_bias:
+        built, given = ("with", "without") if kernel.has_bias else ("without", "with")
+        raise ValueError(
+            f"{type(kernel).__name__} was built {built} a bias and was called {given} one; "
+            f"bias presence is part of what the program is compiled for, so the op layer "
+            f"builds one kernel per side"
+        )
+    config = kernel.config
+    program = kernel.kernel(
+        config["block_m"],
+        config["block_n"],
+        config["block_k"],
+        config["num_stages"],
+        config["threads"],
+        config["enable_rasterization"],
+    )
+    if bias is None:
+        return program(*tensors)
+    return program(*tensors, bias)
 
 
 class Conv1dPointwiseKernel(Kernel):
@@ -742,26 +628,8 @@ class Conv1dPointwiseKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         weight_2d = weight[:, :, 0].contiguous()
-        return _conv1d_pointwise_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.c_out,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight_2d,
-            bias,
-        )
+        return _launch(self, x, weight_2d, bias=bias)
 
 
 class Conv1dKernel(Kernel):
@@ -861,31 +729,8 @@ class Conv1dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         weight_flat = self._get_weight_flat(weight)
-        return _conv1d_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.c_out,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_left,
-            self.pad_right,
-            self.dilation_l,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight_flat,
-            bias,
-        )
+        return _launch(self, x, weight_flat, bias=bias)
 
 
 class GroupConv1dKernel(Kernel):
@@ -1035,56 +880,9 @@ class GroupConv1dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        if self.use_direct:
-            return _conv1d_direct_wrapped_kernel(
-                self.n,
-                self.c_in,
-                self.l_in,
-                self.c_out,
-                self.kernel_l,
-                self.stride_l,
-                self.pad_left,
-                self.pad_right,
-                self.dilation_l,
-                self.has_bias,
-                self.dtype_str,
-                self.config["block_m"],
-                self.config["block_n"],
-                self.config["block_k"],
-                self.config["num_stages"],
-                self.config["threads"],
-                self.config["enable_rasterization"],
-                x,
-                weight,
-                bias,
-            )
-        return _conv1d_group_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.c_out,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_left,
-            self.pad_right,
-            self.dilation_l,
-            self.has_bias,
-            self.dtype_str,
-            self.groups,
-            self.c_in_g,
-            self.c_out_g,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-        )
+        # ``self.kernel`` already is the direct or the group builder; ``use_direct`` picked
+        # it at construction.
+        return _launch(self, x, weight, bias=bias)
 
 
 # Conv2d
@@ -1118,13 +916,8 @@ def _conv2d_1x1_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv2d_1x1_main(
-            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv2d_1x1_body(x, weight, out, bias):
             x_flat = T.Tensor((n, c_in, hw), dtype, x.data)
             out_flat = T.Tensor((n, c_out, hw), dtype, out.data)
             with T.Kernel(
@@ -1163,6 +956,27 @@ def _conv2d_1x1_kernel(
                         )
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv2d_1x1_bias_main(
+                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv2d_1x1_body(x, weight, out, bias)
+
+            return _conv2d_1x1_bias_main
+
+        @T.prim_func
+        def _conv2d_1x1_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
+        ):
+            _conv2d_1x1_body(x, weight, out, None)
 
         return _conv2d_1x1_main
 
@@ -1207,13 +1021,8 @@ def _conv2d_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv2d_main(
-            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv2d_body(x, weight, out, bias):
             out_hw = out_h * out_w
             with T.Kernel(
                 T.ceildiv(out_hw, block_n),
@@ -1280,6 +1089,27 @@ def _conv2d_kernel(
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv2d_bias_main(
+                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv2d_body(x, weight, out, bias)
+
+            return _conv2d_bias_main
+
+        @T.prim_func
+        def _conv2d_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv2d_body(x, weight, out, None)
+
         return _conv2d_main
 
     return _conv2d_func
@@ -1327,13 +1157,8 @@ def _conv2d_group_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv2d_group_main(
-            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv2d_group_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(out_hw, block_n),
                 T.ceildiv(c_out_g, block_m),
@@ -1417,6 +1242,27 @@ def _conv2d_group_kernel(
                     if oc_g < c_out_g and spatial_idx < out_hw:
                         out[batch_id, oc, oh, ow] = out_shared[i, j]
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv2d_group_bias_main(
+                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv2d_group_body(x, weight, out, bias)
+
+            return _conv2d_group_bias_main
+
+        @T.prim_func
+        def _conv2d_group_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv2d_group_body(x, weight, out, None)
+
         return _conv2d_group_main
 
     return _conv2d_group_func
@@ -1443,7 +1289,7 @@ def _conv2d_symmetric_kernel(
     k_total = c_in * kernel_size * kernel_size
 
     @tilelang.jit(
-        out_idx=[6],
+        out_idx=[5],
         compile_flags=["-O3", "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
@@ -1511,13 +1357,7 @@ def _conv2d_symmetric_kernel(
                                 dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
 
         @T.macro
-        def conv_nhwc_implicit_gemm_bias(
-            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
-            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-            bias: T.Tensor((c_out,), dtype),
-            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
-            has_bias: bool,
-        ):
+        def conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out_nhwc, bias):
             with T.Kernel(
                 T.ceildiv(c_out, block_n),
                 T.ceildiv(n * out_h * out_w, block_m),
@@ -1557,16 +1397,8 @@ def _conv2d_symmetric_kernel(
 
                 T.copy(out_shared, out_flat[by * block_m, bx * block_n])
 
-        @T.prim_func
-        def _conv2d_symmetric_main(
-            x: T.Tensor((n, c_in, h, w), dtype),
-            weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
-            bias: T.Tensor((c_out,), dtype),
-            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
-            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
-            out: T.Tensor((n, c_out, out_h, out_w), dtype),
-        ):
+        @T.macro
+        def _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out_nhwc, out, bias):
             transpose_spatial_channel(
                 x,
                 x_nhwc,
@@ -1593,7 +1425,7 @@ def _conv2d_symmetric_kernel(
                 channel_fastest=True,
                 is_nchw_to_nhwc=True,
             )
-            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc, has_bias)
+            conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out_nhwc, bias)
             transpose_spatial_channel(
                 out_nhwc,
                 out,
@@ -1608,275 +1440,36 @@ def _conv2d_symmetric_kernel(
                 is_nchw_to_nhwc=False,
             )
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv2d_symmetric_bias_main(
+                x: T.Tensor((n, c_in, h, w), dtype),
+                weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+                x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+                weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+                out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+                out: T.Tensor((n, c_out, out_h, out_w), dtype),
+                bias: T.Tensor((c_out,), dtype),
+            ):
+                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out_nhwc, out, bias)
+
+            return _conv2d_symmetric_bias_main
+
+        @T.prim_func
+        def _conv2d_symmetric_main(
+            x: T.Tensor((n, c_in, h, w), dtype),
+            weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),
+        ):
+            _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out_nhwc, out, None)
+
         return _conv2d_symmetric_main
 
     return _conv2d_symmetric_func
-
-
-@torch.library.custom_op("top::conv2d_1x1_wrapped_kernel", mutates_args=())
-def _conv2d_1x1_wrapped_kernel(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv2d_1x1_kernel(n, c_in, h, w, c_out, 1, 1, 0, 0, has_bias, dtype)(
-        block_m, block_n, block_k, num_stages, threads, enable_rasterization
-    )(x, weight, bias)
-
-
-@_conv2d_1x1_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    return torch.empty((n, c_out, h, w), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
-@torch.library.custom_op("top::conv2d_symmetric_wrapped_kernel", mutates_args=())
-def _conv2d_symmetric_wrapped_kernel(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    kernel_size: int,
-    stride: int,
-    pad: int,
-    dilation: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    x_nhwc: torch.Tensor,
-    weight_krsc: torch.Tensor,
-    out_nhwc: torch.Tensor,
-) -> torch.Tensor:
-    return _conv2d_symmetric_kernel(
-        n, c_in, h, w, c_out, kernel_size, stride, pad, dilation, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(
-        x, weight, bias, x_nhwc, weight_krsc, out_nhwc
-    )
-
-
-@_conv2d_symmetric_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    kernel_size: int,
-    stride: int,
-    pad: int,
-    dilation: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    x = inputs[0]
-    out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
-    out_w = (w + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
-    return torch.empty((n, c_out, out_h, out_w), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::conv2d_wrapped_kernel", mutates_args=())
-def _conv2d_wrapped_kernel(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv2d_kernel(
-        n,
-        c_in,
-        h,
-        w,
-        c_out,
-        kernel_h,
-        kernel_w,
-        stride_h,
-        stride_w,
-        pad_h,
-        pad_w,
-        dilation_h,
-        dilation_w,
-        has_bias,
-        dtype,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
-
-
-@torch.library.custom_op("top::conv2d_group_wrapped_kernel", mutates_args=())
-def _conv2d_group_wrapped_kernel(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv2d_group_kernel(
-        n,
-        c_in,
-        h,
-        w,
-        c_out,
-        kernel_h,
-        kernel_w,
-        stride_h,
-        stride_w,
-        pad_h,
-        pad_w,
-        dilation_h,
-        dilation_w,
-        has_bias,
-        dtype,
-        groups,
-        c_in_g,
-        c_out_g,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
-
-
-@_conv2d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
-    return torch.empty((n, c_out, out_h, out_w), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
-@_conv2d_group_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    del groups, c_in_g, c_out_g
-    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
-    return torch.empty((n, c_out, out_h, out_w), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
 class Conv2dSymmetricKernel(Kernel):
@@ -1956,8 +1549,6 @@ class Conv2dSymmetricKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         x_nhwc = torch.empty(
             (self.n, self.h, self.w, self.c_in),
             device=x.device,
@@ -1973,31 +1564,7 @@ class Conv2dSymmetricKernel(Kernel):
             device=x.device,
             dtype=x.dtype,
         )
-        return _conv2d_symmetric_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.c_out,
-            self.kernel_size,
-            self.stride,
-            self.pad,
-            self.dilation,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-            x_nhwc,
-            weight_krsc,
-            out_nhwc,
-        )
+        return _launch(self, x, weight, x_nhwc, weight_krsc, out_nhwc, bias=bias)
 
 
 class Conv2dKernel(Kernel):
@@ -2107,34 +1674,7 @@ class Conv2dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        return _conv2d_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.c_out,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_h,
-            self.dilation_w,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-        )
+        return _launch(self, x, weight, bias=bias)
 
 
 class GroupConv2dKernel(Kernel):
@@ -2250,37 +1790,7 @@ class GroupConv2dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        return _conv2d_group_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.c_out,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_h,
-            self.dilation_w,
-            self.has_bias,
-            self.dtype_str,
-            self.groups,
-            self.c_in_g,
-            self.c_out_g,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-        )
+        return _launch(self, x, weight, bias=bias)
 
 
 class Conv2d1x1Kernel(Kernel):
@@ -2373,28 +1883,9 @@ class Conv2d1x1Kernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         # OIHW -> OC,IC since the 1x1 kernel consumes a dense [C_out, C_in] weight matrix.
         weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()
-        return _conv2d_1x1_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.c_out,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight_oc_ci,
-            bias,
-        )
+        return _launch(self, x, weight_oc_ci, bias=bias)
 
 
 # Conv3d
@@ -2444,13 +1935,8 @@ def _conv3d_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv3d_main(
-            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv3d_body(x, weight, out, bias):
             out_dhw = out_d * out_h * out_w
             with T.Kernel(
                 T.ceildiv(out_dhw, block_n),
@@ -2521,6 +2007,27 @@ def _conv3d_kernel(
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv3d_bias_main(
+                x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv3d_body(x, weight, out, bias)
+
+            return _conv3d_bias_main
+
+        @T.prim_func
+        def _conv3d_main(
+            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv3d_body(x, weight, out, None)
+
         return _conv3d_main
 
     return _conv3d_func
@@ -2574,13 +2081,8 @@ def _conv3d_group_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv3d_group_main(
-            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in_g, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
-        ):
+        @T.macro
+        def _conv3d_group_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(out_dhw, block_n),
                 T.ceildiv(c_out_g, block_m),
@@ -2671,211 +2173,30 @@ def _conv3d_group_kernel(
                     if oc_g < c_out_g and spatial_idx < out_dhw:
                         out[batch_id, oc, od, oh, ow] = out_shared[i, j]
 
+        if has_bias:
+
+            @T.prim_func
+            def _conv3d_group_bias_main(
+                x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in_g, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv3d_group_body(x, weight, out, bias)
+
+            return _conv3d_group_bias_main
+
+        @T.prim_func
+        def _conv3d_group_main(
+            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in_g, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv3d_group_body(x, weight, out, None)
+
         return _conv3d_group_main
 
     return _conv3d_group_func
-
-
-@torch.library.custom_op("top::conv3d_wrapped_kernel", mutates_args=())
-def _conv3d_wrapped_kernel(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    c_out: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv3d_kernel(
-        n,
-        c_in,
-        d_in,
-        h_in,
-        w_in,
-        c_out,
-        kernel_d,
-        kernel_h,
-        kernel_w,
-        stride_d,
-        stride_h,
-        stride_w,
-        pad_d,
-        pad_h,
-        pad_w,
-        dilation_d,
-        dilation_h,
-        dilation_w,
-        has_bias,
-        dtype,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
-
-
-@torch.library.custom_op("top::conv3d_group_wrapped_kernel", mutates_args=())
-def _conv3d_group_wrapped_kernel(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    c_out: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _conv3d_group_kernel(
-        n,
-        c_in,
-        d_in,
-        h_in,
-        w_in,
-        c_out,
-        kernel_d,
-        kernel_h,
-        kernel_w,
-        stride_d,
-        stride_h,
-        stride_w,
-        pad_d,
-        pad_h,
-        pad_w,
-        dilation_d,
-        dilation_h,
-        dilation_w,
-        has_bias,
-        dtype,
-        groups,
-        c_in_g,
-        c_out_g,
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
-
-
-@_conv3d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    c_out: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-    out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
-    return torch.empty(
-        (n, c_out, out_d, out_h, out_w),
-        dtype=inputs[0].dtype,
-        device=inputs[0].device,
-    )
-
-
-@_conv3d_group_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    c_out: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    has_bias: bool,
-    dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    enable_rasterization: bool,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    del groups, c_in_g, c_out_g
-    out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-    out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
-    return torch.empty(
-        (n, c_out, out_d, out_h, out_w),
-        dtype=inputs[0].dtype,
-        device=inputs[0].device,
-    )
 
 
 class Conv3dKernel(Kernel):
@@ -2991,39 +2312,7 @@ class Conv3dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        return _conv3d_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.d_in,
-            self.h_in,
-            self.w_in,
-            self.c_out,
-            self.kernel_d,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_d,
-            self.stride_h,
-            self.stride_w,
-            self.pad_d,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_d,
-            self.dilation_h,
-            self.dilation_w,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-        )
+        return _launch(self, x, weight, bias=bias)
 
 
 class GroupConv3dKernel(Kernel):
@@ -3158,39 +2447,4 @@ class GroupConv3dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        return _conv3d_group_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.d_in,
-            self.h_in,
-            self.w_in,
-            self.c_out,
-            self.kernel_d,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_d,
-            self.stride_h,
-            self.stride_w,
-            self.pad_d,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_d,
-            self.dilation_h,
-            self.dilation_w,
-            self.has_bias,
-            self.dtype_str,
-            self.groups,
-            self.c_in_g,
-            self.c_out_g,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-        )
+        return _launch(self, x, weight, bias=bias)

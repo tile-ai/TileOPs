@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 
 pytestmark = pytest.mark.smoke
@@ -449,3 +450,78 @@ def test_an_elementwise_op_without_a_builder_for_this_target_raises():
 
     with pytest.raises(OpNotAvailableError, match="registers no kernel builder"):
         SiluFwdOp()(torch.randn(4, 8, dtype=DTYPE))
+
+
+# --------------------------------------------------------------------------------------
+# An optional input at the seam: Conv2dFwdOp's bias
+# --------------------------------------------------------------------------------------
+
+
+class _ConvRecorder:
+    """A target for Conv2dFwdOp; its kernel takes whatever the op hands over."""
+
+    def __init__(self):
+        self.calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(x, weight, bias=None):
+            assert x.is_contiguous() and weight.is_contiguous()
+            return torch.zeros(x.shape[0], weight.shape[0], x.shape[2], x.shape[3], dtype=x.dtype)
+
+        return kernel
+
+
+def _conv_inputs(bias=False):
+    x = torch.randn(1, 8, 8, 8, dtype=DTYPE)
+    weight = torch.randn(4, 8, 3, 3, dtype=DTYPE)
+    return x, weight, (torch.randn(4, dtype=DTYPE) if bias else None)
+
+
+def test_a_missing_optional_input_is_absent_from_the_hand_over():
+    """Presence is what the backend reads; an absent bias is not a placeholder tensor."""
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    x, weight, _ = _conv_inputs()
+
+    Conv2dFwdOp(padding=1)(x, weight)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
+    assert params == {"stride": (1, 1), "padding": 1, "dilation": (1, 1), "groups": 1}
+
+
+def test_a_bias_that_is_passed_reaches_the_backend_as_a_third_spec():
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    x, weight, bias = _conv_inputs(bias=True)
+
+    Conv2dFwdOp(padding=1)(x, weight, bias)
+
+    ((inputs, _),) = recorder.calls
+    assert inputs == (TensorSpec.of(x), TensorSpec.of(weight), TensorSpec.of(bias))
+
+
+def test_the_two_sides_of_an_optional_input_are_two_kernels():
+    """Bias presence changes what a kernel is built for, so it is part of the signature."""
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    op = Conv2dFwdOp(padding=1)
+    x, weight, bias = _conv_inputs(bias=True)
+
+    op(x, weight)
+    op(x, weight, bias)
+    op(x, weight)
+
+    assert len(recorder.calls) == 2
+
+
+def test_a_rejected_conv_call_never_reaches_the_backend():
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    x, weight, _ = _conv_inputs()
+
+    with pytest.raises(ValueError, match="bias shape"):
+        Conv2dFwdOp(padding=1)(x, weight, torch.randn(999, dtype=DTYPE))
+    assert recorder.calls == [], "the op layer's checks run for every target"

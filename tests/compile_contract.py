@@ -19,6 +19,7 @@ import torch
 # Modules whose import populates the registry. Add a module here when it
 # gains contract-backing compile tests.
 _EVIDENCE_MODULES = (
+    "tests.ops.test_convolution",
     "tests.ops.test_elementwise_compile",
     "tests.ops.test_moe_compile",
     "tests.ops.test_pool",
