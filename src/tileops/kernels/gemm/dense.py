@@ -2431,12 +2431,10 @@ class SmallBatchGemmKernel(Kernel):
     ``GemmKernel`` shrinks as ``m`` grows — the measured crossover and the
     dispatch band live in :func:`~tileops.kernels.gemm.call_spec.small_batch_region`.
 
-    Scope: SM90, NT only (``B`` is ``[N,K]`` → K contiguous → coalesced reduction
-    over K; NN/TN/TT do not have that layout and fall through to ``GemmKernel``).
-    The kernel is correct for any ``m``; the region it is selected for is
-    ``m == 2`` on an underfilled generic grid. Everything above routes to
-    ``GemmKernel``, whose small-m band picks swap_ab / split-K configs
-    (``heuristics._tiny_m_config``).
+    Scope: SM90, NT only — ``B`` is ``[N,K]``, so K is contiguous and the
+    reduction over it coalesces; no other layout has that property. The kernel
+    is correct for any ``m``; the region it claims is ``m == 2`` on an n too
+    narrow to fill the device (:func:`~tileops.kernels.gemm.call_spec.small_batch_region`).
 
     Args:
         m: Batch rows.
