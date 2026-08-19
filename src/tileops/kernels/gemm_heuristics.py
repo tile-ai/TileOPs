@@ -44,8 +44,14 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-__all__ = ["SWAP_AB_BLOCK_NN", "SWAP_AB_MPAD", "best_config", "gemv_config",
-           "small_batch_config", "swap_ab_stages"]
+__all__ = [
+    "SWAP_AB_BLOCK_NN",
+    "SWAP_AB_MPAD",
+    "best_config",
+    "gemv_config",
+    "small_batch_config",
+    "swap_ab_stages",
+]
 
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
@@ -66,13 +72,12 @@ SWAP_AB_MPAD = 8
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
 
 # Calibrated ranking constants (H200; see module docstring for protocol).
-_L1_TBPS = 33.0      # aggregate SMEM<->core bandwidth proxy
-_L2_TBPS = 17.5      # aggregate L2 bandwidth proxy
-_TC_TFLOPS = {"basic": 420.0, "splitk": 420.0,
-              "coop2": 525.0, "coop2_splitk": 525.0}
-_RED_TBPS = 1.5      # split-K workspace round-trip bandwidth
-_LAUNCH_US = 2.25    # reduce-pass launch + sync overhead
-_ISSUE_NS = 150.0    # per-K-iteration issue/TMA overhead
+_L1_TBPS = 33.0  # aggregate SMEM<->core bandwidth proxy
+_L2_TBPS = 17.5  # aggregate L2 bandwidth proxy
+_TC_TFLOPS = {"basic": 420.0, "splitk": 420.0, "coop2": 525.0, "coop2_splitk": 525.0}
+_RED_TBPS = 1.5  # split-K workspace round-trip bandwidth
+_LAUNCH_US = 2.25  # reduce-pass launch + sync overhead
+_ISSUE_NS = 150.0  # per-K-iteration issue/TMA overhead
 
 
 @dataclass
@@ -88,16 +93,30 @@ class _Cand:
 
     def to_config(self) -> dict:
         if self.structure == "coop2":
-            return {"coop2": True, "block_n": self.block_n,
-                    "block_k": self.block_k, "num_stages": self.num_stages,
-                    "group_size_m": 16, "stage_n": self.stage_n}
+            return {
+                "coop2": True,
+                "block_n": self.block_n,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
+                "group_size_m": 16,
+                "stage_n": self.stage_n,
+            }
         if self.structure == "coop2_splitk":
-            return {"coop2_splitk": True, "block_n": self.block_n,
-                    "block_k": self.block_k, "num_stages": self.num_stages,
-                    "split_k": self.split_k}
-        return {"block_m": self.block_m, "block_n": self.block_n,
-                "block_k": self.block_k, "num_stages": self.num_stages,
-                "panel_size": self.panel_size, "split_k": self.split_k}
+            return {
+                "coop2_splitk": True,
+                "block_n": self.block_n,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
+                "split_k": self.split_k,
+            }
+        return {
+            "block_m": self.block_m,
+            "block_n": self.block_n,
+            "block_k": self.block_k,
+            "num_stages": self.num_stages,
+            "panel_size": self.panel_size,
+            "split_k": self.split_k,
+        }
 
 
 def _strip_width(bm: int, bn: int, sm_count: int) -> int:
@@ -107,8 +126,7 @@ def _strip_width(bm: int, bn: int, sm_count: int) -> int:
     the group size whose resident-CTA footprint ``g*bm + ceil(SMs/g)*bn``
     is smallest.
     """
-    return min((4, 8, 10, 16),
-               key=lambda g: g * bm + math.ceil(sm_count / g) * bn)
+    return min((4, 8, 10, 16), key=lambda g: g * bm + math.ceil(sm_count / g) * bn)
 
 
 def _ns_basic(bm: int, bn: int, bk: int) -> int:
@@ -143,8 +161,7 @@ def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
     return not (bm * bn < 128 * 192 and ns < 4)
 
 
-def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
-               sm_count: int) -> list:
+def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
     nt = (not trans_a) and trans_b
     out = []
 
@@ -161,8 +178,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
                 k_iters = math.ceil(k / bk)
                 for sk in (2, 4, 8):
                     if k_iters % sk == 0 and k_iters // sk >= 4:
-                        out.append(_Cand("splitk", bm, bn, bk, ns,
-                                         split_k=sk, panel_size=ps))
+                        out.append(_Cand("splitk", bm, bn, bk, ns, split_k=sk, panel_size=ps))
 
     if nt:
         for bn in (64, 128, 192, 256):
@@ -187,10 +203,8 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
                 ns_sk = min(ns, _NS_CAP["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
                     for sk in (2, 4, 8):
-                        if (k_iters % sk == 0 and k_iters // sk >= 4
-                                and mn_tiles * sk >= sm_count):
-                            out.append(_Cand("coop2_splitk", 128, bn, bk,
-                                             ns_sk, split_k=sk))
+                        if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= sm_count:
+                            out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
     return out
 
 
@@ -278,20 +292,32 @@ def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
     """
     stages = swap_ab_stages(n, sm_count)
     if stages is not None:
-        return {"swap_ab": True, "block_nn": SWAP_AB_BLOCK_NN,
-                "block_k": 128, "num_stages": stages}
+        return {"swap_ab": True, "block_nn": SWAP_AB_BLOCK_NN, "block_k": 128, "num_stages": stages}
     k_iters = math.ceil(k / 128)
     for sk in (4, 2):
         if k_iters % sk == 0 and k_iters // sk >= 12:
-            return {"block_m": 64, "block_n": TINY_M_BLOCK_N, "block_k": 128,
-                    "num_stages": 4, "panel_size": 16, "split_k": sk}
-    return {"block_m": 64, "block_n": TINY_M_BLOCK_N, "block_k": 128,
-            "num_stages": 4, "panel_size": 8, "split_k": 1}
+            return {
+                "block_m": 64,
+                "block_n": TINY_M_BLOCK_N,
+                "block_k": 128,
+                "num_stages": 4,
+                "panel_size": 16,
+                "split_k": sk,
+            }
+    return {
+        "block_m": 64,
+        "block_n": TINY_M_BLOCK_N,
+        "block_k": 128,
+        "num_stages": 4,
+        "panel_size": 8,
+        "split_k": 1,
+    }
 
 
 @functools.lru_cache(maxsize=512)
-def _best_config_cached(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
-                        sm_count: int) -> dict:
+def _best_config_cached(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int
+) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
     if m <= 8 and not trans_a and trans_b:
         return _tiny_m_config(n, k, sm_count)
@@ -304,16 +330,17 @@ def _best_config_cached(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
         # it cannot serve are refused by ``GemmKernel``, not silently retiled.
         raise AssertionError(
             f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
-            f"trans_b={trans_b}, sm_count={sm_count})")
+            f"trans_b={trans_b}, sm_count={sm_count})"
+        )
     # Residual score ties break toward larger block_k (fewer K iterations,
     # measured faster whenever the byte model cannot separate candidates).
-    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count),
-                                     -c.block_k))
+    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count), -c.block_k))
     return best.to_config()
 
 
-def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
-                sm_count: int = _DEFAULT_SM_COUNT) -> dict:
+def best_config(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int = _DEFAULT_SM_COUNT
+) -> dict:
     """Return the analytically selected ``GemmKernel`` config for a shape.
 
     Args:

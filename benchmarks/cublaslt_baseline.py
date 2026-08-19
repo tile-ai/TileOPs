@@ -37,12 +37,12 @@ __all__ = ["CublasLtBestGemm", "make_cublaslt_best"]
 _CUDA_R_16F = 2
 _CUDA_R_32F = 0
 _CUDA_R_16BF = 14
-_CUBLAS_COMPUTE_32F = 68          # bf16/fp16 inputs, fp32 accumulate
+_CUBLAS_COMPUTE_32F = 68  # bf16/fp16 inputs, fp32 accumulate
 _CUBLAS_OP_N = 0
 _CUBLAS_OP_T = 1
-_DESC_TRANSA = 3                  # cublasLtMatmulDescAttributes_t
+_DESC_TRANSA = 3  # cublasLtMatmulDescAttributes_t
 _DESC_TRANSB = 4
-_PREF_MAX_WORKSPACE = 1           # cublasLtMatmulPreferenceAttributes_t (SEARCH_MODE=0)
+_PREF_MAX_WORKSPACE = 1  # cublasLtMatmulPreferenceAttributes_t (SEARCH_MODE=0)
 _STATUS_SUCCESS = 0
 
 # cublasLtMatmulAlgoCapAttributes_t  /  ...ConfigAttributes_t  /  reduction schemes
@@ -76,7 +76,7 @@ class _HeuristicResult(ctypes.Structure):
     _fields_ = [
         ("algo", _MatmulAlgo),
         ("workspaceSize", ctypes.c_size_t),
-        ("state", ctypes.c_int),          # cublasStatus_t
+        ("state", ctypes.c_int),  # cublasStatus_t
         ("wavesCount", ctypes.c_float),
         ("reserved", ctypes.c_int * 4),
     ]
@@ -105,25 +105,76 @@ def _load() -> Optional[ctypes.CDLL]:
     _lib.cublasLtCreate.argtypes = [ctypes.POINTER(p)]
     _lib.cublasLtMatmulDescCreate.argtypes = [ctypes.POINTER(p), i, i]
     _lib.cublasLtMatmulDescSetAttribute.argtypes = [p, i, p, sz]
-    _lib.cublasLtMatrixLayoutCreate.argtypes = [ctypes.POINTER(p), i, ctypes.c_uint64,
-                                                ctypes.c_uint64, ctypes.c_int64]
+    _lib.cublasLtMatrixLayoutCreate.argtypes = [
+        ctypes.POINTER(p),
+        i,
+        ctypes.c_uint64,
+        ctypes.c_uint64,
+        ctypes.c_int64,
+    ]
     _lib.cublasLtMatmulPreferenceCreate.argtypes = [ctypes.POINTER(p)]
     _lib.cublasLtMatmulPreferenceSetAttribute.argtypes = [p, i, p, sz]
     _lib.cublasLtMatmulAlgoGetHeuristic.argtypes = [
-        p, p, p, p, p, p, p, i, ctypes.POINTER(_HeuristicResult), ctypes.POINTER(i)]
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        i,
+        ctypes.POINTER(_HeuristicResult),
+        ctypes.POINTER(i),
+    ]
     _lib.cublasLtMatmul.argtypes = [
-        p, p, p, p, p, p, p, p, p, p, p, p,
-        ctypes.POINTER(_MatmulAlgo), p, sz, p]
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        ctypes.POINTER(_MatmulAlgo),
+        p,
+        sz,
+        p,
+    ]
     _lib.cublasLtMatmulAlgoGetIds.argtypes = [
-        p, i, i, i, i, i, i, i, ctypes.POINTER(i), ctypes.POINTER(i)]
-    _lib.cublasLtMatmulAlgoInit.argtypes = [
-        p, i, i, i, i, i, i, i, ctypes.POINTER(_MatmulAlgo)]
+        p,
+        i,
+        i,
+        i,
+        i,
+        i,
+        i,
+        i,
+        ctypes.POINTER(i),
+        ctypes.POINTER(i),
+    ]
+    _lib.cublasLtMatmulAlgoInit.argtypes = [p, i, i, i, i, i, i, i, ctypes.POINTER(_MatmulAlgo)]
     _lib.cublasLtMatmulAlgoCapGetAttribute.argtypes = [
-        ctypes.POINTER(_MatmulAlgo), i, p, sz, ctypes.POINTER(sz)]
-    _lib.cublasLtMatmulAlgoConfigSetAttribute.argtypes = [
-        ctypes.POINTER(_MatmulAlgo), i, p, sz]
+        ctypes.POINTER(_MatmulAlgo),
+        i,
+        p,
+        sz,
+        ctypes.POINTER(sz),
+    ]
+    _lib.cublasLtMatmulAlgoConfigSetAttribute.argtypes = [ctypes.POINTER(_MatmulAlgo), i, p, sz]
     _lib.cublasLtMatmulAlgoCheck.argtypes = [
-        p, p, p, p, p, p, ctypes.POINTER(_MatmulAlgo), ctypes.POINTER(_HeuristicResult)]
+        p,
+        p,
+        p,
+        p,
+        p,
+        p,
+        ctypes.POINTER(_MatmulAlgo),
+        ctypes.POINTER(_HeuristicResult),
+    ]
     return _lib
 
 
@@ -157,9 +208,16 @@ class CublasLtBestGemm:
             algorithm ran.
     """
 
-    def __init__(self, m: int, n: int, k: int, dtype: torch.dtype,
-                 trans_b: bool, workspace_mb: int = 256,
-                 n_candidates: int = 32) -> None:
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        trans_b: bool,
+        workspace_mb: int = 256,
+        n_candidates: int = 32,
+    ) -> None:
         lib = _load()
         if lib is None:
             raise RuntimeError("libcublasLt not found")
@@ -184,8 +242,10 @@ class CublasLtBestGemm:
         _ck(lib.cublasLtCreate(ctypes.byref(handle)), "Create")
         self._handle = handle
         desc = vp()
-        _ck(lib.cublasLtMatmulDescCreate(ctypes.byref(desc), _CUBLAS_COMPUTE_32F,
-                                         _CUDA_R_32F), "MatmulDescCreate")
+        _ck(
+            lib.cublasLtMatmulDescCreate(ctypes.byref(desc), _CUBLAS_COMPUTE_32F, _CUDA_R_32F),
+            "MatmulDescCreate",
+        )
         self._desc = desc
         op_a = _CUBLAS_OP_T if trans_b else _CUBLAS_OP_N
         op_b = _CUBLAS_OP_N
@@ -196,8 +256,8 @@ class CublasLtBestGemm:
         a_rows, a_cols, a_ld = (k, n, k) if trans_b else (n, k, n)  # A_lt := B
         self._io_dt = io_dt
         self._La = self._layout(io_dt, a_rows, a_cols, a_ld)
-        self._Lb = self._layout(io_dt, k, m, k)                      # B_lt := A
-        self._Lc = self._layout(io_dt, n, m, n)                      # C_lt (=[m,n] row-major)
+        self._Lb = self._layout(io_dt, k, m, k)  # B_lt := A
+        self._Lc = self._layout(io_dt, n, m, n)  # C_lt (=[m,n] row-major)
         self._alpha = ctypes.c_float(1.0)
         self._beta = ctypes.c_float(0.0)
 
@@ -211,11 +271,24 @@ class CublasLtBestGemm:
         self._set_attr(pref, _PREF_MAX_WORKSPACE, ctypes.c_size_t(self._ws_bytes), pref=True)
         results = (_HeuristicResult * n_candidates)()
         returned = ctypes.c_int(0)
-        _ck(lib.cublasLtMatmulAlgoGetHeuristic(
-            handle, desc, self._La, self._Lb, self._Lc, self._Lc, pref,
-            n_candidates, results, ctypes.byref(returned)), "AlgoGetHeuristic")
-        candidates = [results[i].algo for i in range(returned.value)
-                      if results[i].state == _STATUS_SUCCESS]
+        _ck(
+            lib.cublasLtMatmulAlgoGetHeuristic(
+                handle,
+                desc,
+                self._La,
+                self._Lb,
+                self._Lc,
+                self._Lc,
+                pref,
+                n_candidates,
+                results,
+                ctypes.byref(returned),
+            ),
+            "AlgoGetHeuristic",
+        )
+        candidates = [
+            results[i].algo for i in range(returned.value) if results[i].state == _STATUS_SUCCESS
+        ]
         candidates += self._enumerate_candidates()
         if not candidates:
             raise RuntimeError("cuBLASLt found no runnable algorithm")
@@ -224,36 +297,50 @@ class CublasLtBestGemm:
 
     # ── construction helpers ──
     def _set_attr(self, obj, attr, cval, pref: bool = False) -> None:
-        fn = (self._lib.cublasLtMatmulPreferenceSetAttribute if pref
-              else self._lib.cublasLtMatmulDescSetAttribute)
+        fn = (
+            self._lib.cublasLtMatmulPreferenceSetAttribute
+            if pref
+            else self._lib.cublasLtMatmulDescSetAttribute
+        )
         _ck(fn(obj, attr, ctypes.byref(cval), ctypes.sizeof(cval)), "SetAttribute")
 
     def _layout(self, dt, rows, cols, ld):
         lay = ctypes.c_void_p()
-        _ck(self._lib.cublasLtMatrixLayoutCreate(ctypes.byref(lay), dt, rows, cols, ld),
-            "MatrixLayoutCreate")
+        _ck(
+            self._lib.cublasLtMatrixLayoutCreate(ctypes.byref(lay), dt, rows, cols, ld),
+            "MatrixLayoutCreate",
+        )
         return lay
 
     def _matmul(self, a: torch.Tensor, b: torch.Tensor, algo: _MatmulAlgo) -> int:
         # A_lt := B, B_lt := A (see the __init__ layout note).
         stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
         return self._lib.cublasLtMatmul(
-            self._handle, self._desc,
+            self._handle,
+            self._desc,
             ctypes.byref(self._alpha),
-            ctypes.c_void_p(b.data_ptr()), self._La,
-            ctypes.c_void_p(a.data_ptr()), self._Lb,
+            ctypes.c_void_p(b.data_ptr()),
+            self._La,
+            ctypes.c_void_p(a.data_ptr()),
+            self._Lb,
             ctypes.byref(self._beta),
-            ctypes.c_void_p(self._c.data_ptr()), self._Lc,
-            ctypes.c_void_p(self._c.data_ptr()), self._Lc,
-            ctypes.byref(algo), ctypes.c_void_p(self._ws.data_ptr()), self._ws_bytes,
-            stream)
+            ctypes.c_void_p(self._c.data_ptr()),
+            self._Lc,
+            ctypes.c_void_p(self._c.data_ptr()),
+            self._Lc,
+            ctypes.byref(algo),
+            ctypes.c_void_p(self._ws.data_ptr()),
+            self._ws_bytes,
+            stream,
+        )
 
     # ── full algorithm enumeration (best-effort search) ──
     def _cap_array(self, algo: _MatmulAlgo, cap: int, maxn: int = 64) -> list:
         buf = (ctypes.c_uint32 * maxn)()
         written = ctypes.c_size_t(0)
         st = self._lib.cublasLtMatmulAlgoCapGetAttribute(
-            ctypes.byref(algo), cap, buf, ctypes.sizeof(buf), ctypes.byref(written))
+            ctypes.byref(algo), cap, buf, ctypes.sizeof(buf), ctypes.byref(written)
+        )
         if st != _STATUS_SUCCESS:
             return []
         return [buf[i] for i in range(written.value // 4)]
@@ -262,22 +349,32 @@ class CublasLtBestGemm:
         val = ctypes.c_uint32(0)
         written = ctypes.c_size_t(0)
         st = self._lib.cublasLtMatmulAlgoCapGetAttribute(
-            ctypes.byref(algo), cap, ctypes.byref(val), 4, ctypes.byref(written))
+            ctypes.byref(algo), cap, ctypes.byref(val), 4, ctypes.byref(written)
+        )
         return val.value if st == _STATUS_SUCCESS else default
 
     def _cfg(self, algo: _MatmulAlgo, attr: int, value: int) -> None:
         v = ctypes.c_uint32(value)
-        self._lib.cublasLtMatmulAlgoConfigSetAttribute(
-            ctypes.byref(algo), attr, ctypes.byref(v), 4)
+        self._lib.cublasLtMatmulAlgoConfigSetAttribute(ctypes.byref(algo), attr, ctypes.byref(v), 4)
 
     def _check_ok(self, algo: _MatmulAlgo) -> bool:
         """True if the configured algo is valid and fits the workspace budget."""
         res = _HeuristicResult()
         st = self._lib.cublasLtMatmulAlgoCheck(
-            self._handle, self._desc, self._La, self._Lb, self._Lc, self._Lc,
-            ctypes.byref(algo), ctypes.byref(res))
-        return (st == _STATUS_SUCCESS and res.state == _STATUS_SUCCESS
-                and res.workspaceSize <= self._ws_bytes)
+            self._handle,
+            self._desc,
+            self._La,
+            self._Lb,
+            self._Lc,
+            self._Lc,
+            ctypes.byref(algo),
+            ctypes.byref(res),
+        )
+        return (
+            st == _STATUS_SUCCESS
+            and res.state == _STATUS_SUCCESS
+            and res.workspaceSize <= self._ws_bytes
+        )
 
     def _enumerate_candidates(self, max_ids: int = 64, max_total: int = 256) -> list:
         """Enumerate every algorithm id × its capability grid (tile, stages,
@@ -289,16 +386,39 @@ class CublasLtBestGemm:
         ids = (ctypes.c_int * max_ids)()
         nret = ctypes.c_int(0)
         dt = self._io_dt
-        if lib.cublasLtMatmulAlgoGetIds(
-                self._handle, _CUBLAS_COMPUTE_32F, _CUDA_R_32F, dt, dt, dt, dt,
-                max_ids, ids, ctypes.byref(nret)) != _STATUS_SUCCESS:
+        if (
+            lib.cublasLtMatmulAlgoGetIds(
+                self._handle,
+                _CUBLAS_COMPUTE_32F,
+                _CUDA_R_32F,
+                dt,
+                dt,
+                dt,
+                dt,
+                max_ids,
+                ids,
+                ctypes.byref(nret),
+            )
+            != _STATUS_SUCCESS
+        ):
             return []
         out: list = []
         for i in range(nret.value):
             algo = _MatmulAlgo()
-            if lib.cublasLtMatmulAlgoInit(
-                    self._handle, _CUBLAS_COMPUTE_32F, _CUDA_R_32F, dt, dt, dt, dt,
-                    ids[i], ctypes.byref(algo)) != _STATUS_SUCCESS:
+            if (
+                lib.cublasLtMatmulAlgoInit(
+                    self._handle,
+                    _CUBLAS_COMPUTE_32F,
+                    _CUDA_R_32F,
+                    dt,
+                    dt,
+                    dt,
+                    dt,
+                    ids[i],
+                    ctypes.byref(algo),
+                )
+                != _STATUS_SUCCESS
+            ):
                 continue
             tiles = self._cap_array(algo, _CAP_TILE_IDS) or [0]
             stages = self._cap_array(algo, _CAP_STAGES_IDS) or [0]
@@ -310,8 +430,12 @@ class CublasLtBestGemm:
             # each reduction scheme the algo's mask allows) when it is supported.
             plans = [(1, _RED_NONE)]
             if splitk_ok:
-                plans += [(sk, bit) for sk in _SPLITK_CANDIDATES
-                          for bit in _RED_SCHEME_BITS if red_mask & bit]
+                plans += [
+                    (sk, bit)
+                    for sk in _SPLITK_CANDIDATES
+                    for bit in _RED_SCHEME_BITS
+                    if red_mask & bit
+                ]
             for tile in tiles:
                 for stage in stages:
                     for swz in swizzles:
@@ -341,8 +465,9 @@ class CublasLtBestGemm:
         never selects a candidate slower than the default. The chosen algorithm's
         latency is re-measured later by the shared CUPTI harness."""
         a = torch.randn(self.m, self.k, dtype=self.dtype, device="cuda")
-        b = torch.randn((self.n, self.k) if self.trans_b else (self.k, self.n),
-                        dtype=self.dtype, device="cuda")
+        b = torch.randn(
+            (self.n, self.k) if self.trans_b else (self.k, self.n), dtype=self.dtype, device="cuda"
+        )
         flush = torch.empty(64 * 1024 * 1024 // 4, dtype=torch.int, device="cuda")
 
         def min_ms(run, iters):
@@ -390,8 +515,9 @@ class CublasLtBestGemm:
         return self._c
 
 
-def make_cublaslt_best(m: int, n: int, k: int, dtype: torch.dtype,
-                       trans_a: bool, trans_b: bool) -> Optional[Callable]:
+def make_cublaslt_best(
+    m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool
+) -> Optional[Callable]:
     """Build a cuBLASLt searched-best GEMM callable, or None if unavailable.
 
     Returns ``None`` (so the caller keeps the plain ``torch-cublas`` baseline)
@@ -410,15 +536,18 @@ if __name__ == "__main__":
     # Self-test: correctness vs torch + best latency, NN and NT.
     from benchmarks.benchmark_base import bench_kernel
 
-    for (label, m, n, k, tb) in [
+    for label, m, n, k, tb in [
         ("NT decode-gate-up", 128, 2112, 7168, True),
         ("NT prefill-attn", 4096, 4096, 7168, True),
         ("NN square-1k", 1024, 1024, 1024, False),
     ]:
         for dt in (torch.bfloat16,):
             a = torch.randn(m, k, dtype=dt, device="cuda")
-            b = (torch.randn(n, k, dtype=dt, device="cuda") if tb
-                 else torch.randn(k, n, dtype=dt, device="cuda"))
+            b = (
+                torch.randn(n, k, dtype=dt, device="cuda")
+                if tb
+                else torch.randn(k, n, dtype=dt, device="cuda")
+            )
             fn = make_cublaslt_best(m, n, k, dt, False, tb)
             if fn is None:
                 print(f"{label}: cuBLASLt unavailable")
@@ -429,9 +558,16 @@ if __name__ == "__main__":
             errcu = ((a @ (b.T if tb else b)).float() - ref).abs().max().item()
             flops = 2 * m * n * k
             tf_best = flops / bench_kernel(lambda x, y, f=fn: f(x, y), args=(a, b)) * 1e-9 / 1e3
-            tf_def = flops / bench_kernel(
-                lambda x, y, t=tb: torch.matmul(x, y.T if t else y), args=(a, b)) * 1e-9 / 1e3
+            tf_def = (
+                flops
+                / bench_kernel(lambda x, y, t=tb: torch.matmul(x, y.T if t else y), args=(a, b))
+                * 1e-9
+                / 1e3
+            )
             ok = err <= max(errcu * 3, 0.5)
-            print(f"{label} {m}x{n}x{k} {str(dt)[6:]}: correct={ok} (err={err:.3f}/cu={errcu:.3f}) "
-                  f"cuBLASLt_best={tf_best*1e3:.0f}T torch_default={tf_def*1e3:.0f}T "
-                  f"gain={tf_best/tf_def:.3f}x", flush=True)
+            print(
+                f"{label} {m}x{n}x{k} {str(dt)[6:]}: correct={ok} (err={err:.3f}/cu={errcu:.3f}) "
+                f"cuBLASLt_best={tf_best * 1e3:.0f}T torch_default={tf_def * 1e3:.0f}T "
+                f"gain={tf_best / tf_def:.3f}x",
+                flush=True,
+            )

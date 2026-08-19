@@ -88,7 +88,7 @@ class GemmFwdOp(Op):
         """
         if a.ndim != 2 or b.ndim != 2:
             raise ValueError(
-                f"GemmOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
+                f"GemmFwdOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
             )
         m, n = self._infer_output_shapes(a.shape, b.shape)["d"]
         k_a = a.shape[0] if self.trans_a else a.shape[1]
