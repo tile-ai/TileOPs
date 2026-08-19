@@ -317,6 +317,14 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
+            # shape declares one shape (R8). Alternatives would leave every
+            # consumer — mock builder, roofline binding, fake — to pick one,
+            # so a tensor whose rank or axis order varies omits shape (R9).
+            if isinstance(attrs.get("shape"), str) and "|" in attrs["shape"]:
+                err(
+                    f"{direction}.{tname}.shape {attrs['shape']!r} lists alternatives; "
+                    f"declare one shape, or omit 'shape' for an arbitrary-rank input"
+                )
             # constraints keys must name dims of the declared shape
             if "constraints" in attrs:
                 constraints = attrs["constraints"]
@@ -3771,10 +3779,9 @@ def check_c3_ctor_signature_parity(
                 f"manifest={manifest_kw_only}, code={code_kw_only}"
             )
 
-    # Code-only extras detection deferred: a faithful "kwarg not declared
-    # anywhere in the manifest" rule needs the protocol-derived allowed
-    # set (params + static_dims + per-family shape/dtype variables),
-    # which is out of scope for the C3 helper. Strict-parity follow-up.
+    # A kwarg the manifest declares nowhere is not reported here: deciding that
+    # needs the protocol-derived allowed set (params, static_dims, and the
+    # per-family shape and dtype variables), which this helper does not build.
 
     return errors
 
@@ -3786,12 +3793,12 @@ def check_c4_forward_signature_parity(
     *,
     warnings: list[str] | None = None,
 ) -> list[str]:
-    """C4: forward positional names match ``signature.inputs`` order.
+    """C4: ``signature.inputs`` are ``forward``'s leading positional parameters.
 
-    L1 already enforces this for the legacy signature path; the C4
-    function exists so the strict gate can run independently of the
-    older ``check_l1`` and report under the ``[forward]`` tag for
-    follow-up triage.
+    L1 compares the parameter names and their order, keyword-only ones
+    included. This adds the part that comparison cannot see: an input a
+    caller can only pass by keyword is not in the order the manifest
+    declares, whatever the names say.
     """
     errors: list[str] = []
     if cls is None:

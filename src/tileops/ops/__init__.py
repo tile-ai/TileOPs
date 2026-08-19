@@ -18,7 +18,7 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .bmm import BmmFp8Op, BmmFwdOp
+from .bmm import BmmFp8NKOp, BmmFp8Op, BmmFwdOp
 from .convolution import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -38,6 +38,7 @@ from .gated_deltanet import (
     GatedDeltaNetDecodeOp,
     GatedDeltaNetFwdOp,
     GatedDeltaNetOp,
+    GatedDeltaNetPrefillBHTDFwdOp,
     GatedDeltaNetPrefillFwdOp,
 )
 from .gated_linear_attn import GLADecodeOp
@@ -128,6 +129,7 @@ __all__ = [
     "AdaptiveMaxPool2dIndicesFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
+    "BmmFp8NKOp",
     "BmmFp8Op",
     "BmmFwdOp",
     "Conv1dFwdOp",
@@ -151,6 +153,7 @@ __all__ = [
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
     "GatedDeltaNetOp",
+    "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillFwdOp",
     "GLABwdOp",
     "GLADecodeOp",

@@ -104,7 +104,6 @@ def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_so
     )
     op = DaCumsumFwdOp(
         chunk_len=chunk_len,
-        has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
         dtype=dtype,
         tune=tune,
@@ -183,7 +182,7 @@ def test_ssd_chunk_state_fwd(
     test = SSDChunkStateFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
-    op = SSDChunkStateFwdOp(has_seq_idx=has_seq_idx, tune=tune)
+    op = SSDChunkStateFwdOp(tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2
     rtol = 1e-3
@@ -209,7 +208,7 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     seq_idx = torch.ones(b, seq_len, dtype=torch.int32, device="cuda")
     seq_idx[:, :Q] = -1
 
-    op = SSDChunkStateFwdOp(has_seq_idx=True)
+    op = SSDChunkStateFwdOp()
     out = op(x, Bmat, dt, dA_cumsum, seq_idx)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g, seq_idx=seq_idx)
 
@@ -398,11 +397,7 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
     C       = torch.randn(batch, seqlen, n_groups, d_state, dtype=dtype,          device=dev) * 0.1
     dt_bias = torch.randn(n_heads,                          dtype=torch.float32,  device=dev) * 0.1
 
-    op = Mamba2FwdOp(
-        chunk_size=chunk_size,
-        dt_softplus=True,
-        has_initial_states=False,
-    )
+    op = Mamba2FwdOp(chunk_size=chunk_size, dt_softplus=True)
     y_op, _ = op.forward(x, dt_raw, A, B, C, dt_bias=dt_bias)
     y_ref   = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
 

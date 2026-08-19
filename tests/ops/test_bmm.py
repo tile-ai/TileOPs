@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import BmmFp8Op, BmmFwdOp
+from tileops.ops import BmmFp8NKOp, BmmFp8Op, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
@@ -328,8 +328,8 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     # unambiguously carries K.
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.shape == (batch, n, k)
-    op_kn = BmmFp8Op(out_dtype=torch.bfloat16)  # default b_layout='kn'
-    op_nk = BmmFp8Op(out_dtype=torch.bfloat16, b_layout="nk")
+    op_kn = BmmFp8Op(out_dtype=torch.bfloat16)
+    op_nk = BmmFp8NKOp(out_dtype=torch.bfloat16)
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk, scale_a, scale_b)
     # Numerically identical: same kernel, same buffer bits, just no
@@ -346,7 +346,7 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
     assert b_nk_view.shape == (batch, n, k)
     assert b_nk_view.stride(-2) == 1
     op_kn = BmmFp8Op(out_dtype=torch.bfloat16)  # default 'kn'
-    op_nk = BmmFp8Op(out_dtype=torch.bfloat16, b_layout="nk")
+    op_nk = BmmFp8NKOp(out_dtype=torch.bfloat16)
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk_view, scale_a, scale_b)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
@@ -364,7 +364,7 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     assert b_nk.stride(-2) == k
 
     # Same logical B matrix, explicit layouts.  Both must yield the same d.
-    op_nk = BmmFp8Op(out_dtype=torch.bfloat16, b_layout="nk")
+    op_nk = BmmFp8NKOp(out_dtype=torch.bfloat16)
     out_nk = op_nk(a, b_nk, scale_a, scale_b).clone()
     op_kn = BmmFp8Op(out_dtype=torch.bfloat16)  # default 'kn'
     out_kn = op_kn(a, b_kn, scale_a, scale_b)

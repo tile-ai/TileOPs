@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -57,11 +59,12 @@ class DaCumsumFwdWorkload(WorkloadBase):
         # A <= 0 (negative decay)
         dt_raw = torch.randn(b, seq_len, h, dtype=torch.float32, device="cuda")
         A = -torch.rand(h, dtype=torch.float32, device="cuda")
-        # dt_bias is random when used; zeros when not (kernel ignores it in that case).
-        if self.has_dt_bias:
-            dt_bias = torch.randn(h, dtype=torch.float32, device="cuda") * 0.5
-        else:
-            dt_bias = torch.zeros(h, dtype=torch.float32, device="cuda")
+        # Absent means None: the op builds the kernel without that branch, and a
+        # zero tensor would instead build the one that reads it.
+        dt_bias = (
+            torch.randn(h, dtype=torch.float32, device="cuda") * 0.5
+            if self.has_dt_bias else None
+        )
         return dt_raw, A, dt_bias
 
     def ref_program(self, dt, A, dt_bias):
@@ -275,7 +278,9 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         n_heads: int,
         d_state: int,
         dtype: torch.dtype,
+        has_initial_states: bool = True,
     ):
+        self.has_initial_states = has_initial_states
         self.batch = batch
         self.num_chunks = num_chunks
         self.n_heads = n_heads
@@ -286,7 +291,11 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
         states = torch.randn(b, c, h, d, dtype=self.dtype, device="cuda") * 0.1
         dA_chunk_cumsum = -torch.rand(b, h, c, dtype=torch.float32, device="cuda").cumsum(-1)
-        initial_states = torch.randn(b, h, d, dtype=torch.float32, device="cuda") * 0.1
+        # Absent means None: the op then builds the kernel that starts from zero.
+        initial_states = (
+            torch.randn(b, h, d, dtype=torch.float32, device="cuda") * 0.1
+            if self.has_initial_states else None
+        )
         return states, dA_chunk_cumsum, initial_states
 
     def ref_program(self, states, dA_chunk_cumsum, initial_states):
@@ -428,7 +437,7 @@ def ssd_chunk_state_fwd_ref(
 def ssd_state_passing_fwd_ref(
     states: torch.Tensor,
     dA_chunk_cumsum: torch.Tensor,
-    initial_states: torch.Tensor,
+    initial_states: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """PyTorch reference for the inter-chunk recurrent scan.
 
@@ -436,9 +445,12 @@ def ssd_state_passing_fwd_ref(
     so out[:,0] = initial_states and final_states = state after chunk C-1.
     """
     b, c, h, d = states.shape
-    # out[:,0] = s_{-1} = initial_states (state before chunk 0)
-    out = [initial_states.float().clone()]
-    s = initial_states.float()
+    # out[:,0] = s_{-1} = initial_states, or zero when the call omits it.
+    s = (
+        torch.zeros(b, h, d, dtype=torch.float32, device=states.device)
+        if initial_states is None else initial_states.float()
+    )
+    out = [s.clone()]
 
     for ci in range(c):
         scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)

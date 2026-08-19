@@ -5,7 +5,6 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops import (
     GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetFwdOp,
-    GatedDeltaNetPrefillFwdOp,
 )
 from workloads.linear_attention import (
     GatedDeltaNetFwdWorkload,
@@ -131,21 +130,13 @@ def test_gated_deltanet_bthd_matches_the_head_major_op(
     v_bthd = v.permute(0, 2, 1, 3).contiguous()
     g_bthd = g.permute(0, 2, 1).contiguous()
     beta_bthd = beta.permute(0, 2, 1).contiguous()
-    production_op = GatedDeltaNetBTHDFwdOp(chunk_size=64)
-    production = production_op(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
+    production = GatedDeltaNetBTHDFwdOp(chunk_size=64)(q_bthd, k_bthd, v_bthd, g_bthd, beta_bthd)
 
     tols = _get_tolerances(dtype)
     torch.testing.assert_close(production[0].permute(0, 2, 1, 3), legacy[0], **tols)
     torch.testing.assert_close(production[1], legacy[1], **tols)
     torch.testing.assert_close(production[2].permute(0, 2, 1, 3), legacy[2], **tols)
     torch.testing.assert_close(production[3].permute(0, 2, 1, 3), legacy[3], **tols)
-    assert production_op.kernel.__class__.__name__ == "GatedDeltaNetFwdProductionKernel"
-    if (seq_len, dim, dtype) == (128, 128, torch.float16):
-        prefill_o, final_state = GatedDeltaNetPrefillFwdOp(chunk_size=64, layout="bthd")(
-            q_bthd[:1], k_bthd[:1], v_bthd[:1], g_bthd[:1], beta_bthd[:1]
-        )
-        torch.testing.assert_close(prefill_o, production[0][:1], **tols)
-        torch.testing.assert_close(final_state, production[1][:1, :, -1], **tols)
 
 
 if __name__ == "__main__":

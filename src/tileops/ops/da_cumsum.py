@@ -35,7 +35,6 @@ class DaCumsumFwdOp(Op):
     Args:
         chunk_len:    Tokens per chunk.
         dt_softplus:  Whether to apply softplus (with bypass for dt > 20) to dt.
-        has_dt_bias:  Whether a per-head dt_bias is added before softplus/clamp.
         dt_min:       Lower clamp bound applied after bias and softplus.
         dt_max:       Upper clamp bound applied after bias and softplus.
         tune:         Whether to autotune tile config on construction.
@@ -46,7 +45,6 @@ class DaCumsumFwdOp(Op):
         chunk_len: int,
         dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
-        has_dt_bias: bool = False,
         dt_min: float = 0.0,
         dt_max: float = float("inf"),
         tune: bool = False,
@@ -66,7 +64,6 @@ class DaCumsumFwdOp(Op):
         self.seq_len = None
         self.dtype = dtype
         self.dt_softplus = dt_softplus
-        self.has_dt_bias = has_dt_bias
         self.dt_min = dt_min
         self.dt_max = dt_max
         self.tune = tune
@@ -83,6 +80,7 @@ class DaCumsumFwdOp(Op):
         num_chunks: int,
         n_heads: int,
         seq_len: int,
+        has_dt_bias: bool,
         device_index: int | None,
     ) -> Kernel:
         key = (
@@ -93,7 +91,7 @@ class DaCumsumFwdOp(Op):
             seq_len,
             self.dtype,
             self.dt_softplus,
-            self.has_dt_bias,
+            has_dt_bias,
             self.dt_min,
             self.dt_max,
             device_index,
@@ -110,7 +108,7 @@ class DaCumsumFwdOp(Op):
                 seq_len,
                 self.dtype,
                 dt_softplus=self.dt_softplus,
-                has_dt_bias=self.has_dt_bias,
+                has_dt_bias=has_dt_bias,
                 dt_min=self.dt_min,
                 dt_max=self.dt_max,
                 tune=self.tune,
@@ -129,7 +127,6 @@ class DaCumsumFwdOp(Op):
             dt: (batch, seq_len, n_heads) float32 — raw dt values.
             A:  (n_heads,) float32 — SSM decay parameters.
             dt_bias: (n_heads,) float32, optional — per-head dt bias.
-                Required when the op was constructed with has_dt_bias=True.
 
         Returns:
             dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
@@ -149,15 +146,17 @@ class DaCumsumFwdOp(Op):
             )
         if A.shape != (n_heads,):
             raise ValueError("A must have shape [n_heads]")
-        if self.has_dt_bias and dt_bias is not None and dt_bias.shape != (n_heads,):
+        if dt_bias is not None and dt_bias.shape != (n_heads,):
             raise ValueError("dt_bias must have shape [n_heads]")
 
         self.batch = batch
         self.seq_len = seq_len
         self.n_heads = n_heads
         self.num_chunks = seq_len // self.chunk_len
+        self.dt_bias_shape = None if dt_bias is None else tuple(dt_bias.shape)
         self.kernel = self._get_kernel(
-            batch, self.num_chunks, n_heads, seq_len, dt.device.index)
+            batch, self.num_chunks, n_heads, seq_len, dt_bias is not None,
+            dt.device.index)
 
         dt = dt.contiguous()
         A = A.contiguous()

@@ -3,11 +3,12 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops import BmmFp8Op, BmmFwdOp
+from tileops.ops import BmmFp8NKOp, BmmFp8Op, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
 _OP_NAME = "BmmFwdOp"
-_FP8_OP_NAME = "BmmFp8Op"
+_FP8_KN_OP_NAME = "BmmFp8Op"
+_FP8_OP_NAME = "BmmFp8NKOp"
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -67,9 +68,9 @@ def _manifest_params() -> list:
     return params
 
 
-def _manifest_fp8_params() -> list:
+def _fp8_params(workloads) -> list:
     params = []
-    for w in load_workloads(_FP8_OP_NAME):
+    for w in workloads:
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
             params.append(pytest.param(
@@ -94,7 +95,30 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     bm.compare({"tileops": op, "torch-cublas": torch.bmm}, a, b, record_as=op, params=locals())
 
 
-@pytest.mark.parametrize("batch, m, n, k, dtype_str", _manifest_fp8_params())
+@pytest.mark.parametrize(
+    "batch, m, n, k, dtype_str", _fp8_params(load_workloads(_FP8_KN_OP_NAME))
+)
+def test_bmm_fp8_kn_bench(
+    batch: int, m: int, n: int, k: int, dtype_str: str,
+) -> None:
+    """The [B, K, N] order, which the kernel reaches through a transpose."""
+    dtype = _DTYPE_MAP[dtype_str]
+    out_dtype = torch.bfloat16
+    workload = BmmFp8BenchmarkWorkload(batch, m, n, k, dtype, out_dtype=out_dtype)
+    a, b_kn, scale_a, scale_b = workload.gen_inputs()
+
+    op = BmmFp8Op(out_dtype=out_dtype, tune=True)
+    bm = ManifestBenchmark(_FP8_KN_OP_NAME, op, workload)
+    bm.compare(
+        {"tileops": (op, (a, b_kn, scale_a, scale_b))},
+        record_as=op,
+        params=locals(),
+    )
+
+
+@pytest.mark.parametrize(
+    "batch, m, n, k, dtype_str", _fp8_params(load_workloads(_FP8_OP_NAME))
+)
 def test_bmm_fp8_bench(
     batch: int, m: int, n: int, k: int, dtype_str: str,
 ) -> None:
@@ -105,8 +129,8 @@ def test_bmm_fp8_bench(
     b_nk = b_kn.transpose(-2, -1).contiguous()      # [B, N, K], K-innermost
     b_kmajor = b_nk.transpose(-2, -1)               # [B, K, N] view, zero-copy
 
-    # Fast path: feed [B, N, K] (K-innermost) via explicit b_layout='nk'.
-    op = BmmFp8Op(out_dtype=out_dtype, tune=True, b_layout="nk")
+    # Fast path: feed [B, N, K] (K-innermost) using BmmFp8NKOp.
+    op = BmmFp8NKOp(out_dtype=out_dtype, tune=True)
     bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
     functors = {
         "tileops": (op, (a, b_nk, scale_a, scale_b)),

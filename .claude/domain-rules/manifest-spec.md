@@ -8,6 +8,8 @@
 
 - Op signatures must match PyTorch's public API (names, set, semantics); include every supported parameter even if the kernel only honors the default. Default to `__init__` kwargs (lifetime-fixed); use `forward()` only when the reference API requires it or the value is per-batch — justify in the introducing issue.
 
+- A param's `type` is a Python type expression. It must agree with the implementation's annotation on whether `None` is admitted, and a type that does not admit `None` may not carry `default: null`. Spelling is not compared: `Number` and `bool | int | float` name one domain. Rule: [manifest.md](../../docs/design/manifest.md#signature).
+
 - `dtype` syntax: `|` for alternatives. `same_as(ref)` is dtype-only identity (matches `ref` at runtime, no extra axis in `dtype_combos`, never used for shape).
 
 - `dtype_combos` only when the supported set is a strict subset of the Cartesian product. Omit when all combinations are valid.

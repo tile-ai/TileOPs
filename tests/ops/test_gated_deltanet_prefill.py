@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GatedDeltaNetPrefillFwdOp
+from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillFwdOp
 from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
 from workloads.linear_attention import (
     GatedDeltaNetPrefillFwdWorkload,
@@ -250,7 +250,7 @@ def test_gated_deltanet_prefill_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetPrefillFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, layout="bhtd", tune=tune)
+    op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
     test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
 
 
@@ -263,7 +263,7 @@ def test_gated_deltanet_prefill_bthd_layout_matches_bhtd() -> None:
     test = GatedDeltaNetPrefillFwdTest(B, H, S, DK, DV, BC, dtype)
     q, k, v, g, beta = test.gen_inputs()
 
-    bhtd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, layout="bhtd", tune=False)
+    bhtd_op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=BC, tune=False)
     bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False)
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
@@ -301,8 +301,8 @@ def test_gated_deltanet_prefill_bthd_blocksolve_path_matches_bhtd(
     test = GatedDeltaNetPrefillFwdTest(B, H, S, DK, DV, BC, dtype)
     q, k, v, g, beta = test.gen_inputs()
 
-    bhtd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, layout="bhtd", tune=False)
-    bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False, layout="bthd")
+    bhtd_op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=BC, tune=False)
+    bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False)
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
     o_bthd, state_bthd = bthd_op(

@@ -1,5 +1,5 @@
 import functools
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -25,6 +25,7 @@ __all__ = [
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
     "GatedDeltaNetOp",
+    "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillFwdOp",
 ]
 
@@ -430,23 +431,22 @@ class GatedDeltaNetPrefillFwdOp(Op):
     This is the serving-oriented zero-state prefill interface:
     ``(q, k, v, g, beta) -> (o, final_state)``. It intentionally does not
     expose backward-only training artifacts such as ``Aw`` and ``Au``.
-    ``layout="bthd"`` follows the official FLA/Qwen convention
-    (``q/k/v/o [B, T, H, D]``, ``g/beta [B, T, H]``). ``layout="bhtd"``
-    selects the TileOps head-major convention (``q/k/v/o [B, H, T, D]``,
-    ``g/beta [B, H, T]``).
+    Token-major (BTHD) inputs, the FLA/Qwen convention: ``q/k/v/o [B, T, H, D]``,
+    ``g/beta [B, T, H]``. Head-major callers want ``GatedDeltaNetPrefillBHTDFwdOp``.
     When ``chunk_size`` is not specified, the op uses a small-stream serving
     default: 128 for ``batch * heads <= 8`` when the sequence length allows it,
     otherwise 64.
     """
+
+    #: The memory order this op takes; one order per entry (R19).
+    LAYOUT: ClassVar[str] = "bthd"
 
     def __init__(
         self,
         chunk_size: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        layout: str = "bthd",
     ) -> None:
-        layout = _normalize_layout(layout)
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -455,7 +455,6 @@ class GatedDeltaNetPrefillFwdOp(Op):
         self._requested_chunk_size = chunk_size
         self.chunk_size = chunk_size
         self.dtype = None
-        self.layout = layout
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -477,7 +476,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         beta_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         del k_shape, g_shape, beta_shape
-        layout = _normalize_layout(getattr(self, "layout", "bthd"))
+        layout = self.LAYOUT
         if layout == "bthd":
             return {
                 "o": (q_shape[0], q_shape[1], q_shape[2], v_shape[-1]),
@@ -532,7 +531,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
             dim_k,
             dim_v,
             dtype,
-            self.layout,
+            self.LAYOUT,
             device_index,
             self.tune,
         )
@@ -547,7 +546,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
                 dim_k,
                 dim_v,
                 dtype=Kernel.dtype_to_str(dtype),
-                layout=self.layout,
+                layout=self.LAYOUT,
                 tune=self.tune,
             ),
         )
@@ -560,7 +559,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> None:
-        if self.layout == "bthd":
+        if self.LAYOUT == "bthd":
             if q.ndim != 4:
                 raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
             batch, seq_len, heads, dim_k = q.shape
@@ -638,7 +637,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
             v.device,
             g.device,
             beta.device,
-            self.layout,
+            self.LAYOUT,
             self._requested_chunk_size,
             getattr(self, "tune", None),
         )
@@ -647,6 +646,18 @@ class GatedDeltaNetPrefillFwdOp(Op):
             self._validate_shapes(q, k, v, g, beta)
             self._active_sig = sig
         return self.kernel(q, k, v, g, beta)
+
+
+class GatedDeltaNetPrefillBHTDFwdOp(GatedDeltaNetPrefillFwdOp):
+    """Gated DeltaNet inference prefill over head-major (BHTD) inputs.
+
+    ``q/k/v/o [B, H, T, D]``, ``g/beta [B, H, T]`` — the TileOps convention.
+    Same kernel and same arithmetic as ``GatedDeltaNetPrefillFwdOp``; only the
+    memory order the tensors arrive in differs, and memory order is part of the
+    signature, so it is its own entry.
+    """
+
+    LAYOUT: ClassVar[str] = "bhtd"
 
 
 class GatedDeltaNetBwdOp(Op):

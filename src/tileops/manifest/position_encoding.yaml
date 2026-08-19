@@ -11,7 +11,7 @@ RopeNeoxOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -46,7 +46,7 @@ RopeNonNeoxOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -80,7 +80,7 @@ RopeLlama31Op:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -118,7 +118,7 @@ RopeYarnOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:
@@ -157,7 +157,7 @@ RopeLongRopeOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
     params:

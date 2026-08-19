@@ -24,13 +24,11 @@ class SSDChunkStateFwdOp(Op):
               * (1 if seq_idx is None else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     Args:
-        has_seq_idx: Whether to accept and apply a seq_idx mask.
         tune:       Whether to autotune tile config on construction.
     """
 
     def __init__(
         self,
-        has_seq_idx: bool = False,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
@@ -42,7 +40,6 @@ class SSDChunkStateFwdOp(Op):
         self.d_state = None
         self.n_groups = None
         self.dtype = None
-        self.has_seq_idx = has_seq_idx
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.kernel = None
@@ -64,6 +61,7 @@ class SSDChunkStateFwdOp(Op):
         n_groups: int,
         dtype: torch.dtype,
         dt_dtype: torch.dtype,
+        has_seq_idx: bool,
         device_index: int | None,
     ) -> Kernel:
         key = (
@@ -76,7 +74,7 @@ class SSDChunkStateFwdOp(Op):
             n_groups,
             dtype,
             dt_dtype,
-            self.has_seq_idx,
+            has_seq_idx,
             device_index,
             self.tune,
         )
@@ -92,7 +90,7 @@ class SSDChunkStateFwdOp(Op):
                 d_state,
                 n_groups,
                 dtype,
-                has_seq_idx=self.has_seq_idx,
+                has_seq_idx=has_seq_idx,
                 dt_dtype=dt_dtype,
                 tune=self.tune,
             ),
@@ -148,9 +146,10 @@ class SSDChunkStateFwdOp(Op):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = x.dtype
+        self.seq_idx_shape = None if seq_idx is None else tuple(seq_idx.shape)
         self.kernel = self._get_kernel(
             batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, x.dtype,
-            dt.dtype, x.device.index)
+            dt.dtype, seq_idx is not None, x.device.index)
 
         x = x.contiguous()
         Bmat = Bmat.contiguous()
@@ -158,14 +157,11 @@ class SSDChunkStateFwdOp(Op):
         dA_cumsum = dA_cumsum.contiguous()
 
         if seq_idx is None:
-            if self.has_seq_idx:
-                seq_idx = x.new_zeros(
-                    self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32,
-                )
-            else:
-                seq_idx = x.new_empty(
-                    self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32,
-                )
+            # The kernel built for this call has no seq_idx branch, so this
+            # buffer only fills the argument slot and is never read.
+            seq_idx = x.new_empty(
+                self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32,
+            )
         else:
             seq_idx = seq_idx.contiguous()
 

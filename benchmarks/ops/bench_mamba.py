@@ -1,27 +1,62 @@
-from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
-    DaCumsumFwdFixture,
     DaCumsumFwdWorkload,
-    SSDChunkScanFwdFixture,
     SSDChunkScanFwdWorkload,
-    SSDChunkStateFwdFixture,
     SSDChunkStateFwdWorkload,
-    SSDDecodeFixture,
     SSDDecodeWorkload,
-    SSDStatePassingFwdFixture,
     SSDStatePassingFwdWorkload,
+    ssd_state_passing_fwd_ref,
 )
+
+_DA_CUMSUM_OP_NAME = "DaCumsumFwdOp"
+_CHUNK_STATE_OP_NAME = "SSDChunkStateFwdOp"
+_CHUNK_SCAN_OP_NAME = "SSDChunkScanFwdOp"
+_STATE_PASSING_OP_NAME = "SSDStatePassingFwdOp"
+_DECODE_OP_NAME = "SSDDecodeOp"
+
+
+def _da_cumsum_args(w: dict) -> tuple:
+    """Constructor arguments for one manifest workload row."""
+    batch, seq_len, n_heads = w["dt_shape"]
+    chunk_len = w["chunk_len"]
+    return (batch, seq_len // chunk_len, chunk_len, n_heads,
+            "dt_bias_shape" in w, bool(w.get("dt_softplus", True)))
+
+
+def _chunk_state_args(w: dict) -> tuple:
+    batch, _, n_heads, d_head = w["x_shape"]
+    _, _, n_groups, d_state = w["Bmat_shape"]
+    return (batch, w["dt_shape"][2], w["dt_shape"][3], n_heads, d_head, d_state,
+            n_groups, "seq_idx_shape" in w)
+
+
+def _chunk_scan_args(w: dict) -> tuple:
+    batch, _, n_heads, d_head = w["x_shape"]
+    _, num_chunks, n_groups, chunk_len, _ = w["cb_shape"]
+    return batch, num_chunks, chunk_len, n_heads, d_head, w["C_shape"][3], n_groups
+
+
+def _state_passing_args(w: dict) -> tuple:
+    batch, num_chunks, n_heads, d_state = w["states_shape"]
+    return batch, num_chunks, n_heads, d_state, "initial_states_shape" in w
+
+
+def _decode_args(w: dict) -> tuple:
+    n_heads, d_head, d_state = w["A_shape"]
+    return w["x_shape"][0], n_heads, d_head, d_state, w["B_in_shape"][1]
+
 
 # Optional mamba_ssm Triton baselines
 try:
@@ -79,45 +114,24 @@ def da_cumsum_fwd_ref(
     return dt_out, dA_cumsum
 
 
-class DaCumsumFwdBenchmark(BenchmarkBase[DaCumsumFwdWorkload]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
-        # Core ops per element: 1 mul (dt*A) + 1 add (cumsum) = 2
-        # Optional bias add: +1; optional softplus (exp+log+add): +3; clamp (min+max): +2
-        bias_ops = 1 if t.has_dt_bias else 0
-        softplus_ops = 3 if t.dt_softplus else 0
-        ops_per_elem = 2 + bias_ops + softplus_ops + 2  # +2 for clamp always
-        return float(ops_per_elem * b * c * L * h)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
-        elem = 4  # float32
-        # Reads: dt_raw (b, c*L, h) + A (h,) + optional dt_bias (h,)
-        reads = (b * c * L * h + h + (h if t.has_dt_bias else 0)) * elem
-        # Writes: dt_out (b, h, c, L) + dA_cumsum (b, h, c, L)
-        writes = 2 * b * h * c * L * elem
-        return float(reads + writes)
-
-
-@DaCumsumFwdFixture
+@pytest.mark.parametrize(
+    "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune",
+    manifest_params(load_workloads(_DA_CUMSUM_OP_NAME), _da_cumsum_args, tune=False),
+)
 def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune):
     test = DaCumsumFwdWorkload(
         batch, num_chunks, chunk_len, n_heads,
         has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
     )
-    bm = DaCumsumFwdBenchmark(test)
     inputs = test.gen_inputs()  # (dt_raw, A, dt_bias)
 
     op = DaCumsumFwdOp(
         chunk_len=chunk_len,
-        has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
         dtype=dtype,
         tune=tune,
     )
+    bm = ManifestBenchmark(_DA_CUMSUM_OP_NAME, op, test)
     functors = {"tileops": op}
 
     # ── Mamba-2 Triton baseline ──
@@ -212,45 +226,6 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     return out
 
 
-class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdWorkload]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        b, c, L, h, p, n = (
-            t.batch, t.num_chunks, t.chunk_len,
-            t.n_heads, t.d_head, t.d_state,
-        )
-        # History path: C @ prev_states per token
-        #   b * c * L * h matmuls of shape (1, n) x (n, p) -> 2*n*p FLOPs each
-        history_flops = b * c * L * h * 2 * n * p
-        # Intra-chunk path: lower-triangular lcb @ x
-        #   b * c * h causal GEMMs of size (L, L) x (L, p) -> L*(L+1)/2 * 2*p FLOPs each
-        diag_flops = b * c * h * (L * (L + 1) // 2) * 2 * p
-        return float(history_flops + diag_flops)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        b, c, L, h, p, n, g = (
-            t.batch, t.num_chunks, t.chunk_len,
-            t.n_heads, t.d_head, t.d_state, t.n_groups,
-        )
-        S = c * L
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        # Reads (input dtype): x + cb + C + prev_states + dt
-        reads = (
-            b * S * h * p           # x          [B, S, H, P]
-            + b * c * g * L * L     # cb         [B, C, G, L, L]
-            + b * S * g * n         # C          [B, S, G, N]
-            + b * c * h * p * n     # prev_states [B, C, H, P, N]
-            + b * h * c * L         # dt         [B, H, C, L]
-        ) * elem
-        # Reads (float32): dA_cumsum [B, H, C, L]
-        reads += b * h * c * L * 4
-        # Writes (float32): out [B, S, H, P]
-        writes = b * S * h * p * 4
-        return float(reads + writes)
-
-
 # Benchmark parameters
 #
 # Model-to-shape mapping (Mamba-2 defaults):
@@ -262,27 +237,9 @@ class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdWorkload]):
 #   1.3B -> n_heads=64   2.7B -> n_heads=80
 #
 # Schema: (batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune)
-_SSD_CHUNK_SCAN_FWD_BENCH_PARAMS = [
-    # ── unit-scale ──
-    pytest.param(1, 2,  64, 4,  64,  32, 1, torch.float16,  False, id="b1-c2-L64-h4-p64-n32-fp16"),
-    pytest.param(2, 4,  64, 8,  64,  64, 2, torch.float16,  False, id="b2-c4-L64-h8-p64-n64-fp16"),
-    pytest.param(1, 2, 128, 4, 128,  32, 1, torch.bfloat16, False, id="b1-c2-L128-h4-p128-n32-bf16"),
-    pytest.param(2, 2,  64, 4,  64,  32, 2, torch.bfloat16, False, id="b2-c2-L64-h4-p64-n32-bf16"),
-    # ── 130M (n_heads=24) ──
-    pytest.param(1,  16, 256, 24, 64, 128, 1, torch.float16, True, id="latency-130m-4k"),
-    pytest.param(8,  16, 256, 24, 64, 128, 1, torch.float16, True, id="serving-130m-4k"),
-    pytest.param(4, 128, 256, 24, 64, 128, 1, torch.float16, True, id="longctx-130m-32k"),
-    # ── 2.7B (n_heads=80) ──
-    pytest.param(1,  16, 256, 80, 64, 128, 1, torch.float16, True, id="latency-2p7b-4k"),
-    pytest.param(4,  16, 256, 80, 64, 128, 1, torch.float16, True, id="serving-2p7b-4k"),
-    pytest.param(2, 128, 256, 80, 64, 128, 1, torch.float16, True, id="longctx-2p7b-32k"),
-    pytest.param(4,   8, 256, 80, 64, 128, 1, torch.float16, True, id="throughput-2p7b-2k"),
-]
-
-
 @pytest.mark.parametrize(
     "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune",
-    _SSD_CHUNK_SCAN_FWD_BENCH_PARAMS,
+    manifest_params(load_workloads(_CHUNK_SCAN_OP_NAME), _chunk_scan_args, tune=False),
 )
 def test_ssd_chunk_scan_fwd_bench(
     batch: int,
@@ -298,11 +255,11 @@ def test_ssd_chunk_scan_fwd_bench(
     test = SSDChunkScanFwdWorkload(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
     )
-    bm = SSDChunkScanFwdBenchmark(test)
     inputs = test.gen_inputs()  # x, cb, dA_cumsum, C, prev_states, dt
 
     # ── TileOPs kernel ──
     op = SSDChunkScanFwdOp(tune=tune)
+    bm = ManifestBenchmark(_CHUNK_SCAN_OP_NAME, op, test)
     functors = {"tileops": op}
 
     # ── Mamba-2 Triton baseline ──
@@ -360,86 +317,22 @@ def ssd_chunk_state_fwd_ref(
     return out.permute(0, 1, 2, 4, 3)
 
 
-class SSDChunkStateFwdBenchmark(BenchmarkBase[SSDChunkStateFwdWorkload]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        b, c, Q, h, p, n = (
-            t.batch, t.num_chunks, t.chunk_len,
-            t.n_heads, t.d_head, t.d_state,
-        )
-        # For each (b, c, h) block we do a rank-1 outer-product accumulation
-        # over Q positions: Q * (p + n) multiply-adds, giving Q * p * n * 2 FLOPs
-        # (treating the outer product as n*p MACs per position).
-        flops = b * c * h * Q * n * p * 2
-        return float(flops)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        b, c, Q, h, p, n, g = (
-            t.batch, t.num_chunks, t.chunk_len,
-            t.n_heads, t.d_head, t.d_state, t.n_groups,
-        )
-        seq_len = c * Q
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        # Reads (input dtype): x + Bmat
-        reads = (
-            b * seq_len * h * p      # x
-            + b * seq_len * g * n    # Bmat
-        ) * elem
-        # Reads (float32): dt + dA_cumsum
-        reads += b * h * c * Q * 4 * 2
-        # Writes (float32): out
-        writes = b * c * h * n * p * 4
-        return float(reads + writes)
-
-
-_SSD_CHUNK_STATE_FWD_BENCH_PARAMS = [
-    # ── smoke / debug ────────────────────────────────────────────────────────
-    # Minimal shape for fast local iteration and CI smoke runs.
-    # Not used for PR performance claims.
-    pytest.param(1, 2, 64, 4, 64, 32, 1, torch.float16, False, False,
-                 id="debug-b1-c2-L64-h4-p64-n32-g1-fp16"),
-    # ── Production-scale configs (HuggingFace state-spaces/mamba2-*) ─────────
-    # All models: headdim=64, d_state=128, ngroups=1, chunk_size=256.
-    # nheads = d_model * expand / headdim.
-    # seqlen=2048 -> num_chunks=8 (L2k); seqlen=8192 -> num_chunks=32 (L8k).
-    # Grid = B*C*H blocks (needs >> 132 SMs on H200 to produce useful numbers).
-    #
-    # mamba2-370m: d_model=1024, expand=2 -> d_inner=2048, nheads=32
-    pytest.param(1,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="mamba2-370m-b1-L2k-fp16"),
-    pytest.param(4,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="mamba2-370m-b4-L2k-fp16"),
-    # mamba2-1.3b: d_model=2048, expand=2 -> d_inner=4096, nheads=64
-    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b1-L2k-fp16"),
-    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b4-L2k-fp16"),
-    # mamba2-2.7b: d_model=2560, expand=2 -> d_inner=5120, nheads=80
-    # Use bf16 to match the target production dtype for this model scale.
-    pytest.param(1,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="mamba2-2p7b-b1-L2k-bf16"),
-    pytest.param(4,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="mamba2-2p7b-b4-L2k-bf16"),
-    # Long-context: seqlen=8192
-    pytest.param(1, 32, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b1-L8k-fp16"),
-    # seq_idx: latency (b1) and throughput (b4) cases exercise the separate
-    # has_seq_idx=True config branch (threads=128 vs threads=256 for non-seqidx).
-    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="mamba2-1p3b-b1-L2k-seqidx-fp16"),
-    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="mamba2-1p3b-b4-L2k-seqidx-fp16"),
-]
-
-
 @pytest.mark.parametrize(
-    "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx",
-    _SSD_CHUNK_STATE_FWD_BENCH_PARAMS,
+    "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, has_seq_idx,"
+    " dtype, tune",
+    manifest_params(load_workloads(_CHUNK_STATE_OP_NAME), _chunk_state_args, tune=False),
 )
 def test_ssd_chunk_state_fwd_bench(
     batch: int, num_chunks: int, chunk_len: int, n_heads: int, d_head: int,
-    d_state: int, n_groups: int, dtype: torch.dtype, tune: bool, has_seq_idx: bool,
+    d_state: int, n_groups: int, has_seq_idx: bool, dtype: torch.dtype, tune: bool,
 ) -> None:
     test = SSDChunkStateFwdWorkload(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
-    bm = SSDChunkStateFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SSDChunkStateFwdOp(has_seq_idx=has_seq_idx, tune=tune)
+    op = SSDChunkStateFwdOp(tune=tune)
+    bm = ManifestBenchmark(_CHUNK_STATE_OP_NAME, op, test)
     functors = {"tileops": op}
 
     if _mamba_chunk_state_fwd is not None:
@@ -465,53 +358,6 @@ def test_ssd_chunk_state_fwd_bench(
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
-def ssd_state_passing_fwd_ref(
-    states: torch.Tensor,
-    dA_chunk_cumsum: torch.Tensor,
-    initial_states: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for ssd_state_passing_fwd (benchmark-local copy).
-
-    Matches mamba convention: out[:,c] = state *before* processing chunk c,
-    so out[:,0] = initial_states and final_states = state after chunk C-1.
-    """
-    b, c, h, d = states.shape
-    out = [initial_states.float().clone()]
-    s = initial_states.float()
-
-    for ci in range(c):
-        scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
-        u = states[:, ci, :, :].float()
-        s = scale * s + u
-        if ci < c - 1:
-            out.append(s.clone())
-
-    return torch.stack(out, dim=1), s
-
-
-class SSDStatePassingFwdBenchmark(BenchmarkBase[SSDStatePassingFwdWorkload]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        b, c, h, d = t.batch, t.num_chunks, t.n_heads, t.d_state
-        # Per chunk: scale multiply + add for each (b, h, d) element
-        # 2 FLOPs (mul + add) per element per chunk
-        flops = b * c * h * d * 2
-        return float(flops)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        b, c, h, d = t.batch, t.num_chunks, t.n_heads, t.d_state
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        # Reads (input dtype): states
-        reads = b * c * h * d * elem
-        # Reads (float32): dA_chunk_cumsum + initial_states
-        reads += b * h * c * 4 + b * h * d * 4
-        # Writes (float32): out + final_states
-        writes = (b * c * h * d + b * h * d) * 4
-        return float(reads + writes)
-
-
 # State passing benchmark parameters.
 #
 # Model-to-shape mapping (Mamba-2 defaults):
@@ -522,37 +368,22 @@ class SSDStatePassingFwdBenchmark(BenchmarkBase[SSDStatePassingFwdWorkload]):
 #   1.3B -> n_heads=64   2.7B -> n_heads=80
 #
 # Schema: (batch, num_chunks, n_heads, d_state, dtype, tune)
-_SSD_STATE_PASSING_FWD_BENCH_PARAMS = [
-    # ── unit-scale ──
-    pytest.param(1, 2, 4,  32, torch.float16,  False, id="b1-c2-h4-d32-fp16"),
-    pytest.param(2, 4, 8,  64, torch.float16,  False, id="b2-c4-h8-d64-fp16"),
-    pytest.param(1, 2, 4,  32, torch.bfloat16, False, id="b1-c2-h4-d32-bf16"),
-    pytest.param(2, 4, 8,  64, torch.bfloat16, False, id="b2-c4-h8-d64-bf16"),
-    # ── 130M (n_heads=24) ──
-    pytest.param(1,  16, 24, 128, torch.float16, True, id="latency-130m-4k"),
-    pytest.param(8,  16, 24, 128, torch.float16, True, id="serving-130m-4k"),
-    pytest.param(4, 128, 24, 128, torch.float16, True, id="longctx-130m-32k"),
-    # ── 2.7B (n_heads=80) ──
-    pytest.param(1,  16, 80, 128, torch.float16, True, id="latency-2p7b-4k"),
-    pytest.param(4,  16, 80, 128, torch.float16, True, id="serving-2p7b-4k"),
-    pytest.param(2, 128, 80, 128, torch.float16, True, id="longctx-2p7b-32k"),
-]
-
-
 @pytest.mark.parametrize(
-    "batch, num_chunks, n_heads, d_state, dtype, tune",
-    _SSD_STATE_PASSING_FWD_BENCH_PARAMS,
+    "batch, num_chunks, n_heads, d_state, has_initial_states, dtype, tune",
+    manifest_params(load_workloads(_STATE_PASSING_OP_NAME), _state_passing_args, tune=False),
 )
 def test_ssd_state_passing_fwd_bench(
     batch: int, num_chunks: int, n_heads: int, d_state: int,
-    dtype: torch.dtype, tune: bool,
+    has_initial_states: bool, dtype: torch.dtype, tune: bool,
 ) -> None:
-    test = SSDStatePassingFwdWorkload(batch, num_chunks, n_heads, d_state, dtype)
-    bm = SSDStatePassingFwdBenchmark(test)
+    test = SSDStatePassingFwdWorkload(
+        batch, num_chunks, n_heads, d_state, dtype, has_initial_states
+    )
     inputs = test.gen_inputs()
     states, dA_chunk_cumsum, initial_states = inputs
 
     op = SSDStatePassingFwdOp(tune=tune)
+    bm = ManifestBenchmark(_STATE_PASSING_OP_NAME, op, test)
     functors = {"tileops": op}
 
     if _mamba_state_passing_fwd is not None:
@@ -563,7 +394,9 @@ def test_ssd_state_passing_fwd_bench(
             return _mamba_state_passing_fwd(
                 states.contiguous(),
                 dA_chunk_cumsum.contiguous(),
-                initial_states=initial_states.contiguous(),
+                initial_states=(
+                    None if initial_states is None else initial_states.contiguous()
+                ),
                 out_dtype=torch.float32,
             )
 
@@ -615,34 +448,6 @@ def ssd_decode_ref(
     return y_out
 
 
-class SSDDecodeBenchmark(BenchmarkBase[SSDDecodeWorkload]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        b, h, p, n = t.batch, t.n_heads, t.d_head, t.d_state
-        # State update: dA * old_s + dt * x * B  -> 3 muls + 1 add per (b,h,p,n)
-        # Output accum: new_s * C                 -> 1 mul + 1 add per (b,h,p,n)
-        # Total: 6 * b * h * p * n
-        return float(6 * b * h * p * n)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        b, h, p, n, g = t.batch, t.n_heads, t.d_head, t.d_state, t.n_groups
-        f32 = torch.float32.itemsize
-        dtype_bytes = self.workload.dtype.itemsize
-        # Reads: A(h,p,n) + dt(b,h,p) + x(b,h,p) + B_in(b,g,n) + C_in(b,g,n) + state(b,h,p,n)
-        reads = (
-            h * p * n * f32
-            + b * h * p * f32
-            + b * h * p * dtype_bytes
-            + 2 * b * g * n * dtype_bytes
-            + b * h * p * n * f32
-        )
-        # Writes: state(b,h,p,n) + y_out(b,h,p)
-        writes = (b * h * p * n + b * h * p) * f32
-        return float(reads + writes)
-
-
 # Mamba2 (SSD) decode benchmark parameters.
 #
 # Model-to-shape mapping (Mamba2 defaults):
@@ -654,33 +459,15 @@ class SSDDecodeBenchmark(BenchmarkBase[SSDDecodeWorkload]):
 #   2.7B (d_model=2560) -> n_heads=80
 #
 # Schema: (batch, n_heads, d_head, d_state, n_groups, dtype, tune)
-_SSD_DECODE_BENCH_PARAMS = [
-    # ── smoke / unit-scale ──
-    pytest.param(1,  4,  64,  16, 1, torch.float16,  False, id="b1-h4-p64-n16-g1-fp16"),
-    pytest.param(2,  8,  64,  32, 2, torch.float16,  False, id="b2-h8-p64-n32-g2-fp16"),
-    pytest.param(1,  4,  64,  16, 1, torch.bfloat16, False, id="b1-h4-p64-n16-g1-bf16"),
-    pytest.param(2,  8, 128,  64, 4, torch.bfloat16, False, id="b2-h8-p128-n64-g4-bf16"),
-    # ── 130M (n_heads=24) ──
-    pytest.param(1,  24, 64, 128, 1, torch.float16, True, id="latency-130m"),
-    pytest.param(8,  24, 64, 128, 1, torch.float16, True, id="serving-130m"),
-    pytest.param(64, 24, 64, 128, 1, torch.float16, True, id="throughput-130m"),
-    # ── 2.7B (n_heads=80) ──
-    pytest.param(1,  80, 64, 128, 1, torch.float16, True, id="latency-2p7b"),
-    pytest.param(4,  80, 64, 128, 1, torch.float16, True, id="serving-2p7b"),
-    pytest.param(8,  80, 64, 128, 1, torch.float16, True, id="throughput-2p7b"),
-]
-
-
 @pytest.mark.parametrize(
     "batch, n_heads, d_head, d_state, n_groups, dtype, tune",
-    _SSD_DECODE_BENCH_PARAMS,
+    manifest_params(load_workloads(_DECODE_OP_NAME), _decode_args, tune=False),
 )
 def test_ssd_decode_bench(
     batch: int, n_heads: int, d_head: int, d_state: int,
     n_groups: int, dtype: torch.dtype, tune: bool,
 ) -> None:
     test = SSDDecodeWorkload(batch, n_heads, d_head, d_state, n_groups, dtype)
-    bm = SSDDecodeBenchmark(test)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
     # Clone state before each profile run so both start from identical initial
@@ -689,6 +476,7 @@ def test_ssd_decode_bench(
     state_bl = state.clone()
 
     op = SSDDecodeOp(tune=tune)
+    bm = ManifestBenchmark(_DECODE_OP_NAME, op, test)
     functors = {"tileops": op}
 
     def baseline(A, dt, x, B_in, C_in, state):

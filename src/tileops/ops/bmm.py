@@ -5,7 +5,7 @@ batch item is an independent GEMM, no broadcasting.
 """
 
 import warnings
-from typing import Dict, Hashable, Optional, Set, Tuple
+from typing import ClassVar, Dict, Hashable, Optional, Set, Tuple
 
 import torch
 
@@ -14,7 +14,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["BmmFp8Op", "BmmFwdOp"]
+__all__ = ["BmmFp8NKOp", "BmmFp8Op", "BmmFwdOp"]
 
 
 class BmmFwdOp(Op):
@@ -134,7 +134,11 @@ class BmmFwdOp(Op):
 
 
 class BmmFp8Op(Op):
-    """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
+    """Batched FP8 GEMM over ``b`` in ``[B, K, N]``: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
+
+    This is torch.bmm's memory order. The fp8-TN WGMMA kernel wants K innermost,
+    so this op transposes ``b`` before the call; ``BmmFp8NKOp`` takes ``[B, N, K]``
+    and hands it over as it stands.
     Args:
         out_dtype: Output tensor dtype (``torch.float16`` or ``torch.bfloat16``).
         kernel_map: Optional kernel override dict.
@@ -142,19 +146,18 @@ class BmmFp8Op(Op):
 
     Example:
         >>> op = BmmFp8Op(out_dtype=torch.bfloat16)
-        >>> # Default path: b is [B,K,N] (torch.bmm layout).
         >>> d = op(a, b_kn, scale_a, scale_b)
-        >>> # Fast path: b is [B,N,K] (K-innermost), zero-copy into kernel.
-        >>> d = op(a, b_nk, scale_a, scale_b)
         >>> flops, nbytes = op.eval_roofline()    # valid after the forward
     """
+
+    #: Whether ``b`` arrives with K innermost, which is what the kernel wants.
+    B_IS_NK: ClassVar[bool] = False
 
     def __init__(
         self,
         out_dtype: torch.dtype | str = "bfloat16",
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        b_layout: str = "kn",
     ) -> None:
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
@@ -162,12 +165,8 @@ class BmmFp8Op(Op):
             raise ValueError(
                 f"BmmFp8Op outputs torch.float16 or torch.bfloat16, "
                 f"got {out_dtype}")
-        if b_layout not in ("kn", "nk"):
-            raise ValueError(
-                f"BmmFp8Op b_layout must be 'kn' or 'nk', got {b_layout!r}")
         self.out_dtype = out_dtype
         self.tune = tune
-        self.b_layout = b_layout
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
@@ -220,11 +219,11 @@ class BmmFp8Op(Op):
                 f"BmmFp8Op batch dim mismatch: a.shape[0]={batch_a} vs "
                 f"b.shape[0]={batch_b}"
             )
-        if self.b_layout == "nk":
+        if self.B_IS_NK:
             if b2 != k:
                 raise ValueError(
-                    f"BmmFp8Op b_layout='nk' but b={tuple(b.shape)} is not a "
-                    f"valid [B,N,K] (needs b.shape[2]==K={k})"
+                    f"{type(self).__name__} takes b as [B,N,K], but "
+                    f"b={tuple(b.shape)} needs b.shape[2]==K={k}"
                 )
             n, b_is_nk = b1, True
         else:  # 'kn'
@@ -315,11 +314,10 @@ class BmmFp8Op(Op):
             self.b_shape = tuple(b.shape)
             self.scale_a_shape = tuple(scale_a.shape)
             self.scale_b_shape = tuple(scale_b.shape)
-            self._b_is_nk = b_is_nk
             kernel = self._get_kernel(batch, m, n, k, a.dtype, device=a.device)
             self._active = kernel
             self._active_sig = sig
-        if self._b_is_nk:
+        if self.B_IS_NK:
             b = b.contiguous()
         else:
             # Slow path: [B,K,N] layout requires an extra DtoD transpose
@@ -341,3 +339,19 @@ class BmmFp8Op(Op):
         scale_a = scale_a.reshape(1)
         scale_b = scale_b.reshape(1)
         return self._active(a, b, scale_a, scale_b)
+
+
+class BmmFp8NKOp(BmmFp8Op):
+    """Batched FP8 GEMM over ``b`` in ``[B, N, K]``.
+
+    K is innermost, which is the order the fp8-TN WGMMA kernel reads, so ``b``
+    reaches it without a transpose. Same kernel and same arithmetic as
+    ``BmmFp8Op``; only the memory order ``b`` arrives in differs, and memory
+    order is part of the signature, so it is its own entry.
+
+    Example:
+        >>> op = BmmFp8NKOp(out_dtype=torch.bfloat16)
+        >>> d = op(a, b_nk, scale_a, scale_b)
+    """
+
+    B_IS_NK: ClassVar[bool] = True
