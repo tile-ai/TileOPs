@@ -650,41 +650,34 @@ def _make_binary_explicit(
 # Strategy factory: FusedGated
 
 
-@functools.lru_cache(maxsize=32)
-def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=None):
-    """FusedGated direct: 1 element per thread. x[:, :N] is gate, x[:, N:] is value.
+def _fused_gated_col(col_block, thread, item, threads, num_per_thread):
+    """Shared compile-time column mapping for all fused-gated row policies."""
+    return (col_block * threads + thread) * num_per_thread + item
 
-    ``op_func(gate, value)`` is the compound operation that applies the
-    activation to *gate* and multiplies by *value*.  For fp8 dtypes the
-    caller wraps it via ``_wrap_fp8_accumulation`` so this factory stays
-    fp8-agnostic.
 
-    Args:
-        output_dtype: TileLang dtype string for the output tensor. Defaults to dtype.
-    """
-    out_dtype = output_dtype or dtype
+def _make_fused_gated_store(N, op_func):
+    """Create the single fused-gated pointwise epilogue implementation."""
 
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg):
-        @T.prim_func
-        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
-                for i in T.Parallel(threads_arg):
-                    col = bx * threads_arg + i
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+    @T.macro
+    def store(x, y, row, col):
+        gate = x[row, col]
+        value = x[row, N + col]
+        y[row, col] = op_func(gate, value)
 
-        return main
-
-    return kernel
+    return store
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_explicit(
-    M, N, dtype, op_func, threads=256, num_per_thread=8, output_dtype=None
+def _make_fused_gated(
+    M,
+    N,
+    dtype,
+    op_func,
+    threads=256,
+    num_per_thread=8,
+    output_dtype=None,
 ):
-    """FusedGated explicit_parallel: N elements per thread.
+    """Build the normal-row FusedGated strategy.
 
     ``op_func(gate, value)`` is the compound operation (see
     ``_make_fused_gated_direct``).  fp8 accumulation belongs to the caller, which
@@ -695,23 +688,77 @@ def _make_fused_gated_explicit(
     """
     block_N = threads * num_per_thread
     out_dtype = output_dtype or dtype
+    store = _make_fused_gated_store(N, op_func)
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    col = (bx * threads_arg + i) * npt_arg + j
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+            if M <= 65535:
+                with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = _fused_gated_col(bx, i, j, threads_arg, npt_arg)
+                        store(x, y, by, col)
+            else:
+                col_blocks = T.ceildiv(N, block_N)
+                with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
+                    row = bx // col_blocks
+                    col_block = bx % col_blocks
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = _fused_gated_col(col_block, i, j, threads_arg, npt_arg)
+                        store(x, y, row, col)
 
         return main
 
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
+def _make_fused_gated_bounded(
+    M,
+    N,
+    dtype,
+    op_func,
+    grid_rows,
+    threads=256,
+    num_per_thread=8,
+    output_dtype=None,
+):
+    """Persistent FusedGated with a device row count.
+
+    ``num_per_thread=1`` is the direct strategy. Keeping that choice static
+    shares the pointwise source without adding a runtime bounded/strategy
+    branch.
+    """
+    block_N = threads * num_per_thread
+    out_dtype = output_dtype or dtype
+    store = _make_fused_gated_store(N, op_func)
+
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((M, 2 * N), dtype),
+            valid_rows: T.Tensor((1,), "int32"),
+            y: T.Tensor((M, N), out_dtype),
+        ):
+            col_blocks = T.ceildiv(N, block_N)
+            with T.Kernel(grid_rows * col_blocks, threads=threads_arg) as bx:
+                worker_row = bx // col_blocks
+                col_block = bx % col_blocks
+                for row_iter in T.serial(T.ceildiv(M, grid_rows)):
+                    row = worker_row + row_iter * grid_rows
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = _fused_gated_col(col_block, i, j, threads_arg, npt_arg)
+                        if row < valid_rows[0]:
+                            store(x, y, row, col)
+
+        return main
+
+    return kernel
+
+
+# ---------------------------------------------------------------------------
 # Template base classes
 
 
@@ -1260,16 +1307,17 @@ class FusedGatedKernel(Kernel):
         cfg = self.default_config
         effective_op = self._get_effective_op_func()
         if strategy == "direct":
-            return _make_fused_gated_direct(
+            return _make_fused_gated(
                 self.M,
                 self.N,
                 self.dtype_str,
                 effective_op,
                 threads=cfg["threads"],
+                num_per_thread=1,
                 output_dtype=self._kernel_output_dtype,
             )
         elif strategy == "explicit_parallel":
-            return _make_fused_gated_explicit(
+            return _make_fused_gated(
                 self.M,
                 self.N,
                 self.dtype_str,
@@ -1340,12 +1388,58 @@ class FusedGatedKernel(Kernel):
         # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
         if self.strategy == "direct":
-            self._compiled_fn = self.kernel(cfg["threads"])
+            self._compiled_fn = self.kernel(cfg["threads"], 1)
         else:
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        self._bounded_compiled_fn = None
 
     def forward(self, x):
         result = self._compiled_fn(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+    def forward_rows(self, x, valid_rows):
+        """Apply the gated activation only to ``valid_rows`` leading rows.
+
+        ``valid_rows`` remains a CUDA int32 tensor so one compiled capacity
+        can be replayed with different received row counts without host sync.
+        Rows in the returned capacity tail are unspecified.
+        """
+        if valid_rows.dtype != torch.int32 or valid_rows.numel() != 1:
+            raise ValueError("valid_rows must be a one-element torch.int32 tensor")
+        if valid_rows.device != x.device:
+            raise ValueError("valid_rows and x must be on the same device")
+        if self._bounded_compiled_fn is None:
+            cfg = self.config
+            effective_op = self._get_effective_op_func()
+            sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
+            grid_rows = min(self.M, 16 * sm_count)
+            if self.strategy == "direct":
+                bounded_kernel = _make_fused_gated_bounded(
+                    self.M,
+                    self.N,
+                    self.dtype_str,
+                    effective_op,
+                    grid_rows,
+                    threads=cfg["threads"],
+                    num_per_thread=1,
+                    output_dtype=self._kernel_output_dtype,
+                )
+                self._bounded_compiled_fn = bounded_kernel(cfg["threads"], 1)
+            else:
+                bounded_kernel = _make_fused_gated_bounded(
+                    self.M,
+                    self.N,
+                    self.dtype_str,
+                    effective_op,
+                    grid_rows,
+                    cfg["threads"],
+                    cfg["num_per_thread"],
+                    output_dtype=self._kernel_output_dtype,
+                )
+                self._bounded_compiled_fn = bounded_kernel(cfg["threads"], cfg["num_per_thread"])
+        result = self._bounded_compiled_fn(x, valid_rows.reshape(1))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result
