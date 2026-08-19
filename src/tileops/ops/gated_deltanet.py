@@ -20,13 +20,13 @@ from tileops.kernels.kernel_base import Kernel
 from .op_base import Op
 
 __all__ = [
+    "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
-    "GatedDeltaNetFwdOp",
     "GatedDeltaNetOp",
     "GatedDeltaNetPrefillBHTDFwdOp",
-    "GatedDeltaNetPrefillFwdOp",
+    "GatedDeltaNetPrefillBTHDFwdOp",
 ]
 
 #: Implementations of the gated DeltaNet decode slot.
@@ -153,7 +153,7 @@ def _normalize_layout(layout: str) -> str:
     return normalized
 
 
-class GatedDeltaNetFwdOp(Op):
+class GatedDeltaNetBHTDFwdOp(Op):
     """Gated DeltaNet forward operator.
 
     Pipeline: prepare_wy_repr(k, g, beta) -> (Aw, Au) -> gated_deltanet_fwd(q, k, v, g, beta, Aw, Au) -> o.
@@ -274,7 +274,7 @@ class GatedDeltaNetFwdOp(Op):
 class GatedDeltaNetBTHDFwdOp(Op):
     """Gated DeltaNet forward over token-major (BTHD) inputs.
 
-    Same operator as ``GatedDeltaNetFwdOp`` and the same four outputs, over the
+    Same operator as ``GatedDeltaNetBHTDFwdOp`` and the same four outputs, over the
     token-major memory order the FLA reference uses: ``q/k [B, S, H, DK]``,
     ``v [B, S, H, DV]``, ``g/beta [B, S, H]``. A separate entry because the
     memory order is part of the signature, not a mode of one signature.
@@ -425,7 +425,7 @@ class GatedDeltaNetBTHDFwdOp(Op):
         return o, S, Aw, Au
 
 
-class GatedDeltaNetPrefillFwdOp(Op):
+class GatedDeltaNetPrefillBTHDFwdOp(Op):
     """Gated DeltaNet inference prefill operator.
 
     This is the serving-oriented zero-state prefill interface:
@@ -648,11 +648,11 @@ class GatedDeltaNetPrefillFwdOp(Op):
         return self.kernel(q, k, v, g, beta)
 
 
-class GatedDeltaNetPrefillBHTDFwdOp(GatedDeltaNetPrefillFwdOp):
+class GatedDeltaNetPrefillBHTDFwdOp(GatedDeltaNetPrefillBTHDFwdOp):
     """Gated DeltaNet inference prefill over head-major (BHTD) inputs.
 
     ``q/k/v/o [B, H, T, D]``, ``g/beta [B, H, T]`` — the TileOps convention.
-    Same kernel and same arithmetic as ``GatedDeltaNetPrefillFwdOp``; only the
+    Same kernel and same arithmetic as ``GatedDeltaNetPrefillBTHDFwdOp``; only the
     memory order the tensors arrive in differs, and memory order is part of the
     signature, so it is its own entry.
     """

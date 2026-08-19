@@ -3,9 +3,9 @@
 # Source of truth for linear-attention op interfaces. Spec-only entries define
 # the public Op contract before the implementation is wired up.
 
-GatedDeltaNetPrefillFwdOp:
+GatedDeltaNetPrefillBTHDFwdOp:
   # Inference prefill for Gated DeltaNet. This is intentionally separate from
-  # GatedDeltaNetFwdOp, which exposes training-forward artifacts needed by
+  # GatedDeltaNetBHTDFwdOp, which exposes training-forward artifacts needed by
   # backward. Prefill returns only the prompt output and the recurrent state
   # consumed by decode.
   ref_api: "none"
@@ -64,7 +64,7 @@ GatedDeltaNetPrefillFwdOp:
 
 GatedDeltaNetPrefillBHTDFwdOp:
   # Head-major (BHTD) inference prefill. Same kernel and same outputs as
-  # GatedDeltaNetPrefillFwdOp; memory order is part of the signature, so the
+  # GatedDeltaNetPrefillBTHDFwdOp; memory order is part of the signature, so the
   # two orders are two entries.
   ref_api: "none"
   family: linear_attention
@@ -272,7 +272,7 @@ GLADecodeOp:
 # (Aw/Au/w/u/h) or optional initial/final state choices that need a separate
 # release-facing wrapper before they should count as implemented manifest ops.
 
-GatedDeltaNetFwdOp:
+GatedDeltaNetBHTDFwdOp:
   # Training forward in head-major (BHTD) order. GatedDeltaNetBwdOp reads the S
   # this returns, in this order; token-major callers want GatedDeltaNetBTHDFwdOp.
   ref_api: "none"
@@ -307,7 +307,7 @@ GatedDeltaNetFwdOp:
 GatedDeltaNetBTHDFwdOp:
   # The same operator in token-major (BTHD) order, which is what the FLA
   # reference uses. Memory order is part of the signature, so it is its own
-  # entry rather than a mode of GatedDeltaNetFwdOp. Runs the warp-specialized
+  # entry rather than a mode of GatedDeltaNetBHTDFwdOp. Runs the warp-specialized
   # production pipeline, which serves Hopper only.
   ref_api: "none"
   family: linear_attention

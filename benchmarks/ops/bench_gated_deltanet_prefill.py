@@ -19,10 +19,10 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillFwdOp
+from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
 
-_OP_NAME = "GatedDeltaNetPrefillFwdOp"
+_OP_NAME = "GatedDeltaNetPrefillBTHDFwdOp"
 _BHTD_OP_NAME = "GatedDeltaNetPrefillBHTDFwdOp"
 def _fla_prefill_fwd():
     """Return the FLA prefill baseline callable."""
@@ -156,7 +156,7 @@ def test_gated_deltanet_prefill_fwd_bench(
     )
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, tune=tune)
+    op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=chunk_size, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}

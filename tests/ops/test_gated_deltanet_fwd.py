@@ -3,8 +3,8 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import (
+    GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBTHDFwdOp,
-    GatedDeltaNetFwdOp,
 )
 from workloads.linear_attention import (
     GatedDeltaNetFwdWorkload,
@@ -79,7 +79,7 @@ def test_gated_deltanet_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
+    op = GatedDeltaNetBHTDFwdOp(chunk_size=chunk_size, tune=tune)
     tols = _get_tolerances(dtype)
     inputs = test.gen_inputs()
     ref_o = test.ref_program(*inputs)
@@ -123,7 +123,7 @@ def test_gated_deltanet_bthd_matches_the_head_major_op(
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(2, 4, seq_len, dim, dim, 64, dtype)
     q, k, v, g, beta = test.gen_inputs()
-    legacy = GatedDeltaNetFwdOp(chunk_size=64)(q, k, v, g, beta)
+    legacy = GatedDeltaNetBHTDFwdOp(chunk_size=64)(q, k, v, g, beta)
 
     q_bthd = q.permute(0, 2, 1, 3).contiguous()
     k_bthd = k.permute(0, 2, 1, 3).contiguous()

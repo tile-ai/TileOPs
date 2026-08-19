@@ -76,9 +76,7 @@ dtype_combos:
 
 **R7. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R9).
 
-**R8. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). One declaration, not a
-list of candidates: no ellipsis, no wildcards, no `|` alternatives. A tensor whose rank or axis
-order varies between calls omits `shape` (R9). Roofline variable binding is defined in [roofline.md](roofline.md).
+**R8. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). One declaration: no ellipsis, no wildcards, no `|` alternatives. A tensor whose rank or axis order varies omits `shape` (R9). Roofline variable binding is defined in [roofline.md](roofline.md).
 
 **R9. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
 
@@ -102,10 +100,7 @@ order varies between calls omits `shape` (R9). Roofline variable binding is defi
 
 **R18.1. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch is two entries, because the caller cannot unpack a return whose shape it does not know.
 
-**R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout`
-field, `shape` names reflect memory order. One entry declares one memory order: an op serving two
-is two entries, because the order changes what a caller-visible axis means, and `shape` can only
-be true of one of them. A param may size a dimension; it may not select which shape a tensor has.
+**R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order. One entry declares one memory order, and an op serving two is two entries: the order changes what an axis means, and `shape` can be true of only one of them. A param may size a dimension, not select which shape a tensor has.
 
 **R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
 

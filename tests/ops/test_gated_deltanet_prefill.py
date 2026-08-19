@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillFwdOp
+from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
 from workloads.linear_attention import (
     GatedDeltaNetPrefillFwdWorkload,
@@ -264,7 +264,7 @@ def test_gated_deltanet_prefill_bthd_layout_matches_bhtd() -> None:
     q, k, v, g, beta = test.gen_inputs()
 
     bhtd_op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=BC, tune=False)
-    bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False)
+    bthd_op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=BC, tune=False)
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
     q_bthd = q.permute(0, 2, 1, 3)
@@ -302,7 +302,7 @@ def test_gated_deltanet_prefill_bthd_blocksolve_path_matches_bhtd(
     q, k, v, g, beta = test.gen_inputs()
 
     bhtd_op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=BC, tune=False)
-    bthd_op = GatedDeltaNetPrefillFwdOp(chunk_size=BC, tune=False)
+    bthd_op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=BC, tune=False)
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
     o_bthd, state_bthd = bthd_op(

@@ -45,10 +45,10 @@ BmmFwdOp:
     kernel_map:
       bmm_kernel: BmmKernel
 
-# BmmFp8Op: strict 3D-3D batched FP8 GEMM with per-tensor scaling.
+# BmmFp8KNFwdOp: strict 3D-3D batched FP8 GEMM with per-tensor scaling.
 # A single fp32 scalar per operand is shared across the whole batch,
 # mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
-BmmFp8Op:
+BmmFp8KNFwdOp:
   ref_api: "none"
   family: bmm
   status: implemented
@@ -64,7 +64,7 @@ BmmFp8Op:
     params:
       out_dtype: {type: dtype, default: bfloat16}
     # Only fp8_e4m3fn inputs are supported (fp8_e5m2 is rejected at
-    # forward-time by :meth:`BmmFp8Op._validate_dtypes`); output picks
+    # forward-time by :meth:`BmmFp8KNFwdOp._validate_dtypes`); output picks
     # a single dtype per compile.  ``dtype_combos`` pins the Cartesian
     # product so validators do not treat (e5m2, *) as legal.
     dtype_combos:
@@ -97,9 +97,9 @@ BmmFp8Op:
     kernel_map:
       bmm_fp8_kernel: BmmFp8Kernel
 
-BmmFp8NKOp:
+BmmFp8NKFwdOp:
   # K innermost, the order the fp8-TN kernel reads, so b arrives without a
-  # transpose. Same kernel as BmmFp8Op; only b's memory order differs.
+  # transpose. Same kernel as BmmFp8KNFwdOp; only b's memory order differs.
   ref_api: "none"
   family: bmm
   status: implemented
@@ -115,7 +115,7 @@ BmmFp8NKOp:
     params:
       out_dtype: {type: dtype, default: bfloat16}
     # Only fp8_e4m3fn inputs are supported (fp8_e5m2 is rejected at
-    # forward-time by :meth:`BmmFp8NKOp._validate_dtypes`); output picks
+    # forward-time by :meth:`BmmFp8NKFwdOp._validate_dtypes`); output picks
     # a single dtype per compile.  ``dtype_combos`` pins the Cartesian
     # product so validators do not treat (e5m2, *) as legal.
     dtype_combos:

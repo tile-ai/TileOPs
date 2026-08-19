@@ -1245,7 +1245,7 @@ def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 
 def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for batched FP8 GEMM ``BmmFp8Op``.
+    """Roofline for batched FP8 GEMM ``BmmFp8KNFwdOp``.
 
     Layout matches the fp16 ``bmm_fwd_roofline``: ``a: [B, M, K]``,
     ``b: [B, K, N]``. Per-tensor scales only and no fused bias, so bytes are
@@ -1256,7 +1256,7 @@ def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
     """
     if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
         raise RuntimeError(
-            "BmmFp8Op.eval_roofline() is valid only after the first forward(); "
+            "BmmFp8KNFwdOp.eval_roofline() is valid only after the first forward(); "
             "batch/m/n/k and dtype are inferred from the inputs."
         )
     batch, m, n, k = op.batch, op.m, op.n, op.k

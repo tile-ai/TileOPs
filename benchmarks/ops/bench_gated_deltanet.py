@@ -26,7 +26,7 @@ from benchmarks.benchmark_base import (
 )
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GatedDeltaNetBTHDFwdOp, GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
+from tileops.ops import GatedDeltaNetBHTDFwdOp, GatedDeltaNetBTHDFwdOp, GatedDeltaNetBwdOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
 
@@ -153,7 +153,7 @@ def test_gated_deltanet_vs_fla_bwd(
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get S, then profile bwd only ---
-    fwd_op = GatedDeltaNetFwdOp(chunk_size=BC)
+    fwd_op = GatedDeltaNetBHTDFwdOp(chunk_size=BC)
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
 
     bwd_op = GatedDeltaNetBwdOp(chunk_size=BC, tune=tune)

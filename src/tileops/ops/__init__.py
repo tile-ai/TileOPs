@@ -18,7 +18,7 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .bmm import BmmFp8NKOp, BmmFp8Op, BmmFwdOp
+from .bmm import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
 from .convolution import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -33,13 +33,13 @@ from .fft import FFTC2COp
 from .fp8_lightning_indexer import FP8LightningIndexerOp
 from .fp8_quant import FP8QuantOp
 from .gated_deltanet import (
+    GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeOp,
-    GatedDeltaNetFwdOp,
     GatedDeltaNetOp,
     GatedDeltaNetPrefillBHTDFwdOp,
-    GatedDeltaNetPrefillFwdOp,
+    GatedDeltaNetPrefillBTHDFwdOp,
 )
 from .gated_linear_attn import GLADecodeOp
 from .gemm import GemmFp8Op, GemmOp, GemmW4A16Op
@@ -129,8 +129,8 @@ __all__ = [
     "AdaptiveMaxPool2dIndicesFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
-    "BmmFp8NKOp",
-    "BmmFp8Op",
+    "BmmFp8KNFwdOp",
+    "BmmFp8NKFwdOp",
     "BmmFwdOp",
     "Conv1dFwdOp",
     "Conv2dFwdOp",
@@ -151,10 +151,10 @@ __all__ = [
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
-    "GatedDeltaNetFwdOp",
+    "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetOp",
     "GatedDeltaNetPrefillBHTDFwdOp",
-    "GatedDeltaNetPrefillFwdOp",
+    "GatedDeltaNetPrefillBTHDFwdOp",
     "GLABwdOp",
     "GLADecodeOp",
     "GLAFwdOp",
