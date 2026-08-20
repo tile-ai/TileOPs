@@ -575,9 +575,8 @@ def test_gqa_prefill_dense_publishes_rope_before_cross_stream_graph_capture() ->
         entry._rope_tables(call)
 
     graph = torch.cuda.CUDAGraph()
-    with torch.cuda.stream(consumer):
-        with torch.cuda.graph(graph):
-            captured = op(q, k, v)
+    with torch.cuda.stream(consumer), torch.cuda.graph(graph):
+        captured = op(q, k, v)
     graph.replay()
     consumer.synchronize()
     assert torch.isfinite(captured).all()
