@@ -5,7 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.compile_contract import register_compile_contract
+from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
@@ -1809,7 +1809,7 @@ _MAX_POOL_INVALID_INPUT_CASES = [
         1,
         {"kernel_size": 3},
         ((1, 1, 8), None),
-        "input must be a CUDA tensor",
+        "is a CUDA kernel",
         False,
         id="1d-cpu-input",
         marks=pytest.mark.full,
@@ -1837,7 +1837,7 @@ _MAX_POOL_INVALID_INPUT_CASES = [
         2,
         {"kernel_size": (3, 3)},
         ((1, 1, 8, 8), None),
-        "input must be a CUDA tensor",
+        "is a CUDA kernel",
         False,
         id="2d-cpu-input",
         marks=pytest.mark.full,
@@ -1865,7 +1865,7 @@ _MAX_POOL_INVALID_INPUT_CASES = [
         3,
         {"kernel_size": 3},
         ((1, 1, 4, 8, 8), None),
-        "input must be a CUDA tensor",
+        "is a CUDA kernel",
         False,
         id="3d-cpu-input",
         marks=pytest.mark.full,
@@ -2002,6 +2002,7 @@ def test_max_pool_compile_fullgraph(
         torch.testing.assert_close(out[1], ref[1], atol=0, rtol=0)
     else:
         torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    assert_op_owns_graph_nodes(op, x)
 
 
 # ---------------------------------------------------------------------------
@@ -2116,6 +2117,7 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
     out = compiled(x)
     ref = getattr(F, f"avg_pool{dims}d")(x, 2, 2, 0)
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+    assert_op_owns_graph_nodes(op, x)
 
 
 # ---------------------------------------------------------------------------
@@ -2674,6 +2676,7 @@ def test_adaptive_pool_compile_fullgraph(
     else:
         ref = F.adaptive_max_pool2d(x, (4, 4))
         torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    assert_op_owns_graph_nodes(op, x)
 
 
 @pytest.mark.smoke

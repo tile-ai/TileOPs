@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.common import pool_output_dim, require_cuda
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
@@ -227,6 +227,7 @@ class _MaxPool2dKernelBase(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> Any:
+        require_cuda(self, x)
         return type(self)._dispatch(
             self.n,
             self.c_in,

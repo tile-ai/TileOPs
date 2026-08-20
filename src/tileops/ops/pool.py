@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import Any, ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -140,13 +140,19 @@ class MeanPoolingForwardOp(Op):
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(
+        self,
+        x: torch.Tensor,
+        offsets: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> Kernel:
         return self.get_or_build_kernel(
             "mean_pooling_fwd_kernel",
-            key=dtype,
+            (x, offsets, indices),
+            key=x.dtype,
             build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
                 **self._kernel_params,
-                dtype=dtype,
+                dtype=x.dtype,
             ),
         )
 
@@ -160,8 +166,10 @@ class MeanPoolingForwardOp(Op):
         offsets: torch.Tensor,
         indices: torch.Tensor,
     ) -> torch.Tensor:
+        kernel = self._get_kernel(x, offsets, indices)
+        out = kernel(x, offsets, indices=indices)
         self.dtype = x.dtype
-        return self._get_kernel(x.dtype)(x, offsets, indices=indices)
+        return out
 
 
 def _device_index(tensor: torch.Tensor) -> int | None:
@@ -196,6 +204,13 @@ class _AvgPoolFwdOpBase(Op):
     """
 
     ndim: ClassVar[int]
+    #: Average pooling has one output; the registration below reads this.
+    _returns_indices: ClassVar[bool] = False
+
+    #: This op's operator, and its name; both set by the registrations at the bottom of
+    #: this module, one per concrete op class.
+    _wrapped: ClassVar[Any]
+    compile_op_names: ClassVar[Tuple[str, ...]] = ()
 
     def __init__(
         self,
@@ -275,8 +290,6 @@ class _AvgPoolFwdOpBase(Op):
                 f"{type(self).__name__} expects input to be a {nd + 2}D {_POOL_LAYOUTS[nd]} tensor"
             )
         n, c_in, *in_dims = input.shape
-        if not input.is_cuda:
-            raise ValueError("input must be a CUDA tensor")
         self._validate_dtypes(input)
         ks, st, pd = self._param_tuples()
         out_dims = tuple(
@@ -292,6 +305,7 @@ class _AvgPoolFwdOpBase(Op):
 
     def _get_kernel(
         self,
+        input: torch.Tensor,
         n: int,
         c_in: int,
         in_dims: Tuple[int, ...],
@@ -333,7 +347,7 @@ class _AvgPoolFwdOpBase(Op):
                     kernel_kwargs["divisor_override"] = self.divisor_override
             return self.kernel_map[kernel_name](**kernel_kwargs)
 
-        return self.get_or_build_kernel(kernel_name, key=key, build=build)
+        return self.get_or_build_kernel(kernel_name, (input,), key=key, build=build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -355,7 +369,7 @@ class _AvgPoolFwdOpBase(Op):
         return {"output": (n, c_in, *out_dims)}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return _pool_fwd(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         resolved = self._resolve_input(input)
@@ -365,7 +379,10 @@ class _AvgPoolFwdOpBase(Op):
         in_dims = resolved[2 : 2 + nd]
         out_dims = resolved[2 + nd : 2 + 2 * nd]
         dtype = resolved[-1]
-        kernel = self._get_kernel(n, c_in, in_dims, dtype, _device_index(input))
+        kernel = self._get_kernel(input, n, c_in, in_dims, dtype, _device_index(input))
+        out = kernel(input)
+        # Recorded after the launch: eval_roofline and profiling read these, and a call that
+        # raised described nothing.
         self.kernel = kernel
         self.n = n
         self.c_in = c_in
@@ -375,7 +392,7 @@ class _AvgPoolFwdOpBase(Op):
             setattr(self, f"out_{name}", size)
         self.dtype = dtype
         self._last_roofline_spec = resolved
-        return kernel(input)
+        return out
 
 
 class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
@@ -529,6 +546,11 @@ class _MaxPoolFwdOpBase(Op):
     _kernel_slot: ClassVar[str] = ""
     _returns_indices: ClassVar[bool] = False
 
+    #: This op's operator, and its name; both set by the registrations at the bottom of
+    #: this module, one per concrete op class.
+    _wrapped: ClassVar[Any]
+    compile_op_names: ClassVar[Tuple[str, ...]] = ()
+
     def __init__(
         self,
         kernel_size: int | Tuple[int, ...],
@@ -577,8 +599,6 @@ class _MaxPoolFwdOpBase(Op):
                 f"{nd + 2}D {_POOL_LAYOUTS[nd]} tensor"
             )
         n, c_in, *in_dims = input.shape
-        if not input.is_cuda:
-            raise ValueError("input must be a CUDA tensor")
         self._validate_dtypes(input)
         out_dims = tuple(
             pool_output_dim(
@@ -600,6 +620,7 @@ class _MaxPoolFwdOpBase(Op):
 
     def _get_kernel(
         self,
+        input: torch.Tensor,
         n: int,
         c_in: int,
         in_dims: Tuple[int, ...],
@@ -637,7 +658,7 @@ class _MaxPoolFwdOpBase(Op):
                 kernel_kwargs[f"dilation_{name}"] = self.dilation[k]
             return self.kernel_map[self._kernel_slot](**kernel_kwargs)
 
-        return self.get_or_build_kernel(self._kernel_slot, key=key, build=build)
+        return self.get_or_build_kernel(self._kernel_slot, (input,), key=key, build=build)
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -666,7 +687,7 @@ class _MaxPoolFwdOpBase(Op):
         return {"output": full}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return _pool_fwd(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def _eager_forward(self, input: torch.Tensor):
         resolved = self._resolve_input(input)
@@ -676,7 +697,10 @@ class _MaxPoolFwdOpBase(Op):
         in_dims = resolved[2 : 2 + nd]
         out_dims = resolved[2 + nd : 2 + 2 * nd]
         dtype = resolved[-1]
-        kernel = self._get_kernel(n, c_in, in_dims, dtype, _device_index(input))
+        kernel = self._get_kernel(input, n, c_in, in_dims, dtype, _device_index(input))
+        out = kernel(input)
+        # Recorded after the launch: eval_roofline and profiling read these, and a call that
+        # raised described nothing.
         self.kernel = kernel
         self.n = n
         self.c_in = c_in
@@ -686,7 +710,7 @@ class _MaxPoolFwdOpBase(Op):
             setattr(self, f"out_{name}", size)
         self.dtype = dtype
         self._last_roofline_spec = resolved
-        return kernel(input)
+        return out
 
 
 class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
@@ -761,7 +785,7 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
         }
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _pool_fwd_with_indices(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def eval_roofline(self) -> tuple[int, int]:
         return _max_pool_roofline(self, indices=True)
@@ -839,7 +863,7 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
         }
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _pool_fwd_with_indices(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def eval_roofline(self) -> tuple[int, int]:
         return _max_pool_roofline(self, indices=True)
@@ -917,7 +941,7 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
         }
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _pool_fwd_with_indices(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def eval_roofline(self) -> tuple[int, int]:
         return _max_pool_roofline(self, indices=True)
@@ -1046,6 +1070,11 @@ class _AdaptivePool2dFwdOpBase(Op):
     _kernel_slot: ClassVar[str] = ""
     _returns_indices: ClassVar[bool] = False
 
+    #: This op's operator, and its name; both set by the registrations at the bottom of
+    #: this module, one per concrete op class.
+    _wrapped: ClassVar[Any]
+    compile_op_names: ClassVar[Tuple[str, ...]] = ()
+
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]],
@@ -1091,7 +1120,7 @@ class _AdaptivePool2dFwdOpBase(Op):
         return {"output": full}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return _pool_fwd(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def _eager_forward(self, input: torch.Tensor):
         if input.ndim == 3:
@@ -1104,8 +1133,6 @@ class _AdaptivePool2dFwdOpBase(Op):
             raise ValueError(
                 f"{type(self).__name__} expects input to be a 3D CHW or 4D NCHW tensor"
             )
-        if not x.is_cuda:
-            raise ValueError("input must be a CUDA tensor")
         self._validate_dtypes(x)
         n, c_in, h_in, w_in = x.shape
         out_h, out_w = self._resolve_out_dims(h_in, w_in)
@@ -1114,6 +1141,7 @@ class _AdaptivePool2dFwdOpBase(Op):
         key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x), self.tune)
         kernel = self.get_or_build_kernel(
             self._kernel_slot,
+            (x,),
             key=key,
             build=lambda: self.kernel_map[self._kernel_slot](
                 n=n,
@@ -1126,6 +1154,9 @@ class _AdaptivePool2dFwdOpBase(Op):
                 tune=self.tune,
             ),
         )
+        result = kernel(x)
+        # Recorded after the launch: eval_roofline and profiling read these, and a call that
+        # raised described nothing.
         self.kernel = kernel
         self.n = n
         self.c_in = c_in
@@ -1136,14 +1167,13 @@ class _AdaptivePool2dFwdOpBase(Op):
         self.dtype = dtype
         self._last_roofline_spec = (n, c_in, h_in, w_in, out_h, out_w, dtype)
         if self._returns_indices:
-            out, indices = kernel(x)
+            out, indices = result
             if squeezed:
                 return out.squeeze(0), indices.squeeze(0)
             return out, indices
-        out = kernel(x)
         if squeezed:
-            return out.squeeze(0)
-        return out
+            return result.squeeze(0)
+        return result
 
 
 class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
@@ -1216,43 +1246,67 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
         }
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _pool_fwd_with_indices(input, self._instance_key)
+        return type(self)._wrapped(input, self._instance_key)
 
     def eval_roofline(self) -> tuple[int, int]:
         return _adaptive_pool2d_roofline(self, indices=True)
 
 
-# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
+# The compile boundary: one operator per concrete op class, registered at import time.
+# The op's key crosses it, and the body trades the key back for the instance — see
+# src/tileops/ops/compile_boundary.py. Per class rather than per family, so the name a
+# traced graph carries identifies the op that produced it, and a target that replaces one
+# pool op leaves what the others' graphs hold alone.
 
 
-@torch.library.custom_op("top::pool_fwd", mutates_args=())
-def _pool_fwd(input: torch.Tensor, instance_key: str) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input)
+def _register_pool_operator(op_cls: type, name: str) -> None:
+    """Register *name* as *op_cls*'s operator and record it on the class."""
+    if op_cls._returns_indices:
+
+        @torch.library.custom_op(name, mutates_args=())
+        def _fwd(input: torch.Tensor, instance_key: str) -> Tuple[torch.Tensor, torch.Tensor]:
+            return get_instance(instance_key)._eager_forward(input)
+
+        @_fwd.register_fake
+        def _fwd_fake(
+            input: torch.Tensor,
+            instance_key: str,
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+            shapes = get_instance(instance_key)._infer_output_shapes(tuple(input.shape))
+            # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so
+            # a non-contiguous input's strides must not survive into the fake.
+            return (
+                input.new_empty(shapes["output"]),
+                input.new_empty(shapes["indices"], dtype=torch.int64),
+            )
+
+    else:
+
+        @torch.library.custom_op(name, mutates_args=())
+        def _fwd(input: torch.Tensor, instance_key: str) -> torch.Tensor:  # noqa: F811
+            return get_instance(instance_key)._eager_forward(input)
+
+        @_fwd.register_fake
+        def _fwd_fake(input: torch.Tensor, instance_key: str) -> torch.Tensor:  # noqa: F811
+            shapes = get_instance(instance_key)._infer_output_shapes(tuple(input.shape))
+            return input.new_empty(shapes["output"])
+
+    op_cls._wrapped = _fwd
+    op_cls.compile_op_names = (name,)
 
 
-@_pool_fwd.register_fake
-def _pool_fwd_fake(input: torch.Tensor, instance_key: str) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(input.shape))
-    return input.new_empty(shapes["output"])
-
-
-@torch.library.custom_op("top::pool_fwd_with_indices", mutates_args=())
-def _pool_fwd_with_indices(
-    input: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return get_instance(instance_key)._eager_forward(input)
-
-
-@_pool_fwd_with_indices.register_fake
-def _pool_fwd_with_indices_fake(
-    input: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(input.shape))
-    return (
-        input.new_empty(shapes["output"]),
-        input.new_empty(shapes["indices"], dtype=torch.int64),
-    )
+for _op_cls, _op_name in (
+    (AvgPool1dFwdOp, "top::pool_avg_pool1d_fwd"),
+    (AvgPool2dFwdOp, "top::pool_avg_pool2d_fwd"),
+    (AvgPool3dFwdOp, "top::pool_avg_pool3d_fwd"),
+    (MaxPool1dFwdOp, "top::pool_max_pool1d_fwd"),
+    (MaxPool2dFwdOp, "top::pool_max_pool2d_fwd"),
+    (MaxPool3dFwdOp, "top::pool_max_pool3d_fwd"),
+    (MaxPool1dIndicesFwdOp, "top::pool_max_pool1d_indices_fwd"),
+    (MaxPool2dIndicesFwdOp, "top::pool_max_pool2d_indices_fwd"),
+    (MaxPool3dIndicesFwdOp, "top::pool_max_pool3d_indices_fwd"),
+    (AdaptiveAvgPool2dFwdOp, "top::pool_adaptive_avg_pool2d_fwd"),
+    (AdaptiveMaxPool2dFwdOp, "top::pool_adaptive_max_pool2d_fwd"),
+    (AdaptiveMaxPool2dIndicesFwdOp, "top::pool_adaptive_max_pool2d_indices_fwd"),
+):
+    _register_pool_operator(_op_cls, _op_name)

@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.common import pool_output_dim, require_cuda
 
 __all__ = ["AvgPool1dKernel", "AvgPool1dSpatialKernel"]
 
@@ -301,6 +301,7 @@ class AvgPool1dSpatialKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        require_cuda(self, x)
         return _avg_pool1d_spatial_wrapped_kernel(
             self.n,
             self.c_in,
@@ -372,6 +373,7 @@ class AvgPool1dKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        require_cuda(self, x)
         return _avg_pool1d_wrapped_kernel(
             self.n,
             self.c_in,
