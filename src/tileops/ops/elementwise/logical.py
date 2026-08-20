@@ -6,17 +6,17 @@ from tileops.kernels.elementwise import (
     LogicalOrFwdKernel,
 )
 
-from ._base import UnaryOp, _BoolOutputBinaryOp
+from ._base import BinaryOp, UnaryOp
 
 
-class LogicalAndFwdOp(_BoolOutputBinaryOp):
+class LogicalAndFwdOp(BinaryOp):
     """Element-wise logical AND with broadcast using non-zero truthiness."""
 
     _op_name = "logical_and"
     kernel_cls = LogicalAndFwdKernel
 
 
-class LogicalOrFwdOp(_BoolOutputBinaryOp):
+class LogicalOrFwdOp(BinaryOp):
     """Element-wise logical OR with broadcast using non-zero truthiness."""
 
     _op_name = "logical_or"

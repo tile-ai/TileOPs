@@ -16,47 +16,47 @@ from tileops.kernels.elementwise import (
 
 from ._base import (
     _PREDICATE_FALLBACK_DTYPES,
-    _BoolOutputBinaryOp,
+    BinaryOp,
     _IntIdentityUnaryOp,
 )
 
 
-class EqFwdOp(_BoolOutputBinaryOp):
+class EqFwdOp(BinaryOp):
     """Element-wise equality with broadcast: y = (a == b)."""
 
     _op_name = "eq"
     kernel_cls = EqFwdKernel
 
 
-class NeFwdOp(_BoolOutputBinaryOp):
+class NeFwdOp(BinaryOp):
     """Element-wise not-equal with broadcast: y = (a != b)."""
 
     _op_name = "ne"
     kernel_cls = NeFwdKernel
 
 
-class GtFwdOp(_BoolOutputBinaryOp):
+class GtFwdOp(BinaryOp):
     """Element-wise greater-than with broadcast: y = (a > b)."""
 
     _op_name = "gt"
     kernel_cls = GtFwdKernel
 
 
-class LtFwdOp(_BoolOutputBinaryOp):
+class LtFwdOp(BinaryOp):
     """Element-wise less-than with broadcast: y = (a < b)."""
 
     _op_name = "lt"
     kernel_cls = LtFwdKernel
 
 
-class GeFwdOp(_BoolOutputBinaryOp):
+class GeFwdOp(BinaryOp):
     """Element-wise greater-equal with broadcast: y = (a >= b)."""
 
     _op_name = "ge"
     kernel_cls = GeFwdKernel
 
 
-class LeFwdOp(_BoolOutputBinaryOp):
+class LeFwdOp(BinaryOp):
     """Element-wise less-equal with broadcast: y = (a <= b)."""
 
     _op_name = "le"

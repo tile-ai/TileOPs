@@ -233,12 +233,11 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         return type(self)._wrapped(input, mask, self._instance_key)
 
 
-# The compile boundary. Module-level because registration happens once per qualified name
-# at import time and the schema is read off the annotations, so ``self`` cannot appear; the
-# instance comes back from the string key. See src/tileops/ops/compile_boundary.py.
+# The compile boundary: one operator for this op, registered at import time. The op's
+# key crosses it, and the body trades the key back for the instance — see
+# src/tileops/ops/compile_boundary.py.
 
-# Two variants, two operators: the Tensor-value one takes a third tensor, so it cannot
-# share a schema with the scalar one.
+# Two variants, two operators: their schemas differ by the value tensor.
 _require_shape_inference(MaskedFillFwdOp)
 _require_shape_inference(MaskedFillScalarFwdOp)
 

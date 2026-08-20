@@ -231,13 +231,12 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
         return type(self)._wrapped(input, self._instance_key)
 
 
-# The compile boundary. Module-level because registration happens once per qualified name
-# at import time and the schema is read off the annotations, so ``self`` cannot appear; the
-# instance comes back from the string key. See src/tileops/ops/compile_boundary.py.
+# The compile boundary: one operator for this op, registered at import time. The op's
+# key crosses it, and the body trades the key back for the instance — see
+# src/tileops/ops/compile_boundary.py.
 
-# ``ClampFwdOp``'s bounds are ``Optional[torch.Tensor]``, which ``custom_op`` reads off the
-# annotations as ``Tensor? min, Tensor? max``: one registration covers either bound alone
-# and both together. Its namespace is distinct from ``ClampScalarFwdOp``'s.
+# The bounds are annotated ``Optional[torch.Tensor]``, so the schema reads
+# ``Tensor? min, Tensor? max`` and one registration serves clamp, clamp_min and clamp_max.
 _require_shape_inference(ClampFwdOp)
 
 

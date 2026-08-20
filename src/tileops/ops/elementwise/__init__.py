@@ -182,10 +182,10 @@ __all__ = [
 # have zero tensor inputs (output is fully derived from ``__init__``
 # params), so they bypass the custom-op wrapper and run eager-only.
 
-# --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
+# --- Unary ops whose output dtype follows the input ---
 for _cls in [
     ReluFwdOp,
-    # math (17)
+    # math
     ExpFwdOp,
     LogFwdOp,
     SqrtFwdOp,
@@ -203,7 +203,7 @@ for _cls in [
     ErfFwdOp,
     Log1pFwdOp,
     Expm1FwdOp,
-    # activations (8)
+    # activations
     GeluFwdOp,
     SiluFwdOp,
     SigmoidFwdOp,
@@ -212,16 +212,16 @@ for _cls in [
     HardsigmoidFwdOp,
     MishFwdOp,
     SeluFwdOp,
-    # bitwise (1) -- output same dtype as input
+    # bitwise — output dtype follows the input
     BitwiseNotFwdOp,
 ]:
     _register_unary_custom_op(_cls)
 
-# --- Unary ops: bool output (4 ops) ---
+# --- Unary ops whose output is bool ---
 for _cls in [LogicalNotFwdOp, IsnanFwdOp, IsinfFwdOp, IsfiniteFwdOp]:
     _register_unary_custom_op(_cls)
 
-# --- Binary ops (arithmetic 10 + bitwise 3 + comparison 6 + logical 2 = 21) ---
+# --- Binary ops: arithmetic, bitwise, comparison, logical ---
 # Output dtype comes from each op's manifest entry, so comparison and logical
 # ops need no separate registration group.
 for _cls in [
@@ -249,14 +249,13 @@ for _cls in [
 ]:
     _register_binary_custom_op(_cls)
 
-# --- Fused gated ops (3 ops) ---
+# --- Fused gated ops ---
 for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
     _register_fused_gated_custom_op(_cls)
 
-# --- Independent unary-like ops (6 ops: x -> y with baked params) ---
-# ClampScalarFwdOp is the scalar-bound clamp (single-tensor input + min/max
-# baked into __init__). The Tensor-bound ClampFwdOp registers its own
-# multi-input custom_op below.
+# --- Unary-like ops with values baked in at construction ---
+# ``ClampScalarFwdOp`` is the scalar-bound clamp; the Tensor-bound
+# ``ClampFwdOp`` registers its own operator in clamp.py.
 for _cls in [
     LeakyReluFwdOp,
     EluFwdOp,

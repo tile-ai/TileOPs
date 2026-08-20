@@ -14,12 +14,14 @@ a construction parameter either: an instance serves whichever dtype its caller
 passes, one specialization per element type, built on first use.
 
 torch.compile support: each concrete op is registered as one opaque operator at
-package load time by the factories below, which also publish its name through
-``compile_op_names`` so a test can assert the traced graph holds nothing else. The
-fake reads its output shape from the op's ``_infer_output_shapes`` and its dtype
-from the manifest — never from a kernel class, which would make the compiled graph
-depend on which target served the op. Instances are recovered inside the operator
-by key, via the registry in ``tileops.ops.compile_boundary``.
+package load time, and publishes its name through ``compile_op_names`` so a test can
+assert the traced graph holds nothing else. The factories below do that for the ops
+that share a shape — unary, binary, fused gated, and the in-place companions; an op
+whose signature is its own registers in its own file, next to the class. Either way
+the fake reads its output shape from the op's ``_infer_output_shapes`` and its dtype
+from the manifest, never from a kernel class, which would make the compiled graph
+depend on which target served the op. Instances are recovered inside the operator by
+key, via the registry in ``tileops.ops.compile_boundary``.
 """
 
 import functools
@@ -142,10 +144,10 @@ def _validate_scalar_param_repr(
 
 
 def _require_shape_inference(op_cls) -> None:
-    """Refuse a boundary whose fake would have nothing to say about the output.
+    """Refuse to register a boundary for a class with no ``_infer_output_shapes``.
 
-    The fake is the only thing the compiler learns about this node, so a class that
-    inherits the base stub would silently register a boundary nobody can trace.
+    The registered fake is all the compiler learns about the node, and it takes the
+    output shape from that method.
     """
     owner = next(b for b in op_cls.__mro__ if "_infer_output_shapes" in b.__dict__)
     if owner is Op:
@@ -259,13 +261,11 @@ def _register_fused_gated_custom_op(op_cls):
 
 
 def broadcast_or_raise(op_name: str, **shapes: Optional[tuple]) -> tuple:
-    """Broadcast the shapes this call passed, or say which ones do not fit.
+    """The shape these operands broadcast to, or a ``ValueError`` naming the ones that
+    do not fit.
 
-    The manifest states the output shape as a broadcast of the inputs, so this returns
-    exactly that — including ``()`` when every operand is 0-dim. Shapes that cannot
-    broadcast break a shape rule, so they raise a ``ValueError`` like every other rule
-    rather than the ``RuntimeError`` ``torch.broadcast_shapes`` raises. Pure in its
-    arguments: the registered fake calls it too.
+    ``()`` when every operand is 0-dim, which is what the manifest's shape rule says.
+    Reads only its arguments; the registered fake calls it too.
 
     Args:
         op_name: Named in the error.
@@ -343,11 +343,9 @@ def resolve_output_dtype(op_class_name: str, input_dtype: torch.dtype) -> torch.
 
 
 def _require_one_device(op_name: str, **tensors: Optional[torch.Tensor]) -> None:
-    """Every tensor this call carries has to agree on a device.
+    """Refuse a call whose tensors are not all on one device.
 
-    Agreement is what the op layer checks. Which kind of device this is, and whether
-    any kernel runs on it, is a target's answer, and a kernel says so itself when it
-    is handed a device it was not written for.
+    Which device that is, and whether any kernel runs there, the kernel answers.
 
     Args:
         op_name: Named in the error, so a caller sees which op refused.
@@ -371,27 +369,19 @@ def _require_one_device(op_name: str, **tensors: Optional[torch.Tensor]) -> None
 class _PerDtypeKernels:
     """The family's one way to reach a kernel: ``self._kernel(inputs, dtype, *dims)``.
 
-    A subclass supplies ``_build(dtype, *dims)``, which constructs the in-tree kernel
-    for one specialization. What comes back is called with the manifest-declared
-    tensors — an op hands over the shapes the manifest names, and laying them out is
-    the kernel's business — so the in-tree path and a target's path return the same
-    shape of thing.
+    A subclass supplies ``_build(dtype, *dims)`` for one specialization. What comes
+    back is called with the manifest-declared tensors, so the in-tree path and a
+    target's path hand back the same kind of thing.
 
-    ``self.dtype`` and the recorded input shapes are metadata for ``eval_roofline`` and
-    ``total_memory``, never for execution: by the time a second call arrives they no
-    longer describe the call in flight. ``_note_call`` writes them once the launch has
-    returned, so they name the most recent call that completed. Making them describe a
-    *specific* call rather than the latest one needs the invocation context to reach
-    ``eval_roofline`` instead of a mutable slot, an ``Op``-wide change.
+    ``self.dtype`` and the recorded input shapes describe the most recent call that
+    completed. ``eval_roofline`` and ``total_memory`` read them; no execution path may.
     """
 
     def _note_call(self, dtype: torch.dtype, **shapes: Optional[tuple]) -> None:
-        """Record what the call that just returned was: element type and input shapes.
+        """Record the element type and input shapes of the call that just returned.
 
-        Only ``eval_roofline`` and ``total_memory`` read these, and only from outside the
-        compile boundary — never to decide anything about a call in flight. Written after
-        the launch, so a call that raised leaves the previous account in place instead of
-        half of its own.
+        Written after the launch, so a call that raised leaves the previous one's
+        account in place rather than half of its own.
         """
         for name, shape in shapes.items():
             setattr(self, name, shape)
@@ -399,12 +389,7 @@ class _PerDtypeKernels:
 
     @property
     def _slot(self) -> str:
-        """The dispatch key this op's ``kernel_map`` declares, and its memory role.
-
-        Every op in this family declares exactly one, so naming it a second time at the
-        get-or-build would let the two drift and leave ``built_kernels(slot)`` empty
-        while the entries sat under another name.
-        """
+        """The one dispatch key this op's ``kernel_map`` declares; also its memory role."""
         ((slot, _),) = self.kernel_map.items()
         return slot
 
@@ -922,17 +907,6 @@ class _AlphaScaledBinaryOp(BinaryOp):
         return impl(a_shape, b_shape, dtype, tune=tune, alpha=self.alpha)
 
 
-class _BoolOutputBinaryOp(BinaryOp):
-    """Binary op base whose public output dtype is bool.
-
-    Nothing to add: the kernels declare ``OUTPUT_DTYPE = torch.bool`` and a bool
-    operand is served by whichever storage this backend uses for it, which
-    ``Kernel.specialize`` names. The class stays because the manifest groups these
-    ops and a reader looking for "where does bool output come from" should land on
-    a docstring rather than on nothing.
-    """
-
-
 _MANIFEST_INT_DTYPES = (
     torch.uint8,
     torch.int8,
@@ -951,16 +925,11 @@ _PREDICATE_FALLBACK_DTYPES = _MANIFEST_INT_DTYPES + (torch.bool,)
 
 
 class _IntFallbackCall:
-    """What ``_IntIdentityUnaryOp`` builds when no in-tree kernel serves this dtype.
+    """What ``_IntIdentityUnaryOp`` builds for a dtype the shipped kernels do not serve.
 
-    That base already answered integer dtypes with a torch primitive and already held
-    the three handlers below; this is the same answer in the shape the boundary
-    requires — something callable with the manifest tensors — rather than an entry
-    whose kernel slot was ``None``.
-
-    Only the in-tree path builds one: with a target selected, ``build=`` is never
-    called and the backend is asked for a kernel instead. Not a ``Kernel``, so
-    ``autotune`` walks past it — there is nothing to tune.
+    Callable with the op's tensors, like a kernel, but not a ``Kernel``: ``autotune``
+    walks past it. Only the in-tree path builds one — a target that registers the op is
+    asked for a kernel instead.
     """
 
     def __init__(self, handler):
@@ -973,18 +942,14 @@ class _IntFallbackCall:
 
 
 class _IntIdentityUnaryOp(UnaryOp):
-    """Base for unary ops whose manifest declares integer dtypes that the shipped
-    kernels, being float-only, do not serve.
+    """Base for unary ops whose manifest declares integer dtypes the shipped
+    float-only kernels do not serve.
 
     Such a dtype builds ``_IntFallbackCall``; subclasses set ``_int_handler`` and
-    ``_int_output_dtype`` for their integer semantics. Every other dtype goes to the
-    kernel, which raises on its own dtype check.
-
-    The choice sits in ``_build``, the in-tree branch, so that a target which
-    registers this op is asked for a kernel instead, and so that a ``kernel_map``
-    override declaring integer support in ``SUPPORTED_DTYPES`` is used rather than
-    silently discarded. A native integer kernel replaces the fallback without
-    touching the op.
+    ``_int_output_dtype``. Every other dtype goes to the kernel, which raises on its
+    own dtype check. A ``kernel_map`` override that declares integer support in
+    ``SUPPORTED_DTYPES`` is used instead — the choice is made in ``_build``, which
+    only the in-tree path reaches.
     """
 
     _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(_int_identity)
