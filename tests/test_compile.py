@@ -4,12 +4,7 @@
 import pytest
 import torch
 
-from tests.compile_contract import (
-    assert_op_owns_graph_nodes,
-    operator_overload,
-    register_compile_contract,
-    traced_call_targets,
-)
+from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.ops.attention.test_mha import MhaFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
@@ -54,9 +49,6 @@ def test_mha_cold_fullgraph_trace_matches_eager():
     output = torch.compile(op, fullgraph=True)(q, k, v)
 
     assert output.shape == q.shape
-    assert traced_call_targets(op, q, k, v) == {
-        operator_overload("top::gqa_prefill_dense_fwd")
-    }
     torch.testing.assert_close(output, op(q, k, v))
 
 
@@ -109,7 +101,9 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
     v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
     scales = torch.ones(batch, heads_kv, device="cuda", dtype=torch.float32)
-    inputs = (q, k, v, scales, scales, scales)
+    rope_cos = torch.randn(seq_len, dim // 2, device="cuda", dtype=torch.float16)
+    rope_sin = torch.randn_like(rope_cos)
+    inputs = (q, k, v, scales, scales, scales, rope_cos, rope_sin)
 
     output = torch.compile(op, fullgraph=True)(*inputs)
 
@@ -131,7 +125,9 @@ def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float8_e4m3fn)
     v = torch.empty_like(k)
 
-    output = _gqa_prefill_dense_fwd_fake(q, k, v, None, None, None, op._instance_key)
+    output = _gqa_prefill_dense_fwd_fake(
+        q, k, v, None, None, None, None, None, op._instance_key
+    )
 
     assert output.shape == q.shape
     assert output.dtype == torch.bfloat16

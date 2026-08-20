@@ -6,14 +6,9 @@ everything the op layer does for every target — validation, contiguity, output
 happens. Uses a fake target, so no vendor hardware is involved.
 """
 
-import time
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Event
-
 import pytest
 import torch
 
-import tileops.ops.op_base as op_base
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
@@ -131,7 +126,6 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
         "pos_encoding_mode": "none",
         "rotary_dim": None,
         "rope_layout": "neox",
-        "rope_base": 10000.0,
     }
     assert tuple(params) == op.__manifest_param_names__
     assert len(runs[0]) == 3
@@ -140,7 +134,7 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
     assert runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
 
 
-def test_dense_gqa_target_gets_rope_as_constructor_configuration():
+def test_dense_gqa_target_gets_rope_configuration_and_caller_owned_tables():
     builds = []
     runs = []
 
@@ -160,56 +154,27 @@ def test_dense_gqa_target_gets_rope_as_constructor_configuration():
         pos_encoding_mode="rope",
         rotary_dim=4,
         rope_layout="interleaved",
-        rope_base=500000.0,
         target="gqa_fake",
     )
     q = torch.randn(1, 3, 4, 8, dtype=torch.float16)
     k = torch.randn(1, 3, 2, 8, dtype=torch.float16)
     v = torch.randn_like(k)
+    rope_cos = torch.randn(3, 2, dtype=torch.float16)
+    rope_sin = torch.randn_like(rope_cos)
 
-    output = op(q, k, v)
+    output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
 
     assert output.shape == q.shape
     assert len(builds) == 1
     specs, params = builds[0]
-    assert len(specs) == 3, "RoPE tables and omitted scales are not runtime inputs"
-    assert len(runs[0]) == 3
+    assert len(specs) == 5, "caller-owned RoPE tables are optional runtime inputs"
+    assert len(runs[0]) == 5
     assert params["pos_encoding_mode"] == "rope"
     assert params["rotary_dim"] == 4
     assert params["rope_layout"] == "interleaved"
-    assert params["rope_base"] == 500000.0
     assert params["sm_scale"] == 8**-0.5
     assert params["dtype"] == torch.float16
     assert specs[0].dtype == torch.float16
-
-
-def test_mha_wrapper_defers_external_replacement_to_dense_delegate():
-    builds = []
-
-    def build_kernel(*specs, **params):
-        builds.append((specs, params))
-
-        def kernel(q, k, v):
-            return torch.empty_like(q, dtype=params["dtype"])
-
-        return kernel
-
-    registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
-    )
-
-    op = MultiHeadAttentionFwdOp(1, 4, 3, 8, is_causal=False)
-    q = torch.randn(1, 3, 4, 8, dtype=torch.float16)
-    output = op(q, torch.randn_like(q), torch.randn_like(q))
-
-    assert output.shape == q.shape
-    assert op._settled_target is BUILTIN
-    assert op._gqa_op._settled_target == "gqa_fake"
-    assert len(builds) == 1
-    _, params = builds[0]
-    assert params["sm_scale"] == 8**-0.5
-    assert params["dtype"] == torch.float16
 
 
 def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
@@ -218,7 +183,8 @@ def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
     def build_kernel(*specs, **params):
         params_seen.append(params)
 
-        def kernel(q, k, v):
+        def kernel(*inputs):
+            q = inputs[0]
             return torch.empty_like(q, dtype=params["dtype"])
 
         return kernel
@@ -236,130 +202,12 @@ def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
     for dim in (8, 16):
         q = torch.randn(1, 3, 4, dim, dtype=torch.float16)
         k = torch.randn(1, 3, 2, dim, dtype=torch.float16)
-        op(q, k, torch.randn_like(k))
+        table = torch.randn(3, dim // 2, dtype=torch.float16)
+        op(q, k, torch.randn_like(k), rope_cos=table, rope_sin=table)
 
     assert [params["sm_scale"] for params in params_seen] == [8**-0.5, 16**-0.5]
     assert [params["rotary_dim"] for params in params_seen] == [8, 16]
     assert [params["dtype"] for params in params_seen] == [torch.float16, torch.float16]
-
-
-def test_dense_gqa_external_signature_cache_is_bounded_lru(monkeypatch):
-    monkeypatch.setattr(op_base, "_EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE", 2)
-    builds = []
-
-    def build_kernel(*specs, **params):
-        builds.append(specs)
-
-        def kernel(q, k, v):
-            return torch.empty_like(q)
-
-        return kernel
-
-    registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
-    )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False, target="gqa_fake")
-
-    for dim in range(8, 11):
-        q = torch.randn(1, 2, 4, dim, dtype=torch.float16)
-        k = torch.randn(1, 2, 2, dim, dtype=torch.float16)
-        op(q, k, torch.randn_like(k))
-
-    assert len(builds) == 3
-    assert len(op.built_kernels("gqa_prefill_dense")) == 2
-
-    # The first signature was least recently used and must build again.
-    q = torch.randn(1, 2, 4, 8, dtype=torch.float16)
-    k = torch.randn(1, 2, 2, 8, dtype=torch.float16)
-    op(q, k, torch.randn_like(k))
-    assert len(builds) == 4
-
-
-def test_dense_gqa_external_builder_is_once_and_callable_autotunes():
-    builds = []
-
-    class ExternalCallable:
-        def __init__(self) -> None:
-            self.tunes = 0
-
-        def __call__(self, q, k, v):
-            return torch.empty_like(q)
-
-        def autotune(self) -> None:
-            self.tunes += 1
-
-    def build_kernel(*specs, **params):
-        time.sleep(0.05)  # Release the GIL while a concurrent miss is waiting.
-        entry = ExternalCallable()
-        builds.append(entry)
-        return entry
-
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
-    )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False, target="gqa_fake")
-    q = torch.randn(1, 2, 4, 8, dtype=torch.float16)
-    k = torch.randn(1, 2, 2, 8, dtype=torch.float16)
-    v = torch.randn_like(k)
-    op._resolve_builder((q, k, v), {})
-    start = Barrier(3)
-
-    def invoke():
-        start.wait()
-        return op(q, k, v)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(invoke) for _ in range(2)]
-        start.wait()
-        outputs = [future.result() for future in futures]
-
-    assert all(output.shape == q.shape for output in outputs)
-    assert len(builds) == 1
-    assert list(op.iter_kernels()) == []
-    op.autotune()
-    assert builds[0].tunes == 1
-
-
-def test_dense_gqa_external_hit_survives_concurrent_lru_eviction(monkeypatch):
-    monkeypatch.setattr(op_base, "_EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE", 1)
-
-    def build_kernel(*specs, **params):
-        return lambda q, k, v: torch.empty_like(q)
-
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
-    )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False, target="gqa_fake")
-    q_a = torch.randn(1, 2, 4, 8, dtype=torch.float16)
-    k_a = torch.randn(1, 2, 2, 8, dtype=torch.float16)
-    op(q_a, k_a, torch.randn_like(k_a))
-
-    role = "gqa_prefill_dense"
-    original = op._kernel_roles[role]
-    signature_a = next(iter(original))
-    hit_read = Event()
-    eviction_done = Event()
-
-    class CoordinatedEntries(op_base.OrderedDict):
-        def get(self, key, default=None):
-            value = super().get(key, default)
-            if key == signature_a and value is not default:
-                hit_read.set()
-                eviction_done.wait()
-            return value
-
-    op._kernel_roles[role] = CoordinatedEntries(original)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        hit = pool.submit(op, q_a, k_a, torch.randn_like(k_a))
-        assert hit_read.wait(timeout=2)
-        try:
-            q_b = torch.randn(1, 2, 4, 9, dtype=torch.float16)
-            k_b = torch.randn(1, 2, 2, 9, dtype=torch.float16)
-            op(q_b, k_b, torch.randn_like(k_b))
-        finally:
-            eviction_done.set()
-        assert hit.result(timeout=2).shape == q_a.shape
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")

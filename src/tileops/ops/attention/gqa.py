@@ -57,7 +57,6 @@ __all__ = [
 _ROPE_LAYOUTS = frozenset(("neox", "interleaved"))
 _POS_ENCODING_MODES = frozenset(("none", "rope"))
 _DENSE_SPECIALIZATION_CACHE_SIZE = 16
-_DENSE_ROPE_CACHE_SIZE = 8
 
 
 def _validate_attention_dtype(dtype: torch.dtype) -> None:
@@ -176,6 +175,42 @@ def _prepare_group_scales(
     return tuple(resolved)
 
 
+def _prepare_rope_tables(
+    reference: torch.Tensor,
+    *,
+    enabled: bool,
+    max_position: int,
+    rotary_dim: int,
+    output_dtype: torch.dtype,
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+) -> tuple[torch.Tensor, ...]:
+    """Validate caller-owned RoPE tables while preserving optional presence."""
+    if (rope_cos is None) != (rope_sin is None):
+        raise ValueError("rope_cos and rope_sin must be supplied together")
+    if not enabled:
+        if rope_cos is not None:
+            raise ValueError("RoPE tables require pos_encoding_mode='rope'")
+        return ()
+    if rope_cos is None or rope_sin is None:
+        raise ValueError("pos_encoding_mode='rope' requires rope_cos and rope_sin")
+    expected_columns = rotary_dim // 2
+    for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+        if table.device != reference.device:
+            raise ValueError(f"{name} must be on {reference.device}, got {table.device}")
+        if table.dtype != output_dtype:
+            raise ValueError(f"{name} must have dtype {output_dtype}")
+        if table.ndim != 2:
+            raise ValueError(f"{name} must be 2-dimensional")
+        if table.shape[0] < max_position or table.shape[1] != expected_columns:
+            raise ValueError(
+                f"{name} must have shape [max_position >= {max_position}, {expected_columns}]"
+            )
+    if rope_cos.shape != rope_sin.shape:
+        raise ValueError("rope_cos and rope_sin must have the same shape")
+    return rope_cos.contiguous(), rope_sin.contiguous()
+
+
 def _build_prefill_kernel(
     kernel_map: Dict[str, Kernel],
     key: str,
@@ -209,18 +244,11 @@ def _build_prefill_kernel(
 
 
 @dataclass
-class _DenseRopeTables:
-    cos: torch.Tensor
-    sin: torch.Tensor
-
-
-@dataclass
 class _DensePrefillBuiltin:
     """Backend callable that dispatches each Dense shape to one native kernel."""
 
     kernel_map: Dict[str, Kernel]
     select_kernel_key: Callable[[tuple[str, ...], object], str]
-    device: torch.device
     arch: int
     h200: bool
     input_dtype: torch.dtype
@@ -233,7 +261,6 @@ class _DensePrefillBuiltin:
     fuse_rope: bool
     rotary_dim: Optional[int]
     rope_layout: str
-    rope_base: float
     tune_enabled: Callable[[], bool]
     _kernel_cache: OrderedDict[AttentionCall, DensePrefillKernel] = field(
         default_factory=OrderedDict, repr=False
@@ -242,16 +269,6 @@ class _DensePrefillBuiltin:
     # concrete kernels owned by this callable. The OrderedDict above is the
     # lookup/index; both containers are updated together under _cache_lock.
     _retained_kernels: list[DensePrefillKernel] = field(default_factory=list, repr=False)
-    _rope_table_cache: OrderedDict[tuple[int, int], _DenseRopeTables] = field(
-        default_factory=OrderedDict, repr=False
-    )
-    # CUDA Graphs capture raw device pointers, not Python Tensor ownership.
-    # Keep tables used by a capture alive even after the ordinary bounded memo
-    # evicts their lookup entry. Captured graph signatures are intentionally
-    # pinned for this callable's lifetime.
-    _captured_rope_tables: dict[tuple[int, int], _DenseRopeTables] = field(
-        default_factory=dict, repr=False
-    )
     _cache_lock: RLock = field(default_factory=RLock, repr=False)
 
     def _selection_facts(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
@@ -262,7 +279,7 @@ class _DensePrefillBuiltin:
             "rope" if self.fuse_rope else "none",
             self.rotary_dim,
             self.rope_layout,
-            self.rope_base,
+            10000.0,
         )
         return AttentionCall(
             arch=self.arch,
@@ -288,62 +305,6 @@ class _DensePrefillBuiltin:
             rope_layout=self.rope_layout,
             tune=self.tune_enabled(),
         )
-
-    def _rope_tables(self, call: AttentionCall) -> tuple[torch.Tensor, torch.Tensor]:
-        max_position = call.max_position or 1
-        rotary_dim = call.rotary_dim or 0
-        key = (max_position, rotary_dim)
-        is_capturing = self.device.type == "cuda" and torch.cuda.is_current_stream_capturing()
-        # Once a graph captures a table generation, that object is canonical
-        # for this key for the callable's lifetime. Reusing it prevents a later
-        # graph from capturing an unpinned second generation after memo eviction.
-        cached = self._rope_table_cache.get(key) or self._captured_rope_tables.get(key)
-        if cached is not None:
-            if self.device.type == "cuda" and not is_capturing:
-                stream = torch.cuda.current_stream(self.device)
-                cached.cos.record_stream(stream)
-                cached.sin.record_stream(stream)
-            if is_capturing:
-                self._captured_rope_tables.setdefault(key, cached)
-            return cached.cos, cached.sin
-        if is_capturing:
-            raise RuntimeError(
-                "Dense prefill CUDA Graph capture requires a same-signature warmup"
-            )
-        with self._cache_lock:
-            # Recheck after acquiring: another host thread may have filled the
-            # miss while this one waited. Hot CUDA-graph hits never take a lock.
-            cached = self._rope_table_cache.get(key) or self._captured_rope_tables.get(key)
-            if cached is not None:
-                if self.device.type == "cuda":
-                    stream = torch.cuda.current_stream(self.device)
-                    cached.cos.record_stream(stream)
-                    cached.sin.record_stream(stream)
-                return cached.cos, cached.sin
-            if call.fuse_rope:
-                assert call.rotary_dim is not None
-                cos, sin = _base_freqs(
-                    call.rotary_dim,
-                    max_position,
-                    base=self.rope_base,
-                    dtype=self.output_dtype,
-                    device=self.device,
-                )
-            else:
-                dummy = torch.empty((1, 1), device=self.device, dtype=self.output_dtype)
-                cos, sin = dummy, dummy
-            if self.device.type == "cuda":
-                # Publish only complete tables. CUDA Graph capture cannot query
-                # or reliably join arbitrary uncaptured Event work, so readiness
-                # is settled once on this miss instead of on every hot hit.
-                ready = torch.cuda.Event()
-                ready.record(torch.cuda.current_stream(self.device))
-                ready.synchronize()
-            cached = _DenseRopeTables(cos=cos, sin=sin)
-            self._rope_table_cache[key] = cached
-            if len(self._rope_table_cache) > _DENSE_ROPE_CACHE_SIZE:
-                self._rope_table_cache.popitem(last=False)
-            return cached.cos, cached.sin
 
     def _kernel_for(self, call: AttentionCall) -> DensePrefillKernel:
         # Tuning is lifecycle state, not part of the specialization identity.
@@ -380,13 +341,23 @@ class _DensePrefillBuiltin:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        *scales: torch.Tensor,
+        *optional_inputs: torch.Tensor,
     ) -> torch.Tensor:
-        if len(scales) not in (0, 3):
-            raise ValueError("Dense prefill expects either zero or three scale tensors")
+        scale_count = 3 if self.input_dtype == fp8_dtype() else 0
+        rope_count = 2 if self.fuse_rope else 0
+        if len(optional_inputs) != scale_count + rope_count:
+            raise ValueError("Dense prefill optional-input presence does not match its configuration")
+        scales = optional_inputs[:scale_count]
+        rope_tables = optional_inputs[scale_count:]
         call = self._selection_facts(q, k)
         kernel = self._kernel_for(call)
-        rope_cos, rope_sin = self._rope_tables(call)
+        if rope_tables:
+            rope_cos, rope_sin = rope_tables
+        else:
+            # The Dense ABI is uniform across specializations. Non-RoPE kernels
+            # compile the table reads away, so existing input storage is a safe
+            # no-allocation placeholder.
+            rope_cos = rope_sin = q
         return kernel(
             q,
             k,
@@ -398,7 +369,7 @@ class _DensePrefillBuiltin:
 
 
 class GroupedQueryAttentionPrefillDenseFwdOp(Op):
-    """Shape-agnostic BSHD GQA prefill with constructor-owned position encoding.
+    """Shape-agnostic BSHD GQA prefill with caller-owned optional RoPE tables.
 
     ``dtype=None`` has the complete public meaning "follow ``q.dtype``" for
     float16/bfloat16 calls; it is not a deferred backend choice.  A backend
@@ -422,7 +393,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         pos_encoding_mode: str = "none",
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
-        rope_base: float = 10000.0,
         target: Target = None,
     ) -> None:
         if pos_encoding_mode not in ("none", "rope"):
@@ -430,9 +400,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
 
         if rotary_dim is not None and pos_encoding_mode != "rope":
             raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
-
-        if pos_encoding_mode == "rope" and (rope_base <= 0 or not math.isfinite(rope_base)):
-            raise ValueError("rope_base must be finite and positive")
 
         if sm_scale is not None and not math.isfinite(sm_scale):
             raise ValueError(f"sm_scale must be finite, got {sm_scale}")
@@ -452,7 +419,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         self.fuse_rope = pos_encoding_mode == "rope"
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
-        self.rope_base = rope_base
 
         if dtype is not None:
             _validate_attention_dtype(dtype)
@@ -534,7 +500,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         return _DensePrefillBuiltin(
             kernel_map=self.kernel_map,
             select_kernel_key=self.select_kernel_key,
-            device=device,
             arch=target_facts.arch,
             h200=target_facts.h200,
             input_dtype=dtype,
@@ -547,7 +512,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             fuse_rope=self.fuse_rope,
             rotary_dim=self.rotary_dim,
             rope_layout=self.rope_layout,
-            rope_base=self.rope_base,
             tune_enabled=lambda: self.tune,
         )
 
@@ -568,7 +532,7 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
                     self.pos_encoding_mode,
                     self.rotary_dim,
                     self.rope_layout,
-                    self.rope_base,
+                    10000.0,
                 )
                 if self.fuse_rope
                 else None
@@ -590,6 +554,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         q_scale_shape: Optional[tuple[int, ...]] = None,
         k_scale_shape: Optional[tuple[int, ...]] = None,
         v_scale_shape: Optional[tuple[int, ...]] = None,
+        rope_cos_shape: Optional[tuple[int, ...]] = None,
+        rope_sin_shape: Optional[tuple[int, ...]] = None,
     ) -> Dict[str, tuple[int, ...]]:
         return {"o": tuple(q_shape)}
 
@@ -601,6 +567,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run shape-agnostic GQA prefill behind the target-independent graph node."""
         return _gqa_prefill_dense_fwd(
@@ -610,6 +578,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             q_scale,
             k_scale,
             v_scale,
+            rope_cos,
+            rope_sin,
             self._instance_key,
         )
 
@@ -621,6 +591,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run GQA prefill with shape inference."""
         B, S_q, H, D = q.shape
@@ -648,8 +620,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             )
 
         _attention_scale(D, self.sm_scale)
-        _validate_rope_config(
-            D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, self.rope_base
+        resolved_rotary_dim = _validate_rope_config(
+            D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, 10000.0
         )
 
         self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale)
@@ -665,10 +637,19 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
 
         _validate_same_device(q, k=k, v=v)
         scales = _prepare_group_scales(q, B, H_kv, q_scale, k_scale, v_scale)
+        rope_tables = _prepare_rope_tables(
+            q,
+            enabled=self.fuse_rope,
+            max_position=S_kv,
+            rotary_dim=resolved_rotary_dim or D,
+            output_dtype=self.output_dtype or q.dtype,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
+        )
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        inputs = (q, k, v, *scales)
+        inputs = (q, k, v, *scales, *rope_tables)
         entry = self._get_entry(inputs, q.dtype, q.device)
         output = entry(*inputs)
         self._roofline_state = {
@@ -703,10 +684,14 @@ def _gqa_prefill_dense_fwd(
     q_scale: Optional[torch.Tensor],
     k_scale: Optional[torch.Tensor],
     v_scale: Optional[torch.Tensor],
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
     instance_key: str,
 ) -> torch.Tensor:
     """Opaque Op-owned compile boundary; implementation dispatch stays untraced."""
-    return get_instance(instance_key)._eager_forward(q, k, v, q_scale, k_scale, v_scale)
+    return get_instance(instance_key)._eager_forward(
+        q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin
+    )
 
 
 @_gqa_prefill_dense_fwd.register_fake
@@ -717,6 +702,8 @@ def _gqa_prefill_dense_fwd_fake(
     q_scale: Optional[torch.Tensor],
     k_scale: Optional[torch.Tensor],
     v_scale: Optional[torch.Tensor],
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
     instance_key: str,
 ) -> torch.Tensor:
     """Manifest-derived output metadata for the target-independent graph node."""
@@ -733,6 +720,8 @@ def _gqa_prefill_dense_fwd_fake(
         None if q_scale is None else tuple(q_scale.shape),
         None if k_scale is None else tuple(k_scale.shape),
         None if v_scale is None else tuple(v_scale.shape),
+        None if rope_cos is None else tuple(rope_cos.shape),
+        None if rope_sin is None else tuple(rope_sin.shape),
     )
     return q.new_empty(shapes["o"], dtype=output_dtype)
 

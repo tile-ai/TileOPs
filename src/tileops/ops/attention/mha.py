@@ -3,7 +3,6 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
@@ -16,6 +15,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionPrefillDenseFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
@@ -51,9 +51,6 @@ class MultiHeadAttentionFwdOp(Op):
         self.dim = dim
         self.is_causal = is_causal
 
-        # This class is an in-tree semantic wrapper, not a replaceable kernel
-        # boundary. Third-party replacement happens at the Dense GQA delegate.
-        self.target = BUILTIN
         self.dispatch_kernel(kernel_map)
         self._gqa_op = GroupedQueryAttentionPrefillDenseFwdOp(
             is_causal=is_causal,
@@ -82,7 +79,10 @@ class MultiHeadAttentionFwdOp(Op):
         return {"o": tuple(q_shape)}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Trace the composite wrapper into its replaceable Dense GQA delegate."""
+        """Run MHA forward."""
+        return _mha_fwd(q, k, v, self._instance_key)
+
+    def _eager_forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         self.dtype = q.dtype
         return self._gqa_op(q, k, v)
 
@@ -307,3 +307,20 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     ) -> torch.Tensor:
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv, block_table)
+
+
+# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
+
+
+@torch.library.custom_op("top::mha_fwd", mutates_args=())
+def _mha_fwd(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, instance_key: str) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(q, k, v)
+
+
+@_mha_fwd.register_fake
+def _mha_fwd_fake(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, instance_key: str
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(q.shape), tuple(k.shape), tuple(v.shape))
+    return q.new_empty(shapes["o"])

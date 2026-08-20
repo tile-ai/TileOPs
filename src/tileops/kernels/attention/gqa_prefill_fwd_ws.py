@@ -25,6 +25,7 @@ from .call_spec import (
     ATTENTION_DTYPES,
     WS_ARCH,
     causal_ws_prefill_region,
+    square_ws_prefill_region,
 )
 from .prefill import DensePrefillKernel
 
@@ -449,7 +450,9 @@ class GQAPrefillFwdWsPersistentCausalKernel(DensePrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return causal_ws_prefill_region(call)
+        # The H200 square causal kernel owns its sub-region; excluding it here
+        # keeps the two disjoint, so selection never breaks a tie by ordering.
+        return causal_ws_prefill_region(call) and not square_ws_prefill_region(call)
 
     def _validate_spec(self) -> None:
         if not self.is_causal:
