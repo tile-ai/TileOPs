@@ -547,6 +547,43 @@ def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
 
 
 @pytest.mark.smoke
+def test_gqa_prefill_dense_graph_capture_waits_for_rope_producer_stream() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=True,
+        pos_encoding_mode="rope",
+        rope_layout="interleaved",
+    )
+    entry = op._get_entry((q, k, v), q.dtype, q.device)
+    call = entry._selection_facts(q, k)
+    kernel = entry._kernel_for(call)
+
+    # Compile/initialize the concrete launch without populating the callable's
+    # RoPE memo. The producer below is therefore the first table publication.
+    ones = torch.ones(seq_len, dim // 2, device="cuda", dtype=torch.float16)
+    zeros = torch.zeros_like(ones)
+    kernel(q, k, v, rope_cos=ones, rope_sin=zeros)
+    torch.cuda.synchronize()
+
+    producer = torch.cuda.Stream()
+    consumer = torch.cuda.Stream()
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(20_000_000)
+        entry._rope_tables(call)
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.stream(consumer):
+        with torch.cuda.graph(graph):
+            captured = op(q, k, v)
+    graph.replay()
+    consumer.synchronize()
+    assert torch.isfinite(captured).all()
+
+
+@pytest.mark.smoke
 def test_gqa_prefill_dense_fused_rope_graph_tables_survive_cache_eviction() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
