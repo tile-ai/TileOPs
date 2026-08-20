@@ -353,11 +353,14 @@ class _DensePrefillBuiltin:
         kernel = self._kernel_for(call)
         if rope_tables:
             rope_cos, rope_sin = rope_tables
+        elif self.input_dtype == fp8_dtype():
+            # The native-FP8 Kernel owns its output-dtype dummy operand.
+            rope_cos = rope_sin = None
         else:
             # The Dense ABI is uniform across specializations. Non-RoPE kernels
-            # compile the table reads away, so existing input storage is a safe
-            # no-allocation placeholder.
-            rope_cos = rope_sin = q
+            # compile the table reads away. A 2-D one-element view satisfies the
+            # ABI without allocating or retaining an internal RoPE tensor.
+            rope_cos = rope_sin = q.reshape(-1)[:1].reshape(1, 1)
         return kernel(
             q,
             k,
