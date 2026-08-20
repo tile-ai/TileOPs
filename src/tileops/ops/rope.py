@@ -87,13 +87,14 @@ __all__ = [
     "RopeNeoxPositionIdsFwdOp",
     "RopeNonNeoxFwdOp",
     "RopeYarnFwdOp",
+    "base_freqs",
 ]
 
 
 # Frequency computation helpers (pure Python / PyTorch, run on host)
 
 
-def _base_freqs(
+def base_freqs(
     head_dim: int,
     seq_len: int,
     base: float = 10000.0,
@@ -528,7 +529,7 @@ class RopeNeoxFwdOp(_RopeOpBase):
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _base_freqs(
+        return base_freqs(
             self.head_dim, self.seq_len, base=self.base, dtype=self.dtype, device=device
         )
 
@@ -588,7 +589,7 @@ class RopeNeoxPositionIdsFwdOp(Op):
     def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         key = (self.rotary_dim, self.max_position, self.dtype, device)
         if key not in self._freq_cache:
-            self._freq_cache[key] = _base_freqs(
+            self._freq_cache[key] = base_freqs(
                 self.rotary_dim,
                 self.max_position,
                 base=self.base,
@@ -701,7 +702,7 @@ class RopeNonNeoxFwdOp(_RopeOpBase):
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _base_freqs(
+        return base_freqs(
             self.head_dim, self.seq_len, base=self.base, dtype=self.dtype, device=device
         )
 
