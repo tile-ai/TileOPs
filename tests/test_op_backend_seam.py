@@ -6,6 +6,10 @@ everything the op layer does for every target — validation, contiguity, output
 happens. Uses a fake target, so no vendor hardware is involved.
 """
 
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 import torch
 
@@ -270,6 +274,51 @@ def test_dense_gqa_external_signature_cache_is_bounded_lru(monkeypatch):
     k = torch.randn(1, 2, 2, 8, dtype=torch.float16)
     op(q, k, torch.randn_like(k))
     assert len(builds) == 4
+
+
+def test_dense_gqa_external_builder_is_once_and_callable_autotunes():
+    builds = []
+
+    class ExternalCallable:
+        def __init__(self) -> None:
+            self.tunes = 0
+
+        def __call__(self, q, k, v):
+            return torch.empty_like(q)
+
+        def autotune(self) -> None:
+            self.tunes += 1
+
+    def build_kernel(*specs, **params):
+        time.sleep(0.05)  # Release the GIL while a concurrent miss is waiting.
+        entry = ExternalCallable()
+        builds.append(entry)
+        return entry
+
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False, target="gqa_fake")
+    q = torch.randn(1, 2, 4, 8, dtype=torch.float16)
+    k = torch.randn(1, 2, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    op._resolve_builder((q, k, v), {})
+    start = Barrier(3)
+
+    def invoke():
+        start.wait()
+        return op(q, k, v)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke) for _ in range(2)]
+        start.wait()
+        outputs = [future.result() for future in futures]
+
+    assert all(output.shape == q.shape for output in outputs)
+    assert len(builds) == 1
+    assert list(op.iter_kernels()) == []
+    op.autotune()
+    assert builds[0].tunes == 1
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")

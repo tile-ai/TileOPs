@@ -2,6 +2,7 @@ import dataclasses
 import warnings
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from threading import RLock
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -37,6 +38,7 @@ _EMPTY_STATIC_DIMS_WARNED: set = set()
 # set described by the multi-backend RFC. This is deliberately not the common
 # in-tree TileLang config-cache size of 32; the empirical knob starts large.
 _EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE = 256
+_CACHE_MISS = object()
 
 _Entry = TypeVar("_Entry")
 
@@ -81,6 +83,21 @@ def _entry_kernels(entry: object) -> "list[Kernel]":
     if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
         return [
             k for f in dataclasses.fields(entry) for k in _entry_kernels(getattr(entry, f.name))
+        ]
+    return []
+
+
+def _entry_autotunables(entry: object) -> list[object]:
+    """Return opt-in tuning owners without reflecting through external callables."""
+    if callable(getattr(entry, "autotune", None)):
+        return [entry]
+    if isinstance(entry, (tuple, list)):
+        return [owner for item in entry for owner in _entry_autotunables(item)]
+    if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
+        return [
+            owner
+            for field in dataclasses.fields(entry)
+            for owner in _entry_autotunables(getattr(entry, field.name))
         ]
     return []
 
@@ -131,6 +148,7 @@ class Op(ABC):
     # attribute appears on the first ``get_or_build_kernel`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
     _kernel_roles: dict[str, dict[Hashable, object]]
+    _kernel_role_lock: RLock
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
     dtype: Optional[torch.dtype] = None
@@ -354,6 +372,7 @@ class Op(ABC):
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
+        self._kernel_role_lock = RLock()
         ensure_loaded()  # before any traced region, which the first call may be inside
         self._install_kernel_map(kernel_map)
         # Conforming __init__s all pass through here — the zero-boilerplate
@@ -404,12 +423,18 @@ class Op(ABC):
         # cannot trace a method call on an instance ``__dict__``.
         roles = getattr(self, "_kernel_roles", None)
         if roles is None:
-            roles = {}
-            self._kernel_roles = roles
+            with self._kernel_role_lock:
+                roles = getattr(self, "_kernel_roles", None)
+                if roles is None:
+                    roles = {}
+                    self._kernel_roles = roles
         entries = roles.get(name)
         if entries is None:
-            entries = OrderedDict()
-            roles[name] = entries
+            with self._kernel_role_lock:
+                entries = roles.get(name)
+                if entries is None:
+                    entries = OrderedDict()
+                    roles[name] = entries
 
         settled_here = self._builder is _UNRESOLVED
         if settled_here:
@@ -437,9 +462,15 @@ class Op(ABC):
                         f"so it needs a target that registers one; known targets for this "
                         f"op: {registered_targets(type(self).__name__)}"
                     )
-                if key not in entries:
-                    entries[key] = build()
-                return entries[key]
+                cached = entries.get(key, _CACHE_MISS)
+                if cached is not _CACHE_MISS:
+                    return cached
+                with self._kernel_role_lock:
+                    cached = entries.get(key, _CACHE_MISS)
+                    if cached is _CACHE_MISS:
+                        cached = build()
+                        entries[key] = cached
+                    return cached
 
             # External: this layer cannot know what the target's kernel specializes on, so
             # it keys on every cheap fact it has: the dtype and shape of each input.
@@ -460,13 +491,20 @@ class Op(ABC):
             signature = (present[0].device,) + tuple(
                 None if spec is None else (spec.dtype, spec.shape) for spec in specs
             )
-            if signature not in entries:
-                entries[signature] = self._build_external(builder, name, specs, params=params)
+            cached = entries.get(signature, _CACHE_MISS)
+            if cached is not _CACHE_MISS:
+                entries.move_to_end(signature)
+                return cached
+            with self._kernel_role_lock:
+                cached = entries.get(signature, _CACHE_MISS)
+                if cached is _CACHE_MISS:
+                    cached = self._build_external(builder, name, specs, params=params)
+                    entries[signature] = cached
+                else:
+                    entries.move_to_end(signature)
                 if len(entries) > _EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE:
                     entries.popitem(last=False)
-            else:
-                entries.move_to_end(signature)
-            return entries[signature]
+                return cached
         except Exception:
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when
             # the failure comes out of a compiled graph, so this one has to.
@@ -576,6 +614,14 @@ class Op(ABC):
                     yield from _entry_kernels(entry)
             yield from _entry_kernels(getattr(op, "kernel", None))
 
+    def _walk_autotunables(self) -> Iterator[object]:
+        """Yield TileOps kernels and opt-in external callable tuning owners."""
+        for op in self._walk_ops():
+            for entries in (getattr(op, "_kernel_roles", None) or {}).values():
+                for entry in entries.values():
+                    yield from _entry_autotunables(entry)
+            yield from _entry_autotunables(getattr(op, "kernel", None))
+
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
 
@@ -588,8 +634,12 @@ class Op(ABC):
         """
         for op in self._walk_ops():
             op.tune = True
-        for kernel in self.iter_kernels():
-            kernel.autotune()
+        seen: set[int] = set()
+        for owner in self._walk_autotunables():
+            if id(owner) in seen:
+                continue
+            seen.add(id(owner))
+            owner.autotune()
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
