@@ -241,6 +241,13 @@ class _DensePrefillBuiltin:
     ] = field(
         default_factory=OrderedDict, repr=False
     )
+    # CUDA Graphs capture raw device pointers, not Python Tensor ownership.
+    # Keep tables used by a capture alive even after the ordinary bounded memo
+    # evicts their lookup entry. Captured graph signatures are intentionally
+    # pinned for this callable's lifetime.
+    _captured_rope_tables: dict[
+        tuple[int, int], tuple[torch.Tensor, torch.Tensor]
+    ] = field(default_factory=dict, repr=False)
     _cache_lock: RLock = field(default_factory=RLock, repr=False)
 
     def _selection_facts(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
@@ -282,9 +289,16 @@ class _DensePrefillBuiltin:
         max_position = call.max_position or 1
         rotary_dim = call.rotary_dim or 0
         key = (max_position, rotary_dim)
+        is_capturing = self.device.type == "cuda" and torch.cuda.is_current_stream_capturing()
         cached = self._rope_table_cache.get(key)
         if cached is not None:
+            if is_capturing:
+                self._captured_rope_tables.setdefault(key, cached)
             return cached
+        if is_capturing:
+            raise RuntimeError(
+                "Dense prefill CUDA Graph capture requires a same-signature warmup"
+            )
         with self._cache_lock:
             # Recheck after acquiring: another host thread may have filled the
             # miss while this one waited. Hot CUDA-graph hits never take a lock.

@@ -521,6 +521,42 @@ def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
     assert not torch.equal(captured, first)
 
 
+@pytest.mark.smoke
+def test_gqa_prefill_dense_fused_rope_graph_tables_survive_cache_eviction() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=True,
+        pos_encoding_mode="rope",
+        rope_layout="interleaved",
+    )
+    op(q, k, v)
+    entry = next(iter(op.built_kernels("gqa_prefill_dense").values()))
+    captured_tables = entry._rope_table_cache[(seq_len, dim)]
+
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = op(q, k, v)
+
+    for other_len in range(seq_len + 1, seq_len + 10):
+        other_q = torch.randn(
+            batch, other_len, heads, dim, device="cuda", dtype=torch.float16
+        )
+        other_k = torch.randn(
+            batch, other_len, heads_kv, dim, device="cuda", dtype=torch.float16
+        )
+        op(other_q, other_k, torch.randn_like(other_k))
+
+    assert (seq_len, dim) not in entry._rope_table_cache
+    assert entry._captured_rope_tables[(seq_len, dim)] is captured_tables
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.isfinite(captured).all()
+
+
 @pytest.mark.parametrize(
     (
         "seq_len_q",
