@@ -9,8 +9,14 @@ from tileops.backend import Target
 from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
-from ._base import _PerDtypeKernels, _require_one_device
+from ._base import (
+    _PerDtypeKernels,
+    _require_one_device,
+    _require_shape_inference,
+    resolve_output_dtype,
+)
 
 
 class PreluFwdOp(_PerDtypeKernels, Op):
@@ -122,3 +128,26 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         return type(self)._wrapped(input, weight, self._instance_key)
+
+
+# The compile boundary. Module-level because registration happens once per qualified name
+# at import time and the schema is read off the annotations, so ``self`` cannot appear; the
+# instance comes back from the string key. See src/tileops/ops/compile_boundary.py.
+
+_require_shape_inference(PreluFwdOp)
+
+
+@torch.library.custom_op("top::elementwise_prelu", mutates_args=())
+def _prelu_fwd(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(x, weight)
+
+
+@_prelu_fwd.register_fake
+def _prelu_fwd_fake(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
+    return x.new_empty(shapes["output"], dtype=resolve_output_dtype("PreluFwdOp", x.dtype))
+
+
+PreluFwdOp._wrapped = _prelu_fwd
+PreluFwdOp.compile_op_names = ("top::elementwise_prelu",)

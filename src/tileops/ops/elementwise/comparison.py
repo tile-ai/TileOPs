@@ -17,8 +17,6 @@ from tileops.kernels.elementwise import (
 from ._base import (
     _PREDICATE_FALLBACK_DTYPES,
     _BoolOutputBinaryOp,
-    _int_all_false,
-    _int_all_true,
     _IntIdentityUnaryOp,
 )
 
@@ -74,9 +72,12 @@ class IsnanFwdOp(_IntIdentityUnaryOp):
 
     _op_name = "isnan"
     kernel_cls = IsnanFwdKernel
-    _int_handler = staticmethod(_int_all_false)
     _int_output_dtype = torch.bool
     _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
+
+    @staticmethod
+    def _int_handler(input: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(input.shape, dtype=torch.bool, device=input.device)
 
 
 class IsinfFwdOp(_IntIdentityUnaryOp):
@@ -88,9 +89,12 @@ class IsinfFwdOp(_IntIdentityUnaryOp):
 
     _op_name = "isinf"
     kernel_cls = IsinfFwdKernel
-    _int_handler = staticmethod(_int_all_false)
     _int_output_dtype = torch.bool
     _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
+
+    @staticmethod
+    def _int_handler(input: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(input.shape, dtype=torch.bool, device=input.device)
 
 
 class IsfiniteFwdOp(_IntIdentityUnaryOp):
@@ -102,6 +106,9 @@ class IsfiniteFwdOp(_IntIdentityUnaryOp):
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteFwdKernel
-    _int_handler = staticmethod(_int_all_true)
     _int_output_dtype = torch.bool
     _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
+
+    @staticmethod
+    def _int_handler(input: torch.Tensor) -> torch.Tensor:
+        return torch.ones(input.shape, dtype=torch.bool, device=input.device)

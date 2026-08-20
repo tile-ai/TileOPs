@@ -22,13 +22,16 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from ._base import (
     BinaryOp,
     _AlphaScaledBinaryOp,
     _PerDtypeKernels,
     _require_one_device,
+    _require_shape_inference,
     broadcast_or_raise,
+    resolve_output_dtype,
 )
 
 
@@ -301,3 +304,40 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         return type(self)._wrapped(input, end, weight, self._instance_key)
+
+
+# The compile boundary. Module-level because registration happens once per qualified name
+# at import time and the schema is read off the annotations, so ``self`` cannot appear; the
+# instance comes back from the string key. See src/tileops/ops/compile_boundary.py.
+
+# Registered under its own name rather than the scalar ``LerpFwdOp``'s: the Tensor-weight
+# overload takes a third tensor.
+_require_shape_inference(LerpTensorFwdOp)
+
+
+@torch.library.custom_op("top::elementwise_lerp_tensor", mutates_args=())
+def _lerp_tensor_fwd(
+    input: torch.Tensor,
+    end: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, end, weight)
+
+
+@_lerp_tensor_fwd.register_fake
+def _lerp_tensor_fwd_fake(
+    input: torch.Tensor,
+    end: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(input.shape), tuple(end.shape), tuple(weight.shape))
+    return input.new_empty(
+        shapes["output"], dtype=resolve_output_dtype("LerpTensorFwdOp", input.dtype)
+    )
+
+
+LerpTensorFwdOp._wrapped = _lerp_tensor_fwd
+LerpTensorFwdOp.compile_op_names = ("top::elementwise_lerp_tensor",)

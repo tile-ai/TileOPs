@@ -12,12 +12,15 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from ._base import (
     _PerDtypeKernels,
     _require_one_device,
+    _require_shape_inference,
     _validate_scalar_param_repr,
     broadcast_or_raise,
+    resolve_output_dtype,
 )
 
 
@@ -228,3 +231,65 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         return type(self)._wrapped(input, mask, self._instance_key)
+
+
+# The compile boundary. Module-level because registration happens once per qualified name
+# at import time and the schema is read off the annotations, so ``self`` cannot appear; the
+# instance comes back from the string key. See src/tileops/ops/compile_boundary.py.
+
+# Two variants, two operators: the Tensor-value one takes a third tensor, so it cannot
+# share a schema with the scalar one.
+_require_shape_inference(MaskedFillFwdOp)
+_require_shape_inference(MaskedFillScalarFwdOp)
+
+
+@torch.library.custom_op("top::elementwise_masked_fill_tensor_value", mutates_args=())
+def _masked_fill_tensor_value_fwd(
+    input: torch.Tensor,
+    mask: torch.Tensor,
+    value: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, mask, value)
+
+
+@_masked_fill_tensor_value_fwd.register_fake
+def _masked_fill_tensor_value_fwd_fake(
+    input: torch.Tensor,
+    mask: torch.Tensor,
+    value: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(input.shape), tuple(mask.shape), tuple(value.shape))
+    return input.new_empty(
+        shapes["output"], dtype=resolve_output_dtype("MaskedFillFwdOp", input.dtype)
+    )
+
+
+@torch.library.custom_op("top::elementwise_masked_fill", mutates_args=())
+def _masked_fill_fwd(
+    input: torch.Tensor,
+    mask: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, mask)
+
+
+@_masked_fill_fwd.register_fake
+def _masked_fill_fwd_fake(
+    input: torch.Tensor,
+    mask: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(input.shape), tuple(mask.shape))
+    return input.new_empty(
+        shapes["output"], dtype=resolve_output_dtype("MaskedFillScalarFwdOp", input.dtype)
+    )
+
+
+MaskedFillFwdOp._wrapped = _masked_fill_tensor_value_fwd
+MaskedFillFwdOp.compile_op_names = ("top::elementwise_masked_fill_tensor_value",)
+MaskedFillScalarFwdOp._wrapped = _masked_fill_fwd
+MaskedFillScalarFwdOp.compile_op_names = ("top::elementwise_masked_fill",)

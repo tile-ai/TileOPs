@@ -9,12 +9,15 @@ from tileops.backend import Target
 from tileops.kernels.elementwise import ClampFwdKernel, ClampTensorFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from ._base import (
     _PerDtypeKernels,
     _require_one_device,
+    _require_shape_inference,
     _validate_scalar_param_repr,
     broadcast_or_raise,
+    resolve_output_dtype,
 )
 
 
@@ -226,3 +229,43 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         return type(self)._wrapped(input, self._instance_key)
+
+
+# The compile boundary. Module-level because registration happens once per qualified name
+# at import time and the schema is read off the annotations, so ``self`` cannot appear; the
+# instance comes back from the string key. See src/tileops/ops/compile_boundary.py.
+
+# ``ClampFwdOp``'s bounds are ``Optional[torch.Tensor]``, which ``custom_op`` reads off the
+# annotations as ``Tensor? min, Tensor? max``: one registration covers either bound alone
+# and both together. Its namespace is distinct from ``ClampScalarFwdOp``'s.
+_require_shape_inference(ClampFwdOp)
+
+
+@torch.library.custom_op("top::elementwise_clamp_tensor", mutates_args=())
+def _clamp_tensor_fwd(
+    input: torch.Tensor,
+    min: Optional[torch.Tensor],
+    max: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, min, max)
+
+
+@_clamp_tensor_fwd.register_fake
+def _clamp_tensor_fwd_fake(
+    input: torch.Tensor,
+    min: Optional[torch.Tensor],
+    max: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(input.shape),
+        None if min is None else tuple(min.shape),
+        None if max is None else tuple(max.shape),
+    )
+    return input.new_empty(shapes["output"], dtype=resolve_output_dtype("ClampFwdOp", input.dtype))
+
+
+ClampFwdOp._wrapped = _clamp_tensor_fwd
+ClampFwdOp.compile_op_names = ("top::elementwise_clamp_tensor",)
