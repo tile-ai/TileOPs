@@ -2,6 +2,7 @@ import dataclasses
 import warnings
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from contextlib import suppress
 from threading import RLock
 from types import MappingProxyType
 from typing import (
@@ -499,10 +500,8 @@ class Op(ABC):
                 # Recency is best-effort on the lock-free hit path. A concurrent
                 # miss may evict this key after ``get``; the strong local callable
                 # remains valid and must still run.
-                try:
+                with suppress(KeyError):
                     entries.move_to_end(signature)
-                except KeyError:
-                    pass
                 return cached
             with self._kernel_role_lock:
                 cached = entries.get(signature, _CACHE_MISS)
