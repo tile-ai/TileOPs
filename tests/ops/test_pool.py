@@ -2053,7 +2053,7 @@ def test_pool_output_dim_with_dilation(
     ],
 )
 def test_validate_pool_params_with_dilation(dilation: tuple[int, int], valid: bool) -> None:
-    from tileops.kernels.pool.common import validate_pool_params
+    from tileops.ops.pool import validate_pool_params
 
     if valid:
         validate_pool_params(
