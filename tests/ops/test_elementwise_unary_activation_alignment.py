@@ -85,8 +85,7 @@ def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
     x = torch.randn(2, 4, device="cuda", dtype=torch.float16)
     bound = torch.zeros_like(x)
     inst(x, bound) if op_name == "ClampFwdOp" else inst(x)
-    # The role is the op's name; ``key`` is the kernel_map slot, which differs here.
-    ((built,),) = [tuple(inst.built_kernels(inst._op_name).values())]
+    ((built,),) = [tuple(inst.built_kernels(key).values())]
     assert isinstance(built, MarkerKernel), (
         f"{op_name}: kernel_map override class was not used to build the "
         f"kernel (kernel type: {type(built).__name__})"

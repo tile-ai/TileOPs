@@ -57,7 +57,7 @@ class ClampFwdOp(_PerDtypeKernels, Op):
         self.dispatch_kernel(kernel_map)
 
     def _build(self, dtype: torch.dtype, n_total: int, has_min: bool, has_max: bool):
-        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return impl(
             n_total,
             ctor_dtype,
@@ -190,7 +190,7 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
             _validate_scalar_param_repr("min", self.min, dtype, self._op_name)
         if self.max is not None:
             _validate_scalar_param_repr("max", self.max, dtype, self._op_name)
-        impl, ctor_dtype = self._selected_kernel_cls("clamp").specialize(dtype)
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return impl(
             n_total,
             ctor_dtype,

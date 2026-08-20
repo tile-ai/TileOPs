@@ -219,7 +219,7 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     torch.testing.assert_close(op(inp, mn, None), torch.clamp(inp, min=mn))
     torch.testing.assert_close(op(inp, None, mx), torch.clamp(inp, max=mx))
 
-    assert len(op.built_kernels(op._op_name)) == 3, "one kernel per presence pattern"
+    assert len(op.built_kernels(op._slot)) == 3, "one kernel per presence pattern"
 
 
 # ClampScalarFwdOp, and ClampFwdOp with one bound withheld

@@ -171,12 +171,10 @@ def _register_unary_custom_op(op_cls):
 
     @_wrapped.register_fake
     def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        # Shape from the op's manifest shape_rules, dtype from its manifest
-        # signature.outputs: covers a predicate's bool output and an integer input
-        # promoted to float32 alike, without a per-registration override.
-        # ``new_empty``, not ``empty_like``: the real path writes into fresh
-        # contiguous storage, so a non-contiguous input's strides must not survive
-        # into the fake or the compiled graph asserts on the mismatch.
+        # Shape from the op, dtype from the manifest: one rule covers a predicate's
+        # bool output and an integer input promoted to float32. ``new_empty``, not
+        # ``empty_like`` — the real path writes fresh contiguous storage, and a
+        # non-contiguous input's strides in the fake fail the graph's assertion.
         op = get_instance(instance_key)
         shapes = op._infer_output_shapes(tuple(x.shape))
         return x.new_empty(
@@ -477,36 +475,21 @@ def _register_fused_gated_custom_op(op_cls):
     op_cls.compile_op_names = (op_name,)
 
 
-def broadcast_out_shape(a_shape, b_shape) -> torch.Size:
-    """Return the PyTorch broadcast output shape of two operand shapes.
-
-    0-dim operands are normalised to a single size-1 dimension, so a scalar
-    paired with a scalar yields ``(1,)`` rather than ``()``.
-
-    Args:
-        a_shape: Shape tuple of input a.
-        b_shape: Shape tuple of input b.
-
-    Returns:
-        The broadcast output shape.
-    """
-    return torch.broadcast_shapes(tuple(a_shape) or (1,), tuple(b_shape) or (1,))
-
-
 def broadcast_or_raise(op_name: str, **shapes: Optional[tuple]) -> tuple:
     """Broadcast the shapes this call passed, or say which ones do not fit.
 
-    The manifest states the output shape as a broadcast of the inputs, so shapes that
-    cannot broadcast break a shape rule — a ``ValueError`` like every other rule, not
-    the ``RuntimeError`` ``torch.broadcast_shapes`` raises. Pure in its arguments: the
-    registered fake calls it too.
+    The manifest states the output shape as a broadcast of the inputs, so this returns
+    exactly that — including ``()`` when every operand is 0-dim. Shapes that cannot
+    broadcast break a shape rule, so they raise a ``ValueError`` like every other rule
+    rather than the ``RuntimeError`` ``torch.broadcast_shapes`` raises. Pure in its
+    arguments: the registered fake calls it too.
 
     Args:
         op_name: Named in the error.
         shapes: Operand shapes by their manifest names; ``None`` for an optional input
             this call did not pass.
     """
-    present = {name: tuple(shape) or (1,) for name, shape in shapes.items() if shape is not None}
+    present = {name: tuple(shape) for name, shape in shapes.items() if shape is not None}
     try:
         return tuple(torch.broadcast_shapes(*present.values()))
     except RuntimeError as exc:
@@ -639,14 +622,26 @@ class _PerDtypeKernels:
             setattr(self, name, shape)
         self.dtype = dtype
 
-    def _selected_kernel_cls(self, slot: Optional[str] = None):
+    @property
+    def _slot(self) -> str:
+        """The dispatch key this op's ``kernel_map`` declares, and its memory role.
+
+        Every op in this family declares exactly one, so naming it a second time at the
+        get-or-build would let the two drift and leave ``built_kernels(slot)`` empty
+        while the entries sat under another name.
+        """
+        ((slot, _),) = self.kernel_map.items()
+        return slot
+
+    def _selected_kernel_cls(self):
         """The kernel class that will run, honoring a ``kernel_map`` override.
 
         Capability questions must go to this class, never to the family default:
         an override that supports a different dtype set is the whole point of
         supplying one.
         """
-        return self.kernel_map[slot if slot is not None else self._op_name]
+        ((_, kernel_cls),) = self.kernel_map.items()
+        return kernel_cls
 
     def _kernel(self, inputs: tuple, dtype: torch.dtype, *dims):
         """Return what serves this call, building it once per specialization.
@@ -661,7 +656,7 @@ class _PerDtypeKernels:
                 kernel is keyed on the input signature instead, by the base class.
         """
         return self.get_or_build_kernel(
-            self._op_name,
+            self._slot,
             inputs,
             key=(dtype, *dims),
             build=lambda: self._build(dtype, *dims),
@@ -1204,33 +1199,24 @@ class _IntFallbackCall:
         self._handler = handler
 
     def __call__(self, input: torch.Tensor) -> torch.Tensor:
-        # The kernel path writes into fresh contiguous storage, so this one does
-        # too: the op's layout must not depend on which dtype it was handed, and it
-        # has to agree with the registered fake.
+        # Contiguous like the kernel path: the layout must not depend on which dtype
+        # the op was handed, and it has to agree with the registered fake.
         return self._handler(input).contiguous()
 
 
 class _IntIdentityUnaryOp(UnaryOp):
-    """Base for unary ops whose manifest declares integer dtypes but whose
-    in-tree kernel is float-only.
+    """Base for unary ops whose manifest declares integer dtypes that the shipped
+    kernels, being float-only, do not serve.
 
-    An integer input builds ``_IntFallbackCall`` instead of a kernel. Subclasses
-    override ``_int_handler`` (default ``input.clone()``) and ``_int_output_dtype``
-    (default: same as input) for the op's integer semantics.
+    Such a dtype builds ``_IntFallbackCall``; subclasses set ``_int_handler`` and
+    ``_int_output_dtype`` for their integer semantics. Every other dtype goes to the
+    kernel, which raises on its own dtype check.
 
-    The decision belongs inside ``_build`` — the in-tree branch — for two reasons.
-    A target that registers this op is asked for a kernel and never reaches here, so
-    the fallback cannot swallow a call that another target was chosen to serve. And a
-    ``kernel_map`` override supplying a native integer kernel declares it in
-    ``SUPPORTED_DTYPES`` and is used instead; deciding without asking would discard
-    the override silently.
-
-    Only the integer dtypes declared in the manifest fall back. Other non-float
-    dtypes go to the kernel, which raises on its own dtype check.
-
-    PyTorch stands in here because the shipped TileLang kernels are float-only, not
-    because TileLang cannot express integer arithmetic; a native integer kernel
-    replaces this without touching the op.
+    The choice sits in ``_build``, the in-tree branch, so that a target which
+    registers this op is asked for a kernel instead, and so that a ``kernel_map``
+    override declaring integer support in ``SUPPORTED_DTYPES`` is used rather than
+    silently discarded. A native integer kernel replaces the fallback without
+    touching the op.
     """
 
     _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(_int_identity)

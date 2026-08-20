@@ -40,10 +40,8 @@ class PreluFwdOp(_PerDtypeKernels, Op):
     ):
         self.target = target
         self.tune = tune
-        # Manifest input bindings for the synthesized eval_roofline
-        # (docs/design/roofline.md §4.4.3): each signature.inputs entry is exposed as
-        # self.<name>_shape so the codegen resolver can reach it without
-        # family-specific aliases. Both are bound by the first forward.
+        # The synthesized eval_roofline resolves each signature.inputs entry as
+        # self.<name>_shape (docs/design/roofline.md §4.4.3); the first forward binds them.
         self.input_shape: Optional[tuple] = None
         self.weight_shape: Optional[tuple] = None
         self.dispatch_kernel(kernel_map)

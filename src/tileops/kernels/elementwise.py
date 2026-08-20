@@ -1,27 +1,29 @@
 """Elementwise kernel templates and strategy factories.
 
-Three template base classes for 66 elementwise ops:
+Template base classes, one per input shape:
 - UnaryKernel: 1-input → 1-output (relu, sigmoid, abs, ...)
 - BinaryKernel: 2-input → 1-output with N-dim broadcast (add, mul, ...)
 - FusedGatedKernel: fused gate+activation (silu_and_mul, gelu_and_mul, ...)
+- ParametricUnaryKernel: 1-input plus values baked in at build time, and the
+  multi-input kernels built on it (where, clamp, masked_fill, prelu, lerp)
 
-Each kernel uses one of three strategies (no shared memory):
-  Global → Register → Compute → Register → Global
+An op hands over the shapes its manifest entry declares; flattening, broadcasting and
+restoring the output shape are each kernel's ``forward``. No kernel here uses shared
+memory: Global → Register → Compute → Register → Global.
 
-Strategies:
-- direct: 1 element per thread, simplest codegen
+Three strategies pick the loop body at build time:
+- direct: 1 element per thread
 - explicit_parallel: N elements per thread via T.Parallel(threads, npt)
-- register_copy: fragment load → compute → fragment store (unary only)
+- register_copy: fragment load → compute → fragment store
 
-Binary register_copy is NOT supported (incompatible with stride-based access).
-Boundary checks handled by TileLang LegalizeSafeMemoryAccess.
+Boundary checks are TileLang's, via LegalizeSafeMemoryAccess.
 
 fp8 (e4m3fn, e5m2) accumulates in fp16 — direct fp8 arithmetic loses too much
 precision for sigmoid/exp and friends. Defaults: num_per_thread=16 (128-bit
-alignment) and explicit_parallel (register_copy is unreliable for fp8).
-Saturation follows the NVIDIA spec: e4m3fn has no Inf, so the kernel's
-saturating T.Cast clamping to ±448.0 is correct; e5m2 does, so the kernel emits
-fp16 and the Op layer does the final non-saturating cast.
+alignment) and explicit_parallel (register_copy is unreliable for fp8). Saturation
+follows from the format: e4m3fn has no Inf, so a saturating ``T.Cast`` clamping to
+±448.0 is what it can represent; e5m2 does have Inf, so the PrimFunc emits fp16 and
+``forward`` casts to e5m2 without saturating, which keeps Inf and NaN.
 """
 
 import functools
@@ -213,9 +215,9 @@ def _fp8_accum_dtype_str() -> str:
 def _get_fp8_output_dtypes(dtype: torch.dtype):
     """Return (fp8_output_dtype, kernel_output_dtype) for fp8 handling.
 
-    For e5m2: kernel produces fp16 to preserve Inf/NaN; Op layer does the
-    final non-saturating cast to e5m2 via PyTorch.
-    For e4m3fn or non-fp8: kernel outputs directly in the input dtype.
+    For e5m2: the PrimFunc produces fp16 to preserve Inf/NaN, and ``forward`` casts
+    to e5m2 without saturating.
+    For e4m3fn or non-fp8: the PrimFunc outputs the input dtype directly.
 
     Returns:
         Tuple of (_fp8_output_dtype, output_dtype).  _fp8_output_dtype is
@@ -271,7 +273,7 @@ def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
 
     Both fp8 dtypes cast inputs to fp16 and compute there. e4m3fn casts the
     result back via saturating ``T.Cast`` (correct — it has no Inf); e5m2
-    leaves the result in fp16 and the Op layer does the final non-saturating
+    leaves the result in fp16 and ``forward`` does the final non-saturating
     cast, which preserves Inf/NaN.
 
     Non-fp8 dtypes get *base_op* back unchanged.
@@ -401,10 +403,12 @@ def _flat(t):
 def _broadcast_target(*tensors):
     """The output shape a multi-operand kernel writes, from the operands it got.
 
-    A 0-dim operand normalizes to one axis of size one, so a scalar pair yields
-    ``(1,)`` rather than ``()`` — the shape the flat PrimFuncs below produce.
+    What ``torch.broadcast_shapes`` says, which is what the manifest's shape rules say:
+    all-0-dim operands give ``()``. The PrimFuncs below work on a flat buffer either
+    way — a 0-dim tensor holds one element — so restoring that shape is this wrapper's
+    last step.
     """
-    return torch.broadcast_shapes(*(tuple(t.shape) or (1,) for t in tensors if t is not None))
+    return torch.broadcast_shapes(*(tuple(t.shape) for t in tensors if t is not None))
 
 
 def _expand_flat(t, shape):
@@ -799,10 +803,7 @@ class UnaryKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
-        # For e5m2: kernel produces fp16 to preserve Inf/NaN; Op layer
-        # performs the final non-saturating cast to e5m2 via PyTorch.
-        # For e4m3fn: kernel produces e4m3fn via saturating T.Cast (correct,
-        # since e4m3fn has no Inf representation).
+        # Which fp8 dtype needs a post-cast, and why: module docstring.
         self._fp8_output_dtype = None
         if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
             self._fp8_output_dtype = dtype
@@ -1026,6 +1027,9 @@ class BinaryKernel(Kernel):
             self.b_shape,
         )
         self.out_shape = out_shape
+        # What a caller gets back. ``out_shape`` is the coalesced index space, which
+        # normalizes a 0-dim operand to one axis; two 0-dim operands broadcast to ``()``.
+        self.result_shape = tuple(torch.broadcast_shapes(self.a_shape, self.b_shape))
         self.N_total = math.prod(out_shape)
         self.a_numel = math.prod(self.a_shape)
         self.b_numel = math.prod(self.b_shape)
@@ -1229,7 +1233,7 @@ class BinaryKernel(Kernel):
         result = self._compiled_fn(_flat(a), _flat(b))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result.reshape(self.out_shape)
+        return result.reshape(self.result_shape)
 
 
 class FusedGatedKernel(Kernel):

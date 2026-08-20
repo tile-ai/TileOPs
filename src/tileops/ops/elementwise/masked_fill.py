@@ -52,7 +52,7 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
 
     def _build(self, dtype: torch.dtype, n_total: int):
         """The kernel names the implementation and storage for this dtype."""
-        impl, compute = self._selected_kernel_cls("masked_fill_tensor_value").specialize(dtype)
+        impl, compute = self._selected_kernel_cls().specialize(dtype)
         supported = impl.SUPPORTED_DTYPES
         if supported is not None and compute not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
@@ -169,7 +169,7 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     def _build(self, dtype: torch.dtype, n_total: int):
         """The fill value is baked in, so it is checked against each dtype."""
-        impl, compute = self._selected_kernel_cls("masked_fill").specialize(dtype)
+        impl, compute = self._selected_kernel_cls().specialize(dtype)
         supported = impl.SUPPORTED_DTYPES
         if supported is not None and compute not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))

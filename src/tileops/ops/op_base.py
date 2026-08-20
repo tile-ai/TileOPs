@@ -443,11 +443,9 @@ class Op(ABC):
             # The device is part of the key: a kernel built for one of a target's devices
             # may hold resources allocated on it. The op layer has already checked that
             # this call's tensors agree on a device, so the first one speaks for all.
-            #
-            # An absent optional input keeps its slot as ``None``. Dropping the slot would
-            # make two different calls describe themselves the same way — a clamp with only
-            # a lower bound and one with only an upper bound hand over the same dtypes and
-            # shapes — and the second would be served the first one's kernel.
+            # An absent optional input keeps its place as ``None``: drop it and a clamp
+            # with only a lower bound describes itself exactly like one with only an
+            # upper bound, so the second is served the first one's kernel.
             signature = (present[0].device,) + tuple(
                 None if spec is None else (spec.dtype, spec.shape) for spec in specs
             )
