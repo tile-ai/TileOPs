@@ -297,13 +297,9 @@ class _DensePrefillBuiltin:
         is_capturing = self.device.type == "cuda" and torch.cuda.is_current_stream_capturing()
         cached = self._rope_table_cache.get(key)
         if cached is not None:
-            if self.device.type == "cuda":
+            if self.device.type == "cuda" and not is_capturing:
                 stream = torch.cuda.current_stream(self.device)
                 if cached.ready is not None and not cached.ready.query():
-                    if is_capturing:
-                        raise RuntimeError(
-                            "Dense prefill CUDA Graph capture requires its warmup to complete"
-                        )
                     stream.wait_event(cached.ready)
                 cached.cos.record_stream(stream)
                 cached.sin.record_stream(stream)
