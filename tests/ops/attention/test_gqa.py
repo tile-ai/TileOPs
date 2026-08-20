@@ -676,8 +676,7 @@ def test_gqa_prefill_fwd_auto_backend_serves_uniform_input_dense() -> None:
     assert out.shape == q.shape
     # Uniform ranges put an automatic request on a dense implementation, not on
     # the ragged one — the outcome the range reading exists to produce.
-    assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [torch.float16]
-    assert not op.built_kernels("gqa_prefill_varlen_fwd_kernel")
+    assert list(op.built_kernels("gqa_prefill")) == [(q.device, torch.float16, False, True)]
 
 
 @pytest.mark.smoke
@@ -1238,8 +1237,11 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
         kernel_map=_stand_in_prefill_map(),
     )
 
-    call = packed.attention_call(is_fp8=False, is_uniform=True)
-    kernel = packed._kernel_for(packed.select_kernel_key(PACKED_PREFILL_KEYS, call), call)
+    kernel = packed._build_builtin_kernel(
+        device=torch.device("cuda"),
+        is_fp8=False,
+        is_uniform=True,
+    )
 
     assert kernel.kwargs["max_seqlen_q"] == max_seqlen_q
     assert kernel.kwargs["max_seqlen_kv"] == max_seqlen_kv
