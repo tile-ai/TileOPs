@@ -143,7 +143,7 @@ GroupedQueryAttentionPrefillDenseFwdOp:
       - "(rope_cos is None) == (rope_sin is None)"
       - "(pos_encoding_mode == 'rope') == (rope_cos is not None)"
       - "rope_cos is None or rope_cos.ndim == 2"
-      - "rope_sin is None or rope_sin.shape == rope_cos.shape"
+      - "rope_cos is None or rope_sin is None or rope_sin.shape == rope_cos.shape"
       - "rope_cos is None or rope_cos.shape[0] >= S_kv"
       - "rope_cos is None or rope_cos.shape[1] == (rotary_dim if rotary_dim is not None else D) // 2"
       - "pos_encoding_mode == 'none' or pos_encoding_mode == 'rope'"
