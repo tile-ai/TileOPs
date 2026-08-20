@@ -133,16 +133,10 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         assert delegate.kernel_map[key].__name__ == "GQAPrefillDenseFwdKernel"
     assert len(op._gqa_op.built_kernels("gqa_prefill_dense")) == len(_DTYPES)
 
-    # MHA builds no kernel of its own. The lifecycle walk reaches the concrete
-    # kernels retained by each GQA backend callable, and the flag governs
-    # specializations constructed afterwards.
-    op.autotune()
-    assert op._gqa_op.tune
-    assert all(
-        kernel.autotuned
-        for entry in op._gqa_op.built_kernels("gqa_prefill_dense").values()
-        for kernel in entry._retained_kernels
-    )
+    # MHA builds no kernel of its own. Enumeration reaches the concrete kernels
+    # retained by the GQA backend callables. A CPU stand-in test covers actual
+    # autotune propagation without launching a full tuning sweep here.
+    assert len(list(op.iter_kernels())) == len(_DTYPES)
 
 
 @pytest.mark.smoke
