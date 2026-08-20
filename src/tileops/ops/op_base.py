@@ -148,7 +148,10 @@ class Op(ABC):
     # attribute appears on the first ``get_or_build_kernel`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
     _kernel_roles: dict[str, dict[Hashable, object]]
-    _kernel_role_lock: RLock
+    # Conforming ops replace this fallback in ``dispatch_kernel``. The shared
+    # lock keeps legacy/slotted subclasses that bypass dispatch construction
+    # correct without requiring a writable ``__dict__``.
+    _kernel_role_lock: RLock = RLock()
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
     dtype: Optional[torch.dtype] = None
