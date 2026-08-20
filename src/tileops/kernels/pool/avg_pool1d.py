@@ -301,7 +301,7 @@ class AvgPool1dSpatialKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        require_cuda(self, x)
+        require_cuda(self, x=x)
         return _avg_pool1d_spatial_wrapped_kernel(
             self.n,
             self.c_in,
@@ -373,7 +373,7 @@ class AvgPool1dKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        require_cuda(self, x)
+        require_cuda(self, x=x)
         return _avg_pool1d_wrapped_kernel(
             self.n,
             self.c_in,

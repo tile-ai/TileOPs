@@ -12,6 +12,7 @@ import torch
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
+from tileops.ops.pool import MaxPool2dFwdOp
 
 pytestmark = pytest.mark.smoke
 
@@ -530,3 +531,44 @@ def test_a_rejected_conv_call_never_reaches_the_backend():
     with pytest.raises(ValueError, match="bias shape"):
         Conv2dFwdOp(padding=1)(x, weight, torch.randn(999, dtype=DTYPE))
     assert recorder.calls == [], "the op layer's checks run for every target"
+
+
+# --------------------------------------------------------------------------------------
+# An explicit target: MaxPool2dFwdOp
+# --------------------------------------------------------------------------------------
+
+
+class _PoolRecorder:
+    """A target for MaxPool2dFwdOp; its kernel takes the one input the op hands over."""
+
+    def __init__(self):
+        self.calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(x):
+            assert x.is_contiguous()
+            return torch.full((x.shape[0], x.shape[1], 4, 4), 7, dtype=x.dtype)
+
+        return kernel
+
+
+def test_an_explicit_target_serves_a_pool_op_no_detector_claims_the_device():
+    """``target=`` is the override, so it routes with nothing claiming the device."""
+    recorder = _PoolRecorder()
+    _register(recorder, op="MaxPool2dFwdOp", claims=False)
+    x = torch.randn(1, 4, 8, 8, dtype=DTYPE)
+
+    out = MaxPool2dFwdOp(kernel_size=2, target="acme")(x)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x),), "signature.inputs order"
+    assert params == {
+        "kernel_size": (2, 2),
+        "stride": (2, 2),
+        "padding": (0, 0),
+        "dilation": (1, 1),
+        "ceil_mode": False,
+    }
+    assert torch.equal(out, torch.full_like(out, 7)), "the target's kernel produced the result"

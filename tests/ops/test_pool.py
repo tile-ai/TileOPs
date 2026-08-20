@@ -2132,6 +2132,7 @@ _AVG_POOL_CTOR_PARAMS_1D = (
     ("padding", 0),
     ("ceil_mode", False),
     ("count_include_pad", True),
+    ("target", None),
     ("kernel_map", None),
     ("tune", False),
 )
@@ -2143,6 +2144,7 @@ _AVG_POOL_CTOR_PARAMS_ND = (
     ("ceil_mode", False),
     ("count_include_pad", True),
     ("divisor_override", None),
+    ("target", None),
     ("kernel_map", None),
     ("tune", False),
 )
@@ -2153,6 +2155,7 @@ _MAX_POOL_CTOR_PARAMS = (
     ("padding", 0),
     ("dilation", 1),
     ("ceil_mode", False),
+    ("target", None),
     ("kernel_map", None),
     ("tune", False),
 )

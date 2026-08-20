@@ -3,6 +3,7 @@ from typing import Any, ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
     AdaptiveAvgPool2dKernel,
@@ -140,19 +141,15 @@ class MeanPoolingForwardOp(Op):
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(
-        self,
-        x: torch.Tensor,
-        offsets: torch.Tensor,
-        indices: torch.Tensor,
-    ) -> Kernel:
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        # Hands over no tensors and takes no ``target=``: this op has no manifest entry, so a
+        # target's builder could not be told what to build. In-tree only until it has one.
         return self.get_or_build_kernel(
             "mean_pooling_fwd_kernel",
-            (x, offsets, indices),
-            key=x.dtype,
+            key=dtype,
             build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
                 **self._kernel_params,
-                dtype=x.dtype,
+                dtype=dtype,
             ),
         )
 
@@ -166,7 +163,7 @@ class MeanPoolingForwardOp(Op):
         offsets: torch.Tensor,
         indices: torch.Tensor,
     ) -> torch.Tensor:
-        kernel = self._get_kernel(x, offsets, indices)
+        kernel = self._get_kernel(x.dtype)
         out = kernel(x, offsets, indices=indices)
         self.dtype = x.dtype
         return out
@@ -220,6 +217,8 @@ class _AvgPoolFwdOpBase(Op):
         ceil_mode: bool = False,
         count_include_pad: bool = True,
         divisor_override: Optional[int] = None,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -237,6 +236,7 @@ class _AvgPoolFwdOpBase(Op):
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
         self.dtype = None
+        self.target = target
         self.tune = tune
         validate_pool_params(
             ndim=nd,
@@ -408,6 +408,8 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
         padding: int | Tuple[int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -418,6 +420,7 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
             padding=padding,
             ceil_mode=ceil_mode,
             count_include_pad=count_include_pad,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -460,6 +463,8 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         ceil_mode: bool = False,
         count_include_pad: bool = True,
         divisor_override: Optional[int] = None,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -470,6 +475,7 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
             ceil_mode=ceil_mode,
             count_include_pad=count_include_pad,
             divisor_override=divisor_override,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -558,6 +564,8 @@ class _MaxPoolFwdOpBase(Op):
         padding: int | Tuple[int, ...] = 0,
         dilation: int | Tuple[int, ...] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -576,6 +584,7 @@ class _MaxPoolFwdOpBase(Op):
             raise TypeError("ceil_mode must be a bool")
         self.ceil_mode = ceil_mode
         self.dtype = None
+        self.target = target
         self.tune = tune
         validate_pool_params(
             ndim=nd,
@@ -727,6 +736,8 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
         padding: int | Tuple[int] = 0,
         dilation: int | Tuple[int] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -736,6 +747,7 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -765,6 +777,8 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
         padding: int | Tuple[int] = 0,
         dilation: int | Tuple[int] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -774,6 +788,7 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -805,6 +820,8 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
         padding: int | Tuple[int, int] = 0,
         dilation: int | Tuple[int, int] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -814,6 +831,7 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -843,6 +861,8 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
         padding: int | Tuple[int, int] = 0,
         dilation: int | Tuple[int, int] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -852,6 +872,7 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -883,6 +904,8 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
         padding: int | Tuple[int, int, int] = 0,
         dilation: int | Tuple[int, int, int] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -892,6 +915,7 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -921,6 +945,8 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
         padding: int | Tuple[int, int, int] = 0,
         dilation: int | Tuple[int, int, int] = 1,
         ceil_mode: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -930,6 +956,7 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -961,6 +988,8 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
         ceil_mode: bool = False,
         count_include_pad: bool = True,
         divisor_override: Optional[int] = None,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -971,6 +1000,7 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
             ceil_mode=ceil_mode,
             count_include_pad=count_include_pad,
             divisor_override=divisor_override,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -1078,6 +1108,8 @@ class _AdaptivePool2dFwdOpBase(Op):
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]],
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1087,6 +1119,7 @@ class _AdaptivePool2dFwdOpBase(Op):
         self.w_in = None
         self.output_size = _normalize_output_size(output_size)
         self.dtype = None
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         if self._kernel_slot not in self.kernel_map:
@@ -1185,10 +1218,17 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]],
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        super().__init__(output_size=output_size, kernel_map=kernel_map, tune=tune)
+        super().__init__(
+            output_size=output_size,
+            target=target,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1209,10 +1249,17 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]],
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        super().__init__(output_size=output_size, kernel_map=kernel_map, tune=tune)
+        super().__init__(
+            output_size=output_size,
+            target=target,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1234,10 +1281,17 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]],
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        super().__init__(output_size=output_size, kernel_map=kernel_map, tune=tune)
+        super().__init__(
+            output_size=output_size,
+            target=target,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
