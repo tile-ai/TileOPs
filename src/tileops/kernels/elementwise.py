@@ -1,27 +1,29 @@
 """Elementwise kernel templates and strategy factories.
 
-Three template base classes for 66 elementwise ops:
+Template base classes, one per input shape:
 - UnaryKernel: 1-input → 1-output (relu, sigmoid, abs, ...)
 - BinaryKernel: 2-input → 1-output with N-dim broadcast (add, mul, ...)
 - FusedGatedKernel: fused gate+activation (silu_and_mul, gelu_and_mul, ...)
+- ParametricUnaryKernel: 1-input plus values baked in at build time, and the
+  multi-input kernels built on it (where, clamp, masked_fill, prelu, lerp)
 
-Each kernel uses one of three strategies (no shared memory):
-  Global → Register → Compute → Register → Global
+An op hands over the shapes its manifest entry declares; flattening, broadcasting and
+restoring the output shape are each kernel's ``forward``. No kernel here uses shared
+memory: Global → Register → Compute → Register → Global.
 
-Strategies:
-- direct: 1 element per thread, simplest codegen
+Three strategies pick the loop body at build time:
+- direct: 1 element per thread
 - explicit_parallel: N elements per thread via T.Parallel(threads, npt)
-- register_copy: fragment load → compute → fragment store (unary only)
+- register_copy: fragment load → compute → fragment store
 
-Binary register_copy is NOT supported (incompatible with stride-based access).
-Boundary checks handled by TileLang LegalizeSafeMemoryAccess.
+Boundary checks are TileLang's, via LegalizeSafeMemoryAccess.
 
 fp8 (e4m3fn, e5m2) accumulates in fp16 — direct fp8 arithmetic loses too much
 precision for sigmoid/exp and friends. Defaults: num_per_thread=16 (128-bit
-alignment) and explicit_parallel (register_copy is unreliable for fp8).
-Saturation follows the NVIDIA spec: e4m3fn has no Inf, so the kernel's
-saturating T.Cast clamping to ±448.0 is correct; e5m2 does, so the kernel emits
-fp16 and the Op layer does the final non-saturating cast.
+alignment) and explicit_parallel (register_copy is unreliable for fp8). Saturation
+follows from the format: e4m3fn has no Inf, so a saturating ``T.Cast`` clamping to
+±448.0 is what it can represent; e5m2 does have Inf, so the PrimFunc emits fp16 and
+``forward`` casts to e5m2 without saturating, which keeps Inf and NaN.
 """
 
 import functools
@@ -213,9 +215,9 @@ def _fp8_accum_dtype_str() -> str:
 def _get_fp8_output_dtypes(dtype: torch.dtype):
     """Return (fp8_output_dtype, kernel_output_dtype) for fp8 handling.
 
-    For e5m2: kernel produces fp16 to preserve Inf/NaN; Op layer does the
-    final non-saturating cast to e5m2 via PyTorch.
-    For e4m3fn or non-fp8: kernel outputs directly in the input dtype.
+    For e5m2: the PrimFunc produces fp16 to preserve Inf/NaN, and ``forward`` casts
+    to e5m2 without saturating.
+    For e4m3fn or non-fp8: the PrimFunc outputs the input dtype directly.
 
     Returns:
         Tuple of (_fp8_output_dtype, output_dtype).  _fp8_output_dtype is
@@ -271,7 +273,7 @@ def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
 
     Both fp8 dtypes cast inputs to fp16 and compute there. e4m3fn casts the
     result back via saturating ``T.Cast`` (correct — it has no Inf); e5m2
-    leaves the result in fp16 and the Op layer does the final non-saturating
+    leaves the result in fp16 and ``forward`` does the final non-saturating
     cast, which preserves Inf/NaN.
 
     Non-fp8 dtypes get *base_op* back unchanged.
@@ -370,6 +372,54 @@ def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_p
         return main
 
     return kernel
+
+
+# Layout adapters: what a PrimFunc wants, from what the Op layer hands over
+
+
+def _require_cuda(kernel, **tensors) -> None:
+    """Refuse a device these kernels were not written for.
+
+    The op layer checks that a call's tensors agree on a device; which devices this
+    set of kernels runs on is stated here, where the answer lives.
+    """
+    for name, tensor in tensors.items():
+        if tensor is not None and not tensor.is_cuda:
+            raise ValueError(
+                f"{type(kernel).__name__} is a CUDA kernel; got {name} on "
+                f"{tensor.device}. Another target's backend serves other devices."
+            )
+
+
+def _flat(t):
+    """The flat view every PrimFunc here takes.
+
+    The Op layer normalizes contiguity and hands over the manifest-declared
+    shape, so reducing it to one dimension is this backend's business.
+    """
+    return t.reshape(-1)
+
+
+def _broadcast_target(*tensors):
+    """The output shape a multi-operand kernel writes, from the operands it got.
+
+    What ``torch.broadcast_shapes`` says, which is what the manifest's shape rules say:
+    all-0-dim operands give ``()``. The PrimFuncs below work on a flat buffer either
+    way — a 0-dim tensor holds one element — so restoring that shape is this wrapper's
+    last step.
+    """
+    return torch.broadcast_shapes(*(tuple(t.shape) for t in tensors if t is not None))
+
+
+def _expand_flat(t, shape):
+    """Broadcast *t* to *shape*, then flatten it.
+
+    Materializes a copy when *t* is genuinely broadcast: the kernels below index
+    every operand at the output element, so they need one element per output.
+    """
+    if tuple(t.shape) != tuple(shape):
+        t = t.expand(shape)
+    return t.contiguous().reshape(-1)
 
 
 # Strategy factory: Binary
@@ -753,10 +803,7 @@ class UnaryKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
-        # For e5m2: kernel produces fp16 to preserve Inf/NaN; Op layer
-        # performs the final non-saturating cast to e5m2 via PyTorch.
-        # For e4m3fn: kernel produces e4m3fn via saturating T.Cast (correct,
-        # since e4m3fn has no Inf representation).
+        # Which fp8 dtype needs a post-cast, and why: module docstring.
         self._fp8_output_dtype = None
         if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
             self._fp8_output_dtype = dtype
@@ -923,10 +970,11 @@ class UnaryKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
-        result = self._compiled_fn(x)
+        _require_cuda(self, x=x)
+        result = self._compiled_fn(_flat(x))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result
+        return result.reshape(x.shape)
 
 
 class BinaryKernel(Kernel):
@@ -979,6 +1027,9 @@ class BinaryKernel(Kernel):
             self.b_shape,
         )
         self.out_shape = out_shape
+        # What a caller gets back. ``out_shape`` is the coalesced index space, which
+        # normalizes a 0-dim operand to one axis; two 0-dim operands broadcast to ``()``.
+        self.result_shape = tuple(torch.broadcast_shapes(self.a_shape, self.b_shape))
         self.N_total = math.prod(out_shape)
         self.a_numel = math.prod(self.a_shape)
         self.b_numel = math.prod(self.b_shape)
@@ -1178,10 +1229,11 @@ class BinaryKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, a, b):
-        result = self._compiled_fn(a, b)
+        _require_cuda(self, a=a, b=b)
+        result = self._compiled_fn(_flat(a), _flat(b))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result
+        return result.reshape(self.result_shape)
 
 
 class FusedGatedKernel(Kernel):
@@ -1345,6 +1397,7 @@ class FusedGatedKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
+        _require_cuda(self, x=x)
         result = self._compiled_fn(x)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
@@ -2539,10 +2592,11 @@ class ParametricUnaryKernel(Kernel):
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
-        result = self._compiled_fn(x)
+        _require_cuda(self, x=x)
+        result = self._compiled_fn(_flat(x))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result
+        return result.reshape(x.shape)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2915,21 +2969,22 @@ class PreluFwdKernel(ParametricUnaryKernel):
         return (self.N_total, self.C, self.inner_size, self.dtype_str)
 
     def forward(self, x, weight):
-        return self._compiled_fn(x, weight)
+        _require_cuda(self, x=x, weight=weight)
+        return self._compiled_fn(_flat(x), _flat(weight)).reshape(x.shape)
 
 
 @functools.lru_cache(maxsize=32)
 def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
-    The Op layer packs the bool condition as uint8 so that T.copy can
-    perform vectorized loads (TileLang does not vectorize bool tensors).
-    Each uint8 element is 0 or 1; the kernel loads it into a register
-    fragment and unpacks per-element with a != 0 comparison.
+    ``WhereFwdKernel.forward`` packs the bool condition as uint8 so that T.copy
+        can perform vectorized loads (TileLang does not vectorize bool tensors).
+        Each uint8 element is 0 or 1; the kernel loads it into a register
+        fragment and unpacks per-element with a != 0 comparison.
 
-    For non-fp8 dtypes, writes the result back into the x register fragment
-    (in-place) to reduce register pressure and avoid a fourth data-typed
-    fragment allocation.
+        For non-fp8 dtypes, writes the result back into the x register fragment
+        (in-place) to reduce register pressure and avoid a fourth data-typed
+        fragment allocation.
     """
     block_size = threads * npt
 
@@ -2998,27 +3053,34 @@ class WhereFwdKernel(ParametricUnaryKernel):
         return _make_where_kernel
 
     def forward(self, cond, x, y):
+        _require_cuda(self, cond=cond, x=x, y=y)
+        out_shape = _broadcast_target(cond, x, y)
         # A bool condition is this backend's uint8 predicate; the caller passes
         # semantic bool and never names the representation.
         if cond.dtype == torch.bool:
             cond = cond.view(torch.uint8)
-        return self._compiled_fn(cond, x, y)
+        result = self._compiled_fn(
+            _expand_flat(cond, out_shape),
+            _expand_flat(x, out_shape),
+            _expand_flat(y, out_shape),
+        )
+        return result.reshape(out_shape)
 
 
 @functools.lru_cache(maxsize=32)
 def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
 
-    The Op layer pre-broadcasts ``input`` / ``end`` / ``weight`` to the
-    flat output shape so the kernel sees three contiguous 1-D tensors of
-    size ``N``. Computation is performed in the input dtype for fp16 /
-    bfloat16 / float32 (the only dtypes the manifest declares); the fp8
-    path is unreachable here because the kernel's ``SUPPORTED_DTYPES``
-    excludes fp8.
+    ``LerpTensorFwdKernel.forward`` broadcasts ``input`` / ``end`` / ``weight``
+        to the output shape and flattens them, so this PrimFunc sees three
+        contiguous 1-D tensors of size ``N``. Computation is performed in the input dtype for fp16 /
+        bfloat16 / float32 (the only dtypes the manifest declares); the fp8
+        path is unreachable here because the kernel's ``SUPPORTED_DTYPES``
+        excludes fp8.
 
-    Uses the register-fragment load -> compute -> fragment store strategy
-    (matches the non-fp8 ``_make_where_kernel`` layout) so all three
-    inputs and the output share the same vectorized memory access path.
+        Uses the register-fragment load -> compute -> fragment store strategy
+        (matches the non-fp8 ``_make_where_kernel`` layout) so all three
+        inputs and the output share the same vectorized memory access path.
     """
     del is_fp8  # fp8 is not in the manifest contract for this op
     out_dtype = output_dtype or dtype
@@ -3053,14 +3115,14 @@ def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=
 class LerpTensorFwdKernel(ParametricUnaryKernel):
     """Tensor-weight lerp: out = input + weight * (end - input).
 
-    Implements the Tensor-weight overload of ``torch.lerp`` —
-    ``torch.lerp(input, end, weight: Tensor)`` — where all three operands
-    are float tensors of the same dtype broadcast together by the Op
-    layer to a flat ``N``-element view.
+        Implements the Tensor-weight overload of ``torch.lerp`` —
+        ``torch.lerp(input, end, weight: Tensor)`` — where all three operands
+    are float tensors of the same dtype, broadcast together and flattened
+        by ``forward``.
 
-    Manifest declares ``float16 | bfloat16 | float32``; fp8 is rejected
-    at construction. The Op layer is responsible for broadcasting the
-    three inputs to ``N_total`` before dispatch.
+        Manifest declares ``float16 | bfloat16 | float32``; fp8 is rejected
+        at construction. ``forward`` takes the manifest shapes and broadcasts
+        them to ``N_total`` itself.
     """
 
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -3072,7 +3134,14 @@ class LerpTensorFwdKernel(ParametricUnaryKernel):
         return _make_lerp_tensor_kernel
 
     def forward(self, a, b, w):
-        return self._compiled_fn(a, b, w)
+        _require_cuda(self, a=a, b=b, w=w)
+        out_shape = _broadcast_target(a, b, w)
+        result = self._compiled_fn(
+            _expand_flat(a, out_shape),
+            _expand_flat(b, out_shape),
+            _expand_flat(w, out_shape),
+        )
+        return result.reshape(out_shape)
 
 
 @functools.lru_cache(maxsize=32)
@@ -3171,23 +3240,24 @@ def _make_clamp_tensor_kernel(
 ):
     """Build Tensor-bound clamp kernel.
 
-    Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
-        x: data tensor.
-        lo: lower-bound tensor (only present when ``has_min``).
-        hi: upper-bound tensor (only present when ``has_max``).
+    Inputs (all flat, length N, broadcast and flattened by
+        ``ClampTensorFwdKernel.forward``):
+            x: data tensor.
+            lo: lower-bound tensor (only present when ``has_min``).
+            hi: upper-bound tensor (only present when ``has_max``).
 
-    Output:
-        y: clamp result, same dtype as ``output_dtype`` (or ``dtype``).
+        Output:
+            y: clamp result, same dtype as ``output_dtype`` (or ``dtype``).
 
-    For fp8 the cast/compute uses fp32 to preserve precision; for non-fp8
-    the kernel uses register_copy with fp32 accumulation.
+        For fp8 the cast/compute uses fp32 to preserve precision; for non-fp8
+        the kernel uses register_copy with fp32 accumulation.
 
-    NaN semantics: matches ``torch.clamp`` / ``torch.clamp_min`` /
-    ``torch.clamp_max``. If ``x``, ``lo``, or ``hi`` is NaN at a position,
-    the output at that position is NaN. ``T.max`` / ``T.min`` on CUDA do
-    not propagate NaN by themselves (they return the non-NaN operand), so
-    we add explicit ``isnan`` guards in fp32 -- mirroring the pattern used
-    by ``MaximumFwdKernel`` / ``MinimumFwdKernel``.
+        NaN semantics: matches ``torch.clamp`` / ``torch.clamp_min`` /
+        ``torch.clamp_max``. If ``x``, ``lo``, or ``hi`` is NaN at a position,
+        the output at that position is NaN. ``T.max`` / ``T.min`` on CUDA do
+        not propagate NaN by themselves (they return the non-NaN operand), so
+        we add explicit ``isnan`` guards in fp32 -- mirroring the pattern used
+        by ``MaximumFwdKernel`` / ``MinimumFwdKernel``.
     """
     if not (has_min or has_max):
         raise ValueError(
@@ -3382,11 +3452,11 @@ def _make_clamp_tensor_kernel(
 class ClampTensorFwdKernel(ParametricUnaryKernel):
     """Tensor-bound clamp kernel.
 
-    Computes ``y = clamp(x, lo, hi)`` over flat tensors of length
-    ``N_total``. The Op layer broadcasts ``input`` / ``min`` / ``max``
-    to the output shape and flattens them before dispatch. ``has_min``
-    / ``has_max`` select between the three forms used by the Tensor
-    clamp, clamp_min, and clamp_max ops.
+    Computes ``y = clamp(x, lo, hi)``. ``forward`` takes the manifest shapes,
+        broadcasts ``input`` / ``min`` / ``max`` to the output shape and flattens
+        them; the PrimFunc works on length ``N_total``. ``has_min`` / ``has_max``
+        select between the three forms used by the Tensor clamp, clamp_min, and
+        clamp_max ops.
     """
 
     _DEFAULT_THREADS = 512
@@ -3408,15 +3478,20 @@ class ClampTensorFwdKernel(ParametricUnaryKernel):
         return (self.has_min, self.has_max)
 
     def forward(self, x, lo=None, hi=None):
+        _require_cuda(self, x=x, lo=lo, hi=hi)
+        out_shape = _broadcast_target(x, lo, hi)
+        x_flat = _expand_flat(x, out_shape)
         if self.has_min and self.has_max:
-            result = self._compiled_fn(x, lo, hi)
+            result = self._compiled_fn(
+                x_flat, _expand_flat(lo, out_shape), _expand_flat(hi, out_shape)
+            )
         elif self.has_min:
-            result = self._compiled_fn(x, lo)
+            result = self._compiled_fn(x_flat, _expand_flat(lo, out_shape))
         else:
-            result = self._compiled_fn(x, hi)
+            result = self._compiled_fn(x_flat, _expand_flat(hi, out_shape))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result
+        return result.reshape(out_shape)
 
 
 @functools.lru_cache(maxsize=32)
@@ -3425,17 +3500,17 @@ def _make_masked_fill_kernel(
 ):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
-    The Op layer packs the bool mask as uint8 so that T.copy can
-    perform vectorized loads (TileLang does not vectorize bool tensors).
-    Each uint8 element is 0 or 1; the kernel loads it into a register
-    fragment and unpacks per-element with a != 0 comparison.
+    ``MaskedFillFwdKernel.forward`` packs the bool mask as uint8 so that T.copy
+        can perform vectorized loads (TileLang does not vectorize bool tensors).
+        Each uint8 element is 0 or 1; the kernel loads it into a register
+        fragment and unpacks per-element with a != 0 comparison.
 
-    For non-fp8 dtypes, writes the result back into the x register fragment
-    (in-place) to reduce register pressure and avoid a third data-typed
-    fragment allocation.
+        For non-fp8 dtypes, writes the result back into the x register fragment
+        (in-place) to reduce register pressure and avoid a third data-typed
+        fragment allocation.
 
-    For e5m2, the kernel outputs fp16 so the Op layer can do a
-    non-saturating cast to e5m2.
+        For e5m2, the PrimFunc outputs fp16 so ``forward`` can do a
+        non-saturating cast to e5m2.
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -3520,12 +3595,16 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
         return (self.fill_value,)
 
     def forward(self, x, mask):
+        _require_cuda(self, x=x, mask=mask)
+        out_shape = _broadcast_target(x, mask)
         as_bool = x.dtype == torch.bool
         if as_bool:
             x = x.view(torch.uint8)
         if mask.dtype == torch.bool:
             mask = mask.view(torch.uint8)
-        result = self._compiled_fn(x, mask)
+        result = self._compiled_fn(
+            _expand_flat(x, out_shape), _expand_flat(mask, out_shape)
+        ).reshape(out_shape)
         return result.view(torch.bool) if as_bool else result
 
 
@@ -3535,14 +3614,15 @@ def _make_masked_fill_tensor_value_kernel(
 ):
     """Build masked_fill kernel with a 0-dim Tensor fill value.
 
-    Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
-        x: data tensor (length N).
-        mask: bool mask packed as uint8 (length N).
-        value: scalar fill value carried as a length-1 tensor (the Op
-            layer reshapes the 0-dim Tensor to ``(1,)``).
+    Inputs (all flat, length N, broadcast and flattened by
+        ``MaskedFillTensorValueFwdKernel.forward``):
+            x: data tensor (length N).
+            mask: bool mask packed as uint8 (length N).
+            value: scalar fill value carried as a length-1 tensor (``forward``
+                reshapes the 0-dim Tensor to ``(1,)``).
 
-    Output:
-        out: ``out[i] = value[0] if mask[i] else x[i]``.
+        Output:
+            out: ``out[i] = value[0] if mask[i] else x[i]``.
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -3606,12 +3686,12 @@ def _make_masked_fill_tensor_value_kernel(
 class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
     """MaskedFill kernel with 0-dim Tensor fill value.
 
-    Computes ``out = mask ? value : x`` over flat tensors of length
-    ``N_total``. The Op layer broadcasts ``input`` and ``mask`` to the
-    output shape, flattens them, packs the mask as uint8, and reshapes
-    the 0-dim ``value`` to a length-1 tensor before dispatch. Bool storage is
-    reinterpreted as uint8 here, being this backend's requirement rather than
-    part of the op's semantics.
+    Computes ``out = mask ? value : x``. ``forward`` broadcasts ``input`` and
+        ``mask`` to the output shape, flattens them, packs the mask as uint8, and
+        reshapes the 0-dim ``value`` to a length-1 tensor; the PrimFunc works on
+        length ``N_total``. Bool storage is
+        reinterpreted as uint8 here, being this backend's requirement rather than
+        part of the op's semantics.
     """
 
     _DEFAULT_THREADS = 512
@@ -3622,19 +3702,22 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
         return _make_masked_fill_tensor_value_kernel
 
     def forward(self, x, mask, value):
+        _require_cuda(self, x=x, mask=mask, value=value)
+        out_shape = _broadcast_target(x, mask)
         as_bool = x.dtype == torch.bool
         if as_bool:
             x = x.view(torch.uint8)
         # A 0-d scalar is the semantic form; this kernel reads it from a
         # length-one buffer.
-        value = value.contiguous().view(1)
+        value = value.contiguous().reshape(1)
         if as_bool:
             value = value.view(torch.uint8)
         if mask.dtype == torch.bool:
             mask = mask.view(torch.uint8)
-        result = self._compiled_fn(x, mask, value)
+        result = self._compiled_fn(_expand_flat(x, out_shape), _expand_flat(mask, out_shape), value)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
+        result = result.reshape(out_shape)
         return result.view(torch.bool) if as_bool else result
 
 

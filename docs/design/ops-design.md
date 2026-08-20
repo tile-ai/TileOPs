@@ -1,6 +1,6 @@
 # Op Interface Design
 
-Step-by-step playbook for scaffolding a new op from a manifest entry, plus short concepts and links to [`ops-design-reference.md`](ops-design-reference.md) for the authoritative per-slot rules.
+What an Op's interface rests on, then the step-by-step playbook for scaffolding one from a manifest entry, then the contract an op takes on when it declares itself compilable. Per-slot rules are authoritative in [`ops-design-reference.md`](ops-design-reference.md); this file states the decisions those rules follow from.
 
 ## Concepts
 
@@ -20,18 +20,24 @@ Op                          ← L1: thin base, shared by all ops
 
 ### Execution timing
 
-**Do it at the first moment all required information is known, do it once, cache the result.**
+**Do it at the first moment all required information is known, do it once, cache the result.** What an op knows at construction is what the manifest declares there:
 
-| Op category    | When all info is known                                      | Behaviour                                 |
-| -------------- | ----------------------------------------------------------- | ----------------------------------------- |
-| Fixed-rank     | `__init__` (all dims provided)                              | `_infer_output_shapes` runs once at init. |
-| Arbitrary-rank | `__init__` for `static_dims`; `forward` for everything else | `_infer_output_shapes` runs per shape.    |
+| Op category    | `__init__` takes       | The call carries    |
+| -------------- | ---------------------- | ------------------- |
+| Fixed-rank     | the dims `shape` names | nothing about shape |
+| Arbitrary-rank | the `static_dims` keys | every other dim     |
+
+`_infer_output_shapes` runs per call either way, over the shapes it is handed.
+
+**Shape is not a constructor parameter when the tensors carry it.** Only what the manifest declares belongs in `__init__` — `shape` dim names, `static_dims` keys, `params` keys — plus the arguments every op takes (`target`, `kernel_map`, `tune`). A dimension declared nowhere is not construction information: it arrives with the call, and taking it twice lets an instance disagree with the tensors it is handed. What the kernel is compiled for goes in the memory key instead, so a second shape builds a second kernel.
 
 **Dtype is not a constructor parameter when the inputs determine it.** An op reads it from the input tensors in `forward()`: a caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
 
 An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
 
 The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
+
+`_validate_dtypes` is the only dtype gate, and it runs on every `forward()` call: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. `self.dtype` exists for `eval_roofline` / `total_memory` only: it records an earlier call, and the next dtype invalidates it, so no execution path may read it. A family that writes it after the launch returns — the elementwise bases do — narrows that to the last call that completed. Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ### Kernel selection
 
@@ -44,10 +50,6 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 **Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
 
 The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](ops-design-reference.md#slot-s13).
-
-`self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
-
-`_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes. It is the only dtype gate; an op does not compare an incoming tensor against a dtype it was constructed with, because there is no such dtype. Roofline timing and formula semantics are defined in [roofline.md](roofline.md). See [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ### Kernel caching and enumeration
 
@@ -312,19 +314,23 @@ enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
 warm-up before `torch.compile` only hides the miss path and does not
 satisfy the cold-call contract.
 
-**Mechanism** (`src/tileops/ops/compile_boundary.py`; reference adopters:
-`pool.py`, `norm/batch_norm.py`):
+**Mechanism** (`src/tileops/ops/compile_boundary.py`; one op one operator:
+`norm/rms_norm.py`, `ops/elementwise/_base.py`):
 
 1. `Op.dispatch_kernel` registers every op in a weak instance registry at
    `__init__` time and stores `self._instance_key`.
-1. The family defines one `torch.library.custom_op` per output arity. Its
-   eager body resolves the instance from the registry and calls
+1. One `torch.library.custom_op` per op — that is what makes the node in the
+   graph this op's, and keeps it the same node when another target serves it.
+   Its eager body resolves the instance from the registry and calls
    `self._eager_forward` — cache lookup, Kernel construction, and launch
    all run untraced. Its fake derives output shapes from
    `_infer_output_shapes` and dtypes from the manifest contract.
 1. `forward` becomes a single dispatch call:
    `return _family_fwd(input, self._instance_key)`; the previous body is
    renamed `_eager_forward` unchanged.
+1. The op publishes what it registered through `compile_op_names` — a tuple,
+   since a conditional in-place write registers two — so a test can assert the
+   traced graph holds nothing else.
 
 **Constraints.**
 
@@ -341,6 +347,13 @@ satisfy the cold-call contract.
 - An op that builds no kernel in `forward` — every kernel already in its
   cache — does not need the boundary; the invariant still applies to its
   `forward`.
+- Validation and normalization belong in `_eager_forward`, not in `forward`:
+  they run for every target either way, and keeping them untraced leaves `forward`
+  a single call.
+- `_infer_output_shapes` reads only its shape arguments. A shape recorded by an
+  earlier call is a state write the fake reads before the write happens.
+- An op with no tensor input has no device to detect and no node to own, so it
+  registers no boundary.
 
 ## Family-Base Refactoring
 

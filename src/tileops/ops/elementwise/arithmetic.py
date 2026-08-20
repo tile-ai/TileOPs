@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.elementwise import (
     AddFwdKernel,
     DivFwdKernel,
@@ -21,12 +22,15 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from ._base import (
     BinaryOp,
-    KernelEntry,
     _AlphaScaledBinaryOp,
     _PerDtypeKernels,
+    _require_one_device,
+    _require_shape_inference,
+    broadcast_or_raise,
     resolve_output_dtype,
 )
 
@@ -75,10 +79,8 @@ class DivFwdOp(BinaryOp):
     Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
     (truncation toward zero), or ``"floor"`` (floor division); each
-    value selects a dedicated kernel specialization. The leading ``*``
-    makes ``rounding_mode`` and the existing ``kernel_map`` / ``tune``
-    parameters keyword-only; only the positional pair
-    ``(a_shape, b_shape)`` is shared with ``BinaryOp``.
+    value selects a dedicated kernel specialization. It is fixed for the
+    instance, which is why it is not part of the memory key.
     """
 
     _op_name = "div"
@@ -86,10 +88,9 @@ class DivFwdOp(BinaryOp):
 
     def __init__(
         self,
-        a_shape: tuple,
-        b_shape: tuple,
         *,
         rounding_mode: Optional[str] = None,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -104,12 +105,7 @@ class DivFwdOp(BinaryOp):
         # SUPPORTED_DTYPES check in ``BinaryOp.__init__``) pick the variant
         # matching ``rounding_mode``.
         self.kernel_cls = _DIV_KERNEL_BY_ROUNDING_MODE[rounding_mode]
-        super().__init__(
-            a_shape,
-            b_shape,
-            kernel_map=kernel_map,
-            tune=tune,
-        )
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
 
 class RemainderFwdOp(BinaryOp):
@@ -131,6 +127,12 @@ class PowFwdOp(BinaryOp):
     kernel_cls = PowFwdKernel
     _other_name = "exponent"
 
+    def _infer_output_shapes(self, input_shape: tuple, exponent_shape: tuple) -> Dict[str, tuple]:
+        """Manifest ``shape_rules``: ``output.shape == broadcast_shapes(...)``."""
+        return {
+            "output": broadcast_or_raise("PowFwdOp", input=input_shape, exponent=exponent_shape)
+        }
+
 
 class FloorDivideFwdOp(BinaryOp):
     """Element-wise floor division with broadcast: y = floor(a / b)."""
@@ -148,9 +150,9 @@ class LerpFwdOp(BinaryOp):
     needed for each distinct weight value.
 
     Args:
-        a_shape: Shape of input a.
-        b_shape: Shape of input b.
-        weight: Scalar interpolation weight, fixed at construction (default 0.5).
+        weight: Scalar interpolation weight, fixed at construction (manifest
+            ``params.weight``, default 0.5).
+        target: Which set of kernels serves this op.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -159,19 +161,23 @@ class LerpFwdOp(BinaryOp):
     kernel_cls = LerpFwdKernel
     _other_name = "end"
 
+    def _infer_output_shapes(self, input_shape: tuple, end_shape: tuple) -> Dict[str, tuple]:
+        """Manifest ``shape_rules``: ``output.shape == broadcast_shapes(...)``."""
+        return {"output": broadcast_or_raise("LerpFwdOp", input=input_shape, end=end_shape)}
+
     def __init__(
         self,
-        a_shape: tuple,
-        b_shape: tuple,
+        *,
         weight: float = 0.5,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self._weight = weight
-        super().__init__(a_shape, b_shape, kernel_map=kernel_map, tune=tune)
+        self.weight = weight
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    def _build_kernel_instance(self, tune, dtype, impl):
-        return impl(self.a_shape, self.b_shape, dtype, tune=tune, weight=self._weight)
+    def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
+        return impl(a_shape, b_shape, dtype, tune=tune, weight=self.weight)
 
 
 class MaximumFwdOp(BinaryOp):
@@ -192,17 +198,14 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
     """Tensor-weight lerp: out = input + weight * (end - input).
 
     Conforms to the Tensor-weight overload of ``torch.lerp`` —
-    ``torch.lerp(input, end, weight: Tensor)`` where ``weight`` is a
-    Tensor that broadcasts together with ``input`` and ``end`` to the
-    output shape. The Op layer expands the three inputs to the broadcast
-    shape and dispatches the flat ``LerpTensorFwdKernel`` on
-    ``N_total = product(broadcast_shape)`` elements. The scalar-weight
+    ``torch.lerp(input, end, weight: Tensor)`` where ``weight`` is a Tensor that
+    broadcasts together with ``input`` and ``end`` to the output shape. The scalar-weight
     overload is handled separately by ``LerpFwdOp``.
 
     Args:
-        input: Shape of the start tensor.
-        end: Shape of the end tensor.
-        weight: Shape of the per-element weight tensor.
+        target: Which set of kernels serves this op.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
     """
 
     _op_name = "lerp_tensor"
@@ -216,51 +219,59 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
     def __init__(
         self,
         *,
-        input: tuple,
-        end: tuple,
-        weight: tuple,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.input_shape = tuple(input)
-        self.end_shape = tuple(end)
-        self.weight_shape = tuple(weight)
-        self.out_shape = tuple(
-            torch.broadcast_shapes(
-                self.input_shape,
-                self.end_shape,
-                self.weight_shape,
-            )
-        )
-        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.target = target
         self.tune = tune
+        self.input_shape: Optional[tuple] = None
+        self.end_shape: Optional[tuple] = None
+        self.weight_shape: Optional[tuple] = None
         self.dispatch_kernel(kernel_map)
 
-    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple,
+        end_shape: tuple,
+        weight_shape: tuple,
+    ) -> Dict[str, tuple]:
+        """Manifest ``shape_rules``: ``output.shape == broadcast_shapes(...)``."""
+        return {
+            "output": broadcast_or_raise(
+                "LerpTensorFwdOp", input=input_shape, end=end_shape, weight=weight_shape
+            )
+        }
+
+    def _build(self, dtype: torch.dtype, n_total: int):
         if dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
             raise ValueError(
                 f"LerpTensorFwdOp does not support dtype {dtype}. Supported: [{names}]"
             )
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        kernel = impl(self.N_total, ctor_dtype, tune=self.tune)
-
-        return KernelEntry(
-            kernel=kernel,
-            compute_dtype=ctor_dtype,
-            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
-        )
+        return impl(n_total, ctor_dtype, tune=self.tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"lerp_tensor": LerpTensorFwdKernel}
 
-    @staticmethod
-    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
-        """Expand ``t`` to ``target_shape`` and return a contiguous flat view."""
-        if tuple(t.shape) != tuple(target_shape):
-            t = t.expand(target_shape)
-        return t.contiguous().view(-1)
+    @property
+    def out_shape(self) -> tuple:
+        """Broadcast output shape of the most recent forward."""
+        if self.input_shape is None:
+            raise RuntimeError(
+                "LerpTensorFwdOp needs a prior forward() call: the operand shapes "
+                "arrive with the tensors"
+            )
+        return self._infer_output_shapes(self.input_shape, self.end_shape, self.weight_shape)[
+            "output"
+        ]
+
+    @property
+    def N_total(self) -> int:
+        """Output element count of the most recent forward."""
+        return prod(self.out_shape)
 
     def _eager_forward(
         self,
@@ -268,12 +279,23 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        out_shape = self.out_shape if self.out_shape else (1,)
-        a_flat = self._expand_flat(input, out_shape)
-        b_flat = self._expand_flat(end, out_shape)
-        w_flat = self._expand_flat(weight, out_shape)
-        result = self._entry(a_flat.dtype).kernel(a_flat, b_flat, w_flat)
-        return result.view(self.out_shape if self.out_shape else ())
+        _require_one_device("LerpTensorFwdOp", input=input, end=end, weight=weight)
+        for name, t in (("end", end), ("weight", weight)):
+            if t.dtype != input.dtype:
+                raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
+        self._validate_dtypes(input, end, weight)
+        shapes = dict(
+            input_shape=tuple(input.shape),
+            end_shape=tuple(end.shape),
+            weight_shape=tuple(weight.shape),
+        )
+        n_total = prod(self._infer_output_shapes(*shapes.values())["output"])
+        input = input.contiguous()
+        end = end.contiguous()
+        weight = weight.contiguous()
+        result = self._kernel((input, end, weight), input.dtype, n_total)(input, end, weight)
+        self._note_call(input.dtype, **shapes)
+        return result
 
     def forward(
         self,
@@ -281,18 +303,40 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        if not (input.is_cuda and end.is_cuda and weight.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
-        for name, t, expected in [
-            ("input", input, self.input_shape),
-            ("end", end, self.end_shape),
-            ("weight", weight, self.weight_shape),
-        ]:
-            if t.dtype != input.dtype:
-                raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
-            if tuple(t.shape) != expected:
-                raise ValueError(f"Expected {name}.shape {expected}, got {tuple(t.shape)}")
-        wrapped = type(self)._wrapped
-        if wrapped is not None:
-            return wrapped(input, end, weight, self._instance_key)
-        return self._eager_forward(input, end, weight)
+        return type(self)._wrapped(input, end, weight, self._instance_key)
+
+
+# The compile boundary: one operator for this op, registered at import time. The op's
+# key crosses it, and the body trades the key back for the instance — see
+# src/tileops/ops/compile_boundary.py.
+
+# Its own name, not the scalar ``LerpFwdOp``'s: the weight is a third tensor here.
+_require_shape_inference(LerpTensorFwdOp)
+
+
+@torch.library.custom_op("top::elementwise_lerp_tensor", mutates_args=())
+def _lerp_tensor_fwd(
+    input: torch.Tensor,
+    end: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input, end, weight)
+
+
+@_lerp_tensor_fwd.register_fake
+def _lerp_tensor_fwd_fake(
+    input: torch.Tensor,
+    end: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(input.shape), tuple(end.shape), tuple(weight.shape))
+    return input.new_empty(
+        shapes["output"], dtype=resolve_output_dtype("LerpTensorFwdOp", input.dtype)
+    )
+
+
+LerpTensorFwdOp._wrapped = _lerp_tensor_fwd
+LerpTensorFwdOp.compile_op_names = ("top::elementwise_lerp_tensor",)

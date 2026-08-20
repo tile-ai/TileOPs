@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.elementwise import SinusoidalFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
@@ -26,6 +27,10 @@ class SinusoidalFwdOp(Op):
         seq_len: Sequence length.
         d_model: Model dimension.
         dtype: Torch dtype.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+            the in-tree kernels, or ``None``. Nothing is probed: with no tensor input
+            there is no device to detect, so the in-tree kernels serve unless a target
+            is named.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
@@ -34,18 +39,18 @@ class SinusoidalFwdOp(Op):
 
     def __init__(
         self,
+        *,
         seq_len: int,
         d_model: int,
         dtype: torch.dtype,
-        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
+        self.target = target
         self.dispatch_kernel(kernel_map)
-        impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
-        self.kernel = impl(seq_len, d_model, ctor_dtype)
 
     @property
     def default_kernel_map(self):
@@ -65,8 +70,18 @@ class SinusoidalFwdOp(Op):
         n_elem = self.seq_len * self.d_model
         return 6 * n_elem, self.total_memory
 
+    def _build(self, dtype: torch.dtype):
+        impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
+        return impl(self.seq_len, self.d_model, ctor_dtype)
+
     def forward(self) -> torch.Tensor:
         # The op promised ``self.dtype``; whichever storage the backend chose to
         # compute in is its own business and does not reach the caller.
-        out = self.kernel().reshape(self.seq_len, self.d_model)
+        kernel = self.get_or_build_kernel(
+            self._op_name,
+            (),  # no tensor input, so no device to detect: in-tree only
+            key=self.dtype,
+            build=lambda: self._build(self.dtype),
+        )
+        out = kernel().reshape(self.seq_len, self.d_model)
         return out if out.dtype == self.dtype else out.to(self.dtype)

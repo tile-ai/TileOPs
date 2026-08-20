@@ -19,7 +19,7 @@ ReluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -58,7 +58,7 @@ GeluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      approximate: {type: str, default: "none"}
+      approximate: {type: str, default: "none", kw_only: true}
     shape_rules:
       - "approximate in ('none', 'tanh')"
       - "output.shape == input.shape"
@@ -96,7 +96,7 @@ SiluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -133,7 +133,7 @@ HardswishFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -170,7 +170,7 @@ HardsigmoidFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -207,7 +207,7 @@ MishFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -244,7 +244,7 @@ SeluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -274,14 +274,15 @@ LeakyReluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      negative_slope: {type: float, default: 0.01}
-      inplace: {type: bool, default: false}
+      negative_slope: {type: float, default: 0.01, kw_only: true}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -311,14 +312,15 @@ EluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      alpha: {type: float, default: 1.0}
-      inplace: {type: bool, default: false}
+      alpha: {type: float, default: 1.0, kw_only: true}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -348,15 +350,16 @@ HardtanhFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      min_val: {type: float, default: -1.0}
-      max_val: {type: float, default: 1.0}
-      inplace: {type: bool, default: false}
+      min_val: {type: float, default: -1.0, kw_only: true}
+      max_val: {type: float, default: 1.0, kw_only: true}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "min_val <= max_val"
       - "output.shape == input.shape"
@@ -388,14 +391,15 @@ SoftplusFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      beta: {type: float, default: 1.0}
-      threshold: {type: float, default: 20.0}
+      beta: {type: float, default: 1.0, kw_only: true}
+      threshold: {type: float, default: 20.0, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -483,8 +487,8 @@ ClampScalarFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      min: {type: "Number | None", default: null}
-      max: {type: "Number | None", default: null}
+      min: {type: "Number | None", default: null, kw_only: true}
+      max: {type: "Number | None", default: null, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -515,15 +519,16 @@ NanToNumFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      nan: {type: float, default: 0.0}
-      posinf: {type: "float | None", default: null}
-      neginf: {type: "float | None", default: null}
+      nan: {type: float, default: 0.0, kw_only: true}
+      posinf: {type: "float | None", default: null, kw_only: true}
+      neginf: {type: "float | None", default: null, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 

@@ -24,7 +24,7 @@ from tileops.kernels.attention import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ..rope import _base_freqs
+from ..rope import base_freqs
 from .selection import (
     DECODE_KEYS,
     DENSE_PREFILL_KEYS,
@@ -1047,7 +1047,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             raise ValueError("max_position is required when fuse_rope=True")
         cached = self._rope_cos_cache.get((device, dtype))
         if cached is None:
-            cached = _base_freqs(
+            cached = base_freqs(
                 self.rotary_dim,
                 self.max_position,
                 base=self.rope_base,

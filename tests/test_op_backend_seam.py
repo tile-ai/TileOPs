@@ -340,3 +340,112 @@ def test_a_settled_instance_is_bound_to_that_target_s_devices():
 
     with pytest.raises(ValueError, match="is a CUDA kernel"):
         op(*_inputs())  # same signature, CPU tensors
+
+
+# --------------------------------------------------------------------------------------
+# Two optional inputs at the seam: ClampFwdOp's min and max
+# --------------------------------------------------------------------------------------
+
+
+class _ClampRecorder:
+    """A target for ClampFwdOp; its kernel takes whatever the op hands over."""
+
+    def __init__(self):
+        self.calls = []
+        self.kernel_calls = 0
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(input, min=None, max=None):
+            assert input.is_contiguous()
+            self.kernel_calls += 1
+            return torch.full_like(input, 7)
+
+        return kernel
+
+
+def _clamp_inputs(rows=4, cols=8, dtype=DTYPE, device="cpu"):
+    make = lambda: torch.randn(rows, cols, dtype=dtype, device=device)  # noqa: E731
+    return make(), make(), make()
+
+
+def test_an_absent_optional_input_keeps_its_slot():
+    """The slot says which input is missing; how many slots there are cannot."""
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops.ops.elementwise import ClampFwdOp
+
+    input, lower, _ = _clamp_inputs()
+    ClampFwdOp()(input, lower, None)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(input), TensorSpec.of(lower), None)
+    assert params == {}, "ClampFwdOp declares no manifest params"
+
+
+def test_the_two_one_sided_clamps_are_two_kernels():
+    """Both hand over two tensors of one shape; only the slot tells them apart."""
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops.ops.elementwise import ClampFwdOp
+
+    op = ClampFwdOp()
+    input, lower, upper = _clamp_inputs()
+
+    op(input, lower, None)
+    op(input, None, upper)
+    op(input, lower, None)
+
+    assert len(recorder.calls) == 2, "a lower bound and an upper bound are not one kernel"
+    assert recorder.calls[0][0][1] is not None and recorder.calls[0][0][2] is None
+    assert recorder.calls[1][0][1] is None and recorder.calls[1][0][2] is not None
+
+
+def test_a_clamp_with_neither_bound_never_reaches_the_backend():
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops.ops.elementwise import ClampFwdOp
+
+    input, _, _ = _clamp_inputs()
+    with pytest.raises(ValueError, match="at least one of"):
+        ClampFwdOp()(input)
+    assert recorder.calls == [], "the op layer's checks run for every target"
+
+
+# --------------------------------------------------------------------------------------
+# An elementwise op whose shape is learned from the call
+# --------------------------------------------------------------------------------------
+
+
+class _ReluRecorder:
+    def __init__(self):
+        self.calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+        return lambda x: torch.full_like(x, 7)
+
+
+def test_an_elementwise_op_hands_over_the_manifest_shape():
+    """Not the flat view the in-tree kernel wants: that is the kernel's own business."""
+    recorder = _ReluRecorder()
+    _register(recorder, op="ReluFwdOp")
+    from tileops.ops.elementwise import ReluFwdOp
+
+    x = torch.randn(4, 8, 16, dtype=DTYPE)
+    out = ReluFwdOp()(x)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x),), "the shape the manifest declares, not (512,)"
+    assert params == {"inplace": False}
+    assert torch.equal(out, torch.full_like(x, 7))
+
+
+def test_an_elementwise_op_without_a_builder_for_this_target_raises():
+    recorder = _ReluRecorder()
+    _register(recorder, op="ReluFwdOp")
+    from tileops.ops.elementwise import SiluFwdOp
+
+    with pytest.raises(OpNotAvailableError, match="registers no kernel builder"):
+        SiluFwdOp()(torch.randn(4, 8, dtype=DTYPE))

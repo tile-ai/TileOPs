@@ -104,9 +104,6 @@ def _resolve_gated_bthd(
     return batch, heads, seq_len, dim_k, dim_v, dtype
 
 
-_LAYOUTS = ("bhtd", "bthd")
-
-
 @functools.lru_cache(maxsize=8)
 def _device_capability(device_index: "int | None") -> tuple[int, int]:
     """Compute capability of *device_index*. A device property, so read it once."""
@@ -141,14 +138,6 @@ def _bthd_production_gaps(
             f"got {major}.{minor}"
         )
     return gaps
-
-
-def _normalize_layout(layout: str) -> str:
-    """Lower-case *layout* and reject anything outside the two this file serves."""
-    normalized = layout.lower()
-    if normalized not in _LAYOUTS:
-        raise ValueError(f"layout must be one of {_LAYOUTS}, got {layout!r}")
-    return normalized
 
 
 class GatedDeltaNetBHTDFwdOp(Op):

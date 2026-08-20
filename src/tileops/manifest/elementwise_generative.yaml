@@ -12,9 +12,9 @@ AlibiFwdOp:
     outputs:
       output: {dtype: "float16 | bfloat16 | float32", shape: "[num_heads, seq_len, seq_len]"}
     params:
-      seq_len: {type: int}
-      num_heads: {type: int}
-      dtype: {type: torch.dtype}
+      seq_len: {type: int, kw_only: true}
+      num_heads: {type: int, kw_only: true}
+      dtype: {type: torch.dtype, kw_only: true}
     shape_rules:
       - "seq_len > 0"
       - "num_heads > 0"
@@ -61,9 +61,9 @@ SinusoidalFwdOp:
     outputs:
       output: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, d_model]"}
     params:
-      seq_len: {type: int}
-      d_model: {type: int}
-      dtype: {type: torch.dtype}
+      seq_len: {type: int, kw_only: true}
+      d_model: {type: int, kw_only: true}
+      dtype: {type: torch.dtype, kw_only: true}
     shape_rules:
       - "seq_len > 0"
       - "d_model > 0"
