@@ -9,6 +9,7 @@ Conv1dFwdOp:
   # Equivalent to torch.nn.functional.conv1d; bias is optional.
   family: convolution
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -80,6 +81,7 @@ Conv2dFwdOp:
   # Equivalent to torch.nn.functional.conv2d; bias is optional.
   family: convolution
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -187,6 +189,7 @@ Conv3dFwdOp:
   # Equivalent to torch.nn.functional.conv3d; bias is optional.
   family: convolution
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

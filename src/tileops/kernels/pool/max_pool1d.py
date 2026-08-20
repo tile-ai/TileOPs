@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.common import pool_output_dim, require_cuda
 
 __all__ = ["MaxPool1dKernel", "MaxPool1dWithIndicesKernel"]
 
@@ -68,8 +68,7 @@ def _max_pool1d_kernel(
     return _max_pool1d_func
 
 
-@torch.library.custom_op("top::max_pool1d_wrapped_kernel", mutates_args=())
-def _max_pool1d_wrapped_kernel(
+def _launch_max_pool1d(
     n: int,
     c_in: int,
     l_in: int,
@@ -94,26 +93,6 @@ def _max_pool1d_wrapped_kernel(
         ceil_mode,
         dtype,
     )(block_m, threads)(x)
-
-
-@_max_pool1d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_w: int,
-    stride_w: int,
-    pad_w: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (dtype, block_m, threads)
-    out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    return torch.empty((n, c_in, out_l), dtype=x.dtype, device=x.device)
 
 
 class _MaxPool1dKernelBase(Kernel):
@@ -186,6 +165,7 @@ class _MaxPool1dKernelBase(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> Any:
+        require_cuda(self, x=x)
         return type(self)._dispatch(
             self.n,
             self.c_in,
@@ -206,7 +186,7 @@ class MaxPool1dKernel(_MaxPool1dKernelBase):
     """Max pooling forward kernel (return_indices=False)."""
 
     _build = staticmethod(_max_pool1d_kernel)
-    _dispatch = staticmethod(_max_pool1d_wrapped_kernel)
+    _dispatch = staticmethod(_launch_max_pool1d)
 
 
 @functools.lru_cache(maxsize=32)
@@ -288,8 +268,7 @@ def _max_pool1d_with_indices_kernel(
     return _max_pool1d_with_indices_func
 
 
-@torch.library.custom_op("top::max_pool1d_with_indices_wrapped_kernel", mutates_args=())
-def _max_pool1d_with_indices_wrapped_kernel(
+def _launch_max_pool1d_with_indices(
     n: int,
     c_in: int,
     l_in: int,
@@ -316,31 +295,8 @@ def _max_pool1d_with_indices_wrapped_kernel(
     )(block_m, threads)(x)
 
 
-@_max_pool1d_with_indices_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_w: int,
-    stride_w: int,
-    pad_w: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    _ = (dtype, block_m, threads)
-    out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    return (
-        torch.empty((n, c_in, out_l), dtype=x.dtype, device=x.device),
-        torch.empty((n, c_in, out_l), dtype=torch.int64, device=x.device),
-    )
-
-
 class MaxPool1dWithIndicesKernel(_MaxPool1dKernelBase):
     """Max pooling forward-with-indices kernel."""
 
     _build = staticmethod(_max_pool1d_with_indices_kernel)
-    _dispatch = staticmethod(_max_pool1d_with_indices_wrapped_kernel)
+    _dispatch = staticmethod(_launch_max_pool1d_with_indices)

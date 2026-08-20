@@ -6,6 +6,20 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 
 
+def require_cuda(kernel: Kernel, **tensors: torch.Tensor) -> None:
+    """Raise unless every named tensor is on a CUDA device.
+
+    The in-tree pool kernels are CUDA kernels, so the device requirement is theirs to
+    state; another target's backend serves other devices.
+    """
+    for name, tensor in tensors.items():
+        if not tensor.is_cuda:
+            raise ValueError(
+                f"{type(kernel).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
+                "Another target's backend serves other devices."
+            )
+
+
 def pool_output_dim(
     input_size: int,
     kernel_size: int,
@@ -56,10 +70,7 @@ class AdaptivePool2dKernelBase(Kernel):
     declares nothing else:
 
     - ``_build`` the cached builder that traces the prim_func.
-    - ``_dispatch`` the registered custom op the forward call goes through.
-
-    Each variant keeps its own ``torch.library`` registration; those need
-    distinct names and are what ``torch.compile`` resolves against.
+    - ``_dispatch`` the launch the forward call goes through.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
@@ -103,6 +114,7 @@ class AdaptivePool2dKernelBase(Kernel):
         ]
 
     def forward(self, x: torch.Tensor):
+        require_cuda(self, x=x)
         return type(self)._dispatch(
             self.n,
             self.c_in,
