@@ -30,7 +30,7 @@ class SinusoidalFwdOp(Op):
         target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
             the in-tree kernels, or ``None``. Nothing is probed: with no tensor input
             there is no device to detect, so the in-tree kernels serve unless a target
-            is named (RFC §3.5).
+            is named.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
@@ -79,7 +79,7 @@ class SinusoidalFwdOp(Op):
         # compute in is its own business and does not reach the caller.
         kernel = self.get_or_build_kernel(
             self._op_name,
-            (),  # no tensor input: this op is in-tree only (RFC S3.5)
+            (),  # no tensor input, so no device to detect: in-tree only
             key=self.dtype,
             build=lambda: self._build(self.dtype),
         )
