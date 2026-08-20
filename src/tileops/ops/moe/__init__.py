@@ -1,5 +1,7 @@
 """MoE operator package."""
 
+from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
+
 from .abc import (
     FusedMoEExperts,
     FusedMoEExpertsModular,
@@ -7,6 +9,33 @@ from .abc import (
     PrepareResult,
     WeightedReduce,
     WeightedReduceNoOp,
+)
+from .contracts import (
+    AlignmentPolicy,
+    ComputeFamilyKey,
+    ContiguousLayoutSpec,
+    Fp8OneDOneDComputeSpec,
+    Fp8OneDTwoDComputeSpec,
+    InversePermuteContext,
+    MaskedLayoutSpec,
+    MaskedMetadata,
+    MaterializationPolicy,
+    MaterializedExpertLayout,
+    MetadataKind,
+    NoScaleComputeSpec,
+    PaddingPolicy,
+    PerRowExpertMetadata,
+    PhysicalPsumMetadata,
+    PostPermuteOutput,
+    PrePermuteOutput,
+    ResolvedContiguousLayout,
+    ResolvedMaskedLayout,
+    RoutingEpilogueSpec,
+    ScaleLayout,
+    TailReadPolicy,
+    TileBoundaryPolicy,
+    resolve_compute_family,
+    routing_epilogue_reference,
 )
 from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
@@ -20,8 +49,19 @@ from .routed_expert import (
     MoeUnpermuteFwdOp,
 )
 from .shared_fused_moe import SharedFusedMoE
+from .staged import (
+    MoeExpertMLPFwdOp,
+    MoeGroupedGemmFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+)
 
 __all__ = [
+    "AlignmentPolicy",
+    "ComputeFamilyKey",
+    "ContiguousLayoutSpec",
+    "Fp8OneDOneDComputeSpec",
+    "Fp8OneDTwoDComputeSpec",
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
@@ -29,14 +69,41 @@ __all__ = [
     "FusedMoe",
     "FusedMoeFwdOp",
     "FusedTopKOp",
+    "InversePermuteContext",
+    "MGroupedGemmCall",
+    "MaskedLayoutSpec",
+    "MaskedMetadata",
+    "MaterializationPolicy",
+    "MaterializedExpertLayout",
+    "MetadataKind",
     "MoEPrepareAndFinalizeNoDPEP",
+    "MoeExpertMLPFwdOp",
     "MoeGateUpFwdOp",
+    "MoeGroupedGemmFwdOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
     "MoePermuteNopadFwdOp",
+    "MoePostPermuteFwdOp",
+    "MoePrePermuteFwdOp",
     "MoeUnpermuteFwdOp",
+    "NoScaleComputeSpec",
+    "PaddingPolicy",
+    "PerRowExpertMetadata",
+    "PhysicalPsumMetadata",
+    "PostPermuteCall",
+    "PostPermuteOutput",
+    "PrePermuteCall",
+    "PrePermuteOutput",
     "PrepareResult",
+    "ResolvedContiguousLayout",
+    "ResolvedMaskedLayout",
+    "RoutingEpilogueSpec",
+    "ScaleLayout",
     "SharedFusedMoE",
+    "TailReadPolicy",
+    "TileBoundaryPolicy",
     "WeightedReduce",
     "WeightedReduceNoOp",
+    "resolve_compute_family",
+    "routing_epilogue_reference",
 ]

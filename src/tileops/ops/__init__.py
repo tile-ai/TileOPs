@@ -47,7 +47,13 @@ from .gla import GLABwdOp, GLAFwdOp
 from .grouped_gemm import GroupedGemmFwdOp
 from .mamba2_fwd import Mamba2FwdOp
 from .mhc import MHCPostFwdOp, MHCPreFwdOp
-from .moe import MoePermuteAlignFwdOp
+from .moe import (
+    MoeExpertMLPFwdOp,
+    MoeGroupedGemmFwdOp,
+    MoePermuteAlignFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+)
 from .norm import (
     AdaLayerNormFwdOp,
     AdaLayerNormZeroFwdOp,
@@ -193,6 +199,10 @@ __all__ = [
     "NSATopkVarlenOp",
     "Op",
     "MoePermuteAlignFwdOp",
+    "MoeExpertMLPFwdOp",
+    "MoeGroupedGemmFwdOp",
+    "MoePostPermuteFwdOp",
+    "MoePrePermuteFwdOp",
     "RMSNormFwdOp",
     "Mamba2FwdOp",
     "SSDChunkScanFwdOp",
