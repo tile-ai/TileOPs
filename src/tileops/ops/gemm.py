@@ -1,4 +1,4 @@
-from typing import Dict, Hashable, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -7,15 +7,18 @@ from tileops.kernels.gemm import (
     GemmFp8EpilogueKernel,
     GemmKernel,
     GemvKernel,
+    SmallBatchGemmKernel,
 )
 from tileops.kernels.gemm_call import GemmCall
 from tileops.kernels.gemm_w4a16 import GROUP_SIZE, GemmW4A16Kernel
-from tileops.kernels.gemm_w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+__all__ = ["GEMM_KEYS", "GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+
+#: Implementations of the dense-GEMM slot.
+GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
 
 
 class GemmFwdOp(Op):
@@ -68,12 +71,37 @@ class GemmFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gemm_kernel": GemmKernel, "gemv_kernel": GemvKernel}
+        return {
+            "gemm_kernel": GemmKernel,
+            "gemv_kernel": GemvKernel,
+            "small_batch_kernel": SmallBatchGemmKernel,
+        }
+
+    def _infer_output_shapes(
+        self,
+        a_shape: Tuple[int, ...],
+        b_shape: Tuple[int, ...],
+    ) -> dict[str, Tuple[int, int]]:
+        """Logical ``[M, N]``: each operand's non-K axis, per the trans flags."""
+        m = a_shape[1] if self.trans_a else a_shape[0]
+        n = b_shape[0] if self.trans_b else b_shape[1]
+        return {"d": (m, n)}
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
-        """Derive logical ``(m, n, k)`` from input shapes per the trans flags."""
-        k_a, m = (a.shape[0], a.shape[1]) if self.trans_a else (a.shape[1], a.shape[0])
-        n, k_b = (b.shape[0], b.shape[1]) if self.trans_b else (b.shape[1], b.shape[0])
+        """Derive logical ``(m, n, k)`` from input shapes per the trans flags.
+
+        Rank is checked first: an extra axis is otherwise dropped silently, and
+        the dims read out of the remaining axes reach the kernel builder, which
+        compiles for a shape the call does not have before TileLang rejects the
+        arguments.
+        """
+        if a.ndim != 2 or b.ndim != 2:
+            raise ValueError(
+                f"GemmFwdOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
+            )
+        m, n = self._infer_output_shapes(a.shape, b.shape)["d"]
+        k_a = a.shape[0] if self.trans_a else a.shape[1]
+        k_b = b.shape[1] if self.trans_b else b.shape[0]
         if k_a != k_b:
             raise ValueError(
                 f"GEMM contraction dim mismatch: a contributes K={k_a}, b contributes K={k_b} "
@@ -82,26 +110,23 @@ class GemmFwdOp(Op):
             )
         return m, n, k_a
 
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
-        """Project onto the dims the kernel actually specializes on."""
-        return (
-            self.m,
-            self.n,
-            self.k,
-            self.trans_a,
-            self.trans_b,
-            None if self.dtype is None else str(self.dtype),
-        )
-
     def _get_kernel(self, m: int, n: int, k: int, dtype: torch.dtype) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
 
-        ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path, else
-        ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
-        covering all four ``(trans_a, trans_b)`` layouts.
+        ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path (the two
+        differ in which operand is the vector, so ``forward`` reshapes
+        accordingly), ``"small_batch"`` for the low-``m`` NT bandwidth kernel,
+        else ``"gemm"`` — ``GemmKernel`` (SM90), covering all four
+        ``(trans_a, trans_b)`` layouts.
+
+        Which one serves the call is stated by the candidates themselves
+        (``gemm_call.gemv_region`` / ``small_batch_region``, read through
+        ``Kernel.applies``); this method owns only mechanism: mapping the
+        selected key to a kernel instance and caching it.
         """
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
-        if self.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == "gemv_kernel":
+        key = self.select_kernel_key(GEMM_KEYS, call)
+        if key == "gemv_kernel":
             # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
             mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
             gemv_cls = self.kernel_map["gemv_kernel"]
@@ -111,6 +136,15 @@ class GemmFwdOp(Op):
                 build=lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
             )
             return mode, kernel
+
+        if key == "small_batch_kernel":
+            sb_cls = self.kernel_map["small_batch_kernel"]
+            kernel = self.get_or_build_kernel(
+                "small_batch_kernel",
+                key=(m, n, k, dtype),
+                build=lambda: sb_cls(m, n, k, dtype, tune=self.tune),
+            )
+            return "small_batch", kernel
 
         kernel = self.get_or_build_kernel(
             "gemm_kernel",
@@ -126,7 +160,9 @@ class GemmFwdOp(Op):
         # built/JIT'd kernel directly, skipping dtype validation, shape
         # inference, and the cache lookup (this is the steady state in
         # benchmarking / serving, where per-call Python overhead matters).
-        sig = (a.shape, b.shape, a.dtype)
+        # Because it skips the gate, the signature carries every dtype that gate
+        # reads — a further input dtype has to be added here as well.
+        sig = (a.shape, b.shape, a.dtype, b.dtype)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)
             m, n, k = self._infer_mnk(a, b)
@@ -364,10 +400,7 @@ class GemmW4A16FwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gemm_w4a16_kernel": GemmW4A16Kernel,
-            "gemm_w4a16_decode_kernel": GemmW4A16DecodeKernel,
-        }
+        return {"gemm_w4a16_kernel": GemmW4A16Kernel}
 
     def _validate_dtypes(
         self,
@@ -454,12 +487,10 @@ class GemmW4A16FwdOp(Op):
         k: int,
         dtype: torch.dtype,
     ) -> Kernel:
-        call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_b=True)
-        key_name = self.select_kernel_key(("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call)
         return self.get_or_build_kernel(
-            key_name,
+            "gemm_w4a16_kernel",
             key=(m, n, k, dtype, self.group_size),
-            build=lambda: self.kernel_map[key_name](
+            build=lambda: self.kernel_map["gemm_w4a16_kernel"](
                 m, n, k, dtype, tune=self.tune, group_size=self.group_size
             ),
         )

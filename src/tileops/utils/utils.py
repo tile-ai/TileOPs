@@ -44,17 +44,19 @@ def get_sm_version(index: "int | None" = None) -> int:
     return _sm_version(torch.cuda.current_device() if index is None else index)
 
 
-def get_sm_count(index: "int | None" = None) -> int:
-    """Multiprocessors on the device; defaults to current.
+def get_sm_count(index: "int | None" = None, fallback: int = 132) -> int:
+    """Streaming-multiprocessor count of the device; defaults to current.
 
-    Persistent kernels size their grid by this, so it is read once per kernel
-    construction rather than kept as a constant per kernel.
+    Falls back to ``fallback`` (the H100/H200 SXM count) when CUDA is
+    unavailable, so shape policy stays computable off-device.
     """
+    if not torch.cuda.is_available():
+        return fallback
     return _sm_count(torch.cuda.current_device() if index is None else index)
 
 
 def forget_device_properties() -> None:
-    """Drop the cached architecture, multiprocessor count and name of every device.
+    """Drop the cached architecture and name of every device.
 
     A device's properties do not change, so the cache is normally never
     invalidated. What does change is whether the query itself can be answered —

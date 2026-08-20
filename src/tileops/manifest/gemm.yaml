@@ -44,6 +44,13 @@ GemmFwdOp:
   - {m: 32, n: 4096, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m32-attn"}
   - {m: 64, n: 7168, k: 2048, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m64-down"}
   - {m: 96, n: 2112, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m96-gate-up"}
+  # Single- and two-token decode. These are the only workloads whose m reaches
+  # the bandwidth kernel-modes — one per mode, on the same projection as the
+  # decode rows above so the three token counts are comparable. The two-token
+  # shape keeps n narrow on purpose: on a grid wide enough for the
+  # operand-swapped generic kernel that one serves m = 2 instead.
+  - {m: 1, n: 2112, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "ds-v3-decode-gate-up-b1"}
+  - {m: 2, n: 2112, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "ds-v3-decode-gate-up-b2"}
 
   roofline:
     func: "tileops.perf.formulas.gemm_fwd_roofline"
@@ -57,6 +64,7 @@ GemmFwdOp:
     kernel_map:
       gemm_kernel: GemmKernel
       gemv_kernel: GemvKernel
+      small_batch_kernel: SmallBatchGemmKernel
 
 GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"

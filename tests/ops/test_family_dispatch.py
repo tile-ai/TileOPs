@@ -15,7 +15,7 @@ from tileops.kernels.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.gemm_call import GemmCall
 from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS, DeltaNetDecodeFwdOp
 from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS, GatedDeltaNetDecodeFwdOp
-from tileops.ops.gemm import GemmFwdOp
+from tileops.ops.gemm import GEMM_KEYS, GemmFwdOp
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="selection reads the device architecture"
@@ -36,9 +36,7 @@ _SM80 = 80
         pytest.param(1, 8, False, True, "gemv_kernel", id="lhs-row"),
         pytest.param(8, 1, False, False, "gemv_kernel", id="rhs-col"),
         pytest.param(1, 8, False, False, "gemm_kernel", id="lhs-row-wrong-layout"),
-        pytest.param(1, 8, True, True, "gemm_kernel", id="lhs-row-trans-a"),
         pytest.param(8, 1, False, True, "gemm_kernel", id="rhs-col-wrong-layout"),
-        pytest.param(8, 1, True, False, "gemm_kernel", id="rhs-col-trans-a"),
         pytest.param(8, 8, False, False, "gemm_kernel", id="neither-is-a-vector"),
         pytest.param(1, 1, False, False, "gemv_kernel", id="both-are-vectors"),
     ],
@@ -49,7 +47,33 @@ def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: s
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    assert op.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == expected
+    assert op.select_kernel_key(GEMM_KEYS, call) == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("m", "n", "trans_a", "trans_b", "dim"),
+    [
+        pytest.param(1, 8, True, True, "m=1", id="lhs-row-trans-a"),
+        pytest.param(8, 1, True, False, "n=1", id="rhs-col-trans-a"),
+    ],
+)
+def test_gemm_vector_on_a_transposed_operand_is_refused(
+    m: int, n: int, trans_a: bool, trans_b: bool, dim: str
+) -> None:
+    """A ``trans_a`` layout puts the vector on an operand's TMA-loaded innermost
+    dimension, where the descriptor needs a multiple of 8 fp16 elements — and the
+    GEMV kernel has no form for these layouts. Selection refuses, naming the
+    dimension; it used to hand these to the general kernel, whose build then died
+    inside TileLang (``T.tma_copy() ... TMA is not available``).
+    """
+    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
+    call = GemmCall(
+        arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
+    )
+
+    with pytest.raises(ValueError, match=f"multiple of 8 .*and {dim}"):
+        op.select_kernel_key(GEMM_KEYS, call)
 
 
 @pytest.mark.smoke
