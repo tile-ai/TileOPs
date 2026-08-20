@@ -7,7 +7,12 @@ Workload shapes and roofline formulas are loaded from the ops manifest (src/tile
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 
@@ -44,7 +49,12 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         ).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -77,7 +87,12 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         ).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -110,7 +125,12 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
         ).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

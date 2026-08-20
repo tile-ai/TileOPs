@@ -7,7 +7,12 @@ Workload shapes and roofline formulas are loaded from the ops manifest (src/tile
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 from workloads.reduction import AllWorkload, AnyWorkload, CountNonzeroWorkload
 
@@ -39,7 +44,12 @@ def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.bool().any(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -67,7 +77,12 @@ def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.bool().all(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -94,7 +109,12 @@ def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype, op_params: dict) 
         return torch.count_nonzero(x, dim=dim).to(torch.int64)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

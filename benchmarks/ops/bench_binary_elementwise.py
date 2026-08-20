@@ -15,6 +15,7 @@ from benchmarks.benchmark_base import (
     BenchmarkBase,
     BenchmarkReport,
     ManifestBenchmark,
+    torch_inductor_baseline,
 )
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
@@ -358,7 +359,12 @@ def test_binary_arith_bench(
 
     op = op_cls()
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 # Comparison ops (6)
@@ -404,7 +410,12 @@ def test_comparison_bench(
 
     op = _CMP_OPS[op_name]()
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 # Logical ops (2)
@@ -469,8 +480,8 @@ def test_logical_bench(
 
     # Baseline uses bool tensors
     a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
-    functors["torch"] = (
-        baseline_fn,
+    functors["torch-inductor"] = (
+        torch_inductor_baseline(baseline_fn),
         (
             a_bool,
             b_bool,
@@ -534,7 +545,12 @@ def test_bitwise_bench(
 
     op = op_cls()
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 # Fused gated ops (2)
@@ -601,7 +617,7 @@ _FUSED_BASELINES = {
 def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str, params: dict) -> None:
     inputs = test.gen_inputs()
     bm.compare(
-        {"tileops": op, "torch-ref": _FUSED_BASELINES[baseline_key]},
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(_FUSED_BASELINES[baseline_key])},
         *inputs,
         record_as=op,
         params=params,
@@ -696,7 +712,7 @@ def test_fused_gated_strategy_bench(
     kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
     baseline_fn = _FUSED_BASELINES[op_name]
     bm.compare(
-        {f"tileops-{strategy}": kernel, "torch": baseline_fn},
+        {f"tileops-{strategy}": kernel, "torch-inductor": torch_inductor_baseline(baseline_fn)},
         *inputs,
         record_as=f"{op_name}_strategy",
         params=locals(),
@@ -839,7 +855,7 @@ def test_broadcast_bench(
     op = op_cls()
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
         *inputs,
         record_as=f"{op_name}_bcast",
         params=locals(),

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from benchmarks.benchmark_base import workloads_to_params
+from benchmarks.benchmark_base import torch_inductor_baseline, workloads_to_params
 from benchmarks.timing import (
     Trace,
     _attributed_samples,
@@ -229,3 +229,20 @@ def test_kernel_runtime_error_propagates():
 
     with pytest.raises(RuntimeError, match="kernel failure"):
         bench_kernel(boom)
+
+
+@pytest.mark.smoke
+def test_torch_inductor_baseline_uses_fullgraph_compile(monkeypatch):
+    calls = []
+
+    def baseline(x):
+        return x
+
+    def fake_compile(fn, **kwargs):
+        calls.append((fn, kwargs))
+        return "compiled-baseline"
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    assert torch_inductor_baseline(baseline) == "compiled-baseline"
+    assert calls == [(baseline, {"fullgraph": True})]

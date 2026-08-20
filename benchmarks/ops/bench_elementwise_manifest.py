@@ -12,7 +12,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, torch_inductor_baseline
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AddFwdOp,
@@ -234,7 +234,10 @@ def _record_unary(
     baseline_fn: Callable,
 ) -> None:
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=_manifest_params(bm)
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=_manifest_params(bm),
     )
 
 
@@ -245,7 +248,10 @@ def _record_binary(
     baseline_fn: Callable,
 ) -> None:
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=_manifest_params(bm)
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=_manifest_params(bm),
     )
 
 
@@ -417,7 +423,13 @@ def test_prelu_manifest_bench(
     x, weight = test.gen_inputs()
     op = PreluFwdOp()
     bm = ManifestBenchmark(_PRELU_OP, op, test)
-    bm.compare({"tileops": op, "torch": F.prelu}, x, weight, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(F.prelu)},
+        x,
+        weight,
+        record_as=op,
+        params=locals(),
+    )
 
 
 _MASKED_FILL_OP = "MaskedFillFwdOp"
@@ -439,7 +451,10 @@ def test_masked_fill_tensor_manifest_bench(
     op = MaskedFillFwdOp()
     bm = ManifestBenchmark(_MASKED_FILL_OP, op, test)
     bm.compare(
-        {"tileops": op, "torch": lambda a, m, v: a.masked_fill(m, v)},
+        {
+            "tileops": op,
+            "torch-inductor": torch_inductor_baseline(lambda a, m, v: a.masked_fill(m, v)),
+        },
         x,
         mask,
         value,
@@ -461,7 +476,10 @@ def test_masked_fill_scalar_manifest_bench(
     op = MaskedFillScalarFwdOp(value=-100.0)
     bm = ManifestBenchmark(_MASKED_FILL_SCALAR_OP, op, test)
     bm.compare(
-        {"tileops": op, "torch": lambda a, m: a.masked_fill(m, -100.0)},
+        {
+            "tileops": op,
+            "torch-inductor": torch_inductor_baseline(lambda a, m: a.masked_fill(m, -100.0)),
+        },
         x,
         mask,
         record_as=op,
@@ -740,7 +758,14 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
     cond, x, other = test.gen_inputs()
     op = WhereFwdOp()
     bm = ManifestBenchmark(_WHERE_OP, op, test)
-    bm.compare({"tileops": op, "torch": torch.where}, cond, x, other, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(torch.where)},
+        cond,
+        x,
+        other,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_LERP_TENSOR_OP)))
@@ -749,4 +774,11 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     x, end, weight = test.gen_inputs()
     op = LerpTensorFwdOp()
     bm = ManifestBenchmark(_LERP_TENSOR_OP, op, test)
-    bm.compare({"tileops": op, "torch": torch.lerp}, x, end, weight, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(torch.lerp)},
+        x,
+        end,
+        weight,
+        record_as=op,
+        params=locals(),
+    )

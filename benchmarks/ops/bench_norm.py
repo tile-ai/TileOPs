@@ -4,7 +4,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
@@ -16,6 +20,16 @@ from workloads.normalization import (
     LayerNormWorkload,
     RMSNormWorkload,
 )
+
+
+def _flashinfer_module():
+    """Return the ``flashinfer`` module, or None when it is not installed."""
+    try:
+        import flashinfer
+    except ImportError:
+        return None
+    return flashinfer
+
 
 _RMS_OP_NAME = "RMSNormFwdOp"
 
@@ -40,9 +54,15 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     op = RMSNormFwdOp(normalized_shape=(n,), tune=tune)
     bm = ManifestBenchmark(_RMS_OP_NAME, op, test)
 
-    bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
-    )
+    functors = {
+        "tileops": op,
+        "torch-inductor": torch_inductor_baseline(test.ref_program),
+    }
+    flashinfer = _flashinfer_module()
+    if flashinfer is not None:
+        functors["flashinfer"] = lambda x, weight: flashinfer.rmsnorm(x, weight, eps=test.eps)
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 _FUSED_RMS_OP_NAME = "FusedAddRMSNormFwdOp"
@@ -81,7 +101,20 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
         y = ((add_result.float() / rms) * weight.float()).to(x.dtype)
         return y, add_result
 
-    bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
+    functors = {
+        "tileops": op,
+        "torch-inductor": torch_inductor_baseline(baseline_fn),
+    }
+    flashinfer = _flashinfer_module()
+    if flashinfer is not None:
+
+        def flashinfer_baseline(x, residual, weight):
+            flashinfer.fused_add_rmsnorm(x, residual, weight, eps=test.eps)
+            return x, residual
+
+        functors["flashinfer"] = flashinfer_baseline
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 _LN_OP_NAME = "LayerNormFwdOp"
@@ -110,7 +143,12 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     def baseline_fn(x, weight, bias):
         return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 _FUSED_LN_OP_NAME = "FusedAddLayerNormFwdOp"
@@ -140,4 +178,9 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
         add_result = (x.float() + residual.float()).to(x.dtype)
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=test.eps), add_result
 
-    bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )

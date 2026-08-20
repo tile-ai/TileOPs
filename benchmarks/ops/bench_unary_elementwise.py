@@ -15,7 +15,12 @@ from typing import Callable
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.elementwise import (
     AbsFwdOp,
     BitwiseNotFwdOp,
@@ -85,7 +90,12 @@ def _profile_and_record(
     instead of reflecting only this helper's locals.
     """
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=params)
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=params,
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
