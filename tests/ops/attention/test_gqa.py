@@ -435,12 +435,37 @@ def test_gqa_prefill_dense_rope_tables_are_callable_owned_and_cached() -> None:
     op(q, k, v)
 
     entry = next(iter(op.built_kernels("gqa_prefill_dense").values()))
-    cos, sin = entry._rope_table_cache[(seq_len_kv, dim)]
+    tables = entry._rope_table_cache[(seq_len_kv, dim)]
+    cos, sin = tables.cos, tables.sin
     cached_cos, cached_sin = entry._rope_tables(entry._selection_facts(q, k))
 
     assert cos.shape == sin.shape == (seq_len_kv, dim // 2)
     assert cached_cos is cos
     assert cached_sin is sin
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_rope_tables_are_safe_across_streams() -> None:
+    q = torch.randn(1, 32, 8, 64, device="cuda", dtype=torch.float16)
+    k = torch.randn(1, 80, 2, 64, device="cuda", dtype=torch.float16)
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=True,
+        pos_encoding_mode="rope",
+    )
+    entry = op._get_entry((q, k, torch.randn_like(k)), q.dtype, q.device)
+    call = entry._selection_facts(q, k)
+    producer = torch.cuda.Stream()
+    consumer = torch.cuda.Stream()
+
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(20_000_000)
+        expected_cos, _ = entry._rope_tables(call)
+    with torch.cuda.stream(consumer):
+        cached_cos, _ = entry._rope_tables(call)
+        observed = cached_cos.clone()
+
+    consumer.synchronize()
+    torch.testing.assert_close(observed, expected_cos)
 
 
 @pytest.mark.smoke

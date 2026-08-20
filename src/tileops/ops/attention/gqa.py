@@ -209,6 +209,13 @@ def _build_prefill_kernel(
 
 
 @dataclass
+class _DenseRopeTables:
+    cos: torch.Tensor
+    sin: torch.Tensor
+    ready: Optional[torch.cuda.Event]
+
+
+@dataclass
 class _DensePrefillBuiltin:
     """Backend callable that dispatches each Dense shape to one native kernel."""
 
@@ -236,18 +243,16 @@ class _DensePrefillBuiltin:
     # concrete kernels owned by this callable. The OrderedDict above is the
     # lookup/index; both containers are updated together under _cache_lock.
     _retained_kernels: list[DensePrefillKernel] = field(default_factory=list, repr=False)
-    _rope_table_cache: OrderedDict[
-        tuple[int, int], tuple[torch.Tensor, torch.Tensor]
-    ] = field(
+    _rope_table_cache: OrderedDict[tuple[int, int], _DenseRopeTables] = field(
         default_factory=OrderedDict, repr=False
     )
     # CUDA Graphs capture raw device pointers, not Python Tensor ownership.
     # Keep tables used by a capture alive even after the ordinary bounded memo
     # evicts their lookup entry. Captured graph signatures are intentionally
     # pinned for this callable's lifetime.
-    _captured_rope_tables: dict[
-        tuple[int, int], tuple[torch.Tensor, torch.Tensor]
-    ] = field(default_factory=dict, repr=False)
+    _captured_rope_tables: dict[tuple[int, int], _DenseRopeTables] = field(
+        default_factory=dict, repr=False
+    )
     _cache_lock: RLock = field(default_factory=RLock, repr=False)
 
     def _selection_facts(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
@@ -292,9 +297,19 @@ class _DensePrefillBuiltin:
         is_capturing = self.device.type == "cuda" and torch.cuda.is_current_stream_capturing()
         cached = self._rope_table_cache.get(key)
         if cached is not None:
+            if self.device.type == "cuda":
+                stream = torch.cuda.current_stream(self.device)
+                if cached.ready is not None and not cached.ready.query():
+                    if is_capturing:
+                        raise RuntimeError(
+                            "Dense prefill CUDA Graph capture requires its warmup to complete"
+                        )
+                    stream.wait_event(cached.ready)
+                cached.cos.record_stream(stream)
+                cached.sin.record_stream(stream)
             if is_capturing:
                 self._captured_rope_tables.setdefault(key, cached)
-            return cached
+            return cached.cos, cached.sin
         if is_capturing:
             raise RuntimeError(
                 "Dense prefill CUDA Graph capture requires a same-signature warmup"
@@ -304,10 +319,16 @@ class _DensePrefillBuiltin:
             # miss while this one waited. Hot CUDA-graph hits never take a lock.
             cached = self._rope_table_cache.get(key)
             if cached is not None:
-                return cached
+                if self.device.type == "cuda":
+                    stream = torch.cuda.current_stream(self.device)
+                    if cached.ready is not None and not cached.ready.query():
+                        stream.wait_event(cached.ready)
+                    cached.cos.record_stream(stream)
+                    cached.sin.record_stream(stream)
+                return cached.cos, cached.sin
             if call.fuse_rope:
                 assert call.rotary_dim is not None
-                cached = _base_freqs(
+                cos, sin = _base_freqs(
                     call.rotary_dim,
                     max_position,
                     base=self.rope_base,
@@ -316,11 +337,16 @@ class _DensePrefillBuiltin:
                 )
             else:
                 dummy = torch.empty((1, 1), device=self.device, dtype=self.output_dtype)
-                cached = (dummy, dummy)
+                cos, sin = dummy, dummy
+            ready = None
+            if self.device.type == "cuda":
+                ready = torch.cuda.Event()
+                ready.record(torch.cuda.current_stream(self.device))
+            cached = _DenseRopeTables(cos=cos, sin=sin, ready=ready)
             self._rope_table_cache[key] = cached
             if len(self._rope_table_cache) > _DENSE_ROPE_CACHE_SIZE:
                 self._rope_table_cache.popitem(last=False)
-            return cached
+            return cached.cos, cached.sin
 
     def _kernel_for(self, call: AttentionCall) -> DensePrefillKernel:
         # Tuning is lifecycle state, not part of the specialization identity.

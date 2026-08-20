@@ -138,11 +138,7 @@ def dense_sliding_prefill_region(call: AttentionCall) -> bool:
 
 
 def square_ws_prefill_region(call: AttentionCall) -> bool:
-    """The H200 square causal packed-prefill region.
-
-    Owned by ``GQAFwdWsPersistentCausalKernel``; the warp-specialized causal
-    kernel behind it excludes exactly this region so the two never both apply.
-    """
+    """The H200 persistent square-causal schedule's positive region."""
     if not dense_prefill_region(call) or uses_sliding_window(call):
         return False
     if call.dtype not in ATTENTION_DTYPES:
@@ -166,20 +162,34 @@ def square_ws_prefill_region(call: AttentionCall) -> bool:
 
 
 def causal_ws_prefill_region(call: AttentionCall) -> bool:
-    """The warp-specialized causal packed-prefill region: head dim 128, 16-bit.
+    """The non-persistent causal schedule's positive profitability region.
 
-    Owned by ``GQAPrefillFwdWsPersistentCausalKernel``. Architecture is not part
-    of it: ``Kernel.refusal`` settles ``supported_archs`` before it asks
-    ``applies``, so a region never repeats what the class already declares.
+    Rectangular, tail, odd-block, and under-filled calls benefit from this
+    schedule. A large aligned square that cannot run the H200 persistent
+    specialization deliberately falls through to the general Dense kernel;
+    this implementation neither names nor negates a sibling's region.
     """
-    return (
+    if not (
         dense_prefill_region(call)
         and not uses_sliding_window(call)
         and call.is_causal
         and call.dim == 128
         and call.dtype in ATTENTION_DTYPES
         and (call.prefill_topology != "dense" or call.sm_scale > 0)
-    )
+    ):
+        return False
+    if call.max_seqlen_q != call.max_seqlen_kv:
+        return True
+    if call.max_seqlen_q % _WS_BLOCK_M != 0:
+        return True
+    m_blocks = math.ceil(call.max_seqlen_q / _WS_BLOCK_M)
+    if m_blocks % 2 != 0:
+        return True
+    if call.heads_kv <= 0 or call.heads % call.heads_kv != 0:
+        return False
+    groups = call.heads // call.heads_kv
+    work_items = call.batch * call.heads_kv * (m_blocks // 2) * groups
+    return work_items < _H200_SMS
 
 
 #: Tile heights the warp-specialized paged decode kernel can pick from. A tile
