@@ -1,6 +1,7 @@
 import dataclasses
 import warnings
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -32,6 +33,10 @@ from .compile_boundary import register_instance
 
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
+# External signatures have the much larger continuous-batching/prefill working
+# set described by the multi-backend RFC. This is deliberately not the common
+# in-tree TileLang config-cache size of 32; the empirical knob starts large.
+_EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE = 256
 
 _Entry = TypeVar("_Entry")
 
@@ -403,7 +408,7 @@ class Op(ABC):
             self._kernel_roles = roles
         entries = roles.get(name)
         if entries is None:
-            entries = {}
+            entries = OrderedDict()
             roles[name] = entries
 
         settled_here = self._builder is _UNRESOLVED
@@ -457,6 +462,10 @@ class Op(ABC):
             )
             if signature not in entries:
                 entries[signature] = self._build_external(builder, name, specs, params=params)
+                if len(entries) > _EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE:
+                    entries.popitem(last=False)
+            else:
+                entries.move_to_end(signature)
             return entries[signature]
         except Exception:
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when

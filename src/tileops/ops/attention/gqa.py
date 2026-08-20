@@ -282,10 +282,14 @@ class _DensePrefillBuiltin:
         max_position = call.max_position or 1
         rotary_dim = call.rotary_dim or 0
         key = (max_position, rotary_dim)
+        cached = self._rope_table_cache.get(key)
+        if cached is not None:
+            return cached
         with self._cache_lock:
+            # Recheck after acquiring: another host thread may have filled the
+            # miss while this one waited. Hot CUDA-graph hits never take a lock.
             cached = self._rope_table_cache.get(key)
             if cached is not None:
-                self._rope_table_cache.move_to_end(key)
                 return cached
             if call.fuse_rope:
                 assert call.rotary_dim is not None
@@ -309,10 +313,14 @@ class _DensePrefillBuiltin:
         # op.autotune() tunes retained kernels and flips tune_enabled() for
         # specializations constructed after that point.
         signature = replace(call, tune=False)
+        cached = self._kernel_cache.get(signature)
+        if cached is not None:
+            return cached
         with self._cache_lock:
+            # Miss-only serialization keeps construction unique without putting
+            # a lock on the CUDA-graph capture/replay hit path.
             cached = self._kernel_cache.get(signature)
             if cached is not None:
-                self._kernel_cache.move_to_end(signature)
                 return cached
 
             key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)

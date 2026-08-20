@@ -4,7 +4,12 @@
 import pytest
 import torch
 
-from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.compile_contract import (
+    assert_op_owns_graph_nodes,
+    operator_overload,
+    register_compile_contract,
+    traced_call_targets,
+)
 from tests.ops.attention.test_mha import MhaFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
@@ -49,7 +54,9 @@ def test_mha_cold_fullgraph_trace_matches_eager():
     output = torch.compile(op, fullgraph=True)(q, k, v)
 
     assert output.shape == q.shape
-    assert_op_owns_graph_nodes(op, q, k, v)
+    assert traced_call_targets(op, q, k, v) == {
+        operator_overload("top::gqa_prefill_dense_fwd")
+    }
     torch.testing.assert_close(output, op(q, k, v))
 
 

@@ -259,10 +259,11 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
 
 def _tileops_gqa_variant(
     op: GroupedQueryAttentionPrefillDenseFwdOp,
-    dtype: torch.dtype,
-    device: torch.device,
+    inputs: tuple[torch.Tensor, ...],
 ) -> str:
-    kernel = op._get_kernel(dtype, device=device)
+    q, k = inputs[:2]
+    entry = op._get_entry(inputs, q.dtype, q.device)
+    kernel = entry._kernel_for(entry._selection_facts(q, k))
     if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
         return "prefill_ws_causal"
     if isinstance(kernel, GQASlidingWindowFwdWgmmaPipelinedKernel):
@@ -337,7 +338,7 @@ def test_gqa_fwd_bench(
         tune=tune,
     )
     bm = ManifestBenchmark(_GQA_FWD_OP, op, test)
-    tileops_variant = _tileops_gqa_variant(op, dtype, inputs[0].device)
+    tileops_variant = _tileops_gqa_variant(op, inputs)
     functors = {f"tileops_{tileops_variant}": op}
 
     fa3_fn = _fa3_gqa_fwd(test)

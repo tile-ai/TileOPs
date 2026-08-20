@@ -9,6 +9,7 @@ happens. Uses a fake target, so no vendor hardware is involved.
 import pytest
 import torch
 
+import tileops.ops.op_base as op_base
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
@@ -236,6 +237,39 @@ def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
     assert [params["sm_scale"] for params in params_seen] == [8**-0.5, 16**-0.5]
     assert [params["rotary_dim"] for params in params_seen] == [8, 16]
     assert [params["dtype"] for params in params_seen] == [torch.float16, torch.float16]
+
+
+def test_dense_gqa_external_signature_cache_is_bounded_lru(monkeypatch):
+    monkeypatch.setattr(op_base, "_EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE", 2)
+    builds = []
+
+    def build_kernel(*specs, **params):
+        builds.append(specs)
+
+        def kernel(q, k, v):
+            return torch.empty_like(q)
+
+        return kernel
+
+    registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False, target="gqa_fake")
+
+    for dim in range(8, 11):
+        q = torch.randn(1, 2, 4, dim, dtype=torch.float16)
+        k = torch.randn(1, 2, 2, dim, dtype=torch.float16)
+        op(q, k, torch.randn_like(k))
+
+    assert len(builds) == 3
+    assert len(op.built_kernels("gqa_prefill_dense")) == 2
+
+    # The first signature was least recently used and must build again.
+    q = torch.randn(1, 2, 4, 8, dtype=torch.float16)
+    k = torch.randn(1, 2, 2, 8, dtype=torch.float16)
+    op(q, k, torch.randn_like(k))
+    assert len(builds) == 4
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
