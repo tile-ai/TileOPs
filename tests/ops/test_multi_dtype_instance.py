@@ -95,6 +95,7 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
     Causal dim-128 takes the warp-specialized dense slot.
     """
     from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillDenseFwdOp
+    from tileops.ops.attention.selection import DENSE_PREFILL_KEYS
 
     batch, heads, heads_kv, seq_len, dim = 1, 8, 2, 256, 128
     op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=True)
@@ -104,16 +105,18 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
         v = torch.randn_like(k)
         output = op(q, k, v)
         assert output.dtype == dtype
-        kernel = op._get_kernel(dtype, device=q.device)
-        assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
-        assert kernel.dtype == dtype
-    _assert_two_entries(op)
+        entry = op._get_entry((q, k, v), dtype, q.device)
+        call = entry._selection_facts(q, k)
+        key = op.select_kernel_key(DENSE_PREFILL_KEYS, call)
+        assert op.kernel_map[key].__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+    assert len(op.built_kernels("gqa_prefill_dense")) == len(_DTYPES)
 
 
 @pytest.mark.smoke
 def test_attention_mha_serves_two_dtypes_from_one_instance():
     """MHA owns no kernels; the per-dtype cache lives on the GQA delegate."""
     from tileops.ops.attention.mha import MultiHeadAttentionFwdOp
+    from tileops.ops.attention.selection import DENSE_PREFILL_KEYS
 
     batch, heads, seq_len, dim = 1, 8, 256, 64
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, is_causal=False)
@@ -123,18 +126,17 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         v = torch.randn_like(q)
         output = op(q, k, v)
         assert output.dtype == dtype
-        assert (
-            op._get_kernel(dtype, device=q.device).__class__.__name__ == "GQAPrefillDenseFwdKernel"
-        )
-    _assert_two_entries(op._gqa_op)
+        delegate = op._gqa_op
+        entry = delegate._get_entry((q, k, v), dtype, q.device)
+        call = entry._selection_facts(q, k)
+        key = delegate.select_kernel_key(DENSE_PREFILL_KEYS, call)
+        assert delegate.kernel_map[key].__name__ == "GQAPrefillDenseFwdKernel"
+    assert len(op._gqa_op.built_kernels("gqa_prefill_dense")) == len(_DTYPES)
 
-    # MHA builds no kernel of its own, so autotune has to reach the delegate's
-    # kernels, one per dtype, through ``kernel_delegates``.
-    tuned = []
-    for kernel in list(op._gqa_op.iter_kernels()):
-        kernel.autotune = lambda *_args, _k=kernel: tuned.append(id(_k))
+    # MHA builds no kernel of its own, so the lifecycle flag reaches the GQA
+    # callable and governs every concrete kernel it constructs afterwards.
     op.autotune()
-    assert len(tuned) == len(_DTYPES)
+    assert op._gqa_op.tune
 
 
 @pytest.mark.smoke

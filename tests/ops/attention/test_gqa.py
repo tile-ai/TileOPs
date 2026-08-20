@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import GQAPrefillDenseFwdKernel, GQAPrefillVarlenFwdKernel
+from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
 from tileops.kernels.attention.prefill import DensePrefillKernel, PackedPrefillKernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
@@ -418,21 +418,21 @@ def test_gqa_prefill_dense_native_fp8_fused_rope() -> None:
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_dense_rope_tables_are_constructor_owned_and_cached() -> None:
+def test_gqa_prefill_dense_rope_tables_are_callable_owned_and_cached() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 32, 80, 8, 2, 64
     op = GroupedQueryAttentionPrefillDenseFwdOp(
         is_causal=True,
         pos_encoding_mode="rope",
     )
 
-    # 需要先调用 forward 来设置 seq_len_kv
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
     op(q, k, v)
 
-    cos, sin = op._rope_tables(torch.device("cuda"), torch.float16)
-    cached_cos, cached_sin = op._rope_tables(torch.device("cuda"), torch.float16)
+    entry = next(iter(op.built_kernels("gqa_prefill_dense").values()))
+    cos, sin = entry._rope_table_cache[(seq_len_kv, dim)]
+    cached_cos, cached_sin = entry._rope_tables(entry._selection_facts(q, k))
 
     assert cos.shape == sin.shape == (seq_len_kv, dim // 2)
     assert cached_cos is cos
@@ -1413,17 +1413,15 @@ def _record_kernel_builds(op: Op) -> list:
     calls: list = []
 
     def recorder(slot: str, real: type) -> type:
-        class Recorder:
+        class Recorder(real):
             supported_archs = real.supported_archs
             general = real.general
 
-            @classmethod
-            def refusal(cls, call: object) -> "str | None":
-                return real.refusal(call)
-
-            def __new__(cls, *args: object, **kwargs: object) -> str:
+            def __init__(self, *args: object, **kwargs: object) -> None:
                 calls.append((slot, args, kwargs))
-                return f"built:{slot}"
+
+            def forward(self, q: torch.Tensor, *args: object, **kwargs: object) -> torch.Tensor:
+                return torch.empty_like(q)
 
         return Recorder
 
@@ -1466,8 +1464,8 @@ def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
     would land on the general dense implementation. Both entry points into the
     dense-prefill build must refuse it instead."""
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
-        GroupedQueryAttentionPrefillDenseFwdOp(is_causal=True)._get_kernel(
-            torch.float32, device=torch.device("cuda")
+        GroupedQueryAttentionPrefillDenseFwdOp(is_causal=True)._build_builtin(
+            torch.float32, torch.device("cuda")
         )
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
         GroupedQueryAttentionPrefillFwdOp(
@@ -1484,11 +1482,11 @@ def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
 
 
 @pytest.mark.smoke
-def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> None:
-    """The wrapper builds its kernel once and holds no op to build it for one.
+def test_gqa_fwd_bshd_wrapper_caches_one_callable_and_holds_no_child_op() -> None:
+    """The wrapper caches one backend callable rather than the first shape's kernel.
 
-    Two calls leave one entry under the key selection reached: the registry is
-    what "built once" means, so nothing has to count constructor calls.
+    Concrete kernel construction remains inside the callable and can therefore
+    reselect for every shape.
     """
     batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
     q = torch.empty(batch, seq_len, heads, dim, dtype=torch.float16)
@@ -1504,7 +1502,7 @@ def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> N
 
     entries = op.built_kernels("gqa_prefill_dense")
     assert len(entries) == 1
-    assert isinstance(next(iter(entries.values())).kernel, GQAPrefillDenseFwdKernel)
+    assert type(next(iter(entries.values()))).__name__ == "_DensePrefillBuiltin"
     assert not hasattr(op, "_cu_seqlens")
     assert _op_valued_attrs(op) == []
 
@@ -1542,17 +1540,47 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
         is_causal=True,
         kernel_map=_stand_in_dense_prefill_map(),
     )
+    calls = _record_kernel_builds(dense)
 
-    # 需要先调用 forward 来设置 shape
-    q = torch.randn(batch, max_seqlen_q, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch, max_seqlen_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    q = torch.randn(batch, max_seqlen_q, heads, dim, dtype=torch.float16)
+    k = torch.randn(batch, max_seqlen_kv, heads_kv, dim, dtype=torch.float16)
     v = torch.randn_like(k)
     dense(q, k, v)
 
-    kernel = dense._get_kernel(torch.float16, device=torch.device("cuda"))
+    _, _, kwargs = calls[-1]
 
-    assert kernel.kwargs["max_seqlen_q"] == max_seqlen_q
-    assert kernel.kwargs["max_seqlen_kv"] == max_seqlen_kv
+    assert kwargs["max_seqlen_q"] == max_seqlen_q
+    assert kwargs["max_seqlen_kv"] == max_seqlen_kv
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_callable_reselects_for_each_shape() -> None:
+    """One cached callable resolves shape-dependent defaults on every invocation."""
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=True,
+        pos_encoding_mode="rope",
+        kernel_map=_stand_in_dense_prefill_map(),
+    )
+    calls = _record_kernel_builds(op)
+
+    q1 = torch.randn(1, 32, 8, 64, dtype=torch.float16)
+    k1 = torch.randn(1, 48, 2, 64, dtype=torch.float16)
+    op(q1, k1, torch.randn_like(k1))
+
+    q2 = torch.randn(2, 64, 16, 128, dtype=torch.float16)
+    k2 = torch.randn(2, 96, 4, 128, dtype=torch.float16)
+    op(q2, k2, torch.randn_like(k2))
+
+    assert len(op.built_kernels("gqa_prefill_dense")) == 1
+    assert [kwargs["dim"] for _, _, kwargs in calls] == [64, 128]
+    assert [kwargs["max_seqlen_q"] for _, _, kwargs in calls] == [32, 64]
+    assert [kwargs["max_seqlen_kv"] for _, _, kwargs in calls] == [48, 96]
+    assert [kwargs["sm_scale"] for _, _, kwargs in calls] == pytest.approx(
+        [64**-0.5, 128**-0.5]
+    )
+    assert [kwargs["rotary_dim"] for _, _, kwargs in calls] == [64, 128]
+    assert op.sm_scale is None
+    assert op.rotary_dim is None
 
 
 if __name__ == "__main__":

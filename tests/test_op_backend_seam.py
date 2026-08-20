@@ -118,7 +118,9 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
     assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
     assert params == {
         "is_causal": True,
-        "sm_scale": 8**-0.5,
+            # The callable derives the shape-dependent default from q_spec;
+            # the Op must not freeze the first call's head dimension here.
+            "sm_scale": None,
         "softcap": 0.0,
         "window_size_left": -1,
         "window_size_right": -1,

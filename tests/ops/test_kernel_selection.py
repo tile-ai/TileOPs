@@ -99,8 +99,8 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     q = torch.randn(4, 512, 32, 128, device="cuda", dtype=torch.float16)
     k = torch.randn(4, 512, 8, 128, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
-    op(q, k, v)
-    call = op.attention_call(torch.float16)
+    entry = op._get_entry((q, k, v), q.dtype, q.device)
+    call = entry._selection_facts(q, k)
     assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
 
 
@@ -150,19 +150,23 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     ],
 )
 def test_bshd_tail_requests_respect_specialization_safety(ctor: dict, expected: str) -> None:
-    op = GroupedQueryAttentionPrefillDenseFwdOp(**ctor)
-    # 需要先调用 forward 来设置 shape
     batch = ctor.get("batch", 1)
     heads = ctor.get("heads", 8)
     heads_kv = ctor.get("heads_kv", 2)
     seq_len_q = ctor.get("seq_len", 128)
     seq_len_kv = ctor.get("seq_len_kv", seq_len_q)
     dim = ctor.get("dim", 128)
+    config = {
+        name: value
+        for name, value in ctor.items()
+        if name not in {"batch", "heads", "heads_kv", "seq_len", "seq_len_kv", "dim"}
+    }
+    op = GroupedQueryAttentionPrefillDenseFwdOp(**config)
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
-    op(q, k, v)
-    call = op.attention_call(torch.float16)
+    entry = op._get_entry((q, k, v), q.dtype, q.device)
+    call = entry._selection_facts(q, k)
     assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == expected
 
 

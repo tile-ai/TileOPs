@@ -1,10 +1,8 @@
-import dataclasses
-
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention.call_spec import square_ws_prefill_region
+from tileops.kernels.attention.call_spec import AttentionCall, square_ws_prefill_region
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from tileops.ops.attention.selection import DENSE_PREFILL_KEYS
@@ -181,9 +179,8 @@ def test_mha_fwd(
 @pytest.mark.smoke
 def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
     op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False)
-    assert op._get_kernel(torch.float16, device=torch.device("cuda")).__class__.__name__.startswith(
-        "GQA"
-    )
+    (delegate,) = op.kernel_delegates()
+    assert all(kernel.__name__.startswith("GQA") for kernel in delegate.kernel_map.values())
 
 
 @pytest.mark.smoke
@@ -205,7 +202,20 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path() -> None:
         },
     )
     (delegate,) = op.kernel_delegates()
-    stated = dataclasses.replace(delegate.attention_call(torch.float16), arch=90, h200=True)
+    stated = AttentionCall(
+        arch=90,
+        h200=True,
+        dtype=torch.float16,
+        prefill_topology="dense",
+        batch=4,
+        heads=64,
+        heads_kv=64,
+        dim=128,
+        max_seqlen_q=512,
+        max_seqlen_kv=512,
+        is_causal=True,
+        sm_scale=128**-0.5,
+    )
 
     key = delegate.select_kernel_key(DENSE_PREFILL_KEYS, stated)
 

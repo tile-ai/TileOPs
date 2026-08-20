@@ -1,6 +1,6 @@
 import math
-from dataclasses import dataclass
-from typing import ClassVar, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Callable, ClassVar, Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -204,13 +204,86 @@ def _build_prefill_kernel(
     )
 
 
-@dataclass(frozen=True)
+@dataclass
 class _DensePrefillBuiltin:
-    """Bind constructor-owned operands to one selected native Dense kernel."""
+    """Backend callable that dispatches each Dense shape to one native kernel."""
 
-    kernel: DensePrefillKernel
-    rope_cos: torch.Tensor
-    rope_sin: torch.Tensor
+    kernel_map: Dict[str, Kernel]
+    select_kernel_key: Callable[[tuple[str, ...], object], str]
+    device: torch.device
+    arch: int
+    h200: bool
+    input_dtype: torch.dtype
+    output_dtype: torch.dtype
+    is_causal: bool
+    sm_scale: Optional[float]
+    softcap: float
+    window_size_left: int
+    window_size_right: int
+    fuse_rope: bool
+    rotary_dim: Optional[int]
+    rope_layout: str
+    rope_base: float
+    tune_enabled: Callable[[], bool]
+    _rope_table_cache: Dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = field(
+        default_factory=dict, repr=False
+    )
+
+    def _selection_facts(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
+        batch, seq_len_q, heads, dim = q.shape
+        _, seq_len_kv, heads_kv, _ = k.shape
+        resolved_rotary_dim = _validate_rope_config(
+            dim,
+            "rope" if self.fuse_rope else "none",
+            self.rotary_dim,
+            self.rope_layout,
+            self.rope_base,
+        )
+        return AttentionCall(
+            arch=self.arch,
+            h200=self.h200,
+            dtype=self.output_dtype,
+            prefill_topology="dense",
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            dim=dim,
+            max_seqlen_q=seq_len_q,
+            max_seqlen_kv=seq_len_kv,
+            is_causal=self.is_causal,
+            sm_scale=_attention_scale(dim, self.sm_scale),
+            softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            is_fp8=self.input_dtype == fp8_dtype(),
+            is_uniform=True,
+            fuse_rope=self.fuse_rope,
+            max_position=seq_len_kv if self.fuse_rope else None,
+            rotary_dim=resolved_rotary_dim,
+            rope_layout=self.rope_layout,
+            tune=self.tune_enabled(),
+        )
+
+    def _rope_tables(self, call: AttentionCall) -> tuple[torch.Tensor, torch.Tensor]:
+        max_position = call.max_position or 1
+        rotary_dim = call.rotary_dim or 0
+        key = (max_position, rotary_dim)
+        cached = self._rope_table_cache.get(key)
+        if cached is None:
+            if call.fuse_rope:
+                assert call.rotary_dim is not None
+                cached = _base_freqs(
+                    call.rotary_dim,
+                    max_position,
+                    base=self.rope_base,
+                    dtype=self.output_dtype,
+                    device=self.device,
+                )
+            else:
+                dummy = torch.empty((1, 1), device=self.device, dtype=self.output_dtype)
+                cached = (dummy, dummy)
+            self._rope_table_cache[key] = cached
+        return cached
 
     def __call__(
         self,
@@ -221,18 +294,24 @@ class _DensePrefillBuiltin:
     ) -> torch.Tensor:
         if len(scales) not in (0, 3):
             raise ValueError("Dense prefill expects either zero or three scale tensors")
-        return self.kernel(
+        call = self._selection_facts(q, k)
+        key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
+        kernel = _build_prefill_kernel(self.kernel_map, key, call)
+        if not isinstance(kernel, DensePrefillKernel):
+            raise TypeError(f"Dense prefill selected a non-Dense kernel: {type(kernel).__name__}")
+        rope_cos, rope_sin = self._rope_tables(call)
+        return kernel(
             q,
             k,
             v,
             *scales,
-            rope_cos=self.rope_cos,
-            rope_sin=self.rope_sin,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
         )
 
 
 class GroupedQueryAttentionPrefillDenseFwdOp(Op):
-    """Fixed-shape BSHD GQA prefill with constructor-owned position encoding.
+    """Shape-agnostic BSHD GQA prefill with constructor-owned position encoding.
 
     ``dtype=None`` has the complete public meaning "follow ``q.dtype``" for
     float16/bfloat16 calls; it is not a deferred backend choice.  A backend
@@ -259,25 +338,20 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         rope_base: float = 10000.0,
         target: Target = None,
     ) -> None:
-        # 验证配置参数
         if pos_encoding_mode not in ("none", "rope"):
             raise ValueError(f"pos_encoding_mode must be 'none' or 'rope', got {pos_encoding_mode}")
 
-        # 验证 rotary_dim 需要 rope 模式
         if rotary_dim is not None and pos_encoding_mode != "rope":
             raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
 
-        # 验证 rope_base
         if pos_encoding_mode == "rope" and (rope_base <= 0 or not math.isfinite(rope_base)):
             raise ValueError("rope_base must be finite and positive")
 
-        # 验证 sm_scale
         if sm_scale is not None and not math.isfinite(sm_scale):
             raise ValueError(f"sm_scale must be finite, got {sm_scale}")
 
-        # 保存配置参数（不保存 shape）
         self.is_causal = is_causal
-        self.sm_scale = sm_scale  # 延迟到 forward 时根据 dim 计算
+        self.sm_scale = sm_scale
         self.softcap = _score_softcap(softcap)
 
         if window_size_left < -1:
@@ -289,7 +363,7 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
 
         self.pos_encoding_mode = pos_encoding_mode
         self.fuse_rope = pos_encoding_mode == "rope"
-        self.rotary_dim = rotary_dim  # 延迟到 forward 时验证
+        self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.rope_base = rope_base
 
@@ -297,16 +371,15 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             _validate_attention_dtype(dtype)
         self.dtype = dtype
         self.output_dtype = dtype
-        self.input_dtype: Optional[torch.dtype] = None
 
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-        # 缓存：基于实际输入的 shape 和 device
-        self._rope_table_cache: Dict[
-            tuple[int, torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]
-        ] = {}  # key: (seq_len_kv, device, dtype)
+        # Reporting state is deliberately separate from kernel dispatch. It is
+        # populated only after a successful call because eval_roofline() has no
+        # input arguments in the current Op protocol.
+        self._roofline_state: Optional[dict[str, object]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -359,91 +432,37 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             if scale is not None and scale.dtype != torch.float32:
                 raise ValueError(f"{name} must be float32")
 
-    def attention_call(
-        self,
-        dtype: torch.dtype,
-        device: Optional[torch.device] = None,
-    ) -> AttentionCall:
-        """State what one fixed-shape call is: a uniform dense packed request."""
-        is_fp8 = fp8_dtype() is not None and dtype == fp8_dtype()
-        output_dtype = self.output_dtype
-        if output_dtype is None:
-            if is_fp8:
-                raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
-            output_dtype = dtype
-        facts = dict(
-            dtype=output_dtype,
-            prefill_topology="dense",
-            batch=self.batch,
-            heads=self.heads,
-            heads_kv=self.heads_kv,
-            dim=self.dim,
-            max_seqlen_q=self.seq_len,
-            max_seqlen_kv=self.seq_len_kv,
-            is_causal=self.is_causal,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
-            window_size_left=self.window_size_left,
-            window_size_right=self.window_size_right,
-            is_fp8=is_fp8,
-            is_uniform=True,
-            fuse_rope=self.fuse_rope,
-            max_position=self.max_position,
-            rotary_dim=self.rotary_dim,
-            rope_layout=self.rope_layout,
-            tune=self.tune,
-        )
-        if device is None:
-            return AttentionCall(**facts)
-        return AttentionCall.from_device(device, **facts)
-
     def _build_builtin(
         self,
         dtype: torch.dtype,
         device: torch.device,
     ) -> _DensePrefillBuiltin:
-        """Select in-tree implementation details only on the BUILTIN branch."""
+        """Build one shape-agnostic callable for this builtin target and dtype."""
         if dtype != fp8_dtype():
             _validate_attention_dtype(dtype)
-        call = self.attention_call(dtype, device)
-        key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
-        rope_cos, rope_sin = self._rope_tables(device, self.output_dtype or dtype)
-        kernel = _build_prefill_kernel(self.kernel_map, key, call)
-        if not isinstance(kernel, DensePrefillKernel):
-            raise TypeError(f"Dense prefill selected a non-Dense kernel: {type(kernel).__name__}")
-        return _DensePrefillBuiltin(kernel, rope_cos, rope_sin)
-
-    def _rope_tables(
-        self, device: torch.device, dtype: torch.dtype
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return RoPE operands for the in-tree kernel ABI, cached by seq_len_kv."""
-        # seq_len_kv is set in _eager_forward before this is called
-        key = (self.seq_len_kv, device, dtype)
-        cached = self._rope_table_cache.get(key)
-        if cached is None:
-            if self.fuse_rope:
-                assert self.rotary_dim is not None
-                cached = _base_freqs(
-                    self.rotary_dim,
-                    self.seq_len_kv,
-                    base=self.rope_base,
-                    dtype=dtype,
-                    device=device,
-                )
-            else:
-                dummy = torch.empty((1, 1), device=device, dtype=dtype)
-                cached = (dummy, dummy)
-            self._rope_table_cache[key] = cached
-        return cached
-
-    def _get_kernel(
-        self,
-        dtype: torch.dtype,
-        *,
-        device: torch.device,
-    ) -> Kernel:
-        """Compatibility introspection with an explicit input-device fact."""
-        return self._get_entry((), dtype, device).kernel
+        output_dtype = self.output_dtype or dtype
+        if output_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
+        target_facts = AttentionCall.from_device(device)
+        return _DensePrefillBuiltin(
+            kernel_map=self.kernel_map,
+            select_kernel_key=self.select_kernel_key,
+            device=device,
+            arch=target_facts.arch,
+            h200=target_facts.h200,
+            input_dtype=dtype,
+            output_dtype=output_dtype,
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            fuse_rope=self.fuse_rope,
+            rotary_dim=self.rotary_dim,
+            rope_layout=self.rope_layout,
+            rope_base=self.rope_base,
+            tune_enabled=lambda: self.tune,
+        )
 
     def _get_entry(
         self,
@@ -499,11 +518,9 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run GQA prefill with shape inference."""
-        # 从输入推断 shape
         B, S_q, H, D = q.shape
         B_k, S_kv, H_kv, D_k = k.shape
 
-        # 验证 shape 一致性
         if k.shape != v.shape:
             raise ValueError(f"k and v must have the same shape, got k={k.shape}, v={v.shape}")
         if B_k != B or D_k != D:
@@ -511,44 +528,27 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
                 f"q and k must have matching batch and dim, got q=({B}, {S_q}, {H}, {D}), k=({B_k}, {S_kv}, {H_kv}, {D_k})"
             )
 
-        # 验证 GQA 维度约束
+        _validate_positive(batch=B, seq_len_q=S_q, seq_len_kv=S_kv)
+
         _validate_gqa_dims(H, H_kv, D)
 
-        # 验证 causal 约束
         if self.is_causal and S_q > S_kv:
             raise ValueError(
                 f"causal dense prefill requires seq_len <= seq_len_kv, got {S_q} > {S_kv}"
             )
 
-        # 验证 RoPE 约束
         if self.fuse_rope and S_q > S_kv:
             raise ValueError(
                 f"fused RoPE uses bottom-right Q positions and requires seq_len <= seq_len_kv, got {S_q} > {S_kv}"
             )
 
-        # 保存 shape 信息（用于 eval_roofline 和其他方法）
-        self.batch = B
-        self.heads = H
-        self.heads_kv = H_kv
-        self.seq_len = S_q
-        self.seq_len_kv = S_kv
-        self.dim = D
-        self.max_position = S_kv if self.fuse_rope else None
+        _attention_scale(D, self.sm_scale)
+        _validate_rope_config(
+            D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, self.rope_base
+        )
 
-        # 计算 sm_scale（如果未指定）
-        if self.sm_scale is None:
-            self.sm_scale = _attention_scale(D, None)
-
-        # 验证和初始化 RoPE（如果启用）
-        if self.fuse_rope:
-            self.rotary_dim = _validate_rope_config(
-                D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, self.rope_base
-            )
-
-        # 验证 dtype
         self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale)
 
-        # 验证 scales
         has_scales = tuple(scale is not None for scale in (q_scale, k_scale, v_scale))
         if any(has_scales) and not all(has_scales):
             raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
@@ -566,17 +566,28 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         inputs = (q, k, v, *scales)
         entry = self._get_entry(inputs, q.dtype, q.device)
         output = entry(*inputs)
-        self.input_dtype = q.dtype
+        self._roofline_state = {
+            "q_shape": tuple(q.shape),
+            "kv_shape": tuple(k.shape),
+            "input_dtype": q.dtype,
+            "output_dtype": self.output_dtype or q.dtype,
+            "is_causal": self.is_causal,
+            "window_size_left": self.window_size_left,
+            "window_size_right": self.window_size_right,
+            "fuse_rope": self.fuse_rope,
+            "rotary_dim": self.rotary_dim or D,
+            "max_position": S_kv if self.fuse_rope else None,
+        }
         return output
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self.input_dtype is None:
+        if self._roofline_state is None:
             raise RuntimeError(
                 f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
             )
         from tileops.perf.formulas import gqa_fwd_roofline
 
-        return gqa_fwd_roofline(self)
+        return gqa_fwd_roofline(**self._roofline_state)
 
 
 @torch.library.custom_op("top::gqa_prefill_dense_fwd", mutates_args=())

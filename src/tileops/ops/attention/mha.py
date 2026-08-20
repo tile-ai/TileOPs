@@ -66,9 +66,6 @@ class MultiHeadAttentionFwdOp(Op):
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
-    def _get_kernel(self, dtype: torch.dtype, *, device: torch.device) -> Kernel:
-        return self._gqa_op._get_kernel(dtype, device=device)
-
     def kernel_delegates(self) -> tuple[GroupedQueryAttentionPrefillDenseFwdOp, ...]:
         """Every kernel this op runs is built by the GQA prefill dispatcher."""
         return (self._gqa_op,)
