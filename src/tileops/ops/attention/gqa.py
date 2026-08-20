@@ -294,7 +294,10 @@ class _DensePrefillBuiltin:
         rotary_dim = call.rotary_dim or 0
         key = (max_position, rotary_dim)
         is_capturing = self.device.type == "cuda" and torch.cuda.is_current_stream_capturing()
-        cached = self._rope_table_cache.get(key)
+        # Once a graph captures a table generation, that object is canonical
+        # for this key for the callable's lifetime. Reusing it prevents a later
+        # graph from capturing an unpinned second generation after memo eviction.
+        cached = self._rope_table_cache.get(key) or self._captured_rope_tables.get(key)
         if cached is not None:
             if self.device.type == "cuda" and not is_capturing:
                 stream = torch.cuda.current_stream(self.device)
@@ -310,7 +313,7 @@ class _DensePrefillBuiltin:
         with self._cache_lock:
             # Recheck after acquiring: another host thread may have filled the
             # miss while this one waited. Hot CUDA-graph hits never take a lock.
-            cached = self._rope_table_cache.get(key)
+            cached = self._rope_table_cache.get(key) or self._captured_rope_tables.get(key)
             if cached is not None:
                 if self.device.type == "cuda":
                     stream = torch.cuda.current_stream(self.device)

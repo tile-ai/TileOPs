@@ -613,9 +613,18 @@ def test_gqa_prefill_dense_fused_rope_graph_tables_survive_cache_eviction() -> N
 
     assert (seq_len, dim) not in entry._rope_table_cache
     assert entry._captured_rope_tables[(seq_len, dim)] is captured_tables
+    reused_cos, reused_sin = entry._rope_tables(entry._selection_facts(q, k))
+    assert reused_cos is captured_tables.cos
+    assert reused_sin is captured_tables.sin
+
+    second_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(second_graph):
+        second_captured = op(q, k, v)
     graph.replay()
+    second_graph.replay()
     torch.cuda.synchronize()
     assert torch.isfinite(captured).all()
+    assert torch.isfinite(second_captured).all()
 
 
 @pytest.mark.parametrize(
