@@ -442,9 +442,10 @@ class Conv1dFwdOp(Op):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        # Only the tensors this call carries: a missing optional input is absent from the
-        # hand-over, not a placeholder.
-        inputs = (input, weight) if bias is None else (input, weight, bias)
+        # One argument per ``signature.inputs`` entry, in that order; a bias this call did
+        # not pass is ``None`` there rather than absent, so a builder and the memory key
+        # read presence off the argument rather than off how many arguments there are.
+        inputs = (input, weight, bias)
         kernel = self._get_kernel_1d(
             n,
             c_in,
@@ -838,7 +839,7 @@ class Conv2dFwdOp(Op):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        inputs = (input, weight) if bias is None else (input, weight, bias)
+        inputs = (input, weight, bias)
         kernel = self._get_kernel_2d(
             n,
             c_in,
@@ -1210,7 +1211,7 @@ class Conv3dFwdOp(Op):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        inputs = (input, weight) if bias is None else (input, weight, bias)
+        inputs = (input, weight, bias)
         kernel = self._get_kernel_3d(
             n,
             c_in,

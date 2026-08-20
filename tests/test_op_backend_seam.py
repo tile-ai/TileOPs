@@ -479,8 +479,13 @@ def _conv_inputs(bias=False):
     return x, weight, (torch.randn(4, dtype=DTYPE) if bias else None)
 
 
-def test_a_missing_optional_input_is_absent_from_the_hand_over():
-    """Presence is what the backend reads; an absent bias is not a placeholder tensor."""
+def test_a_missing_optional_input_keeps_its_place_in_the_hand_over():
+    """Presence is what the backend reads, and it reads it off the argument.
+
+    One argument per ``signature.inputs`` entry: a bias this call did not pass is ``None``
+    there. Dropping the argument would leave the count to say what is missing, which it
+    cannot do for an op with two optional inputs.
+    """
     recorder = _ConvRecorder()
     _register(recorder, op="Conv2dFwdOp")
     x, weight, _ = _conv_inputs()
@@ -488,7 +493,7 @@ def test_a_missing_optional_input_is_absent_from_the_hand_over():
     Conv2dFwdOp(padding=1)(x, weight)
 
     ((inputs, params),) = recorder.calls
-    assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
+    assert inputs == (TensorSpec.of(x), TensorSpec.of(weight), None), "signature.inputs order"
     assert params == {"stride": (1, 1), "padding": 1, "dilation": (1, 1), "groups": 1}
 
 
