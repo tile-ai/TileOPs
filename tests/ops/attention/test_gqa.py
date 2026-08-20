@@ -547,7 +547,7 @@ def test_gqa_prefill_dense_fused_rope_cuda_graph_replay() -> None:
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_dense_graph_capture_waits_for_rope_producer_stream() -> None:
+def test_gqa_prefill_dense_publishes_rope_before_cross_stream_graph_capture() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 32, 8, 2, 64
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)

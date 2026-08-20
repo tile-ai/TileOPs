@@ -212,7 +212,6 @@ def _build_prefill_kernel(
 class _DenseRopeTables:
     cos: torch.Tensor
     sin: torch.Tensor
-    ready: Optional[torch.cuda.Event]
 
 
 @dataclass
@@ -297,18 +296,10 @@ class _DensePrefillBuiltin:
         is_capturing = self.device.type == "cuda" and torch.cuda.is_current_stream_capturing()
         cached = self._rope_table_cache.get(key)
         if cached is not None:
-            if self.device.type == "cuda":
+            if self.device.type == "cuda" and not is_capturing:
                 stream = torch.cuda.current_stream(self.device)
-                if is_capturing:
-                    # cudaStreamWaitEvent is graph-capturable; unlike Event.query,
-                    # it preserves an immediate cross-stream warmup dependency.
-                    if cached.ready is not None:
-                        stream.wait_event(cached.ready)
-                else:
-                    if cached.ready is not None and not cached.ready.query():
-                        stream.wait_event(cached.ready)
-                    cached.cos.record_stream(stream)
-                    cached.sin.record_stream(stream)
+                cached.cos.record_stream(stream)
+                cached.sin.record_stream(stream)
             if is_capturing:
                 self._captured_rope_tables.setdefault(key, cached)
             return cached.cos, cached.sin
@@ -323,8 +314,6 @@ class _DensePrefillBuiltin:
             if cached is not None:
                 if self.device.type == "cuda":
                     stream = torch.cuda.current_stream(self.device)
-                    if cached.ready is not None and not cached.ready.query():
-                        stream.wait_event(cached.ready)
                     cached.cos.record_stream(stream)
                     cached.sin.record_stream(stream)
                 return cached.cos, cached.sin
@@ -340,11 +329,14 @@ class _DensePrefillBuiltin:
             else:
                 dummy = torch.empty((1, 1), device=self.device, dtype=self.output_dtype)
                 cos, sin = dummy, dummy
-            ready = None
             if self.device.type == "cuda":
+                # Publish only complete tables. CUDA Graph capture cannot query
+                # or reliably join arbitrary uncaptured Event work, so readiness
+                # is settled once on this miss instead of on every hot hit.
                 ready = torch.cuda.Event()
                 ready.record(torch.cuda.current_stream(self.device))
-            cached = _DenseRopeTables(cos=cos, sin=sin, ready=ready)
+                ready.synchronize()
+            cached = _DenseRopeTables(cos=cos, sin=sin)
             self._rope_table_cache[key] = cached
             if len(self._rope_table_cache) > _DENSE_ROPE_CACHE_SIZE:
                 self._rope_table_cache.popitem(last=False)
