@@ -181,7 +181,6 @@ def _prepare_rope_tables(
     enabled: bool,
     max_position: int,
     rotary_dim: int,
-    output_dtype: torch.dtype,
     rope_cos: Optional[torch.Tensor],
     rope_sin: Optional[torch.Tensor],
 ) -> tuple[torch.Tensor, ...]:
@@ -198,8 +197,6 @@ def _prepare_rope_tables(
     for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
         if table.device != reference.device:
             raise ValueError(f"{name} must be on {reference.device}, got {table.device}")
-        if table.dtype != output_dtype:
-            raise ValueError(f"{name} must have dtype {output_dtype}")
         if table.ndim != 2:
             raise ValueError(f"{name} must be 2-dimensional")
         if table.shape[0] < max_position or table.shape[1] != expected_columns:
@@ -353,13 +350,11 @@ class _DensePrefillBuiltin:
         kernel = self._kernel_for(call)
         if rope_tables:
             rope_cos, rope_sin = rope_tables
-        elif self.input_dtype == fp8_dtype():
-            # The native-FP8 Kernel owns its output-dtype dummy operand.
-            rope_cos = rope_sin = None
         else:
             # The Dense ABI is uniform across specializations. Non-RoPE kernels
             # compile the table reads away. A 2-D one-element view satisfies the
-            # ABI without allocating or retaining an internal RoPE tensor.
+            # ABI without allocating or retaining an internal RoPE tensor. The
+            # native-FP8 kernel declares this unused operand as FP8 in that mode.
             rope_cos = rope_sin = q.reshape(-1)[:1].reshape(1, 1)
         return kernel(
             q,
@@ -455,6 +450,8 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> None:
         """Validate the manifest dtype union before target dispatch."""
         fp8 = fp8_dtype()
@@ -487,6 +484,10 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         for name, scale in zip(("q_scale", "k_scale", "v_scale"), scales, strict=True):
             if scale is not None and scale.dtype != torch.float32:
                 raise ValueError(f"{name} must be float32")
+
+        for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if table is not None and output_dtype is not None and table.dtype != output_dtype:
+                raise ValueError(f"{name} must have dtype {output_dtype}")
 
     def _build_builtin(
         self,
@@ -627,7 +628,7 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, 10000.0
         )
 
-        self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale)
+        self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
 
         has_scales = tuple(scale is not None for scale in (q_scale, k_scale, v_scale))
         if any(has_scales) and not all(has_scales):
@@ -645,7 +646,6 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
             enabled=self.fuse_rope,
             max_position=S_kv,
             rotary_dim=resolved_rotary_dim or D,
-            output_dtype=self.output_dtype or q.dtype,
             rope_cos=rope_cos,
             rope_sin=rope_sin,
         )

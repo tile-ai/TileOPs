@@ -104,6 +104,7 @@ def _gqa_fwd_fp8_general_kernel(
         out_shape = (batch, seq_len_q, heads, dim)
         rope_cols, paired_dim, rotate = make_prefill_rope_policy(fuse_rope, rotary_dim, rope_layout)
         rope_shape = (max_position if fuse_rope else 1, rope_cols)
+        rope_dtype = out_dtype if fuse_rope else fp8
         fp8_tile_update = make_native_fp8_prefill_tile_update(
             is_causal=is_causal,
             softcap=softcap,
@@ -123,8 +124,8 @@ def _gqa_fwd_fp8_general_kernel(
             q_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
             k_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
             v_scale: T.Tensor(scale_shape, T.float32),  # type: ignore
-            cos_table: T.Tensor(rope_shape, out_dtype),  # type: ignore
-            sin_table: T.Tensor(rope_shape, out_dtype),  # type: ignore
+            cos_table: T.Tensor(rope_shape, rope_dtype),  # type: ignore
+            sin_table: T.Tensor(rope_shape, rope_dtype),  # type: ignore
             output: T.Tensor(out_shape, out_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(T.ceildiv(seq_len_q, block_m), heads, batch, threads=threads) as (
@@ -1124,7 +1125,6 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(DensePrefillKernel):
     def _build_program(self) -> None:
         # Built inside the wrapped custom op; the schedule is fixed by contract.
         self.kernel = None
-        self._rope_dummy: dict[torch.device, torch.Tensor] = {}
 
     def _uses_bn224_fast_schedule(self) -> bool:
         return (
@@ -1162,12 +1162,7 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(DensePrefillKernel):
         if rope_cos is None or rope_sin is None:
             if self.fuse_rope:
                 raise ValueError("fused RoPE requires prepared cosine and sine tables")
-            dummy = self._rope_dummy.get(q.device)
-            if dummy is None:
-                dummy = torch.empty((1, 1), device=q.device, dtype=self.dtype)
-                self._rope_dummy[q.device] = dummy
-            rope_cos = dummy
-            rope_sin = dummy
+            rope_cos = rope_sin = q.reshape(-1)[:1].reshape(1, 1)
         if self._uses_bn224_fast_schedule():
             _validate_fa3_gqa_descales(
                 q_scale,
