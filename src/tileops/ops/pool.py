@@ -1156,6 +1156,10 @@ class _AdaptivePool2dFwdOpBase(Op):
         return type(self)._wrapped(input, self._instance_key)
 
     def _eager_forward(self, input: torch.Tensor):
+        # A 3D CHW call is the torch-parity convenience; the manifest declares NCHW only. The
+        # rank is normalized here, like contiguity, so what crosses to a kernel is the shape
+        # the manifest describes, and the batch axis is dropped again on the way out. A CHW
+        # call therefore shares its kernel with the batch-1 NCHW call, which computes it.
         if input.ndim == 3:
             squeezed = True
             x = input.unsqueeze(0)

@@ -461,6 +461,9 @@ class Conv1dFwdOp(Op):
             bias is not None,
             inputs,
         )
+        out = kernel(input, weight, bias)
+        # Recorded after the launch: eval_roofline and profiling read these, and a call
+        # that raised described nothing.
         self.kernel = kernel
         self.n = n
         self.c_in = c_in
@@ -484,7 +487,7 @@ class Conv1dFwdOp(Op):
             dtype,
             bias is not None,
         )
-        return kernel(input, weight, bias)
+        return out
 
     def _infer_output_shapes(
         self,
@@ -858,6 +861,9 @@ class Conv2dFwdOp(Op):
             bias is not None,
             inputs,
         )
+        out = kernel(input, weight, bias)
+        # Recorded after the launch: eval_roofline and profiling read these, and a call
+        # that raised described nothing.
         self.kernel = kernel
         self.n = n
         self.c_in = c_in
@@ -885,7 +891,7 @@ class Conv2dFwdOp(Op):
             dtype,
             bias is not None,
         )
-        return kernel(input, weight, bias)
+        return out
 
     def _infer_output_shapes(
         self,
@@ -1234,6 +1240,9 @@ class Conv3dFwdOp(Op):
             bias is not None,
             inputs,
         )
+        out = kernel(input, weight, bias)
+        # Recorded after the launch: eval_roofline and profiling read these, and a call
+        # that raised described nothing.
         self.kernel = kernel
         self.n = n
         self.c_in = c_in
@@ -1266,7 +1275,7 @@ class Conv3dFwdOp(Op):
             dtype,
             bias is not None,
         )
-        return kernel(input, weight, bias)
+        return out
 
     def _infer_output_shapes(
         self,

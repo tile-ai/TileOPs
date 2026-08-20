@@ -70,10 +70,7 @@ class AdaptivePool2dKernelBase(Kernel):
     declares nothing else:
 
     - ``_build`` the cached builder that traces the prim_func.
-    - ``_dispatch`` the registered custom op the forward call goes through.
-
-    Each variant keeps its own ``torch.library`` registration; those need
-    distinct names and are what ``torch.compile`` resolves against.
+    - ``_dispatch`` the launch the forward call goes through.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]

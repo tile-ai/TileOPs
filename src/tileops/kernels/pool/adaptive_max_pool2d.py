@@ -74,8 +74,7 @@ def _adaptive_max_pool2d_kernel(
     return _adaptive_max_pool2d_func
 
 
-@torch.library.custom_op("top::adaptive_max_pool2d_wrapped_kernel", mutates_args=())
-def _adaptive_max_pool2d_wrapped_kernel(
+def _launch_adaptive_max_pool2d(
     n: int,
     c_in: int,
     h_in: int,
@@ -92,28 +91,11 @@ def _adaptive_max_pool2d_wrapped_kernel(
     )
 
 
-@_adaptive_max_pool2d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (dtype, block_m, threads)
-    return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
-
-
 class AdaptiveMaxPool2dKernel(AdaptivePool2dKernelBase):
     """Adaptive max pooling forward kernel for NCHW inputs."""
 
     _build = staticmethod(_adaptive_max_pool2d_kernel)
-    _dispatch = staticmethod(_adaptive_max_pool2d_wrapped_kernel)
+    _dispatch = staticmethod(_launch_adaptive_max_pool2d)
 
 
 @functools.lru_cache(maxsize=32)
@@ -206,8 +188,7 @@ def _adaptive_max_pool2d_with_indices_kernel(
     return _adaptive_max_pool2d_with_indices_func
 
 
-@torch.library.custom_op("top::adaptive_max_pool2d_with_indices_wrapped_kernel", mutates_args=())
-def _adaptive_max_pool2d_with_indices_wrapped_kernel(
+def _launch_adaptive_max_pool2d_with_indices(
     n: int,
     c_in: int,
     h_in: int,
@@ -224,28 +205,8 @@ def _adaptive_max_pool2d_with_indices_wrapped_kernel(
     )(x)
 
 
-@_adaptive_max_pool2d_with_indices_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    _ = (dtype, block_m, threads)
-    return (
-        torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device),
-        torch.empty((n, c_in, out_h, out_w), dtype=torch.int64, device=x.device),
-    )
-
-
 class AdaptiveMaxPool2dWithIndicesKernel(AdaptivePool2dKernelBase):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
 
     _build = staticmethod(_adaptive_max_pool2d_with_indices_kernel)
-    _dispatch = staticmethod(_adaptive_max_pool2d_with_indices_wrapped_kernel)
+    _dispatch = staticmethod(_launch_adaptive_max_pool2d_with_indices)

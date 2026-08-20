@@ -147,8 +147,7 @@ def _avg_pool2d_spatial_kernel(
     return _avg_pool2d_spatial_func
 
 
-@torch.library.custom_op("top::avg_pool2d_spatial_wrapped_kernel", mutates_args=())
-def _avg_pool2d_spatial_wrapped_kernel(
+def _launch_avg_pool2d_spatial(
     n: int,
     c_in: int,
     h_in: int,
@@ -179,35 +178,7 @@ def _avg_pool2d_spatial_wrapped_kernel(
     )(block_m, threads)(x)
 
 
-@_avg_pool2d_spatial_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (
-        dtype,
-        block_m,
-        threads,
-    )
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, False)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, False)
-    return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::avg_pool2d_wrapped_kernel", mutates_args=())
-def _avg_pool2d_wrapped_kernel(
+def _launch_avg_pool2d(
     n: int,
     c_in: int,
     h_in: int,
@@ -244,40 +215,6 @@ def _avg_pool2d_wrapped_kernel(
         divisor_override,
         dtype,
     )(block_m, threads)(x)
-
-
-@_avg_pool2d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    ceil_mode: bool,
-    count_include_pad: bool,
-    use_divisor_override: bool,
-    divisor_override: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (
-        count_include_pad,
-        use_divisor_override,
-        divisor_override,
-        dtype,
-        block_m,
-        threads,
-    )
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode)
-    return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
 
 
 class AvgPool2dSpatialKernel(Kernel):
@@ -346,7 +283,7 @@ class AvgPool2dSpatialKernel(Kernel):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         require_cuda(self, x=x)
-        return _avg_pool2d_spatial_wrapped_kernel(
+        return _launch_avg_pool2d_spatial(
             self.n,
             self.c_in,
             self.h_in,
@@ -440,7 +377,7 @@ class AvgPool2dKernel(Kernel):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         require_cuda(self, x=x)
-        return _avg_pool2d_wrapped_kernel(
+        return _launch_avg_pool2d(
             self.n,
             self.c_in,
             self.h_in,

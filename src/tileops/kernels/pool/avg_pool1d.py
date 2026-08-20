@@ -158,8 +158,7 @@ def _avg_pool1d_spatial_kernel(
     return _avg_pool1d_spatial_func
 
 
-@torch.library.custom_op("top::avg_pool1d_spatial_wrapped_kernel", mutates_args=())
-def _avg_pool1d_spatial_wrapped_kernel(
+def _launch_avg_pool1d_spatial(
     n: int,
     c_in: int,
     l_in: int,
@@ -182,26 +181,7 @@ def _avg_pool1d_spatial_wrapped_kernel(
     )(block_m, threads)(x)
 
 
-@_avg_pool1d_spatial_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (dtype, block_m, threads)
-    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, False)
-    return torch.empty((n, c_in, out_l), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::avg_pool1d_wrapped_kernel", mutates_args=())
-def _avg_pool1d_wrapped_kernel(
+def _launch_avg_pool1d(
     n: int,
     c_in: int,
     l_in: int,
@@ -226,26 +206,6 @@ def _avg_pool1d_wrapped_kernel(
         count_include_pad,
         dtype,
     )(block_m, threads)(x)
-
-
-@_avg_pool1d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    ceil_mode: bool,
-    count_include_pad: bool,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (count_include_pad, dtype, block_m, threads)
-    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, ceil_mode)
-    return torch.empty((n, c_in, out_l), dtype=x.dtype, device=x.device)
 
 
 class AvgPool1dSpatialKernel(Kernel):
@@ -302,7 +262,7 @@ class AvgPool1dSpatialKernel(Kernel):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         require_cuda(self, x=x)
-        return _avg_pool1d_spatial_wrapped_kernel(
+        return _launch_avg_pool1d_spatial(
             self.n,
             self.c_in,
             self.l_in,
@@ -374,7 +334,7 @@ class AvgPool1dKernel(Kernel):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         require_cuda(self, x=x)
-        return _avg_pool1d_wrapped_kernel(
+        return _launch_avg_pool1d(
             self.n,
             self.c_in,
             self.l_in,
