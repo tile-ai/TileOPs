@@ -496,7 +496,13 @@ class Op(ABC):
             )
             cached = entries.get(signature, _CACHE_MISS)
             if cached is not _CACHE_MISS:
-                entries.move_to_end(signature)
+                # Recency is best-effort on the lock-free hit path. A concurrent
+                # miss may evict this key after ``get``; the strong local callable
+                # remains valid and must still run.
+                try:
+                    entries.move_to_end(signature)
+                except KeyError:
+                    pass
                 return cached
             with self._kernel_role_lock:
                 cached = entries.get(signature, _CACHE_MISS)

@@ -8,7 +8,7 @@ happens. Uses a fake target, so no vendor hardware is involved.
 
 import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 import torch
@@ -319,6 +319,47 @@ def test_dense_gqa_external_builder_is_once_and_callable_autotunes():
     assert list(op.iter_kernels()) == []
     op.autotune()
     assert builds[0].tunes == 1
+
+
+def test_dense_gqa_external_hit_survives_concurrent_lru_eviction(monkeypatch):
+    monkeypatch.setattr(op_base, "_EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE", 1)
+
+    def build_kernel(*specs, **params):
+        return lambda q, k, v: torch.empty_like(q)
+
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False, target="gqa_fake")
+    q_a = torch.randn(1, 2, 4, 8, dtype=torch.float16)
+    k_a = torch.randn(1, 2, 2, 8, dtype=torch.float16)
+    op(q_a, k_a, torch.randn_like(k_a))
+
+    role = "gqa_prefill_dense"
+    original = op._kernel_roles[role]
+    signature_a = next(iter(original))
+    hit_read = Event()
+    eviction_done = Event()
+
+    class CoordinatedEntries(op_base.OrderedDict):
+        def get(self, key, default=None):
+            value = super().get(key, default)
+            if key == signature_a and value is not default:
+                hit_read.set()
+                eviction_done.wait()
+            return value
+
+    op._kernel_roles[role] = CoordinatedEntries(original)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        hit = pool.submit(op, q_a, k_a, torch.randn_like(k_a))
+        assert hit_read.wait(timeout=2)
+        try:
+            q_b = torch.randn(1, 2, 4, 9, dtype=torch.float16)
+            k_b = torch.randn(1, 2, 2, 9, dtype=torch.float16)
+            op(q_b, k_b, torch.randn_like(k_b))
+        finally:
+            eviction_done.set()
+        assert hit.result(timeout=2).shape == q_a.shape
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
