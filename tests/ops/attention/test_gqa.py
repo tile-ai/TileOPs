@@ -108,6 +108,10 @@ def _stand_in(real: type, *, allow_cpu: bool = False) -> type:
         def __init__(self, *args: object, **kwargs: object) -> None:
             self.args = args
             self.kwargs = kwargs
+            self.autotuned = False
+
+        def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+            self.autotuned = True
 
         def forward(self, q: torch.Tensor, *args: object, **kwargs: object) -> torch.Tensor:
             return torch.empty_like(q)
@@ -437,6 +441,22 @@ def test_gqa_prefill_dense_rope_tables_are_callable_owned_and_cached() -> None:
     assert cos.shape == sin.shape == (seq_len_kv, dim // 2)
     assert cached_cos is cos
     assert cached_sin is sin
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_rope_table_cache_is_bounded() -> None:
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=False,
+        pos_encoding_mode="rope",
+        kernel_map=_stand_in_dense_prefill_map(),
+    )
+    for seq_len in range(2, 11):
+        q = torch.randn(1, seq_len, 4, 16, dtype=torch.float16)
+        k = torch.randn(1, seq_len, 2, 16, dtype=torch.float16)
+        op(q, k, torch.randn_like(k))
+
+    entry = next(iter(op.built_kernels("gqa_prefill_dense").values()))
+    assert len(entry._rope_table_cache) == 8
 
 
 @pytest.mark.smoke
@@ -1555,7 +1575,7 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
 
 @pytest.mark.smoke
 def test_gqa_prefill_dense_callable_reselects_for_each_shape() -> None:
-    """One cached callable resolves shape-dependent defaults on every invocation."""
+    """One callable resolves and retains bounded shape specializations."""
     op = GroupedQueryAttentionPrefillDenseFwdOp(
         is_causal=True,
         pos_encoding_mode="rope",
@@ -1579,8 +1599,36 @@ def test_gqa_prefill_dense_callable_reselects_for_each_shape() -> None:
         [64**-0.5, 128**-0.5]
     )
     assert [kwargs["rotary_dim"] for _, _, kwargs in calls] == [64, 128]
+    entry = next(iter(op.built_kernels("gqa_prefill_dense").values()))
+    assert len(entry._kernel_cache) == 2
+    assert list(op.iter_kernels()) == entry._retained_kernels
+
+    # Repeating a known signature reuses the concrete Kernel object rather
+    # than rebuilding or tuning inside the execution path.
+    op(q1, k1, torch.randn_like(k1))
+    assert len(calls) == 2
+
+    op.autotune()
+    assert all(kernel.autotuned for kernel in entry._retained_kernels)
     assert op.sm_scale is None
     assert op.rotary_dim is None
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_callable_bounds_owned_specializations() -> None:
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=False,
+        kernel_map=_stand_in_dense_prefill_map(),
+    )
+    for dim in range(16, 33):
+        q = torch.randn(1, 2, 4, dim, dtype=torch.float16)
+        k = torch.randn(1, 2, 2, dim, dtype=torch.float16)
+        op(q, k, torch.randn_like(k))
+
+    entry = next(iter(op.built_kernels("gqa_prefill_dense").values()))
+    assert len(entry._kernel_cache) == 16
+    assert len(entry._retained_kernels) == 16
+    assert len(list(op.iter_kernels())) == 16
 
 
 if __name__ == "__main__":

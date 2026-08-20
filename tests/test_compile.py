@@ -49,6 +49,7 @@ def test_mha_cold_fullgraph_trace_matches_eager():
     output = torch.compile(op, fullgraph=True)(q, k, v)
 
     assert output.shape == q.shape
+    assert_op_owns_graph_nodes(op, q, k, v)
     torch.testing.assert_close(output, op(q, k, v))
 
 

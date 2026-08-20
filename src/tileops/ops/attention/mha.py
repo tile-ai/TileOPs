@@ -3,6 +3,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
+from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
@@ -35,6 +36,8 @@ class MultiHeadAttentionFwdOp(Op):
     maintained forward path through the GQA prefill dispatcher.
     """
 
+    compile_op_names = ("top::mha_fwd",)
+
     def __init__(
         self,
         batch: int,
@@ -51,6 +54,9 @@ class MultiHeadAttentionFwdOp(Op):
         self.dim = dim
         self.is_causal = is_causal
 
+        # This class is an in-tree semantic wrapper, not a replaceable kernel
+        # boundary. Third-party replacement happens at the Dense GQA delegate.
+        self.target = BUILTIN
         self.dispatch_kernel(kernel_map)
         self._gqa_op = GroupedQueryAttentionPrefillDenseFwdOp(
             is_causal=is_causal,

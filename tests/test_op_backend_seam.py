@@ -11,7 +11,7 @@ import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.kernels.attention.call_spec import AttentionCall
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
+from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool import MaxPool2dFwdOp
@@ -118,9 +118,7 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
     assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
     assert params == {
         "is_causal": True,
-            # The callable derives the shape-dependent default from q_spec;
-            # the Op must not freeze the first call's head dimension here.
-            "sm_scale": None,
+        "sm_scale": 8**-0.5,
         "softcap": 0.0,
         "window_size_left": -1,
         "window_size_right": -1,
@@ -175,8 +173,69 @@ def test_dense_gqa_target_gets_rope_as_constructor_configuration():
     assert params["rotary_dim"] == 4
     assert params["rope_layout"] == "interleaved"
     assert params["rope_base"] == 500000.0
-    assert params["dtype"] is None
+    assert params["sm_scale"] == 8**-0.5
+    assert params["dtype"] == torch.float16
     assert specs[0].dtype == torch.float16
+
+
+def test_mha_wrapper_defers_external_replacement_to_dense_delegate():
+    builds = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(q, k, v):
+            return torch.empty_like(q, dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+
+    op = MultiHeadAttentionFwdOp(1, 4, 3, 8, is_causal=False)
+    q = torch.randn(1, 3, 4, 8, dtype=torch.float16)
+    output = op(q, torch.randn_like(q), torch.randn_like(q))
+
+    assert output.shape == q.shape
+    assert op._settled_target is BUILTIN
+    assert op._gqa_op._settled_target == "gqa_fake"
+    assert len(builds) == 1
+    _, params = builds[0]
+    assert params["sm_scale"] == 8**-0.5
+    assert params["dtype"] == torch.float16
+
+
+def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
+    params_seen = []
+
+    def build_kernel(*specs, **params):
+        params_seen.append(params)
+
+        def kernel(q, k, v):
+            return torch.empty_like(q, dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+    )
+    op = GroupedQueryAttentionPrefillDenseFwdOp(
+        is_causal=False,
+        pos_encoding_mode="rope",
+        target="gqa_fake",
+    )
+
+    for dim in (8, 16):
+        q = torch.randn(1, 3, 4, dim, dtype=torch.float16)
+        k = torch.randn(1, 3, 2, dim, dtype=torch.float16)
+        op(q, k, torch.randn_like(k))
+
+    assert [params["sm_scale"] for params in params_seen] == [8**-0.5, 16**-0.5]
+    assert [params["rotary_dim"] for params in params_seen] == [8, 16]
+    assert [params["dtype"] for params in params_seen] == [torch.float16, torch.float16]
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")

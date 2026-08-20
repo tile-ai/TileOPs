@@ -1,5 +1,7 @@
 import math
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
+from threading import RLock
 from typing import Callable, ClassVar, Dict, Optional
 
 import torch
@@ -54,6 +56,8 @@ __all__ = [
 
 _ROPE_LAYOUTS = frozenset(("neox", "interleaved"))
 _POS_ENCODING_MODES = frozenset(("none", "rope"))
+_DENSE_SPECIALIZATION_CACHE_SIZE = 16
+_DENSE_ROPE_CACHE_SIZE = 8
 
 
 def _validate_attention_dtype(dtype: torch.dtype) -> None:
@@ -225,9 +229,19 @@ class _DensePrefillBuiltin:
     rope_layout: str
     rope_base: float
     tune_enabled: Callable[[], bool]
-    _rope_table_cache: Dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = field(
-        default_factory=dict, repr=False
+    _kernel_cache: OrderedDict[AttentionCall, DensePrefillKernel] = field(
+        default_factory=OrderedDict, repr=False
     )
+    # Kept as a list so Op._entry_kernels() can enumerate and autotune the
+    # concrete kernels owned by this callable. The OrderedDict above is the
+    # lookup/index; both containers are updated together under _cache_lock.
+    _retained_kernels: list[DensePrefillKernel] = field(default_factory=list, repr=False)
+    _rope_table_cache: OrderedDict[
+        tuple[int, int], tuple[torch.Tensor, torch.Tensor]
+    ] = field(
+        default_factory=OrderedDict, repr=False
+    )
+    _cache_lock: RLock = field(default_factory=RLock, repr=False)
 
     def _selection_facts(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
         batch, seq_len_q, heads, dim = q.shape
@@ -268,8 +282,11 @@ class _DensePrefillBuiltin:
         max_position = call.max_position or 1
         rotary_dim = call.rotary_dim or 0
         key = (max_position, rotary_dim)
-        cached = self._rope_table_cache.get(key)
-        if cached is None:
+        with self._cache_lock:
+            cached = self._rope_table_cache.get(key)
+            if cached is not None:
+                self._rope_table_cache.move_to_end(key)
+                return cached
             if call.fuse_rope:
                 assert call.rotary_dim is not None
                 cached = _base_freqs(
@@ -283,7 +300,35 @@ class _DensePrefillBuiltin:
                 dummy = torch.empty((1, 1), device=self.device, dtype=self.output_dtype)
                 cached = (dummy, dummy)
             self._rope_table_cache[key] = cached
-        return cached
+            if len(self._rope_table_cache) > _DENSE_ROPE_CACHE_SIZE:
+                self._rope_table_cache.popitem(last=False)
+            return cached
+
+    def _kernel_for(self, call: AttentionCall) -> DensePrefillKernel:
+        # Tuning is lifecycle state, not part of the specialization identity.
+        # op.autotune() tunes retained kernels and flips tune_enabled() for
+        # specializations constructed after that point.
+        signature = replace(call, tune=False)
+        with self._cache_lock:
+            cached = self._kernel_cache.get(signature)
+            if cached is not None:
+                self._kernel_cache.move_to_end(signature)
+                return cached
+
+            key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
+            kernel = _build_prefill_kernel(self.kernel_map, key, call)
+            if not isinstance(kernel, DensePrefillKernel):
+                raise TypeError(
+                    f"Dense prefill selected a non-Dense kernel: {type(kernel).__name__}"
+                )
+            self._kernel_cache[signature] = kernel
+            self._retained_kernels.append(kernel)
+            if len(self._kernel_cache) > _DENSE_SPECIALIZATION_CACHE_SIZE:
+                _, evicted = self._kernel_cache.popitem(last=False)
+                self._retained_kernels = [
+                    retained for retained in self._retained_kernels if retained is not evicted
+                ]
+            return kernel
 
     def __call__(
         self,
@@ -295,10 +340,7 @@ class _DensePrefillBuiltin:
         if len(scales) not in (0, 3):
             raise ValueError("Dense prefill expects either zero or three scale tensors")
         call = self._selection_facts(q, k)
-        key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
-        kernel = _build_prefill_kernel(self.kernel_map, key, call)
-        if not isinstance(kernel, DensePrefillKernel):
-            raise TypeError(f"Dense prefill selected a non-Dense kernel: {type(kernel).__name__}")
+        kernel = self._kernel_for(call)
         rope_cos, rope_sin = self._rope_tables(call)
         return kernel(
             q,
@@ -470,11 +512,29 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         dtype: torch.dtype,
         device: torch.device,
     ) -> _DensePrefillBuiltin:
+        dim = inputs[0].shape[-1]
+        manifest_params = self._manifest_params()
+        manifest_params.update(
+            sm_scale=_attention_scale(dim, self.sm_scale),
+            dtype=self.output_dtype or dtype,
+            rotary_dim=(
+                _validate_rope_config(
+                    dim,
+                    self.pos_encoding_mode,
+                    self.rotary_dim,
+                    self.rope_layout,
+                    self.rope_base,
+                )
+                if self.fuse_rope
+                else None
+            ),
+        )
         return self.get_or_build_kernel(
             "gqa_prefill_dense",
             inputs,
             key=(device, dtype, self.output_dtype),
             build=lambda: self._build_builtin(dtype, device),
+            params=manifest_params,
         )
 
     def _infer_output_shapes(
@@ -497,7 +557,7 @@ class GroupedQueryAttentionPrefillDenseFwdOp(Op):
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run fixed-shape GQA prefill behind the target-independent graph node."""
+        """Run shape-agnostic GQA prefill behind the target-independent graph node."""
         return _gqa_prefill_dense_fwd(
             q,
             k,

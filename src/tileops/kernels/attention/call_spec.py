@@ -137,12 +137,8 @@ def dense_sliding_prefill_region(call: AttentionCall) -> bool:
     )
 
 
-def square_ws_prefill_region(call: AttentionCall) -> bool:
-    """The H200 square causal packed-prefill region.
-
-    Owned by ``GQAFwdWsPersistentCausalKernel``; the warp-specialized causal
-    kernel behind it excludes exactly this region so the two never both apply.
-    """
+def _persistent_square_prefill_eligible(call: AttentionCall) -> bool:
+    """Whether the H200 persistent-square launch geometry is profitable."""
     if not dense_prefill_region(call) or uses_sliding_window(call):
         return False
     if call.dtype not in ATTENTION_DTYPES:
@@ -165,12 +161,18 @@ def square_ws_prefill_region(call: AttentionCall) -> bool:
     return work_items >= _H200_SMS
 
 
-def causal_ws_prefill_region(call: AttentionCall) -> bool:
-    """The warp-specialized causal packed-prefill region: head dim 128, 16-bit.
+def square_ws_prefill_region(call: AttentionCall) -> bool:
+    """The H200 persistent square-causal schedule's positive region."""
+    return _persistent_square_prefill_eligible(call)
 
-    Owned by ``GQAPrefillFwdWsPersistentCausalKernel``. Architecture is not part
-    of it: ``Kernel.refusal`` settles ``supported_archs`` before it asks
-    ``applies``, so a region never repeats what the class already declares.
+
+def causal_ws_prefill_region(call: AttentionCall) -> bool:
+    """The non-persistent warp-specialized causal schedule's positive region.
+
+    Architecture is not part of the base capability: ``Kernel.refusal`` settles
+    ``supported_archs`` before it asks ``applies``. The one platform fact used
+    here is schedule ownership: a call eligible for the persistent-square grid
+    is not a call served by this non-persistent schedule.
     """
     return (
         dense_prefill_region(call)
@@ -179,6 +181,7 @@ def causal_ws_prefill_region(call: AttentionCall) -> bool:
         and call.dim == 128
         and call.dtype in ATTENTION_DTYPES
         and (call.prefill_topology != "dense" or call.sm_scale > 0)
+        and not _persistent_square_prefill_eligible(call)
     )
 
 
