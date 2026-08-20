@@ -573,7 +573,7 @@ def test_gqa_prefill_dense_fused_rope_graph_tables_survive_cache_eviction() -> N
         other_k = torch.randn(
             batch, other_len, heads_kv, dim, device="cuda", dtype=torch.float16
         )
-        op(other_q, other_k, torch.randn_like(other_k))
+        entry._rope_tables(entry._selection_facts(other_q, other_k))
 
     assert (seq_len, dim) not in entry._rope_table_cache
     assert entry._captured_rope_tables[(seq_len, dim)] is captured_tables
