@@ -114,7 +114,7 @@ def _conv1d_kernel(
         enable_rasterization: bool,
     ):
         @T.macro
-        def _conv1d_body(x, weight, out, bias):
+        def _conv1d_body(x, weight_flat, out, bias):
             with T.Kernel(
                 T.ceildiv(out_l, block_n),
                 T.ceildiv(c_out, block_m),
@@ -125,11 +125,6 @@ def _conv1d_kernel(
                 data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
-
-                # k runs over (c_in, kernel_l) in that order, which is how the weight is
-                # already laid out, so the kernel takes it as it comes and stages it with a
-                # tile copy.
-                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
 
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
@@ -148,8 +143,11 @@ def _conv1d_kernel(
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         ol = bx * block_n + j
-                        ci = k_idx // kernel_l
-                        kw = k_idx % kernel_l
+                        # k runs over (kernel_l, c_in): one k tile then covers a single
+                        # tap across every input channel, which is one rectangle of x.
+                        # Laying it out the other way costs 50% on c_in=128, kernel 10.
+                        kw = k_idx // c_in
+                        ci = k_idx % c_in
                         il = ol * stride_l + kw * dilation_l - pad_left
                         if tile_spatial_full & ((k_iter + 1) * block_k <= k_total):
                             data_shared[i, j] = x[bz, ci, il]
@@ -186,21 +184,21 @@ def _conv1d_kernel(
             @T.prim_func
             def _conv1d_bias_main(
                 x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
+                weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
                 out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
                 bias: T.Tensor((c_out,), dtype),  # type: ignore
             ):
-                _conv1d_body(x, weight, out, bias)
+                _conv1d_body(x, weight_flat, out, bias)
 
             return _conv1d_bias_main
 
         @T.prim_func
         def _conv1d_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
+            weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
         ):
-            _conv1d_body(x, weight, out, None)
+            _conv1d_body(x, weight_flat, out, None)
 
         return _conv1d_main
 
@@ -341,12 +339,6 @@ def _conv1d_group_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                # k runs over (c_in_g, kernel_l) in that order, which is how the weight is
-                # already laid out, so staging it is a tile copy rather than a gather. The
-                # rows past this group's c_out_g read the next group's weights; the
-                # epilogue masks the accumulator rows they feed.
-                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
-
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
@@ -355,16 +347,27 @@ def _conv1d_group_kernel(
                 oc_base = group_id * c_out_g + by * block_m
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    T.copy(weight_flat[oc_base, k_iter * block_k], weight_shared)
+                    for i, k in T.Parallel(block_m, block_k):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        k_idx = k_iter * block_k + k
+                        kw = k_idx // c_in_g
+                        ci_g = k_idx % c_in_g
+                        weight_shared[i, k] = T.if_then_else(
+                            (oc_g < c_out_g) & (k_idx < k_total),
+                            weight[oc, ci_g, kw],
+                            T.cast(0.0, dtype),
+                        )
 
                     for k, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + k
                         ol = bx * block_n + j
-                        ci_g = k_idx // kernel_l
-                        kw = k_idx % kernel_l
+                        # k runs over (kernel_l, c_in_g), matching the general Conv1d
+                        # kernel; the weight is staged by gather because that order is not
+                        # the one it is stored in.
+                        kw = k_idx // c_in_g
+                        ci_g = k_idx % c_in_g
                         il = ol * stride_l + kw * dilation_l - pad_left
-                        # k past k_total is zeroed here, which is what keeps the weight
-                        # tile's own tail out of the product.
                         data_shared[k, j] = T.if_then_else(
                             (k_idx < k_total) & (ol < out_l) & (il >= 0) & (il < l_in),
                             x[batch_id, group_id * c_in_g + ci_g, il],
@@ -670,6 +673,9 @@ class Conv1dKernel(Kernel):
         self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
+        self._weight_flat_cache_source: Optional[torch.Tensor] = None
+        self._weight_flat_cache_version: Optional[int] = None
+        self._weight_flat_cache: Optional[torch.Tensor] = None
         self.kernel = _conv1d_kernel(
             n,
             c_in,
@@ -710,13 +716,34 @@ class Conv1dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(self.dtype)
 
+    def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
+        """Return the weight laid out as the prim_func's ``(c_out, k_total)``.
+
+        k runs over ``(kernel_l, c_in)``, so this is a permute the caller's
+        ``(c_out, c_in, kernel_l)`` cannot alias. Held per weight identity and version:
+        a weight is a parameter, so it repeats across calls.
+        """
+        weight_version = weight._version
+        if (
+            self._weight_flat_cache_source is weight
+            and self._weight_flat_cache_version == weight_version
+            and self._weight_flat_cache is not None
+        ):
+            return self._weight_flat_cache
+
+        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
+        self._weight_flat_cache_source = weight
+        self._weight_flat_cache_version = weight_version
+        self._weight_flat_cache = weight_flat
+        return weight_flat
+
     def forward(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _launch(self, x, weight, bias=bias)
+        return _launch(self, x, self._get_weight_flat(weight), bias=bias)
 
 
 class GroupConv1dKernel(Kernel):
