@@ -53,10 +53,9 @@ second copy that used to drift.
 A baseline that is another idiom for the same computation overrides
 `ref_program` in the benchmark and says why.
 
-A baseline that is a different implementation is timed under its own tag,
-alongside the reference: the tag is what names it in the report, so it is
-checked against the reference before the case is timed, and one that is
-unavailable is an error rather than a silent fall back.
+A baseline that is a different implementation is timed under its own tag next
+to the reference: the tag is what names it in the report, so it is checked
+against the reference before the case is timed.
 
 [`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
 checks the `tests/` import and a locally defined `gen_inputs`, both by literal
