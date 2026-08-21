@@ -57,9 +57,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 B_shape = (batch_count, K, N)
                 B_shared_shape = (block_k, block_n)
 
-            # One M tile per group-local tile, so a tile never straddles a group
-            # boundary. Sizes arrive on the device, so the grid takes the bound
-            # and CTAs past the real count exit.
+            # Tiles enumerated per group; CTAs past the real count exit.
             _num_pid_m = tile_upper_bound(batch_sum, batch_count, block_m)
             _num_pid_n = math.ceil(N / block_n)
             _group_tile_cumsum = make_group_tile_cumsum(batch_count, block_m)

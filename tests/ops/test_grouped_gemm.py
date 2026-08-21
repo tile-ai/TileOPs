@@ -37,6 +37,18 @@ class GroupedGemmFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
+                    4098,
+                    6,
+                    4000,
+                    4096,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="groups-unaligned-to-block-m",
+                ),
+                pytest.param(
                     16384,
                     4,
                     4864,

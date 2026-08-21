@@ -788,7 +788,7 @@ def _make_cooperative_fused_act_kernel(
                         _group_tile_decode(m_tile, s_cum, lo, hi, ex, _row)
                         ms[0] = true_offsets[ex[0]] + _row[0]
                         ns_[0] = n_tile * T.int32(block_n)
-                        rows[0] = true_sizes[ex[0]] - (m_tile - s_cum[ex[0]]) * T.int32(block_m)
+                        rows[0] = true_sizes[ex[0]] - _row[0]
                         v[0] = T.int32(1)
                     else:
                         v[0] = T.int32(0)
