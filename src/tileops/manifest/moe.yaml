@@ -417,3 +417,115 @@ FusedMoeFwdOp:
       silu_and_mul: SiluAndMulFwdKernel
       gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
+
+MoePrePermuteFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+  signature:
+    inputs:
+      hidden_states: {dtype: "bfloat16"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      expert_input: {dtype: "same_as(hidden_states)"}
+    params:
+      layout: {type: MGroupedLayoutSpec}
+      out: {type: "tensor | None", default: null}
+    shape_rules:
+    - "hidden_states.ndim == 2"
+    - "topk_ids.ndim == 2"
+    - "topk_ids.shape[0] == hidden_states.shape[0]"
+  workloads: []
+  roofline: {flops: "0", bytes: "hidden_states.numel() * elem_bytes + topk_ids.numel() * 4"}
+  source:
+    kernel: tileops/ops/moe/staged.py
+    op: tileops/ops/moe/staged.py
+    test: tests/ops/test_moe_staged_contracts.py
+    bench: benchmarks/ops/bench_moe_staged.py
+
+MoeGroupedGemmFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+  signature:
+    inputs:
+      a: {dtype: "bfloat16"}
+      b: {dtype: "same_as(a)"}
+    outputs:
+      output: {dtype: "bfloat16"}
+    params:
+      compute: {type: GroupedGemmComputeSpec}
+      expert_layout: {type: MaterializedExpertLayout}
+      scales: {type: "object | None", default: null}
+      out: {type: "tensor | None", default: null}
+    shape_rules:
+    - "a.ndim == 2 or a.ndim == 3"
+    - "b.ndim == 3"
+    - "a.shape[-1] == b.shape[-1]"
+    - "output.shape == (*a.shape[:-1], b.shape[1])"
+  workloads: []
+  roofline: {flops: "2 * a.numel() * b.shape[1]", bytes: "(a.numel() + b.numel() + output.numel()) * elem_bytes"}
+  source:
+    kernel: tileops/ops/moe/staged.py
+    op: tileops/ops/moe/staged.py
+    test: tests/ops/test_moe_staged_contracts.py
+    bench: benchmarks/ops/bench_moe_staged.py
+
+MoeExpertMLPFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+  signature:
+    inputs:
+      expert_input: {dtype: "bfloat16"}
+      w_gate_up: {dtype: "same_as(expert_input)"}
+      w_down: {dtype: "same_as(expert_input)"}
+    outputs:
+      output: {dtype: "same_as(expert_input)"}
+    params:
+      activation: {type: str, default: silu_and_mul}
+      compute: {type: "GroupedGemmComputeSpec | None", default: null}
+      expert_layout: {type: MaterializedExpertLayout}
+      out: {type: "tensor | None", default: null}
+    shape_rules:
+    - "expert_input.ndim == 2 or expert_input.ndim == 3"
+    - "w_gate_up.ndim == 3"
+    - "w_down.ndim == 3"
+    - "w_gate_up.shape[1] == 2 * w_down.shape[2]"
+    - "expert_input.shape[-1] == w_gate_up.shape[-1]"
+    - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
+  workloads: []
+  roofline:
+    flops: "(expert_input.numel() // expert_input.shape[-1]) * (2 * w_gate_up.shape[1] * w_gate_up.shape[2] + 6 * w_down.shape[2] + 2 * w_down.shape[1] * w_down.shape[2])"
+    bytes: "(expert_input.numel() + w_gate_up.numel() + w_down.numel() + output.numel()) * elem_bytes"
+  source:
+    kernel: tileops/ops/moe/staged.py
+    op: tileops/ops/moe/staged.py
+    test: tests/ops/test_moe_staged_contracts.py
+    bench: benchmarks/ops/bench_moe_staged.py
+
+MoePostPermuteFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+  signature:
+    inputs:
+      expert_output: {dtype: "bfloat16"}
+      topk_weights: {dtype: "float32"}
+    outputs:
+      output: {dtype: "bfloat16"}
+    params:
+      epilogue: {type: RoutingEpilogueSpec}
+      inverse_permute_context: {type: InversePermuteContext}
+      out: {type: "tensor | None", default: null}
+    shape_rules:
+    - "expert_output.ndim == 2 or expert_output.ndim == 3"
+    - "topk_weights.ndim == 2"
+    - "output.shape == (topk_weights.shape[0], expert_output.shape[-1])"
+  workloads: []
+  roofline: {flops: "2 * topk_weights.numel() * expert_output.shape[-1]", bytes: "0"}
+  source:
+    kernel: tileops/ops/moe/staged.py
+    op: tileops/ops/moe/staged.py
+    test: tests/ops/test_moe_staged_contracts.py
+    bench: benchmarks/ops/bench_moe_staged.py
