@@ -43,6 +43,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.grouped_tiling import (
+    make_group_tile_cumsum,
+    make_group_tile_decode,
+)
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeGroupedGemmNopadKernel"]
@@ -74,8 +78,8 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
         max_tiles:   Conservative tile upper bound (numel // block_m + E).
         block_m:     Tile height in M dimension (compile-time constant).
     """
-    # Static binary search depth: ceil(log2(E+1)) iterations suffice for E experts.
-    log2_up = max(1, math.ceil(math.log2(num_experts + 1)))
+    _group_tile_cumsum = make_group_tile_cumsum(num_experts, block_m)
+    _group_tile_decode = make_group_tile_decode(num_experts, block_m)
 
     @tilelang.jit(out_idx=[1, 2, 3])
     def _func(threads: int):
@@ -90,15 +94,15 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
                 s_cum = T.alloc_shared([num_experts + 1], "int32")
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
+                _ex = T.alloc_local([1], "int32")
+                _row = T.alloc_local([1], "int32")
 
                 tx = T.get_thread_binding()
 
                 # Sub-phase (a): thread 0 computes exclusive prefix sum of
                 # ceildiv(true_sizes[e], block_m) into SMEM.
                 if tx == 0:
-                    s_cum[0] = T.int32(0)
-                    for e in T.serial(num_experts):
-                        s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
+                    _group_tile_cumsum(true_sizes, s_cum)
                     if bx == 0:
                         total_tiles[0] = s_cum[num_experts]
                 T.sync_threads()
@@ -107,16 +111,9 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
                 tile_id = bx * threads + tx
                 if tile_id < max_tiles:
                     if tile_id < s_cum[num_experts]:
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= tile_id:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        tile_expert_ids[tile_id] = lo[0]
-                        tile_row_offsets[tile_id] = (tile_id - s_cum[lo[0]]) * T.int32(block_m)
+                        _group_tile_decode(tile_id, s_cum, lo, hi, _ex, _row)
+                        tile_expert_ids[tile_id] = _ex[0]
+                        tile_row_offsets[tile_id] = _row[0]
                     else:
                         tile_expert_ids[tile_id] = T.int32(-1)
                         tile_row_offsets[tile_id] = T.int32(0)

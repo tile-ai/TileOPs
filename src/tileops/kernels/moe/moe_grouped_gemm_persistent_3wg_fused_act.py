@@ -17,6 +17,10 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.grouped_gemm import rows_per_group_regime
+from tileops.kernels.grouped_tiling import (
+    make_group_tile_cumsum,
+    make_group_tile_decode,
+)
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count
 
@@ -298,9 +302,8 @@ def _make_pingpong_fused_act_kernel(
     the [numel, 2*ffn] gate_up tensor never reaches global memory.
     """
     accum_dtype = "float"
-    # Binary search over [0, num_experts-1] (num_experts elements) needs
-    # ceil(log2(num_experts)) iterations to converge to one element.
-    log2_up = max(1, math.ceil(math.log2(num_experts)))
+    _group_tile_cumsum = make_group_tile_cumsum(num_experts, block_m)
+    _group_tile_decode = make_group_tile_decode(num_experts, block_m)
 
     assert threads == 384, (
         f"fused-act pingpong persistent grouped GEMM requires threads=384 "
@@ -350,6 +353,9 @@ def _make_pingpong_fused_act_kernel(
             s_total = T.alloc_shared((1,), "int32")
             lo = T.alloc_local((1,), "int32")
             hi = T.alloc_local((1,), "int32")
+            _row = T.alloc_local((1,), "int32")
+            _ex = T.alloc_local((1,), "int32")
+            _ms = T.alloc_local((1,), "int32")
             # Per-tile metadata hoisted to alloc_local so the interleaved
             # K-loop body can read m_start/n_start/expert_id across IfFrame
             # boundaries.
@@ -396,9 +402,7 @@ def _make_pingpong_fused_act_kernel(
                 T.dec_max_nreg(24)
 
                 if tx == 0:
-                    s_cum[0] = T.int32(0)
-                    for e in T.serial(num_experts):
-                        s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
+                    _group_tile_cumsum(true_sizes, s_cum)
                     s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
                 # CTA-wide sync: publishes s_cum/s_total to consumers.
                 T.sync_threads()
@@ -413,18 +417,8 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
                         n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile_0:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        ex0[0] = lo[0]
-                        ms0[0] = true_offsets[ex0[0]] + (m_tile_0 - s_cum[ex0[0]]) * T.int32(
-                            block_m
-                        )
+                        _group_tile_decode(m_tile_0, s_cum, lo, hi, ex0, _row)
+                        ms0[0] = true_offsets[ex0[0]] + _row[0]
                         ns0[0] = n_tile_0 * T.int32(block_n)
                         v0[0] = T.int32(1)
                     else:
@@ -436,18 +430,8 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
                         n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile_1:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        ex1[0] = lo[0]
-                        ms1[0] = true_offsets[ex1[0]] + (m_tile_1 - s_cum[ex1[0]]) * T.int32(
-                            block_m
-                        )
+                        _group_tile_decode(m_tile_1, s_cum, lo, hi, ex1, _row)
+                        ms1[0] = true_offsets[ex1[0]] + _row[0]
                         ns1[0] = n_tile_1 * T.int32(block_n)
                         v1[0] = T.int32(1)
                     else:
@@ -526,17 +510,11 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
                         n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile_0:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        expert_id_0 = lo[0]
-                        row_0 = (m_tile_0 - s_cum[expert_id_0]) * T.int32(block_m)
-                        m_start_0 = true_offsets[expert_id_0] + row_0
+                        _group_tile_decode(m_tile_0, s_cum, lo, hi, _ex, _row)
+                        _ms[0] = true_offsets[_ex[0]] + _row[0]
+                        expert_id_0 = _ex[0]
+                        row_0 = _row[0]
+                        m_start_0 = _ms[0]
                         n_start_0 = n_tile_0 * T.int32(block_n)
                         arows_0 = T.min(T.int32(block_m), true_sizes[expert_id_0] - row_0)
 
@@ -610,17 +588,11 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
                         n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile_1:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        expert_id_1 = lo[0]
-                        row_1 = (m_tile_1 - s_cum[expert_id_1]) * T.int32(block_m)
-                        m_start_1 = true_offsets[expert_id_1] + row_1
+                        _group_tile_decode(m_tile_1, s_cum, lo, hi, _ex, _row)
+                        _ms[0] = true_offsets[_ex[0]] + _row[0]
+                        expert_id_1 = _ex[0]
+                        row_1 = _row[0]
+                        m_start_1 = _ms[0]
                         n_start_1 = n_tile_1 * T.int32(block_n)
                         arows_1 = T.min(T.int32(block_m), true_sizes[expert_id_1] - row_1)
 
@@ -700,9 +672,8 @@ def _make_cooperative_fused_act_kernel(
     never reaches global memory.
     """
     accum_dtype = "float"
-    # Binary search over [0, num_experts-1] (num_experts elements) needs
-    # ceil(log2(num_experts)) iterations to converge to one element.
-    log2_up = max(1, math.ceil(math.log2(num_experts)))
+    _group_tile_cumsum = make_group_tile_cumsum(num_experts, block_m)
+    _group_tile_decode = make_group_tile_decode(num_experts, block_m)
 
     assert threads == 384, (
         f"fused-act cooperative persistent grouped GEMM requires threads=384 "
@@ -760,6 +731,9 @@ def _make_cooperative_fused_act_kernel(
             s_total = T.alloc_shared((1,), "int32")
             lo = T.alloc_local((1,), "int32")
             hi = T.alloc_local((1,), "int32")
+            _row = T.alloc_local((1,), "int32")
+            _ex = T.alloc_local((1,), "int32")
+            _ms = T.alloc_local((1,), "int32")
             # Per-tile metadata in alloc_local (same pattern as pingpong).
             ms = T.alloc_local((1,), "int32")
             ns_ = T.alloc_local((1,), "int32")
@@ -798,9 +772,7 @@ def _make_cooperative_fused_act_kernel(
                 T.dec_max_nreg(24)
 
                 if tx == 0:
-                    s_cum[0] = T.int32(0)
-                    for e in T.serial(num_experts):
-                        s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
+                    _group_tile_cumsum(true_sizes, s_cum)
                     s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
                 # CTA-wide sync: publishes s_cum/s_total to consumers
                 T.sync_threads()
@@ -813,16 +785,8 @@ def _make_cooperative_fused_act_kernel(
                         m_tile = flat_id // T.int32(_num_pid_n)
                         n_tile = flat_id % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        ex[0] = lo[0]
-                        ms[0] = true_offsets[ex[0]] + (m_tile - s_cum[ex[0]]) * T.int32(block_m)
+                        _group_tile_decode(m_tile, s_cum, lo, hi, ex, _row)
+                        ms[0] = true_offsets[ex[0]] + _row[0]
                         ns_[0] = n_tile * T.int32(block_n)
                         rows[0] = true_sizes[ex[0]] - (m_tile - s_cum[ex[0]]) * T.int32(block_m)
                         v[0] = T.int32(1)
@@ -889,17 +853,11 @@ def _make_cooperative_fused_act_kernel(
                         m_tile = flat_id // T.int32(_num_pid_n)
                         n_tile = flat_id % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        expert_id = lo[0]
-                        row = (m_tile - s_cum[expert_id]) * T.int32(block_m)
-                        m_start = true_offsets[expert_id] + row
+                        _group_tile_decode(m_tile, s_cum, lo, hi, _ex, _row)
+                        _ms[0] = true_offsets[_ex[0]] + _row[0]
+                        expert_id = _ex[0]
+                        row = _row[0]
+                        m_start = _ms[0]
                         n_start = n_tile * T.int32(block_n)
                         # Top-half row count: clamp(true_arows, 0, half_m).
                         true_arows = true_sizes[expert_id] - row
@@ -974,17 +932,11 @@ def _make_cooperative_fused_act_kernel(
                         m_tile = flat_id // T.int32(_num_pid_n)
                         n_tile = flat_id % T.int32(_num_pid_n)
 
-                        lo[0] = T.int32(0)
-                        hi[0] = T.int32(num_experts - 1)
-                        for _bs in T.serial(log2_up):
-                            mid = (lo[0] + hi[0]) >> T.int32(1)
-                            if s_cum[mid + 1] <= m_tile:
-                                lo[0] = mid + T.int32(1)
-                            else:
-                                hi[0] = mid
-                        expert_id = lo[0]
-                        row = (m_tile - s_cum[expert_id]) * T.int32(block_m)
-                        m_start = true_offsets[expert_id] + row
+                        _group_tile_decode(m_tile, s_cum, lo, hi, _ex, _row)
+                        _ms[0] = true_offsets[_ex[0]] + _row[0]
+                        expert_id = _ex[0]
+                        row = _row[0]
+                        m_start = _ms[0]
                         n_start = n_tile * T.int32(block_n)
                         # Bottom-half row count: clamp(true_arows-half_m, 0, half_m).
                         true_arows = true_sizes[expert_id] - row
