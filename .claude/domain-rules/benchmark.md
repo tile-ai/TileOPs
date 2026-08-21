@@ -10,7 +10,7 @@ which matches names literally — it will not catch a draw helper under another 
 
 ______________________________________________________________________
 
-- Every benchmark records ≥1 non-`tileops` baseline. Add a local torch fallback where a torch reference is a meaningful comparison; where it is not, require the external library and let the import fail.
+- Every benchmark records ≥1 non-`tileops` baseline.
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
 - Every case is named: a manifest `label`, or `id=` on `pytest.param`. Name the scenario (`serving-130m-4k`), not the parameters. Enforced by the `workload-names-lint` pre-commit hook.
 - A workload `label` omits the dtype; the case id appends it.

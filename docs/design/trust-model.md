@@ -92,10 +92,6 @@ consumers carry the reference instead. `TestBase` already declares
 `ref_program` abstract, so whichever class supplies it, a test without one
 cannot be instantiated.
 
-A benchmark whose baseline is deliberately not the reference — a different
-layout, a faster idiom, an external library — overrides `ref_program`. That is
-a benchmark decision and belongs in the benchmark.
-
 ```
 WorkloadBase (workloads/workload_base.py)  # gen_inputs(), and ref_program()
   |                                        # on the classes named for an op
