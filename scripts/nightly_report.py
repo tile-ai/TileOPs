@@ -277,6 +277,11 @@ def aggregate_bench_results(results: list[dict]) -> dict:
     return dict(ops)
 
 
+def count_bench_skips(results: list[dict]) -> int:
+    """Skipped cases, which are neither configs nor failures: without a count they vanish."""
+    return sum(1 for r in results if r["outcome"] == "skipped")
+
+
 def collect_bench_failures(results: list[dict]) -> list[dict]:
     """Collect failed benchmark results for reporting."""
     return [
@@ -358,9 +363,7 @@ def _history_deltas(bench_ops: dict, history_runs: list[dict]):
             if lat is None:
                 continue
             best = find_best_latency(history_runs, op, cfg["name"], key)
-            if not best:
-                # A zero reading is not a baseline to divide by, and the workflow turns a
-                # traceback into a warning: the night would lose report and history both.
+            if not best:  # a zero is not something to measure against
                 continue
             yield (
                 {
@@ -386,11 +389,7 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
 
 
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance improvements vs 14-day best.
-
-    Held to the same absolute floor as a regression: a tenth of a microsecond on a
-    two-microsecond kernel is noise whichever way it points.
-    """
+    """Detect performance improvements vs 14-day best, on the regression's absolute floor."""
     return [
         record
         for record, delta in _history_deltas(bench_ops, history_runs)
@@ -400,12 +399,7 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
-    """Find configs where tileops is significantly slower than its strongest baseline.
-
-    One alert per config, naming the baseline that beat tileops by the most. A config
-    timed against several baselines would otherwise alert once per baseline and read as
-    several problems.
-    """
+    """Find configs where tileops is slower than its strongest baseline: one alert each."""
     alerts = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
@@ -593,6 +587,7 @@ def generate_report(
     baseline_alerts: list[dict],
     coverage: list[dict] | None = None,
     coverage_prev: dict | None = None,
+    bench_skips: int = 0,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -616,6 +611,8 @@ def generate_report(
     # ── Summary ───────────────────────────────────────────────────────────
     corr_icon = _PASS if n_failures == 0 else f"{_FAIL} {n_failures} failed"
     bench_fail_icon = f"{_FAIL} {len(bench_failures)}" if bench_failures else f"{_PASS} None"
+    if bench_skips:
+        bench_fail_icon += f" &ensp;|&ensp; {_WARN} {bench_skips} skipped"
     reg_icon = f"{_PASS} None" if not regressions else f"{_WARN} {len(regressions)}"
     alert_icon = f"{_WARN} {len(baseline_alerts)}" if baseline_alerts else f"{_PASS} None"
 
@@ -807,9 +804,9 @@ def generate_report(
                 tflops = cfg.get("tileops_tflops")
                 bw = cfg.get("tileops_bandwidth_tbs")
                 variant = cfg.get("tileops_variant")
-                lat_str = f"{lat:.4f}" if lat else "-"
-                tflops_str = f"{tflops:.2f}" if tflops else "-"
-                bw_str = f"{bw:.2f}" if bw else "-"
+                lat_str = f"{lat:.4f}" if lat is not None else "-"
+                tflops_str = f"{tflops:.2f}" if tflops is not None else "-"
+                bw_str = f"{bw:.2f}" if bw is not None else "-"
 
                 # Collect all baselines for this config into rows
                 bl_rows = []
@@ -832,13 +829,12 @@ def generate_report(
                 else:
                     via_parts = []
                     for btag, bratio in bl_rows:
-                        r_str = f"{bratio:.1%}" if bratio else "-"
+                        r_str = f"{bratio:.1%}" if bratio is not None else "-"
                         via_parts.append(f"{btag} {r_str}")
                     via_str = ", ".join(via_parts)
-                    # The strongest baseline is the fastest one, which is the lowest
-                    # ratio: a row that beats eager torch and loses to inductor has lost.
-                    strongest = min((r for _, r in bl_rows if r), default=None)
-                    emoji = _ratio_emoji(strongest) if strongest else ""
+                    # Strongest baseline = fastest = lowest ratio.
+                    rows = [r for _, r in bl_rows if r is not None]
+                    emoji = _ratio_emoji(min(rows)) if rows else ""
                     lines.append(
                         f"| {emoji} | {op} | {cfg['name']} "
                         f"| {lat_str} | {tflops_str} | {bw_str} "
@@ -995,10 +991,12 @@ def main():
 
     bench_ops = None
     bench_failures = []
+    bench_skips = 0
     if args.bench_xml and Path(args.bench_xml).exists():
         bench_results = parse_bench_xml(args.bench_xml)
         bench_ops = aggregate_bench_results(bench_results)
         bench_failures = collect_bench_failures(bench_results)
+        bench_skips = count_bench_skips(bench_results)
 
     # Prune first: the carried-over artifact can hold entries older than the
     # window when a run gap exceeds the retention period, and the verdicts below
@@ -1024,6 +1022,7 @@ def main():
         baseline_alerts,
         coverage,
         coverage_prev,
+        bench_skips,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
