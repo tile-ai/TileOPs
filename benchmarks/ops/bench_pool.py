@@ -555,8 +555,7 @@ def _assert_matches_reference(fn, test, inputs: tuple) -> None:
     got, expected = fn(*inputs), test.ref_program(*inputs)
     if isinstance(got, tuple):
         got, expected = got[0], expected[0]
-    tol = 1e-5 if got.dtype is torch.float32 else 2e-2
-    torch.testing.assert_close(got.float(), expected.float(), atol=tol, rtol=tol)
+    torch.testing.assert_close(got, expected)
 
 
 def compiled_reference(test):
