@@ -192,7 +192,7 @@ def test_avg_pool1d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL1D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     # torch stays alongside the library baseline: it is what the nightly's ratio alert and
     # its history were measured against, and both numbers belong in the same row.
     bm.compare(
@@ -282,7 +282,7 @@ def test_avg_pool2d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL2D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -373,7 +373,7 @@ def test_avg_pool3d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL3D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -464,7 +464,7 @@ def test_max_pool2d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -515,7 +515,7 @@ def test_max_pool2d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_INDICES_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -606,7 +606,7 @@ def test_max_pool1d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -655,7 +655,7 @@ def test_max_pool1d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_INDICES_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -752,7 +752,7 @@ def test_max_pool3d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -805,7 +805,7 @@ def test_max_pool3d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -874,7 +874,7 @@ def test_adaptive_avg_pool2d_bench(
     op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_AVG_POOL2D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -902,7 +902,7 @@ def test_adaptive_max_pool2d_bench(
     op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,
@@ -934,7 +934,7 @@ def test_adaptive_max_pool2d_indices_bench(
     op = AdaptiveMaxPool2dIndicesFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME, op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
         *inputs,

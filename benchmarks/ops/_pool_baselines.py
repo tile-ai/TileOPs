@@ -1,15 +1,14 @@
-"""Baselines for pool benchmarks: direct cuDNN graph API and FlagGems.
+"""Baselines for pool benchmarks: cuDNN through its backend C API, and FlagGems.
 
-Private helper for ``bench_pool.py``. Follows the flash-attn pattern from
-``bench_gqa.py``: libraries are imported lazily and any miss falls back to
-the torch reference, so the bench file runs with or without the optional
-dependencies.
+Private helper for ``bench_pool.py``. Both libraries are imported when the op that
+selected them is benchmarked; a selected library that is missing raises, so a report
+cannot claim a baseline it did not run.
 
-The cuDNN side uses the v9 graph API's Resample node (the modern pooling
-op). nvidia-cudnn-frontend 1.27 does not bind Resample to Python yet ("Python
-API for resampling forward will be supported soon" — cuDNN FE docs), so this
-module drives the same node through the backend C API via ctypes, mirroring
-``cudnn_frontend/node/resample.h`` call for call.
+cuDNN is reached through the v9 backend's Resample node in ctypes, not a binding:
+nvidia-cudnn-frontend 1.27 exposes 141 graph ops and none of them is resample, and the
+legacy ``cudnnPoolingForward`` rejects bfloat16. Measured on an H200, the legacy entry
+point reaches the same kernel as the graph API (0.0867 vs 0.0865 ms device-busy), so
+this route costs nothing but the descriptor plumbing below.
 """
 
 import atexit
@@ -260,12 +259,11 @@ def cudnn_pool_fn(
     divisor_override: Optional[int] = None,
     return_indices: bool = False,
 ) -> Optional[Callable[[torch.Tensor], torch.Tensor]]:
-    """Return a direct-cuDNN pooling callable, or None if unsupported.
+    """Return a direct-cuDNN pooling callable, or None where Resample cannot express it.
 
-    Built on the v9 graph API Resample node. ``kernel_size``/``stride``/
-    ``padding`` are per-spatial-dim tuples (2D or 3D). Resample has no dilation, no divisor_override, and
-    its index output is a backward mask rather than torch's indices; those
-    cases return None.
+    ``kernel_size`` / ``stride`` / ``padding`` are per-spatial-dim tuples, 2D or 3D.
+    Resample has no dilation and no divisor_override, and its index output is a backward
+    mask rather than torch's indices.
     """
     if return_indices:
         return None
@@ -345,26 +343,17 @@ def cudnn_pool_fn(
                 pool_output_dim(n, k, s, p, ceil_mode)
                 for n, k, s, p in zip(x.shape[2:], kernel_size, stride, padding, strict=True)
             )
-            try:
-                built = _build(x, out_spatial, _CUDNN_DTYPES[x.dtype])
-                entry = (False, *built)
-            except RuntimeError:
-                # No engine for this dtype: pool in float32 and cast back.
-                # The math matches torch's fp32-accumulated half kernels, so
-                # results stay within the reference tolerance.
-                built = _build(x.float(), out_spatial, _CUDNN_DATA_FLOAT)
-                entry = (True, *built)
+            entry = _build(x, out_spatial, _CUDNN_DTYPES[x.dtype])
             state[key] = entry
-        cast, out_shape, plan, workspace = entry
-        x_in = x.float() if cast else x
-        y = torch.empty(out_shape, device=x.device, dtype=torch.float32 if cast else x.dtype)
+        out_shape, plan, workspace = entry
+        y = torch.empty(out_shape, device=x.device, dtype=x.dtype)
         varpack = c.create(_DESC_VARPACK, keep=False)
         c.set(varpack, _ATTR_VARPACK_UIDS, _TYPE_INT64, [0, 1], "uids")
         c.set(
             varpack,
             _ATTR_VARPACK_PTRS,
             _TYPE_VOID_PTR,
-            [x_in.data_ptr(), y.data_ptr()],
+            [x.data_ptr(), y.data_ptr()],
             "ptrs",
         )
         if workspace is not None:
@@ -372,7 +361,7 @@ def cudnn_pool_fn(
         c.finalize_or_raise(varpack, "varpack")
         c.execute(plan, varpack)
         c.destroy(varpack)
-        return y.to(x.dtype) if cast else y
+        return y
 
     return run
 
@@ -536,7 +525,16 @@ def _as_tuple(value, ndim: int) -> tuple:
     return (value,) * ndim
 
 
-def pool_baseline(op_name: str, test) -> tuple:
+def _assert_matches_reference(fn, test, inputs: tuple) -> None:
+    """A baseline that computes something else is worse than no baseline."""
+    got, expected = fn(*inputs), test.ref_program(*inputs)
+    if isinstance(got, tuple):
+        got, expected = got[0], expected[0]
+    tol = 1e-5 if got.dtype is torch.float32 else 2e-2
+    torch.testing.assert_close(got.float(), expected.float(), atol=tol, rtol=tol)
+
+
+def pool_baseline(op_name: str, test, *inputs) -> tuple:
     """Return (tag, callable) for op_name's baseline.
 
     An op this table does not name, and a case the selected library cannot express,
@@ -563,4 +561,5 @@ def pool_baseline(op_name: str, test) -> tuple:
     fn = factory(kind, kernel, stride, _as_tuple(test.padding, ndim), test.ceil_mode, **kwargs)
     if fn is None:
         return "torch-ref", test.ref_program
+    _assert_matches_reference(fn, test, inputs)
     return choice, fn
