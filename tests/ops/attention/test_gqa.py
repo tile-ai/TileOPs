@@ -1599,10 +1599,7 @@ def test_dense_and_packed_attention_have_distinct_runtime_abis() -> None:
         for key, kernel_cls in _SHIPPED_DENSE_MAP.items()
         if key.startswith("gqa_prefill_")
     ]
-    assert all(
-        issubclass(kernel_cls, DensePrefillKernel)
-        for kernel_cls in dense_prefill_classes
-    )
+    assert all(issubclass(kernel_cls, DensePrefillKernel) for kernel_cls in dense_prefill_classes)
     dense_abi = {
         "q",
         "k",
@@ -1667,9 +1664,7 @@ def test_gqa_prefill_dense_callable_reselects_for_each_shape() -> None:
     assert [kwargs["dim"] for _, _, kwargs in calls] == [64, 128]
     assert [kwargs["max_seqlen_q"] for _, _, kwargs in calls] == [32, 64]
     assert [kwargs["max_seqlen_kv"] for _, _, kwargs in calls] == [48, 96]
-    assert [kwargs["sm_scale"] for _, _, kwargs in calls] == pytest.approx(
-        [64**-0.5, 128**-0.5]
-    )
+    assert [kwargs["sm_scale"] for _, _, kwargs in calls] == pytest.approx([64**-0.5, 128**-0.5])
     assert [kwargs["rotary_dim"] for _, _, kwargs in calls] == [64, 128]
     entry = next(iter(op.built_kernels("gqa_dense").values()))
     assert len(entry._kernel_cache) == 2

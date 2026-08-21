@@ -97,9 +97,7 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
 
         return kernel
 
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
-    )
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
     op = GroupedQueryAttentionDenseFwdOp(
         dtype=torch.float16,
         target="gqa_fake",
@@ -115,9 +113,7 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
     assert output.shape == q.shape
     assert len(builds) == 1, "one input signature builds one external callable"
     specs, params = builds[0]
-    assert specs == tuple(
-        None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0]
-    )
+    assert specs == tuple(None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0])
     assert params == {
         "is_causal": True,
         "sm_scale": 8**-0.5,
@@ -150,9 +146,7 @@ def test_dense_gqa_target_gets_rope_configuration_and_caller_owned_tables():
 
         return kernel
 
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
-    )
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
     op = GroupedQueryAttentionDenseFwdOp(
         pos_encoding_mode="rope",
         rotary_dim=4,
@@ -195,9 +189,7 @@ def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
         return kernel
 
     registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
-    )
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
     op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         pos_encoding_mode="rope",
@@ -229,9 +221,7 @@ def test_dense_gqa_target_preserves_present_optional_inputs():
 
         return kernel
 
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
-    )
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
     op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         dtype=torch.float16,
@@ -251,9 +241,7 @@ def test_dense_gqa_target_preserves_present_optional_inputs():
     assert all(spec is not None for spec in specs[:6])
     assert specs[6:] == (None, None)
     assert runs[0][6:] == (None, None)
-    assert specs == tuple(
-        None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0]
-    )
+    assert specs == tuple(None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0])
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
@@ -264,9 +252,7 @@ def test_dense_gqa_rejects_fp8_without_output_dtype_before_external_builder():
         builds.append((specs, params))
         raise AssertionError("an invalid public call must not reach the target")
 
-    registry.register_kernel_builder(
-        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
-    )
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
     op = GroupedQueryAttentionDenseFwdOp(
         target="gqa_fake",
     )

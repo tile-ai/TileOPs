@@ -196,18 +196,14 @@ def test_packed_prefill_rejects_calls_no_candidate_serves(ctor: dict, call: dict
         pytest.param({"softcap": 2.0}, torch.float16, "gqa_decode_kernel", id="softcap"),
     ],
 )
-def test_dense_decode_dispatch_is_unchanged(
-    ctor: dict, dtype: torch.dtype, expected: str
-) -> None:
+def test_dense_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
     """The S_q=1 Dense region keeps its batch-1 fast path and fallbacks."""
     shape = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
     shape.update({k: v for k, v in ctor.items() if k in shape})
     op = GroupedQueryAttentionDenseFwdOp(
         **{k: v for k, v in ctor.items() if k not in shape or k == "softcap"}
     )
-    q = torch.empty(
-        shape["batch"], 1, shape["heads"], shape["dim"], device="cuda", dtype=dtype
-    )
+    q = torch.empty(shape["batch"], 1, shape["heads"], shape["dim"], device="cuda", dtype=dtype)
     k = torch.empty(
         shape["batch"],
         shape["seqlen_kv"],

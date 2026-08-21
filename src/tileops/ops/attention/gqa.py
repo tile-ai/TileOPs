@@ -254,9 +254,7 @@ class _DenseCompileInfo:
     rotary_dim: Optional[int]
     rope_layout: str
 
-    def for_tensors(
-        self, q: torch.Tensor, k: torch.Tensor, *, tune: bool
-    ) -> AttentionCall:
+    def for_tensors(self, q: torch.Tensor, k: torch.Tensor, *, tune: bool) -> AttentionCall:
         """Resolve dynamic shape facts into the existing attention call contract."""
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape

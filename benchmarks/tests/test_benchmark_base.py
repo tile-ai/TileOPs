@@ -81,9 +81,7 @@ def test_dense_gqa_benchmarks_partition_every_non_fp8_manifest_case():
         for workload in load_workloads("GroupedQueryAttentionDenseFwdOp")
         if workload.get("input_dtype") is None
     )
-    actual = len(bench_gqa._GQA_FWD_BENCH_PARAMS) + len(
-        bench_gqa_decode._GQA_DECODE_BENCH_PARAMS
-    )
+    actual = len(bench_gqa._GQA_FWD_BENCH_PARAMS) + len(bench_gqa_decode._GQA_DECODE_BENCH_PARAMS)
     assert actual == expected
 
 

@@ -142,9 +142,7 @@ def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float8_e4m3fn)
     v = torch.empty_like(k)
 
-    output = _gqa_dense_fwd_fake(
-        q, k, v, None, None, None, None, None, op._instance_key
-    )
+    output = _gqa_dense_fwd_fake(q, k, v, None, None, None, None, None, op._instance_key)
 
     assert output.shape == q.shape
     assert output.dtype == torch.bfloat16
