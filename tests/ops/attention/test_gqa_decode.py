@@ -39,7 +39,7 @@ def _selected_decode_kernel(
     q = torch.empty(batch, 1, heads, dim, device="cuda", dtype=dtype)
     k = torch.empty(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
     entry = op._get_entry((q, k, k), dtype, q.device)
-    return entry._kernel_for(entry._selection_facts(q, k))
+    return entry._kernel_for(entry._selection_facts(q, k)).kernel
 
 
 @GroupedQueryAttentionDecodeFixture

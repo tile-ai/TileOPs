@@ -32,6 +32,7 @@ MultiHeadAttentionFwdOp:
     # Llama-3.1-70B (H=64, D=128)
     - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short"}
     - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long"}
+    - {q_shape: [4, 1, 32, 128], kv_shape: [4, 1, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-decode"}
 
   roofline:
     func: "tileops.perf.formulas.mha_fwd_roofline"
@@ -42,6 +43,8 @@ MultiHeadAttentionFwdOp:
       gqa_prefill_dense_fwd_kernel: GQAPrefillDenseFwdKernel
       gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
       gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
+      gqa_decode_kernel: GQADecodeKernel
+      gqa_decode_bs1_kernel: GQADecodeBs1Kernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py

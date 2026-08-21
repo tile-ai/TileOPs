@@ -91,7 +91,7 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
         builds.append((specs, params))
 
         def kernel(*inputs):
-            assert all(tensor.is_contiguous() for tensor in inputs)
+            assert all(tensor is None or tensor.is_contiguous() for tensor in inputs)
             runs.append(inputs)
             return torch.empty_like(inputs[0], dtype=params["dtype"])
 
@@ -115,7 +115,9 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
     assert output.shape == q.shape
     assert len(builds) == 1, "one input signature builds one external callable"
     specs, params = builds[0]
-    assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
+    assert specs == tuple(
+        None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0]
+    )
     assert params == {
         "is_causal": True,
         "sm_scale": 8**-0.5,
@@ -128,7 +130,8 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
         "rope_layout": "neox",
     }
     assert tuple(params) == op.__manifest_param_names__
-    assert len(runs[0]) == 3
+    assert len(runs[0]) == 8
+    assert runs[0][3:] == (None, None, None, None, None)
     assert len(runs) == 2, "one callable serves different contents of one signature"
     assert not torch.equal(runs[0][0], runs[1][0])
     assert runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
@@ -167,8 +170,10 @@ def test_dense_gqa_target_gets_rope_configuration_and_caller_owned_tables():
     assert output.shape == q.shape
     assert len(builds) == 1
     specs, params = builds[0]
-    assert len(specs) == 5, "caller-owned RoPE tables are optional runtime inputs"
-    assert len(runs[0]) == 5
+    assert len(specs) == len(runs[0]) == 8
+    assert specs[3:6] == (None, None, None)
+    assert runs[0][3:6] == (None, None, None)
+    assert specs[6:] == (TensorSpec.of(rope_cos), TensorSpec.of(rope_sin))
     assert params["pos_encoding_mode"] == "rope"
     assert params["rotary_dim"] == 4
     assert params["rope_layout"] == "interleaved"
@@ -242,9 +247,13 @@ def test_dense_gqa_target_preserves_present_optional_inputs():
     assert output.dtype == torch.float16
     assert len(builds) == 1
     specs, _ = builds[0]
-    assert len(specs) == 6
-    assert len(runs[0]) == 6
-    assert specs == tuple(TensorSpec.of(tensor) for tensor in runs[0])
+    assert len(specs) == len(runs[0]) == 8
+    assert all(spec is not None for spec in specs[:6])
+    assert specs[6:] == (None, None)
+    assert runs[0][6:] == (None, None)
+    assert specs == tuple(
+        None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0]
+    )
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")

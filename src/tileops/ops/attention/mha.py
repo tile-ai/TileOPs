@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
+    GQADecodeBs1Kernel,
+    GQADecodeKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
@@ -64,6 +66,8 @@ class MultiHeadAttentionFwdOp(Op):
             "gqa_prefill_dense_fwd_kernel": GQAPrefillDenseFwdKernel,
             "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
+            "gqa_decode_kernel": GQADecodeKernel,
+            "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
         }
 
     def kernel_delegates(self) -> tuple[GroupedQueryAttentionDenseFwdOp, ...]:

@@ -11,6 +11,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
 from tileops.kernels.attention.prefill import DensePrefillKernel, PackedPrefillKernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -1710,6 +1711,41 @@ def test_dense_callable_dispatches_prefill_and_decode_from_one_public_abi() -> N
 
 
 @pytest.mark.smoke
+def test_dense_decode_abi_follows_the_selected_role_not_the_builtin_class() -> None:
+    """An independent slot replacement still receives the BHD decode ABI."""
+
+    class IndependentDecodeKernel(Kernel):
+        supported_archs = [0]
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.seen_q_shape = None
+
+        def forward(
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            real_seqlen_kv: int,
+        ) -> torch.Tensor:
+            self.seen_q_shape = q.shape
+            assert q.ndim == 3
+            assert real_seqlen_kv == k.shape[1] == v.shape[1]
+            return torch.empty_like(q)
+
+    op = GroupedQueryAttentionDenseFwdOp(
+        kernel_map={"gqa_decode_bs1_kernel": IndependentDecodeKernel}
+    )
+    q = torch.randn(1, 1, 8, 64, dtype=torch.float16)
+    k = torch.randn(1, 48, 2, 64, dtype=torch.float16)
+
+    assert op(q, k, torch.randn_like(k)).shape == q.shape
+    entry = next(iter(op.built_kernels("gqa_dense").values()))
+    ((kernel,),) = [tuple(entry._retained_kernels)]
+    assert isinstance(kernel, IndependentDecodeKernel)
+    assert kernel.seen_q_shape == (1, 8, 64)
+
+
+@pytest.mark.smoke
 def test_dense_single_query_rope_uses_feature_complete_prefill_family() -> None:
     """S_q=1 alone does not force decode when that family lacks a requested feature."""
     op = GroupedQueryAttentionDenseFwdOp(
@@ -1723,6 +1759,43 @@ def test_dense_single_query_rope_uses_feature_complete_prefill_family() -> None:
     rope = torch.randn(48, 32, dtype=torch.float16)
     op(q, k, torch.randn_like(k), rope_cos=rope, rope_sin=rope)
     assert [slot for slot, _, _ in calls] == ["gqa_prefill_dense_fwd_kernel"]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("batch", "dim", "expected_kernel"),
+    [(1, 128, "GQADecodeBs1Kernel"), (4, 64, "GQADecodeKernel")],
+    ids=["bs1", "general"],
+)
+def test_dense_decode_cuda_graph_replay_reuses_warmed_specialization(
+    batch: int,
+    dim: int,
+    expected_kernel: str,
+) -> None:
+    heads, heads_kv, seq_len_kv = 8, 2, 256
+    op = GroupedQueryAttentionDenseFwdOp()
+    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+
+    op(q, k, v)
+    torch.cuda.synchronize()
+    builtin = next(iter(op.built_kernels("gqa_dense").values()))
+    assert len(builtin._kernel_cache) == 1
+    selected = next(iter(builtin._kernel_cache.values()))
+    assert type(selected.kernel).__name__ == expected_kernel
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = op(q, k, v)
+
+    q.zero_()
+    graph.replay()
+    torch.cuda.synchronize()
+
+    reference = op(q, k, v)
+    torch.testing.assert_close(captured, reference, atol=1e-2, rtol=1e-2)
+    assert len(builtin._kernel_cache) == 1
 
 
 @pytest.mark.smoke

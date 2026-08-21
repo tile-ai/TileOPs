@@ -84,7 +84,7 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
         q = torch.empty(1, 1, 32, 128, device="cuda", dtype=dtype)
         k = torch.empty(1, 8192, 4, 128, device="cuda", dtype=dtype)
         entry = op._get_entry((q, k, k), dtype, q.device)
-        kernels.append(entry._kernel_for(entry._selection_facts(q, k)))
+        kernels.append(entry._kernel_for(entry._selection_facts(q, k)).kernel)
     fp16, bf16 = kernels
     assert fp16.__class__.__name__ == "GQADecodeBs1Kernel"
     assert bf16.__class__.__name__ == "GQADecodeKernel"

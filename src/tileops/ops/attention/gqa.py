@@ -25,7 +25,6 @@ from tileops.kernels.attention import (
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
-from tileops.kernels.attention.prefill import DensePrefillKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
@@ -294,6 +293,14 @@ class _DenseCompileInfo:
         )
 
 
+@dataclass(frozen=True)
+class _DenseKernelEntry:
+    """One selected implementation plus the runtime ABI its role requires."""
+
+    kernel: Kernel
+    is_decode: bool
+
+
 @dataclass
 class _DenseBuiltin:
     """Builtin callable that dispatches each Dense shape to one native kernel."""
@@ -302,7 +309,7 @@ class _DenseBuiltin:
     select_kernel_key: Callable[[tuple[str, ...], object], str]
     compile_info: _DenseCompileInfo
     tune_enabled: Callable[[], bool]
-    _kernel_cache: OrderedDict[AttentionCall, Kernel] = field(
+    _kernel_cache: OrderedDict[AttentionCall, _DenseKernelEntry] = field(
         default_factory=OrderedDict, repr=False
     )
     # Kept as a list so Op._entry_kernels() can enumerate and autotune the
@@ -325,7 +332,7 @@ class _DenseBuiltin:
             and call.window_size_right == -1
         )
 
-    def _kernel_for(self, call: AttentionCall) -> Kernel:
+    def _kernel_for(self, call: AttentionCall) -> _DenseKernelEntry:
         # Tuning is lifecycle state, not part of the specialization identity.
         # op.autotune() tunes retained kernels and flips tune_enabled() for
         # specializations constructed after that point.
@@ -340,7 +347,8 @@ class _DenseBuiltin:
             if cached is not None:
                 return cached
 
-            if self._uses_decode_kernel(call):
+            is_decode = self._uses_decode_kernel(call)
+            if is_decode:
                 key = self.select_kernel_key(DENSE_FWD_DECODE_KEYS, call)
                 kernel = self.kernel_map[key](
                     call.batch,
@@ -353,56 +361,61 @@ class _DenseBuiltin:
                     softcap=call.softcap,
                     tune=call.tune,
                 )
-                if not isinstance(kernel, (GQADecodeKernel, GQADecodeBs1Kernel)):
-                    raise TypeError(
-                        f"Dense decode selected an incompatible kernel: {type(kernel).__name__}"
-                    )
             else:
                 key = self.select_kernel_key(DENSE_FWD_PREFILL_KEYS, call)
                 kernel = _build_prefill_kernel(self.kernel_map, key, call)
-                if not isinstance(kernel, DensePrefillKernel):
-                    raise TypeError(
-                        f"Dense attention selected an incompatible kernel: {type(kernel).__name__}"
-                    )
-            self._kernel_cache[signature] = kernel
+            entry = _DenseKernelEntry(kernel=kernel, is_decode=is_decode)
+            self._kernel_cache[signature] = entry
             self._retained_kernels.append(kernel)
             if len(self._kernel_cache) > _DENSE_KERNEL_CACHE_SIZE:
                 _, evicted = self._kernel_cache.popitem(last=False)
                 self._retained_kernels = [
-                    retained for retained in self._retained_kernels if retained is not evicted
+                    retained
+                    for retained in self._retained_kernels
+                    if retained is not evicted.kernel
                 ]
-            return kernel
+            return entry
 
     def __call__(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        *optional_inputs: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        scale_count = 3 if self.compile_info.input_dtype == fp8_dtype() else 0
-        rope_count = 2 if self.compile_info.fuse_rope else 0
-        if len(optional_inputs) != scale_count + rope_count:
-            raise ValueError("Dense attention optional-input presence does not match its configuration")
-        scales = optional_inputs[:scale_count]
-        rope_tables = optional_inputs[scale_count:]
-        call = self._selection_facts(q, k)
-        kernel = self._kernel_for(call)
-        if isinstance(kernel, (GQADecodeKernel, GQADecodeBs1Kernel)):
-            return kernel(q.squeeze(1), k, v, call.max_seqlen_kv).unsqueeze(1)
-        if rope_tables:
-            rope_cos, rope_sin = rope_tables
+        scales = (q_scale, k_scale, v_scale)
+        if self.compile_info.input_dtype == fp8_dtype():
+            if any(scale is None for scale in scales):
+                raise ValueError("FP8 Dense callable requires all three scales")
+            kernel_scales = tuple(scale for scale in scales if scale is not None)
         else:
+            if any(scale is not None for scale in scales):
+                raise ValueError("16-bit Dense callable does not accept scales")
+            kernel_scales = ()
+        if self.compile_info.fuse_rope:
+            if rope_cos is None or rope_sin is None:
+                raise ValueError("fused RoPE Dense callable requires both tables")
+        elif rope_cos is not None or rope_sin is not None:
+            raise ValueError("non-RoPE Dense callable does not accept RoPE tables")
+        call = self._selection_facts(q, k)
+        entry = self._kernel_for(call)
+        if entry.is_decode:
+            return entry.kernel(q.squeeze(1), k, v, call.max_seqlen_kv).unsqueeze(1)
+        if rope_cos is None:
             # The Dense ABI is uniform across specializations. Non-RoPE kernels
             # compile the table reads away. A 2-D one-element view satisfies the
             # ABI without allocating or retaining an internal RoPE tensor. The
             # native-FP8 kernel declares this unused operand as FP8 in that mode.
             rope_cos = rope_sin = q.reshape(-1)[:1].reshape(1, 1)
-        return kernel(
+        return entry.kernel(
             q,
             k,
             v,
-            *scales,
+            *kernel_scales,
             rope_cos=rope_cos,
             rope_sin=rope_sin,
         )
@@ -571,7 +584,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
     def _get_entry(
         self,
-        inputs: tuple[torch.Tensor, ...],
+        inputs: tuple[Optional[torch.Tensor], ...],
         dtype: torch.dtype,
         device: torch.device,
     ) -> _DenseBuiltin:
@@ -702,7 +715,9 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        inputs = (q, k, v, *scales, *rope_tables)
+        normalized_scales = scales if scales else (None, None, None)
+        normalized_rope = rope_tables if rope_tables else (None, None)
+        inputs = (q, k, v, *normalized_scales, *normalized_rope)
         entry = self._get_entry(inputs, q.dtype, q.device)
         output = entry(*inputs)
         self._roofline_state = {

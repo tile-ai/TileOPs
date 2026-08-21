@@ -34,6 +34,25 @@ class _FakeSquareDenseKernel(Kernel):
         return None
 
 
+class _FakeDecodeKernel(Kernel):
+    """Independent replacement for the general contiguous decode slot."""
+
+    general = True
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.seen_q_shape = None
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        real_seqlen_kv: int,
+    ) -> torch.Tensor:
+        self.seen_q_shape = q.shape
+        return torch.empty_like(q)
+
+
 class _FakeLegacyMhaBwdKernel(Kernel):
     def __init__(
         self,
@@ -221,6 +240,25 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path() -> None:
 
     assert key == "gqa_prefill_square_fwd_kernel"
     assert delegate.kernel_map[key] is _FakeSquareDenseKernel
+
+
+@pytest.mark.smoke
+def test_mha_fwd_forwards_the_dense_decode_slot() -> None:
+    op = MultiHeadAttentionFwdOp(
+        batch=2,
+        heads=8,
+        seq_len=1,
+        dim=64,
+        kernel_map={"gqa_decode_kernel": _FakeDecodeKernel},
+    )
+    q = torch.randn(2, 1, 8, 64, dtype=torch.float16)
+
+    assert op(q, q, q).shape == q.shape
+    (delegate,) = op.kernel_delegates()
+    builtin = next(iter(delegate.built_kernels("gqa_dense").values()))
+    ((kernel,),) = [tuple(builtin._retained_kernels)]
+    assert isinstance(kernel, _FakeDecodeKernel)
+    assert kernel.seen_q_shape == (2, 8, 64)
 
 
 @pytest.mark.smoke
