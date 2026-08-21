@@ -79,7 +79,7 @@ def test_pool_baseline_routes_or_says_so():
     express the workload. Anything else must reach the library — a missing one raises rather
     than reporting torch under a case that claims a library baseline.
     """
-    from benchmarks.ops._pool_baselines import _BASELINE, pool_baseline
+    from benchmarks.ops.bench_pool import _BASELINE, pool_baseline
 
     class _Case:
         kernel_size, stride, padding, ceil_mode = 3, 2, 0, False
