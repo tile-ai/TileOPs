@@ -166,7 +166,3 @@ def test_gla_decode_rejects_manifest_shape_mismatch() -> None:
 
     with pytest.raises(ValueError, match="gk must have shape"):
         op.forward(q, k, v, gk, state)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

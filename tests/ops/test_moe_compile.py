@@ -215,7 +215,3 @@ for _op_cls in (
     MoeGroupedGemmNopadFwdOp,
 ):
     register_compile_contract(_op_cls)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

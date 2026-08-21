@@ -30,7 +30,3 @@ def test_mha_decode(
     test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)
     op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, tune=tune)
     test.check(op, *test.gen_inputs(), atol=2e-3, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

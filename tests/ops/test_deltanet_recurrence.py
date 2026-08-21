@@ -322,7 +322,3 @@ def test_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None:
                 "raw_maxrregcount": 146,
             },
         )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

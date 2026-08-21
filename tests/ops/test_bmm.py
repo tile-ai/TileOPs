@@ -457,7 +457,3 @@ def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     b_f = b_kn.float() * scale_b
     ref = torch.bmm(a_f, b_f).to(torch.bfloat16)
     torch.testing.assert_close(out, ref, atol=0.05, rtol=0.05)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

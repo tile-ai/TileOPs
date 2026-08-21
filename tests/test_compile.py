@@ -48,7 +48,3 @@ def test_mha_cold_fullgraph_trace_matches_eager():
 
     assert output.shape == q.shape
     torch.testing.assert_close(output, op(q, k, v))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

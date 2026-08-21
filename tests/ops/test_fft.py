@@ -38,7 +38,3 @@ def test_fft_c2c(n: int, dtype: torch.dtype, tune: bool, batch_shape: tuple) -> 
     else:
         tolerances = {"atol": 1e-8, "rtol": 1e-8}
     test.check(op, *test.gen_inputs(), **tolerances)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

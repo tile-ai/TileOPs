@@ -186,6 +186,57 @@ class MeanPoolingFwdKernel(Kernel):
         self.init_config(config, tune)
 
     @property
+    def autotune_supply_prog(self):
+        """Supply autotuning the chunk map a real call carries.
+
+        The kernel takes each chunk's token range from ``offsets[seq_id]`` and
+        ``offsets[seq_id + 1]`` and divides by that range's length, so random
+        values leave it empty or inverted.
+        """
+        from tilelang.utils.device import get_current_device
+        from tilelang.utils.tensor import get_tensor_supply
+
+        default_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
+        seq_len, seq_num = self.seq_len, self.seq_num
+        chunk_size, chunks_per_batch = self.chunk_size, self.chunks_per_batch
+
+        def supply_prog(params):
+            device = get_current_device()
+            # Sequences split the tokens evenly; a slot past the last sequence
+            # clamps onto it and repeats a chunk of the same size.
+            bounds = torch.linspace(0, seq_len, seq_num + 1, device=device).to(torch.int32)
+            per_seq = max(1, seq_len // seq_num)
+            chunks_per_seq = max(1, (per_seq + chunk_size - 1) // chunk_size)
+            slots = torch.arange(chunks_per_batch, device=device)
+            indices = torch.stack(
+                ((slots // chunks_per_seq).clamp(max=seq_num - 1), slots % chunks_per_seq),
+                dim=1,
+            ).to(torch.int32)
+
+            supplied = []
+            matched = 0
+            for param in params:
+                shape = list(param.shape)
+                if str(param.dtype) != "int32":
+                    supplied.append(default_supply(param))
+                elif shape == [seq_num + 1]:
+                    supplied.append(bounds)
+                    matched += 1
+                elif shape == [chunks_per_batch, 2]:
+                    supplied.append(indices)
+                    matched += 1
+                else:
+                    supplied.append(default_supply(param))
+            if matched != 2:
+                raise RuntimeError(
+                    f"autotuning {type(self).__name__} expects int32 offsets "
+                    f"[{seq_num + 1}] and indices [{chunks_per_batch}, 2], matched {matched}"
+                )
+            return supplied
+
+        return supply_prog
+
+    @property
     def default_config(self) -> dict:
         return {
             "bdim": 128,

@@ -367,10 +367,6 @@ def test_gated_deltanet_prefill_dense_transition_reference() -> None:
     torch.testing.assert_close(scan_final_state, serial_final_state, atol=5e-4, rtol=5e-4)
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 # ----------------------------------------------------------------------
 # Cross-layout contract for the Gated DeltaNet prefill roofline.
 # ----------------------------------------------------------------------

@@ -164,7 +164,3 @@ def test_gqa_decode_bs1_group4() -> None:
     assert op._get_kernel(torch.float16).__class__.__name__ == "GQADecodeBs1Kernel"
     test = GroupedQueryAttentionDecodeTest(1, 32, 8, 4096, 128, torch.float16)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

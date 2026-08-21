@@ -412,7 +412,3 @@ def test_tune_true_reaches_the_sweep(monkeypatch, kernel_cls) -> None:
 
     assert calls == [kernel_cls.__name__]
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

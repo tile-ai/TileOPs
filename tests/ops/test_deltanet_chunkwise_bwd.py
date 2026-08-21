@@ -134,7 +134,3 @@ def test_deltanet_bwd(
             **tols,
             msg=lambda m, n=name: f"{n}: {m}",
         )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

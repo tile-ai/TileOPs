@@ -172,7 +172,3 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
     y = op(x, rm, rv, weight, bias)
     assert isinstance(y, torch.Tensor)
     assert y.shape == x.shape
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

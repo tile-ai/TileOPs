@@ -150,7 +150,3 @@ def test_gated_deltanet_bthd_matches_the_head_major_op(
     torch.testing.assert_close(production[1], legacy[1], **tols)
     torch.testing.assert_close(production[2].permute(0, 2, 1, 3), legacy[2], **tols)
     torch.testing.assert_close(production[3].permute(0, 2, 1, 3), legacy[3], **tols)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

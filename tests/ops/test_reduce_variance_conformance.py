@@ -256,7 +256,3 @@ def test_std_unaligned_innermost(dim) -> None:
     ref = _ref_std(x, dim, False, 1)
     assert y.shape == ref.shape
     torch.testing.assert_close(y, ref, **_tol(dtype))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -718,7 +718,3 @@ def test_logical_reduce_returns_bool(op_name: str) -> None:
     x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
     out = op(x)
     assert out.dtype == torch.bool
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

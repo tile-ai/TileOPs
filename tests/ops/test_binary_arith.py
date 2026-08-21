@@ -1234,7 +1234,3 @@ def test_add_bool_broadcast() -> None:
     with torch.no_grad():
         out = op(a, b)
     _exact_compare(out, ref)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -305,7 +305,3 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), f"max err: {(y - y_ref).abs().max()}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

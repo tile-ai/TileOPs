@@ -163,7 +163,3 @@ def test_mean_pooling_op(
     op = MeanPoolingForwardOp(**params)
     inputs = test.gen_inputs()
     test.check(op, *inputs, atol=1e-3, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

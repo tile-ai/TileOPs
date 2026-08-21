@@ -176,7 +176,3 @@ def test_gated_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
 
     with pytest.raises(ValueError, match="g must have shape"):
         op.forward(q, k, v, g, beta, state)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -25,3 +25,5 @@
 - Inline roofline state contract: for every `signature.inputs` / `signature.params` name **referenced** by the op's manifest `roofline` expressions, the op exposes it on `self`. Inputs: `self.<input>` with `.shape` and `.ndim`, OR `self.<input>_shape` as a shape tuple/list. Params: `self.<param>`. Unreferenced names need not be exposed. See [docs/design/roofline.md §4.4.3](../../docs/design/roofline.md).
 
 - Dynamo-traced `forward` MUST NOT construct a `Kernel` or enter a TileLang builder; call-time kernel resolution goes through the compile dispatch boundary. See [ops-design.md](../../docs/design/ops-design.md#compile-dispatch-boundary).
+
+- A kernel whose integer tensor inputs decide how much work it runs supplies them through `autotune_supply_prog`; one whose integer inputs are data or masks sets `autotune_accepts_random_int_inputs = True` with the reason. `tune_jit_kernel` refuses the unanswered case. **Why:** TileLang generates an unsupplied integer tensor from `randint(-2, 3)`, so every candidate times a collapsed kernel.

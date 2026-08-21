@@ -237,6 +237,53 @@ class GroupedGemmKernel(Kernel):
         self.init_config(config, tune)
 
     @property
+    def autotune_supply_prog(self):
+        """Supply autotuning the batch metadata a real call carries.
+
+        Both templates read a group's row count out of this metadata. Both offset
+        vectors take the tight prefix sum, which puts
+        ``batch_padded_offsets[-1] + batch_sizes[-1]`` at ``batch_sum`` and so
+        keeps every tile in the K-loop.
+        """
+        from tilelang.utils.device import get_current_device
+        from tilelang.utils.tensor import get_tensor_supply
+
+        default_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
+        batch_count = self.batch_count
+        base, extra = divmod(self.batch_sum, batch_count)
+
+        def supply_prog(params):
+            device = get_current_device()
+            sizes = torch.full((batch_count,), base, dtype=torch.int32, device=device)
+            sizes[:extra] += 1
+            offsets = torch.zeros(batch_count, dtype=torch.int32, device=device)
+            offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+
+            # Matched by position among themselves: the prim_func takes
+            # batch_sizes, then batch_offsets, then batch_padded_offsets.
+            is_metadata = [
+                str(p.dtype) == "int32" and list(p.shape) == [batch_count] for p in params
+            ]
+            if sum(is_metadata) != 3:
+                raise RuntimeError(
+                    f"autotuning {type(self).__name__} expects 3 int32 [{batch_count}] "
+                    f"parameters (batch_sizes, batch_offsets, batch_padded_offsets), "
+                    f"got {sum(is_metadata)}"
+                )
+
+            seen = 0
+            inputs = []
+            for param, metadata in zip(params, is_metadata, strict=True):
+                if metadata:
+                    inputs.append(sizes if seen == 0 else offsets)
+                    seen += 1
+                else:
+                    inputs.append(default_supply(param))
+            return inputs
+
+        return supply_prog
+
+    @property
     def default_config(self) -> dict:
         return _DEFAULT_CONFIGS[(self.transpose_a, self.transpose_b)]
 

@@ -1243,7 +1243,3 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
 
     assert kernel.kwargs["max_seqlen_q"] == max_seqlen_q
     assert kernel.kwargs["max_seqlen_kv"] == max_seqlen_kv
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

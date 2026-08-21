@@ -374,7 +374,3 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
     assert torch.allclose(y, ref, **_tol(dtype)), (
         f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -249,7 +249,3 @@ def test_logical_int_bool_matrix(
     with torch.no_grad():
         out = op(a, b)
     _bool_compare(out, ref)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

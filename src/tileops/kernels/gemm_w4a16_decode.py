@@ -134,6 +134,10 @@ def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
 class GemmW4A16DecodeKernel(Kernel):
     """Fuse nibble unpacking, affine dequantization, and the M=1 GEMV."""
 
+    #: ``packed_weight`` and ``weight_zero`` are uint8 payloads; the K loop is
+    #: ``k // block_k``.
+    autotune_accepts_random_int_inputs: bool = True
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod

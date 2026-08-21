@@ -113,7 +113,3 @@ def test_nsa_varlen_op(
     }
     op = NSAFwdVarlenOp(**params)
     test.check(op, *test.gen_inputs(), atol=5e-4, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -49,7 +49,3 @@ def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
     out = op(cond, inp, other)
     ref = torch.where(cond, inp, other)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

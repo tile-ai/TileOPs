@@ -87,7 +87,3 @@ class TestBatchNormCustomOp:
         compiled = torch.compile(op, fullgraph=False)
         gx, gw, gb = compiled(grad_out, x, weight, mean, rstd)
         assert gx.shape == x.shape
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

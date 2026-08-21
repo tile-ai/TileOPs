@@ -53,13 +53,14 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 
 Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles a dtype-specialized program, so `dtype` is a ctor argument here. The op supplies it from the tensors at `forward()`.
 
-| Attribute          | Type                    | Purpose                                        |
-| ------------------ | ----------------------- | ---------------------------------------------- |
-| `dtype`            | `Optional[torch.dtype]` | Element type this kernel is specialized for    |
-| `config`           | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.) |
-| `autotune_configs` | `Optional[list[dict]]`  | Search space for autotuning                    |
-| `supported_archs`  | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)     |
-| `kernel`           | `Callable`              | Compiled TileLang kernel function              |
+| Attribute                            | Type                    | Purpose                                                             |
+| ------------------------------------ | ----------------------- | ------------------------------------------------------------------- |
+| `dtype`                              | `Optional[torch.dtype]` | Element type this kernel is specialized for                         |
+| `config`                             | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.)                      |
+| `autotune_configs`                   | `Optional[list[dict]]`  | Search space for autotuning                                         |
+| `supported_archs`                    | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)                          |
+| `kernel`                             | `Callable`              | Compiled TileLang kernel function                                   |
+| `autotune_accepts_random_int_inputs` | `bool`                  | Whether autotuning may generate the integer tensor inputs at random |
 
 Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 

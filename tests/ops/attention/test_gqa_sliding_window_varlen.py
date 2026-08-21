@@ -330,10 +330,6 @@ def test_gqa_sliding_window_varlen_fwd_op(
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 # ----------------------------------------------------------------------
 # Visible-score accounting for the packed-varlen and sliding-window GQA rooflines.
 # ----------------------------------------------------------------------
