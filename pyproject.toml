@@ -159,7 +159,6 @@ known-first-party = ["tileops"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"bench_*.py" = ["F401"]
 # __all__ intentionally grouped by category, not alphabetical
 "src/tileops/kernels/elementwise.py" = ["RUF022"]
 "src/tileops/ops/__init__.py" = ["RUF022"]

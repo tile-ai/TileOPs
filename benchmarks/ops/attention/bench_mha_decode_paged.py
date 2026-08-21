@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp

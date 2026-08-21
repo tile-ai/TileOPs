@@ -12,7 +12,6 @@ Real model configurations:
 
 from typing import Optional
 
-import pytest
 import torch
 
 try:
@@ -22,7 +21,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase
 from tileops.ops.moe import FusedTopKOp
 from workloads.moe import FusedTopKWorkload
 from workloads.workload_base import FixtureBase

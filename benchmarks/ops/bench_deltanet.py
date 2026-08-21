@@ -18,7 +18,7 @@ import pytest
 import torch
 from fla.ops.delta_rule import chunk_delta_rule
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, backward_of
+from benchmarks.benchmark_base import BenchmarkBase, backward_of
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp
 from workloads.linear_attention import DeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase

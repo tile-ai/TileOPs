@@ -4,13 +4,11 @@ Profiles TileOPs dropout vs torch.nn.functional.dropout on DNN-realistic shapes.
 Uses p=0.5 (default) as representative drop rate.
 """
 
-from math import prod
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.dropout import DropoutFwdOp
 from workloads.elementwise import ShapedRandnWorkload
 

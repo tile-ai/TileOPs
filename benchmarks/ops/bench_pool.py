@@ -15,7 +15,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.kernels.pool.common import pool_output_dim
 from tileops.manifest import load_workloads
 from tileops.ops import (

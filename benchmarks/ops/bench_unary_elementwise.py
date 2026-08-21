@@ -15,7 +15,7 @@ from typing import Callable
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.elementwise import (
     AbsFwdOp,
     BitwiseNotFwdOp,

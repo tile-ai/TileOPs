@@ -6,7 +6,7 @@ come from the op's ``eval_roofline()`` via :class:`ManifestBenchmark`.
 
 import pytest
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload

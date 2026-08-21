@@ -7,14 +7,10 @@ forward+backward case keeps a local roofline because it aggregates four
 GEMM launches, which no single manifest workload describes.
 """
 
-from typing import Optional
-
 import pytest
 import torch
 
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
-    BenchmarkReport,
     ManifestBenchmark,
     workload_field_params,
 )

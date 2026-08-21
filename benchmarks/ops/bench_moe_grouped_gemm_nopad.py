@@ -11,7 +11,7 @@ manifest-derived roofline (`op.eval_roofline()`).
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeGroupedGemmNopadFwdOp
 from workloads.moe import MoeGroupedGemmNopadWorkload
