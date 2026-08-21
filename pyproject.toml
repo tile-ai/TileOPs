@@ -52,6 +52,11 @@ bench = [
     "flashinfer>=0.6.6",
     "vllm==0.27.1",
     "sgl-kernel==0.3.21",
+    # Pooling baselines: flag_gems' triton kernels and libcudnn for the
+    # direct-C-API wrapper in benchmarks/ops/_pool_baselines.py. Both are
+    # imported lazily there; the bench falls back to torch-ref without them.
+    "flag_gems==5.0.2",
+    "nvidia-cudnn-cu13",
 ]
 
 [build-system]
