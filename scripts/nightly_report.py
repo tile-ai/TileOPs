@@ -358,7 +358,9 @@ def _history_deltas(bench_ops: dict, history_runs: list[dict]):
             if lat is None:
                 continue
             best = find_best_latency(history_runs, op, cfg["name"], key)
-            if best is None:
+            if not best:
+                # A zero reading is not a baseline to divide by, and the workflow turns a
+                # traceback into a warning: the night would lose report and history both.
                 continue
             yield (
                 {
@@ -384,11 +386,16 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
 
 
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance improvements vs 14-day best."""
+    """Detect performance improvements vs 14-day best.
+
+    Held to the same absolute floor as a regression: a tenth of a microsecond on a
+    two-microsecond kernel is noise whichever way it points.
+    """
     return [
         record
         for record, delta in _history_deltas(bench_ops, history_runs)
         if delta < -REGRESSION_THRESHOLD
+        and (record["best_ms"] - record["curr_ms"]) > REGRESSION_ABS_MIN
     ]
 
 
@@ -746,7 +753,7 @@ def generate_report(
         lines.append(
             "> TileOPs is slower than baseline"
             f" (ratio < {BASELINE_RATIO_ALERT:.0%})."
-            " Ratio = baseline_latency / tileops_latency."
+            " Ratio = baseline device-busy / tileops device-busy."
         )
         lines.append("")
         lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |")
@@ -792,7 +799,7 @@ def generate_report(
             f" {n_bench_ops} ops)</strong></summary>"
         )
         lines.append("")
-        lines.append("| | Op | Config | Latency (ms) | TFLOPS | BW (TB/s) | Via | Ratio |")
+        lines.append("| | Op | Config | Device busy (ms) | TFLOPS | BW (TB/s) | Via | Ratio |")
         lines.append("|:-|:---|:-------|------------:|-------:|----------:|:----|------:|")
         for op in sorted(bench_ops):
             for cfg in bench_ops[op]["configs"]:
