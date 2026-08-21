@@ -43,9 +43,7 @@ from workloads.pool import (
 )
 
 # ---------------------------------------------------------------------------
-# Baselines: cuDNN through its backend C API, and FlagGems
-#
-# cuDNN is reached through the v9 backend's Resample node in ctypes, not a binding:
+# Baselines. cuDNN is reached through the v9 backend's Resample node in ctypes, not a binding:
 # nvidia-cudnn-frontend 1.27 exposes 141 graph ops and none of them is resample, and the
 # legacy cudnnPoolingForward rejects bfloat16. Measured on an H200, the legacy entry point
 # reaches the same kernel as the graph API (0.0867 vs 0.0865 ms device-busy).
@@ -183,7 +181,7 @@ class _Cudnn:
         self._lib.cudnnBackendDestroyDescriptor(desc)
 
     def set(self, desc, attr: int, atype: int, values: list, what: str) -> None:
-        """SetAttribute; *values* is a list of python ints/floats/pointers."""
+        """SetAttribute; a scalar attribute goes in as a one-element list."""
         if atype == _TYPE_INT64:
             arr = (ctypes.c_int64 * len(values))(*values)
         elif atype == _TYPE_FRACTION:
@@ -410,12 +408,9 @@ def flaggems_pool_fn(
 ) -> Optional[Callable]:
     """Return a FlagGems 2D pooling callable, or None if unsupported.
 
-    FlagGems 5.0.2's LibEntry kernel cache only handles triton 3.3-3.6; under
-    triton 3.7 its repeat-call fast path misaligns kernel arguments and
-    segfaults on the second launch. The adapter therefore launches FlagGems'
-    triton kernels through the standard triton Autotuner path — the measured
-    kernel and its autotuned config are identical, only the broken host-side
-    cache is bypassed.
+    FlagGems 5.0.2's LibEntry cache misaligns kernel arguments under triton 3.7 and
+    segfaults on the second launch, so this launches its triton kernels through triton's
+    own Autotuner instead: same kernel, different host-side path.
     """
     if len(kernel_size) != 2:
         return None
@@ -537,10 +532,9 @@ def flaggems_pool_fn(
     return None
 
 
-# Per-op baseline: the strongest implementation measured on this hardware, with the
-# pooling kind and rank the adapters need. An op absent here keeps the torch reference —
-# 1D native kernels beat both libraries' 2D-emulated paths, and neither library covers
-# adaptive pooling or 3D max-pool indices.
+# Which library serves an op, and the pooling kind and rank its adapter needs. An op absent
+# here has none: no library covers 1D, adaptive pooling, or 3D max-pool indices. Every row
+# is also timed against torch, eager and compiled, so this table is not the whole baseline.
 _BASELINE: dict[str, tuple[str, str, int]] = {
     "AvgPool2dFwdOp": ("flaggems", "avg", 2),
     "AvgPool3dFwdOp": ("cudnn", "avg", 3),
@@ -566,11 +560,10 @@ def _assert_matches_reference(fn, test, inputs: tuple) -> None:
 
 
 def compiled_reference(test):
-    """torch's own kernels through inductor. On 1D pooling it beats eager by 2-6x.
+    """torch's own kernels through inductor; on 1D pooling it beats eager by 2-6x.
 
-    dynamo caches eight graphs per code object and every case here shares one
-    ``ref_program``, so without the reset the later cases would quietly time eager
-    under a tag that says compiled.
+    dynamo caches eight graphs per code object and all cases share one ``ref_program``,
+    so without the reset the later ones would time eager under a tag that says compiled.
     """
     torch._dynamo.reset()
     return torch.compile(test.ref_program, dynamic=False)
