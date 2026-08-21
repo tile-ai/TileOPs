@@ -34,7 +34,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 
 __all__ = [
     # --- base classes ---
@@ -375,20 +375,6 @@ def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_p
 
 
 # Layout adapters: what a PrimFunc wants, from what the Op layer hands over
-
-
-def _require_cuda(kernel, **tensors) -> None:
-    """Refuse a device these kernels were not written for.
-
-    The op layer checks that a call's tensors agree on a device; which devices this
-    set of kernels runs on is stated here, where the answer lives.
-    """
-    for name, tensor in tensors.items():
-        if tensor is not None and not tensor.is_cuda:
-            raise ValueError(
-                f"{type(kernel).__name__} is a CUDA kernel; got {name} on "
-                f"{tensor.device}. Another target's backend serves other devices."
-            )
 
 
 def _flat(t):
@@ -974,7 +960,7 @@ class UnaryKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
-        _require_cuda(self, x=x)
+        require_cuda(self, x=x)
         result = self._compiled_fn(_flat(x))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
@@ -1237,7 +1223,7 @@ class BinaryKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, a, b):
-        _require_cuda(self, a=a, b=b)
+        require_cuda(self, a=a, b=b)
         result = self._compiled_fn(_flat(a), _flat(b))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
@@ -1409,7 +1395,7 @@ class FusedGatedKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
-        _require_cuda(self, x=x)
+        require_cuda(self, x=x)
         result = self._compiled_fn(x)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
@@ -2604,7 +2590,7 @@ class ParametricUnaryKernel(Kernel):
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
-        _require_cuda(self, x=x)
+        require_cuda(self, x=x)
         result = self._compiled_fn(_flat(x))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
@@ -2981,7 +2967,7 @@ class PreluFwdKernel(ParametricUnaryKernel):
         return (self.N_total, self.C, self.inner_size, self.dtype_str)
 
     def forward(self, x, weight):
-        _require_cuda(self, x=x, weight=weight)
+        require_cuda(self, x=x, weight=weight)
         return self._compiled_fn(_flat(x), _flat(weight)).reshape(x.shape)
 
 
@@ -3065,7 +3051,7 @@ class WhereFwdKernel(ParametricUnaryKernel):
         return _make_where_kernel
 
     def forward(self, cond, x, y):
-        _require_cuda(self, cond=cond, x=x, y=y)
+        require_cuda(self, cond=cond, x=x, y=y)
         out_shape = _broadcast_target(cond, x, y)
         # A bool condition is this backend's uint8 predicate; the caller passes
         # semantic bool and never names the representation.
@@ -3146,7 +3132,7 @@ class LerpTensorFwdKernel(ParametricUnaryKernel):
         return _make_lerp_tensor_kernel
 
     def forward(self, a, b, w):
-        _require_cuda(self, a=a, b=b, w=w)
+        require_cuda(self, a=a, b=b, w=w)
         out_shape = _broadcast_target(a, b, w)
         result = self._compiled_fn(
             _expand_flat(a, out_shape),
@@ -3490,7 +3476,7 @@ class ClampTensorFwdKernel(ParametricUnaryKernel):
         return (self.has_min, self.has_max)
 
     def forward(self, x, lo=None, hi=None):
-        _require_cuda(self, x=x, lo=lo, hi=hi)
+        require_cuda(self, x=x, lo=lo, hi=hi)
         out_shape = _broadcast_target(x, lo, hi)
         x_flat = _expand_flat(x, out_shape)
         if self.has_min and self.has_max:
@@ -3607,7 +3593,7 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
         return (self.fill_value,)
 
     def forward(self, x, mask):
-        _require_cuda(self, x=x, mask=mask)
+        require_cuda(self, x=x, mask=mask)
         out_shape = _broadcast_target(x, mask)
         as_bool = x.dtype == torch.bool
         if as_bool:
@@ -3714,7 +3700,7 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
         return _make_masked_fill_tensor_value_kernel
 
     def forward(self, x, mask, value):
-        _require_cuda(self, x=x, mask=mask, value=value)
+        require_cuda(self, x=x, mask=mask, value=value)
         out_shape = _broadcast_target(x, mask)
         as_bool = x.dtype == torch.bool
         if as_bool:
