@@ -528,8 +528,8 @@ InstanceNormFwdOp:
     # Per element: subtract mean + square for var + normalize = 3; affine adds
     # scale + bias, matching GroupNorm (InstanceNorm = GroupNorm with G=C).
     flops: "(5 if affine else 3) * N * C * spatial_size"
-    # Read x + write output; affine reads weight and bias (C each); passed
-    # running stats are read and written back, 2 * C float32 each way.
+    # Read x + write output; affine reads weight and bias (C each); the two passed
+    # running stats are read, C float32 each.
     bytes: "(2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes + (2 * C * 4 if reads_running_stats else 0)"
 
   source:
