@@ -5,7 +5,7 @@ DNN-realistic 2D shapes (tokens × hidden_dim) with the default op configuration
 """
 
 from math import prod
-from typing import Callable, Optional
+from typing import Optional
 
 import pytest
 import torch
@@ -13,7 +13,6 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import (
     BenchmarkBase,
-    BenchmarkReport,
     ManifestBenchmark,
 )
 from tileops.kernels.elementwise import (

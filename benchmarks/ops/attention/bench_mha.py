@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, backward_of
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_qkv_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp

@@ -15,7 +15,7 @@ import pytest
 import torch
 from fla.ops.gla import chunk_gla
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, backward_of
+from benchmarks.benchmark_base import BenchmarkBase, backward_of
 from tileops.ops import GLABwdOp, GLAFwdOp
 from workloads.linear_attention import GLAChunkwiseWorkload
 from workloads.workload_base import FixtureBase

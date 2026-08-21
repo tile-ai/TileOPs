@@ -20,7 +20,6 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
 from benchmarks.benchmark_base import (
     BenchmarkBase,
-    BenchmarkReport,
     ManifestBenchmark,
     backward_of,
 )

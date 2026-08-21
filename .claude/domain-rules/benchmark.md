@@ -1,6 +1,7 @@
 - **MUST NOT**: import from `tests/`. Reads of any other file are unrestricted.
 - **MUST NOT**: author `gen_inputs`. Import the op's workload from `workloads/`; if it has none, add it there instead of copying locally.
 - Time the workload's `ref_program` for the torch baseline. Override it in a subclass only when the baseline is deliberately not the reference, and say so in the subclass docstring.
+- A baseline that is a different implementation takes its own tag next to `ref_program` rather than overriding it, is asserted against the reference before the case is timed, and raises when unavailable instead of falling back.
 
 The two **MUST NOT**s are checked by `benchmarks/tests/test_benchmark_boundaries.py`,
 which matches names literally — it will not catch a draw helper under another name.
@@ -9,7 +10,7 @@ which matches names literally — it will not catch a draw helper under another 
 
 ______________________________________________________________________
 
-- Every benchmark records ≥1 non-`tileops` baseline. Add a local torch fallback where a torch reference is a meaningful comparison; where it is not, require the external library and let the import fail.
+- Every benchmark records ≥1 non-`tileops` baseline.
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
 - Every case is named: a manifest `label`, or `id=` on `pytest.param`. Name the scenario (`serving-130m-4k`), not the parameters. Enforced by the `workload-names-lint` pre-commit hook.
 - A workload `label` omits the dtype; the case id appends it.

@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import (
     gqa_sliding_window_args,
     manifest_params,

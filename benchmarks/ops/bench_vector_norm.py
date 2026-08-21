@@ -7,7 +7,7 @@ Workload shapes and roofline formulas are loaded from the ops manifest (src/tile
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 

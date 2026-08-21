@@ -34,7 +34,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase
 from tileops.ops.moe import SharedFusedMoE
 from workloads.moe import SharedFusedMoeWorkload
 from workloads.workload_base import FixtureBase

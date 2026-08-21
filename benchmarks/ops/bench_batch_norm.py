@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, backward_of
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload

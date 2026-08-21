@@ -18,14 +18,9 @@ from tileops.ops.elementwise import (
     ClampFwdOp,
     ClampScalarFwdOp,
     EluFwdOp,
-    HardtanhFwdOp,
     LeakyReluFwdOp,
     MaskedFillScalarFwdOp,
-    NanToNumFwdOp,
-    PreluFwdOp,
     SinusoidalFwdOp,
-    SoftplusFwdOp,
-    WhereFwdOp,
 )
 from workloads.elementwise import (
     Fp8MaskedFillBenchCase,

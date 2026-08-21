@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
     workloads_to_params,
 )
