@@ -192,8 +192,15 @@ def test_avg_pool1d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL1D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    # torch stays alongside the library baseline: it is what the nightly's ratio alert and
+    # its history were measured against, and both numbers belong in the same row.
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 def _avg_pool2d_bench_params() -> list:
@@ -275,8 +282,13 @@ def test_avg_pool2d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL2D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 def _avg_pool3d_bench_params() -> list:
@@ -361,8 +373,13 @@ def test_avg_pool3d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL3D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 def _max_pool2d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -447,8 +464,13 @@ def test_max_pool2d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -493,8 +515,13 @@ def test_max_pool2d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_INDICES_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 def _max_pool1d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -579,8 +606,13 @@ def test_max_pool1d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -623,8 +655,13 @@ def test_max_pool1d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_INDICES_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 def _max_pool3d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -715,8 +752,13 @@ def test_max_pool3d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -763,8 +805,13 @@ def test_max_pool3d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 class AdaptiveAvgPool2dBenchmarkWorkload(AdaptivePool2dWorkload):
@@ -827,8 +874,13 @@ def test_adaptive_avg_pool2d_bench(
     op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_AVG_POOL2D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -850,8 +902,13 @@ def test_adaptive_max_pool2d_bench(
     op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -877,5 +934,10 @@ def test_adaptive_max_pool2d_indices_bench(
     op = AdaptiveMaxPool2dIndicesFwdOp(output_size=output_size, tune=tune)
     bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME, op, test)
 
-    tag, baseline_fn = pool_baseline(type(op).__name__, test)
-    bm.compare({"tileops": op, tag: baseline_fn}, *inputs, record_as=op, params=locals())
+    _tag, _baseline_fn = pool_baseline(type(op).__name__, test)
+    bm.compare(
+        {"tileops": op, _tag: _baseline_fn, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
