@@ -84,6 +84,10 @@ RUN for pkg in \
         uv pip install --no-build-isolation "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
+# --no-deps, so not in the loop: flag_gems pins numpy==1.26.4 and this stack is on 2.2.6.
+RUN uv pip install sqlalchemy \
+    && uv pip install --no-deps flag_gems \
+    || echo "WARNING: bench baseline 'flag_gems' install failed (non-fatal)"
 # --no-deps so mamba_ssm cannot pull its own newer tilelang pin. The CUDA extension must still
 # build: importing the package loads selective_scan_cuda even for the Triton path the bench uses.
 RUN MAMBA_FORCE_BUILD=TRUE \
