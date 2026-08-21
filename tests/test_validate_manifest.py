@@ -3435,3 +3435,57 @@ class TestCompileContractRegistry:
             f"evidence without declaration: {sorted(registered - declared)}; "
             f"declaration without evidence: {sorted(declared - registered)}"
         )
+
+
+class TestMutatedInputParity:
+    """C8: the operators' write arguments are the manifest's mutated inputs (R22)."""
+
+    @staticmethod
+    def _register(name, schema, mutates_args):
+        import torch
+
+        @torch.library.custom_op(f"c8test::{name}", mutates_args=mutates_args, schema=schema)
+        def _op(*args, **kwargs) -> None:
+            return None
+
+        return f"c8test::{name}"
+
+    def test_declaration_matches_writes(self, validator):
+        qualified = self._register(
+            "stats", "(Tensor x, Tensor(a!) m, str instance_key) -> ()", {"m"}
+        )
+        entry = {
+            "status": "implemented",
+            "signature": {"inputs": {"input": {}, "running_mean": {"mutated": True}}},
+        }
+        cls = _strict_op("StatsOp", compile_op_names=(qualified,))
+        assert validator.check_c8_mutated_inputs_parity("StatsOp", entry, cls) == []
+
+        entry["signature"]["inputs"]["running_mean"] = {}
+        errs = validator.check_c8_mutated_inputs_parity("StatsOp", entry, cls)
+        assert any("write ['running_mean']" in e for e in errs), errs
+
+    def test_write_past_declared_inputs_needs_an_output_buffer_param(self, validator):
+        qualified = self._register(
+            "buffer", "(Tensor x, Tensor(a!) out, str instance_key) -> ()", {"out"}
+        )
+        entry = {"status": "implemented", "signature": {"inputs": {"input": {}}}}
+        cls = _strict_op("BufferOp", compile_op_names=(qualified,))
+        errs = validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls)
+        assert any("past the 1 declared inputs" in e for e in errs), errs
+
+        entry["signature"]["params"] = {"out": {"type": "tensor | None"}}
+        assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) == []
+
+    def test_unverifiable_declaration_warns(self, validator):
+        entry = {
+            "status": "implemented",
+            "signature": {"inputs": {"state": {"mutated": True}}},
+        }
+        cls = _strict_op("UnmigratedOp")
+        warnings: list[str] = []
+        assert (
+            validator.check_c8_mutated_inputs_parity("UnmigratedOp", entry, cls, warnings=warnings)
+            == []
+        )
+        assert any("publishes no compile_op_names" in w for w in warnings), warnings

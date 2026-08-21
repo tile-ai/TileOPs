@@ -306,8 +306,8 @@ BatchNormFwdOp:
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
-      running_mean: {dtype: "float32"}
-      running_var: {dtype: "float32"}
+      running_mean: {dtype: "float32", mutated: true}
+      running_var: {dtype: "float32", mutated: true}
       weight: {dtype: "float32"}
       bias: {dtype: "float32"}
     outputs:

@@ -106,6 +106,8 @@ dtype_combos:
 
 **R21. Workload keys derive from the signature.** Single-tensor-input ops whose workloads carry a `*_shape` key: the shape key MUST be `{input}_shape`; every other key MUST be a `signature.params` name or reserved `dtypes` / `label`. Enforced by the validator and `workloads_to_params`. Multi-input aggregate keys (`kv_shape`) are family bench-file conventions, out of scope.
 
+**R22. Mutated inputs.** A tensor input the op may write declares `mutated: true`, under `signature.inputs` only. Whether a given call writes it can depend on a param (`inplace`, `training`), so the declaration is the set the op may write, not the set one call writes. An operator the op registers lists its tensor arguments in `signature.inputs` order; the inputs named by `mutates_args`, taken across every operator the op registers, are exactly the ones marked here. Marking an input does not change output arity and does not make the return alias the input: a mutated input stays an input, and `signature.outputs` gains nothing. A backend serving the op must perform the write. A caller-supplied output buffer is R18's, not this: it is a param, so an operator may take one tensor argument past the declared inputs, and that write is not marked here.
+
 ## `static_dims`
 
 `static_dims` declares what becomes statically known at the moment the user constructs the Op instance. It is **per-op**, not per-family.
@@ -294,6 +296,7 @@ signature:
 | `constraints` | no       | Dimension restrictions (requires `shape`).                                                                                               |
 | `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
 | `optional`    | no       | `true` when the op may be called without this input (R18). Inputs only.                                                                  |
+| `mutated`     | no       | `true` when the op may write this input (R22). Inputs only.                                                                              |
 
 **Param fields:** `type`, plus optional `default`.
 A param that omits `default` MUST have no `__init__` default either: a

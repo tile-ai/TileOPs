@@ -738,6 +738,35 @@ def _check_optional_flag(op_name: str, sig: dict) -> list[str]:
     return errors
 
 
+def _check_mutated_flag(op_name: str, sig: dict) -> list[str]:
+    """``mutated`` is literal ``true``, and only on ``signature.inputs`` (R22)."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    params = sig.get("params")
+    if isinstance(params, dict):
+        for pname, attrs in params.items():
+            if isinstance(attrs, dict) and "mutated" in attrs:
+                err(f"params.{pname} declares 'mutated'; only a tensor input is written")
+    for direction in ("inputs", "outputs"):
+        tensors = sig.get(direction)
+        if not isinstance(tensors, dict):
+            continue
+        for tname, attrs in tensors.items():
+            if not isinstance(attrs, dict) or "mutated" not in attrs:
+                continue
+            if direction != "inputs":
+                err(
+                    f"{direction}.{tname} declares 'mutated'; an output is returned, "
+                    f"not written in place"
+                )
+            elif attrs["mutated"] is not True:
+                err(
+                    f"inputs.{tname}.mutated must be literal true, got "
+                    f"{attrs['mutated']!r} (omit the key when not mutated)"
+                )
+    return errors
+
+
 def _guard_scopes(node: ast.AST, optional: Collection[str]) -> list[tuple[ast.AST, set[str]]]:
     """Operands of a top-level ``or``, each with the names guarded before it.
 
@@ -985,6 +1014,7 @@ def _check_optional_workload_coverage(
 def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     """All optional-input checks for one entry."""
     errors = _check_optional_flag(op_name, sig)
+    errors.extend(_check_mutated_flag(op_name, sig))
     errors.extend(_check_param_domain(op_name, sig))
     optional = _optional_input_names(sig)
     if not optional:
@@ -3857,6 +3887,84 @@ def check_c5_dispatch_kernel_invariant(
     return errors
 
 
+def _has_tensor_param(entry: dict) -> bool:
+    """True when the entry declares a tensor-typed param: a caller-supplied buffer (R18)."""
+    params = entry.get("signature", {}).get("params") or {}
+    return any(
+        isinstance(attrs, dict) and "tensor" in str(attrs.get("type", ""))
+        for attrs in params.values()
+    )
+
+
+def check_c8_mutated_inputs_parity(
+    op_name: str,
+    entry: dict,
+    cls: type | None,
+    *,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """R22: the operator's write arguments are exactly the manifest's mutated inputs.
+
+    An op that publishes no ``compile_op_names`` has registered no operator to compare
+    against; a mutation it declares is then unverified rather than wrong, so it warns.
+    """
+    errors: list[str] = []
+    if cls is None or _is_spec_only(entry):
+        return errors
+    inputs = entry.get("signature", {}).get("inputs")
+    declared = {
+        name
+        for name, attrs in (inputs or {}).items()
+        if isinstance(attrs, dict) and attrs.get("mutated") is True
+    }
+    names = getattr(cls, "compile_op_names", ()) or ()
+    if not names:
+        if declared and warnings is not None:
+            warnings.append(
+                f"[mutation] {op_name}: declares mutated inputs {sorted(declared)} but "
+                f"publishes no compile_op_names, so mutates_args cannot be checked"
+            )
+        return errors
+
+    import torch
+
+    input_names = list(inputs or ())
+    written: set[str] = set()
+    for qualified in names:
+        namespace, _, opname = qualified.partition("::")
+        try:
+            overload = getattr(getattr(torch.ops, namespace), opname).default
+        except (AttributeError, RuntimeError) as exc:
+            errors.append(
+                f"[mutation] {op_name}: compile_op_names names {qualified!r}, which is not "
+                f"registered ({exc.__class__.__name__})"
+            )
+            continue
+        # The operator lists its tensor arguments in signature.inputs order, so a write at
+        # position i is a write to input i. A tensor argument past the declared inputs is a
+        # caller-supplied output buffer (R18), declared as a param and not covered by R22.
+        tensor_args = [
+            arg for arg in overload._schema.arguments if str(arg.type).startswith("Tensor")
+        ]
+        for position, arg in enumerate(tensor_args):
+            if arg.alias_info is None or not arg.alias_info.is_write:
+                continue
+            if position < len(input_names):
+                written.add(input_names[position])
+            elif not _has_tensor_param(entry):
+                errors.append(
+                    f"[mutation] {op_name}: {qualified!r} writes argument {arg.name!r}, which "
+                    f"is past the {len(input_names)} declared inputs and matches no declared "
+                    f"output buffer param (R18)"
+                )
+    if written != declared:
+        errors.append(
+            f"[mutation] {op_name}: its operators write {sorted(written) or 'no input'} but the "
+            f"manifest marks {sorted(declared) or 'nothing'} as mutated (R22)"
+        )
+    return errors
+
+
 def check_c6_validate_dtypes_not_stub(
     op_name: str,
     entry: dict,
@@ -4093,6 +4201,14 @@ def validate_manifest(
             )
             strict_errors.extend(
                 check_c5_dispatch_kernel_invariant(
+                    op_name,
+                    entry,
+                    op_cls,
+                    warnings=all_warnings,
+                )
+            )
+            strict_errors.extend(
+                check_c8_mutated_inputs_parity(
                     op_name,
                     entry,
                     op_cls,
