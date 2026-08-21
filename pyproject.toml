@@ -87,6 +87,8 @@ skip = [
 
 [tool.ruff]
 line-length = 100
+# Markdown belongs to mdformat; ruff reads a fenced fragment as a whole file and de-indents it.
+extend-exclude = ["*.md"]
 
 # NOTE: Please gradually tighten static code checks and other validations in the future.
 # The current exemptions are in place to ensure normal project development.
