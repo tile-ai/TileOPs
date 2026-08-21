@@ -781,10 +781,8 @@ class UnaryKernel(Kernel):
             within the resolved strategy).
     """
 
-    #: Elementwise work is sized by the tensor shape, never by a value: an
-    #: integer operand is data and a ``uint8`` ``cond``/``mask`` selects a result
-    #: after the element is already visited. Random values change what a
-    #: candidate computes, not how much of it.
+    #: Elementwise work is sized by the tensor shape: an integer operand is
+    #: data, and a ``uint8`` ``cond``/``mask`` only selects a result.
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -1006,10 +1004,8 @@ class BinaryKernel(Kernel):
         N_total: Total output elements.
     """
 
-    #: Elementwise work is sized by the tensor shape, never by a value: an
-    #: integer operand is data and a ``uint8`` ``cond``/``mask`` selects a result
-    #: after the element is already visited. Random values change what a
-    #: candidate computes, not how much of it.
+    #: Elementwise work is sized by the tensor shape: an integer operand is
+    #: data, and a ``uint8`` ``cond``/``mask`` only selects a result.
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -1267,10 +1263,8 @@ class FusedGatedKernel(Kernel):
             within the resolved strategy).
     """
 
-    #: Elementwise work is sized by the tensor shape, never by a value: an
-    #: integer operand is data and a ``uint8`` ``cond``/``mask`` selects a result
-    #: after the element is already visited. Random values change what a
-    #: candidate computes, not how much of it.
+    #: Elementwise work is sized by the tensor shape: an integer operand is
+    #: data, and a ``uint8`` ``cond``/``mask`` only selects a result.
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]

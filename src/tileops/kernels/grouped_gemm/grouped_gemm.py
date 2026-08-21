@@ -240,11 +240,10 @@ class GroupedGemmKernel(Kernel):
     def autotune_supply_prog(self):
         """Supply autotuning the batch metadata a real call carries.
 
-        TileLang fills an int32 parameter from ``randint(-2, 3)``, and both
-        templates read a group's row count out of that metadata, so candidates
-        would time an almost empty kernel and the winner would be noise. Both
-        offset vectors take the tight prefix sum, which puts
-        ``batch_padded_offsets[-1] + batch_sizes[-1]`` at ``batch_sum``.
+        Both templates read a group's row count out of this metadata. Both offset
+        vectors take the tight prefix sum, which puts
+        ``batch_padded_offsets[-1] + batch_sizes[-1]`` at ``batch_sum`` and so
+        keeps every tile in the K-loop.
         """
         from tilelang.utils.device import get_current_device
         from tilelang.utils.tensor import get_tensor_supply
@@ -260,10 +259,8 @@ class GroupedGemmKernel(Kernel):
             offsets = torch.zeros(batch_count, dtype=torch.int32, device=device)
             offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
 
-            # Matched by position among themselves, because the prim_func takes
-            # batch_sizes, then batch_offsets, then batch_padded_offsets. A
-            # fourth such parameter would otherwise be handed offsets and tune
-            # against a plausible but wrong tensor, so the count is checked.
+            # Matched by position among themselves: the prim_func takes
+            # batch_sizes, then batch_offsets, then batch_padded_offsets.
             is_metadata = [
                 str(p.dtype) == "int32" and list(p.shape) == [batch_count] for p in params
             ]

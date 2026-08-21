@@ -8,8 +8,20 @@ from tileops.kernels.kernel_base import Kernel
 pytestmark = pytest.mark.smoke
 
 
+class _FakePrimFunc:
+    """A PrimFunc taking no tensor parameters."""
+
+    params: tuple = ()
+    buffer_map: dict = {}
+
+
 class _FakeJit:
     signature = inspect.signature(lambda block_m, threads: None)
+    out_idx = None
+
+    @staticmethod
+    def get_tir(**config):
+        return _FakePrimFunc()
 
 
 class _FakeAliasedJit:

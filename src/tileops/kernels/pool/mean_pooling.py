@@ -189,11 +189,9 @@ class MeanPoolingFwdKernel(Kernel):
     def autotune_supply_prog(self):
         """Supply autotuning the chunk map a real call carries.
 
-        ``offsets`` and ``indices`` place every chunk: the kernel takes its token
-        range from ``offsets[seq_id]`` and ``offsets[seq_id + 1]`` and divides the
-        sum by that range's length. Values from TileLang's random supplier leave
-        the range empty or inverted, so candidates time a kernel that pools
-        nothing and the winner is measurement noise.
+        The kernel takes each chunk's token range from ``offsets[seq_id]`` and
+        ``offsets[seq_id + 1]`` and divides by that range's length, so random
+        values leave it empty or inverted.
         """
         from tilelang.utils.device import get_current_device
         from tilelang.utils.tensor import get_tensor_supply
@@ -204,9 +202,8 @@ class MeanPoolingFwdKernel(Kernel):
 
         def supply_prog(params):
             device = get_current_device()
-            # Sequences split the tokens evenly, and chunk slots run through each
-            # sequence in turn. A slot past the last sequence clamps onto it and
-            # repeats an earlier chunk, which measures the same amount of work.
+            # Sequences split the tokens evenly; a slot past the last sequence
+            # clamps onto it and repeats a chunk of the same size.
             bounds = torch.linspace(0, seq_len, seq_num + 1, device=device).to(torch.int32)
             per_seq = max(1, seq_len // seq_num)
             chunks_per_seq = max(1, (per_seq + chunk_size - 1) // chunk_size)

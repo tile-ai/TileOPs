@@ -12,13 +12,9 @@ _INHERIT_SUPPLY_PROG = object()
 def _int_tensor_input_names(jit_kernel: Any, seeds: Dict[str, Any]) -> list[str]:
     """Integer tensor parameters *jit_kernel* takes as inputs, outputs excluded.
 
-    Reads the TIR rather than compiling: ``get_tir`` elaborates the PrimFunc for
-    one config, which is what carries the parameter dtypes.
-
     Raises:
-        ValueError: When the parameters cannot be read. Unread parameters are
-            unproven, not proven safe, so the caller refuses rather than
-            assuming the generated inputs are harmless.
+        ValueError: When the parameters cannot be read, which the caller treats
+            as unproven rather than safe.
     """
     get_tir = getattr(jit_kernel, "get_tir", None)
     if not callable(get_tir):
@@ -62,14 +58,10 @@ class Kernel(ABC):
         self._check_arch()
         self.config = {}
 
-    #: Whether autotuning may generate this kernel's integer tensor inputs at
-    #: random. TileLang's supplier fills an integer tensor from
-    #: ``randint(-2, 3)``, which shrinks the work when a value is a row count, a
-    #: slice bound or a loop trip count: every candidate then times a collapsed
-    #: kernel and the winner is measurement noise. Left False, because answering
-    #: by omission is what makes that silent. A kernel whose integer inputs are
-    #: ordinary data, or a mask read after the work is already sized, says so
-    #: here; one whose values decide the work supplies them instead.
+    #: Set True when this kernel's integer tensor inputs are data or masks, so
+    #: autotuning may generate them from ``randint(-2, 3)``. A kernel whose
+    #: integer values decide how much work runs overrides
+    #: ``autotune_supply_prog`` instead; left False, autotuning refuses.
     autotune_accepts_random_int_inputs: bool = False
 
     #: Whether this implementation is the one behind the specialised ones.
@@ -267,11 +259,6 @@ class Kernel(ABC):
 
     def _refuse_random_int_inputs(self, jit_kernel: Callable, seeds: Dict[str, Any]) -> None:
         """Refuse to tune *jit_kernel* on integer inputs TileLang would randomise.
-
-        Only the kernel knows which of its integer inputs decide how much work
-        runs, so the base class asks for an answer rather than guessing one. What
-        it can establish is narrower: an integer tensor input exists, and nothing
-        supplies it.
 
         Raises:
             ValueError: When the kernel takes integer tensor inputs, supplies
