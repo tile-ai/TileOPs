@@ -5,7 +5,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention.call_spec import AttentionCall, square_ws_prefill_region
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from tileops.ops.attention.selection import DENSE_PREFILL_KEYS
+from tileops.ops.attention.selection import DENSE_FWD_PREFILL_KEYS
 from workloads.attention.mha import MhaBwdWorkload, MhaFwdWorkload
 
 
@@ -217,7 +217,7 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path() -> None:
         sm_scale=128**-0.5,
     )
 
-    key = delegate.select_kernel_key(DENSE_PREFILL_KEYS, stated)
+    key = delegate.select_kernel_key(DENSE_FWD_PREFILL_KEYS, stated)
 
     assert key == "gqa_prefill_square_fwd_kernel"
     assert delegate.kernel_map[key] is _FakeSquareDenseKernel

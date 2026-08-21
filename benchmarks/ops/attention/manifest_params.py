@@ -191,7 +191,9 @@ def mha_decode_paged_args(workload: dict[str, Any]) -> tuple[int, int, int, int,
 def gqa_decode_args(
     workload: dict[str, Any],
 ) -> tuple[int, int, int, int, int, float | None, float | None]:
-    batch, heads, dim = workload["q_shape"]
+    batch, seq_len_q, heads, dim = workload["q_shape"]
+    if seq_len_q != 1:
+        raise ValueError("gqa_decode_args requires q_shape[1] == 1")
     _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
     return (
         batch,

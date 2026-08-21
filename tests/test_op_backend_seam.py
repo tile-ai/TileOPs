@@ -11,7 +11,7 @@ import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.kernels.attention.call_spec import AttentionCall
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool import MaxPool2dFwdOp
@@ -98,9 +98,9 @@ def test_dense_gqa_target_preserves_omitted_optional_inputs():
         return kernel
 
     registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
     )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         dtype=torch.float16,
         target="gqa_fake",
     )
@@ -148,9 +148,9 @@ def test_dense_gqa_target_gets_rope_configuration_and_caller_owned_tables():
         return kernel
 
     registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
     )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         pos_encoding_mode="rope",
         rotary_dim=4,
         rope_layout="interleaved",
@@ -191,9 +191,9 @@ def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
 
     registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
     )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         pos_encoding_mode="rope",
         target="gqa_fake",
@@ -225,9 +225,9 @@ def test_dense_gqa_target_preserves_present_optional_inputs():
         return kernel
 
     registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
     )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         dtype=torch.float16,
         target="gqa_fake",
@@ -256,9 +256,9 @@ def test_dense_gqa_rejects_fp8_without_output_dtype_before_external_builder():
         raise AssertionError("an invalid public call must not reach the target")
 
     registry.register_kernel_builder(
-        "GroupedQueryAttentionPrefillDenseFwdOp", "gqa_fake", build_kernel
+        "GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel
     )
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         target="gqa_fake",
     )
     q = torch.empty((1, 3, 8, 128), dtype=torch.float8_e4m3fn)

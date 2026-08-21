@@ -1,14 +1,13 @@
 import pytest
 import torch
-import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import gqa_decode_args, manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionDecodeWorkload
 
-_OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
+_OP_NAME = "GroupedQueryAttentionDenseFwdOp"
 
 
 def _fa3_gqa_decode_fwd(test):
@@ -23,10 +22,9 @@ def _fa3_gqa_decode_fwd(test):
     cache_seqlens = torch.full((test.batch,), test.seq_len_kv, dtype=torch.int32, device="cuda")
 
     def baseline_fn(q, k, v):
-        # Q is (B, H, D); FA3 KV-cache decode expects (B, S_q, H, D).
-        out = flash_attn_with_kvcache(q.unsqueeze(1), k, v, cache_seqlens=cache_seqlens)
+        out = flash_attn_with_kvcache(q, k, v, cache_seqlens=cache_seqlens)
         out = out[0] if isinstance(out, tuple) else out
-        return out.squeeze(1)
+        return out
 
     return baseline_fn
 
@@ -46,7 +44,7 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
 
     # Q is (B, H, D) — single token per request
     # K/V is (B, S_kv, H_kv, D)
-    B, H, D = q.shape
+    B, _, H, D = q.shape
     Hkv = k.shape[2]
     if H // Hkv > 8:
         return None  # FlashInfer decode kernel does not support group_size > 8
@@ -58,18 +56,17 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
             return None
 
         # single_decode expects q (H, D) and k/v (S_kv, H_kv, D) for one request.
-        q_s = q.reshape(H, D)
         k_s = k.reshape(k.shape[1], Hkv, D)
         v_s = v.reshape(v.shape[1], Hkv, D)
 
         def run_fn(q, k, v):
             return single_decode_with_kv_cache(
-                q_s,
+                q[:, 0],
                 k_s,
                 v_s,
                 kv_layout="NHD",
                 use_tensor_cores=True,
-            )
+            ).reshape(1, 1, H, D)
 
         return run_fn
 
@@ -111,12 +108,14 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
     )
 
     def run_fn(q, k, v):
-        return wrapper.run(q, kv_data)
+        return wrapper.run(q[:, 0], kv_data).unsqueeze(1)
 
     return run_fn
 
 
-_GQA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), gqa_decode_args)
+_GQA_DECODE_BENCH_PARAMS = manifest_params(
+    [w for w in load_workloads(_OP_NAME) if w["q_shape"][1] == 1], gqa_decode_args
+)
 
 
 @pytest.mark.parametrize(
@@ -139,12 +138,7 @@ def test_gqa_decode_bench(
     )
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seq_len_kv,
-        dim,
+    op = GroupedQueryAttentionDenseFwdOp(
         sm_scale=sm_scale,
         softcap=softcap,
         tune=tune,

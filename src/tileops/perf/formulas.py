@@ -49,7 +49,6 @@ __all__ = [
     "gla_decode_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
-    "gqa_decode_roofline",
     "gqa_fwd_roofline",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
@@ -590,31 +589,6 @@ def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
         + batch * max(1, (seqlen_kv + int(data["page_size"]) - 1) // int(data["page_size"])) * 4
     )
     nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
-    return int(flops), int(nbytes)
-
-
-# GQA decode
-
-
-def gqa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for GQA decode with KV cache."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, heads, dim = data["q_shape"]
-        _, seqlen_kv, heads_kv, _ = data["kv_shape"]
-    else:
-        batch, heads, heads_kv, seqlen_kv, dim = (
-            data["batch"],
-            data["heads"],
-            data["heads_kv"],
-            data["seqlen_kv"],
-            data["dim"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 4 * batch * heads * seqlen_kv * dim
-    q_elems = batch * heads * dim
-    kv_elems = batch * seqlen_kv * heads_kv * dim
-    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes
     return int(flops), int(nbytes)
 
 

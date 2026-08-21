@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from tileops.perf.formulas import gqa_fwd_roofline
 
 pytestmark = pytest.mark.smoke
@@ -11,7 +11,7 @@ pytestmark = pytest.mark.smoke
 
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
 def test_gqa_dense_roofline_requires_runtime_inputs(pos_encoding_mode: str) -> None:
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         dtype=torch.float16,
         pos_encoding_mode=pos_encoding_mode,
     )

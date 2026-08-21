@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from workloads.workload_base import WorkloadBase
 
 
@@ -82,7 +82,7 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device="cuda"
         )
 
-        fwd_op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=self.is_causal)
+        fwd_op = GroupedQueryAttentionDenseFwdOp(is_causal=self.is_causal)
         with torch.no_grad():
             o = fwd_op(q, k, v)
             lse = _compute_gqa_square_lse(
@@ -161,7 +161,7 @@ class GroupedQueryAttentionDecodeWorkload(WorkloadBase):
         self.softcap = 0.0 if softcap is None else softcap
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(self.batch, self.heads, self.dim, device="cuda", dtype=self.dtype)
+        Q = torch.randn(self.batch, 1, self.heads, self.dim, device="cuda", dtype=self.dtype)
         K = torch.randn(
             self.batch, self.seq_len_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
         )
@@ -171,7 +171,7 @@ class GroupedQueryAttentionDecodeWorkload(WorkloadBase):
         return Q, K, V
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
+        q_bhsd = q.transpose(1, 2)  # [B, H, 1, D]
         groups = self.heads // self.heads_kv
         k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
         v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
@@ -180,7 +180,7 @@ class GroupedQueryAttentionDecodeWorkload(WorkloadBase):
             scores = self.softcap * torch.tanh(scores / self.softcap)
         probs = torch.softmax(scores, dim=-1)
         output_bhsd = torch.matmul(probs, v_bhsd)
-        return output_bhsd.transpose(1, 2).squeeze(1).to(q.dtype).contiguous()
+        return output_bhsd.transpose(1, 2).to(q.dtype).contiguous()
 
 
 class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):

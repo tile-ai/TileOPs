@@ -13,14 +13,13 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
-    GroupedQueryAttentionDecodeWithKVCacheFwdOp,
-    GroupedQueryAttentionPrefillDenseFwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
 )
 from tileops.ops.attention.selection import (
-    DECODE_KEYS,
-    DENSE_PREFILL_KEYS,
+    DENSE_FWD_DECODE_KEYS,
+    DENSE_FWD_PREFILL_KEYS,
     PACKED_PREFILL_KEYS,
     PAGED_DECODE_KEYS,
     PAGED_PREFILL_KEYS,
@@ -94,14 +93,14 @@ def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
     """The BSHD wrapper reaches the same dense candidate the packed op does."""
     if not is_h200():
         pytest.skip("the recorded dispatch table is the H200 one")
-    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=True)
+    op = GroupedQueryAttentionDenseFwdOp(is_causal=True)
     # 需要先调用 forward 来设置 shape
     q = torch.randn(4, 512, 32, 128, device="cuda", dtype=torch.float16)
     k = torch.randn(4, 512, 8, 128, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
     entry = op._get_entry((q, k, v), q.dtype, q.device)
     call = entry._selection_facts(q, k)
-    assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
+    assert op.select_kernel_key(DENSE_FWD_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
 
 
 @pytest.mark.smoke
@@ -161,13 +160,13 @@ def test_bshd_tail_requests_respect_specialization_safety(ctor: dict, expected: 
         for name, value in ctor.items()
         if name not in {"batch", "heads", "heads_kv", "seq_len", "seq_len_kv", "dim"}
     }
-    op = GroupedQueryAttentionPrefillDenseFwdOp(**config)
+    op = GroupedQueryAttentionDenseFwdOp(**config)
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
     entry = op._get_entry((q, k, v), q.dtype, q.device)
     call = entry._selection_facts(q, k)
-    assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == expected
+    assert op.select_kernel_key(DENSE_FWD_PREFILL_KEYS, call) == expected
 
 
 @pytest.mark.smoke
@@ -197,12 +196,28 @@ def test_packed_prefill_rejects_calls_no_candidate_serves(ctor: dict, call: dict
         pytest.param({"softcap": 2.0}, torch.float16, "gqa_decode_kernel", id="softcap"),
     ],
 )
-def test_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
-    """Contiguous decode keeps its batch-1 fast path and its fallbacks."""
-    kwargs = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
-    kwargs.update(ctor)
-    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(**kwargs)
-    candidate = op.select_kernel_key(DECODE_KEYS, op.attention_call(dtype))
+def test_dense_decode_dispatch_is_unchanged(
+    ctor: dict, dtype: torch.dtype, expected: str
+) -> None:
+    """The S_q=1 Dense region keeps its batch-1 fast path and fallbacks."""
+    shape = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
+    shape.update({k: v for k, v in ctor.items() if k in shape})
+    op = GroupedQueryAttentionDenseFwdOp(
+        **{k: v for k, v in ctor.items() if k not in shape or k == "softcap"}
+    )
+    q = torch.empty(
+        shape["batch"], 1, shape["heads"], shape["dim"], device="cuda", dtype=dtype
+    )
+    k = torch.empty(
+        shape["batch"],
+        shape["seqlen_kv"],
+        shape["heads_kv"],
+        shape["dim"],
+        device="cuda",
+        dtype=dtype,
+    )
+    entry = op._get_entry((q, k, k), dtype, q.device)
+    candidate = op.select_kernel_key(DENSE_FWD_DECODE_KEYS, entry._selection_facts(q, k))
     assert candidate == expected
 
 

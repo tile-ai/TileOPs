@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tileops.kernels.attention import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from workloads.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
@@ -28,7 +28,7 @@ def _run_canonical_fp8_prefill(
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
 ) -> torch.Tensor:
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         dtype=out_dtype,
         is_causal=False,
     )
@@ -133,7 +133,7 @@ def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
     q_fp8, q_scale = quantize_q_fa3_gqa_descale(q, heads_kv)
     k_fp8, k_scale = quantize_kv_fa3_descale(k)
     v_fp8, v_scale = quantize_kv_fa3_descale(v)
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         dtype=torch.float16,
         is_causal=False,
     )
@@ -221,7 +221,7 @@ def test_gqa_prefill_fp8_native_general_semantic_matrix(
     q_fp8, q_scale = quantize_q_fa3_gqa_descale(q, heads_kv)
     k_fp8, k_scale = quantize_kv_fa3_descale(k)
     v_fp8, v_scale = quantize_kv_fa3_descale(v)
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         dtype=out_dtype,
         is_causal=is_causal,
         window_size_left=window_size_left,
@@ -283,7 +283,7 @@ def test_gqa_fp8_general_empty_window_rows_are_zero(sm_scale: float) -> None:
         .to(torch.float8_e4m3fn)
     )
     scales = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         window_size_right=0,
         sm_scale=sm_scale,

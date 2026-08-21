@@ -455,24 +455,9 @@ class Op(ABC):
             signature = (present[0].device,) + tuple(
                 None if spec is None else (spec.dtype, spec.shape) for spec in specs
             )
-            cached = entries.get(signature, _CACHE_MISS)
-            if cached is not _CACHE_MISS:
-                # Recency is best-effort on the lock-free hit path. A concurrent
-                # miss may evict this key after ``get``; the strong local callable
-                # remains valid and must still run.
-                with suppress(KeyError):
-                    entries.move_to_end(signature)
-                return cached
-            with self._kernel_role_lock:
-                cached = entries.get(signature, _CACHE_MISS)
-                if cached is _CACHE_MISS:
-                    cached = self._build_external(builder, name, specs, params=params)
-                    entries[signature] = cached
-                else:
-                    entries.move_to_end(signature)
-                if len(entries) > _EXTERNAL_KERNEL_SIGNATURE_CACHE_SIZE:
-                    entries.popitem(last=False)
-                return cached
+            if signature not in entries:
+                entries[signature] = self._build_external(builder, name, specs, params=params)
+            return entries[signature]
         except Exception:
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when
             # the failure comes out of a compiled graph, so this one has to.

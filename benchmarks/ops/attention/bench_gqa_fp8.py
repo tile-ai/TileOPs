@@ -5,13 +5,13 @@ import torch
 
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from workloads.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )
 
-_OP_NAME = "GroupedQueryAttentionPrefillDenseFwdOp"
+_OP_NAME = "GroupedQueryAttentionDenseFwdOp"
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("requires Hopper FP8 WGMMA")
 
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=case.is_causal,
         sm_scale=case.sm_scale,
         softcap=case.softcap,

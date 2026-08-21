@@ -7,11 +7,11 @@ import torch
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.ops.attention.test_mha import MhaFwdTest
 from tests.test_base import FixtureBase
-from tileops.ops import GroupedQueryAttentionPrefillDenseFwdOp, MultiHeadAttentionFwdOp
-from tileops.ops.attention.gqa import _gqa_prefill_dense_fwd_fake
+from tileops.ops import GroupedQueryAttentionDenseFwdOp, MultiHeadAttentionFwdOp
+from tileops.ops.attention.gqa import _gqa_dense_fwd_fake
 
 register_compile_contract(MultiHeadAttentionFwdOp)
-register_compile_contract(GroupedQueryAttentionPrefillDenseFwdOp)
+register_compile_contract(GroupedQueryAttentionDenseFwdOp)
 
 
 class MhaCompileFixture(FixtureBase):
@@ -57,7 +57,7 @@ def test_mha_cold_fullgraph_trace_matches_eager():
 def test_dense_gqa_traced_graph_holds_only_the_op_node():
     """Changing the Dense target or specialization cannot change graph identity."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
-    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False)
+    op = GroupedQueryAttentionDenseFwdOp(is_causal=False)
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
@@ -70,7 +70,7 @@ def test_dense_gqa_traced_graph_holds_only_the_op_node():
 def test_dense_gqa_non_contiguous_cold_fullgraph_matches_eager():
     """The fake promises manifest shape/dtype while eager normalization fixes strides."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
-    op = GroupedQueryAttentionPrefillDenseFwdOp(is_causal=False)
+    op = GroupedQueryAttentionDenseFwdOp(is_causal=False)
     q = torch.randn(batch, seq_len, heads, dim * 2, device="cuda", dtype=torch.float16)[..., ::2]
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
@@ -86,13 +86,30 @@ def test_dense_gqa_non_contiguous_cold_fullgraph_matches_eager():
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
+def test_dense_gqa_decode_cold_fullgraph_matches_eager():
+    """The S_q=1 decode specialization remains behind the same Dense graph node."""
+    batch, seq_len_kv, heads, heads_kv, dim = 1, 512, 8, 2, 64
+    op = GroupedQueryAttentionDenseFwdOp()
+    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+
+    output = torch.compile(op, fullgraph=True)(q, k, v)
+
+    assert output.shape == q.shape
+    assert_op_owns_graph_nodes(op, q, k, v)
+    torch.testing.assert_close(output, op(q, k, v), atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
 def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
     """The all-present Optional[Tensor] signature keeps the same Op-owned graph node."""
     fp8 = getattr(torch, "float8_e4m3fn", None)
     if fp8 is None or torch.cuda.get_device_capability()[0] != 9:
         pytest.skip("native FP8 prefill requires SM90 and float8_e4m3fn")
     batch, seq_len, heads, heads_kv, dim = 1, 65, 8, 2, 128
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         dtype=torch.float16,
         pos_encoding_mode="rope",
@@ -117,7 +134,7 @@ def test_dense_gqa_present_optional_inputs_cold_fullgraph_matches_eager():
 def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     """The Op-owned fake, not an internal kernel fake, defines graph metadata."""
     batch, seq_len, heads, heads_kv, dim = 1, 7, 8, 2, 128
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=False,
         dtype=torch.bfloat16,
     )
@@ -125,7 +142,7 @@ def test_dense_gqa_fake_uses_manifest_shape_and_selected_output_dtype():
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float8_e4m3fn)
     v = torch.empty_like(k)
 
-    output = _gqa_prefill_dense_fwd_fake(
+    output = _gqa_dense_fwd_fake(
         q, k, v, None, None, None, None, None, op._instance_key
     )
 

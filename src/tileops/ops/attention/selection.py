@@ -8,8 +8,8 @@ contradict the user-visible ``backend`` parameter. Choosing among the keys is
 from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype, uses_sliding_window
 
 __all__ = [
-    "DECODE_KEYS",
-    "DENSE_PREFILL_KEYS",
+    "DENSE_FWD_DECODE_KEYS",
+    "DENSE_FWD_PREFILL_KEYS",
     "PACKED_PREFILL_KEYS",
     "PAGED_DECODE_KEYS",
     "PAGED_PREFILL_KEYS",
@@ -25,7 +25,7 @@ PACKED_PREFILL_KEYS = (
 )
 
 #: The subset serving a uniform dense request, for the fixed-shape wrapper.
-DENSE_PREFILL_KEYS = (
+DENSE_FWD_PREFILL_KEYS = (
     "gqa_prefill_fp8_tensor_core_fwd_kernel",
     "gqa_prefill_dense_sliding_fwd_kernel",
     "gqa_prefill_square_fwd_kernel",
@@ -41,7 +41,7 @@ PAGED_PREFILL_KEYS = (
 )
 
 #: Implementations of contiguous GQA decode.
-DECODE_KEYS = ("gqa_decode_bs1_kernel", "gqa_decode_kernel")
+DENSE_FWD_DECODE_KEYS = ("gqa_decode_bs1_kernel", "gqa_decode_kernel")
 
 #: Implementations of paged GQA decode.
 PAGED_DECODE_KEYS = ("gqa_decode_paged_bs1_kernel", "gqa_decode_paged_kernel")
@@ -62,13 +62,13 @@ def check_packed_prefill_request(call: AttentionCall) -> None:
     """
     if call.is_fp8:
         raise ValueError(
-            "Packed FP8 prefill moved to GroupedQueryAttentionPrefillDenseFwdOp; "
+            "Packed FP8 prefill moved to GroupedQueryAttentionDenseFwdOp; "
             "Varlen FP8 support is tracked by #1917."
         )
     if call.backend == "fp8":
-        raise ValueError("backend='fp8' moved to GroupedQueryAttentionPrefillDenseFwdOp.")
+        raise ValueError("backend='fp8' moved to GroupedQueryAttentionDenseFwdOp.")
     if call.backend == "dense":
-        raise ValueError("backend='dense' moved to GroupedQueryAttentionPrefillDenseFwdOp.")
+        raise ValueError("backend='dense' moved to GroupedQueryAttentionDenseFwdOp.")
     if uses_sliding_window(call):
         if call.backend not in ("auto", "sliding_window"):
             raise ValueError(

@@ -17,7 +17,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
-from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionPrefillDenseFwdOp
+from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionDenseFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 
 __all__ = [
@@ -52,7 +52,7 @@ class MultiHeadAttentionFwdOp(Op):
         self.is_causal = is_causal
 
         self.dispatch_kernel(kernel_map)
-        self._gqa_op = GroupedQueryAttentionPrefillDenseFwdOp(
+        self._gqa_op = GroupedQueryAttentionDenseFwdOp(
             is_causal=is_causal,
             kernel_map=self.forwarded_overrides(),
             tune=tune,
@@ -66,7 +66,7 @@ class MultiHeadAttentionFwdOp(Op):
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
-    def kernel_delegates(self) -> tuple[GroupedQueryAttentionPrefillDenseFwdOp, ...]:
+    def kernel_delegates(self) -> tuple[GroupedQueryAttentionDenseFwdOp, ...]:
         """Every kernel this op runs is built by the GQA prefill dispatcher."""
         return (self._gqa_op,)
 

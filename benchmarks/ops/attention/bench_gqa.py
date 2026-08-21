@@ -26,7 +26,7 @@ from tileops.kernels.attention import (
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionPrefillDenseFwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
@@ -40,7 +40,7 @@ from workloads.attention.gqa import (
     uniform_packed_prefill_inputs,
 )
 
-_GQA_FWD_OP = "GroupedQueryAttentionPrefillDenseFwdOp"
+_GQA_FWD_OP = "GroupedQueryAttentionDenseFwdOp"
 _GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
 _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
@@ -258,7 +258,7 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
 
 
 def _tileops_gqa_variant(
-    op: GroupedQueryAttentionPrefillDenseFwdOp,
+    op: GroupedQueryAttentionDenseFwdOp,
     inputs: tuple[torch.Tensor, ...],
 ) -> str:
     q, k = inputs[:2]
@@ -288,7 +288,11 @@ def _tileops_gqa_variant(
 # B=1-2 reflects typical micro-batch sizes.  No long-context training configs
 # since >90% of pretraining compute is at 4K-8K.
 _GQA_FWD_BENCH_PARAMS = manifest_params(
-    [w for w in load_workloads(_GQA_FWD_OP) if w.get("input_dtype") is None],
+    [
+        w
+        for w in load_workloads(_GQA_FWD_OP)
+        if w.get("input_dtype") is None and w["q_shape"][1] != 1
+    ],
     gqa_fwd_args,
 )
 
@@ -329,7 +333,7 @@ def test_gqa_fwd_bench(
     )
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionPrefillDenseFwdOp(
+    op = GroupedQueryAttentionDenseFwdOp(
         is_causal=causal,
         sm_scale=sm_scale,
         softcap=softcap,

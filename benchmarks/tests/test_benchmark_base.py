@@ -68,20 +68,23 @@ def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
 def test_multi_input_op_raises_keyerror():
     """Multi-input ops (q/k/v) raise instead of binding a wrong tensor."""
     with pytest.raises(KeyError, match="exactly one manifest tensor input"):
-        workloads_to_params("GroupedQueryAttentionPrefillDenseFwdOp")
+        workloads_to_params("GroupedQueryAttentionDenseFwdOp")
 
 
-def test_dense_gqa_benchmark_collects_every_non_fp8_manifest_case():
-    """Keep the Dense benchmark's manifest adapter importable and exhaustive."""
-    from benchmarks.ops.attention import bench_gqa
+def test_dense_gqa_benchmarks_partition_every_non_fp8_manifest_case():
+    """Prefill and decode adapters partition one Dense manifest without overlap."""
+    from benchmarks.ops.attention import bench_gqa, bench_gqa_decode
     from tileops.manifest import load_workloads
 
     expected = sum(
         len(workload["dtypes"])
-        for workload in load_workloads("GroupedQueryAttentionPrefillDenseFwdOp")
+        for workload in load_workloads("GroupedQueryAttentionDenseFwdOp")
         if workload.get("input_dtype") is None
     )
-    assert len(bench_gqa._GQA_FWD_BENCH_PARAMS) == expected
+    actual = len(bench_gqa._GQA_FWD_BENCH_PARAMS) + len(
+        bench_gqa_decode._GQA_DECODE_BENCH_PARAMS
+    )
+    assert actual == expected
 
 
 def _kernel(start_ns: int, end_ns: int, correlation_id: int = 0) -> dict:
