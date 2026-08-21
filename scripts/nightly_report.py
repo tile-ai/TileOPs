@@ -393,42 +393,43 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
-    """Find ops where tileops is significantly slower than any baseline."""
+    """Find configs where tileops is significantly slower than its strongest baseline.
+
+    One alert per config, naming the baseline that beat tileops by the most. A config
+    timed against several baselines would otherwise alert once per baseline and read as
+    several problems.
+    """
     alerts = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            # Check legacy primary baseline
-            ratio = cfg.get("baseline_ratio")
-            if ratio is not None and ratio < BASELINE_RATIO_ALERT:
+            primary = cfg.get("baseline_tag", "baseline")
+            candidates = [
+                (
+                    cfg.get("baseline_ratio"),
+                    primary,
+                    cfg.get(f"baseline_{_CONCLUSION_KEY}", cfg.get("baseline_latency_ms")),
+                )
+            ]
+            candidates += [
+                (bl.get("ratio"), tag, bl.get(_CONCLUSION_KEY, bl.get("latency_ms")))
+                for tag, bl in cfg.get("baselines", {}).items()
+                if tag != primary
+            ]
+            timed = [c for c in candidates if c[0] is not None]
+            if not timed:
+                continue
+            ratio, tag, baseline_ms = min(timed, key=lambda c: c[0])
+            if ratio < BASELINE_RATIO_ALERT:
                 alerts.append(
                     {
                         "op": op,
                         "config": cfg["name"],
                         "tileops_ms": _conclusion_ms(cfg),
-                        "baseline_ms": cfg.get(
-                            f"baseline_{_CONCLUSION_KEY}", cfg.get("baseline_latency_ms")
-                        ),
+                        "baseline_ms": baseline_ms,
                         "ratio": ratio,
-                        "baseline_tag": cfg.get("baseline_tag", "baseline"),
+                        "baseline_tag": tag,
                     }
                 )
-            # Check additional baselines
-            for tag, bl in cfg.get("baselines", {}).items():
-                bl_ratio = bl.get("ratio")
-                if bl_ratio is not None and bl_ratio < BASELINE_RATIO_ALERT:
-                    # Skip if this is the same as the primary baseline
-                    if tag == cfg.get("baseline_tag"):
-                        continue
-                    alerts.append(
-                        {
-                            "op": op,
-                            "config": cfg["name"],
-                            "tileops_ms": _conclusion_ms(cfg),
-                            "baseline_ms": bl.get(_CONCLUSION_KEY, bl.get("latency_ms")),
-                            "ratio": bl_ratio,
-                            "baseline_tag": tag,
-                        }
-                    )
     return alerts
 
 
@@ -827,9 +828,10 @@ def generate_report(
                         r_str = f"{bratio:.1%}" if bratio else "-"
                         via_parts.append(f"{btag} {r_str}")
                     via_str = ", ".join(via_parts)
-                    # Use the best (highest) ratio for the emoji
-                    best_ratio = max((r for _, r in bl_rows if r), default=None)
-                    emoji = _ratio_emoji(best_ratio) if best_ratio else ""
+                    # The strongest baseline is the fastest one, which is the lowest
+                    # ratio: a row that beats eager torch and loses to inductor has lost.
+                    strongest = min((r for _, r in bl_rows if r), default=None)
+                    emoji = _ratio_emoji(strongest) if strongest else ""
                     lines.append(
                         f"| {emoji} | {op} | {cfg['name']} "
                         f"| {lat_str} | {tflops_str} | {bw_str} "
