@@ -171,10 +171,14 @@ class BatchNormFwdOp(Op):
         # The op normalizes contiguity and hands over what the manifest declares; how a
         # kernel wants that laid out is its own business.
         x = x.contiguous()
-        running_mean = running_mean.contiguous()
-        running_var = running_var.contiguous()
         weight = weight.contiguous()
         bias = bias.contiguous()
+        # The running statistics are written, so normalizing them is not enough: whoever
+        # serves this op writes the tensor it was handed, and a copy would swallow that
+        # write. ``contiguous()`` returns the same object when it has nothing to do, so
+        # what came back tells us whether a write-back is owed (R22).
+        stats = (running_mean, running_var)
+        running_mean, running_var = (stat.contiguous() for stat in stats)
 
         # ``training`` decides which implementation serves the call, so it belongs in the
         # key; both are fetched under one name, which is what a target is asked to serve.
@@ -193,10 +197,14 @@ class BatchNormFwdOp(Op):
 
         # The training kernel also returns the batch statistics, which the manifest keeps
         # out of this op's outputs.
-        if self.training:
-            y, _mean, _rstd = kernel(x, running_mean, running_var, weight, bias)
-            return y
-        return kernel(x, running_mean, running_var, weight, bias)
+        if not self.training:
+            return kernel(x, running_mean, running_var, weight, bias)
+
+        y, _mean, _rstd = kernel(x, running_mean, running_var, weight, bias)
+        for original, handed_over in zip(stats, (running_mean, running_var), strict=True):
+            if handed_over is not original:
+                original.copy_(handed_over)
+        return y
 
     def forward(
         self,

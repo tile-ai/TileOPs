@@ -3893,7 +3893,7 @@ def _tensor_param_names(entry: dict) -> set[str]:
     return {
         name
         for name, attrs in params.items()
-        if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", ""))
+        if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", "")).lower()
     }
 
 

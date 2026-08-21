@@ -3474,10 +3474,10 @@ class TestMutatedInputParity:
         errs = validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls)
         assert any("past the 1 declared inputs" in e for e in errs), errs
 
-        entry["signature"]["params"] = {"other": {"type": "tensor | None"}}
+        entry["signature"]["params"] = {"other": {"type": "torch.Tensor | None"}}
         assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) != []
 
-        entry["signature"]["params"] = {"out": {"type": "tensor | None"}}
+        entry["signature"]["params"] = {"out": {"type": "torch.Tensor | None"}}
         assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) == []
 
     def test_unverifiable_declaration_warns(self, validator):
