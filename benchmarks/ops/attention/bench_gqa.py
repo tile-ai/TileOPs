@@ -11,22 +11,22 @@ from benchmarks.benchmark_base import (
     backward_of,
 )
 from benchmarks.ops.attention.manifest_params import (
+    gqa_fwd_args,
     gqa_prefill_args,
     gqa_prefill_paged_args,
     gqa_qkv_args,
     manifest_params,
 )
 from tileops.kernels.attention import (
-    GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
-    GQAFwdWsPersistentKernel,
-    GQAPrefillFwdKernel,
+    GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
+    GQASlidingWindowFwdWgmmaPipelinedKernel,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
@@ -40,7 +40,7 @@ from workloads.attention.gqa import (
     uniform_packed_prefill_inputs,
 )
 
-_GQA_FWD_OP = "GroupedQueryAttentionFwdOp"
+_GQA_FWD_OP = "GroupedQueryAttentionDenseFwdOp"
 _GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
 _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
@@ -73,7 +73,15 @@ def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdWorkload):
         return None
 
     def baseline_fn(q, k, v):
-        out = flash_attn_func(q, k, v, causal=test.is_causal)
+        out = flash_attn_func(
+            q,
+            k,
+            v,
+            softmax_scale=test.sm_scale,
+            causal=test.is_causal,
+            softcap=test.softcap or 0.0,
+            window_size=(test.window_size_left, test.window_size_right),
+        )
         return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
@@ -101,6 +109,8 @@ def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdWorkload):
 def _flashinfer_gqa_fwd(test, q, k, v):
     """FlashInfer ragged-prefill baseline. Handles seq_len_q != seq_len_kv (square is
     the seq_len_q == seq_len_kv case). Returns callable or None."""
+    if test.window_size_right >= 0:
+        return None
     try:
         from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
     except ImportError:
@@ -123,6 +133,7 @@ def _flashinfer_gqa_fwd(test, q, k, v):
         causal=test.is_causal,
         logits_soft_cap=getattr(test, "softcap", None) or 0.0,
         sm_scale=getattr(test, "sm_scale", None),
+        window_left=test.window_size_left,
         q_data_type=q.dtype,
     )
 
@@ -137,17 +148,30 @@ def _flashinfer_gqa_fwd(test, q, k, v):
 
 
 def _torch_gqa_fwd(test):
-    """Torch SDPA forward baseline."""
+    """Materialized reference covering scale, softcap, and window semantics."""
 
     def fn(q, k, v):
-        out = F.scaled_dot_product_attention(
-            q.transpose(1, 2),
-            k.transpose(1, 2),
-            v.transpose(1, 2),
-            is_causal=test.is_causal,
-            enable_gqa=True,
-        )
-        return out.transpose(1, 2)
+        groups = test.heads // test.heads_kv
+        q_bhsd = q.transpose(1, 2).float()
+        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        scale = test.dim**-0.5 if test.sm_scale is None else test.sm_scale
+        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
+        if test.softcap is not None and test.softcap > 0:
+            scores = test.softcap * torch.tanh(scores / test.softcap)
+        offset = test.seq_len_kv - test.seq_len
+        q_pos = torch.arange(test.seq_len, device=q.device)[:, None] + offset
+        k_pos = torch.arange(test.seq_len_kv, device=q.device)[None, :]
+        visible = torch.ones_like(q_pos + k_pos, dtype=torch.bool)
+        if test.is_causal:
+            visible &= k_pos <= q_pos
+        if test.window_size_left >= 0:
+            visible &= k_pos >= q_pos - test.window_size_left
+        if test.window_size_right >= 0:
+            visible &= k_pos <= q_pos + test.window_size_right
+        scores.masked_fill_(~visible.view(1, 1, test.seq_len, test.seq_len_kv), float("-inf"))
+        probs = torch.nan_to_num(torch.softmax(scores, dim=-1), nan=0.0)
+        return torch.matmul(probs, v_bhsd).transpose(1, 2).to(q.dtype)
 
     return fn
 
@@ -233,27 +257,28 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
     return fn
 
 
-def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> str:
-    kernel = op._get_kernel(dtype)
+def _tileops_gqa_variant(
+    op: GroupedQueryAttentionDenseFwdOp,
+    inputs: tuple[torch.Tensor, ...],
+) -> str:
+    q, k = inputs[:2]
+    entry = op._get_entry(inputs, q.dtype, q.device)
+    kernel = entry._kernel_for(entry._selection_facts(q, k))
     if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
         return "prefill_ws_causal"
-    if isinstance(kernel, GQAPrefillFwdKernel):
-        return "prefill"
+    if isinstance(kernel, GQASlidingWindowFwdWgmmaPipelinedKernel):
+        return "dense_sliding"
     if isinstance(kernel, GQAFwdWsPersistentCausalKernel):
         return "ws_causal"
-    if isinstance(kernel, GQAFwdWsPersistentKernel):
-        return "ws_noncausal"
-    if isinstance(kernel, GQAFwdWgmmaPipelinedKernel):
-        return "wgmma_pipelined"
     return kernel.__class__.__name__
 
 
 # GQA forward benchmark parameters.
 #
 # Three head profiles cover the mainstream LLM GQA configurations:
-#   small  (32:8:128) — Llama-3.1-8B, Qwen3-8B, Mistral-24B
-#   medium (64:8:128) — Llama-3.1-70B, Qwen3-32B, Qwen2.5-72B
-#   large  (128:8:128) — Llama-3.1-405B
+#   small  (32:8:128): Llama-3.1-8B, Qwen3-8B, Mistral-24B
+#   medium (64:8:128): Llama-3.1-70B, Qwen3-32B, Qwen2.5-72B
+#   large  (128:8:128): Llama-3.1-405B
 # head_dim=128 and kv_heads=8 are near-universal across Llama, Qwen3, and Mistral.
 #
 # Inference prefill (fp16): seq_len from 1K to 128K covers short chat to
@@ -262,29 +287,62 @@ def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> 
 # Training (bf16): seq_len 2K-8K covers SFT (2K) and pretraining (4K-8K).
 # B=1-2 reflects typical micro-batch sizes.  No long-context training configs
 # since >90% of pretraining compute is at 4K-8K.
-_GQA_FWD_BENCH_PARAMS = manifest_params(load_workloads(_GQA_FWD_OP), gqa_qkv_args)
+_GQA_FWD_BENCH_PARAMS = manifest_params(
+    [
+        w
+        for w in load_workloads(_GQA_FWD_OP)
+        if w.get("input_dtype") is None and w["q_shape"][1] != 1
+    ],
+    gqa_fwd_args,
+)
 
 
 @pytest.mark.parametrize(
-    "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
+    "batch, seq_len, seq_len_kv, heads, heads_kv, dim, causal, sm_scale, softcap, "
+    "window_size_left, window_size_right, dtype, tune",
     _GQA_FWD_BENCH_PARAMS,
 )
 def test_gqa_fwd_bench(
     batch: int,
     seq_len: int,
+    seq_len_kv: int,
     heads: int,
     heads_kv: int,
     dim: int,
     causal: bool,
+    sm_scale: Optional[float],
+    softcap: Optional[float],
+    window_size_left: int,
+    window_size_right: int,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionFwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    test = GroupedQueryAttentionFwdWorkload(
+        batch,
+        heads,
+        heads_kv,
+        seq_len,
+        dim,
+        causal,
+        dtype,
+        sm_scale,
+        softcap,
+        window_size_left,
+        window_size_right,
+        seq_len_kv,
+    )
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
+    op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=causal,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+        tune=tune,
+    )
     bm = ManifestBenchmark(_GQA_FWD_OP, op, test)
-    tileops_variant = _tileops_gqa_variant(op, dtype)
+    tileops_variant = _tileops_gqa_variant(op, inputs)
     functors = {f"tileops_{tileops_variant}": op}
 
     fa3_fn = _fa3_gqa_fwd(test)
@@ -302,7 +360,7 @@ def test_gqa_fwd_bench(
 
 
 # GQA backward benchmark parameters (training only).
-# Backward is only used during training — extract the training subset from
+# Backward is only used during training; extract the training subset from
 # _GQA_FWD_BENCH_PARAMS by ID prefix to avoid manual duplication.
 _GQA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_GQA_BWD_OP), gqa_qkv_args)
 
@@ -339,11 +397,7 @@ def test_gqa_bwd_bench(
 
 
 _GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
-    [
-        workload
-        for workload in load_workloads(_GQA_PREFILL_FWD_OP)
-        if workload.get("backend") != "fp8"
-    ],
+    load_workloads(_GQA_PREFILL_FWD_OP),
     gqa_prefill_args,
     tune=False,
 )
@@ -351,7 +405,7 @@ _GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
 
 @pytest.mark.parametrize(
     "batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, causal, backend, "
-    "validate_uniform_cu_seqlens, sm_scale, softcap, dtype, tune",
+    "sm_scale, softcap, dtype, tune",
     _GQA_PREFILL_FWD_BENCH_PARAMS,
 )
 def test_gqa_prefill_fwd_bench(
@@ -363,7 +417,6 @@ def test_gqa_prefill_fwd_bench(
     dim: int,
     causal: bool,
     backend: str,
-    validate_uniform_cu_seqlens: bool,
     sm_scale: Optional[float],
     softcap: Optional[float],
     dtype: torch.dtype,
@@ -386,7 +439,6 @@ def test_gqa_prefill_fwd_bench(
         dtype=dtype,
         tune=tune,
         backend=backend,
-        validate_uniform_cu_seqlens=validate_uniform_cu_seqlens,
         sm_scale=sm_scale,
         softcap=softcap,
     )

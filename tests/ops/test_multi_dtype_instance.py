@@ -76,16 +76,19 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
     float16 at batch=1 takes the warp-specialized kernel and bfloat16 falls
     back, so one instance must hold two different kernel classes.
     """
-    from tileops.ops.attention.gqa import (
-        GroupedQueryAttentionDecodeWithKVCacheFwdOp,
-    )
+    from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 
-    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128)
-    fp16 = op._get_kernel(torch.float16)
-    bf16 = op._get_kernel(torch.bfloat16)
+    op = GroupedQueryAttentionDenseFwdOp()
+    kernels = []
+    for dtype in _DTYPES:
+        q = torch.empty(1, 1, 32, 128, device="cuda", dtype=dtype)
+        k = torch.empty(1, 8192, 4, 128, device="cuda", dtype=dtype)
+        entry = op._get_entry((q, k, k), dtype, q.device)
+        kernels.append(entry._kernel_for(entry._selection_facts(q, k)).kernel)
+    fp16, bf16 = kernels
     assert fp16.__class__.__name__ == "GQADecodeBs1Kernel"
     assert bf16.__class__.__name__ == "GQADecodeKernel"
-    _assert_two_entries(op)
+    assert len(op.built_kernels("gqa_dense")) == len(_DTYPES)
 
 
 @pytest.mark.smoke
@@ -94,26 +97,29 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
 
     Causal dim-128 takes the warp-specialized dense slot.
     """
-    from tileops.ops.attention.gqa import GroupedQueryAttentionFwdOp
+    from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+    from tileops.ops.attention.selection import DENSE_FWD_PREFILL_KEYS
 
     batch, heads, heads_kv, seq_len, dim = 1, 8, 2, 256, 128
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, is_causal=True)
+    op = GroupedQueryAttentionDenseFwdOp(is_causal=True)
     for dtype in _DTYPES:
         q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
         k = torch.randn(batch, seq_len, heads_kv, dim, dtype=dtype, device="cuda")
         v = torch.randn_like(k)
         output = op(q, k, v)
         assert output.dtype == dtype
-        kernel = op._get_kernel(dtype)
-        assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
-        assert kernel.dtype == dtype
-    _assert_two_entries(op)
+        entry = op._get_entry((q, k, v), dtype, q.device)
+        call = entry._selection_facts(q, k)
+        key = op.select_kernel_key(DENSE_FWD_PREFILL_KEYS, call)
+        assert op.kernel_map[key].__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+    assert len(op.built_kernels("gqa_dense")) == len(_DTYPES)
 
 
 @pytest.mark.smoke
 def test_attention_mha_serves_two_dtypes_from_one_instance():
     """MHA owns no kernels; the per-dtype cache lives on the GQA delegate."""
     from tileops.ops.attention.mha import MultiHeadAttentionFwdOp
+    from tileops.ops.attention.selection import DENSE_FWD_PREFILL_KEYS
 
     batch, heads, seq_len, dim = 1, 8, 256, 64
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, is_causal=False)
@@ -123,16 +129,17 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         v = torch.randn_like(q)
         output = op(q, k, v)
         assert output.dtype == dtype
-        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
-    _assert_two_entries(op._gqa_op)
+        delegate = op._gqa_op
+        entry = delegate._get_entry((q, k, v), dtype, q.device)
+        call = entry._selection_facts(q, k)
+        key = delegate.select_kernel_key(DENSE_FWD_PREFILL_KEYS, call)
+        assert delegate.kernel_map[key].__name__ == "GQAPrefillDenseFwdKernel"
+    assert len(op._gqa_op.built_kernels("gqa_dense")) == len(_DTYPES)
 
-    # MHA builds no kernel of its own, so autotune has to reach the delegate's
-    # kernels — one per dtype — through ``kernel_delegates``.
-    tuned = []
-    for kernel in list(op._gqa_op.iter_kernels()):
-        kernel.autotune = lambda *_args, _k=kernel: tuned.append(id(_k))
-    op.autotune()
-    assert len(tuned) == len(_DTYPES)
+    # MHA builds no kernel of its own. Enumeration reaches the concrete kernels
+    # retained by the GQA backend callables. A CPU stand-in test covers actual
+    # autotune propagation without launching a full tuning sweep here.
+    assert len(list(op.iter_kernels())) == len(_DTYPES)
 
 
 @pytest.mark.smoke
@@ -266,8 +273,8 @@ _SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
 def test_single_tensor_op_records_its_dtype(name):
     """No op may reach a result without recording the element type it used.
 
-    An op answering on its own path — an integer identity, a predicate fallback
-    — records for itself, so every declared dtype is driven, not just float32.
+    An op answering on its own path, such as an integer identity or predicate
+    fallback, records for itself, so every declared dtype is driven, not just float32.
     """
     op = _SINGLE_TENSOR_OPS[name]()
     declared = load_manifest()[name]["signature"]["inputs"]

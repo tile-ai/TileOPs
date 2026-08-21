@@ -1989,6 +1989,79 @@ class TestValidateDtypesParity:
         )
         assert errors == []
 
+    def test_optional_same_as_output_follows_each_combo(self, validator):
+        """An optional same_as tensor follows its reference in each row."""
+        import torch
+
+        def validate(self, x, table=None):
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError("unsupported input dtype")
+            if table is not None and table.dtype != x.dtype:
+                raise ValueError("table must follow the output dtype")
+
+        errors, _ = _dtype_parity(
+            validator,
+            validate,
+            _sig(
+                {
+                    "x": "float16 | bfloat16",
+                    "table": {"dtype": "same_as(y)", "optional": True},
+                },
+                {"y": "same_as(x)"},
+                dtype_combos=[
+                    {"x": "float16", "y": "float16"},
+                    {"x": "bfloat16", "y": "bfloat16"},
+                ],
+            ),
+        )
+        assert errors == []
+
+    def test_optional_same_as_required_input_follows_each_combo(self, validator):
+        """The #1933 optional-input example retains same_as identity per row."""
+        import torch
+
+        def validate(self, x, weight=None):
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError("unsupported input dtype")
+            if weight is not None and weight.dtype != x.dtype:
+                raise ValueError("weight must follow x")
+
+        errors, _ = _dtype_parity(
+            validator,
+            validate,
+            _sig(
+                {
+                    "x": "float16 | bfloat16",
+                    "weight": {"dtype": "same_as(x)", "optional": True},
+                },
+                {"y": "same_as(x)"},
+                dtype_combos=[
+                    {"x": "float16", "y": "float16"},
+                    {"x": "bfloat16", "y": "bfloat16"},
+                ],
+            ),
+        )
+        assert errors == []
+
+    def test_combo_resolver_conditions_optional_on_output(self, validator):
+        sig = _sig(
+            {
+                "q": "float8_e4m3fn",
+                "table": {"dtype": "same_as(o)", "optional": True},
+            },
+            {"o": "float16 | bfloat16"},
+        )
+
+        fp16 = validator._resolve_tensor_dtype_options_for_combo(
+            sig, {"q": "float8_e4m3fn", "o": "float16"}
+        )
+        bf16 = validator._resolve_tensor_dtype_options_for_combo(
+            sig, {"q": "float8_e4m3fn", "o": "bfloat16"}
+        )
+
+        assert fp16["table"] == ["float16"]
+        assert bf16["table"] == ["bfloat16"]
+
     def test_dtype_combos_rejects_listed_fails(self, validator):
         import torch
 

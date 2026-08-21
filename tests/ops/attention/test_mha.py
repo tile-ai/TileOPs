@@ -1,13 +1,11 @@
-import dataclasses
-
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention.call_spec import square_ws_prefill_region
+from tileops.kernels.attention.call_spec import AttentionCall, square_ws_prefill_region
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from tileops.ops.attention.selection import DENSE_PREFILL_KEYS
+from tileops.ops.attention.selection import DENSE_FWD_PREFILL_KEYS
 from workloads.attention.mha import MhaBwdWorkload, MhaFwdWorkload
 
 
@@ -34,6 +32,25 @@ class _FakeSquareDenseKernel(Kernel):
 
     def forward(self, *args: object, **kwargs: object) -> object:
         return None
+
+
+class _FakeDecodeKernel(Kernel):
+    """Independent replacement for the general contiguous decode slot."""
+
+    general = True
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.seen_q_shape = None
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        real_seqlen_kv: int,
+    ) -> torch.Tensor:
+        self.seen_q_shape = q.shape
+        return torch.empty_like(q)
 
 
 class _FakeLegacyMhaBwdKernel(Kernel):
@@ -181,7 +198,8 @@ def test_mha_fwd(
 @pytest.mark.smoke
 def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
     op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False)
-    assert op._get_kernel(torch.float16).__class__.__name__.startswith("GQA")
+    (delegate,) = op.kernel_delegates()
+    assert all(kernel.__name__.startswith("GQA") for kernel in delegate.kernel_map.values())
 
 
 @pytest.mark.smoke
@@ -203,12 +221,44 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path() -> None:
         },
     )
     (delegate,) = op.kernel_delegates()
-    stated = dataclasses.replace(delegate.attention_call(torch.float16), arch=90, h200=True)
+    stated = AttentionCall(
+        arch=90,
+        h200=True,
+        dtype=torch.float16,
+        prefill_topology="dense",
+        batch=4,
+        heads=64,
+        heads_kv=64,
+        dim=128,
+        max_seqlen_q=512,
+        max_seqlen_kv=512,
+        is_causal=True,
+        sm_scale=128**-0.5,
+    )
 
-    key = delegate.select_kernel_key(DENSE_PREFILL_KEYS, stated)
+    key = delegate.select_kernel_key(DENSE_FWD_PREFILL_KEYS, stated)
 
     assert key == "gqa_prefill_square_fwd_kernel"
     assert delegate.kernel_map[key] is _FakeSquareDenseKernel
+
+
+@pytest.mark.smoke
+def test_mha_fwd_forwards_the_dense_decode_slot() -> None:
+    op = MultiHeadAttentionFwdOp(
+        batch=2,
+        heads=8,
+        seq_len=1,
+        dim=64,
+        kernel_map={"gqa_decode_kernel": _FakeDecodeKernel},
+    )
+    q = torch.randn(2, 1, 8, 64, dtype=torch.float16)
+
+    assert op(q, q, q).shape == q.shape
+    (delegate,) = op.kernel_delegates()
+    builtin = next(iter(delegate.built_kernels("gqa_dense").values()))
+    ((kernel,),) = [tuple(builtin._retained_kernels)]
+    assert isinstance(kernel, _FakeDecodeKernel)
+    assert kernel.seen_q_shape == (2, 8, 64)
 
 
 @pytest.mark.smoke

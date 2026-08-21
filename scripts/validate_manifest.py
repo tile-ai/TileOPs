@@ -2772,6 +2772,59 @@ def _resolve_tensor_dtype_options(
     return resolved if not pending else None
 
 
+def _resolve_tensor_dtype_options_for_combo(
+    sig: dict,
+    combo: dict[str, str],
+) -> dict[str, list[str]] | None:
+    """Resolve tensor dtype expressions under one concrete combo row.
+
+    Unlike the signature-wide resolver, every tensor named by *combo* is
+    seeded with that row's singleton dtype. Consequently an optional
+    ``same_as(ref)`` follows the dtype of *ref* in this row instead of the
+    union of dtypes that *ref* has across all rows.
+    """
+    pending: dict[str, str] = dict(combo)
+    resolved: dict[str, list[str]] = {}
+    for _ in range(len(pending) + 1):
+        made_progress = False
+        for tname, dtype_str in list(pending.items()):
+            opts = _dtype_options_for_tensor(tname, dtype_str, resolved)
+            if opts is None:
+                continue
+            resolved[tname] = opts
+            del pending[tname]
+            made_progress = True
+        if not pending:
+            break
+        if not made_progress:
+            return None
+
+    tensors: dict[str, dict] = {}
+    for direction in ("inputs", "outputs"):
+        declared = sig.get(direction) or {}
+        if isinstance(declared, dict):
+            tensors.update(declared)
+    pending = {
+        tname: attrs.get("dtype", "")
+        for tname, attrs in tensors.items()
+        if tname not in resolved and isinstance(attrs, dict)
+    }
+    for _ in range(len(pending) + 1):
+        made_progress = False
+        for tname, dtype_str in list(pending.items()):
+            opts = _dtype_options_for_tensor(tname, dtype_str, resolved)
+            if opts is None:
+                continue
+            resolved[tname] = opts
+            del pending[tname]
+            made_progress = True
+        if not pending:
+            return resolved
+        if not made_progress:
+            return None
+    return resolved if not pending else None
+
+
 def _primary_dtype_input(
     sig: dict,
     forward_inputs: list[str],
@@ -3145,13 +3198,20 @@ def check_l3_validate_dtypes_parity(
                 err(f"_validate_dtypes rejects dtype_combos[{i}] {combo!r} listed in manifest")
 
         # The optional inputs have no combo column, so the loop above never
-        # passes one. Probe the other side too: each listed combo, augmented
-        # with every optional at a declared dtype, must still be accepted.
+        # passes one. Probe the other side too. A pure same_as(ref) optional
+        # follows ref in each combo instead of taking the Cartesian product
+        # of every dtype ref has across all rows.
         for name in sorted(optional_inputs):
-            for dtype_name in dtype_options.get(name) or []:
-                for i, combo in enumerate(dtype_combos):
-                    if not isinstance(combo, dict):
-                        continue
+            for i, combo in enumerate(dtype_combos):
+                if not isinstance(combo, dict):
+                    continue
+                row_options = _resolve_tensor_dtype_options_for_combo(sig, combo)
+                optional_dtypes = (
+                    row_options.get(name, [])
+                    if row_options is not None
+                    else dtype_options.get(name) or []
+                )
+                for dtype_name in optional_dtypes:
                     accepted, reason = _combo_accepted(
                         cls,
                         forward_inputs + [name],

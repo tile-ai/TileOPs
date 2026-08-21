@@ -6,8 +6,10 @@ import torch.nn.functional as F
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
+    GQADecodeBs1Kernel,
+    GQADecodeKernel,
     GQAFwdWsPersistentCausalKernel,
-    GQAPrefillFwdKernel,
+    GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
@@ -17,7 +19,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
-from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionDenseFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 
 __all__ = [
@@ -52,12 +54,7 @@ class MultiHeadAttentionFwdOp(Op):
         self.is_causal = is_causal
 
         self.dispatch_kernel(kernel_map)
-        self._gqa_op = GroupedQueryAttentionFwdOp(
-            batch=batch,
-            heads=heads,
-            heads_kv=heads,
-            seq_len=seq_len,
-            dim=dim,
+        self._gqa_op = GroupedQueryAttentionDenseFwdOp(
             is_causal=is_causal,
             kernel_map=self.forwarded_overrides(),
             tune=tune,
@@ -66,15 +63,14 @@ class MultiHeadAttentionFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
+            "gqa_prefill_dense_fwd_kernel": GQAPrefillDenseFwdKernel,
             "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
+            "gqa_decode_kernel": GQADecodeKernel,
+            "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
         }
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        return self._gqa_op._get_kernel(dtype)
-
-    def kernel_delegates(self) -> tuple[GroupedQueryAttentionFwdOp, ...]:
+    def kernel_delegates(self) -> tuple[GroupedQueryAttentionDenseFwdOp, ...]:
         """Every kernel this op runs is built by the GQA prefill dispatcher."""
         return (self._gqa_op,)
 
