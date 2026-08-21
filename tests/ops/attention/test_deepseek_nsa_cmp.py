@@ -73,7 +73,3 @@ def test_nsa_cmp_fwd_varlen_op(
         chunk_num=test.chunk_num,
     )
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -598,7 +598,3 @@ def test_duplicate_dims_raises() -> None:
     op = SumFwdOp(dim=[1, 1], keepdim=False)
     with pytest.raises(ValueError, match="Duplicate dims"):
         op(x)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

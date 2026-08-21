@@ -177,7 +177,3 @@ def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
     )
     key = op.select_kernel_key(MHA_PAGED_DECODE_KEYS, op._attention_call(torch.float16))
     assert key == "mha_decode_paged_kernel"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

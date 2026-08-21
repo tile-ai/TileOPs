@@ -781,6 +781,12 @@ class UnaryKernel(Kernel):
             within the resolved strategy).
     """
 
+    #: Elementwise work is sized by the tensor shape, never by a value: an
+    #: integer operand is data and a ``uint8`` ``cond``/``mask`` selects a result
+    #: after the element is already visited. Random values change what a
+    #: candidate computes, not how much of it.
+    autotune_accepts_random_int_inputs: bool = True
+
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     # Benchmark (H200): register_copy wins for fp16/bf16 across all tested shapes;
@@ -999,6 +1005,12 @@ class BinaryKernel(Kernel):
         out_shape: Broadcast output shape.
         N_total: Total output elements.
     """
+
+    #: Elementwise work is sized by the tensor shape, never by a value: an
+    #: integer operand is data and a ``uint8`` ``cond``/``mask`` selects a result
+    #: after the element is already visited. Random values change what a
+    #: candidate computes, not how much of it.
+    autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
@@ -1254,6 +1266,12 @@ class FusedGatedKernel(Kernel):
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
     """
+
+    #: Elementwise work is sized by the tensor shape, never by a value: an
+    #: integer operand is data and a ``uint8`` ``cond``/``mask`` selects a result
+    #: after the element is already visited. Random values change what a
+    #: candidate computes, not how much of it.
+    autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]

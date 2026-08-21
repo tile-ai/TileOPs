@@ -204,7 +204,3 @@ def test_dynamic_payload_runtime_expr(preserve_trace_state, tmp_path):
 
     payloads = sorted([s.payload for s in loop_slices[:4]])
     assert payloads == [0, 1, 2, 3], f"Expected payloads [0, 1, 2, 3], got {payloads}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

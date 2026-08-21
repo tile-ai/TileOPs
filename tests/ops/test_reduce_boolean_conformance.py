@@ -200,7 +200,3 @@ def test_count_nonzero_unaligned_innermost(dim) -> None:
         f"CountNonzeroFwdOp dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
     )
     torch.testing.assert_close(y, ref, atol=0, rtol=0)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

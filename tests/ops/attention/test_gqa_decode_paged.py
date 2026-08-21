@@ -270,7 +270,3 @@ def test_gqa_decode_paged_bs1_dispatch_fallbacks(
         batch, 32, 4, seqlen_kv, dim, page_size, softcap=softcap
     )
     assert op._get_kernel(dtype).__class__.__name__ == "GQADecodePagedKernel"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

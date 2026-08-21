@@ -253,7 +253,3 @@ def test_fused_gated_kernel_stores_strategy() -> None:
     k2 = SiluAndMulFwdKernel(M=16, N=16, dtype=torch.float16)
     assert k2.strategy == FusedGatedKernel.DEFAULT_STRATEGY
     assert k2.config["strategy"] == FusedGatedKernel.DEFAULT_STRATEGY
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

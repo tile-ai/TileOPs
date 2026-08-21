@@ -149,7 +149,3 @@ def test_gla_bwd(
             cos = cosine_sim(fla_grads[name], op_grads[name])
             print(f"  TileOPs vs FLA {name}: cosine={cos:.6f}")
             assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

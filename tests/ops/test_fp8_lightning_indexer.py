@@ -89,7 +89,3 @@ def test_indexer_rejects_bf16_inputs_with_external_scale() -> None:
 
     with pytest.raises(ValueError, match="float8_e4m3fn"):
         op(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

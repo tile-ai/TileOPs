@@ -243,7 +243,3 @@ class TestCachingCorrectness:
         out = k(x)
         ref = torch.nn.functional.leaky_relu(x.float(), 0.01).to(torch.float16)
         torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

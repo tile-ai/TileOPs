@@ -642,7 +642,3 @@ def test_reciprocal_int_input_validation() -> None:
     assert len(op.built_kernels(op._op_name)) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
         op(torch.ones(4, device="cuda", dtype=torch.float64))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

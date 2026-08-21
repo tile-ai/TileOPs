@@ -729,7 +729,3 @@ def test_softplus_rejects_non_numeric_beta() -> None:
     op = SoftplusFwdOp(beta="bad")
     with pytest.raises(TypeError, match="int/float"):
         op(torch.zeros(1024, device="cuda", dtype=torch.float16))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

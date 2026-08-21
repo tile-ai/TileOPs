@@ -89,7 +89,3 @@ def test_gla_fwd(
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

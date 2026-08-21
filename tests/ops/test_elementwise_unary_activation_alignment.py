@@ -189,7 +189,3 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 # refactor pulling shared ``__init__`` / ``forward`` / ``_eager_forward``
 # logic up into a base or mixin must keep these byte-identical, because
 # downstream code (tests, benches, codegen) relies on them.
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

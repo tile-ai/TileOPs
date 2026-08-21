@@ -606,7 +606,3 @@ def test_vector_norm_tiled_autotune() -> None:
     kernel = op.built_kernels(op._kernel_key)[(m, n, dtype)]
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

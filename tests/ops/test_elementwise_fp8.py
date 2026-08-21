@@ -229,7 +229,3 @@ def test_division_family_kernel_rejects_bool_and_int():
             cls(**_binary_kwargs(torch.bool))
         with pytest.raises(ValueError, match="only supports dtypes"):
             cls(**_binary_kwargs(torch.int32))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -61,7 +61,3 @@ def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype, tu
     test = MHCPostTest(batch, n_expand, c_x, dtype)
     op = MHCPostFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -249,7 +249,3 @@ def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
     ).to(dtype)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y2, y_ref, atol=atol, rtol=rtol)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

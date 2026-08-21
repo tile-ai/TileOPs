@@ -39,7 +39,3 @@ def test_mla_decode(
         batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune
     )
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

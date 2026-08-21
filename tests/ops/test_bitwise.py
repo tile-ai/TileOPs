@@ -270,7 +270,3 @@ def test_bitwise_binary_rejects_float_dtype(op_cls, dtype: torch.dtype) -> None:
     x = torch.zeros(shape, device="cuda", dtype=dtype)
     with pytest.raises(ValueError, match="has dtype|does not support dtype"):
         op(x, x)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

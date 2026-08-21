@@ -93,7 +93,3 @@ def test_the_op_rejects_a_dtype_the_manifest_does_not_declare():
     op = MoeGateUpFwdOp(numel, num_experts, ffn, k)
     with pytest.raises((ValueError, TypeError)):
         op(a, b, sizes, offsets)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

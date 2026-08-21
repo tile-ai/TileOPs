@@ -451,10 +451,6 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
     allclose_compare(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 # ----------------------------------------------------------------------
 # Composite-vs-stage contract for the Mamba-2 / State-Space Dual (SSD) rooflines.
 # ----------------------------------------------------------------------

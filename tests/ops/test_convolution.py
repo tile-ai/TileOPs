@@ -1113,7 +1113,3 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
     assert output.is_contiguous()
     torch.testing.assert_close(output, op(x, weight))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

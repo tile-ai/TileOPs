@@ -707,7 +707,3 @@ def test_argreduce_tuning_space_matches_its_kernel(
     assert kernel.default_config in kernel.autotune_configs, (
         "tuning cannot be worse than not tuning: the default must be a candidate"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -191,7 +191,3 @@ def test_permute_align_skewed_distribution() -> None:
     outputs_ref = tuple(ref_permute_align(topk_ids, block_size, num_experts))
 
     _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

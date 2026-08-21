@@ -231,7 +231,3 @@ def test_mha_bwd(
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

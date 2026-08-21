@@ -128,7 +128,3 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
     # A fourth such parameter must fail rather than silently receive the offsets.
     with pytest.raises(RuntimeError, match="expects 3 int32"):
         kernel.autotune_supply_prog(params + [_FakeKernelParam("int32", [batch_count])])
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

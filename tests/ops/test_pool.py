@@ -2710,7 +2710,3 @@ def test_adaptive_max_pool2d_indices_nan_window() -> None:
     ref_val, ref_idx = F.adaptive_max_pool2d(x.float(), (1, 1), return_indices=True)
     assert torch.isnan(val.float()).all()
     torch.testing.assert_close(idx, ref_idx, atol=0, rtol=0)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

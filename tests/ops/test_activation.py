@@ -372,7 +372,3 @@ def test_independent_activation_rejects_non_float_dtype() -> None:
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         LeakyReluFwdKernel(N_total=16, dtype=torch.int32)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -189,7 +189,3 @@ def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

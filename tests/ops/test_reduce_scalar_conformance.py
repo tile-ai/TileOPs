@@ -188,7 +188,3 @@ def test_scalar_logical_and_count_reductions(
             f"{op_cls.__name__} scalar dim={dim} dtype={dtype}: shape {y.shape} vs ref {ref.shape}"
         )
         torch.testing.assert_close(y, ref, atol=0, rtol=0)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -1293,7 +1293,3 @@ def _mask(*shape):
 def test_the_traced_graph_holds_only_this_ops_operators(build_case):
     op, inputs = build_case()
     assert_op_owns_graph_nodes(op, *inputs)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

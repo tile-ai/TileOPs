@@ -302,7 +302,3 @@ def test_enumeration_still_sees_the_family():
         "BitwiseNotFwdOp",
     ):
         assert expected in _SINGLE_TENSOR_OPS, f"{expected} dropped out of the sweep"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -392,7 +392,3 @@ def test_comparison_rejects_unsupported_dtype(
     x = torch.zeros(shape, device="cuda", dtype=dtype)
     with pytest.raises(ValueError, match="has dtype|does not support dtype"):
         op(x, x)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

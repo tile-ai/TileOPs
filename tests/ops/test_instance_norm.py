@@ -396,7 +396,3 @@ def test_instance_norm_default_momentum_does_not_change_output() -> None:
     y2 = op_other(x, weight=weight, bias=bias)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

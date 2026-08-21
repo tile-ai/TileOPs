@@ -687,7 +687,3 @@ def test_rope_rejects_non_float_dtype() -> None:
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         RopeNeoxKernel(seq_len=16, head_dim=64, dtype=torch.int32)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

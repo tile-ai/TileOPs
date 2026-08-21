@@ -732,7 +732,3 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
     assert torch.allclose(mean_out, ref_mean, **tol), (
         f"var_mean spec mean err: {(mean_out - ref_mean).abs().max()}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
