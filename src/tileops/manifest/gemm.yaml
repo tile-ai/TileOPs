@@ -199,6 +199,7 @@ GroupedGemmFwdOp:
     kernel: tileops/kernels/grouped_gemm/grouped_gemm.py
     kernel_map:
       grouped_gemm_kernel: GroupedGemmKernel
+      grouped_gemm_persistent_3wg_kernel: GroupedGemmPersistent3WGKernel
     op: tileops/ops/grouped_gemm.py
     test: tests/ops/test_grouped_gemm.py
     bench: benchmarks/ops/bench_grouped_gemm.py

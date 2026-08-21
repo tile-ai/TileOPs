@@ -114,8 +114,8 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        """Shapes this kernel's tiling divides."""
-        return _tiling_divides(call.n, call.k)
+        """NT shapes this kernel's tiling divides; it computes ``A @ B^T`` only."""
+        return not call.transpose_a and call.transpose_b and _tiling_divides(call.n, call.k)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Override base autotune: the JIT factory already accepts config
@@ -131,9 +131,9 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         B_dummy = (
             torch.randn(self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
         )
-        per = max(1, self.numel // self.num_experts)
-        sizes = torch.full((self.num_experts,), per, dtype=torch.int32, device="cuda")
-        sizes[-1] = self.numel - per * (self.num_experts - 1)
+        base, extra = divmod(self.numel, self.num_experts)
+        sizes = torch.full((self.num_experts,), base, dtype=torch.int32, device="cuda")
+        sizes[:extra] += 1
         offsets = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
 
