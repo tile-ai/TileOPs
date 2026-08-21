@@ -3887,13 +3887,14 @@ def check_c5_dispatch_kernel_invariant(
     return errors
 
 
-def _has_tensor_param(entry: dict) -> bool:
-    """True when the entry declares a tensor-typed param: a caller-supplied buffer (R18)."""
+def _tensor_param_names(entry: dict) -> set[str]:
+    """The entry's tensor-typed params: caller-supplied output buffers (R18)."""
     params = entry.get("signature", {}).get("params") or {}
-    return any(
-        isinstance(attrs, dict) and "tensor" in str(attrs.get("type", ""))
-        for attrs in params.values()
-    )
+    return {
+        name
+        for name, attrs in params.items()
+        if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", ""))
+    }
 
 
 def check_c8_mutated_inputs_parity(
@@ -3951,10 +3952,10 @@ def check_c8_mutated_inputs_parity(
                 continue
             if position < len(input_names):
                 written.add(input_names[position])
-            elif not _has_tensor_param(entry):
+            elif arg.name not in _tensor_param_names(entry):
                 errors.append(
                     f"[mutation] {op_name}: {qualified!r} writes argument {arg.name!r}, which "
-                    f"is past the {len(input_names)} declared inputs and matches no declared "
+                    f"is past the {len(input_names)} declared inputs and names no declared "
                     f"output buffer param (R18)"
                 )
     if written != declared:

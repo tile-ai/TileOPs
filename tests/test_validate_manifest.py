@@ -3474,6 +3474,9 @@ class TestMutatedInputParity:
         errs = validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls)
         assert any("past the 1 declared inputs" in e for e in errs), errs
 
+        entry["signature"]["params"] = {"other": {"type": "tensor | None"}}
+        assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) != []
+
         entry["signature"]["params"] = {"out": {"type": "tensor | None"}}
         assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) == []
 
