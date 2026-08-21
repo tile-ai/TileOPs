@@ -36,6 +36,10 @@ coverage==7.15.4
 # `.[bench]` install both read the version from here.
 flash-linear-attention==0.5.2
 vllm==0.27.1
+# The 2D pooling baseline. Installed --no-deps: it pins numpy==1.26.4, this stack is on 2.2.6.
+flag_gems==5.0.2
+# flag_gems imports it at module load.
+sqlalchemy==2.0.52
 # Tracks the image CUDA version; bump with it.
 cupti-python==13.2.0
 # Stack dump of a hung benchmark child before the runner kills it.
