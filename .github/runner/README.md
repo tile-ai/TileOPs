@@ -10,8 +10,9 @@ commit, both naming the three versions that decide what the image can run:
 cu<cuda-minor>-torch<major.minor>-tl-<tilelang-short-sha>[-dev]
 ```
 
-`--target final` takes the bare tag (the CI runners, includes the Actions agent); `--target tilelang` takes the `-dev` suffix (local development, no agent). Rebuilding the same three
-versions appends a numeric suffix: `…-tl-<sha>-2`.
+`--target final` takes the bare tag: the CI runners, with the Actions agent. `--target tilelang`
+takes the `-dev` suffix: local development, no agent. Rebuilding the same three versions appends
+a numeric suffix, `…-tl-<sha>-2`.
 
 The Dockerfile carries no commit literal. Pass **exactly one** tilelang source —
 `TILELANG_GIT_SHA=<commit>` compiles that main commit, `TILELANG_VERSION=<version>` installs
@@ -37,7 +38,7 @@ DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target final \
 docker run --rm --gpus all -v "$PWD:/src" "$IMG" python /src/scripts/ci/verify_runner_image.py
 
 # 3. Smoke-test against a checkout.
-docker run --rm --gpus all -v "$PWD:/src" -w /src "$IMG" \
+docker run --rm --gpus all -v "$PWD:/src" -w /src --user root "$IMG" \
   bash -c 'scripts/ci/install_tileops.sh && pytest -m smoke'
 
 # 4. Push, then repeat 1 and 4 with --target tilelang and -t "$IMG-dev".
@@ -47,15 +48,17 @@ docker push "$IMG"
 **Point the runners at the new tag** — a maintainer task outside this repository. Merging a
 TileOPs PR only changes the recipe; the live runners keep their image until this happens.
 
-`--provenance=false --sbom=false` keeps the tag one manifest; BuildKit's default attestations
-add two untagged versions per tag and nothing reads them.
+What the flags are for:
 
-`--build-arg TILEOPS_RUNNER_IMAGE` bakes the tag in, so a run reports which image produced it —
-which the registry cannot answer later, since the host decides what it pulled and `latest` moves.
-`-e TILEOPS_RUNNER_IMAGE=<tag>` overrides for an image built before this; with neither, the
-nightly reports the image as unknown.
-
-Build an earlier stage to debug: `--target runtime`, `--target fa2`, etc.
+- `--user root` — `final` runs as `ci-runner`, which cannot write the editable install's
+  `src/tileops.egg-info` into a bind mount owned by the host user. `--target tilelang` sets no
+  user and needs no override.
+- `--provenance=false --sbom=false` — keeps the tag one manifest. BuildKit's default
+  attestations add two untagged versions per tag and nothing reads them.
+- `--build-arg TILEOPS_RUNNER_IMAGE` — bakes the tag in, so a run reports which image produced
+  it; the registry cannot answer that later. `-e TILEOPS_RUNNER_IMAGE=<tag>` overrides it for an
+  image built before this. With neither, the nightly reports the image as unknown.
+- `--target runtime`, `--target fa2`, … — build an earlier stage to debug.
 
 ## Bump the tilelang commit
 
@@ -74,11 +77,11 @@ Three files. `PIP_CONSTRAINT` hands the latter two to every `pip install` in the
 | `constraints.txt`             | by hand    | Chosen versions and why. Also used by the CPU preflight. |
 | `constraints-runner-lock.txt` | generated  | The transitive closure of both.                          |
 
-The lock is what makes a version stick: an install step that would move a version an earlier step
-settled on fails the build instead of winning silently. Regenerate it with the `uv pip compile`
-command in its own header after changing a version or a requirement, and read the diff. tilelang
-is excluded there: it is source-built in its own stage, and vLLM's exact-release dependency on it
-is overwritten by `--force-reinstall`.
+The lock is what makes a version stick: an install that would move a settled version fails the
+build instead of winning silently. After changing a version or a requirement, regenerate it with
+the `uv pip compile` command in its own header and read the diff. tilelang is excluded there: it
+is source-built in its own stage, and vLLM's exact-release dependency on it is overwritten by
+`--force-reinstall`.
 
 ## Runner registration
 

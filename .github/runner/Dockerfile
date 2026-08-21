@@ -173,7 +173,8 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
     && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
-COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
+# Absolute and outside the home dir: exec form expands nothing, a relative path breaks any -w run.
+COPY .github/runner/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
 USER ci-runner
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
