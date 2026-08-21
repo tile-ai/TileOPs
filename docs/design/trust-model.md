@@ -50,9 +50,13 @@ test-side refactors, and a tolerance or comparator change cannot move a
 baseline number. Sharing the reference costs none of that, and removes the
 second copy that used to drift.
 
-A baseline that is deliberately not the reference — a different layout, a
-faster idiom, an external library — overrides `ref_program` in the benchmark
-and says why.
+A baseline that is another idiom for the same computation overrides
+`ref_program` in the benchmark and says why.
+
+A baseline that is a different implementation is timed under its own tag,
+alongside the reference: the tag is what names it in the report, so it is
+checked against the reference before the case is timed, and one that is
+unavailable is an error rather than a silent fall back.
 
 [`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
 checks the `tests/` import and a locally defined `gen_inputs`, both by literal

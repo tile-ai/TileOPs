@@ -1,6 +1,7 @@
 - **MUST NOT**: import from `tests/`. Reads of any other file are unrestricted.
 - **MUST NOT**: author `gen_inputs`. Import the op's workload from `workloads/`; if it has none, add it there instead of copying locally.
 - Time the workload's `ref_program` for the torch baseline. Override it in a subclass only when the baseline is deliberately not the reference, and say so in the subclass docstring.
+- A baseline that is a different implementation takes its own tag next to `ref_program` rather than overriding it, is asserted against the reference before the case is timed, and raises when unavailable instead of falling back.
 
 The two **MUST NOT**s are checked by `benchmarks/tests/test_benchmark_boundaries.py`,
 which matches names literally — it will not catch a draw helper under another name.
