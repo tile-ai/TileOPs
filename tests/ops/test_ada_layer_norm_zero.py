@@ -63,7 +63,7 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
     m, n = 16, 1152
     test = AdaLayerNormZeroTest(m, n, dtype)
     inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(m, n, test.eps, dtype, has_gate=True)
+    kernel = AdaLayerNormKernel(n, test.eps, dtype, has_gate=True)
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
@@ -79,7 +79,6 @@ def test_ada_layer_norm_zero_async_copy_handles_row_tail() -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
     inputs = test.gen_inputs()
     kernel = AdaLayerNormKernel(
-        m,
         n,
         test.eps,
         dtype,

@@ -70,7 +70,7 @@ def test_fused_add_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -
     residual = r_full[:, :n]
     weight = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = FusedAddRMSNormFwdOp(M=m, N=n)
+    op = FusedAddRMSNormFwdOp()
 
     # Reference on contiguous copies
     test = FusedAddRMSNormTest(m, n, dtype)

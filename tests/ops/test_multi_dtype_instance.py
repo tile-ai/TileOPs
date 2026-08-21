@@ -46,8 +46,8 @@ def test_rms_norm_serves_two_dtypes_from_one_instance():
 
 
 @pytest.mark.smoke
-def test_layer_norm_keys_on_both_shape_and_dtype():
-    """A second dtype at the same shape must not reuse the first entry."""
+def test_layer_norm_keys_on_dtype():
+    """A second dtype must not reuse the first entry."""
     n = 256
     op = LayerNormFwdOp(normalized_shape=(n,))
     for dtype in _DTYPES:
@@ -55,7 +55,7 @@ def test_layer_norm_keys_on_both_shape_and_dtype():
         w = torch.randn(n, dtype=dtype, device="cuda")
         b = torch.randn(n, dtype=dtype, device="cuda")
         assert op(x, w, b).dtype == dtype
-    assert set(op.built_kernels("layer_norm")) == {(16, dt) for dt in _DTYPES}
+    assert set(op.built_kernels("layer_norm")) == set(_DTYPES)
 
 
 @pytest.mark.smoke

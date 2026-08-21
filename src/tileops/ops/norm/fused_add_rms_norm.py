@@ -1,10 +1,12 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import FusedAddRMSNormKernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 
 __all__ = ["FusedAddRMSNormFwdOp"]
@@ -35,28 +37,26 @@ class FusedAddRMSNormFwdOp(Op):
         by padding to 256-element alignment.
 
     Args:
-        M: Optional committed row count for strict compatibility. Preferred
-            API infers it from ``x.shape[:-1]``.
-        N: Optional committed hidden dimension. Preferred API infers it from
-            ``x.shape[-1]``.
-        eps: Epsilon for numerical stability.
+        eps: Epsilon for numerical stability (manifest ``params.eps``).
+        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+            in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_fused_add_rms_norm_fwd",)
+
     def __init__(
         self,
-        M: Optional[int] = None,
-        N: Optional[int] = None,
         eps: float = 1e-6,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self._committed_M = M
-        self._committed_N = N
         self.eps = eps
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: Optional[tuple[int, int]] = None
@@ -64,6 +64,15 @@ class FusedAddRMSNormFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fused_add_rms_norm": FusedAddRMSNormKernel}
+
+    def _infer_output_shapes(
+        self,
+        x_shape: Tuple[int, ...],
+        residual_shape: Tuple[int, ...],
+        weight_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: both outputs have ``x``'s shape."""
+        return {"output": tuple(x_shape), "residual_out": tuple(x_shape)}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
@@ -78,80 +87,94 @@ class FusedAddRMSNormFwdOp(Op):
             (4 * M * N + N) * elem_bytes,
         )
 
-    def _get_kernel(
-        self,
-        M: int,
-        N: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (M, N, dtype, device_index)
-        return self.get_or_build_kernel(
-            "fused_add_rms_norm",
-            key=key,
-            build=lambda: self.kernel_map["fused_add_rms_norm"](
-                M,
-                N,
-                self.eps,
-                dtype,
-                tune=self.tune,
-            ),
-        )
-
     def forward(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor,
-        weight: torch.Tensor,
+        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Apply fused residual addition and RMS normalization.
+        """Apply fused residual addition and normalization.
 
         Args:
-            x: Input tensor of shape ``(*leading, N)`` on CUDA.
-            residual: Residual tensor of the same shape as *x* on CUDA.
-            weight: Affine scale of shape ``(N,)`` on CUDA.
+            x: Input tensor of shape ``(*leading, N)``.
+            residual: Residual tensor of the same shape as *x*.
+            weight: Affine scale of shape ``(N,)``.
 
         Returns:
-            Tuple of ``(y, residual_out)`` where *y* is the normalized
-            output and *residual_out* is ``x + residual``, both of the
+            ``(y, residual_out)``, where *residual_out* is ``x + residual``, both of the
             same shape as *x*.
 
         Raises:
-            ValueError: If tensors are not on CUDA, dtypes mismatch,
-                or shapes are incompatible with the configured dimensions.
+            ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
+                :meth:`_eager_forward`.
         """
-        expected_dtype = x.dtype
-        for name, tensor in [("x", x), ("residual", residual), ("weight", weight)]:
-            if not tensor.is_cuda:
-                raise ValueError(f"{name} must be a CUDA tensor")
-            if tensor.dtype != expected_dtype:
-                raise ValueError(f"Expected {name}.dtype {expected_dtype}, got {tensor.dtype}")
-        if weight.ndim != 1:
-            raise ValueError(f"Expected weight to be 1D, got {weight.ndim}D")
-        N = x.shape[-1]
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected hidden dim {self._committed_N}, got {N}")
+        return _norm_fused_add_rms_norm_fwd(x, residual, weight, self._instance_key)
+
+    def _eager_forward(
+        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
+        """
+        self._validate_dtypes(x, residual, weight)
+        self.dtype = x.dtype
+        for name, tensor in (
+            ("residual", residual),
+            ("weight", weight),
+        ):
+            if tensor.dtype != x.dtype:
+                raise ValueError(f"Expected {name}.dtype {x.dtype}, got {tensor.dtype}")
+        n = x.shape[-1]
         if residual.shape != x.shape:
-            raise ValueError(f"Expected residual shape {x.shape}, got {residual.shape}")
-        if weight.shape[0] != N:
-            raise ValueError(f"Expected weight dim {N}, got {weight.shape[0]}")
-
-        orig_shape = x.shape
-        x = x.contiguous().reshape(-1, N)
-        residual = residual.contiguous().reshape(-1, N)
-        M_actual = x.shape[0]
-        if self._committed_M is not None and M_actual != self._committed_M:
             raise ValueError(
-                f"Expected M={self._committed_M} (product of leading dims), got {M_actual}"
+                f"Expected residual shape {tuple(x.shape)}, got {tuple(residual.shape)}"
             )
-        self.M = M_actual
-        self.N = N
-        dtype = expected_dtype
-        assert dtype is not None
+        if weight.ndim != 1 or weight.shape[0] != n:
+            raise ValueError(f"Expected weight shape ({n},), got {tuple(weight.shape)}")
 
-        kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
+        # The op normalizes contiguity and hands over what the manifest declares; how a
+        # kernel wants that laid out is its own business.
+        x = x.contiguous()
+        residual = residual.contiguous()
+        weight = weight.contiguous()
+        kernel = self.get_or_build_kernel(
+            "fused_add_rms_norm",
+            (x, residual, weight),
+            key=(n, x.dtype),  # this instance's in-tree cache key
+            build=lambda: self.kernel_map["fused_add_rms_norm"](
+                n,
+                self.eps,
+                x.dtype,
+                tune=self.tune,
+            ),
+        )
+        self._last_roofline_mn = (x.numel() // n, n)
         y, residual_out = kernel(x, residual, weight)
-        self._last_roofline_mn = (M_actual, N)
-        self.dtype = expected_dtype
+        return y, residual_out
 
-        return y.reshape(orig_shape), residual_out.reshape(orig_shape)
+
+# Registration happens at import time and once per qualified name, the schema is read off
+# the annotations so ``self`` cannot appear, and the instance is therefore recovered from a
+# string key: src/tileops/ops/compile_boundary.py.
+
+
+@torch.library.custom_op("top::norm_fused_add_rms_norm_fwd", mutates_args=())
+def _norm_fused_add_rms_norm_fwd(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return get_instance(instance_key)._eager_forward(x, residual, weight)
+
+
+@_norm_fused_add_rms_norm_fwd.register_fake
+def _norm_fused_add_rms_norm_fwd_fake(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    instance_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(x.shape), tuple(residual.shape), tuple(weight.shape))
+    # The manifest's shapes, not the kernel's: alignment padding is the kernel's business
+    # and never reaches the op's return.
+    return x.new_empty(shapes["output"]), x.new_empty(shapes["residual_out"])

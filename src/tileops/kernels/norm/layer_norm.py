@@ -17,7 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
@@ -107,26 +107,6 @@ def _layer_norm_kernel(M, N, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("top::layer_norm_fwd", mutates_args=())
-def _layer_norm_wrapped(
-    M: int,
-    N: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _layer_norm_kernel(M, N, eps, dtype_str)(block_m, threads)(x, weight, bias)
-
-
-@_layer_norm_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, x, weight, bias):
-    return torch.empty((M, N), dtype=x.dtype, device=x.device)
-
-
 class LayerNormKernel(Kernel):
     """LayerNorm kernel.
 
@@ -139,21 +119,24 @@ class LayerNormKernel(Kernel):
 
     def __init__(
         self,
-        M: int,
         N: int,
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
+        """Build for a hidden size and dtype.
+
+        The program for a given row count is resolved in ``forward``, memoized by
+        ``_layer_norm_kernel``.
+        """
         super().__init__()
-        self.M = M
         self.N = N
         self.eps = eps
         self.dtype = dtype
         self.N_padded = align_up(N, ALIGNMENT)
-        self.kernel = _layer_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
-        self.init_config(config, tune)
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
+        self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
@@ -164,14 +147,34 @@ class LayerNormKernel(Kernel):
         return select_row_configs(self.N_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-        return _layer_norm_wrapped(
-            self.M,
-            self.N,
-            self.eps,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-            weight,
-            bias,
-        )
+        """Normalize ``x`` over its trailing ``N`` elements.
+
+        Flattening to 2-D rows and a flat weight and bias happens here; the prim_func
+        handles the non-aligned tail itself.
+
+        Args:
+            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device.
+            bias: Affine shift holding ``N`` elements, contiguous, on the same device.
+
+        Returns:
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: An input is not on a CUDA device.
+        """
+        require_cuda(self, x=x, weight=weight, bias=bias)
+
+        original_shape = x.shape
+        rows = x.reshape(-1, self.N)
+        weight = weight.reshape(self.N)
+        bias = bias.reshape(self.N)
+
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = _layer_norm_kernel(rows.shape[0], self.N, self.eps, self.dtype_str)
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
+        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight, bias)
+        return y.reshape(original_shape)

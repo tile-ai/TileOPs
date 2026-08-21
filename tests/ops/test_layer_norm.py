@@ -69,7 +69,7 @@ def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     test = LayerNormTest(m, n, dtype)
     x, weight, bias = test.gen_inputs()
 
-    kernel = LayerNormKernel(m, n, test.eps, dtype)
+    kernel = LayerNormKernel(n, test.eps, dtype)
     y = kernel(x, weight, bias)
     y_ref = test.ref_program(x, weight, bias)
 
@@ -218,9 +218,8 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
-    """A second forward with a different leading-dims product must rebuild
-    the kernel rather than reject the call."""
+def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> None:
+    """The row count is a fact of the call, so it does not specialize the op's kernel."""
     n = 4096
     dtype = torch.float16
 
@@ -230,15 +229,13 @@ def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
 
     x1 = torch.randn(512, n, dtype=dtype, device="cuda")
     y1 = op(x1, weight, bias)
-    first_kernel = op.built_kernels("layer_norm")[(512, dtype)]
+    kernel = op.built_kernels("layer_norm")[dtype]
     assert y1.shape == x1.shape
 
     x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
-    # A separate cache entry for the new M, and the first one is still there.
-    assert op.built_kernels("layer_norm")[(1024, dtype)] is not first_kernel
-    assert op.built_kernels("layer_norm")[(512, dtype)] is first_kernel
+    assert op.built_kernels("layer_norm")[dtype] is kernel
 
     y_ref = F.layer_norm(
         x2.float(),

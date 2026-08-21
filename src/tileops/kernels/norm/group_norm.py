@@ -31,7 +31,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
@@ -194,35 +194,6 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
     return _func
 
 
-@torch.library.custom_op("top::group_norm_fwd", mutates_args=())
-def _group_norm_wrapped(
-    M: int,
-    D: int,
-    eps: float,
-    dtype_str: str,
-    num_groups: int,
-    channels_per_group: int,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> torch.Tensor:
-    return _group_norm_kernel(
-        M,
-        D,
-        eps,
-        dtype_str,
-        num_groups,
-        channels_per_group,
-    )(block_m, threads)(x, weight, bias)
-
-
-@_group_norm_wrapped.register_fake
-def _(M, D, eps, dtype_str, num_groups, channels_per_group, block_m, threads, x, weight, bias):
-    return torch.empty((M, D), dtype=x.dtype, device=x.device)
-
-
 class GroupNormKernel(Kernel):
     """GroupNorm forward kernel with a per-channel affine.
 
@@ -238,7 +209,6 @@ class GroupNormKernel(Kernel):
     memory copies. Single shared buffer reused for input load and output store.
 
     Args:
-        M: Number of rows = N * G.
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
@@ -252,7 +222,6 @@ class GroupNormKernel(Kernel):
 
     def __init__(
         self,
-        M: int,
         D: int,
         eps: float,
         dtype: torch.dtype,
@@ -261,23 +230,20 @@ class GroupNormKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
     ):
+        """Build for a row length, dtype and group layout.
+
+        The program for a given row count is resolved in ``forward``, memoized by
+        ``_group_norm_kernel``.
+        """
         super().__init__()
-        self.M = M
         self.D = D
         self.eps = eps
         self.dtype = dtype
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
         self.D_padded = align_up(D, ALIGNMENT)
-        self.kernel = _group_norm_kernel(
-            self.M,
-            self.D,
-            self.eps,
-            self.dtype_str,
-            self.num_groups,
-            self.channels_per_group,
-        )
-        self.init_config(config, tune)
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
+        self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
@@ -290,32 +256,49 @@ class GroupNormKernel(Kernel):
     def forward(
         self,
         x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Normalize ``(M, D)`` rows and apply the per-channel affine.
+        """Normalize ``D``-long rows and apply the per-channel affine.
+
+        Flattening to ``(M, D)`` rows happens here.
 
         Args:
-            x: Input of shape ``(M, D)``.
-            weight: Affine scale of shape ``(C,)``.
-            bias: Affine shift of shape ``(C,)``.
+            x: Input of shape ``(N, C, *spatial)``, contiguous, on a CUDA device.
+            weight: Affine scale of shape ``(C,)`` on the same device.
+            bias: Affine shift of shape ``(C,)`` on the same device.
 
         Returns:
-            Tensor of shape ``(M, D)``.
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: An input is not on a CUDA device, or the affine pair is missing.
         """
-        return _group_norm_wrapped(
-            self.M,
+        require_cuda(self, x=x, weight=weight, bias=bias)
+        if weight is None or bias is None:
+            raise ValueError(
+                f"{type(self).__name__} applies a per-channel affine; weight and bias are "
+                "required. GroupNormNoAffineKernel serves the affine-free call."
+            )
+
+        original_shape = x.shape
+        rows = x.reshape(-1, self.D)
+
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = _group_norm_kernel(
+            rows.shape[0],
             self.D,
             self.eps,
             self.dtype_str,
             self.num_groups,
             self.channels_per_group,
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-            weight,
-            bias,
         )
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
+        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight, bias)
+        return y.reshape(original_shape)
 
 
 @functools.lru_cache(maxsize=32)
@@ -393,24 +376,6 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("top::group_norm_no_affine_fwd", mutates_args=())
-def _group_norm_no_affine_wrapped(
-    M: int,
-    D: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _group_norm_no_affine_kernel(M, D, eps, dtype_str)(block_m, threads)(x)
-
-
-@_group_norm_no_affine_wrapped.register_fake
-def _(M, D, eps, dtype_str, block_m, threads, x):
-    return torch.empty((M, D), dtype=x.dtype, device=x.device)
-
-
 class GroupNormNoAffineKernel(Kernel):
     """GroupNorm forward kernel without affine scale/shift.
 
@@ -421,7 +386,6 @@ class GroupNormNoAffineKernel(Kernel):
     InstanceNorm.
 
     Args:
-        M: Number of rows = N * G.
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
@@ -433,26 +397,24 @@ class GroupNormNoAffineKernel(Kernel):
 
     def __init__(
         self,
-        M: int,
         D: int,
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
     ):
+        """Build for a row length and dtype.
+
+        The program for a given row count is resolved in ``forward``, memoized by
+        ``_group_norm_no_affine_kernel``.
+        """
         super().__init__()
-        self.M = M
         self.D = D
         self.eps = eps
         self.dtype = dtype
         self.D_padded = align_up(D, ALIGNMENT)
-        self.kernel = _group_norm_no_affine_kernel(
-            self.M,
-            self.D,
-            self.eps,
-            self.dtype_str,
-        )
-        self.init_config(config, tune)
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
+        self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
@@ -462,21 +424,41 @@ class GroupNormNoAffineKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return select_row_configs(self.D_padded, self.dtype)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize ``(M, D)`` rows without an affine.
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Normalize ``D``-long rows without an affine.
+
+        Flattening to ``(M, D)`` rows happens here.
 
         Args:
-            x: Input of shape ``(M, D)``.
+            x: Input of shape ``(N, C, *spatial)``, contiguous, on a CUDA device.
+            weight: The op's empty affine slot; this kernel has no affine.
+            bias: The op's empty affine slot; this kernel has no affine.
 
         Returns:
-            Tensor of shape ``(M, D)``.
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device, or an affine tensor was passed.
         """
-        return _group_norm_no_affine_wrapped(
-            self.M,
-            self.D,
-            self.eps,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-        )
+        require_cuda(self, x=x)
+        if weight is not None or bias is not None:
+            raise ValueError(
+                f"{type(self).__name__} has no affine; GroupNormKernel serves the affine call."
+            )
+
+        original_shape = x.shape
+        rows = x.reshape(-1, self.D)
+
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = _group_norm_no_affine_kernel(rows.shape[0], self.D, self.eps, self.dtype_str)
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
+        y = self.kernel(self.config["block_m"], self.config["threads"])(rows)
+        return y.reshape(original_shape)
