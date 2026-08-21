@@ -52,10 +52,6 @@ bench = [
     "flashinfer>=0.6.6",
     "vllm==0.27.1",
     "sgl-kernel==0.3.21",
-    # The pooling baselines need flag_gems and libcudnn. Neither is listed: flag_gems'
-    # metadata pins numpy==1.26.4 against this stack's 2.2.6, so pip cannot resolve it
-    # here, and nvidia-cudnn-cu13 already arrives with torch. The runner image installs
-    # flag_gems with --no-deps; constraints.txt holds the version.
 ]
 
 [build-system]
