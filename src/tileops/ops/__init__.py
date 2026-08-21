@@ -32,6 +32,7 @@ from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from .fp8_quant import FP8QuantFwdOp
 from .gated_deltanet import (
     GatedDeltaNetBHTDFwdOp,
+    GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeFwdOp,
     GatedDeltaNetOp,
@@ -145,10 +146,12 @@ __all__ = [
     "DeltaNetDecodeFwdOp",
     "DeltaNetFwdOp",
     "DeltaNetOp",
+    "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeFwdOp",
     "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetOp",
+    "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillBTHDFwdOp",
     "GLABwdOp",
     "GLADecodeFwdOp",
