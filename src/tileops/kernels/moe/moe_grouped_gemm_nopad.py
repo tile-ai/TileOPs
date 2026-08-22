@@ -43,10 +43,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_tiling import (
-    make_group_tile_cumsum,
-    make_group_tile_decode,
-)
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeGroupedGemmNopadKernel"]
@@ -78,8 +75,7 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
         max_tiles:   Conservative tile upper bound (numel // block_m + E).
         block_m:     Tile height in M dimension (compile-time constant).
     """
-    _group_tile_cumsum = make_group_tile_cumsum(num_experts, block_m)
-    _group_tile_decode = make_group_tile_decode(num_experts, block_m)
+    _tiling = GroupTiling(num_experts, block_m)
 
     @tilelang.jit(out_idx=[1, 2, 3])
     def _func(threads: int):
@@ -102,7 +98,7 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
                 # Sub-phase (a): thread 0 computes exclusive prefix sum of
                 # ceildiv(true_sizes[e], block_m) into SMEM.
                 if tx == 0:
-                    _group_tile_cumsum(true_sizes, s_cum)
+                    _tiling.cumsum(true_sizes, s_cum)
                     if bx == 0:
                         total_tiles[0] = s_cum[num_experts]
                 T.sync_threads()
@@ -111,7 +107,7 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
                 tile_id = bx * threads + tx
                 if tile_id < max_tiles:
                     if tile_id < s_cum[num_experts]:
-                        _group_tile_decode(tile_id, s_cum, lo, hi, _ex, _row)
+                        _tiling.decode(tile_id, s_cum, lo, hi, _ex, _row)
                         tile_expert_ids[tile_id] = _ex[0]
                         tile_row_offsets[tile_id] = _row[0]
                     else:

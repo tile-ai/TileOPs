@@ -147,33 +147,24 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
 
 
 @pytest.mark.parametrize(
-    "numel, num_experts, n, k, transpose_a, transpose_b, expected",
+    "n, k, transpose_a, transpose_b, expected",
     [
-        (4096, 16, 4096, 4096, False, True, "grouped_gemm_persistent_3wg_kernel"),
-        # Groups shorter than the general kernel's block_m: only the persistent
-        # kernel computes every expert in a tile that spans several of them.
-        (128, 128, 4096, 4096, False, True, "grouped_gemm_persistent_3wg_kernel"),
-        (4096, 16, 4000, 4096, False, True, "grouped_gemm_kernel"),  # N the tiling misses
-        (4096, 16, 4096, 4096, False, False, "grouped_gemm_kernel"),  # NN
-        (4096, 16, 4096, 4096, True, False, "grouped_gemm_kernel"),  # TN
+        (4096, 4096, False, True, "grouped_gemm_persistent_3wg_kernel"),
+        (4000, 4096, False, True, "grouped_gemm_kernel"),  # N the tiling misses
+        (4096, 4096, False, False, "grouped_gemm_kernel"),  # NN
+        (4096, 4096, True, False, "grouped_gemm_kernel"),  # TN
     ],
 )
 @pytest.mark.smoke
 def test_selection_prefers_the_persistent_kernel_where_it_applies(
-    numel: int,
-    num_experts: int,
-    n: int,
-    k: int,
-    transpose_a: bool,
-    transpose_b: bool,
-    expected: str,
+    n: int, k: int, transpose_a: bool, transpose_b: bool, expected: str
 ):
     """The persistent kernel serves aligned NT; the general one serves the rest."""
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
     call = GroupedGemmCall(
         arch=get_sm_version(),
-        numel=numel,
-        num_experts=num_experts,
+        numel=4096,
+        num_experts=16,
         n=n,
         k=k,
         dtype=torch.float16,

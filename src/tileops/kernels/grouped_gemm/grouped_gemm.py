@@ -7,11 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_tiling import (
-    make_group_tile_cumsum,
-    make_group_tile_decode,
-    tile_upper_bound,
-)
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
@@ -58,10 +54,9 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 B_shared_shape = (block_k, block_n)
 
             # Tiles enumerated per group; CTAs past the real count exit.
-            _num_pid_m = tile_upper_bound(batch_sum, batch_count, block_m)
+            _tiling = GroupTiling(batch_count, block_m)
+            _num_pid_m = _tiling.tile_upper_bound(batch_sum)
             _num_pid_n = math.ceil(N / block_n)
-            _group_tile_cumsum = make_group_tile_cumsum(batch_count, block_m)
-            _group_tile_decode = make_group_tile_decode(batch_count, block_m)
 
             @T.prim_func
             def _grouped_gemm_main(
@@ -82,14 +77,14 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     row = T.alloc_local([1], "int32")
                     cur_batch_idx = T.alloc_local([1], "int32")
 
-                    _group_tile_cumsum(batch_sizes, s_cum)
+                    _tiling.cumsum(batch_sizes, s_cum)
 
                     # M-major ordering: each M-tile processes all N-tiles
                     m_tile = pid // _num_pid_n
                     n_start = (pid % _num_pid_n) * block_n
 
                     if m_tile < s_cum[batch_count]:
-                        _group_tile_decode(m_tile, s_cum, lo, hi, cur_batch_idx, row)
+                        _tiling.decode(m_tile, s_cum, lo, hi, cur_batch_idx, row)
                         m_start = batch_offsets[cur_batch_idx[0]] + row[0]
                         actual_rows = T.min(block_m, batch_sizes[cur_batch_idx[0]] - row[0])
                         actual_cols = T.min(block_n, N - n_start)

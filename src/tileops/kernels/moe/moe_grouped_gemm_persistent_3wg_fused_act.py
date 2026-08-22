@@ -17,10 +17,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.grouped_gemm import rows_per_group_regime
-from tileops.kernels.grouped_tiling import (
-    make_group_tile_cumsum,
-    make_group_tile_decode,
-)
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count
 
@@ -302,8 +299,7 @@ def _make_pingpong_fused_act_kernel(
     the [numel, 2*ffn] gate_up tensor never reaches global memory.
     """
     accum_dtype = "float"
-    _group_tile_cumsum = make_group_tile_cumsum(num_experts, block_m)
-    _group_tile_decode = make_group_tile_decode(num_experts, block_m)
+    _tiling = GroupTiling(num_experts, block_m)
 
     assert threads == 384, (
         f"fused-act pingpong persistent grouped GEMM requires threads=384 "
@@ -402,7 +398,7 @@ def _make_pingpong_fused_act_kernel(
                 T.dec_max_nreg(24)
 
                 if tx == 0:
-                    _group_tile_cumsum(true_sizes, s_cum)
+                    _tiling.cumsum(true_sizes, s_cum)
                     s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
                 # CTA-wide sync: publishes s_cum/s_total to consumers.
                 T.sync_threads()
@@ -417,7 +413,7 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
                         n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile_0, s_cum, lo, hi, ex0, _row)
+                        _tiling.decode(m_tile_0, s_cum, lo, hi, ex0, _row)
                         ms0[0] = true_offsets[ex0[0]] + _row[0]
                         ns0[0] = n_tile_0 * T.int32(block_n)
                         v0[0] = T.int32(1)
@@ -430,7 +426,7 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
                         n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile_1, s_cum, lo, hi, ex1, _row)
+                        _tiling.decode(m_tile_1, s_cum, lo, hi, ex1, _row)
                         ms1[0] = true_offsets[ex1[0]] + _row[0]
                         ns1[0] = n_tile_1 * T.int32(block_n)
                         v1[0] = T.int32(1)
@@ -510,7 +506,7 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
                         n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile_0, s_cum, lo, hi, _ex, _row)
+                        _tiling.decode(m_tile_0, s_cum, lo, hi, _ex, _row)
                         _ms[0] = true_offsets[_ex[0]] + _row[0]
                         expert_id_0 = _ex[0]
                         row_0 = _row[0]
@@ -588,7 +584,7 @@ def _make_pingpong_fused_act_kernel(
                         m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
                         n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile_1, s_cum, lo, hi, _ex, _row)
+                        _tiling.decode(m_tile_1, s_cum, lo, hi, _ex, _row)
                         _ms[0] = true_offsets[_ex[0]] + _row[0]
                         expert_id_1 = _ex[0]
                         row_1 = _row[0]
@@ -672,8 +668,7 @@ def _make_cooperative_fused_act_kernel(
     never reaches global memory.
     """
     accum_dtype = "float"
-    _group_tile_cumsum = make_group_tile_cumsum(num_experts, block_m)
-    _group_tile_decode = make_group_tile_decode(num_experts, block_m)
+    _tiling = GroupTiling(num_experts, block_m)
 
     assert threads == 384, (
         f"fused-act cooperative persistent grouped GEMM requires threads=384 "
@@ -772,7 +767,7 @@ def _make_cooperative_fused_act_kernel(
                 T.dec_max_nreg(24)
 
                 if tx == 0:
-                    _group_tile_cumsum(true_sizes, s_cum)
+                    _tiling.cumsum(true_sizes, s_cum)
                     s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
                 # CTA-wide sync: publishes s_cum/s_total to consumers
                 T.sync_threads()
@@ -785,7 +780,7 @@ def _make_cooperative_fused_act_kernel(
                         m_tile = flat_id // T.int32(_num_pid_n)
                         n_tile = flat_id % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile, s_cum, lo, hi, ex, _row)
+                        _tiling.decode(m_tile, s_cum, lo, hi, ex, _row)
                         ms[0] = true_offsets[ex[0]] + _row[0]
                         ns_[0] = n_tile * T.int32(block_n)
                         rows[0] = true_sizes[ex[0]] - _row[0]
@@ -853,7 +848,7 @@ def _make_cooperative_fused_act_kernel(
                         m_tile = flat_id // T.int32(_num_pid_n)
                         n_tile = flat_id % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile, s_cum, lo, hi, _ex, _row)
+                        _tiling.decode(m_tile, s_cum, lo, hi, _ex, _row)
                         _ms[0] = true_offsets[_ex[0]] + _row[0]
                         expert_id = _ex[0]
                         row = _row[0]
@@ -932,7 +927,7 @@ def _make_cooperative_fused_act_kernel(
                         m_tile = flat_id // T.int32(_num_pid_n)
                         n_tile = flat_id % T.int32(_num_pid_n)
 
-                        _group_tile_decode(m_tile, s_cum, lo, hi, _ex, _row)
+                        _tiling.decode(m_tile, s_cum, lo, hi, _ex, _row)
                         _ms[0] = true_offsets[_ex[0]] + _row[0]
                         expert_id = _ex[0]
                         row = _row[0]

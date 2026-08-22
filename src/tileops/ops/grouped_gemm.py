@@ -44,7 +44,6 @@ class GroupedGemmFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    #: Selection asks both, and takes the specialised one where it applies.
     _KERNEL_KEYS = ("grouped_gemm_persistent_3wg_kernel", "grouped_gemm_kernel")
 
     @property
