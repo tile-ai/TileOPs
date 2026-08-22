@@ -69,7 +69,7 @@ def _register_single(op_cls, op_name: str, output: str) -> None:
     def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         op = get_instance(instance_key)
         shapes = op._infer_output_shapes(tuple(x.shape))
-        # ``new_empty``, not ``empty_like``: the real path writes fresh contiguous storage.
+        # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
         return x.new_empty(
             shapes[output],
             dtype=resolve_output_dtype(op_cls.__name__, x.dtype, output),

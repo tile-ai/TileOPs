@@ -1332,8 +1332,7 @@ def _register_pool_operator(op_cls: type, name: str) -> None:
             instance_key: str,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
             shapes = get_instance(instance_key)._infer_output_shapes(tuple(input.shape))
-            # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so
-            # a non-contiguous input's strides must not survive into the fake.
+            # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
             return (
                 input.new_empty(shapes["output"]),
                 input.new_empty(shapes["indices"], dtype=torch.int64),

@@ -372,98 +372,6 @@ def _chunkwise_dims_bound(data: dict) -> tuple[int, int, int, int, int]:
     )
 
 
-def deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked DeltaNet training forward, head-major.
-
-    Two state matmuls per token. In: q, k, v, beta. Out: the output, the four chunk
-    buffers the backward reads, and the per-chunk state, which is fp32 whatever the
-    inputs are.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
-    chunk = int(data.get("chunk_size", 64))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 2 * batch * heads * seq_len * dim_k * dim_v
-    per_token = (2 * dim_k + dim_v + 1) + (dim_v + 2 * chunk + dim_k + dim_v)
-    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
-    nbytes = batch * heads * seq_len * per_token * elem_bytes + state * 4
-    return int(flops), int(nbytes)
-
-
-def deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked DeltaNet backward, head-major.
-
-    Twice the forward's matmul work. In: do, q, k, v, beta and the chunk buffers the
-    forward saved, the fp32 state among them. Out: the four gradients.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
-    chunk = int(data.get("chunk_size", 64))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    per_token = (3 * dim_k + 3 * dim_v + 1 + 2 * chunk) + (2 * dim_k + dim_v + 1)
-    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
-    nbytes = batch * heads * seq_len * per_token * elem_bytes + state * 4
-    return int(flops), int(nbytes)
-
-
-def gated_deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the Gated DeltaNet backward, head-major.
-
-    The gate adds one tensor in and one gradient out over the ungated backward. The
-    per-chunk state the forward saved is read in the input dtype.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
-    chunk = int(data.get("chunk_size", 64))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    tokens = batch * heads * seq_len
-    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
-    nbytes = (tokens * (4 * dim_k + 3 * dim_v + 4) + state) * elem_bytes
-    return int(flops), int(nbytes)
-
-
-def gla_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked GLA forward, token-major: one state matmul pair per token."""
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bshd(data)
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 2 * batch * heads * seq_len * dim_k * dim_v
-    tokens = batch * seq_len * heads
-    state = batch * heads * dim_k * dim_v
-    seeded = data.get("initial_state") is not None or data.get("initial_state_shape") is not None
-    # in: q, k, v, g and the fp32 state a caller may seed; out: o and the fp32 final state.
-    nbytes = tokens * (3 * dim_k + 2 * dim_v) * elem_bytes + state * (2 if seeded else 1) * 4
-    return int(flops), int(nbytes)
-
-
-def gla_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked GLA backward, token-major: twice the forward's matmuls.
-
-    In: q, k, v, g, do in the input dtype, plus the fp32 per-chunk states and the
-    final-state gradient. Out: four gradients, which the kernel accumulates in fp32.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bshd(data)
-    chunk = int(data.get("chunk_size", 64))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    tokens = batch * seq_len * heads
-    states = batch * heads * dim_k * dim_v * (seq_len // chunk + 2)
-    nbytes = (
-        tokens * (3 * dim_k + 2 * dim_v) * elem_bytes
-        + tokens * (3 * dim_k + dim_v) * 4
-        + states * 4
-    )
-    return int(flops), int(nbytes)
-
-
 def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
     lengths = [0] * batch
     remaining = total
@@ -1102,26 +1010,6 @@ def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-def gemm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense FP8 ``GemmFp8FwdOp``."""
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "GemmFp8FwdOp.eval_roofline() is valid only after the first forward(); "
-            "m/n/k and dtype are inferred from the inputs."
-        )
-    m, n, k = op.m, op.n, op.k
-    input_bytes = op.dtype.itemsize
-    out_bytes = op.out_dtype.itemsize
-    scale_a_shape = getattr(op, "scale_a_shape", (1, 1))
-    scale_b_shape = getattr(op, "scale_b_shape", (1, 1))
-    scale_elems = scale_a_shape[0] * scale_a_shape[1] + scale_b_shape[0] * scale_b_shape[1]
-    flops = 2 * m * n * k
-    nbytes = (m * k + n * k) * input_bytes + m * n * out_bytes + scale_elems * 4
-    if getattr(op, "has_bias", False):
-        nbytes += n * out_bytes
-    return int(flops), int(nbytes)
-
-
 def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for dense W4A16 ``GemmW4A16FwdOp``."""
     if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
@@ -1360,29 +1248,6 @@ def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
     elem_bytes = op.dtype.itemsize
     flops = 2 * batch * m * n * k
     nbytes = batch * (m * k + n * k + m * n) * elem_bytes
-    return int(flops), int(nbytes)
-
-
-def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for batched FP8 GEMM ``BmmFp8KNFwdOp``.
-
-    Layout matches the fp16 ``bmm_fwd_roofline``: ``a: [B, M, K]``,
-    ``b: [B, K, N]``. Per-tensor scales only and no fused bias, so bytes are
-    ``B*M*K`` (A, fp8) + ``B*K*N`` (B, fp8) + ``B*M*N`` (C, ``out_dtype``)
-    + 8 for the two batch-independent fp32 scales.
-
-    Valid only after the first ``forward()`` binds dims and dtype.
-    """
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "BmmFp8KNFwdOp.eval_roofline() is valid only after the first forward(); "
-            "batch/m/n/k and dtype are inferred from the inputs."
-        )
-    batch, m, n, k = op.batch, op.m, op.n, op.k
-    input_bytes = op.dtype.itemsize
-    out_bytes = op.out_dtype.itemsize
-    flops = 2 * batch * m * n * k
-    nbytes = batch * ((m * k + n * k) * input_bytes + m * n * out_bytes) + 8
     return int(flops), int(nbytes)
 
 

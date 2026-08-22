@@ -189,8 +189,7 @@ class GroupNormFwdOp(Op):
 
         self._bind_spec(N, C, spatial_size, dtype, affine)
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         if affine:
             weight = weight.contiguous()
@@ -238,6 +237,5 @@ def _norm_group_norm_fwd_fake(
         None if weight is None else tuple(weight.shape),
         None if bias is None else tuple(bias.shape),
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return x.new_empty(shapes["output"])

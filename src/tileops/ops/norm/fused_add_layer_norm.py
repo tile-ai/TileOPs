@@ -136,8 +136,7 @@ class FusedAddLayerNormFwdOp(Op):
         if bias.ndim != 1 or bias.shape[0] != n:
             raise ValueError(f"Expected bias shape ({n},), got {tuple(bias.shape)}")
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         residual = residual.contiguous()
         weight = weight.contiguous()

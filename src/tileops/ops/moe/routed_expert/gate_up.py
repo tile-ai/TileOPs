@@ -186,7 +186,5 @@ def _moe_gate_up_fwd_fake(
     shapes = op._infer_output_shapes(
         tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape), tuple(true_offsets.shape)
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(a)``.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return a.new_empty(shapes["c"])

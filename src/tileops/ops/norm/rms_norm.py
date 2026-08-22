@@ -145,8 +145,7 @@ class RMSNormFwdOp(Op):
         if tuple(weight.shape) != ns:
             raise ValueError(f"Expected weight shape {ns}, got {tuple(weight.shape)}")
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         weight = weight.contiguous()
         kernel = self.get_or_build_kernel(
@@ -188,7 +187,5 @@ def _rms_norm_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(x)``.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return x.new_empty(shapes["output"])

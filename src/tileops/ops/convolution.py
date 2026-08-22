@@ -1352,9 +1352,7 @@ class Conv3dFwdOp(Op):
 # cannot appear; the instance comes back from the string key. See
 # src/tileops/ops/compile_boundary.py.
 #
-# Each fake returns ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes
-# contiguity, so a non-contiguous public input's strides must not survive into the fake.
-# The dtype is the manifest's ``same_as(input)``.
+# ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
 
 
 @torch.library.custom_op("top::conv_conv1d_fwd", mutates_args=())
