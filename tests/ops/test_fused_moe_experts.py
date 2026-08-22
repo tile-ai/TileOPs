@@ -556,6 +556,15 @@ class TestFusedMoeActivationInjection:
             def output_shape(self, T_prime, H):
                 return (T_prime, H)
 
+            def _infer_output_shapes(self, *args, **kwargs):
+                raise NotImplementedError
+
+            def _validate_dtypes(self, *args, **kwargs):
+                raise NotImplementedError
+
+            def eval_roofline(self, *args, **kwargs):
+                raise NotImplementedError
+
             def forward(
                 self,
                 output,
