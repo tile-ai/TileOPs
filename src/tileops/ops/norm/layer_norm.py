@@ -46,7 +46,7 @@ class LayerNormFwdOp(Op):
     DEFAULT_EPS = 1e-5
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_layer_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_layer_norm_fwd",)
 
     def __init__(
         self,
@@ -166,7 +166,7 @@ class LayerNormFwdOp(Op):
         return kernel(x, weight, bias)
 
 
-@torch.library.custom_op("top::norm_layer_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_layer_norm_fwd", mutates_args=())
 def _layer_norm_fwd(
     x: torch.Tensor,
     weight: torch.Tensor,

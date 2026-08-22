@@ -137,7 +137,7 @@ class PreluFwdOp(_PerDtypeKernels, Op):
 _require_shape_inference(PreluFwdOp)
 
 
-@torch.library.custom_op("top::elementwise_prelu", mutates_args=())
+@torch.library.custom_op("tileops::elementwise_prelu", mutates_args=())
 def _prelu_fwd(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torch.Tensor:
     return get_instance(instance_key)._eager_forward(x, weight)
 
@@ -150,4 +150,4 @@ def _prelu_fwd_fake(x: torch.Tensor, weight: torch.Tensor, instance_key: str) ->
 
 
 PreluFwdOp._wrapped = _prelu_fwd
-PreluFwdOp.compile_op_names = ("top::elementwise_prelu",)
+PreluFwdOp.compile_op_names = ("tileops::elementwise_prelu",)

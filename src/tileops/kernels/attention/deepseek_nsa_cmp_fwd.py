@@ -159,7 +159,7 @@ def _nsa_cmp_fwd_varlen_kernel(
     return _nsa_cmp_fwd_varlen_func
 
 
-@torch.library.custom_op("top::nsa_cmp_fwd_varlen_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::nsa_cmp_fwd_varlen_wrapped_kernel", mutates_args=())
 def _nsa_cmp_fwd_varlen_wrapped_kernel(
     seq_num: int,
     c_seq_len: int,

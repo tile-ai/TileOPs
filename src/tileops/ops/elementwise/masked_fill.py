@@ -242,7 +242,7 @@ _require_shape_inference(MaskedFillFwdOp)
 _require_shape_inference(MaskedFillScalarFwdOp)
 
 
-@torch.library.custom_op("top::elementwise_masked_fill_tensor_value", mutates_args=())
+@torch.library.custom_op("tileops::elementwise_masked_fill_tensor_value", mutates_args=())
 def _masked_fill_tensor_value_fwd(
     input: torch.Tensor,
     mask: torch.Tensor,
@@ -266,7 +266,7 @@ def _masked_fill_tensor_value_fwd_fake(
     )
 
 
-@torch.library.custom_op("top::elementwise_masked_fill", mutates_args=())
+@torch.library.custom_op("tileops::elementwise_masked_fill", mutates_args=())
 def _masked_fill_fwd(
     input: torch.Tensor,
     mask: torch.Tensor,
@@ -289,6 +289,6 @@ def _masked_fill_fwd_fake(
 
 
 MaskedFillFwdOp._wrapped = _masked_fill_tensor_value_fwd
-MaskedFillFwdOp.compile_op_names = ("top::elementwise_masked_fill_tensor_value",)
+MaskedFillFwdOp.compile_op_names = ("tileops::elementwise_masked_fill_tensor_value",)
 MaskedFillScalarFwdOp._wrapped = _masked_fill_fwd
-MaskedFillScalarFwdOp.compile_op_names = ("top::elementwise_masked_fill",)
+MaskedFillScalarFwdOp.compile_op_names = ("tileops::elementwise_masked_fill",)

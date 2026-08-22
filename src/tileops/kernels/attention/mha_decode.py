@@ -359,7 +359,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
 # Custom ops (torch.compile compatible wrappers)
 
 
-@torch.library.custom_op("top::mha_decode_no_split_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_no_split_op", mutates_args=())
 def _mha_decode_no_split_op(
     batch: int,
     heads: int,
@@ -403,7 +403,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::mha_decode_split_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_split_op", mutates_args=())
 def _mha_decode_split_op(
     batch: int,
     heads: int,

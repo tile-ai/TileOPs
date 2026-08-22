@@ -43,7 +43,7 @@ class AdaLayerNormFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_ada_layer_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_ada_layer_norm_fwd",)
 
     def __init__(
         self,
@@ -138,7 +138,7 @@ class AdaLayerNormFwdOp(Op):
         return kernel(x, scale, shift)
 
 
-@torch.library.custom_op("top::norm_ada_layer_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_ada_layer_norm_fwd", mutates_args=())
 def _norm_ada_layer_norm_fwd(
     x: torch.Tensor,
     scale: torch.Tensor,

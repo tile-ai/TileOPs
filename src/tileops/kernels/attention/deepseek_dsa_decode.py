@@ -439,7 +439,7 @@ def _sparse_mla_kernel(
     return _sparse_mla_fwd_func
 
 
-@torch.library.custom_op("top::sparse_mla_fwd_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::sparse_mla_fwd_wrapped_kernel", mutates_args=())
 def _sparse_mla_wrapped_kernel(
     batch: int,
     seq_len: int,

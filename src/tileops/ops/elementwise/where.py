@@ -157,7 +157,7 @@ class WhereFwdOp(_PerDtypeKernels, Op):
 _require_shape_inference(WhereFwdOp)
 
 
-@torch.library.custom_op("top::elementwise_where", mutates_args=())
+@torch.library.custom_op("tileops::elementwise_where", mutates_args=())
 def _where_fwd(
     condition: torch.Tensor,
     input: torch.Tensor,
@@ -182,4 +182,4 @@ def _where_fwd_fake(
 
 
 WhereFwdOp._wrapped = _where_fwd
-WhereFwdOp.compile_op_names = ("top::elementwise_where",)
+WhereFwdOp.compile_op_names = ("tileops::elementwise_where",)

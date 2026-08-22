@@ -311,7 +311,7 @@ def _mha_decode_paged_ws_kernel(
 # Custom op (torch.compile compatible wrapper)
 
 
-@torch.library.custom_op("top::mha_decode_paged_ws_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_paged_ws_op", mutates_args=())
 def _mha_decode_paged_ws_op(
     batch: int,
     heads: int,

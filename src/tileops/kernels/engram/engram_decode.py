@@ -234,7 +234,7 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
     return _func
 
 
-@torch.library.custom_op("top::engram_decode", mutates_args=())
+@torch.library.custom_op("tileops::engram_decode", mutates_args=())
 def _engram_decode_wrapped(
     batch: int,
     d_mem: int,

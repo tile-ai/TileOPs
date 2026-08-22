@@ -607,7 +607,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     return func
 
 
-@torch.library.custom_op("top::gqa_fwd_fp8_bn224_tma_v_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gqa_fwd_fp8_bn224_tma_v_wrapped_kernel", mutates_args=())
 def _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
     batch: int,
     heads: int,

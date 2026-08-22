@@ -174,7 +174,7 @@ def _cb_producer_kernel(
 # PyTorch custom op registration
 
 
-@torch.library.custom_op("top::cb_producer", mutates_args=())
+@torch.library.custom_op("tileops::cb_producer", mutates_args=())
 def _cb_producer_wrapped(
     batch: int,
     num_chunks: int,

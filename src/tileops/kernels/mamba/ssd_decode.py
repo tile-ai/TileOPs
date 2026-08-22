@@ -268,7 +268,7 @@ def _ssd_decode_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("top::ssd_decode", mutates_args=("state",))
+@torch.library.custom_op("tileops::ssd_decode", mutates_args=("state",))
 def _ssd_decode_wrapped(
     batch: int,
     n_heads: int,

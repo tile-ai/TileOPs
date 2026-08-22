@@ -106,7 +106,7 @@ def _gqa_decode_bs1_ctx_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, s
     return _func
 
 
-@torch.library.custom_op("top::gqa_decode_bs1_ctx_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_bs1_ctx_op", mutates_args=())
 def _gqa_decode_bs1_ctx_op(
     batch: int,
     heads: int,

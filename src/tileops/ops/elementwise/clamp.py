@@ -240,7 +240,7 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
 _require_shape_inference(ClampFwdOp)
 
 
-@torch.library.custom_op("top::elementwise_clamp_tensor", mutates_args=())
+@torch.library.custom_op("tileops::elementwise_clamp_tensor", mutates_args=())
 def _clamp_tensor_fwd(
     input: torch.Tensor,
     min: Optional[torch.Tensor],
@@ -269,4 +269,4 @@ def _clamp_tensor_fwd_fake(
 
 
 ClampFwdOp._wrapped = _clamp_tensor_fwd
-ClampFwdOp.compile_op_names = ("top::elementwise_clamp_tensor",)
+ClampFwdOp.compile_op_names = ("tileops::elementwise_clamp_tensor",)

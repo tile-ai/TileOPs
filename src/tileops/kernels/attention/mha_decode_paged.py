@@ -439,7 +439,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
 # Use distinct op names so paged and non-paged (mha_decode.py) do not overwrite
 # each other in torch.library; otherwise the first-registered impl "changes" the
 # registry and later parametrized tests can hit the wrong implementation.
-@torch.library.custom_op("top::mha_decode_paged_no_split_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_paged_no_split_op", mutates_args=())
 def _mha_decode_paged_no_split_op(
     batch: int,
     heads: int,
@@ -487,7 +487,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::mha_decode_paged_split_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_paged_split_op", mutates_args=())
 def _mha_decode_paged_split_op(
     batch: int,
     heads: int,

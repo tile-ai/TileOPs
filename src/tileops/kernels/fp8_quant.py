@@ -64,7 +64,7 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
     return _fp8_quant_fwd_func
 
 
-@torch.library.custom_op("top::fp8_quant_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::fp8_quant_wrapped_kernel", mutates_args=())
 def _fp8_quant_wrapped_kernel(
     batch: int,
     seq_len_kv: int,

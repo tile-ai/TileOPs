@@ -50,7 +50,7 @@ def register_compile_contract(op_cls: type) -> None:
 
 
 def operator_overload(name: str):
-    """``"top::foo"`` as the overload object a graph node carries."""
+    """``"tileops::foo"`` as the overload object a graph node carries."""
     namespace, _, opname = name.partition("::")
     return getattr(getattr(torch.ops, namespace), opname).default
 

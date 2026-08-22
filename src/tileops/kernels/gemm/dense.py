@@ -560,7 +560,7 @@ def _gemm_kernel(
     return _gemm_func
 
 
-@torch.library.custom_op("top::gemm_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gemm_wrapped_kernel", mutates_args=())
 def _gemm_wrapped_kernel(
     m: int,
     n: int,
@@ -740,7 +740,7 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
     return _gemv_func
 
 
-@torch.library.custom_op("top::gemv_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gemv_wrapped_kernel", mutates_args=())
 def _gemv_wrapped_kernel(
     n: int,
     k: int,

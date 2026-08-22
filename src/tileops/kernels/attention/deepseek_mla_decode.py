@@ -643,7 +643,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
     return _mla_decode_ws_func
 
 
-@torch.library.custom_op("top::mla_decode_ws_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::mla_decode_ws_wrapped_kernel", mutates_args=())
 def _mla_decode_ws_wrapped_kernel(
     batch: int,
     heads: int,

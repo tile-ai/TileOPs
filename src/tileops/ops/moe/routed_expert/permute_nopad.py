@@ -47,7 +47,7 @@ class MoePermuteNopadFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_permute_nopad_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_permute_nopad_fwd",)
 
     def __init__(
         self,
@@ -312,7 +312,7 @@ class MoePermuteNopadFwdOp(Op):
         return kernel(hidden_states, topk_ids, expert_map)
 
 
-@torch.library.custom_op("top::moe_permute_nopad_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_permute_nopad_fwd", mutates_args=())
 def _moe_permute_nopad_fwd(
     hidden_states: torch.Tensor,
     topk_ids: torch.Tensor,

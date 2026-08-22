@@ -579,7 +579,7 @@ def _bmm_fp8_persistent_ws_kernel(
     return _bmm_fp8_persistent_ws_func
 
 
-@torch.library.custom_op("top::bmm_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::bmm_wrapped_kernel", mutates_args=())
 def _bmm_wrapped_kernel(
     batch: int,
     m: int,

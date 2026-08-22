@@ -72,7 +72,7 @@ class InstanceNormFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_instance_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_instance_norm_fwd",)
 
     def __init__(
         self,
@@ -347,7 +347,7 @@ class InstanceNormFwdOp(Op):
         return kernel(x, running_mean, running_var, weight, bias)
 
 
-@torch.library.custom_op("top::norm_instance_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_instance_norm_fwd", mutates_args=())
 def _norm_instance_norm_fwd(
     x: torch.Tensor,
     running_mean: Optional[torch.Tensor],

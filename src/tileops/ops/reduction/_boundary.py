@@ -45,7 +45,7 @@ def register_reduction_op(op_cls) -> None:
             f"{op_cls.__name__} registers a compile boundary but has no manifest entry; "
             "the operator name, the output names and their dtypes all come from it"
         )
-    op_name = f"top::{entry['family']}_{_snake(op_cls.__name__)}"
+    op_name = f"tileops::{entry['family']}_{_snake(op_cls.__name__)}"
     outputs = tuple(entry["signature"]["outputs"])
     if len(outputs) == 1:
         _register_single(op_cls, op_name, outputs[0])

@@ -246,7 +246,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
     return topk_selector_fwd_func
 
 
-@torch.library.custom_op("top::topk_selector_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::topk_selector_wrapped_kernel", mutates_args=())
 def _topk_selector_wrapped_kernel(
     batch: int,
     seq_len: int,
