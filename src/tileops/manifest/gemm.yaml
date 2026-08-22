@@ -189,8 +189,8 @@ GroupedGemmFwdOp:
   workloads:
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096-fp16"}
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, dtypes: [bfloat16], label: "nt-batch16-m4096-n4096-k4096-bf16"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096-fp16"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096-fp16"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096"}
 
   roofline:
     func: "tileops.perf.formulas.grouped_gemm_roofline"
