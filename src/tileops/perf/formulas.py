@@ -435,8 +435,10 @@ def gla_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
 
     flops = 2 * batch * heads * seq_len * dim_k * dim_v
     tokens = batch * seq_len * heads
-    # in: q, k, v, g; out: o and the fp32 final state.
-    nbytes = tokens * (3 * dim_k + 2 * dim_v) * elem_bytes + batch * heads * dim_k * dim_v * 4
+    state = batch * heads * dim_k * dim_v
+    seeded = data.get("initial_state") is not None or data.get("initial_state_shape") is not None
+    # in: q, k, v, g and the fp32 state a caller may seed; out: o and the fp32 final state.
+    nbytes = tokens * (3 * dim_k + 2 * dim_v) * elem_bytes + state * (2 if seeded else 1) * 4
     return int(flops), int(nbytes)
 
 
