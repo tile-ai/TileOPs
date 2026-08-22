@@ -1,8 +1,12 @@
 import pytest
 import torch
 
-from benchmarks.benchmark_base import ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import gqa_decode_args, manifest_params
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.workload_args import gqa_decode_args
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionDecodeWorkload
@@ -115,7 +119,9 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
     return run_fn
 
 
-_GQA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), gqa_decode_args)
+_GQA_DECODE_BENCH_PARAMS = workload_params(
+    load_workloads(_OP_NAME), then_dtype(gqa_decode_args, tune=True)
+)
 
 
 @pytest.mark.parametrize(

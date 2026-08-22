@@ -14,6 +14,7 @@ Every row is timed against flag_gems' Triton convolutions, ``F.convNd`` eager
 inductor.
 """
 
+import functools
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
@@ -28,7 +29,7 @@ from benchmarks.baselines import (
     compiled_reference,
     flaggems_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 
@@ -75,54 +76,34 @@ class ConvCase:
         return asdict(self)
 
 
-def _mark(idx: int):
-    """First manifest workload of an op is the smoke case; the rest are full."""
-    return pytest.mark.smoke if idx == 0 else pytest.mark.full
-
-
-def _conv_params(workloads: list[dict], kernel_keys: tuple[str, ...]) -> list:
-    """Build one :class:`ConvCase` parameter per manifest workload row and dtype.
+def _conv_args(w: dict, dtype: torch.dtype, kernel_keys: tuple[str, ...]) -> tuple:
+    """One :class:`ConvCase` for this row and dtype.
 
     ``kernel_keys`` names the manifest spatial-extent keys in order, e.g.
-    ``("kD", "kH", "kW")`` for 3d. Workload entries omitting ``stride`` /
-    ``padding`` fall back to the manifest signature defaults; scalar entries
-    are broadcast across the spatial dims the way PyTorch broadcasts them.
+    ``("kD", "kH", "kW")`` for 3d. Rows omitting ``stride`` / ``padding`` fall
+    back to the manifest signature defaults; a scalar entry is broadcast across
+    the spatial dims the way PyTorch broadcasts it.
     """
     n_spatial = len(kernel_keys)
 
-    def _spatial(value) -> tuple[int, ...]:
+    def spatial(value) -> tuple[int, ...]:
         if isinstance(value, (list, tuple)):
             return tuple(value)
         return (value,) * n_spatial
 
-    params = []
-    for idx, w in enumerate(workloads):
-        input_shape = tuple(w["input_shape"])
-        kernel_size = tuple(w[key] for key in kernel_keys)
-        stride = _spatial(w.get("stride", 1))
-        padding = _spatial(w.get("padding", 0))
-        dilation = _spatial(w.get("dilation", 1))
-        groups = w.get("groups", 1)
-        with_bias = "bias_shape" in w
-        for dtype_name in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    ConvCase(
-                        input_shape,
-                        w["C_out"],
-                        kernel_size,
-                        stride,
-                        padding,
-                        dilation,
-                        groups,
-                        getattr(torch, dtype_name),
-                        with_bias,
-                    ),
-                    id=f"{w['label']}-{dtype_name}",
-                    marks=_mark(idx),
-                )
-            )
-    return params
+    return (
+        ConvCase(
+            tuple(w["input_shape"]),
+            w["C_out"],
+            tuple(w[key] for key in kernel_keys),
+            spatial(w.get("stride", 1)),
+            spatial(w.get("padding", 0)),
+            spatial(w.get("dilation", 1)),
+            w.get("groups", 1),
+            dtype,
+            "bias_shape" in w,
+        ),
+    )
 
 
 def _conv_inputs(
@@ -314,7 +295,11 @@ _CONV1D_KERNEL_KEYS = ("kW",)
 
 @pytest.mark.parametrize(
     "case",
-    _conv_params(load_workloads(_CONV1D_OP), _CONV1D_KERNEL_KEYS),
+    workload_params(
+        load_workloads(_CONV1D_OP),
+        functools.partial(_conv_args, kernel_keys=_CONV1D_KERNEL_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_conv1d_bench(case: ConvCase) -> None:
     op = Conv1dFwdOp(
@@ -336,7 +321,11 @@ _CONV2D_KERNEL_KEYS = ("kH", "kW")
 
 @pytest.mark.parametrize(
     "case",
-    _conv_params(load_workloads(_CONV2D_OP), _CONV2D_KERNEL_KEYS),
+    workload_params(
+        load_workloads(_CONV2D_OP),
+        functools.partial(_conv_args, kernel_keys=_CONV2D_KERNEL_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_conv2d_bench(case: ConvCase) -> None:
     op = Conv2dFwdOp(
@@ -358,7 +347,11 @@ _CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
 
 @pytest.mark.parametrize(
     "case",
-    _conv_params(load_workloads(_CONV3D_OP), _CONV3D_KERNEL_KEYS),
+    workload_params(
+        load_workloads(_CONV3D_OP),
+        functools.partial(_conv_args, kernel_keys=_CONV3D_KERNEL_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_conv3d_bench(case: ConvCase) -> None:
     op = Conv3dFwdOp(

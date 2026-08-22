@@ -410,7 +410,7 @@ where a reader sees they come from one implementation.
 Shape keys use `<tensor_name>_shape`. Op-specific parameters can be added per entry.
 
 ```yaml
-- {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b"}
+- {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-8b"}
 ```
 
 `workloads` are for benchmark parametrization only, not unit-test coverage.
@@ -536,8 +536,8 @@ RMSNormFwdOp:
       - "output.shape == x.shape"
 
   workloads:
-    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-8b-decode"}
 
   roofline:
     vars:
@@ -566,12 +566,12 @@ consumption.
 Each entry under `workloads:` is a mapping. `dtypes` and `label` are
 reserved. Key rules: R21.
 
-| Key             | Required | Meaning                                                                                                                                                                                |
-| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files. |
-| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                     |
-| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                                                                                                       |
-| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                         |
+| Key             | Required | Meaning                                                                                                                                                                                               |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files.                |
+| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                                    |
+| `label`         | no       | Human-readable id used in the pytest param id and report tables. MUST NOT name a dtype the row's `dtypes` already lists: the case id ends with the dtype it runs, so the label would render it twice. |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                                        |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 

@@ -18,7 +18,7 @@ from benchmarks.baselines import (
     compiled_reference,
     flaggems_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
@@ -94,36 +94,22 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
 # Manifest-driven params
 
 
-def _manifest_fwd_params():
-    params = []
-    for w in load_workloads(_FWD_OP_NAME):
-        shape = w["x_shape"]
-        N, C, spatial = shape[0], shape[1], tuple(shape[2:])
-        label = w.get("label", f"{N}x{C}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(
-                pytest.param(N, C, spatial, dtype, True, False, id=f"{label}-{dtype_str}")
-            )
-    return params
+def _fwd_args(w: dict, dtype: torch.dtype) -> tuple:
+    n, c, *spatial = w["x_shape"]
+    return (n, c, tuple(spatial), dtype, True, False)
 
 
-def _manifest_bwd_params():
-    params = []
-    for w in load_workloads(_BWD_OP_NAME):
-        shape = w["x_shape"]
-        N, C, spatial = shape[0], shape[1], tuple(shape[2:])
-        label = w.get("label", f"{N}x{C}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(N, C, spatial, dtype, id=f"{label}-{dtype_str}"))
-    return params
+def _bwd_args(w: dict, dtype: torch.dtype) -> tuple:
+    n, c, *spatial = w["x_shape"]
+    return (n, c, tuple(spatial), dtype)
 
 
 # Benchmark tests
 
 
-@pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _manifest_fwd_params())
+@pytest.mark.parametrize(
+    "N, C, spatial, dtype, training, tune", workload_params(load_workloads(_FWD_OP_NAME), _fwd_args)
+)
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype)
     # Manifest input order: (x, running_mean, running_var, weight, bias).
@@ -156,7 +142,9 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     )
 
 
-@pytest.mark.parametrize("N, C, spatial, dtype", _manifest_bwd_params())
+@pytest.mark.parametrize(
+    "N, C, spatial, dtype", workload_params(load_workloads(_BWD_OP_NAME), _bwd_args)
+)
 def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     inputs = _make_bwd_inputs(N, C, spatial, dtype)
 

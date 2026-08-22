@@ -9,7 +9,7 @@ from benchmarks.baselines import (
     flaggems_op,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
@@ -18,13 +18,6 @@ _OP_NAME = "GemmFwdOp"
 _FP8_OP_NAME = "GemmFp8FwdOp"
 _W4A16_OP_NAME = "GemmW4A16FwdOp"
 _W4A16_GROUP_SIZE = 128
-
-_DTYPE_MAP = {
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-    "float8_e4m3fn": torch.float8_e4m3fn,
-    "float8_e5m2": torch.float8_e5m2,
-}
 
 
 class GemmBenchmarkWorkload(GemmWorkload):
@@ -220,75 +213,38 @@ def _prepare_marlin_w4a16_baseline(
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
-def _manifest_params() -> list:
-    """Convert manifest workloads to pytest params (m, n, k, trans_a, trans_b, dtype)."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        trans_a = bool(w.get("trans_a", False))
-        trans_b = bool(w.get("trans_b", True))
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["m"],
-                    w["n"],
-                    w["k"],
-                    trans_a,
-                    trans_b,
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _gemm_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(m, n, k, trans_a, trans_b, dtype)``; the transposes default to N-T."""
+    return (
+        w["m"],
+        w["n"],
+        w["k"],
+        bool(w.get("trans_a", False)),
+        bool(w.get("trans_b", True)),
+        dtype,
+    )
 
 
-def _manifest_fp8_params() -> list:
-    params = []
-    for w in load_workloads(_FP8_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["m"],
-                    w["n"],
-                    w["k"],
-                    w["scale_mode"],
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _gemm_fp8_args(w: dict, dtype: torch.dtype) -> tuple:
+    return (w["m"], w["n"], w["k"], w["scale_mode"], dtype)
 
 
-def _manifest_w4a16_params() -> list:
-    params = []
-    for w in load_workloads(_W4A16_OP_NAME):
-        label = w.get("label", "unlabeled")
-        group_size = int(w.get("group_size", 128))
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["m"],
-                    w["n"],
-                    w["k"],
-                    group_size,
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _gemm_w4a16_args(w: dict, dtype: torch.dtype) -> tuple:
+    return (w["m"], w["n"], w["k"], int(w.get("group_size", 128)), dtype)
 
 
-@pytest.mark.parametrize("m, n, k, trans_a, trans_b, dtype_str", _manifest_params())
+@pytest.mark.parametrize(
+    "m, n, k, trans_a, trans_b, dtype",
+    workload_params(load_workloads(_OP_NAME), _gemm_args),
+)
 def test_gemm_bench(
     m: int,
     n: int,
     k: int,
     trans_a: bool,
     trans_b: bool,
-    dtype_str: str,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     workload = GemmBenchmarkWorkload(m, n, k, dtype, trans_a, trans_b)
     a, b = workload.gen_inputs()
 
@@ -311,15 +267,16 @@ def test_gemm_bench(
     bm.compare(functors, a, b, record_as=op, params=locals())
 
 
-@pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())
+@pytest.mark.parametrize(
+    "m, n, k, scale_mode, dtype", workload_params(load_workloads(_FP8_OP_NAME), _gemm_fp8_args)
+)
 def test_gemm_fp8_bench(
     m: int,
     n: int,
     k: int,
     scale_mode: str,
-    dtype_str: str,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
     workload = GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
     inputs = workload.gen_inputs()
@@ -366,15 +323,16 @@ def test_gemm_fp8_bench(
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
-@pytest.mark.parametrize("m, n, k, group_size, dtype_str", _manifest_w4a16_params())
+@pytest.mark.parametrize(
+    "m, n, k, group_size, dtype", workload_params(load_workloads(_W4A16_OP_NAME), _gemm_w4a16_args)
+)
 def test_gemm_w4a16_bench(
     m: int,
     n: int,
     k: int,
     group_size: int,
-    dtype_str: str,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     workload = GemmW4A16BenchmarkWorkload(m, n, k, dtype, group_size=group_size)
     inputs = workload.gen_inputs()
 

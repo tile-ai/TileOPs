@@ -20,7 +20,7 @@ from benchmarks.baselines import (
     compiled_reference,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.rope import (
     RopeLlama31FwdOp,
@@ -48,49 +48,17 @@ class RopeWorkload:
         self.dtype = dtype
 
 
-def _mark(idx: int):
-    """First manifest workload of an op is the smoke case; the rest are full."""
-    return pytest.mark.smoke if idx == 0 else pytest.mark.full
+def _layout_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(shape, dtype, layout)`` for the 1d/2d RoPE variants."""
+    if w["layout"] == "1d":
+        shape = (w["seq_len"], w["head_dim"])
+    else:
+        shape = (w["batch"], w["seq_len"], w["num_heads"], w["head_dim"])
+    return (shape, dtype, w["layout"])
 
 
-def _layout_params(workloads: list[dict]) -> list:
-    """Build ``(shape, dtype, layout)`` params for the 1d/2d RoPE variants."""
-    params = []
-    for idx, w in enumerate(workloads):
-        layout = w["layout"]
-        if layout == "1d":
-            shape = (w["seq_len"], w["head_dim"])
-        else:
-            shape = (w["batch"], w["seq_len"], w["num_heads"], w["head_dim"])
-        for dtype_name in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    shape,
-                    getattr(torch, dtype_name),
-                    layout,
-                    id=f"{w['label']}-{dtype_name}",
-                    marks=_mark(idx),
-                )
-            )
-    return params
-
-
-def _position_ids_params(workloads: list[dict]) -> list:
-    """Build ``(shape, dtype, max_position)`` params for the THD variant."""
-    params = []
-    for idx, w in enumerate(workloads):
-        shape = (w["num_tokens"], w["num_heads"], w["head_dim"])
-        for dtype_name in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    shape,
-                    getattr(torch, dtype_name),
-                    w["max_position"],
-                    id=f"{w['label']}-{dtype_name}",
-                    marks=_mark(idx),
-                )
-            )
-    return params
+def _position_ids_args(w: dict, dtype: torch.dtype) -> tuple:
+    return ((w["num_tokens"], w["num_heads"], w["head_dim"]), dtype, w["max_position"])
 
 
 # Bench-local PyTorch baselines
@@ -183,7 +151,7 @@ _NEOX_OP = "RopeNeoxFwdOp"
 
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    _layout_params(load_workloads(_NEOX_OP)),
+    workload_params(load_workloads(_NEOX_OP), _layout_args, smoke_first=True),
 )
 def test_rope_neox_bench(
     shape: tuple[int, ...],
@@ -200,7 +168,7 @@ _NON_NEOX_OP = "RopeNonNeoxFwdOp"
 
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    _layout_params(load_workloads(_NON_NEOX_OP)),
+    workload_params(load_workloads(_NON_NEOX_OP), _layout_args, smoke_first=True),
 )
 def test_rope_non_neox_bench(
     shape: tuple[int, ...],
@@ -217,7 +185,7 @@ _LLAMA31_OP = "RopeLlama31FwdOp"
 
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    _layout_params(load_workloads(_LLAMA31_OP)),
+    workload_params(load_workloads(_LLAMA31_OP), _layout_args, smoke_first=True),
 )
 def test_rope_llama31_bench(
     shape: tuple[int, ...],
@@ -234,7 +202,7 @@ _YARN_OP = "RopeYarnFwdOp"
 
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    _layout_params(load_workloads(_YARN_OP)),
+    workload_params(load_workloads(_YARN_OP), _layout_args, smoke_first=True),
 )
 def test_rope_yarn_bench(
     shape: tuple[int, ...],
@@ -251,7 +219,7 @@ _LONGROPE_OP = "RopeLongRopeFwdOp"
 
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    _layout_params(load_workloads(_LONGROPE_OP)),
+    workload_params(load_workloads(_LONGROPE_OP), _layout_args, smoke_first=True),
 )
 def test_rope_longrope_bench(
     shape: tuple[int, ...],
@@ -268,7 +236,7 @@ _POSITION_IDS_OP = "RopeNeoxPositionIdsFwdOp"
 
 @pytest.mark.parametrize(
     "shape, dtype, max_position",
-    _position_ids_params(load_workloads(_POSITION_IDS_OP)),
+    workload_params(load_workloads(_POSITION_IDS_OP), _position_ids_args, smoke_first=True),
 )
 def test_rope_neox_position_ids_bench(
     shape: tuple[int, int, int],

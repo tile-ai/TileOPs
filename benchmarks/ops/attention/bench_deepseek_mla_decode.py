@@ -2,8 +2,12 @@ import pytest
 import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import manifest_params, mla_decode_args
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.workload_args import mla_decode_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek import MlaDecodeWorkload
@@ -11,7 +15,9 @@ from workloads.attention.deepseek import MlaDecodeWorkload
 _OP_NAME = "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"
 
 
-_MLA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mla_decode_args)
+_MLA_DECODE_BENCH_PARAMS = workload_params(
+    load_workloads(_OP_NAME), then_dtype(mla_decode_args, tune=True)
+)
 
 
 @pytest.mark.parametrize(

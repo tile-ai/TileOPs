@@ -9,12 +9,13 @@ from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
     backward_of,
+    then_dtype,
+    workload_params,
 )
-from benchmarks.ops.attention.manifest_params import (
+from benchmarks.ops.attention.workload_args import (
     gqa_prefill_args,
     gqa_prefill_paged_args,
     gqa_qkv_args,
-    manifest_params,
 )
 from tileops.kernels.attention import (
     GQAFwdWgmmaPipelinedKernel,
@@ -262,7 +263,9 @@ def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> 
 # Training (bf16): seq_len 2K-8K covers SFT (2K) and pretraining (4K-8K).
 # B=1-2 reflects typical micro-batch sizes.  No long-context training configs
 # since >90% of pretraining compute is at 4K-8K.
-_GQA_FWD_BENCH_PARAMS = manifest_params(load_workloads(_GQA_FWD_OP), gqa_qkv_args)
+_GQA_FWD_BENCH_PARAMS = workload_params(
+    load_workloads(_GQA_FWD_OP), then_dtype(gqa_qkv_args, tune=True)
+)
 
 
 @pytest.mark.parametrize(
@@ -304,7 +307,9 @@ def test_gqa_fwd_bench(
 # GQA backward benchmark parameters (training only).
 # Backward is only used during training — extract the training subset from
 # _GQA_FWD_BENCH_PARAMS by ID prefix to avoid manual duplication.
-_GQA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_GQA_BWD_OP), gqa_qkv_args)
+_GQA_BWD_BENCH_PARAMS = workload_params(
+    load_workloads(_GQA_BWD_OP), then_dtype(gqa_qkv_args, tune=True)
+)
 
 
 @pytest.mark.parametrize(
@@ -338,14 +343,16 @@ def test_gqa_bwd_bench(
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
-_GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
+_GQA_PREFILL_FWD_BENCH_PARAMS = workload_params(
     [
         workload
         for workload in load_workloads(_GQA_PREFILL_FWD_OP)
         if workload.get("backend") != "fp8"
     ],
-    gqa_prefill_args,
-    tune=False,
+    then_dtype(
+        gqa_prefill_args,
+        tune=False,
+    ),
 )
 
 
@@ -413,7 +420,7 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
         True,
         torch.float16,
         False,
-        id="llama-3.1-8b-prefill-varlen-uniform-fp16",
+        id="llama-8b-prefill-varlen-uniform-fp16",
     ),
     pytest.param(
         4,
@@ -425,7 +432,7 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
         True,
         torch.float16,
         False,
-        id="llama-3.1-8b-prefill-varlen-mixed-fp16",
+        id="llama-8b-prefill-varlen-mixed-fp16",
     ),
     pytest.param(
         2,
@@ -437,7 +444,7 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
         True,
         torch.bfloat16,
         False,
-        id="llama-3.1-70b-prefill-varlen-q-lt-kv-bf16",
+        id="llama-70b-prefill-varlen-q-lt-kv-bf16",
     ),
 ]
 
@@ -499,10 +506,12 @@ def _fp8_paged_cache_inputs(
     )
 
 
-_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
+_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = workload_params(
     load_workloads(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP),
-    gqa_prefill_paged_args,
-    tune=False,
+    then_dtype(
+        gqa_prefill_paged_args,
+        tune=False,
+    ),
 )
 
 

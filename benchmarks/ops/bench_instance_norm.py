@@ -19,7 +19,7 @@ from benchmarks.baselines import (
     flaggems_group_norm,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.normalization import InstanceNormWorkload
@@ -27,27 +27,16 @@ from workloads.normalization import InstanceNormWorkload
 _OP_NAME = "InstanceNormFwdOp"
 
 
-def _build_params(workloads):
-    """One param per workload row and dtype.
-
-    A row applies the affine exactly when it declares ``weight_shape``.
-    """
-    params = []
-    for w in workloads:
-        shape = w["x_shape"]
-        n, c, spatial = shape[0], shape[1], tuple(shape[2:])
-        label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
-        affine = "weight_shape" in w
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(
-                pytest.param(n, c, spatial, dtype, True, affine, id=f"{label}-{dtype_str}")
-            )
-    return params
+def _instance_norm_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(n, c, spatial, dtype, tune, affine)``; a row is affine exactly when it
+    declares ``weight_shape``."""
+    n, c, *spatial = w["x_shape"]
+    return (n, c, tuple(spatial), dtype, True, "weight_shape" in w)
 
 
 @pytest.mark.parametrize(
-    "n, c, spatial, dtype, tune, affine", _build_params(load_workloads(_OP_NAME))
+    "n, c, spatial, dtype, tune, affine",
+    workload_params(load_workloads(_OP_NAME), _instance_norm_args),
 )
 def test_instance_norm_bench(
     n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool, affine: bool

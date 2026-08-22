@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillFwdOp
 from workloads.gqa_fp8_utils import (
@@ -23,34 +23,21 @@ class GQAFp8TensorCoreBenchCase:
     dim: int
     validate_uniform_cu_seqlens: bool
     out_dtype: torch.dtype
-    label: str
 
 
-def _manifest_cases() -> list[GQAFp8TensorCoreBenchCase]:
-    cases: list[GQAFp8TensorCoreBenchCase] = []
-    for workload in load_workloads(_OP_NAME):
-        if workload.get("backend") != "fp8":
-            continue
-        batch = workload["batch"]
-        seq_len = workload["max_seqlen_q"]
-        heads = workload["heads"]
-        heads_kv = workload["heads_kv"]
-        dim = workload["dim"]
-        for dtype_name in workload["dtypes"]:
-            out_dtype = getattr(torch, dtype_name)
-            cases.append(
-                GQAFp8TensorCoreBenchCase(
-                    batch=batch,
-                    seq_len=seq_len,
-                    heads=heads,
-                    heads_kv=heads_kv,
-                    dim=dim,
-                    validate_uniform_cu_seqlens=workload.get("validate_uniform_cu_seqlens", True),
-                    out_dtype=out_dtype,
-                    label=f"{workload['label']}-{dtype_name}",
-                )
-            )
-    return cases
+def _fp8_case_args(workload: dict, dtype: torch.dtype) -> tuple:
+    """One case object; the fp8 tensor-core path is the only one this bench runs."""
+    return (
+        GQAFp8TensorCoreBenchCase(
+            batch=workload["batch"],
+            seq_len=workload["max_seqlen_q"],
+            heads=workload["heads"],
+            heads_kv=workload["heads_kv"],
+            dim=workload["dim"],
+            validate_uniform_cu_seqlens=workload.get("validate_uniform_cu_seqlens", True),
+            out_dtype=dtype,
+        ),
+    )
 
 
 def _make_inputs(case: GQAFp8TensorCoreBenchCase) -> tuple[torch.Tensor, ...]:
@@ -110,7 +97,13 @@ def _fa3_gqa_fp8_fwd(case: GQAFp8TensorCoreBenchCase):
     return _run
 
 
-@pytest.mark.parametrize("case", [pytest.param(c, id=c.label) for c in _manifest_cases()])
+@pytest.mark.parametrize(
+    "case",
+    workload_params(
+        [w for w in load_workloads(_OP_NAME) if w.get("backend") == "fp8"],
+        _fp8_case_args,
+    ),
+)
 def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> None:
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("torch fp8 is unavailable")
@@ -139,4 +132,16 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
 
-    bm.compare(functors, *inputs, record_as=op, params={"case": case.label})
+    bm.compare(
+        functors,
+        *inputs,
+        record_as=op,
+        params={
+            "batch": case.batch,
+            "seq_len": case.seq_len,
+            "heads": case.heads,
+            "heads_kv": case.heads_kv,
+            "dim": case.dim,
+            "dtype": case.out_dtype,
+        },
+    )

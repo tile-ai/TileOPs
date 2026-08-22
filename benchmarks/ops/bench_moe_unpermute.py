@@ -25,7 +25,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.moe import MoeUnpermuteWorkload
@@ -38,29 +38,15 @@ _OP_NAME = "MoeUnpermuteFwdOp"
 # Manifest-driven parametrize
 
 
-def _manifest_params():
-    """Convert manifest workloads to pytest params."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["total_tokens"],
-                    w["top_k"],
-                    w["hidden_size"],
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
 # Benchmark test
 
 
 @pytest.mark.parametrize(
     "total_tokens, top_k, hidden_size",
-    _manifest_params(),
+    workload_params(
+        load_workloads(_OP_NAME),
+        fields("total_tokens", "top_k", "hidden_size"),
+    ),
 )
 def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) -> None:
     dtype = torch.bfloat16

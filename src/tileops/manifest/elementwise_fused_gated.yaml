@@ -28,8 +28,8 @@ SiluAndMulFwdOp:
 
   workloads:
     # SwiGLU FFN intermediate (Llama-3.1-8B, hidden_dim=14336)
-    - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "llama-3.1-8b-swiglu-prefill"}
-    - {x_shape: [1, 28672], dtypes: [bfloat16], label: "llama-3.1-8b-swiglu-decode"}
+    - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "llama-8b-swiglu-prefill"}
+    - {x_shape: [1, 28672], dtypes: [bfloat16], label: "llama-8b-swiglu-decode"}
 
   roofline:
     vars:

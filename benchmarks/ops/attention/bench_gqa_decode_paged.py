@@ -5,8 +5,12 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import gqa_decode_paged_args, manifest_params
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.workload_args import gqa_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionDecodePagedWorkload
@@ -144,10 +148,12 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
-_GQA_DECODE_PAGED_BENCH_PARAMS = manifest_params(
+_GQA_DECODE_PAGED_BENCH_PARAMS = workload_params(
     load_workloads(_OP_NAME),
-    gqa_decode_paged_args,
-    tune=False,
+    then_dtype(
+        gqa_decode_paged_args,
+        tune=False,
+    ),
 )
 
 

@@ -2,8 +2,12 @@ import pytest
 import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import dsa_decode_args, manifest_params
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.workload_args import dsa_decode_args
 from tileops.manifest import load_workloads
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek import DsaDecodeWorkload
@@ -11,10 +15,12 @@ from workloads.attention.deepseek import DsaDecodeWorkload
 _OP_NAME = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
 
 
-_DSA_DECODE_BENCH_PARAMS = manifest_params(
+_DSA_DECODE_BENCH_PARAMS = workload_params(
     load_workloads(_OP_NAME),
-    dsa_decode_args,
-    tune=False,
+    then_dtype(
+        dsa_decode_args,
+        tune=False,
+    ),
 )
 
 

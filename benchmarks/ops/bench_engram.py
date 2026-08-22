@@ -14,7 +14,8 @@ import torch
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
@@ -31,9 +32,10 @@ _TUNE = True
 
 
 _ENGRAM_GATE_CONV_FWD_OP = "EngramGateConvFwdOp"
-_ENGRAM_GATE_CONV_FWD_PARAMS = workload_field_params(
+_ENGRAM_GATE_CONV_FWD_PARAMS = workload_params(
     load_workloads(_ENGRAM_GATE_CONV_FWD_OP),
-    ("M", "seq_len", "d", "dtype"),
+    fields("M", "seq_len", "d", "dtype"),
+    smoke_first=True,
 )
 
 
@@ -58,9 +60,10 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
 
 
 _ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
-_ENGRAM_GATE_CONV_BWD_PARAMS = workload_field_params(
+_ENGRAM_GATE_CONV_BWD_PARAMS = workload_params(
     load_workloads(_ENGRAM_GATE_CONV_BWD_OP),
-    ("M", "seq_len", "d", "dtype"),
+    fields("M", "seq_len", "d", "dtype"),
+    smoke_first=True,
 )
 
 
@@ -89,9 +92,10 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
 
 
 _ENGRAM_DECODE_OP = "EngramDecodeFwdOp"
-_ENGRAM_DECODE_PARAMS = workload_field_params(
+_ENGRAM_DECODE_PARAMS = workload_params(
     load_workloads(_ENGRAM_DECODE_OP),
-    ("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
+    fields("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
+    smoke_first=True,
 )
 
 

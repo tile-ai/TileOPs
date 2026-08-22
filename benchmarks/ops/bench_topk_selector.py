@@ -15,7 +15,8 @@ import torch
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import TopkSelectorFwdOp
@@ -27,9 +28,10 @@ _TUNE = True
 
 
 _TOPK_SELECTOR_OP = "TopkSelectorFwdOp"
-_TOPK_SELECTOR_PARAMS = workload_field_params(
+_TOPK_SELECTOR_PARAMS = workload_params(
     load_workloads(_TOPK_SELECTOR_OP),
-    ("batch", "seq_len", "seq_len_kv", "kv_group", "topk", "in_dtype", "out_dtype"),
+    fields("batch", "seq_len", "seq_len_kv", "kv_group", "topk", "in_dtype", "out_dtype"),
+    smoke_first=True,
 )
 
 

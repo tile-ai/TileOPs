@@ -22,7 +22,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.moe import MoePermuteWorkload
@@ -35,34 +35,17 @@ _OP_NAME = "MoePermuteNopadFwdOp"
 # Manifest-driven parametrize
 
 
-def _manifest_params():
-    """Convert manifest workloads to pytest params."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        total_tokens, hidden_size = w["hidden_states_shape"]
-        topk_tokens, top_k = w["topk_ids_shape"]
-        assert topk_tokens == total_tokens
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    total_tokens,
-                    top_k,
-                    w["num_experts"],
-                    w["num_experts_local"],
-                    hidden_size,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
-# Benchmark test
+def _permute_nopad_args(w: dict, _dtype) -> tuple:
+    """(total_tokens, top_k, num_experts, num_experts_local, hidden_size)."""
+    total_tokens, hidden_size = w["hidden_states_shape"]
+    topk_tokens, top_k = w["topk_ids_shape"]
+    assert topk_tokens == total_tokens
+    return (total_tokens, top_k, w["num_experts"], w["num_experts_local"], hidden_size)
 
 
 @pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, num_experts_local, hidden_size",
-    _manifest_params(),
+    workload_params(load_workloads(_OP_NAME), _permute_nopad_args),
 )
 def test_moe_permute_nopad_bench(
     total_tokens: int,

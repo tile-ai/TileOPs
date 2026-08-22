@@ -16,8 +16,12 @@ import pytest
 import torch
 from fla.ops.delta_rule import chunk_delta_rule
 
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of
-from benchmarks.ops.attention.manifest_params import manifest_params
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    backward_of,
+    then_dtype,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp
 from workloads.linear_attention import DeltaNetFwdWorkload
@@ -48,7 +52,7 @@ def _deltanet_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    manifest_params(load_workloads(_FWD_OP_NAME), _deltanet_args, tune=False),
+    workload_params(load_workloads(_FWD_OP_NAME), then_dtype(_deltanet_args, tune=False)),
 )
 def test_deltanet_vs_fla_fwd(
     batch: int,
@@ -86,7 +90,7 @@ def test_deltanet_vs_fla_fwd(
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    manifest_params(load_workloads(_BWD_OP_NAME), _deltanet_args, tune=False),
+    workload_params(load_workloads(_BWD_OP_NAME), then_dtype(_deltanet_args, tune=False)),
 )
 def test_deltanet_vs_fla_bwd(
     batch: int,

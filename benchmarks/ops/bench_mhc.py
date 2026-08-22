@@ -11,7 +11,8 @@ import torch
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
@@ -27,9 +28,9 @@ _SINKHORN_EPS = 0.02
 
 
 _MHC_PRE_OP = "MHCPreFwdOp"
-_MHC_PRE_PARAMS = workload_field_params(
+_MHC_PRE_PARAMS = workload_params(
     load_workloads(_MHC_PRE_OP),
-    (
+    fields(
         "batch",
         "n_expand",
         "c_x",
@@ -39,6 +40,7 @@ _MHC_PRE_PARAMS = workload_field_params(
         "alpha_res",
         "sinkhorn_repeat",
     ),
+    smoke_first=True,
 )
 
 
@@ -78,9 +80,10 @@ def test_mhc_pre_bench(
 
 
 _MHC_POST_OP = "MHCPostFwdOp"
-_MHC_POST_PARAMS = workload_field_params(
+_MHC_POST_PARAMS = workload_params(
     load_workloads(_MHC_POST_OP),
-    ("batch", "n_expand", "c_x", "dtype"),
+    fields("batch", "n_expand", "c_x", "dtype"),
+    smoke_first=True,
 )
 
 

@@ -453,6 +453,42 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
     return errors
 
 
+def _dtype_label_tokens(dtype: str) -> set[str]:
+    """How a label could spell *dtype*: the name itself and its short forms.
+
+    Derived rather than tabulated, so a dtype the manifest gains later is covered
+    without editing this: ``bfloat16`` yields ``bf16`` / ``f16`` / ``bfloat16``,
+    and ``float8_e4m3fn`` also yields its sub-format ``e4m3fn`` and ``e4m3``.
+    """
+    tokens = {dtype}
+    m = re.fullmatch(r"(b?float)(\d+)(?:_(\w+))?", dtype)
+    if m:
+        kind, bits, sub = m.groups()
+        tokens |= {f"{'bf' if kind == 'bfloat' else 'fp'}{bits}", f"f{bits}", f"{kind}{bits}"}
+        if sub:
+            tokens |= {sub, sub.removesuffix("fn")}
+    m = re.fullmatch(r"(u?int)(\d+)", dtype)
+    if m:
+        tokens.add(f"{'u' if dtype.startswith('u') else ''}i{m.group(2)}")
+    return {tok for tok in tokens if tok}
+
+
+def _label_names_its_own_dtype(label: str, dtypes: list) -> str | None:
+    """The dtype token a label repeats from its own ``dtypes``, if any.
+
+    A case id ends with the dtype the case runs, so a label spelling one renders
+    it twice. Labels use the short spelling, the manifest the long one, and both
+    are checked.
+    """
+    for dtype in dtypes:
+        if not isinstance(dtype, str):
+            continue
+        for token in sorted(_dtype_label_tokens(dtype), key=len, reverse=True):
+            if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", label):
+                return token
+    return None
+
+
 def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
     """Workload policy: count, dtypes, required-param pinning, R21 keys."""
     errors: list[str] = []
@@ -484,6 +520,15 @@ def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
         missing_params = required_params - set(w.keys())
         if missing_params:
             err(f"workloads[{i}] missing required param(s): {sorted(missing_params)}")
+        label = w.get("label")
+        dtypes = w.get("dtypes")
+        if isinstance(label, str) and isinstance(dtypes, list):
+            repeated = _label_names_its_own_dtype(label, dtypes)
+            if repeated is not None:
+                err(
+                    f"workloads[{i}] label {label!r} names {repeated!r}, a dtype the "
+                    f"row already lists in 'dtypes'; the case id appends it"
+                )
     if isinstance(entry.get("signature"), dict):
         errors.extend(_check_single_input_workload_keys(op_name, entry["signature"], workloads))
     return errors
