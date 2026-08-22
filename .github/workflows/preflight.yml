@@ -97,10 +97,9 @@ jobs:
           benchmark=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
-            # `src/tileops/manifest/*` covers the YAML entries and every Python
-            # helper beside them: `scripts/validate_manifest.py` imports
-            # `shape_rules` and `dtype_rules` at module scope, so a change to
-            # either decides what the validator accepts.
+            # The Python helpers beside the YAML count too:
+            # `scripts/validate_manifest.py` imports `shape_rules` and
+            # `dtype_rules` at module scope, so either one decides what it accepts.
             case "$f" in
               src/tileops/manifest/*|scripts/validate_manifest.py|tests/test_validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true

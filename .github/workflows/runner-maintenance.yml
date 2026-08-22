@@ -1,19 +1,14 @@
 name: Runner Maintenance
 
-# Heavy disk reclamation for the self-hosted runner. Runs once per day at
-# 22:00 UTC (06:00 Asia/Shanghai): off-peak for the team, and after the
-# nightly run that starts at 18:00 UTC. Per-PR `gpu-smoke` jobs only attempt
-# the heavier reclaim path when disk is under pressure, and still rate-limit
-# the expensive cache-trim pass via a cooldown; this scheduled job forces the
-# full cleanup pass on days with little PR traffic.
+# Forces the full disk reclamation that per-PR `gpu-smoke` only attempts under
+# disk pressure, for days with little PR traffic. 22:00 UTC is 06:00
+# Asia/Shanghai: off-peak, and past the observed tail of the 18:00 nightly.
 #
-# GPU smoke and nightly share the persistent cache tree bind-mounted at
-# `/ci-cache/*` inside the runner container, and `force-reclaim` here bypasses
-# both the cooldown and the free-space threshold. The trim is destructive in a
-# way a concurrent writer cannot survive: `sentinel-repair` removes any atomic
-# cache subdir lacking its sentinel, and an autotune run mid-write looks
-# exactly like a crashed one. The clock is not a guarantee — nightly may run to
-# its 380-minute ceiling — so `nightly-guard` below is what keeps the two apart.
+# `force-reclaim` bypasses the cooldown and the free-space threshold, and the
+# trim is destructive in a way a concurrent writer cannot survive:
+# `sentinel-repair` removes any atomic cache subdir lacking its sentinel, and an
+# autotune run mid-write looks exactly like a crashed one. Nightly may run to
+# its 380-minute ceiling, so the clock alone cannot keep them apart.
 
 on:
   schedule:
@@ -29,8 +24,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Runs on a GitHub-hosted runner so the self-hosted pool is never occupied just
-  # to answer this question, and so no `gh` binary is assumed on the runner image.
+  # GitHub-hosted: answering this must not occupy the pool it protects, and the
+  # self-hosted image is not assumed to carry `gh`.
   nightly-guard:
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
     runs-on: ubuntu-latest
@@ -44,15 +39,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # One request, filtered client-side: a `status=` filter would need every
-          # non-terminal state spelled out, and one wrong value turns a 422 into a
-          # permanent skip.
+          # Filtered client-side: a `status=` filter needs every non-terminal state
+          # spelled out, and one wrong value turns a 422 into a permanent skip.
           active=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?per_page=20" \
             --jq '[.workflow_runs[] | select(.status != "completed")] | length' || echo "")
 
-          # An API failure must not read as "nothing running": fail closed, because a
-          # skipped reclaim costs a day and a concurrent one costs the nightly run.
+          # Fail closed: a skipped reclaim costs a day, a concurrent one costs the
+          # nightly run.
           if [[ -z "$active" ]]; then
             echo "::warning::could not query nightly runs; assuming one is in flight"
             echo "nightly_active=true" >> "$GITHUB_OUTPUT"

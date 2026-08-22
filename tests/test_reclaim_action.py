@@ -311,12 +311,8 @@ def _case_matches(patterns: str, path: str) -> bool:
 
 
 def test_every_op_test_file_reaches_the_targeted_arm() -> None:
-    """Every tests/ops test file must be selectable as a targeted GPU smoke target.
-
-    A file the arm does not match falls through to the catch-all and forces a full
-    smoke run, which is silent: the catch-all's reason reads like policy, not a miss.
-    Nesting tests/ops one level deeper is exactly what breaks a single-level glob.
-    """
+    """A file the arm misses falls through to the catch-all and runs the whole suite,
+    and the catch-all's reason reads like policy rather than a miss."""
     patterns = _targeted_arm_patterns(_policy_script())
     op_tests = sorted(p for p in (REPO_ROOT / "tests" / "ops").rglob("test_*.py"))
     assert op_tests, "expected test files under tests/ops"
@@ -333,11 +329,8 @@ def test_every_op_test_file_reaches_the_targeted_arm() -> None:
 
 
 def test_fork_fast_path_accepts_the_same_op_tests() -> None:
-    """The fork fast-path arm must list the same op-test patterns as the targeted arm.
-
-    Otherwise a fork PR touching a nested op test is classified as "outside the
-    fast-path policy" rather than as the test-only change it is.
-    """
+    """Otherwise a fork PR touching a nested op test is classified "outside the
+    fast-path policy" rather than as the test-only change it is."""
     script = _policy_script()
     for pattern in _targeted_arm_patterns(script).split("|"):
         assert f"|{pattern}|" in script, (
@@ -352,14 +345,9 @@ PREFLIGHT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "preflight.yml"
 
 
 def test_manifest_gate_covers_every_manifest_file() -> None:
-    """Every file under src/tileops/manifest/ must set the manifest gate.
-
-    `validate-manifest` is the only job that runs the validator, and it is gated on
-    this arm. A file the arm misses skips the job silently — there is no failing
-    check to read, just an absent one. `scripts/validate_manifest.py` imports
-    `shape_rules` and `dtype_rules` at module scope, so those decide what the
-    validator accepts and belong to the gate as much as the YAML does.
-    """
+    """`validate-manifest` is the only job that runs the validator and is gated on
+    this arm, so a file the arm misses leaves no failing check to read — just an
+    absent one."""
     import re
 
     import yaml
@@ -394,14 +382,9 @@ NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
 
 
 def test_reclaim_defers_to_an_in_flight_nightly() -> None:
-    """The destructive cache trim must not run while nightly holds the same cache.
-
-    `sentinel-repair` removes any atomic cache subdir without its sentinel, and an
-    autotune run mid-write is indistinguishable from a crashed one, so a concurrent
-    trim deletes work nightly is doing. The schedule alone cannot separate them —
-    nightly may run to its declared ceiling — so the gate has to be a guard, and it
-    has to fail closed when the API cannot answer.
-    """
+    """A concurrent trim deletes work nightly is doing: `sentinel-repair` cannot tell
+    an autotune run mid-write from a crashed one. Nightly may run to its declared
+    ceiling, so the separation has to be a guard, and it has to fail closed."""
     import yaml
 
     maint = yaml.safe_load(MAINTENANCE_WORKFLOW.read_text())
@@ -422,3 +405,79 @@ def test_reclaim_defers_to_an_in_flight_nightly() -> None:
         "guard must be able to report an active nightly"
     )
     assert '-z "$active"' in guard["run"], "guard must fail closed when the query fails"
+
+
+# gpu-smoke required-check evaluation
+
+
+def _required_check_loop() -> str:
+    """The loop that turns preflight check-runs into pending / failed / satisfied."""
+    script = _policy_script_of("ci-prereq", "check")
+    start = script.index('for check_name in "${required_checks[@]}"; do')
+    # YAML strips the block scalar's common indentation, so the loop's own
+    # indentation is whatever survives, not the column it occupies in the file.
+    indent = script[:start].rpartition("\n")[2]
+    end = script.index(f"\n{indent}done", start)
+    return script[start:end]
+
+
+def _policy_script_of(job: str, step_id: str) -> str:
+    import yaml
+
+    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
+    step = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == step_id)
+    return step["run"]
+
+
+def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
+    """Run the workflow's own loop over synthetic check-runs."""
+    import json
+
+    checks_json = json.dumps(
+        {"check_runs": [{"name": n, "status": s, "conclusion": c, "id": i} for n, s, c, i in runs]}
+    )
+    harness = f"""
+    checks_json={json.dumps(checks_json)}
+    latest_checks=$(echo "$checks_json" | jq '.check_runs | group_by(.name) | map(max_by(.id))')
+    required_checks=(pre-commit gitleaks actionlint)
+    pending="false"
+    failed=""
+    {_required_check_loop()}
+    done
+    echo "$pending $failed"
+    """
+    out = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, check=True
+    ).stdout.split()
+    return out[0], (out[1] if len(out) > 1 else "")
+
+
+def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
+    """Blocking on a skipped run burned the 900s deadline and skipped GPU smoke with
+    "Timed out" in the log, so a PR could reach ready with GPU smoke never having
+    run. A skip with no prior success must still fail closed."""
+    ok = [("pre-commit", "completed", "success", 10), ("gitleaks", "completed", "success", 11)]
+    third = ("actionlint", "completed", "success", 12)
+
+    validated_then_skipped = [
+        *ok,
+        third,
+        ("pre-commit", "completed", "skipped", 20),
+        ("gitleaks", "completed", "skipped", 21),
+        ("actionlint", "completed", "skipped", 22),
+    ]
+    assert _evaluate_checks(validated_then_skipped) == ("false", "")
+
+    never_validated = [
+        ("pre-commit", "completed", "skipped", 20),
+        ("gitleaks", "completed", "skipped", 21),
+        ("actionlint", "completed", "skipped", 22),
+    ]
+    assert _evaluate_checks(never_validated) == ("true", "")
+
+    assert _evaluate_checks([*ok, third][:2]) == ("true", "")  # actionlint absent
+    assert _evaluate_checks([("pre-commit", "in_progress", "", 20), *ok[1:], third]) == ("true", "")
+    assert _evaluate_checks([("pre-commit", "completed", "failure", 20), *ok[1:], third]) == (
+        "false",
+        "pre-commit",
+    )

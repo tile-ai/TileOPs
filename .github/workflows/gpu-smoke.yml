@@ -60,7 +60,20 @@ jobs:
             pending="false"
             failed=""
 
+            # Satisfied means "some run succeeded on this SHA", not "the newest
+            # run did": preflight skips these jobs once the SHA is validated, so
+            # the skipped run is newer than the success it stands for. A skip with
+            # no prior success stays pending and fails closed. Preferring an older
+            # success to a newer failure is safe here — this gate only decides
+            # whether to spend GPU time, and the check blocks the merge on its own.
             for check_name in "${required_checks[@]}"; do
+              succeeded=$(echo "$checks_json" | jq -r --arg name "$check_name" '
+                [.check_runs[] | select(.name == $name and .conclusion == "success")] | length
+              ')
+              if (( succeeded > 0 )); then
+                continue
+              fi
+
               status=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
                 map(select(.name == $name)) | first | .status // ""
               ')
@@ -68,20 +81,13 @@ jobs:
                 map(select(.name == $name)) | first | .conclusion // ""
               ')
 
-              if [[ -z "$status" || "$status" != "completed" ]]; then
+              if [[ "$status" != "completed" || "$conclusion" == "skipped" ]]; then
                 pending="true"
                 continue
               fi
 
-              if [[ "$conclusion" == "skipped" ]]; then
-                pending="true"
-                continue
-              fi
-
-              if [[ "$conclusion" != "success" ]]; then
-                failed="$check_name"
-                break
-              fi
+              failed="$check_name"
+              break
             done
 
             title_status=$(echo "$latest_checks" | jq -r '
