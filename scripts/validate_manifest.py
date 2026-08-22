@@ -453,28 +453,38 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
     return errors
 
 
-# A case id ends with the dtype the case runs, so a label spelling one renders it
-# twice. Both spellings of each dtype are listed, since labels use the short one.
-_DTYPE_LABEL_TOKENS = {
-    "float16": ("fp16", "f16", "float16"),
-    "bfloat16": ("bf16", "bfloat16"),
-    "float32": ("fp32", "f32", "float32"),
-    "float64": ("fp64", "f64", "float64"),
-    "float8_e4m3fn": ("fp8", "e4m3"),
-    "float8_e5m2": ("e5m2",),
-    "int8": ("int8",),
-    "int32": ("int32",),
-    "int64": ("int64",),
-}
+def _dtype_label_tokens(dtype: str) -> set[str]:
+    """How a label could spell *dtype*: the name itself and its short forms.
+
+    Derived rather than tabulated, so a dtype the manifest gains later is covered
+    without editing this: ``bfloat16`` yields ``bf16`` / ``f16`` / ``bfloat16``,
+    and ``float8_e4m3fn`` also yields its sub-format ``e4m3fn`` and ``e4m3``.
+    """
+    tokens = {dtype}
+    m = re.fullmatch(r"(b?float)(\d+)(?:_(\w+))?", dtype)
+    if m:
+        kind, bits, sub = m.groups()
+        tokens |= {f"{'bf' if kind == 'bfloat' else 'fp'}{bits}", f"f{bits}", f"{kind}{bits}"}
+        if sub:
+            tokens |= {sub, sub.removesuffix("fn")}
+    m = re.fullmatch(r"(u?int)(\d+)", dtype)
+    if m:
+        tokens.add(f"{'u' if dtype.startswith('u') else ''}i{m.group(2)}")
+    return {tok for tok in tokens if tok}
 
 
 def _label_names_its_own_dtype(label: str, dtypes: list) -> str | None:
-    """The dtype token a label repeats from its own ``dtypes``, if any."""
+    """The dtype token a label repeats from its own ``dtypes``, if any.
+
+    A case id ends with the dtype the case runs, so a label spelling one renders
+    it twice. Labels use the short spelling, the manifest the long one, and both
+    are checked.
+    """
     for dtype in dtypes:
         if not isinstance(dtype, str):
             continue
-        for token in _DTYPE_LABEL_TOKENS.get(dtype, ()):
-            if re.search(rf"(?<![a-z0-9]){token}(?![a-z0-9])", label):
+        for token in sorted(_dtype_label_tokens(dtype), key=len, reverse=True):
+            if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", label):
                 return token
     return None
 

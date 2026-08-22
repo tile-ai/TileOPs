@@ -31,15 +31,28 @@ _SHAPE_KEYS = (
 )
 
 
+def _one_row_per_shape(workloads: list[dict]) -> list[dict]:
+    """The rows this bench measures: one per shape.
+
+    ``FP8LightningIndexerWorkload.gen_inputs`` emits bf16 and the op quantizes
+    inside, so two rows differing only in ``dtypes`` are one measurement.
+    """
+    seen, rows = set(), []
+    for w in workloads:
+        shape = tuple(str(w[key]) for key in _SHAPE_KEYS)
+        if shape in seen:
+            continue
+        seen.add(shape)
+        rows.append(w)
+    return rows
+
+
 @pytest.mark.parametrize(
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits",
     workload_params(
-        load_workloads(_FP8_LIGHTNING_INDEXER_OP),
+        _one_row_per_shape(load_workloads(_FP8_LIGHTNING_INDEXER_OP)),
         fields(*_SHAPE_KEYS),
         smoke_first=True,
-        # gen_inputs emits bf16 and the op quantizes inside, so the dtype rows
-        # of one shape are one measurement.
-        dedupe_on=_SHAPE_KEYS,
     ),
 )
 def test_fp8_lightning_indexer_bench(

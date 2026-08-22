@@ -214,7 +214,6 @@ def workload_params(
     build_args: "Callable[[dict, torch.dtype], tuple]",
     *,
     smoke_first: bool = False,
-    dedupe_on: "tuple[str, ...] | None" = None,
     marks: "Callable[[dict, torch.dtype, int], tuple] | None" = None,
 ) -> list:
     """The one place a manifest workload becomes a pytest case.
@@ -229,31 +228,19 @@ def workload_params(
         build_args: ``(row, dtype) -> positional args`` for one case.
         smoke_first: Mark the first row's cases ``smoke`` and the rest ``full``.
         marks: ``(row, dtype, row_index) -> marks`` when a case's marks depend on
-            its dtype; it replaces *smoke_first* for the rows it is given.
-        dedupe_on: Row keys that identify a measurement. A row repeating an
-            earlier row's values under these keys is dropped, for a bench whose
-            workload generator makes the dtype rows one measurement.
+            its dtype. A row carrying ``bench_skip_reason`` is skipped either way.
     """
     params: list = []
-    seen: set = set()
-    rows = 0
-    for w in workloads:
-        if dedupe_on is not None:
-            identity = tuple(str(w.get(k)) for k in dedupe_on)
-            if identity in seen:
-                continue
-            seen.add(identity)
-        row_marks: tuple = ()
-        if reason := w.get("bench_skip_reason"):
-            row_marks = (pytest.mark.skip(reason=reason),)
-        elif smoke_first:
-            row_marks = (pytest.mark.smoke if rows == 0 else pytest.mark.full,)
-        index = rows
-        rows += 1
+    for index, w in enumerate(workloads):
+        # A row the manifest says to skip is skipped whatever else decides marks.
+        skip = (
+            (pytest.mark.skip(reason=w["bench_skip_reason"]),) if w.get("bench_skip_reason") else ()
+        )
+        smoke = (pytest.mark.smoke if index == 0 else pytest.mark.full,) if smoke_first else ()
         label = w.get("label", "manifest")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            case_marks = row_marks if marks is None else tuple(marks(w, dtype, index))
+            case_marks = skip or (tuple(marks(w, dtype, index)) if marks else smoke)
             params.append(
                 pytest.param(
                     *build_args(w, dtype),
