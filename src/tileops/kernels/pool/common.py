@@ -3,7 +3,7 @@ from typing import Any, Callable, ClassVar, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 
 
 def pool_output_dim(
@@ -100,7 +100,7 @@ class AdaptivePool2dKernelBase(Kernel):
         ]
 
     def forward(self, x: torch.Tensor):
-        require_cuda(self, x=x)
+        self._require_cuda(x=x)
         return type(self)._dispatch(
             self.n,
             self.c_in,

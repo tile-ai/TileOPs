@@ -176,7 +176,9 @@ def _where_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(condition.shape), tuple(input.shape), tuple(other.shape))
-    return input.new_empty(shapes["output"], dtype=resolve_output_dtype("WhereFwdOp", input.dtype))
+    return input.new_empty(
+        shapes["output"], dtype=resolve_output_dtype(WhereFwdOp.__name__, input.dtype)
+    )
 
 
 WhereFwdOp._wrapped = _where_fwd

@@ -22,7 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -555,7 +555,7 @@ class LogSumExpKernel(Kernel):
         Raises:
             ValueError: *x* is not on a CUDA device.
         """
-        require_cuda(self, x=x)
+        self._require_cuda(x=x)
         in_shape = tuple(x.shape)
         y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)

@@ -18,7 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
@@ -367,7 +367,7 @@ class LogicalReduceKernel(Kernel):
         Raises:
             ValueError: *x* is not on a CUDA device.
         """
-        require_cuda(self, x=x)
+        self._require_cuda(x=x)
         in_shape = tuple(x.shape)
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)

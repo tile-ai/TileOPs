@@ -334,7 +334,7 @@ def _lerp_tensor_fwd_fake(
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(input.shape), tuple(end.shape), tuple(weight.shape))
     return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype("LerpTensorFwdOp", input.dtype)
+        shapes["output"], dtype=resolve_output_dtype(LerpTensorFwdOp.__name__, input.dtype)
     )
 
 

@@ -31,7 +31,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
@@ -274,7 +274,7 @@ class GroupNormKernel(Kernel):
         Raises:
             ValueError: An input is not on a CUDA device, or the affine pair is missing.
         """
-        require_cuda(self, x=x, weight=weight, bias=bias)
+        self._require_cuda(x=x, weight=weight, bias=bias)
         if weight is None or bias is None:
             raise ValueError(
                 f"{type(self).__name__} applies a per-channel affine; weight and bias are "
@@ -445,7 +445,7 @@ class GroupNormNoAffineKernel(Kernel):
         Raises:
             ValueError: *x* is not on a CUDA device, or an affine tensor was passed.
         """
-        require_cuda(self, x=x)
+        self._require_cuda(x=x)
         if weight is not None or bias is not None:
             raise ValueError(
                 f"{type(self).__name__} has no affine; GroupNormKernel serves the affine call."

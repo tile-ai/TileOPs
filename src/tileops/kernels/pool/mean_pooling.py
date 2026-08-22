@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MeanPoolingFwdKernel"]
 
@@ -250,7 +250,7 @@ class MeanPoolingFwdKernel(Kernel):
     def forward(
         self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
     ) -> torch.Tensor:
-        require_cuda(self, x=x, offsets=offsets, indices=indices)
+        self._require_cuda(x=x, offsets=offsets, indices=indices)
         return _mean_pooling_wrapped_kernel(
             self.batch_size,
             self.seq_len,

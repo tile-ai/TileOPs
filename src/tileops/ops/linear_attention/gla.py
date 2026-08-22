@@ -5,7 +5,8 @@ import torch
 from tileops.kernels.gla import GLABwdKernel, GLAFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op, check_tensor_shape
+from .._validation import check_tensor_shape
+from ..op_base import Op
 
 __all__ = ["GLABwdOp", "GLAFwdOp"]
 
