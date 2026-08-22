@@ -36,9 +36,9 @@ EngramGateConvFwdOp:
 
   workloads:
   # d is kept 256-aligned so runtime padding does not distort roofline.
-  - {M: 1, seq_len: 32, d: 256, dtype: float16, dtypes: [float16], label: "fwd-b1-s32-d256-fp16"}
-  - {M: 2, seq_len: 64, d: 512, dtype: float16, dtypes: [float16], label: "fwd-b2-s64-d512-fp16"}
-  - {M: 1, seq_len: 128, d: 256, dtype: bfloat16, dtypes: [bfloat16], label: "fwd-b1-s128-d256-bf16"}
+  - {M: 1, seq_len: 32, d: 256, dtype: float16, dtypes: [float16], label: "fwd-b1-s32-d256"}
+  - {M: 2, seq_len: 64, d: 512, dtype: float16, dtypes: [float16], label: "fwd-b2-s64-d512"}
+  - {M: 1, seq_len: 128, d: 256, dtype: bfloat16, dtypes: [bfloat16], label: "fwd-b1-s128-d256"}
 
   roofline:
     func: "tileops.perf.formulas.engram_gate_conv_fwd_roofline"
@@ -96,9 +96,9 @@ EngramGateConvBwdOp:
     - "conv_w.shape == (4, d)"
 
   workloads:
-  - {M: 1, seq_len: 32, d: 256, dtype: float16, dtypes: [float16], label: "bwd-b1-s32-d256-fp16"}
-  - {M: 2, seq_len: 64, d: 512, dtype: float16, dtypes: [float16], label: "bwd-b2-s64-d512-fp16"}
-  - {M: 1, seq_len: 128, d: 256, dtype: bfloat16, dtypes: [bfloat16], label: "bwd-b1-s128-d256-bf16"}
+  - {M: 1, seq_len: 32, d: 256, dtype: float16, dtypes: [float16], label: "bwd-b1-s32-d256"}
+  - {M: 2, seq_len: 64, d: 512, dtype: float16, dtypes: [float16], label: "bwd-b2-s64-d512"}
+  - {M: 1, seq_len: 128, d: 256, dtype: bfloat16, dtypes: [bfloat16], label: "bwd-b1-s128-d256"}
 
   roofline:
     func: "tileops.perf.formulas.engram_gate_conv_bwd_roofline"
@@ -148,9 +148,9 @@ EngramDecodeFwdOp:
     - "d % 256 == 0"
 
   workloads:
-  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, dtype: float16, dtypes: [float16], label: "decode-b1-dmem512-d256-fp16"}
-  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, dtype: float16, dtypes: [float16], label: "decode-b4-dmem1024-d512-fp16"}
-  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, dtype: bfloat16, dtypes: [bfloat16], label: "decode-b8-dmem512-d256-bf16"}
+  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, dtype: float16, dtypes: [float16], label: "decode-b1-dmem512-d256"}
+  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, dtype: float16, dtypes: [float16], label: "decode-b4-dmem1024-d512"}
+  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, dtype: bfloat16, dtypes: [bfloat16], label: "decode-b8-dmem512-d256"}
 
   roofline:
     func: "tileops.perf.formulas.engram_decode_roofline"
