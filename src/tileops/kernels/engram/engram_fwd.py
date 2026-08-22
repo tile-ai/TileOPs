@@ -193,7 +193,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("top::engram_gate_conv_fwd", mutates_args=())
+@torch.library.custom_op("tileops::engram_gate_conv_fwd", mutates_args=())
 def _engram_gate_conv_fwd_wrapped(
     M: int,
     seq_len: int,

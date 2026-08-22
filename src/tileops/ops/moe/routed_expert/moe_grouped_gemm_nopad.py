@@ -42,7 +42,7 @@ class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_grouped_gemm_nopad_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_grouped_gemm_nopad_fwd",)
 
     def __init__(
         self,
@@ -122,7 +122,7 @@ class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
         return _moe_grouped_gemm_nopad_fwd(a, b, true_sizes, true_offsets, self._instance_key)
 
 
-@torch.library.custom_op("top::moe_grouped_gemm_nopad_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_grouped_gemm_nopad_fwd", mutates_args=())
 def _moe_grouped_gemm_nopad_fwd(
     a: torch.Tensor,
     b: torch.Tensor,

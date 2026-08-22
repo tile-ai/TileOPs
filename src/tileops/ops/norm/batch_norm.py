@@ -73,7 +73,7 @@ class BatchNormFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_batch_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_batch_norm_fwd",)
 
     def __init__(
         self,
@@ -256,7 +256,7 @@ class BatchNormBwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_batch_norm_bwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_batch_norm_bwd",)
 
     def __init__(
         self,
@@ -405,7 +405,7 @@ class BatchNormBwdOp(Op):
 
 
 @torch.library.custom_op(
-    "top::norm_batch_norm_fwd",
+    "tileops::norm_batch_norm_fwd",
     mutates_args=("running_mean", "running_var"),
 )
 def _batch_norm_fwd_wrapped(
@@ -440,7 +440,7 @@ def _batch_norm_fwd_fake(
     return x.new_empty(shapes["output"])
 
 
-@torch.library.custom_op("top::norm_batch_norm_bwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_batch_norm_bwd", mutates_args=())
 def _batch_norm_bwd_wrapped(
     grad_out: torch.Tensor,
     x: torch.Tensor,

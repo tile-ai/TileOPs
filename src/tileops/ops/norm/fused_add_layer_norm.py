@@ -46,7 +46,7 @@ class FusedAddLayerNormFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_fused_add_layer_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_fused_add_layer_norm_fwd",)
 
     def __init__(
         self,
@@ -157,7 +157,7 @@ class FusedAddLayerNormFwdOp(Op):
         return y, residual_out
 
 
-@torch.library.custom_op("top::norm_fused_add_layer_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_fused_add_layer_norm_fwd", mutates_args=())
 def _norm_fused_add_layer_norm_fwd(
     x: torch.Tensor,
     residual: torch.Tensor,

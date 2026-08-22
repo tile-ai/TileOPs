@@ -52,7 +52,7 @@ def _register_rope_custom_op(op_cls):
     """
     op_name = op_cls._op_name
 
-    @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
+    @torch.library.custom_op(f"tileops::rope_{op_name}", mutates_args=())
     def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         instance = get_instance(instance_key)
         return instance._eager_forward(x)
@@ -68,7 +68,7 @@ def _register_rope_position_ids_custom_op(op_cls):
     """Register a RoPE op that consumes explicit packed position ids."""
     op_name = op_cls._op_name
 
-    @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
+    @torch.library.custom_op(f"tileops::rope_{op_name}", mutates_args=())
     def _wrapped(x: torch.Tensor, position_ids: torch.Tensor, instance_key: str) -> torch.Tensor:
         instance = get_instance(instance_key)
         return instance._eager_forward(x, position_ids)

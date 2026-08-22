@@ -314,7 +314,7 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
 _require_shape_inference(LerpTensorFwdOp)
 
 
-@torch.library.custom_op("top::elementwise_lerp_tensor", mutates_args=())
+@torch.library.custom_op("tileops::elementwise_lerp_tensor", mutates_args=())
 def _lerp_tensor_fwd(
     input: torch.Tensor,
     end: torch.Tensor,
@@ -339,4 +339,4 @@ def _lerp_tensor_fwd_fake(
 
 
 LerpTensorFwdOp._wrapped = _lerp_tensor_fwd
-LerpTensorFwdOp.compile_op_names = ("top::elementwise_lerp_tensor",)
+LerpTensorFwdOp.compile_op_names = ("tileops::elementwise_lerp_tensor",)

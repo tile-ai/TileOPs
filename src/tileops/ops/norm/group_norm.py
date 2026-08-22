@@ -64,7 +64,7 @@ class GroupNormFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_group_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_group_norm_fwd",)
 
     def __init__(
         self,
@@ -214,7 +214,7 @@ class GroupNormFwdOp(Op):
         return kernel(x, weight, bias)
 
 
-@torch.library.custom_op("top::norm_group_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_group_norm_fwd", mutates_args=())
 def _norm_group_norm_fwd(
     x: torch.Tensor,
     weight: Optional[torch.Tensor],

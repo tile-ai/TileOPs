@@ -605,7 +605,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
     return _fft_lut_func
 
 
-@torch.library.custom_op("top::fft_c2c_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::fft_c2c_wrapped_kernel", mutates_args=())
 def _fft_c2c_wrapped_kernel(
     n: int,
     batch_size: int,

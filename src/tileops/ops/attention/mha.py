@@ -36,7 +36,7 @@ class MultiHeadAttentionFwdOp(Op):
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::mha_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::mha_fwd",)
 
     def __init__(
         self,
@@ -358,7 +358,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 # torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
 
 
-@torch.library.custom_op("top::mha_fwd", mutates_args=())
+@torch.library.custom_op("tileops::mha_fwd", mutates_args=())
 def _mha_fwd(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, instance_key: str) -> torch.Tensor:
     return get_instance(instance_key)._eager_forward(q, k, v)
 

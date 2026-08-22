@@ -157,7 +157,7 @@ def _nsa_fwd_varlen_kernel(
     return _nsa_fwd_varlen_func
 
 
-@torch.library.custom_op("top::nsa_fwd_varlen_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::nsa_fwd_varlen_wrapped_kernel", mutates_args=())
 def _nsa_fwd_varlen_wrapped_kernel(
     batch: int,
     heads: int,

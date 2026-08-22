@@ -229,7 +229,7 @@ def _conv1d_l_out(
 
 class Conv1dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::conv_conv1d_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv1d_fwd",)
 
     def __init__(
         self,
@@ -561,7 +561,7 @@ def _conv_out_dim(
 
 class Conv2dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::conv_conv2d_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv2d_fwd",)
 
     def __init__(
         self,
@@ -963,7 +963,7 @@ def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
 
 class Conv3dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::conv_conv3d_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv3d_fwd",)
 
     def __init__(
         self,
@@ -1355,7 +1355,7 @@ class Conv3dFwdOp(Op):
 # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
 
 
-@torch.library.custom_op("top::conv_conv1d_fwd", mutates_args=())
+@torch.library.custom_op("tileops::conv_conv1d_fwd", mutates_args=())
 def _conv1d_fwd(
     input: torch.Tensor,
     weight: torch.Tensor,
@@ -1381,7 +1381,7 @@ def _conv1d_fwd_fake(
     return input.new_empty(shapes["output"])
 
 
-@torch.library.custom_op("top::conv_conv2d_fwd", mutates_args=())
+@torch.library.custom_op("tileops::conv_conv2d_fwd", mutates_args=())
 def _conv2d_fwd(
     input: torch.Tensor,
     weight: torch.Tensor,
@@ -1407,7 +1407,7 @@ def _conv2d_fwd_fake(
     return input.new_empty(shapes["output"])
 
 
-@torch.library.custom_op("top::conv_conv3d_fwd", mutates_args=())
+@torch.library.custom_op("tileops::conv_conv3d_fwd", mutates_args=())
 def _conv3d_fwd(
     input: torch.Tensor,
     weight: torch.Tensor,

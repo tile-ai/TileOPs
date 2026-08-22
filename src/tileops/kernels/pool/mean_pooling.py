@@ -79,7 +79,7 @@ def _mean_pooling_kernel(
     return _mean_pooling_func
 
 
-@torch.library.custom_op("top::mean_pooling_fwd_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::mean_pooling_fwd_wrapped_kernel", mutates_args=())
 def _mean_pooling_wrapped_kernel(
     batch_size: int,
     seq_len: int,

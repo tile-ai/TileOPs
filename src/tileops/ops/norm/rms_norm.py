@@ -63,7 +63,7 @@ class RMSNormFwdOp(Op):
     DEFAULT_EPS = 1.0e-6
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_rms_norm_fwd",)
 
     def __init__(
         self,
@@ -170,7 +170,7 @@ class RMSNormFwdOp(Op):
 # src/tileops/ops/compile_boundary.py.
 
 
-@torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_rms_norm_fwd", mutates_args=())
 def _rms_norm_fwd(
     x: torch.Tensor,
     weight: torch.Tensor,

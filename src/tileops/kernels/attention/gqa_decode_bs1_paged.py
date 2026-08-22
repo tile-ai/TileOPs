@@ -118,7 +118,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     return _func
 
 
-@torch.library.custom_op("top::gqa_decode_paged_bs1_ctx_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_paged_bs1_ctx_op", mutates_args=())
 def _gqa_decode_paged_bs1_ctx_op(
     batch: int,
     heads: int,

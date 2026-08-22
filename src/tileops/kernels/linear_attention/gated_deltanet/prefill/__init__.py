@@ -2,9 +2,9 @@
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
-from .tilelang_compat import install_gemm_v1_compat
+from .gemm_lowering import install_gemm_v1
 
-install_gemm_v1_compat()
+install_gemm_v1()
 
 from .cp_fwd import correct_initial_states, get_warmup_chunks  # noqa: E402
 from .fused_fwd import fused_gdr_fwd  # noqa: E402

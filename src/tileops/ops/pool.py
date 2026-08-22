@@ -1354,17 +1354,17 @@ def _register_pool_operator(op_cls: type, name: str) -> None:
 
 
 for _op_cls, _op_name in (
-    (AvgPool1dFwdOp, "top::pool_avg_pool1d_fwd"),
-    (AvgPool2dFwdOp, "top::pool_avg_pool2d_fwd"),
-    (AvgPool3dFwdOp, "top::pool_avg_pool3d_fwd"),
-    (MaxPool1dFwdOp, "top::pool_max_pool1d_fwd"),
-    (MaxPool2dFwdOp, "top::pool_max_pool2d_fwd"),
-    (MaxPool3dFwdOp, "top::pool_max_pool3d_fwd"),
-    (MaxPool1dIndicesFwdOp, "top::pool_max_pool1d_indices_fwd"),
-    (MaxPool2dIndicesFwdOp, "top::pool_max_pool2d_indices_fwd"),
-    (MaxPool3dIndicesFwdOp, "top::pool_max_pool3d_indices_fwd"),
-    (AdaptiveAvgPool2dFwdOp, "top::pool_adaptive_avg_pool2d_fwd"),
-    (AdaptiveMaxPool2dFwdOp, "top::pool_adaptive_max_pool2d_fwd"),
-    (AdaptiveMaxPool2dIndicesFwdOp, "top::pool_adaptive_max_pool2d_indices_fwd"),
+    (AvgPool1dFwdOp, "tileops::pool_avg_pool1d_fwd"),
+    (AvgPool2dFwdOp, "tileops::pool_avg_pool2d_fwd"),
+    (AvgPool3dFwdOp, "tileops::pool_avg_pool3d_fwd"),
+    (MaxPool1dFwdOp, "tileops::pool_max_pool1d_fwd"),
+    (MaxPool2dFwdOp, "tileops::pool_max_pool2d_fwd"),
+    (MaxPool3dFwdOp, "tileops::pool_max_pool3d_fwd"),
+    (MaxPool1dIndicesFwdOp, "tileops::pool_max_pool1d_indices_fwd"),
+    (MaxPool2dIndicesFwdOp, "tileops::pool_max_pool2d_indices_fwd"),
+    (MaxPool3dIndicesFwdOp, "tileops::pool_max_pool3d_indices_fwd"),
+    (AdaptiveAvgPool2dFwdOp, "tileops::pool_adaptive_avg_pool2d_fwd"),
+    (AdaptiveMaxPool2dFwdOp, "tileops::pool_adaptive_max_pool2d_fwd"),
+    (AdaptiveMaxPool2dIndicesFwdOp, "tileops::pool_adaptive_max_pool2d_indices_fwd"),
 ):
     _register_pool_operator(_op_cls, _op_name)

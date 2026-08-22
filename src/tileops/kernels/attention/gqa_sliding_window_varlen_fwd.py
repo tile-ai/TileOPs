@@ -317,7 +317,9 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_varlen_wgmma_pipelined_func
 
 
-@torch.library.custom_op("top::gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel", mutates_args=())
+@torch.library.custom_op(
+    "tileops::gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel", mutates_args=()
+)
 def _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel(
     batch: int,
     heads: int,

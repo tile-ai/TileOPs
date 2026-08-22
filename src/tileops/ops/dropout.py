@@ -141,7 +141,7 @@ class DropoutFwdOp(Op):
 # torch.compile registration
 
 
-@torch.library.custom_op("top::dropout", mutates_args=())
+@torch.library.custom_op("tileops::dropout", mutates_args=())
 def _wrapped_dropout(x: torch.Tensor, instance_key: str) -> torch.Tensor:
     instance = get_instance(instance_key)
     return instance._eager_forward(x)

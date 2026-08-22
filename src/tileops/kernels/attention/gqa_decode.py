@@ -309,7 +309,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
 # Custom ops (torch.compile compatible wrappers)
 
 
-@torch.library.custom_op("top::gqa_decode_no_split_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_no_split_op", mutates_args=())
 def _gqa_decode_no_split_op(
     batch: int,
     heads: int,
@@ -355,7 +355,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::gqa_decode_split_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_split_op", mutates_args=())
 def _gqa_decode_split_op(
     batch: int,
     heads: int,

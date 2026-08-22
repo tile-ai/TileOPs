@@ -66,7 +66,7 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
     return _mhc_func
 
 
-@torch.library.custom_op("top::mhc_post_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::mhc_post_wrapped_kernel", mutates_args=())
 def _mhc_post_wrapped_kernel(
     batch: int,
     n_expand: int,

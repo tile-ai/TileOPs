@@ -225,7 +225,7 @@ def _gqa_prefill_varlen_fwd_kernel(
     return _gqa_prefill_varlen_fwd_func
 
 
-@torch.library.custom_op("top::gqa_prefill_varlen_fwd_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gqa_prefill_varlen_fwd_wrapped_kernel", mutates_args=())
 def _gqa_prefill_varlen_fwd_wrapped_kernel(
     batch: int,
     heads: int,

@@ -163,7 +163,7 @@ def _register_unary_custom_op(op_cls):
         op_cls: The Op subclass to register (must have ``_op_name``).
     """
     _require_shape_inference(op_cls)
-    op_name = f"top::elementwise_unary_{op_cls._op_name}"
+    op_name = f"tileops::elementwise_unary_{op_cls._op_name}"
 
     @torch.library.custom_op(op_name, mutates_args=())
     def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
@@ -197,7 +197,7 @@ def _register_unary_inplace_custom_op(op_cls):
     correctly. Sets ``op_cls._wrapped_inplace`` for ``forward()`` to
     dispatch through.
     """
-    op_name = f"top::elementwise_unary_{op_cls._op_name}_inplace"
+    op_name = f"tileops::elementwise_unary_{op_cls._op_name}_inplace"
 
     @torch.library.custom_op(op_name, mutates_args=("x",))
     def _wrapped_inplace(x: torch.Tensor, instance_key: str) -> None:
@@ -218,7 +218,7 @@ def _register_binary_custom_op(op_cls):
         op_cls: The Op subclass to register.
     """
     _require_shape_inference(op_cls)
-    op_name = f"top::elementwise_binary_{op_cls._op_name}"
+    op_name = f"tileops::elementwise_binary_{op_cls._op_name}"
 
     @torch.library.custom_op(op_name, mutates_args=())
     def _wrapped(a: torch.Tensor, b: torch.Tensor, instance_key: str) -> torch.Tensor:
@@ -242,7 +242,7 @@ def _register_fused_gated_custom_op(op_cls):
         op_cls: The Op subclass to register.
     """
     _require_shape_inference(op_cls)
-    op_name = f"top::elementwise_fused_gated_{op_cls._op_name}"
+    op_name = f"tileops::elementwise_fused_gated_{op_cls._op_name}"
 
     @torch.library.custom_op(op_name, mutates_args=())
     def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:

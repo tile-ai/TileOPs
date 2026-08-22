@@ -40,8 +40,8 @@ class MoeUnpermuteFwdOp(Op):
     #: ``relu`` / ``relu_``: ``forward`` picks one, and a test asserts the graph holds
     #: nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = (
-        "top::moe_unpermute_fwd",
-        "top::moe_unpermute_fwd_inplace",
+        "tileops::moe_unpermute_fwd",
+        "tileops::moe_unpermute_fwd_inplace",
     )
 
     def __init__(
@@ -136,7 +136,7 @@ class MoeUnpermuteFwdOp(Op):
         )
 
 
-@torch.library.custom_op("top::moe_unpermute_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_unpermute_fwd", mutates_args=())
 def _moe_unpermute_fwd(
     mm2_pad: torch.Tensor,
     fwd_idx: torch.Tensor,
@@ -161,7 +161,7 @@ def _moe_unpermute_fwd_fake(
     return mm2_pad.new_empty(shapes["output"])
 
 
-@torch.library.custom_op("top::moe_unpermute_fwd_inplace", mutates_args=("out",))
+@torch.library.custom_op("tileops::moe_unpermute_fwd_inplace", mutates_args=("out",))
 def _moe_unpermute_fwd_inplace(
     mm2_pad: torch.Tensor,
     fwd_idx: torch.Tensor,

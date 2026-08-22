@@ -154,7 +154,7 @@ def _da_cumsum_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("top::da_cumsum_fwd", mutates_args=())
+@torch.library.custom_op("tileops::da_cumsum_fwd", mutates_args=())
 def _da_cumsum_fwd_wrapped(
     batch: int,
     num_chunks: int,
