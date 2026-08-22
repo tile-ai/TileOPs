@@ -22,7 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -30,6 +30,8 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     compute_tile_n,
     device_smem_budget,
+    restore_reduced,
+    rows_for_axes,
 )
 
 # These two kernels bake tile_n in at build time and default to the wider
@@ -224,30 +226,6 @@ def _compute_padded_cols(N: int, tile_n: int) -> int:
     return num_tiles * tile_n
 
 
-# custom_op wrappers for torch.compile compatibility
-
-
-@torch.library.custom_op("top::logsumexp_fwd", mutates_args=())
-def _logsumexp_fwd_wrapped(
-    M: int,
-    N: int,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    tile_n: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _logsumexp_kernel(M, N, dtype_str, tile_n)(block_m, threads)(x)
-
-
-@_logsumexp_fwd_wrapped.register_fake
-def _(M, N, dtype_str, block_m, threads, tile_n, x):
-    return torch.empty((M,), dtype=x.dtype, device=x.device)
-
-
-# Kernel class
-
-
 def _elem_bytes(dtype: torch.dtype) -> int:
     """Return bytes per element for the given dtype."""
     return torch.tensor([], dtype=dtype).element_size()
@@ -266,11 +244,17 @@ class LogSumExpKernel(Kernel):
     via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
     needed.
 
+    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; moving
+    those axes to the end, flattening to rows and shaping the result back are this
+    kernel's business, so both sides of the op/backend boundary speak the declared shape.
+
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        M: Rows the reduction leaves.
+        N: Elements each row reduces.
         op_kind: Must be "logsumexp" (kept for API consistency with SoftmaxKernel).
         dtype: Data type (float32, float16, or bfloat16).
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
         device_index: CUDA device index for shared memory budget query.
@@ -286,17 +270,21 @@ class LogSumExpKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind != "logsumexp":
             raise ValueError(f"Unsupported op_kind '{op_kind}'. Expected 'logsumexp'.")
         self.M = M
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
@@ -554,20 +542,25 @@ class LogSumExpKernel(Kernel):
                 )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the logsumexp kernel.
+        """Reduce *reduce_axes* of *x*.
 
-        Accepts an ``(M, N)`` tensor.  Boundary handling for non-aligned
-        ``N`` is performed inside the GPU kernel (masked loads + ``-inf``
-        fill), so no host-side ``F.pad`` is needed.
+        Args:
+            x: The tensor the op declares, contiguous, on a CUDA device. Boundary
+                handling for non-aligned ``N`` is performed inside the GPU kernel
+                (masked loads + ``-inf`` fill), so no host-side ``F.pad`` is needed.
+
+        Returns:
+            The reduced tensor.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
         """
-        tile_n = self._tile_n
+        require_cuda(self, x=x)
+        in_shape = tuple(x.shape)
+        y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
+        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
 
-        return _logsumexp_fwd_wrapped(
-            self.M,
-            self.N,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            tile_n,
-            x,
-        )
+    def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        program = _logsumexp_kernel(self.M, self.N, self.dtype_str, self._tile_n)
+        return program(self.config["block_m"], self.config["threads"])(x)

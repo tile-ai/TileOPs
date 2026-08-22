@@ -34,9 +34,8 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.manifest import load_manifest
-from tileops.manifest.dtype_rules import promote_int_to_float_ref, same_as_ref
 
+from .._output_dtype import resolve_output_dtype
 from ..compile_boundary import get_instance
 from ..op_base import Op
 
@@ -286,62 +285,6 @@ _PROMOTED_FLOAT_DTYPE = torch.float32
 
 
 @functools.lru_cache(maxsize=None)
-def _manifest_output_dtype_expr(op_class_name: str) -> str:
-    """Return the manifest ``signature.outputs`` dtype expression for an op.
-
-    Args:
-        op_class_name: Op class name, which is the manifest entry key.
-
-    Returns:
-        The declared dtype expression, e.g. ``"same_as(input)"`` or ``"bool"``.
-
-    Raises:
-        KeyError: If the manifest has no entry for *op_class_name*.
-        ValueError: If the entry declares other than exactly one output.
-    """
-    entry = load_manifest().get(op_class_name)
-    if entry is None:
-        raise KeyError(
-            f"{op_class_name} has no manifest entry; the output dtype is "
-            "declared under signature.outputs"
-        )
-    outputs = entry["signature"]["outputs"]
-    if len(outputs) != 1:
-        raise ValueError(
-            f"{op_class_name} declares {len(outputs)} outputs; the elementwise "
-            "bases resolve a single output dtype"
-        )
-    return next(iter(outputs.values()))["dtype"]
-
-
-def resolve_output_dtype(op_class_name: str, input_dtype: torch.dtype) -> torch.dtype:
-    """Resolve an op's output dtype from its manifest declaration.
-
-    Args:
-        op_class_name: Op class name, which is the manifest entry key.
-        input_dtype: Declared input dtype of the op instance.
-
-    Returns:
-        The output dtype. ``same_as(...)`` and dtype unions follow the input;
-        ``promote_int_to_float(...)`` promotes integral inputs to float32; a
-        bare dtype name resolves to that dtype.
-
-    Raises:
-        ValueError: If the declared expression names an unknown dtype.
-    """
-    expr = _manifest_output_dtype_expr(op_class_name)
-    if same_as_ref(expr) is not None or "|" in expr:
-        return input_dtype
-    if promote_int_to_float_ref(expr) is not None:
-        if input_dtype.is_floating_point:
-            return input_dtype
-        return _PROMOTED_FLOAT_DTYPE
-    resolved = getattr(torch, expr, None)
-    if not isinstance(resolved, torch.dtype):
-        raise ValueError(f"{op_class_name}: manifest output dtype {expr!r} is not a torch dtype")
-    return resolved
-
-
 def _require_one_device(op_name: str, **tensors: Optional[torch.Tensor]) -> None:
     """Refuse a call whose tensors are not all on one device.
 

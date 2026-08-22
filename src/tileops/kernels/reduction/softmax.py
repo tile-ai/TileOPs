@@ -23,7 +23,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -31,6 +31,8 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     compute_tile_n,
     device_smem_budget,
+    restore_same_shape,
+    rows_for_axes,
 )
 
 # These two kernels bake tile_n in at build time and default to the wider
@@ -487,9 +489,6 @@ def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
     return _softmax_kernel_tiled(M, N, op_kind, dtype, tile_n)
 
 
-# custom_op wrappers for torch.compile compatibility
-
-
 def _compute_padded_cols(N: int, tile_n: int) -> int:
     """Compute the total column count (may exceed N_padded for tiled path)."""
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -497,26 +496,6 @@ def _compute_padded_cols(N: int, tile_n: int) -> int:
         return N_padded
     num_tiles = (N_padded + tile_n - 1) // tile_n
     return num_tiles * tile_n
-
-
-@torch.library.custom_op("top::softmax_fwd", mutates_args=())
-def _softmax_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    tile_n: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _softmax_kernel(M, N, op_kind, dtype_str, tile_n)(block_m, threads)(x)
-
-
-@_softmax_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, block_m, threads, tile_n, x):
-    total_cols = _compute_padded_cols(N, tile_n)
-    return torch.empty((M, total_cols), dtype=x.dtype, device=x.device)
 
 
 # Kernel class
@@ -540,11 +519,16 @@ class SoftmaxKernel(Kernel):
     via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
     needed.
 
+    ``forward`` takes the tensor the op declares and normalizes over *norm_axis*; moving
+    that axis to the end, flattening to rows and putting the result back are this kernel's
+    business, so both sides of the op/backend boundary speak the declared shape.
+
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        M: Rows the normalization runs over — the product of every axis but *norm_axis*.
+        N: Length of the normalized axis.
         op_kind: One of "softmax", "log_softmax".
         dtype: Data type (float32, float16, or bfloat16).
+        norm_axis: Non-negative index of the axis the normalization runs over.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
         device_index: CUDA device index for shared memory budget query.
@@ -559,11 +543,12 @@ class SoftmaxKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        norm_axis: int,
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind not in ("softmax", "log_softmax"):
             raise ValueError(
                 f"Unsupported op_kind '{op_kind}'. Expected one of 'softmax', 'log_softmax'."
@@ -572,6 +557,7 @@ class SoftmaxKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.norm_axis = norm_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
@@ -849,28 +835,31 @@ class SoftmaxKernel(Kernel):
                 )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the softmax/log_softmax kernel.
+        """Normalize *x* over *norm_axis*.
 
         Args:
-            x: Input of shape ``(M, N)``. Boundary handling for non-aligned
-                ``N`` happens inside the GPU kernel (masked loads + ``-inf``
-                fill), so no host-side ``F.pad`` is needed.
+            x: The tensor the op declares, contiguous, on a CUDA device. Boundary
+                handling for non-aligned ``N`` happens inside the GPU kernel (masked
+                loads + ``-inf`` fill), so no host-side ``F.pad`` is needed.
 
         Returns:
-            Tensor of shape ``(M, N)``. The prim_func writes an
-            alignment-padded row; the surplus columns are trimmed here.
+            A tensor shaped like *x*.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
         """
-        tile_n = self._tile_n
+        require_cuda(self, x=x)
+        in_shape = tuple(x.shape)
+        axes = (self.norm_axis,)
+        y = self._normalize_rows(rows_for_axes(x, axes))
+        return restore_same_shape(y, in_shape, axes)
 
-        y = _softmax_fwd_wrapped(
-            self.M,
-            self.N,
-            self.op_kind,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            tile_n,
-            x,
-        )
+    def _normalize_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize the trailing axis of an ``(M, N)`` buffer.
 
+        The prim_func writes an alignment-padded row; the surplus columns are trimmed
+        here.
+        """
+        program = _softmax_kernel(self.M, self.N, self.op_kind, self.dtype_str, self._tile_n)
+        y = program(self.config["block_m"], self.config["threads"])(x)
         return y[:, : self.N] if y.shape[1] > self.N else y

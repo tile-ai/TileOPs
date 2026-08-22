@@ -2,13 +2,18 @@
 
 Provides reusable utility functions, constants, and T.macro factories
 used across all reduction sub-category kernels (sum, max, softmax,
-variance, prefix-scan, etc.).
+variance, prefix-scan, etc.), plus the row layout every one of them wants.
 
-This module must land before any sub-category kernel PR so that shared
-infrastructure is available from the start.
+A reduction kernel reduces the trailing axis of a 2-D ``(M, N)`` buffer, while an op
+declares an arbitrary-rank tensor and the axes to reduce; the permute and flatten between
+the two is a kernel's business, so both sides of the op/backend boundary speak the shapes
+the manifest declares. ``axes`` below is the sorted tuple of non-negative axis indices the
+reduction runs over — which forms an empty ``dim`` takes, and which ranks it may name, are
+the op's contract rather than a kernel's.
 """
 
 import itertools
+from math import prod
 
 import tilelang.language as T
 import torch
@@ -31,6 +36,9 @@ __all__ = [
     "make_softmax_epilogue",
     "make_welford_update",
     "reduce_column_alignment",
+    "restore_reduced",
+    "restore_same_shape",
+    "rows_for_axes",
     "tune_by_forward",
 ]
 
@@ -431,15 +439,32 @@ _SOFTMAX_KINDS = {"softmax", "log_softmax"}
 _SCAN_KINDS = {"sum", "prod"}
 
 
-def tune_by_forward(kernel, *probe_inputs, warmup: int = 10, rep: int = 10) -> None:
-    """Select the fastest candidate config by timing ``kernel.forward``.
+def tune_by_forward(
+    kernel,
+    *probe_inputs,
+    warmup: int = 10,
+    rep: int = 10,
+    forward=None,
+) -> None:
+    """Select the fastest candidate config by timing one call per candidate.
 
     The tiled reduction paths have no single ``self.kernel`` object for
     TileLang's autotuner to decorate — they dispatch through wrapped helper
-    functions — so each candidate is timed through ``forward`` instead.
+    functions — so each candidate is timed through a call instead.
     Leaves ``kernel.config`` set to the winner, or to ``default_config`` when
     the kernel declares no candidates.
+
+    Args:
+        kernel: The kernel whose ``config`` is being chosen.
+        probe_inputs: What to call with.
+        warmup: Untimed calls per candidate.
+        rep: Timed calls per candidate.
+        forward: What to call. Defaults to ``kernel.forward``. A kernel that reshapes
+            its input inside ``forward`` passes the row-level entry point instead, so the
+            probe is a ``(M, N)`` buffer and the timing excludes a config-independent
+            permute.
     """
+    call = kernel.forward if forward is None else forward
     configs = kernel.autotune_configs
     if not configs:
         kernel.config = kernel.default_config
@@ -450,14 +475,14 @@ def tune_by_forward(kernel, *probe_inputs, warmup: int = 10, rep: int = 10) -> N
     for cfg in configs:
         kernel.config = cfg
         for _ in range(warmup):
-            kernel.forward(*probe_inputs)
+            call(*probe_inputs)
         torch.cuda.synchronize()
 
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
         for _ in range(rep):
-            kernel.forward(*probe_inputs)
+            call(*probe_inputs)
         end.record()
         torch.cuda.synchronize()
         elapsed = start.elapsed_time(end) / rep
@@ -676,3 +701,59 @@ def make_cumulative_scan(op_kind: str):
                     output_buf[i, j] = output_buf[i, j - 1] * input_buf[i, j]
 
     return scan
+
+
+# The row layout a reduction kernel reduces, and the shape its caller declared.
+
+
+def _kept(ndim: int, axes: "tuple[int, ...]") -> "list[int]":
+    """The axes the reduction leaves, in order."""
+    return [i for i in range(ndim) if i not in axes]
+
+
+def rows_for_axes(x: torch.Tensor, axes: "tuple[int, ...]") -> torch.Tensor:
+    """Move *axes* to the end and flatten to ``(M, N)``.
+
+    Reducing every axis gives ``M == 1``.
+    """
+    kept = _kept(x.ndim, axes)
+    n = prod(x.shape[a] for a in axes)
+    m = prod(x.shape[i] for i in kept)
+    return x.permute(kept + list(axes)).contiguous().reshape(m, n)
+
+
+def restore_reduced(
+    y: torch.Tensor,
+    in_shape: "tuple[int, ...]",
+    axes: "tuple[int, ...]",
+    keepdim: bool,
+) -> torch.Tensor:
+    """Shape an ``(M,)`` result the way the reduction's caller expects.
+
+    Reducing every axis without *keepdim* gives a 0-D tensor.
+    """
+    if keepdim:
+        return y.reshape([1 if i in axes else d for i, d in enumerate(in_shape)])
+    kept = [in_shape[i] for i in _kept(len(in_shape), axes)]
+    return y.reshape(kept) if kept else y.reshape(())
+
+
+def restore_same_shape(
+    y: torch.Tensor,
+    in_shape: "tuple[int, ...]",
+    axes: "tuple[int, ...]",
+) -> torch.Tensor:
+    """Undo :func:`rows_for_axes` on a result that kept its input's shape.
+
+    For an op that writes one element per input element — softmax, a prefix scan — whose
+    row layout is unwound rather than collapsed.
+    """
+    kept = _kept(len(in_shape), axes)
+    perm = kept + list(axes)
+    y = y.reshape([in_shape[i] for i in perm])
+    inverse = [0] * len(perm)
+    for position, axis in enumerate(perm):
+        inverse[axis] = position
+    # Contiguous, because the op's fake reports contiguous strides and a mismatch there is
+    # a silent wrong answer, not a failure. Free when the reduced axis is already last.
+    return y.permute(inverse).contiguous()

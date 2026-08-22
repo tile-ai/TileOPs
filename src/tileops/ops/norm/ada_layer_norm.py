@@ -117,8 +117,7 @@ class AdaLayerNormFwdOp(Op):
         if shift.shape != x.shape:
             raise ValueError(f"Expected shift shape {tuple(x.shape)}, got {tuple(shift.shape)}")
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         scale = scale.contiguous()
         shift = shift.contiguous()
@@ -158,6 +157,5 @@ def _norm_ada_layer_norm_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(x.shape), tuple(scale.shape), tuple(shift.shape))
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return x.new_empty(shapes["output"])

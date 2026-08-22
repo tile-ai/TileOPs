@@ -249,24 +249,26 @@ def test_empty_dim_policy_class_attrs() -> None:
 
 
 @pytest.mark.smoke
-def test_all_empty_dim_noop_rejects_cpu_tensor() -> None:
-    """dim=[] must still validate device; non-CUDA input must raise."""
-    from tileops.ops.reduction.logical_reduce import AllFwdOp
+@pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
+def test_empty_dim_noop_answers_without_a_target(op_name: str) -> None:
+    """``dim=[]`` reduces nothing, so it needs no kernel and no device of any kind.
+
+    The op computes the degenerate answer itself. Nothing about it is a target's to
+    serve, so there is nobody to refuse a CPU tensor: which devices a *kernel* runs on is
+    that kernel's statement, and this call reaches none. The same op with ``dim=-1`` does
+    reach one and is refused there — that asymmetry is the edge of what the installed
+    targets cover, not an inconsistency in the op.
+    """
+    import tileops.ops.reduction.logical_reduce as logical_reduce
 
     x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
-    op = AllFwdOp(dim=[])
-    with pytest.raises(ValueError, match="CUDA tensor"):
-        op(x)
+    op = getattr(logical_reduce, op_name)(dim=[])
 
+    out = op(x)
 
-@pytest.mark.smoke
-def test_any_empty_dim_noop_rejects_cpu_tensor() -> None:
-    from tileops.ops.reduction.logical_reduce import AnyFwdOp
-
-    x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
-    op = AnyFwdOp(dim=[])
-    with pytest.raises(ValueError, match="CUDA tensor"):
-        op(x)
+    assert out.device == x.device
+    assert out.dtype == torch.bool
+    assert torch.equal(out, x != 0)
 
 
 @pytest.mark.smoke
@@ -349,3 +351,32 @@ def test_validate_dim_rejects_bool_in_list() -> None:
 
     with pytest.raises(TypeError, match="must be int .not bool"):
         SumFwdOp(dim=[True, 0])
+
+
+# A kernel's architecture check reads the device the op handed over
+
+
+@pytest.mark.smoke
+def test_the_arch_check_asks_about_the_input_s_device(monkeypatch) -> None:
+    """Not whichever device is current: the two differ on a mixed-architecture host.
+
+    A homogeneous host cannot show the wrong answer, so what is asserted is which device
+    was asked about.
+    """
+    import tileops.utils as utils
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    asked: list = []
+    real = utils.get_sm_version
+
+    def recording(index=None):
+        asked.append(index)
+        return real(index)
+
+    monkeypatch.setattr(utils, "get_sm_version", recording)
+
+    x = torch.randn(4, 8, dtype=torch.float16, device="cuda")
+    SumFwdOp(dim=-1)(x)
+
+    assert asked, "the kernel declares supported_archs, so it must have probed"
+    assert all(i == x.device.index for i in asked), asked

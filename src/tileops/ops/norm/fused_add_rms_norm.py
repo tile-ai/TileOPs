@@ -130,8 +130,7 @@ class FusedAddRMSNormFwdOp(Op):
         if weight.ndim != 1 or weight.shape[0] != n:
             raise ValueError(f"Expected weight shape ({n},), got {tuple(weight.shape)}")
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         residual = residual.contiguous()
         weight = weight.contiguous()

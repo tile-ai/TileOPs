@@ -432,9 +432,7 @@ def _bmm_fp8_persistent_ws_kernel(
 
                 tx = T.get_thread_binding()
 
-                # ═════════════════════════════════════════════════════════
                 # Producer WG: tx < 128
-                # ═════════════════════════════════════════════════════════
                 if tx < 128:
                     T.dec_max_nreg(24)
 
@@ -482,9 +480,7 @@ def _bmm_fp8_persistent_ws_kernel(
                                 T.barrier_arrive(ab_full[slot])
                                 gi_prod = gi_prod + 1
 
-                # ═════════════════════════════════════════════════════════
                 # Consumer WG0: 128 ≤ tx < 256 — top half (rows 0..half_m)
-                # ═════════════════════════════════════════════════════════
                 elif tx < 256:
                     T.inc_max_nreg(240)
 
@@ -531,9 +527,7 @@ def _bmm_fp8_persistent_ws_kernel(
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0, c[bs[0], ms[0], ns_[0]])
 
-                # ═════════════════════════════════════════════════════════
                 # Consumer WG1: tx ≥ 256 — bottom half (rows half_m..block_m)
-                # ═════════════════════════════════════════════════════════
                 else:
                     T.inc_max_nreg(240)
 

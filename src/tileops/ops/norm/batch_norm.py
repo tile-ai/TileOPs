@@ -168,8 +168,7 @@ class BatchNormFwdOp(Op):
         self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
         self._bind_spec(C, L, dtype)
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         weight = weight.contiguous()
         bias = bias.contiguous()

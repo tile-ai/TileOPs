@@ -8,6 +8,7 @@ SoftmaxFwdOp:
   ref_api: "torch.nn.functional.softmax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -56,6 +57,7 @@ LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -108,10 +110,11 @@ LogSumExpFwdOp:
   ref_api: "torch.logsumexp"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)"}
     params:
@@ -159,6 +162,7 @@ SumFwdOp:
   ref_api: "torch.sum"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -210,6 +214,7 @@ MeanFwdOp:
   ref_api: "torch.mean"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -257,6 +262,7 @@ AmaxFwdOp:
   ref_api: "torch.amax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -300,6 +306,7 @@ AminFwdOp:
   ref_api: "torch.amin"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -343,6 +350,7 @@ ProdFwdOp:
   ref_api: "torch.prod"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
   # NOTE: torch.prod has two overloads -- prod(input) for full reduction (no
   # dim arg) and prod(input, dim, keepdim=False) where dim is a required int.
   # Unlike torch.sum, torch.prod's dim overload rejects dim=None at runtime
@@ -398,6 +406,7 @@ VarFwdOp:
   ref_api: "torch.var"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -442,6 +451,7 @@ StdFwdOp:
   ref_api: "torch.std"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -486,6 +496,7 @@ VarMeanFwdOp:
   ref_api: "torch.var_mean"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -536,6 +547,7 @@ ArgmaxFwdOp:
   ref_api: "torch.argmax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -580,6 +592,7 @@ ArgminFwdOp:
   ref_api: "torch.argmin"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -625,6 +638,7 @@ AllFwdOp:
   ref_api: "torch.all"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -670,6 +684,7 @@ AnyFwdOp:
   ref_api: "torch.any"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -715,6 +730,7 @@ CountNonzeroFwdOp:
   ref_api: "torch.count_nonzero"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -761,6 +777,7 @@ L1NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -810,6 +827,7 @@ L2NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -859,6 +877,7 @@ InfNormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

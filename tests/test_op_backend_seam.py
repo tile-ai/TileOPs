@@ -610,3 +610,62 @@ def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
     ):
         assert torch.equal(got, expected)
     assert torch.equal(out, torch.full_like(x, 7))
+
+
+# --------------------------------------------------------------------------------------
+# A reduction op at the seam: the declared rank, and the axes as a param
+# --------------------------------------------------------------------------------------
+
+
+class _ReduceRecorder:
+    """A target for a reduction op, returning a result of the shape the op declares."""
+
+    def __init__(self, out_shape):
+        self.calls = []
+        self._out_shape = out_shape
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+        (spec,) = inputs
+
+        def kernel(x):
+            assert x.is_contiguous(), "the op normalizes contiguity before handing over"
+            return torch.full(self._out_shape, 7, dtype=spec.dtype, device=spec.device)
+
+        return kernel
+
+
+def test_a_reduction_op_hands_over_the_declared_rank():
+    """Not the ``(M, N)`` rows the in-tree kernel wants: that permute is the kernel's."""
+    recorder = _ReduceRecorder((4,))
+    _register(recorder, op="SumFwdOp")
+    from tileops.ops.reduction import SumFwdOp
+
+    x = torch.randn(4, 8, 16, dtype=DTYPE)
+    out = SumFwdOp(dim=[1, 2])(x)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x),), "the rank the manifest declares, not (4, 128)"
+    assert params == {"dim": [1, 2], "keepdim": False}
+    assert torch.equal(out, torch.full((4,), 7, dtype=DTYPE))
+
+
+def test_a_non_contiguous_reduction_input_reaches_the_backend_contiguous():
+    recorder = _ReduceRecorder((4,))
+    _register(recorder, op="SumFwdOp")
+    from tileops.ops.reduction import SumFwdOp
+
+    SumFwdOp(dim=-1)(torch.randn(8, 4, dtype=DTYPE).t())
+
+    assert len(recorder.calls) == 1  # the assertion that matters is inside the kernel
+
+
+def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
+    recorder = _ReduceRecorder((4,))
+    _register(recorder, op="SumFwdOp")
+    from tileops.ops.reduction import SumFwdOp
+
+    with pytest.raises(IndexError):
+        SumFwdOp(dim=5)(torch.randn(4, 8, dtype=DTYPE))
+
+    assert recorder.calls == []

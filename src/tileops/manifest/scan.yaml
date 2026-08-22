@@ -8,6 +8,7 @@ CumsumFwdOp:
   ref_api: "torch.cumsum"
   family: scan
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -48,6 +49,7 @@ CumprodFwdOp:
   ref_api: "torch.cumprod"
   family: scan
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

@@ -126,8 +126,7 @@ class AdaLayerNormZeroFwdOp(Op):
         if gate.shape != x.shape:
             raise ValueError(f"Expected gate shape {tuple(x.shape)}, got {tuple(gate.shape)}")
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         scale = scale.contiguous()
         shift = shift.contiguous()
@@ -172,6 +171,5 @@ def _norm_ada_layer_norm_zero_fwd_fake(
     shapes = op._infer_output_shapes(
         tuple(x.shape), tuple(scale.shape), tuple(shift.shape), tuple(gate.shape)
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return x.new_empty(shapes["output"])

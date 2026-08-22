@@ -419,9 +419,7 @@ def _make_pingpong_kernel(
 
             tx = T.get_thread_binding()
 
-            # ═════════════════════════════════════════════════════════
             # Producer WG: tx < 128
-            # ═════════════════════════════════════════════════════════
             # Static-wave scheduler: each CTA enumerates tile IDs
             # ``flat_id_0 = 2*(sm_count*w + pid)`` and
             # ``flat_id_1 = flat_id_0 + 1`` for wave w.  No atomic.
@@ -504,9 +502,7 @@ def _make_pingpong_kernel(
                             T.barrier_arrive(ab_full_wg1[slot1])
                             gi_prod_1 = gi_prod_1 + 1
 
-            # ═════════════════════════════════════════════════════════
             # Consumer WG0: 128 ≤ tx < 256 — processes flat_id_0 per wave
-            # ═════════════════════════════════════════════════════════
             elif tx < 256:
                 T.inc_max_nreg(240)
                 # CTA-wide sync (pairs with producer's post-init sync).
@@ -576,9 +572,7 @@ def _make_pingpong_kernel(
                                 if i < arows_0 and j < acols_0:
                                     C[m_start_0 + i, n_start_0 + j] = C_local_cast_wg0[i, j]
 
-            # ═════════════════════════════════════════════════════════
             # Consumer WG1: tx ≥ 256 — processes flat_id_1 per wave
-            # ═════════════════════════════════════════════════════════
             else:
                 T.inc_max_nreg(240)
                 # CTA-wide sync (pairs with producer's post-init sync).
@@ -796,11 +790,9 @@ def _make_cooperative_kernel(
 
             tx = T.get_thread_binding()
 
-            # ═════════════════════════════════════════════════════════
             # Producer WG: tx < 128
             # Static-wave scheduler: flat_id = sm_count * w + pid (one
             # tile per CTA per wave; both math WGs co-process it).
-            # ═════════════════════════════════════════════════════════
             if tx < 128:
                 T.dec_max_nreg(24)
 
@@ -855,9 +847,7 @@ def _make_cooperative_kernel(
                             T.barrier_arrive(ab_full[slot])
                             gi_prod = gi_prod + 1
 
-            # ═════════════════════════════════════════════════════════
             # Consumer WG0: 128 ≤ tx < 256 — top half (rows 0..half_m)
-            # ═════════════════════════════════════════════════════════
             elif tx < 256:
                 T.inc_max_nreg(240)
                 T.sync_threads()
@@ -931,9 +921,7 @@ def _make_cooperative_kernel(
                                 if i < arows0:
                                     C[m_start + i, n_start + j] = C_local_cast_wg0[i, j]
 
-            # ═════════════════════════════════════════════════════════
             # Consumer WG1: tx ≥ 256 — bottom half (rows half_m..block_m)
-            # ═════════════════════════════════════════════════════════
             else:
                 T.inc_max_nreg(240)
                 T.sync_threads()

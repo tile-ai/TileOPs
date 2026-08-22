@@ -1,24 +1,17 @@
-"""Multi-dim reduction utilities for the Op layer.
+"""How a reduction op reads its ``dim`` param.
 
-Provides helpers to flatten multiple reduction dims into a single dim,
-so that existing single-dim kernels can handle ``dim=list[int]`` by
-reducing over the flattened dimension.
-
-Strategy: move all target dims to the end, flatten them into one dim,
-reduce along that single dim, then restore the output shape with or
-without keepdim.
+Turning ``dim`` into the axes a call reduces is the op's contract: which forms an empty
+``dim`` takes, and which values a given rank accepts, differ per op and are declared in
+the manifest. What a kernel then does with those axes — the permute to rows and back —
+lives in :mod:`tileops.kernels.reduction._primitives`.
 """
 
 from __future__ import annotations
 
 from typing import Literal, Union
 
-import torch
-
 __all__ = [
-    "flatten_for_multidim",
     "normalize_dim",
-    "restore_multidim_shape",
 ]
 
 EmptyDimPolicy = Literal["reject", "full", "noop"]
@@ -84,77 +77,3 @@ def normalize_dim(
         raise ValueError(f"Duplicate dims in reduction: {dims}")
 
     return sorted(normalized)
-
-
-def flatten_for_multidim(
-    x: torch.Tensor,
-    dims: list[int],
-) -> tuple[torch.Tensor, torch.Size, list[int]]:
-    """Move target dims to end and flatten them into one dim.
-
-    Args:
-        x: Input tensor (any shape).
-        dims: Sorted list of non-negative dim indices to reduce.
-
-    Returns:
-        (x_reshaped, orig_shape, kept_dims) where:
-        - x_reshaped has the target dims flattened into the last dim
-        - orig_shape is the original tensor shape
-        - kept_dims is the list of dims NOT being reduced (in order)
-    """
-    orig_shape = x.shape
-    ndim = x.ndim
-
-    # Determine which dims are kept vs reduced.
-    kept_dims = [i for i in range(ndim) if i not in dims]
-
-    # Permute: kept dims first, then reduced dims.
-    perm = kept_dims + dims
-    x = x.permute(perm).contiguous()
-
-    # Compute shapes.
-    kept_shape = [orig_shape[i] for i in kept_dims]
-    reduced_size = 1
-    for d in dims:
-        reduced_size *= orig_shape[d]
-
-    # Flatten reduced dims into one.
-    # All dims being reduced -> (1, reduced_size); otherwise append flattened dim.
-    new_shape = kept_shape + [reduced_size] if kept_shape else [1, reduced_size]
-
-    x = x.reshape(new_shape)
-    return x, orig_shape, kept_dims
-
-
-def restore_multidim_shape(
-    y: torch.Tensor,
-    orig_shape: torch.Size,
-    dims: list[int],
-    keepdim: bool,
-) -> torch.Tensor:
-    """Reshape the output of a single-dim reduction back to multi-dim output shape.
-
-    Args:
-        y: Output tensor from single-dim reduction (reduced dim removed).
-        orig_shape: Original input tensor shape.
-        dims: Sorted list of non-negative dim indices that were reduced.
-        keepdim: Whether to retain reduced dims as size 1.
-
-    Returns:
-        Tensor with the correct output shape.
-    """
-    ndim = len(orig_shape)
-    kept_dims = [i for i in range(ndim) if i not in dims]
-
-    if keepdim:
-        # Build shape with 1 at each reduced dim position.
-        out_shape = list(orig_shape)
-        for d in dims:
-            out_shape[d] = 1
-        return y.reshape(out_shape)
-    else:
-        # Output shape is just the kept dims.
-        out_shape = [orig_shape[i] for i in kept_dims]
-        if not out_shape:
-            return y.squeeze()
-        return y.reshape(out_shape)

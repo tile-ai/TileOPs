@@ -170,8 +170,6 @@ class ExampleCumsumFwdOp(Op):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._validate_dtypes(x)
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
         # Validate `dim` against shape_rule `-x.ndim <= dim < x.ndim`
         # and normalize to a non-negative axis (Op._static_axes contract).
         if not -x.ndim <= self.dim < x.ndim:
@@ -189,30 +187,26 @@ class ExampleCumsumFwdOp(Op):
         M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
         self.M = M  # stored for eval_roofline
         self.dtype = x.dtype  # ditto; the op commits to no dtype before this
+        x = x.contiguous()          # handed over as the manifest declares it
         kernel = self.get_or_build_kernel(
             "example_cumsum_fwd",
             (x,),                        # the tensors the kernel will be handed
-            key=((M,), x.dtype),         # what the in-tree kernel specializes on
+            key=(tuple(x.shape), dim, x.dtype, x.device.index),
             build=lambda: self.kernel_map["example_cumsum_fwd"](
-                M, self.N, "sum", x.dtype, tune=self.tune),
+                M, self.N, "sum", x.dtype, scan_axis=dim, tune=self.tune),
         )
-        # Move reduction axis to last, reshape to (M, N), compute, restore.
-        orig_shape = x.shape
-        x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
-        y2 = kernel(x2)
-        y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1:], self.N)
-        return y.movedim(-1, dim)
+        return kernel(x)
 ```
 
 **Validation.**
 
 - `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim.
-- `forward` calls `self._validate_dtypes(...)` first — not inline dtype comparisons, which are Step 5's job.
+- `forward` calls `self._validate_dtypes(...)` first — not inline dtype comparisons, which are Step 5's job. It checks no device kind: a kernel states which devices it runs on.
 - Every `static_dims` commitment is checked against the tensor shape at the normalized axis, and `_static_axes` is bound from that (non-negative) axis. Both before the get-or-build call.
 - The kernel comes from `self.get_or_build_kernel`, never a cache dict the op owns:
   - `key=` and `build=` are the in-tree recipe. The kernel is built from `x.dtype` and the key carries it, so a call with another dtype builds a second kernel rather than reusing the first.
   - `inputs=` is the tensors the kernel is handed, which is what an external target's builder is described with. A new op passes it; an op not yet migrated omits it and stays in-tree only.
-- The op never trims kernel output: a kernel that pads internally returns the semantic shape.
+- The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
 **Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
 
@@ -291,8 +285,8 @@ from .example_cumsum import ExampleCumsumFwdOp
 
 This playbook emits exactly the 17 slots above. The following are **not** produced by the scaffold — each needs separate treatment:
 
-- **Family-specific protocol variables.** `_op_kind` (reduction), `_kernel_key`, `_kernel_cls` (norm + reduction T1 wrappers), `_kernel_handles_padding`, `_op_name`, `kernel_cls`. Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
-- **Optional hooks.** `_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`. Op-specific business logic (e.g., `ArgmaxFwdOp._pad_value = -inf`). See [Optional Hooks (Appendix)](ops-design-reference.md#optional-hooks-appendix).
+- **Family-specific protocol variables.** `_op_kind` (reduction), `_kernel_key`, `_kernel_cls` (norm + reduction T1 wrappers), `_op_name`, `kernel_cls`. Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
+- **Optional hooks.** `_validate_dim`. Op-specific business logic (e.g., `ArgmaxFwdOp._validate_dim` narrows the accepted `dim`). See [Optional Hooks (Appendix)](ops-design-reference.md#optional-hooks-appendix).
 - **`_cache_key` override.** The default projection via `_static_axes` is correct but sometimes over-fragmenting. Override logic depends on what subset of the input shape the kernel actually depends on — kernel-math-specific.
 - **Family-base (T1) subclassing.** See [Family-Base Refactoring](#family-base-refactoring).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.

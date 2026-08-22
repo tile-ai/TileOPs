@@ -317,8 +317,7 @@ class InstanceNormFwdOp(Op):
             y = (x.float() - mean_b) * torch.rsqrt(var_b + self.eps)
             return y.to(x.dtype)
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         if affine:
             weight = weight.contiguous()
@@ -377,6 +376,5 @@ def _norm_instance_norm_fwd_fake(
         None if weight is None else tuple(weight.shape),
         None if bias is None else tuple(bias.shape),
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return x.new_empty(shapes["output"])

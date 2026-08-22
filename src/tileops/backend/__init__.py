@@ -18,8 +18,9 @@ and, in its pyproject::
     [project.entry-points."tileops.backends"]
     acme = "tileops_acme"
 
-``build_kernel``'s signature is the op's manifest signature: tensors in
-``signature.inputs`` order, params under ``signature.params`` names. Choosing among its own
+``build_kernel``'s signature is the op's manifest signature: one argument per
+``signature.inputs`` entry in that order, with an ``optional: true`` input the call did not
+pass arriving as ``None``, then params under ``signature.params`` names. Choosing among its own
 kernels, constructing, caching and compiling all happen inside it, so nothing here names a
 kernel class, a specialization axis, a priority or a fallback: this layer picks a target,
 the target picks a kernel.

@@ -18,13 +18,15 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
+    restore_reduced,
+    rows_for_axes,
     tune_by_forward,
 )
 
@@ -247,59 +249,6 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
     return _func
 
 
-# custom_op wrappers for torch.compile compatibility
-
-
-@torch.library.custom_op("top::logical_reduce_fwd", mutates_args=())
-def _logical_reduce_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    out_raw = _logical_reduce_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
-    if op_kind == "count_nonzero":
-        return out_raw.to(torch.int64)
-    return out_raw.bool()
-
-
-@torch.library.custom_op("top::logical_reduce_tiled_fwd", mutates_args=())
-def _logical_reduce_tiled_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    tile_n: int,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    out_raw = _logical_reduce_kernel_tiled(M, N, op_kind, dtype_str, tile_n)(block_m, threads)(x)
-    if op_kind == "count_nonzero":
-        return out_raw.to(torch.int64)
-    return out_raw.bool()
-
-
-@_logical_reduce_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, block_m, threads, x):
-    if op_kind == "count_nonzero":
-        return torch.empty((M,), dtype=torch.int64, device=x.device)
-    return torch.empty((M,), dtype=torch.bool, device=x.device)
-
-
-@_logical_reduce_tiled_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, tile_n, block_m, threads, x):
-    if op_kind == "count_nonzero":
-        return torch.empty((M,), dtype=torch.int64, device=x.device)
-    return torch.empty((M,), dtype=torch.bool, device=x.device)
-
-
-# LogicalReduceKernel class
-
-
 class LogicalReduceKernel(Kernel):
     """Any / all / count_nonzero forward kernel.
 
@@ -310,19 +259,25 @@ class LogicalReduceKernel(Kernel):
 
     Output dtype is bool for any/all and int64 for count_nonzero.
 
-    Note: TileLang does not support bool, integer, or complex dtypes as a
-    storage dtype for shared memory. When dtype is one of these, the kernel is
-    compiled for float32 internally and the Op layer is responsible for
-    pre-converting the input tensor to float32 before calling forward().
+    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; the
+    permute to rows and the shape of the result are this kernel's business.
+
+    TileLang does not support bool, integer, or complex dtypes as a shared-memory storage
+    dtype. When *dtype* is one of these the kernel is compiled for float32 and ``forward``
+    converts the input, so an op hands over the tensor its manifest declares and this
+    restriction stays inside the implementation that has it.
 
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        M: Rows the reduction leaves.
+        N: Elements each row reduces.
         op_kind: One of "any", "all", "count_nonzero".
         dtype: Input data type (float32, float16, bfloat16, bool, complex64,
                or complex128).
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
+        device_index: CUDA device the input lives on, for the shared-memory budget.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -333,10 +288,13 @@ class LogicalReduceKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: "int | None" = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind not in _LOGICAL_REDUCE_KINDS:
             raise ValueError(
                 f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_LOGICAL_REDUCE_KINDS)}."
@@ -345,6 +303,8 @@ class LogicalReduceKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
         # TileLang cannot handle bool, integer, or complex dtypes as
         # shared-memory storage dtypes; remap all unsupported dtypes -> float32.
         self._kernel_dtype = (
@@ -352,7 +312,7 @@ class LogicalReduceKernel(Kernel):
         )
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
-        self._smem_budget = device_smem_budget()
+        self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
@@ -392,36 +352,43 @@ class LogicalReduceKernel(Kernel):
         x = torch.randn(
             self.M, self.N, dtype=self._kernel_dtype, device=torch.cuda.current_device()
         )
-        tune_by_forward(self, x, warmup=warmup, rep=rep)
+        tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the any/all/count_nonzero kernel.
+        """Reduce *reduce_axes* of *x*.
 
         Args:
-            x: Input tensor of shape (M, N). Must have dtype matching
-               _kernel_dtype (float32 when the original dtype is bool).
+            x: The tensor the op declares, contiguous, on a CUDA device. A dtype TileLang
+                cannot store is converted here.
 
         Returns:
-            Output tensor of shape (M,) with dtype bool (any/all) or int64
-            (count_nonzero).
+            The reduced tensor, dtype bool (any/all) or int64 (count_nonzero).
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
         """
+        require_cuda(self, x=x)
+        in_shape = tuple(x.shape)
+        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
+            x = to_logical_float32(x)
+        rows = rows_for_axes(x, self.reduce_axes)
+        y = self._reduce_rows(rows)
+        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
+
+    def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce the trailing axis of an ``(M, N)`` buffer.
+
+        The prim_func counts in the storage dtype; the declared output dtype is applied
+        here.
+        """
+        dtype_str = self.dtype_to_str(self._kernel_dtype)
         if self._needs_tiling:
-            return _logical_reduce_tiled_fwd_wrapped(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_to_str(self._kernel_dtype),
-                self.config["tile_n"],
-                self.config["block_m"],
-                self.config["threads"],
-                x,
+            program = _logical_reduce_kernel_tiled(
+                self.M, self.N, self.op_kind, dtype_str, self.config["tile_n"]
             )
-        return _logical_reduce_fwd_wrapped(
-            self.M,
-            self.N,
-            self.op_kind,
-            self.dtype_to_str(self._kernel_dtype),
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-        )
+        else:
+            program = _logical_reduce_kernel(self.M, self.N, self.op_kind, dtype_str)
+        counted = program(self.config["block_m"], self.config["threads"])(x)
+        if self.op_kind == "count_nonzero":
+            return counted.to(torch.int64)
+        return counted.bool()
