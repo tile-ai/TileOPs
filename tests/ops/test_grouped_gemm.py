@@ -2,8 +2,9 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.grouped_gemm import GroupedGemmKernel
+from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmKernel
 from tileops.ops.grouped_gemm import GroupedGemmFwdOp
+from tileops.utils import get_sm_version
 from workloads.grouped_gemm import (
     GroupedGemmWorkload,
 )
@@ -34,6 +35,30 @@ class GroupedGemmFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    4099,
+                    6,
+                    4000,
+                    4096,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="uneven-unaligned",
+                ),
+                pytest.param(
+                    4099,
+                    6,
+                    4000,
+                    4096,
+                    torch.float16,
+                    False,
+                    False,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="nn-uneven-unaligned",
                 ),
                 pytest.param(
                     16384,
@@ -128,3 +153,34 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
     # A fourth such parameter must fail rather than silently receive the offsets.
     with pytest.raises(RuntimeError, match="expects 3 int32"):
         kernel.autotune_supply_prog(params + [_FakeKernelParam("int32", [batch_count])])
+
+
+# Which kernel serves which call
+
+
+@pytest.mark.parametrize(
+    "n, k, transpose_a, transpose_b, expected",
+    [
+        (4096, 4096, False, True, "grouped_gemm_persistent_3wg_kernel"),
+        (4000, 4096, False, True, "grouped_gemm_kernel"),  # N the tiling misses
+        (4096, 4096, False, False, "grouped_gemm_kernel"),  # NN
+        (4096, 4096, True, False, "grouped_gemm_kernel"),  # TN
+    ],
+)
+@pytest.mark.smoke
+def test_selection_prefers_the_persistent_kernel_where_it_applies(
+    n: int, k: int, transpose_a: bool, transpose_b: bool, expected: str
+):
+    """The persistent kernel serves aligned NT; the general one serves the rest."""
+    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
+    call = GroupedGemmCall(
+        arch=get_sm_version(),
+        numel=4096,
+        num_experts=16,
+        n=n,
+        k=k,
+        dtype=torch.float16,
+        transpose_a=transpose_a,
+        transpose_b=transpose_b,
+    )
+    assert op.select_kernel_key(op._KERNEL_KEYS, call) == expected
