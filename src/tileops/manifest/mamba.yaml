@@ -231,7 +231,7 @@ SSDChunkScanFwdOp:
 
 SSDDecodeFwdOp:
   # Single-token Mamba-2 SSD decode step. y_out is the only returned tensor;
-  # state carries mutated: true (R22). The D * x skip connection and
+  # state carries mutated: true, so whoever serves this op writes it. The D * x skip connection and
   # z-gate are not fused here.
   ref_api: "none"
   family: mamba

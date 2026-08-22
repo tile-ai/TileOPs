@@ -77,7 +77,7 @@ def _to_params(workloads):
     """Convert the manifest entry's workloads to pytest params.
 
     A row passes the correction bias exactly when it declares
-    ``correction_bias_shape`` (R18.1).
+    ``correction_bias_shape``.
     """
     params = []
     for w in workloads:

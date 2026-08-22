@@ -62,7 +62,7 @@ _CLAMP_FWD_OP = "ClampFwdOp"
 def _workloads_to_clamp_params(workloads: list) -> list:
     """Convert manifest workload dicts to clamp-bench pytest params.
 
-    A row passes a bound exactly when it declares that bound's shape (R18.1).
+    A row passes a bound exactly when it declares that bound's shape.
     """
     params = []
     for idx, w in enumerate(workloads):

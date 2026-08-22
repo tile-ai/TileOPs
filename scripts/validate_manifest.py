@@ -113,17 +113,18 @@ _VALID_SIGNATURE_KEYS = {
 }
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
-# Valid tensor layout values (R19)
+# Valid tensor layout values: what a non-default ``layout`` field may say
 _VALID_LAYOUTS = {"channels_last"}
 
-# Single-axis reference: `<tensor>.shape[<int_literal_or_identifier>]` (R20)
+# Single-axis reference a ``static_dims`` entry takes:
+# `<tensor>.shape[<int_literal_or_identifier>]`
 _STATIC_DIM_EXPR_RE = re.compile(
     r"^([A-Za-z_][A-Za-z0-9_]*)\.shape\[(-?\d+|[A-Za-z_][A-Za-z0-9_]*)\]$"
 )
 
 
 def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
-    """Validate `signature.static_dims` per R20.
+    """Validate `signature.static_dims`: each entry maps an ``__init__`` keyword to one axis.
 
     - Must be a mapping of str → str.
     - Each value must be a single-axis reference: `<tensor>.shape[<axis>]`
@@ -155,7 +156,7 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
             errors.append(
                 f"[schema] {op_name}: static_dims.{dname} expression "
                 f"{expr!r} is not a single-axis reference of the form "
-                f"`<tensor>.shape[<const_or_param>]` (R20)"
+                f"`<tensor>.shape[<const_or_param>]`"
             )
             continue
         tensor_name, axis_ref = match.groups()
@@ -334,9 +335,10 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
-            # shape declares one shape (R8). Alternatives would leave every
+            # shape declares one shape. Alternatives would leave every
             # consumer — mock builder, roofline binding, fake — to pick one,
-            # so a tensor whose rank or axis order varies omits shape (R9).
+            # so a tensor whose rank or axis order varies omits shape and states its
+            # constraints in params and shape_rules instead.
             if isinstance(attrs.get("shape"), str) and "|" in attrs["shape"]:
                 err(
                     f"{direction}.{tname}.shape {attrs['shape']!r} lists alternatives; "
@@ -358,7 +360,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                                 f"'{ckey}' is not in shape dims "
                                 f"{sorted(dims)}"
                             )
-            # layout validation (R19)
+            # layout validation: only the declared memory orders are accepted
             if "layout" in attrs:
                 layout = attrs["layout"]
                 if not isinstance(layout, str):
@@ -370,7 +372,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                         f"(valid: {', '.join(sorted(_VALID_LAYOUTS))})"
                     )
 
-    # Params must be a mapping if present; each entry needs 'type' (R1).
+    # Params must be a mapping if present; each entry needs 'type'.
     if "params" in sig:
         params = sig["params"]
         if not isinstance(params, dict):
@@ -406,7 +408,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
             if isinstance(attrs, dict) and "shape" not in attrs:
                 err(f"output '{tname}' must declare 'shape' or the signature must have shape_rules")
 
-    # dtype_combos must be a list of dicts if present (R4).
+    # dtype_combos must be a list of dicts if present.
     if "dtype_combos" in sig:
         combos = sig["dtype_combos"]
         if not isinstance(combos, list):
@@ -445,7 +447,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
             f"keys are {sorted(_VALID_SIGNATURE_KEYS)}"
         )
 
-    # static_dims must be a mapping of str -> str expression (R20).
+    # static_dims must be a mapping of str -> str expression.
     if "static_dims" in sig:
         errors.extend(_check_static_dims(op_name, sig["static_dims"], sig))
     return errors
@@ -740,7 +742,7 @@ def _check_optional_flag(op_name: str, sig: dict) -> list[str]:
 
 
 def _check_mutated_flag(op_name: str, sig: dict) -> list[str]:
-    """``mutated`` is literal ``true``, and only on ``signature.inputs`` (R22)."""
+    """``mutated`` is literal ``true``, and appears only on ``signature.inputs``."""
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
     params = sig.get("params")
@@ -1158,7 +1160,8 @@ def check_l1_signature(
     The strict rule: every manifest-declared param must appear in the union
     of ``__init__()`` and ``forward()`` parameter names. Manifest inputs must
     appear in ``forward()`` in declaration order. Every ``static_dims`` key
-    must appear as an ``__init__()`` parameter (per R20).
+    must appear as an ``__init__()`` parameter: it is what the user commits to at
+    construction time.
 
     ``init_params=None`` is treated as empty (only forward is checked).
     """
@@ -1188,7 +1191,7 @@ def check_l1_signature(
         if pname not in code_params:
             err(f"manifest param {pname!r} not found in __init__() or forward() parameters")
 
-    # static_dims check (R20): every static_dims key must be an __init__ param
+    # every static_dims key must be an __init__ param
     if manifest_static_dims:
         if not isinstance(manifest_static_dims, dict):
             err("signature.static_dims is not a mapping")
@@ -1521,7 +1524,7 @@ def _check_dtype_combos_same_as_identity(
     dtype_combos: list,
     same_as_map: dict[str, str],
 ) -> list[str]:
-    """Enforce same_as identity in dtype_combos entries (R3).
+    """Enforce same_as identity in dtype_combos entries.
 
     Every tensor bound by same_as(ref) must have the exact same dtype as
     its reference tensor in every combo row.
@@ -1538,7 +1541,7 @@ def _check_dtype_combos_same_as_identity(
                 err(
                     f"dtype_combos[{i}] violates same_as identity "
                     f"constraint — {tensor} ({combo[tensor]}) must match "
-                    f"{ref} ({combo[ref]}) per R3"
+                    f"{ref} ({combo[ref]}), which same_as requires"
                 )
             elif t_in and not r_in:
                 err(
@@ -1553,7 +1556,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """Validate dtype strings are recognized torch types or same_as references.
 
     Checks both signature tensor dtypes and workload dtype entries.
-    Also enforces same_as identity constraint in dtype_combos (R3).
+    Also enforces the same_as identity constraint in dtype_combos.
     """
     errors: list[str] = []
     err = _emit_to(errors, "dtype", op_name)
@@ -1570,7 +1573,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     input_names = set(inputs.keys())
 
     # Signature tensor dtypes. ``promote_int_to_float`` is output-side
-    # only (R3a) — reject it on input tensors.
+    # only — reject it on input tensors.
     for tname, attrs in all_tensors.items():
         if not isinstance(attrs, dict):
             continue
@@ -1586,7 +1589,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
             if token_err:
                 errors.append(token_err)
 
-    # same_as identity constraint in dtype_combos (R3)
+    # same_as identity constraint in dtype_combos
     dtype_combos = sig.get("dtype_combos", [])
     if isinstance(dtype_combos, list) and dtype_combos:
         same_as_map = _build_same_as_map(all_tensors)
@@ -1953,7 +1956,7 @@ def _input_bound_symbols(sig: dict) -> set[str]:
 
 
 def _optional_inputs(sig: dict) -> set[str]:
-    """Input names declared ``optional: true`` (R18)."""
+    """Input names declared ``optional: true``."""
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict):
         return set()
@@ -2426,7 +2429,7 @@ def check_l2_infer_parity(
     if infer_fn is None:
         return errors
 
-    # Presence of an optional input is the declared dispatch fact (R18), so the
+    # Whether an optional input was passed is a fact kernel dispatch may read, so the
     # probe runs once with every optional input supplied and once with none.
     optional = _optional_inputs(sig)
     variants: list[frozenset[str]] = [frozenset()]
@@ -3442,7 +3445,7 @@ def _same_as_refs(sig: dict) -> dict[str, str]:
 
 
 def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
-    """Return True when *candidate* satisfies same_as identity (R3)."""
+    """Return True when *candidate* satisfies the same_as dtype identity."""
     inputs = sig.get("inputs") or {}
     if not isinstance(inputs, dict):
         return True
@@ -3894,7 +3897,9 @@ def check_c5_dispatch_kernel_invariant(
 
 
 def _tensor_param_names(entry: dict) -> set[str]:
-    """The entry's tensor-typed params: caller-supplied output buffers (R18)."""
+    """The entry's tensor-typed params, which is where a caller-supplied output buffer
+    is declared: the op writes it and the return aliases it, so it is not an input.
+    """
     params = entry.get("signature", {}).get("params") or {}
     return {
         name
@@ -3949,7 +3954,8 @@ def check_c8_mutated_inputs_parity(
             continue
         # The operator lists its tensor arguments in signature.inputs order, so a write at
         # position i is a write to input i. A tensor argument past the declared inputs is a
-        # caller-supplied output buffer (R18), declared as a param and not covered by R22.
+        # caller-supplied output buffer, which is declared as a param rather than an input
+        # and so is not part of the mutated-input set.
         tensor_args = [
             arg for arg in overload._schema.arguments if str(arg.type).startswith("Tensor")
         ]
@@ -3962,12 +3968,12 @@ def check_c8_mutated_inputs_parity(
                 errors.append(
                     f"[mutation] {op_name}: {qualified!r} writes argument {arg.name!r}, which "
                     f"is past the {len(input_names)} declared inputs and names no declared "
-                    f"output buffer param (R18)"
+                    f"output buffer param"
                 )
     if written != declared:
         errors.append(
             f"[mutation] {op_name}: its operators write {sorted(written) or 'no input'} but the "
-            f"manifest marks {sorted(declared) or 'nothing'} as mutated (R22)"
+            f"manifest marks {sorted(declared) or 'nothing'} with mutated: true"
         )
     return errors
 

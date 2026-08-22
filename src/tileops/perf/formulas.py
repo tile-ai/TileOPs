@@ -194,7 +194,7 @@ def _dtype_itemsize(dtype: Any) -> int:
 
 
 def _supplied(op: Any, name: str) -> bool:
-    """Whether the call passed the ``optional: true`` input *name* (R18.1).
+    """Whether the call passed the ``optional: true`` input *name*.
 
     Mirrors the two bindings inline roofline synthesis accepts: the tensor on
     ``self.<name>``, or its shape on ``self.<name>_shape``.

@@ -429,7 +429,8 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
     otherwise 64.
     """
 
-    #: The memory order this op takes; one order per entry (R19).
+    #: The memory order this op takes. One entry declares one order: the order changes
+    #: what an axis means, so an op serving two layouts is two entries.
     LAYOUT: ClassVar[str] = "bthd"
 
     def __init__(

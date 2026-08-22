@@ -275,7 +275,7 @@ class TestSchema:
             ),
             ("status non-string", lambda e: e.update(status=123), ["status", "string"]),
             (
-                "dtype_combos references unknown tensor (R4)",
+                "dtype_combos references unknown tensor",
                 lambda e: e["signature"].update(
                     dtype_combos=[{"x": "float16", "nonexistent": "bfloat16"}]
                 ),
@@ -297,7 +297,7 @@ class TestSchema:
                 ["parity_opt_out", "unknown entry keys"],
             ),
             (
-                "unrecognized layout value (R19)",
+                "unrecognized layout value",
                 lambda e: _set_input(e, {"dtype": "float16", "layout": "nchw"}),
                 ["layout", "nchw"],
             ),
@@ -338,7 +338,7 @@ class TestSchema:
 
     def test_valid_forms_pass(self, validator):
         """Case table: entry variations the schema explicitly permits."""
-        # Tensor with valid layout field (R19).
+        # Tensor with a valid layout field.
         entry = _make_entry(
             inputs={"x": {"dtype": "float16", "shape": "[N, H, W, C]", "layout": "channels_last"}},
         )
@@ -986,7 +986,7 @@ class TestOptionalInputs:
         assert any("every workload row passes" in e for e in errors), errors
 
     def test_coverage_counts_per_input_not_per_combination(self, validator):
-        """Two optionals need 2 rows, not 4 (R18.2)."""
+        """Two optionals need 2 rows, not 4."""
         entry = self._entry()
         entry["signature"]["inputs"]["v"] = {
             "dtype": "same_as(x)",
@@ -1181,7 +1181,7 @@ class TestSignature:
                 },
             ),
             (
-                "static_dims key appears in __init__() (R20)",
+                "static_dims key appears in __init__()",
                 StaticDimInitOp,
                 {
                     "inputs": {"x": {"dtype": "float16"}},
@@ -1267,7 +1267,7 @@ class TestSignature:
                 ["eps"],
             ),
             (
-                "static_dims key missing from __init__ (R20)",
+                "static_dims key missing from __init__",
                 InitWithoutStaticDimOp,
                 {
                     "inputs": {"x": {"dtype": "float16"}},
@@ -1367,7 +1367,7 @@ class TestDtype:
     def test_resolver_semantics(self, validator):
         """``_resolve_tensor_dtype_options`` resolves forward same_as refs
         (R3 is an identity constraint, not an ordering rule) and expands
-        ``promote_int_to_float`` per R3a."""
+        ``promote_int_to_float``."""
         sig = _sig(
             {"x": "same_as(y)", "y": "float16 | bfloat16"},
             {"z": "same_as(y)"},
@@ -1389,7 +1389,7 @@ class TestDtype:
         assert resolved["output"] == ["float16", "bfloat16", "float32"]
 
     def test_promote_int_to_float_rejected_outside_outputs(self, validator):
-        """``promote_int_to_float`` is output-side only (R3a); unknown refs
+        """``promote_int_to_float`` is output-side only; unknown refs
         and malformed args are rejected wherever they appear."""
         cases = [
             # (description, sig, workloads, substrings expected in one error)
@@ -3459,7 +3459,7 @@ class TestCompileContractRegistry:
 
 
 class TestMutatedInputParity:
-    """C8: the operators' write arguments are the manifest's mutated inputs (R22)."""
+    """C8: the operators' write arguments are the inputs the manifest marks mutated."""
 
     @staticmethod
     def _register(name, schema, mutates_args):

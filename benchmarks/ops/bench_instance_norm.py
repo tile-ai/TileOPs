@@ -30,7 +30,7 @@ _OP_NAME = "InstanceNormFwdOp"
 def _build_params(workloads):
     """One param per workload row and dtype.
 
-    A row applies the affine exactly when it declares ``weight_shape`` (R18.1).
+    A row applies the affine exactly when it declares ``weight_shape``.
     """
     params = []
     for w in workloads:
