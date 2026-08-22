@@ -85,7 +85,7 @@ def _prefill_partition_metadata(
     )
 
 
-def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int) -> int:
+def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int, device_index: int) -> int:
     env_max_local_chunks = os.environ.get(
         "TILEOPS_GDN_PREFILL_MAX_LOCAL_CHUNKS",
         os.environ.get("TILEOPS_GDN_PREFILL_CP_MAX_LOCAL_CHUNKS"),
@@ -93,7 +93,8 @@ def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int) -> int:
     if env_max_local_chunks:
         max_local_chunks = int(env_max_local_chunks)
     else:
-        sm_count = torch.cuda.get_device_properties().multi_processor_count
+        # Without an argument this reads the current device, not the tensors'.
+        sm_count = torch.cuda.get_device_properties(device_index).multi_processor_count
         max_local_chunks = 2 ** round(math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3))
         if num_heads >= 64 and num_chunks >= 512:
             max_local_chunks = max(max_local_chunks, 256)
@@ -125,7 +126,7 @@ def _prefill_partitioned_initial_state_bthd(
     if sum(raw_sequence_lengths) != num_tokens:
         raise ValueError("raw sequence lengths must sum to the flattened token count")
     num_chunks = tilelang.cdiv(num_tokens, chunk_size)
-    max_local_chunks = _prefill_auto_cp_local_chunks(num_chunks, num_heads)
+    max_local_chunks = _prefill_auto_cp_local_chunks(num_chunks, num_heads, k.device.index)
 
     has_partition = num_chunks > max_local_chunks
     force_partition = (

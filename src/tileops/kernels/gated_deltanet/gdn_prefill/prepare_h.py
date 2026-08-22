@@ -2,6 +2,8 @@
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
+import functools
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -9,6 +11,7 @@ import torch
 from .utils import prepare_chunk_offsets
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

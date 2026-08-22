@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
+import functools
 import os
 
 import tilelang
@@ -14,6 +15,7 @@ MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
 TARGET_NUM_CTAS = int(MULTI_PROCESSOR_COUNT * 0.7)
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit(
     # out_idx=[-3, -2, -1],
     pass_configs={

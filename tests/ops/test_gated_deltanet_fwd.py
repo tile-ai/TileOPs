@@ -126,22 +126,7 @@ def test_bthd_forward_names_the_requirement_a_call_missed() -> None:
         pytest.param(128, 64, torch.float16, marks=pytest.mark.smoke),
         pytest.param(128, 64, torch.bfloat16, marks=pytest.mark.smoke),
         pytest.param(128, 128, torch.float16, marks=pytest.mark.smoke),
-        pytest.param(
-            32768,
-            64,
-            torch.float16,
-            marks=[
-                pytest.mark.full,
-                # xfail, not skip: `hopper` tests that skip on a Hopper device fail
-                # the run by policy, and the disagreement is worth still measuring.
-                pytest.mark.xfail(
-                    reason="BTHD and BHTD disagree at this sequence length: ~2300 of "
-                    "16.7M elements exceed the 0.05 tolerance, some by an infinite "
-                    "relative difference. The three shorter cases still run.",
-                    strict=False,
-                ),
-            ],
-        ),
+        pytest.param(32768, 64, torch.float16, marks=pytest.mark.full),
     ],
 )
 @pytest.mark.hopper

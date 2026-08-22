@@ -159,6 +159,7 @@ def _fp8_lightning_indexer_kernel(
     return _fp8_lightning_indexer_func
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit
 def clean_logits_(
     threads: int = 512,

@@ -82,6 +82,7 @@ def prepare_chunk_indices(
     return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit()
 def _build_prepare_chunk_offsets_kernel(
     chunk_size,

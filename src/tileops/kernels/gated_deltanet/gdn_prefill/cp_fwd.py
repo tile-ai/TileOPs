@@ -2,11 +2,14 @@
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
+import functools
+
 import tilelang
 import tilelang.language as T
 import torch
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit()
 def _build_warmup_chunks_kernel(
     num_heads,
@@ -100,6 +103,7 @@ def get_warmup_chunks(
     return num_warmup_chunks, fallback_mask
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit()
 def _build_correct_h0_kernel(
     H,
@@ -134,11 +138,6 @@ def _build_correct_h0_kernel(
         h_shared = T.alloc_shared((DK, block_DV), dtype=buffer_dtype)
         hd_shared = T.alloc_shared((DK, block_DV), dtype=buffer_dtype)
         m_shared = T.alloc_shared((DK, DK), dtype=buffer_dtype)
-
-        T.copy(
-            h_fragment,
-            cp_h0[seq_start_idx, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
-        )
 
         for i_s in T.Pipelined(num_iters - 1, num_stages=2):
             if fallback_mask[seq_start_idx + i_s, bh]:
@@ -188,6 +187,13 @@ def _build_correct_h0_kernel(
                     raw_h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
                     h_fragment,
                 )
+                # The loop never writes the partition a sequence starts on, and a
+                # fragment-to-global T.copy before it is dropped — the fragment's
+                # layout comes from how the loop consumes it. Hence a plain store.
+                for ik, iv in T.Parallel(DK, block_DV):
+                    cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = raw_h0[
+                        bb, bh, ik, bv * block_DV + iv
+                    ]
 
                 kernel_body(
                     bb,
@@ -227,6 +233,9 @@ def _build_correct_h0_kernel(
 
                 h_fragment = T.alloc_fragment((DK, block_DV), dtype=accum_dtype)
                 T.clear(h_fragment)
+                # See the raw_h0 branch.
+                for ik, iv in T.Parallel(DK, block_DV):
+                    cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = 0.0
 
                 kernel_body(
                     bb,
