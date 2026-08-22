@@ -344,3 +344,81 @@ def test_fork_fast_path_accepts_the_same_op_tests() -> None:
             f"fork fast-path arm is missing '{pattern}'; the two arms must describe "
             "the same set of op test files"
         )
+
+
+# preflight manifest gate
+
+PREFLIGHT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "preflight.yml"
+
+
+def test_manifest_gate_covers_every_manifest_file() -> None:
+    """Every file under src/tileops/manifest/ must set the manifest gate.
+
+    `validate-manifest` is the only job that runs the validator, and it is gated on
+    this arm. A file the arm misses skips the job silently — there is no failing
+    check to read, just an absent one. `scripts/validate_manifest.py` imports
+    `shape_rules` and `dtype_rules` at module scope, so those decide what the
+    validator accepts and belong to the gate as much as the YAML does.
+    """
+    import re
+
+    import yaml
+
+    wf = yaml.safe_load(PREFLIGHT_WORKFLOW.read_text())
+    step = next(
+        s for s in wf["jobs"]["detect-changes"]["steps"] if "manifest=false" in (s.get("run") or "")
+    )
+    arms = re.findall(r"^\s*(src/tileops/manifest[^)\n]*)\)\s*$", step["run"], re.M)
+    assert len(arms) == 1, f"expected one manifest case arm, found {arms}"
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "src/tileops/manifest"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert tracked, "expected tracked files under src/tileops/manifest"
+
+    ungated = [f for f in tracked if not _case_matches(arms[0], f)]
+    assert not ungated, (
+        f"case arm '{arms[0]}' does not gate these manifest files, so changing one of "
+        f"them skips validate-manifest: {ungated}"
+    )
+
+
+# runner maintenance vs nightly
+
+MAINTENANCE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "runner-maintenance.yml"
+NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
+
+
+def test_reclaim_defers_to_an_in_flight_nightly() -> None:
+    """The destructive cache trim must not run while nightly holds the same cache.
+
+    `sentinel-repair` removes any atomic cache subdir without its sentinel, and an
+    autotune run mid-write is indistinguishable from a crashed one, so a concurrent
+    trim deletes work nightly is doing. The schedule alone cannot separate them —
+    nightly may run to its declared ceiling — so the gate has to be a guard, and it
+    has to fail closed when the API cannot answer.
+    """
+    import yaml
+
+    maint = yaml.safe_load(MAINTENANCE_WORKFLOW.read_text())
+    nightly = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())
+    # `on` is the YAML 1.1 boolean `true` once parsed.
+    maint_cron = (maint.get(True) or maint["on"])["schedule"][0]["cron"]
+    nightly_cron = (nightly.get(True) or nightly["on"])["schedule"][0]["cron"]
+    assert maint_cron != nightly_cron, "reclaim and nightly must not share a cron"
+
+    reclaim = maint["jobs"]["reclaim-disk"]
+    assert "nightly-guard" in str(reclaim["needs"])
+    assert "nightly_active" in reclaim["if"]
+    # The manual dispatch is the escape hatch for a disk-full runner.
+    assert "github.event_name != 'schedule'" in reclaim["if"]
+
+    guard = next(s for s in maint["jobs"]["nightly-guard"]["steps"] if s.get("id") == "check")
+    assert 'nightly_active=true" >> "$GITHUB_OUTPUT"' in guard["run"], (
+        "guard must be able to report an active nightly"
+    )
+    assert '-z "$active"' in guard["run"], "guard must fail closed when the query fails"
