@@ -5,20 +5,23 @@ are enumerated per group. Enumerated over the whole row range instead, a tile ca
 straddle a boundary, and one that resolves a single group computes only the first
 of the ones it covers.
 
-The primitives run inside a kernel and take the caller's buffers, so each caller
-keeps its own scheduler.
+A CTA builds the prefix sum once and searches it for the group owning a tile.
 """
 
 import tilelang.language as T
 
-__all__ = ["make_group_tile_cumsum", "make_group_tile_decode", "tile_upper_bound"]
+__all__ = [
+    "make_group_tile_cumsum",
+    "make_group_tile_decode",
+    "tile_upper_bound",
+]
 
 
 def tile_upper_bound(numel: int, num_groups: int, block_m: int) -> int:
     """Tiles ``numel`` rows can need, at most one partial tile per group.
 
-    Sizes arrive on the device, so a grid takes this bound and reads the exact
-    count off ``s_cum[num_groups]``.
+    Sizes arrive on the device, so a grid takes this bound and drops the tiles
+    past the count the kernel finds at run time.
     """
     return numel // block_m + num_groups
 
@@ -40,11 +43,11 @@ def make_group_tile_cumsum(num_groups: int, block_m: int):
 
 
 def make_group_tile_decode(num_groups: int, block_m: int):
-    """Build the macro resolving one M tile id into its group and first row.
+    """Build the macro searching ``s_cum`` for the group owning one M tile id.
 
-    ``row`` is the tile's first row within its group: the caller reads the packed
-    start as ``offsets[group] + row`` and clamps the tile with
-    ``sizes[group] - row``.
+    For a CTA that resolves several tiles, so the prefix sum it searches is built
+    once. ``row`` is the tile's first row within its group: the caller reads the
+    packed start as ``offsets[group] + row``.
     """
     log2_up = max(1, (num_groups - 1).bit_length())
 
