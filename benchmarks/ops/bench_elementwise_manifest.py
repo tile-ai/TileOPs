@@ -3,6 +3,8 @@
 These cases keep the legacy risk-matrix benchmarks intact while giving each
 implemented elementwise manifest entry a benchmark path that is sourced from
 ``workloads`` and reports roofline data through ``ManifestBenchmark``.
+
+Each row is timed against torch eager and the same reference through inductor.
 """
 
 from math import prod
@@ -12,6 +14,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
@@ -234,7 +237,14 @@ def _record_unary(
     baseline_fn: Callable,
 ) -> None:
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=_manifest_params(bm)
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=_manifest_params(bm),
     )
 
 
@@ -245,7 +255,14 @@ def _record_binary(
     baseline_fn: Callable,
 ) -> None:
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=_manifest_params(bm)
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=_manifest_params(bm),
     )
 
 
@@ -417,7 +434,17 @@ def test_prelu_manifest_bench(
     x, weight = test.gen_inputs()
     op = PreluFwdOp()
     bm = ManifestBenchmark(_PRELU_OP, op, test)
-    bm.compare({"tileops": op, "torch": F.prelu}, x, weight, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": F.prelu,
+            TORCH_COMPILE_TAG: compiled_reference(F.prelu),
+        },
+        x,
+        weight,
+        record_as=op,
+        params=locals(),
+    )
 
 
 _MASKED_FILL_OP = "MaskedFillFwdOp"
@@ -438,8 +465,16 @@ def test_masked_fill_tensor_manifest_bench(
     x, mask, value = test.gen_inputs()
     op = MaskedFillFwdOp()
     bm = ManifestBenchmark(_MASKED_FILL_OP, op, test)
+
+    def baseline_fn(a, m, v):
+        return a.masked_fill(m, v)
+
     bm.compare(
-        {"tileops": op, "torch": lambda a, m, v: a.masked_fill(m, v)},
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         x,
         mask,
         value,
@@ -460,8 +495,16 @@ def test_masked_fill_scalar_manifest_bench(
     x, mask = test.gen_inputs()
     op = MaskedFillScalarFwdOp(value=-100.0)
     bm = ManifestBenchmark(_MASKED_FILL_SCALAR_OP, op, test)
+
+    def baseline_fn(a, m):
+        return a.masked_fill(m, -100.0)
+
     bm.compare(
-        {"tileops": op, "torch": lambda a, m: a.masked_fill(m, -100.0)},
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         x,
         mask,
         record_as=op,
@@ -740,7 +783,18 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
     cond, x, other = test.gen_inputs()
     op = WhereFwdOp()
     bm = ManifestBenchmark(_WHERE_OP, op, test)
-    bm.compare({"tileops": op, "torch": torch.where}, cond, x, other, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": torch.where,
+            TORCH_COMPILE_TAG: compiled_reference(torch.where),
+        },
+        cond,
+        x,
+        other,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_LERP_TENSOR_OP)))
@@ -749,4 +803,15 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     x, end, weight = test.gen_inputs()
     op = LerpTensorFwdOp()
     bm = ManifestBenchmark(_LERP_TENSOR_OP, op, test)
-    bm.compare({"tileops": op, "torch": torch.lerp}, x, end, weight, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": torch.lerp,
+            TORCH_COMPILE_TAG: compiled_reference(torch.lerp),
+        },
+        x,
+        end,
+        weight,
+        record_as=op,
+        params=locals(),
+    )

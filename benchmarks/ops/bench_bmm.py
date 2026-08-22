@@ -1,6 +1,12 @@
 import pytest
 import torch
 
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    assert_matches_reference,
+    flaggems_op,
+    reference_tolerance,
+)
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
@@ -108,7 +114,20 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     # eval_roofline() is read lazily after profiling, by which point
     # forward() has bound the dims.
 
-    bm.compare({"tileops": op, "torch-cublas": torch.bmm}, a, b, record_as=op, params=locals())
+    flaggems_bmm = flaggems_op("bmm")
+    assert_matches_reference(flaggems_bmm, torch.bmm, a, b, **reference_tolerance(a.dtype))
+
+    bm.compare(
+        {
+            "tileops": op,
+            FLAGGEMS_TAG: flaggems_bmm,
+            "torch-cublas": torch.bmm,
+        },
+        a,
+        b,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("batch, m, n, k, dtype_str", _fp8_params(load_workloads(_FP8_KN_OP_NAME)))

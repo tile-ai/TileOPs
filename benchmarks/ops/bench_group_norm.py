@@ -1,7 +1,19 @@
+"""Benchmarks for GroupNormFwdOp, affine and not, against flag_gems and torch."""
+
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_group_norm,
+    reference_tolerance,
+)
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
@@ -46,8 +58,23 @@ def test_group_norm_bench(
     def baseline_fn(x, weight, bias):
         return F.group_norm(x, num_groups, weight=weight, bias=bias, eps=1e-5)
 
+    flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), num_groups, 1e-5)
+    assert_matches_reference(
+        flaggems_fn, baseline_fn, x, weight, bias, **reference_tolerance(dtype)
+    )
+
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, x, weight, bias, record_as=op, params=locals()
+        {
+            "tileops": op,
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        x,
+        weight,
+        bias,
+        record_as=op,
+        params=locals(),
     )
 
 
@@ -64,4 +91,17 @@ def test_group_norm_no_affine_bench(
     def baseline_no_affine(x):
         return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)
 
-    bm.compare({"tileops": op, "torch": baseline_no_affine}, x, record_as=op, params=locals())
+    flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), num_groups, 1e-5)
+    assert_matches_reference(flaggems_fn, baseline_no_affine, x, **reference_tolerance(dtype))
+
+    bm.compare(
+        {
+            "tileops": op,
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch": baseline_no_affine,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_no_affine),
+        },
+        x,
+        record_as=op,
+        params=locals(),
+    )

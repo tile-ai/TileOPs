@@ -8,6 +8,9 @@ One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
 ``load_workloads("<OpName>")`` call to its manifest entry. A shared
 ``_profile_and_record`` helper handles the profile + record pair so the
 per-op functions stay tiny and intentional.
+
+Baselines: torch eager and the same reference through inductor. flag_gems covers
+most of these ops but cannot be timed on them; ``flaggems_op`` says why.
 """
 
 from typing import Callable
@@ -15,6 +18,7 @@ from typing import Callable
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.elementwise import (
     AbsFwdOp,
@@ -84,8 +88,13 @@ def _profile_and_record(
     caller's scope; passing it explicitly keeps the report rows distinguishable
     instead of reflecting only this helper's locals.
     """
+    functors = {
+        "tileops": op,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=params)
+        bm.compare(functors, *inputs, record_as=op, params=params)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

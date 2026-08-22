@@ -3,6 +3,9 @@ import gc
 import pytest
 import torch
 
+# Imported for its side effect: arming the guard that keeps flag_gems from
+# reaching torch's op registry before vllm. See benchmarks.baselines.
+import benchmarks.baselines  # noqa: F401
 from benchmarks.report import BenchmarkReport, _bench_results
 
 

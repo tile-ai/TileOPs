@@ -8,6 +8,7 @@ byte counts come from the op's ``eval_roofline()`` via
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     workload_field_params,
@@ -39,5 +40,12 @@ def test_fp8_quant_bench(
     bm = ManifestBenchmark(_FP8_QUANT_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

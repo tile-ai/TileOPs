@@ -2,6 +2,9 @@
 
 Profiles TileOPs vs PyTorch baselines using DNN-realistic 2-D shapes
 (tokens x hidden_dim) across all supported dtypes.
+
+Each row is timed against torch eager and the same reference through inductor,
+including the two generative ops (alibi, sinusoidal), which take no inputs.
 """
 
 from math import prod
@@ -11,6 +14,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
@@ -111,7 +115,11 @@ def test_clamp_tensor_bench(
         return torch.clamp(x, t_min, t_max)
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         x,
         t_min,
         t_max,
@@ -183,8 +191,15 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
     bm = ManifestBenchmark(_ALIBI_OP, op, workload)
 
+    def baseline_fn():
+        return _alibi_reference(seq_len, num_heads, dtype)
+
     bm.compare(
-        {"tileops": op, "torch-ref": lambda: _alibi_reference(seq_len, num_heads, dtype)},
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         record_as=op,
         params=locals(),
     )
@@ -196,8 +211,15 @@ def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> Non
     workload = _GenerativeWorkload((seq_len, d_model), dtype)
     bm = ManifestBenchmark(_SINUSOIDAL_OP, op, workload)
 
+    def baseline_fn():
+        return _sinusoidal_reference(seq_len, d_model, dtype)
+
     bm.compare(
-        {"tileops": op, "torch-ref": lambda: _sinusoidal_reference(seq_len, d_model, dtype)},
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         record_as=op,
         params=locals(),
     )
@@ -273,7 +295,14 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
         return baseline_fn(x.to(torch.float16)).to(dtype)
 
     bm.compare(
-        {"tileops": op, "torch-ref": baseline}, *inputs, record_as=f"{op_name}_fp8", params=locals()
+        {
+            "tileops": op,
+            "torch-ref": baseline,
+            TORCH_COMPILE_TAG: compiled_reference(baseline),
+        },
+        *inputs,
+        record_as=f"{op_name}_fp8",
+        params=locals(),
     )
 
 
@@ -343,4 +372,14 @@ def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> 
         def baseline(x, mask):
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
-        bm.compare({"tileops": op, "torch-ref": baseline}, x, mask, record_as=op, params=locals())
+        bm.compare(
+            {
+                "tileops": op,
+                "torch-ref": baseline,
+                TORCH_COMPILE_TAG: compiled_reference(baseline),
+            },
+            x,
+            mask,
+            record_as=op,
+            params=locals(),
+        )

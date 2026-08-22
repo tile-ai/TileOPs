@@ -14,6 +14,12 @@ rotation itself is measured.
 import pytest
 import torch
 
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    VLLM_TAG,
+    compiled_reference,
+    vllm_op,
+)
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.rope import (
@@ -115,6 +121,34 @@ def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tens
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
 
 
+def _vllm_rope(
+    x: torch.Tensor,
+    position_ids: torch.Tensor,
+    head_dim: int,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+):
+    """Return vllm's rotary_embedding and the arguments it rotates.
+
+    It rewrites its query in place and takes it flattened to
+    ``[num_tokens, num_heads * head_dim]``, so it gets its own copy; its cache is
+    the half-width cos and sin concatenated, not the doubled tables the reference
+    indexes; and ``is_neox=True`` is the same half-split rotation.
+    """
+    fn = vllm_op("rotary_embedding")
+    num_tokens = x.shape[0]
+    half = head_dim // 2
+    cache = torch.cat([cos[:, :half], sin[:, :half]], dim=-1).contiguous()
+    positions = position_ids.long()
+    query = x.reshape(num_tokens, -1).clone()
+
+    def baseline_fn(positions_i, query_i):
+        fn(positions_i, query_i, None, head_dim, cache, True)
+        return query_i
+
+    return baseline_fn, (positions, query)
+
+
 def _profile_rope(
     op, bm: ManifestBenchmark, shape: tuple[int, ...], dtype: torch.dtype, layout: str
 ) -> None:
@@ -126,8 +160,19 @@ def _profile_rope(
     cos, sin = _rope_tables(seq_len, shape[-1], dtype)
     if layout != "1d":
         cos, sin = (t.view(1, seq_len, 1, shape[-1]) for t in (cos, sin))
+
+    def baseline_fn(t):
+        return _rotate(t, cos, sin)
+
     bm.compare(
-        {"tileops": op, "torch-ref": lambda t: _rotate(t, cos, sin)}, x, record_as=op, params=params
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        x,
+        record_as=op,
+        params=params,
     )
 
 
@@ -251,6 +296,27 @@ def test_rope_neox_position_ids_bench(
         idx = pos.long()
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
+    # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they
+    # agree to one rounding step: over the manifest's rows on an H200, max |Δ| 0.0039
+    # in fp16 and 0.0156 in bf16.
+    check_fn, check_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
+    torch.testing.assert_close(
+        check_fn(*check_args).view(x.shape),
+        baseline_fn(x, position_ids),
+        rtol=1e-2,
+        atol=2e-2,
+    )
+    vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
+
     bm.compare(
-        {"tileops": op, "torch-ref": baseline_fn}, x, position_ids, record_as=op, params=params
+        {
+            "tileops": op,
+            VLLM_TAG: (vllm_fn, vllm_args),
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        x,
+        position_ids,
+        record_as=op,
+        params=params,
     )
