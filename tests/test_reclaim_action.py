@@ -279,3 +279,68 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
         s for s in gpu_job["steps"] if (s.get("name") or "").startswith("Checkout trusted actions")
     )
     assert "needs.security-policy.outputs.is_fork" in str(ref_step["with"]["ref"])
+
+
+# gpu-smoke targeted test selection
+
+
+def _policy_script() -> str:
+    import yaml
+
+    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
+    policy_job = wf["jobs"]["security-policy"]
+    step = next(s for s in policy_job["steps"] if s.get("id") == "policy")
+    return step["run"]
+
+
+def _targeted_arm_patterns(script: str) -> str:
+    """The `case` arm that turns a changed test file into a targeted pytest target."""
+    import re
+
+    arms = re.findall(r"^\s*(tests/ops[^)\n]*)\)\s*$", script, re.M)
+    assert len(arms) == 1, f"expected one tests/ops case arm, found {arms}"
+    return arms[0]
+
+
+def _case_matches(patterns: str, path: str) -> bool:
+    proc = subprocess.run(
+        ["bash", "-c", f'case "$1" in {patterns}) exit 0 ;; *) exit 1 ;; esac', "_", path],
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def test_every_op_test_file_reaches_the_targeted_arm() -> None:
+    """Every tests/ops test file must be selectable as a targeted GPU smoke target.
+
+    A file the arm does not match falls through to the catch-all and forces a full
+    smoke run, which is silent: the catch-all's reason reads like policy, not a miss.
+    Nesting tests/ops one level deeper is exactly what breaks a single-level glob.
+    """
+    patterns = _targeted_arm_patterns(_policy_script())
+    op_tests = sorted(p for p in (REPO_ROOT / "tests" / "ops").rglob("test_*.py"))
+    assert op_tests, "expected test files under tests/ops"
+
+    unmatched = [
+        str(p.relative_to(REPO_ROOT))
+        for p in op_tests
+        if not _case_matches(patterns, str(p.relative_to(REPO_ROOT)))
+    ]
+    assert not unmatched, (
+        f"case arm '{patterns}' does not select these op tests, so changing one of them "
+        f"runs the whole suite instead: {unmatched}"
+    )
+
+
+def test_fork_fast_path_accepts_the_same_op_tests() -> None:
+    """The fork fast-path arm must list the same op-test patterns as the targeted arm.
+
+    Otherwise a fork PR touching a nested op test is classified as "outside the
+    fast-path policy" rather than as the test-only change it is.
+    """
+    script = _policy_script()
+    for pattern in _targeted_arm_patterns(script).split("|"):
+        assert f"|{pattern}|" in script, (
+            f"fork fast-path arm is missing '{pattern}'; the two arms must describe "
+            "the same set of op test files"
+        )
