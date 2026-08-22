@@ -2,11 +2,14 @@
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
+import functools
+
 import tilelang
 import tilelang.language as T
 import torch
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit()
 def _build_warmup_chunks_kernel(
     num_heads,
@@ -100,6 +103,7 @@ def get_warmup_chunks(
     return num_warmup_chunks, fallback_mask
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit()
 def _build_correct_h0_kernel(
     H,

@@ -14,6 +14,7 @@ __all__ = ["FlashAttnBwdPreprocessKernel", "GQABwdWgmmaPipelinedKernel"]
 # preprocess for gqa bwd
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[2])
 def _flashattn_bwd_preprocess_kernel(
     batch: int, heads: int, seq_len: int, dim: int, dtype: str
