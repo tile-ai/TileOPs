@@ -606,5 +606,15 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     op.cache_lens = cache_lens
     op.max_seqlen_q = test.max_seqlen_q
     bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
+    # FIXME(staged-rollout): this row records no baseline.
+    #
+    # Broken invariant: every benchmark records >=1 non-tileops baseline.
+    # Why: the op reads old KV through the block table, optionally applies RoPE,
+    #   appends k_new/v_new into the paged cache in place, and dequantizes an fp8
+    #   cache through k_scale/v_scale -- all in one launch. Reaching the same
+    #   answer with what is installed means gathering the pages into a
+    #   contiguous KV first, so the column would time a materialization the op
+    #   never performs.
+    # Cleanup: a baseline that attends over a paged cache in place.
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

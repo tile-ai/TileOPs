@@ -149,8 +149,13 @@ def test_moe_experts_nopad_bench(
     functors = {"tileops-nopad-3wg": _nopad_fn}
 
     if expert_map is not None:
-        # No vLLM column: its fused_experts takes the full weight table, so the
-        # two would not measure the same work.
+        # FIXME(staged-rollout): this row records no baseline.
+        #
+        # Broken invariant: every benchmark records >=1 non-tileops baseline.
+        # Why: under expert parallelism the weights are this rank's slice of the
+        #   expert table, and vLLM's fused_experts takes the full table, so the
+        #   column would time a different amount of work.
+        # Cleanup: a baseline that runs the experts this rank owns.
         bm.compare(
             functors,
             hidden,
