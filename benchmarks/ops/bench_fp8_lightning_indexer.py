@@ -7,7 +7,7 @@ come from the op's ``eval_roofline()`` via :class:`ManifestBenchmark`.
 import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
@@ -31,29 +31,16 @@ _SHAPE_KEYS = (
 )
 
 
-def _indexer_params() -> list:
-    """Params from manifest workloads, deduped on shape.
-
-    ``FP8LightningIndexerWorkload.gen_inputs`` emits bf16 and quantizes inside
-    the op, so workloads differing only in ``dtypes`` are one measurement.
-    """
-    seen, params = set(), []
-    for w in load_workloads(_FP8_LIGHTNING_INDEXER_OP):
-        args = tuple(w[k] for k in _SHAPE_KEYS)
-        if args in seen:
-            continue
-        seen.add(args)
-        params.append(
-            pytest.param(
-                *args, id=w["label"], marks=pytest.mark.smoke if not params else pytest.mark.full
-            )
-        )
-    return params
-
-
 @pytest.mark.parametrize(
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits",
-    _indexer_params(),
+    workload_params(
+        load_workloads(_FP8_LIGHTNING_INDEXER_OP),
+        fields(*_SHAPE_KEYS),
+        smoke_first=True,
+        # gen_inputs emits bf16 and the op quantizes inside, so the dtype rows
+        # of one shape are one measurement.
+        dedupe_on=_SHAPE_KEYS,
+    ),
 )
 def test_fp8_lightning_indexer_bench(
     batch: int,

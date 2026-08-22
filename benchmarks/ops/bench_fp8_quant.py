@@ -11,7 +11,8 @@ import torch
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import FP8QuantFwdOp
@@ -23,9 +24,10 @@ _TUNE = True
 
 
 _FP8_QUANT_OP = "FP8QuantFwdOp"
-_FP8_QUANT_PARAMS = workload_field_params(
+_FP8_QUANT_PARAMS = workload_params(
     load_workloads(_FP8_QUANT_OP),
-    ("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
+    fields("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
+    smoke_first=True,
 )
 
 

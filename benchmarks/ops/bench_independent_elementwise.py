@@ -15,7 +15,13 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    ManifestBenchmark,
+    fields,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AlibiFwdOp,
@@ -59,37 +65,25 @@ class UnaryBenchmark(BenchmarkBase[ShapedRandnWorkload]):
 _CLAMP_FWD_OP = "ClampFwdOp"
 
 
-def _workloads_to_clamp_params(workloads: list) -> list:
-    """Convert manifest workload dicts to clamp-bench pytest params.
+def _clamp_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(input_shape, min_shape, max_shape, dtype)``; a row passes a bound
+    exactly when it declares that bound's shape."""
+    return (
+        tuple(w["input_shape"]),
+        tuple(w["min_shape"]) if "min_shape" in w else None,
+        tuple(w["max_shape"]) if "max_shape" in w else None,
+        dtype,
+    )
 
-    A row passes a bound exactly when it declares that bound's shape.
-    """
-    params = []
-    for idx, w in enumerate(workloads):
-        input_shape = tuple(w["input_shape"])
-        min_shape = tuple(w["min_shape"]) if "min_shape" in w else None
-        max_shape = tuple(w["max_shape"]) if "max_shape" in w else None
-        label = w.get("label", "x".join(str(s) for s in input_shape))
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            # Smoke = first workload + fp16; everything else is full-mode.
-            mark = pytest.mark.smoke if (idx == 0 and dtype is torch.float16) else pytest.mark.full
-            params.append(
-                pytest.param(
-                    input_shape,
-                    min_shape,
-                    max_shape,
-                    dtype,
-                    marks=mark,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+
+def _clamp_marks(w: dict, dtype: torch.dtype, index: int) -> tuple:
+    """The first row's fp16 case is the smoke case; every other case is full."""
+    return (pytest.mark.smoke if index == 0 and dtype is torch.float16 else pytest.mark.full,)
 
 
 @pytest.mark.parametrize(
     "input_shape, min_shape, max_shape, dtype",
-    _workloads_to_clamp_params(load_workloads(_CLAMP_FWD_OP)),
+    workload_params(load_workloads(_CLAMP_FWD_OP), _clamp_args, marks=_clamp_marks),
 )
 def test_clamp_tensor_bench(
     input_shape: tuple,
@@ -134,30 +128,15 @@ _ALIBI_OP = "AlibiFwdOp"
 _SINUSOIDAL_OP = "SinusoidalFwdOp"
 
 
-def _generative_params(workloads: list, keys: tuple) -> list:
-    """Manifest workloads -> params; first workload smoke, rest full.
-
-    The id ends with the dtype the case runs, so a label never has to spell one.
-    """
-    params = []
-    for i, w in enumerate(workloads):
-        values = [w[k] for k in keys]
-        dtype_name = w["dtypes"][0]
-        mark = pytest.mark.smoke if i == 0 else pytest.mark.full
-        label = w.get("label", f"w{i}")
-        params.append(
-            pytest.param(
-                *values, getattr(torch, dtype_name), marks=mark, id=f"{label}-{dtype_name}"
-            )
-        )
-    return params
-
-
 class AlibiBenchFixture(FixtureBase):
     PARAMS = [
         (
             "seq_len, num_heads, dtype",
-            _generative_params(load_workloads(_ALIBI_OP), ("seq_len", "num_heads")),
+            workload_params(
+                load_workloads(_ALIBI_OP),
+                fields("seq_len", "num_heads", dtype_last=True),
+                smoke_first=True,
+            ),
         )
     ]
 
@@ -166,7 +145,11 @@ class SinusoidalBenchFixture(FixtureBase):
     PARAMS = [
         (
             "seq_len, d_model, dtype",
-            _generative_params(load_workloads(_SINUSOIDAL_OP), ("seq_len", "d_model")),
+            workload_params(
+                load_workloads(_SINUSOIDAL_OP),
+                fields("seq_len", "d_model", dtype_last=True),
+                smoke_first=True,
+            ),
         )
     ]
 

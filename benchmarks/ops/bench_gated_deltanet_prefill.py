@@ -16,8 +16,12 @@ import pytest
 import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import manifest_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
@@ -105,11 +109,13 @@ def _gdn_prefill_args(
     )
 
 
-_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), _gdn_prefill_args, tune=False)
-_BHTD_BENCH_PARAMS = manifest_params(
+_BENCH_PARAMS = workload_params(load_workloads(_OP_NAME), then_dtype(_gdn_prefill_args, tune=False))
+_BHTD_BENCH_PARAMS = workload_params(
     load_workloads(_BHTD_OP_NAME),
-    functools.partial(_gdn_prefill_args, layout="bhtd"),
-    tune=False,
+    then_dtype(
+        functools.partial(_gdn_prefill_args, layout="bhtd"),
+        tune=False,
+    ),
 )
 
 

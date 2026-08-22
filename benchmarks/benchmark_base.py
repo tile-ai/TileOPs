@@ -6,6 +6,7 @@ are re-exported here, so a bench file keeps importing what it always did.
 
 import statistics
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any, Generic, Optional, TypeVar
 
 import pytest
@@ -37,7 +38,9 @@ __all__ = [
     "ManifestBenchmark",
     "backward_of",
     "bench_kernel",
-    "workload_field_params",
+    "fields",
+    "then_dtype",
+    "workload_params",
     "workloads_to_params",
 ]
 
@@ -206,16 +209,103 @@ def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
     }
 
 
+def workload_params(
+    workloads: list,
+    build_args: "Callable[[dict, torch.dtype], tuple]",
+    *,
+    smoke_first: bool = False,
+    dedupe_on: "tuple[str, ...] | None" = None,
+    marks: "Callable[[dict, torch.dtype, int], tuple] | None" = None,
+) -> list:
+    """The one place a manifest workload becomes a pytest case.
+
+    One case per (row, dtype in that row's ``dtypes``), with the id
+    ``f"{label}-{dtype}"`` — so a label never has to spell a dtype. What varies
+    per family is only how a row becomes positional args, which is *build_args*;
+    compose it with :func:`fields` and :func:`then_dtype`.
+
+    Args:
+        workloads: Rows from ``load_workloads``.
+        build_args: ``(row, dtype) -> positional args`` for one case.
+        smoke_first: Mark the first row's cases ``smoke`` and the rest ``full``.
+        marks: ``(row, dtype, row_index) -> marks`` when a case's marks depend on
+            its dtype; it replaces *smoke_first* for the rows it is given.
+        dedupe_on: Row keys that identify a measurement. A row repeating an
+            earlier row's values under these keys is dropped, for a bench whose
+            workload generator makes the dtype rows one measurement.
+    """
+    params: list = []
+    seen: set = set()
+    rows = 0
+    for w in workloads:
+        if dedupe_on is not None:
+            identity = tuple(str(w.get(k)) for k in dedupe_on)
+            if identity in seen:
+                continue
+            seen.add(identity)
+        row_marks: tuple = ()
+        if reason := w.get("bench_skip_reason"):
+            row_marks = (pytest.mark.skip(reason=reason),)
+        elif smoke_first:
+            row_marks = (pytest.mark.smoke if rows == 0 else pytest.mark.full,)
+        index = rows
+        rows += 1
+        label = w.get("label", "manifest")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            case_marks = row_marks if marks is None else tuple(marks(w, dtype, index))
+            params.append(
+                pytest.param(
+                    *build_args(w, dtype),
+                    id=f"{label}-{dtype_str}",
+                    marks=case_marks,
+                )
+            )
+    return params
+
+
+def fields(*keys: str, dtype_last: bool = False) -> "Callable[[dict, torch.dtype], tuple]":
+    """Row values under *keys*, positionally.
+
+    A key ending in ``dtype`` resolves to the ``torch.dtype`` it names, so a row
+    declaring an input and an output dtype keeps them apart. With *dtype_last*
+    the case's dtype follows the keyed values, for a test whose signature ends
+    in ``dtype`` while the row does not name one.
+    """
+
+    def build(w: dict, dtype: torch.dtype) -> tuple:
+        values = tuple(getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys)
+        return (*values, dtype) if dtype_last else values
+
+    return build
+
+
+def then_dtype(
+    row_args: "Callable[[dict], tuple]",
+    *,
+    tune: bool | None = None,
+) -> "Callable[[dict, torch.dtype], tuple]":
+    """Append the case's dtype to what *row_args* returns, and *tune* after it
+    when the test takes one. *row_args* is a family's row-to-args function; it
+    reads the row only, since the dtype is the axis this adds."""
+
+    def build(w: dict, dtype: torch.dtype) -> tuple:
+        tail = (dtype,) if tune is None else (dtype, tune)
+        return (*row_args(w), *tail)
+
+    return build
+
+
 def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     """Convert manifest workload dicts for *op_name* to pytest params.
 
-    Each entry becomes ``pytest.param(shape, dtype, id=...)``; with
-    ``include_extra=True`` a third element carries the op-call params
-    declared on the workload entry (e.g. ``{"dim": 0}``).
+    Single-tensor-input convenience wrapper over :func:`workload_params`: it
+    reads the manifest, checks each row against the signature, and yields
+    ``pytest.param(shape, dtype)``; with ``include_extra=True`` a third element
+    carries the op-call params declared on the row (e.g. ``{"dim": 0}``).
     """
     workloads = load_workloads(op_name)  # canonical not-found error
     shape_key, allowed = _workload_contract(op_name)
-    params = []
     for w in workloads:
         if shape_key not in w:
             raise KeyError(
@@ -232,38 +322,22 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
                 f"workload {w.get('label', w)!r} of {op_name!r} has unknown "
                 f"keys {unknown}; allowed: {sorted(allowed)}."
             )
+
+    def build(w: dict, dtype: torch.dtype) -> tuple:
         shape = tuple(w[shape_key])
-        label = w.get("label", "x".join(str(s) for s in shape))
-        extra = _workload_extra_params(w, shape_key) if include_extra else {}
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            # Copy ``extra`` per parametrization so mutation in one test case
-            # cannot leak into later cases sharing the workload entry.
-            param_args = (shape, dtype, dict(extra)) if include_extra else (shape, dtype)
-            params.append(pytest.param(*param_args, id=f"{label}-{dtype_str}"))
-    return params
+        if not include_extra:
+            return (shape, dtype)
+        # Copy the extras per case so mutation in one cannot leak into a later
+        # case sharing the row.
+        return (shape, dtype, dict(_workload_extra_params(w, shape_key)))
 
-
-def workload_field_params(workloads: list, keys: tuple) -> list:
-    """Turn manifest workload dicts into pytest params.
-
-    First workload is marked ``smoke``, the rest ``full``. Keys ending in
-    ``dtype`` are resolved to ``torch.dtype`` values, and the case id ends with
-    the dtype it runs, so a label never has to spell one.
-    """
-    params = []
-    for i, w in enumerate(workloads):
-        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
-        dtype_keys = [k for k in keys if k.endswith("dtype")]
-        suffix = "".join(f"-{w[k]}" for k in dtype_keys)
-        params.append(
-            pytest.param(
-                *args,
-                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
-                id=f"{w['label']}{suffix}",
-            )
-        )
-    return params
+    # A row with no label is named by its shape, as the reports did before. The
+    # rows are the manifest's own dicts, so name a copy rather than writing to them.
+    rows = [
+        w if "label" in w else {**w, "label": "x".join(str(s) for s in w[shape_key])}
+        for w in workloads
+    ]
+    return workload_params(rows, build)
 
 
 class ManifestBenchmark(BenchmarkBase[Any]):

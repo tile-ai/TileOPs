@@ -1,38 +1,10 @@
-from collections.abc import Callable, Iterable
 from typing import Any
 
-import pytest
 import torch
 
 
 def torch_dtype(dtype_name: str) -> torch.dtype:
     return getattr(torch, dtype_name)
-
-
-def manifest_params(
-    workloads: Iterable[dict[str, Any]],
-    build_args: Callable[[dict[str, Any]], tuple[Any, ...]],
-    *,
-    tune: bool = True,
-) -> list:
-    params = []
-    for workload in workloads:
-        label = workload.get("label", "manifest")
-        marks = ()
-        if reason := workload.get("bench_skip_reason"):
-            marks = (pytest.mark.skip(reason=reason),)
-        for dtype_name in workload["dtypes"]:
-            dtype = torch_dtype(dtype_name)
-            params.append(
-                pytest.param(
-                    *build_args(workload),
-                    dtype,
-                    tune,
-                    id=f"{label}-{dtype_name}",
-                    marks=marks,
-                )
-            )
-    return params
 
 
 def mha_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, bool]:

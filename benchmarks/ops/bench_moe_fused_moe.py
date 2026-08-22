@@ -30,17 +30,12 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase
+from benchmarks.benchmark_base import BenchmarkBase, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
 from workloads.moe import FusedMoeWorkload
 
 _OP_NAME = "FusedMoeFwdOp"
-
-_DTYPE_MAP = {
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-}
 
 
 class FusedMoeBenchmark(BenchmarkBase[FusedMoeWorkload]):
@@ -73,35 +68,24 @@ def _renormalize(w: dict) -> bool:
     return bool(w.get("renormalize", False))
 
 
-def _to_params(workloads):
-    """Convert the manifest entry's workloads to pytest params.
-
-    A row passes the correction bias exactly when it declares
-    ``correction_bias_shape``.
-    """
-    params = []
-    for w in workloads:
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["num_tokens"],
-                    w["num_experts"],
-                    w["top_k"],
-                    w["hidden_size"],
-                    w["ffn_size"],
-                    w["scoring_func"],
-                    _renormalize(w),
-                    "correction_bias_shape" in w,
-                    _routed_scaling_factor(w),
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _fused_moe_args(w: dict, dtype: torch.dtype) -> tuple:
+    """Positional args for one fused-MoE case; a row passes the correction bias
+    exactly when it declares ``correction_bias_shape``."""
+    return (
+        w["num_tokens"],
+        w["num_experts"],
+        w["top_k"],
+        w["hidden_size"],
+        w["ffn_size"],
+        w["scoring_func"],
+        _renormalize(w),
+        "correction_bias_shape" in w,
+        _routed_scaling_factor(w),
+        dtype,
+    )
 
 
-_FWD_PARAMS = _to_params(load_workloads(_OP_NAME))
+_FWD_PARAMS = workload_params(load_workloads(_OP_NAME), _fused_moe_args)
 
 
 def _run_bench(
@@ -238,7 +222,7 @@ def _run_bench(
 @pytest.mark.parametrize(
     "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
     " scoring_func, renormalize, with_correction_bias,"
-    " routed_scaling_factor, dtype_str",
+    " routed_scaling_factor, dtype",
     _FWD_PARAMS,
 )
 def test_fused_moe_fwd_bench(
@@ -251,9 +235,8 @@ def test_fused_moe_fwd_bench(
     renormalize,
     with_correction_bias,
     routed_scaling_factor,
-    dtype_str,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     _run_bench(
         num_tokens,
         num_experts,

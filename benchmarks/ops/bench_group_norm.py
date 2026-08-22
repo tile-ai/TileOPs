@@ -14,7 +14,7 @@ from benchmarks.baselines import (
     flaggems_group_norm,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
@@ -22,26 +22,19 @@ from workloads.normalization import GroupNormWorkload
 _OP_NAME = "GroupNormFwdOp"
 
 
-def _build_params(workloads):
-    params = []
-    for w in workloads:
-        shape = w["x_shape"]
-        n, c, spatial = shape[0], shape[1], tuple(shape[2:])
-        num_groups = w.get("num_groups")
-        if num_groups is None:
-            raise KeyError("Workload manifest must contain 'num_groups'")
-        label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(
-                pytest.param(n, c, spatial, num_groups, dtype, False, id=f"{label}-{dtype_str}")
-            )
-    return params
+def _group_norm_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(n, c, spatial, num_groups, dtype, tune)``."""
+    n, c, *spatial = w["x_shape"]
+    if "num_groups" not in w:
+        raise KeyError("Workload manifest must contain 'num_groups'")
+    return (n, c, tuple(spatial), w["num_groups"], dtype, False)
 
 
 _WORKLOADS = load_workloads(_OP_NAME)
-_AFFINE_PARAMS = _build_params([w for w in _WORKLOADS if "weight_shape" in w])
-_NO_AFFINE_PARAMS = _build_params([w for w in _WORKLOADS if "weight_shape" not in w])
+_AFFINE_PARAMS = workload_params([w for w in _WORKLOADS if "weight_shape" in w], _group_norm_args)
+_NO_AFFINE_PARAMS = workload_params(
+    [w for w in _WORKLOADS if "weight_shape" not in w], _group_norm_args
+)
 
 
 @pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune", _AFFINE_PARAMS)

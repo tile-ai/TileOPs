@@ -25,6 +25,7 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import (
     BenchmarkBase,
     ManifestBenchmark,
+    workload_params,
 )
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
@@ -577,35 +578,41 @@ _GELU_AND_MUL_OP = "GeluAndMulFwdOp"
 _GELU_TANH_AND_MUL_OP = "GeluTanhAndMulFwdOp"
 
 
-def _fused_gated_params(workloads: list) -> list:
-    """Manifest workloads -> (M, N, dtype) params; x_shape trailing axis is 2*N."""
-    params = []
-    for i, w in enumerate(workloads):
-        m, two_n = w["x_shape"]
-        for dtype_name in w["dtypes"]:
-            mark = pytest.mark.smoke if i == 0 else pytest.mark.full
-            params.append(
-                pytest.param(
-                    m,
-                    two_n // 2,
-                    getattr(torch, dtype_name),
-                    marks=mark,
-                    id=f"{w.get('label', f'w{i}')}-{dtype_name}",
-                )
-            )
-    return params
+def _fused_gated_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(M, N, dtype)``; the x_shape trailing axis is 2*N."""
+    m, two_n = w["x_shape"]
+    return (m, two_n // 2, dtype)
 
 
 class SiluAndMulBenchFixture(FixtureBase):
-    PARAMS = [("M, N, dtype", _fused_gated_params(load_workloads(_SILU_AND_MUL_OP)))]
+    PARAMS = [
+        (
+            "M, N, dtype",
+            workload_params(load_workloads(_SILU_AND_MUL_OP), _fused_gated_args, smoke_first=True),
+        )
+    ]
 
 
 class GeluAndMulBenchFixture(FixtureBase):
-    PARAMS = [("M, N, dtype", _fused_gated_params(load_workloads(_GELU_AND_MUL_OP)))]
+    PARAMS = [
+        (
+            "M, N, dtype",
+            workload_params(load_workloads(_GELU_AND_MUL_OP), _fused_gated_args, smoke_first=True),
+        )
+    ]
 
 
 class GeluTanhAndMulBenchFixture(FixtureBase):
-    PARAMS = [("M, N, dtype", _fused_gated_params(load_workloads(_GELU_TANH_AND_MUL_OP)))]
+    PARAMS = [
+        (
+            "M, N, dtype",
+            workload_params(
+                load_workloads(_GELU_TANH_AND_MUL_OP),
+                _fused_gated_args,
+                smoke_first=True,
+            ),
+        )
+    ]
 
 
 def _silu_and_mul_baseline(x: torch.Tensor) -> torch.Tensor:

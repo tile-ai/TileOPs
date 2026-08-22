@@ -2,8 +2,12 @@ from typing import Optional
 
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import manifest_params
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetDecodeFwdOp
 from workloads.linear_attention import GatedDeltaNetDecodeWorkload
@@ -70,10 +74,12 @@ class GatedDeltaNetDecodeBenchFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, dim_k, dim_v, dtype, tune",
-            manifest_params(
+            workload_params(
                 load_workloads(_OP_NAME),
-                lambda w: (w["q_shape"][0], w["q_shape"][1], w["q_shape"][2], w["v_shape"][2]),
-                tune=False,
+                then_dtype(
+                    lambda w: (w["q_shape"][0], w["q_shape"][1], w["q_shape"][2], w["v_shape"][2]),
+                    tune=False,
+                ),
             ),
         ),
     ]

@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.kernels.moe import (
     MoeGroupedGemmPersistent3WGFusedActKernel,
     MoeGroupedGemmSeparateActKernel,
@@ -27,47 +27,24 @@ from workloads.moe import MoeGroupedGemmNopadWorkload
 
 _OP_NAME = "MoeGateUpFwdOp"
 
-_DTYPE_MAP = {
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-}
-
-
-def _manifest_params():
-    """Convert manifest workloads to pytest params (numel, E, ffn, K, dtype)."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["numel"],
-                    w["num_experts"],
-                    w["ffn"],
-                    w["k"],
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
-
 
 @pytest.mark.parametrize(
-    "numel, num_experts, ffn, k, dtype_str",
-    _manifest_params(),
+    "numel, num_experts, ffn, k, dtype",
+    workload_params(
+        load_workloads(_OP_NAME), fields("numel", "num_experts", "ffn", "k", dtype_last=True)
+    ),
 )
 def test_moe_gate_up_bench(
     numel: int,
     num_experts: int,
     ffn: int,
     k: int,
-    dtype_str: str,
+    dtype: torch.dtype,
 ) -> None:
     cap = torch.cuda.get_device_capability()
     if cap[0] < 9:
         pytest.skip(f"SM90 required for the 3WG fused-activation kernel; got SM{cap[0]}{cap[1]}.")
 
-    dtype = _DTYPE_MAP[dtype_str]
     workload = MoeGroupedGemmNopadWorkload(numel, num_experts, 2 * ffn, k, dtype)
     a, b, true_sizes, true_offsets = workload.gen_inputs()
 

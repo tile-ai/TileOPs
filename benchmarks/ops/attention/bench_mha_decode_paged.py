@@ -1,8 +1,12 @@
 import pytest
 import torch
 
-from benchmarks.benchmark_base import ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_paged_args
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.manifest_params import mha_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MhaDecodePagedWorkload
@@ -79,7 +83,9 @@ def _flashinfer_mha_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
-_MHA_DECODE_PAGED_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_decode_paged_args)
+_MHA_DECODE_PAGED_BENCH_PARAMS = workload_params(
+    load_workloads(_OP_NAME), then_dtype(mha_decode_paged_args, tune=True)
+)
 
 
 @pytest.mark.parametrize(

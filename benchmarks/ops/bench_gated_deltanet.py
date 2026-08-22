@@ -19,8 +19,9 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     backward_of,
+    then_dtype,
+    workload_params,
 )
-from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetBHTDFwdOp, GatedDeltaNetBTHDFwdOp, GatedDeltaNetBwdOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
@@ -61,7 +62,7 @@ def _gdn_bthd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
-    manifest_params(load_workloads(_FWD_OP_NAME), _gdn_bthd_args, tune=False),
+    workload_params(load_workloads(_FWD_OP_NAME), then_dtype(_gdn_bthd_args, tune=False)),
 )
 def test_gated_deltanet_vs_fla_fwd(
     batch: int,
@@ -90,7 +91,7 @@ def test_gated_deltanet_vs_fla_fwd(
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
-    manifest_params(load_workloads(_BHTD_FWD_OP_NAME), _gdn_bhtd_args, tune=False),
+    workload_params(load_workloads(_BHTD_FWD_OP_NAME), then_dtype(_gdn_bhtd_args, tune=False)),
 )
 def test_gated_deltanet_bhtd_vs_fla_fwd(
     batch: int,
@@ -121,7 +122,7 @@ def test_gated_deltanet_bhtd_vs_fla_fwd(
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
-    manifest_params(load_workloads(_BWD_OP_NAME), _gdn_bhtd_args, tune=False),
+    workload_params(load_workloads(_BWD_OP_NAME), then_dtype(_gdn_bhtd_args, tune=False)),
 )
 def test_gated_deltanet_vs_fla_bwd(
     batch: int,

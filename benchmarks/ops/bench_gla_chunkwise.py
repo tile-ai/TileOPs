@@ -13,8 +13,12 @@ import pytest
 import torch
 from fla.ops.gla import chunk_gla
 
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of
-from benchmarks.ops.attention.manifest_params import manifest_params
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    backward_of,
+    then_dtype,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import GLABwdOp, GLAFwdOp
 from workloads.linear_attention import GLAChunkwiseWorkload
@@ -53,7 +57,7 @@ def _gla_bwd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, has_initial_state, dtype, tune",
-    manifest_params(load_workloads(_FWD_OP_NAME), _gla_args, tune=False),
+    workload_params(load_workloads(_FWD_OP_NAME), then_dtype(_gla_args, tune=False)),
 )
 def test_gla_fwd_bench(
     batch: int,
@@ -98,7 +102,7 @@ def test_gla_fwd_bench(
 )
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    manifest_params(load_workloads(_BWD_OP_NAME), _gla_bwd_args, tune=False),
+    workload_params(load_workloads(_BWD_OP_NAME), then_dtype(_gla_bwd_args, tune=False)),
 )
 def test_gla_bwd_bench(
     batch: int,
