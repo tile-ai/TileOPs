@@ -117,9 +117,9 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 ### Calling conventions
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
-- **Op with dynamic dims:** `_infer_output_shapes` called in `forward()` once dynamic dims resolve.
-- **Kernel construction:** always in `forward()`, through `get_or_build_kernel` — see [Slot S16](#slot-s16).
-- **`_validate_dtypes`:** runs on every `forward()` call, and is the only place an op rejects a dtype.
+- **Op with dynamic dims:** `_infer_output_shapes` called once dynamic dims resolve, and by the fake while tracing.
+- **Kernel construction:** in `_eager_forward`, through `get_or_build_kernel` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](#slot-s16).
+- **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ### Inheritance in family-base hierarchies

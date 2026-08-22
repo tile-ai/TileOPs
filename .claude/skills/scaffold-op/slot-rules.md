@@ -1,7 +1,8 @@
 # Scaffold Slot Rules
 
-The 17 slots `scaffold-op` emits: S1-S7, S12-S21. Examples scaffold the fictional
-`ExampleCumsumFwdOp`; none mirrors a shipped file.
+The 17 slots `scaffold-op` emits: S1-S7, S12-S21. S8-S11 are reserved for T1 thin-wrapper
+subclasses and never emitted here. Examples scaffold the fictional `ExampleCumsumFwdOp`; none
+mirrors a shipped file.
 
 Contracts these rules emit against — base-class attributes, protocol variables, naming, parameter
 design, calling conventions — live in
@@ -77,28 +78,30 @@ design, calling conventions — live in
 
 ### Slot S12: <a id="slot-s12"></a> `__init__` signature
 
-- **Rule.** Keyword-only via `*`. Block order: (1) `static_dims` entries in manifest key order, no
-  defaults; (2) `signature.params` entries in manifest key order; (3) `kernel_map`, `tune`. Give
-  `dtype` a kwarg only when the inputs do not determine every output dtype — see
+- **Rule.** Block order: (1) `static_dims` entries in manifest key order, no defaults;
+  (2) `signature.params` entries in manifest key order; then `*` and (3) any param declaring
+  `kw_only: true`, followed by `target`, `kernel_map`, `tune`. Give `dtype` a parameter only when
+  the inputs do not determine every output dtype — see
   [Parameter design](../../../docs/design/ops-design-reference.md#parameter-design).
 - **Example.**
   ```python
   def __init__(
       self,
-      *,
-      M: int,
       N: int,
       dim: int = -1,
+      *,
+      target: Target = None,
       kernel_map: Optional[Dict[str, Kernel]] = None,
       tune: bool = False,
   ):
   ```
-- **Common mistakes.** Kwargs with no manifest source; accepting `dtype`, `in_dtype` or
-  `out_dtype`.
+- **Common mistakes.** Parameters with no manifest source; accepting `dtype`, `in_dtype` or
+  `out_dtype`; making a param keyword-only that the manifest does not declare `kw_only`.
 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
-- **Rule.** Sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`.
+- **Rule.** Sequence: (a) `self.<name> = <name>` per parameter, `target` among them; (b)
+  `self.dispatch_kernel(kernel_map)`.
   **Construct no kernel here**, whatever the op shape: the kernel is dtype-specialized and no dtype
   exists until `forward()` receives a tensor. `dispatch_kernel` resolves the kernel *class*, which
   needs no tensor and reads no device property; an architecture that cannot run the op is refused
@@ -117,9 +120,10 @@ design, calling conventions — live in
   ```python
   self.N = N
   self.dim = dim
+  self.target = target
   self.tune = tune
   # M unknown at init (only N committed via static_dims), and no dtype
-  # is known at all; the kernel is built in forward() from both.
+  # is known at all; the kernel is built on the first call from both.
   self.dispatch_kernel(kernel_map)
   ```
 - **Common mistakes.** `_infer_output_shapes` before `dispatch_kernel`; hard-coding the kernel
@@ -143,67 +147,65 @@ design, calling conventions — live in
 
 - **Rule.** Positional tensor parameters in manifest `signature.inputs` order; return annotation
   `torch.Tensor` or `Tuple[torch.Tensor, ...]` matching `signature.outputs` —
-  `def forward(self, x: torch.Tensor) -> torch.Tensor:`.
+  `def forward(self, x: torch.Tensor) -> torch.Tensor:`. An `optional: true` input defaults to
+  `None`.
 - **Common mistakes.** Keyword-only tensor parameters; non-tensor kwargs, which belong to
   `__init__`.
 
 ### Slot S16: <a id="slot-s16"></a> `forward` body
 
-- **Rule.** Sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` and normalise
-  parameter-dependent axes via modulo (`dim = self.dim % x.ndim`); (c) validate each `static_dims`
-  commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops bind
-  `self._static_axes`, then — whatever the op shape — call
-  `self.get_or_build_kernel(<name>, <inputs>, key=<key>, build=<factory>)`; (e)
-  `.contiguous()` then reshape to the kernel's 2D layout; (f) call the kernel; (g) restore the
-  original shape.
+- **Rule.** Sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` and normalise parameter-dependent
+  axes via modulo (`dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment
+  (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) bind `self._static_axes` for arbitrary-rank
+  ops; (e) `.contiguous()` every input; (f)
+  `self.get_or_build_kernel(<name>, <inputs>, key=<key>, build=<factory>)`, handing over one slot
+  per `signature.inputs` entry — `None` for an absent optional one; (g) call the kernel.
+  An op that declares `torch_compile_fullgraph` keeps this body under the name `_eager_forward`,
+  and its `forward` becomes one call to the operator it registers — that operator is outside the
+  scaffold's scope, see
+  [Compile Dispatch Boundary](../../../docs/design/ops-design.md#compile-dispatch-boundary).
 - **Derivation.** Validation expressions come from each `static_dims` entry's
   `<tensor>.shape[<axis>]` RHS. Axis normalisation mirrors the param evaluation in `static_dims` +
   `shape_rules`. The role is the `kernel_map` dispatch key whose kernel the factory builds; the key
-  names every input the factory closes over. A kernel that pads
-  internally returns the semantic shape, so the op does not trim.
+  names every input the factory closes over.
+- **What the op does not do.** It states no device requirement — the kernel it fetched does that —
+  and it does not reshape for the kernel: rank reduction, padding and their inverses belong to the
+  kernel's own call wrapper, so a backend is handed the shapes the manifest declares.
 - **Example (arbitrary-rank).**
   ```python
-  self._validate_dtypes(x)
-  if not x.is_cuda:
-      raise ValueError("x must be a CUDA tensor")
-  if not -x.ndim <= self.dim < x.ndim:
-      raise ValueError(f"dim {self.dim} out of range for x.ndim={x.ndim}")
-  dim = self.dim % x.ndim
-  if x.shape[dim] != self.N:
-      raise ValueError(
-          f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
-          f"got {x.shape[dim]}"
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+      self._validate_dtypes(x)
+      if not -x.ndim <= self.dim < x.ndim:
+          raise ValueError(f"dim {self.dim} out of range for x.ndim={x.ndim}")
+      dim = self.dim % x.ndim
+      if x.shape[dim] != self.N:
+          raise ValueError(
+              f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
+              f"got {x.shape[dim]}"
+          )
+      self._static_axes = frozenset({(0, dim)})
+      self.dtype = x.dtype
+      x = x.contiguous()
+      kernel = self.get_or_build_kernel(
+          "example_cumsum_fwd",
+          (x,),
+          key=(self._cache_key(x.shape), x.dtype),
+          build=lambda: self.kernel_map["example_cumsum_fwd"](
+              self.N, "sum", x.dtype, tune=self.tune
+          ),
       )
-  self._static_axes = frozenset({(0, dim)})
-  M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
-  self.M = M
-  # default _cache_key projects non-static axes; override for coarser
-  # keying when kernel math permits (see Optional Hooks appendix).
-  self.dtype = x.dtype
-  kernel = self.get_or_build_kernel(
-      "example_cumsum_fwd",
-      (x,),
-      key=(self._cache_key(x.shape), x.dtype),
-      build=lambda: self.kernel_map["example_cumsum_fwd"](
-          M, self.N, "sum", x.dtype, tune=self.tune
-      ),
-  )
-  orig_shape = x.shape
-  x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
-  y2 = kernel(x2)
-  y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1 :], self.N)
-  return y.movedim(-1, dim)
+      return kernel(x)
   ```
 - **Entry.** The entry is the kernel when dtype is the whole story; when a specialization implies
   more — a compute dtype differing from the semantic one, an output dtype no input supplies — it is
   one frozen record holding them together. Those fields MUST NOT live in `self.*` attributes
   written while building the kernel: a second dtype leaves them describing the first.
-- **Common mistakes.** Keying on shape alone — a second dtype then silently reuses the first
-  dtype's kernel; reshaping before `.contiguous()`; hard-coding `x.shape[-1]` instead of the
-  normalised `x.shape[self.dim % x.ndim]`; binding `self._static_axes` before the axis is
-  non-negative; constructing the kernel outside the factory, or passing an already-built kernel
-  where a factory is expected — the build then runs on every call, hit or miss; trimming padded
-  kernel output in the op; not restoring the original shape.
+- **Common mistakes.** Keying on shape alone — a second
+  dtype then silently reuses the first dtype's kernel; a `.is_cuda` or `device.type` check in the
+  op; reshaping before the fetch, which hands a backend a shape the manifest never declares;
+  binding `self._static_axes` before the axis is non-negative; constructing the kernel outside the
+  factory, or passing an already-built kernel where a factory is expected — the build then runs on
+  every call, hit or miss; fetching a kernel at two sites in one op.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 

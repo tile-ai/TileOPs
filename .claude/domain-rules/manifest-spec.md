@@ -26,8 +26,9 @@
 
   Empty-sequence semantics is per-op:
 
-  - Ops accepting `dim=None` (`sum`, `mean`, `amax`, `amin`, `var`, `std`, `var_mean`, `all`, `any`, `count_nonzero`, `linalg.vector_norm` variants): empty sequence ≡ full reduction; formulas use `set(range(x.ndim))` as fallback.
-  - Ops without `dim=None` (e.g. `logsumexp`): empty sequence is invalid; declare `"isinstance(dim, int) or len(dim) > 0"`.
+  - Full reduction (`sum`, `mean`, `amax`, `amin`, `var`, `std`, `var_mean`, `count_nonzero`, `linalg.vector_norm` variants): empty sequence ≡ every axis. `reduced_shape(x.shape, dim, keepdim)` reads it that way.
+  - No reduction (`all`, `any`, matching `torch.all` / `torch.any`): empty sequence reduces nothing, so the rule names it: `reduced_shape(x.shape, dim, keepdim, 'noop')`.
+  - Invalid (`logsumexp`, which takes no `dim=None`): declare `"isinstance(dim, int) or len(dim) > 0"`.
 
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 
