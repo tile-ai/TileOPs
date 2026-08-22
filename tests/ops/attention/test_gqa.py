@@ -1154,7 +1154,7 @@ def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
     would land on the general dense implementation. Both entry points into the
     dense-prefill build must refuse it instead."""
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
-        GroupedQueryAttentionFwdOp(1, 8, 2, 128, 128, True)._get_kernel(torch.float32)
+        GroupedQueryAttentionFwdOp(1, 8, 2, 128, 128, True)._get_kernel((), torch.float32)
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
         GroupedQueryAttentionPrefillFwdOp(
             batch=1,
@@ -1239,7 +1239,7 @@ def test_gqa_prefill_dense_build_threads_q_and_kv_lengths_apart() -> None:
     )
 
     call = packed.attention_call(is_fp8=False, is_uniform=True)
-    kernel = packed._kernel_for(packed.select_kernel_key(PACKED_PREFILL_KEYS, call), call)
+    kernel = packed._kernel_for((), packed.select_kernel_key(PACKED_PREFILL_KEYS, call), call)
 
     assert kernel.kwargs["max_seqlen_q"] == max_seqlen_q
     assert kernel.kwargs["max_seqlen_kv"] == max_seqlen_kv
