@@ -180,22 +180,12 @@ class Op(ABC):
     def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    # FIXME(staged-rollout): compile_op_names defaults to empty instead of being required.
-    #
-    # Broken invariant: an op that declares ``torch_compile_fullgraph`` is not forced to
-    #     say which operators are its own, so nothing checks that the node in the graph
-    #     belongs to the op rather than to a kernel.
-    # Why: most ops still register their custom op in src/tileops/kernels/, where there
-    #     is no op-level name to declare.
-    # Cleanup: once every op that declares ``torch_compile_fullgraph`` names its
-    #     operators, have ``register_compile_contract`` reject an empty tuple, and delete
-    #     this marker.
-
     #: Operators this op registers on the torch.compile boundary. Naming them is what lets
     #: a test assert the traced graph holds nothing else, which is what keeps the graph the
     #: same when another target serves the op. A tuple because a conditional in-place write
-    #: registers two; empty means no boundary yet. Registration happens once per class, so
-    #: this is class state.
+    #: registers two. Registration happens once per class, so this is class state; an op
+    #: that declares ``torch_compile_fullgraph`` names its operators, which
+    #: ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:

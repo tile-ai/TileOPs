@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -34,6 +34,9 @@ class MultiHeadAttentionFwdOp(Op):
     MHA is the heads_kv == heads specialization of GQA, so route the
     maintained forward path through the GQA prefill dispatcher.
     """
+
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::mha_fwd",)
 
     def __init__(
         self,
