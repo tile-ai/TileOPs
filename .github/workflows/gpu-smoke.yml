@@ -49,19 +49,26 @@ jobs:
           required_checks=(pre-commit gitleaks actionlint)
           deadline=$((SECONDS + 900))
 
+          # Asked per check name, so the page is bounded by how often that one check
+          # ran on this SHA rather than by every check on it.
+          check_ever_succeeded() {
+            local name="$1" hits
+            hits=$(gh api \
+              "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?check_name=${name}&per_page=100" \
+              --jq '[.check_runs[] | select(.conclusion == "success")] | length')
+            [[ -n "$hits" && "$hits" -gt 0 ]]
+          }
+
           while true; do
-            checks_json=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100")
-            latest_checks=$(echo "$checks_json" | jq '
-              .check_runs
-              | group_by(.name)
-              | map(max_by(.id))
-            ')
+            # filter=latest returns one run per check name, so this is the exact
+            # newest state and its length is bounded by the number of check names.
+            latest_checks=$(gh api \
+              "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100" \
+              --jq '.check_runs')
 
             pending="false"
             failed=""
 
-            # per_page=100 above: the default page holds 30, and a success on a
-            # later page would read as absent. Truncation only ever delays.
             for check_name in "${required_checks[@]}"; do
               status=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
                 map(select(.name == $name)) | first | .status // ""
@@ -86,10 +93,7 @@ jobs:
               # other conclusion is judged on the latest run alone: a check that is
               # failing now is exactly what this gate must not spend GPU time on.
               if [[ "$conclusion" == "skipped" ]]; then
-                succeeded=$(echo "$checks_json" | jq -r --arg name "$check_name" '
-                  [.check_runs[] | select(.name == $name and .conclusion == "success")] | length
-                ')
-                if (( succeeded > 0 )); then
+                if check_ever_succeeded "$check_name"; then
                   continue
                 fi
                 pending="true"

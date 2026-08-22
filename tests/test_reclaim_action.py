@@ -336,10 +336,15 @@ def test_fork_fast_path_accepts_the_same_op_tests() -> None:
 
     script = _policy_script()
     # The arm itself, not the whole script: a substring search also matches the
-    # pattern quoted in a comment, and would pass over an arm that dropped it.
+    # pattern quoted in a comment, and would pass over an arm that dropped it. The
+    # `;;` requirement is what keeps a comment shaped like an arm from matching.
     fork_arms = [
         a
-        for a in re.findall(r"^\s*([^\s)]*ISSUE_TEMPLATE[^)\n]*)\)\s*$", script, re.M)
+        for a in re.findall(
+            r"^[ \t]*([^\s)#][^\s)]*ISSUE_TEMPLATE[^)\n]*)\)\n(?:.*\n)*?[ \t]*;;\s*$",
+            script,
+            re.M,
+        )
         if "tests/ops" in a
     ]
     assert len(fork_arms) == 1, f"expected one fork fast-path arm, found {fork_arms}"
@@ -455,11 +460,19 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     # yields empty strings — and empty reads as "no success, not completed", a
     # plausible-looking pending rather than a failure. set -e plus the guard below
     # turn that into an error instead of a wrong answer.
+    # check_ever_succeeded is the workflow's one call out to the API; stubbing it
+    # against the same synthetic runs keeps the loop text under test verbatim.
     harness = f"""
     set -euo pipefail
-    checks_json={json.dumps(checks_json)}
-    latest_checks=$(echo "$checks_json" | jq '.check_runs | group_by(.name) | map(max_by(.id))')
+    all_runs={json.dumps(checks_json)}
+    latest_checks=$(echo "$all_runs" | jq '.check_runs | group_by(.name) | map(max_by(.id))')
     [[ -n "$latest_checks" ]]
+    check_ever_succeeded() {{
+      local hits
+      hits=$(echo "$all_runs" | jq -r --arg name "$1" \
+        '[.check_runs[] | select(.name == $name and .conclusion == "success")] | length')
+      [[ -n "$hits" && "$hits" -gt 0 ]]
+    }}
     required_checks=(pre-commit gitleaks actionlint)
     pending="false"
     failed=""
