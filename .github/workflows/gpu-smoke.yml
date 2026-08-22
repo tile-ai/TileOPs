@@ -50,7 +50,7 @@ jobs:
           deadline=$((SECONDS + 900))
 
           while true; do
-            checks_json=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs")
+            checks_json=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100")
             latest_checks=$(echo "$checks_json" | jq '
               .check_runs
               | group_by(.name)
@@ -60,6 +60,9 @@ jobs:
             pending="false"
             failed=""
 
+            # per_page=100 above: the default page holds 30, and a success on a
+            # later page would read as absent. Truncation now only delays.
+            #
             # Satisfied means "some run succeeded on this SHA", not "the newest
             # run did": preflight skips these jobs once the SHA is validated, so
             # the skipped run is newer than the success it stands for. A skip with

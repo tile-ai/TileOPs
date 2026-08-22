@@ -21,6 +21,7 @@ runner or the Tilelang runtime. Must stay fast and hermetic.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -436,9 +437,15 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     checks_json = json.dumps(
         {"check_runs": [{"name": n, "status": s, "conclusion": c, "id": i} for n, s, c, i in runs]}
     )
+    # Every verdict in the loop comes out of jq, so a jq that is missing or errors
+    # yields empty strings — and empty reads as "no success, not completed", a
+    # plausible-looking pending rather than a failure. set -e plus the guard below
+    # turn that into an error instead of a wrong answer.
     harness = f"""
+    set -euo pipefail
     checks_json={json.dumps(checks_json)}
     latest_checks=$(echo "$checks_json" | jq '.check_runs | group_by(.name) | map(max_by(.id))')
+    [[ -n "$latest_checks" ]]
     required_checks=(pre-commit gitleaks actionlint)
     pending="false"
     failed=""
@@ -452,6 +459,7 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     return out[0], (out[1] if len(out) > 1 else "")
 
 
+@pytest.mark.skipif(shutil.which("jq") is None, reason="executes the workflow's jq calls")
 def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
     """Blocking on a skipped run burned the 900s deadline and skipped GPU smoke with
     "Timed out" in the log, so a PR could reach ready with GPU smoke never having

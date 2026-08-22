@@ -163,7 +163,7 @@ jobs:
           # skippable, but still require the core preflight checks to be
           # successful so `ready_for_review` re-runs them and unblocks
           # gpu-smoke.
-          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" --jq '
+          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100" --jq '
             [
               .check_runs
               | group_by(.name)
