@@ -48,6 +48,7 @@ from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
     dim_uniqueness,
     reduced_axes,
+    reduced_shape,
 )
 
 PACKAGE_ROOT = "src"
@@ -2272,6 +2273,7 @@ _SHAPE_RULE_BUILTIN_PAIRS = [
     ("dim_range_validity", dim_range_validity),
     ("dim_uniqueness", dim_uniqueness),
     ("reduced_axes", reduced_axes),
+    ("reduced_shape", reduced_shape),
 ]
 _SHAPE_RULE_BUILTINS: dict = {}
 for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:

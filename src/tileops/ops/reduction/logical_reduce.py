@@ -10,6 +10,7 @@ from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceKernel,
     to_logical_float32,
 )
+from tileops.manifest.shape_rules import reduced_shape
 
 from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
@@ -186,6 +187,10 @@ class CountNonzeroFwdOp(_ReduceOpBase):
             kernel_map=kernel_map,
             tune=tune,
         )
+
+    def _infer_output_shapes(self, x_shape: Tuple[int, ...]) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: no ``keepdim`` param, so a reduced axis always goes."""
+        return {"output": reduced_shape(x_shape, self.dim, False)}
 
     def _noop_output_dtype(self) -> torch.dtype:
         """count_nonzero returns int64 per manifest contract.

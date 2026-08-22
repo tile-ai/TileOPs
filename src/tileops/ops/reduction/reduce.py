@@ -20,6 +20,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.reduce import ReduceKernel
+from tileops.manifest.shape_rules import reduced_shape
 
 from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
@@ -112,6 +113,10 @@ class _ReduceOpBase(Op):
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: tuple[int, int] | None = None
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: the reduced axes leave, or stay as size 1."""
+        return {"output": reduced_shape(x_shape, self.dim, self.keepdim)}
 
     # Dim validation (subclasses may override)
 
@@ -699,6 +704,11 @@ class VarFwdOp(_WelfordReduceOp):
 
 class VarMeanFwdOp(_WelfordReduceOp):
     """Variance and mean reduction."""
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: both outputs are the reduced shape."""
+        shape = reduced_shape(x_shape, self.dim, self.keepdim)
+        return {"var": shape, "mean": shape}
 
     _op_kind = "var_mean"
 

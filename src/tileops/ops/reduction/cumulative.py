@@ -46,6 +46,10 @@ class CumulativeOp(Op):
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
 
+    def _infer_output_shapes(self, x_shape: Tuple[int, ...]) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: a scan writes one element per input element."""
+        return {"y": tuple(x_shape)}
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"cumulative_fwd": CumulativeKernel}

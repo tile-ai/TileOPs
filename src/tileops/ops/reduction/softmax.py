@@ -9,6 +9,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.logsumexp import LogSumExpKernel
 from tileops.kernels.reduction.softmax import SoftmaxKernel
+from tileops.manifest.shape_rules import reduced_shape
 
 from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
@@ -69,6 +70,10 @@ class _SoftmaxBaseOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel: object | None = None
         self._last_roofline_spec: tuple[int, int, torch.dtype] | None = None
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: normalizing over an axis keeps the shape."""
+        return {"output": tuple(x_shape)}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -343,3 +348,7 @@ class LogSumExpFwdOp(_SoftmaxBaseOp):
     ):
         super().__init__(dim=dim, kernel_map=kernel_map, tune=tune)
         self.keepdim = keepdim
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: this one reduces, unlike its siblings."""
+        return {"output": reduced_shape(x_shape, self.dim, self.keepdim)}
