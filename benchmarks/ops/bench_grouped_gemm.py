@@ -10,6 +10,7 @@ GEMM launches, which no single manifest workload describes.
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     workload_field_params,
@@ -57,5 +58,12 @@ def test_grouped_gemm_bench(
     bm = ManifestBenchmark(_GROUPED_GEMM_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=name, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=name,
+        params=locals(),
     )

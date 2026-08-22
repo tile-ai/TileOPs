@@ -3,6 +3,7 @@ from typing import List, Optional
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import BenchmarkBase
 from tileops.ops import MeanPoolingForwardOp
 from workloads.nsa_utils import prepare_chunk_indices
@@ -128,5 +129,12 @@ def test_mean_pooling_bench(
     op = MeanPoolingForwardOp(**params)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

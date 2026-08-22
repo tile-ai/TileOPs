@@ -11,6 +11,7 @@ manifest-derived roofline (`op.eval_roofline()`).
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeGroupedGemmNopadFwdOp
@@ -84,7 +85,11 @@ def test_moe_grouped_gemm_nopad_bench(
     torch.cuda.synchronize()
 
     bm.compare(
-        {"tileops": op, "torch-ref": _torch_fn},
+        {
+            "tileops": op,
+            "torch-ref": _torch_fn,
+            TORCH_COMPILE_TAG: compiled_reference(_torch_fn),
+        },
         a,
         b,
         true_sizes,

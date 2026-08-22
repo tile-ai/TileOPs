@@ -135,6 +135,7 @@ fields its own benchmark reads.
 1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `BenchmarkBase`, implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
 1. **Benchmark function** — `@YourFixture` decorated, construct workload + benchmark, call `inputs = workload.gen_inputs()`, then `bm.profile(op, *inputs)` and `BenchmarkReport.record(op, locals(), result, tag="tileops")`.
 1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). Profile the workload's `ref_program` for the torch baseline. Another idiom for the same computation overrides `ref_program` and says why; a different implementation takes its own tag next to it, is asserted against the reference before the case is timed, and raises when unavailable. Never import a baseline from `tests/`.
+1. **Library baselines** — resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): `flaggems_op`, `flashinfer_op` and `vllm_op` for the kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row that has a library kernel for its op times it, so the nightly's ratio is against the strongest implementation available rather than against eager torch alone.
 
 ### Metrics
 

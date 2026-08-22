@@ -11,6 +11,7 @@ One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     workload_field_params,
@@ -45,7 +46,14 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )
 
 
@@ -68,7 +76,16 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     def ref_with_grad(*args):
         return test.ref_program(*args)
 
-    bm.compare({"tileops": op, "torch": ref_with_grad}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": ref_with_grad,
+            TORCH_COMPILE_TAG: compiled_reference(ref_with_grad),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 _ENGRAM_DECODE_OP = "EngramDecodeFwdOp"
@@ -98,5 +115,12 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

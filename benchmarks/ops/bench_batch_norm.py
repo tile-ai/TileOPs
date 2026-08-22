@@ -1,6 +1,9 @@
 """Benchmark for BatchNormFwdOp and BatchNormBwdOp.
 
-Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes.
+Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes. The
+forward row adds flag_gems' batch_norm and cuDNN through inductor; the backward row
+stays on the autograd reference alone, which is a node driven on this thread and not
+work either of those performs.
 """
 
 import math
@@ -8,6 +11,13 @@ import math
 import pytest
 import torch
 
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_op,
+)
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
@@ -52,6 +62,21 @@ def _torch_bn_fwd(x, weight, bias, running_mean, running_var):
         bias.float(),
         training=True,
     )
+
+
+def _flaggems_bn_fwd(running_mean: torch.Tensor, running_var: torch.Tensor):
+    """flag_gems' batch_norm on its own running statistics, output only.
+
+    Training mode updates them in place, and the cuDNN reference clones before it
+    does, so this gets copies rather than the tensors the other tags read.
+    """
+    fn = flaggems_op("batch_norm")
+    private_mean, private_var = running_mean.clone(), running_var.clone()
+
+    def baseline_fn(x, _running_mean, _running_var, weight, bias):
+        return fn(x.float(), weight, bias, private_mean, private_var, True, 0.1, 1e-5)[0]
+
+    return baseline_fn
 
 
 def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
@@ -111,10 +136,19 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
+    def torch_fn(x, rm, rv, w, b):
+        return _torch_bn_fwd(x, w, b, rm, rv)
+
+    flaggems_fn = _flaggems_bn_fwd(running_mean, running_var)
+    # cuDNN and Triton both reduce over N*H*W in fp32; agreement is at fp32 strength.
+    assert_matches_reference(flaggems_fn, torch_fn, *inputs, rtol=1e-4, atol=1e-4)
+
     bm.compare(
         {
             "tileops": lambda *a: op(*a),
-            "torch-cudnn": lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv),
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch-cudnn": torch_fn,
+            TORCH_COMPILE_TAG: compiled_reference(torch_fn),
         },
         *inputs,
         record_as=op,

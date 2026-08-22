@@ -2,6 +2,9 @@
 
 Profiles TileOPs vs PyTorch baselines for each new op category using
 DNN-realistic 2D shapes (tokens × hidden_dim) with the default op configuration.
+
+Every row adds the same reference through inductor. The three fused gated ops add
+flashinfer's kernel, which takes the concatenated input the reference splits.
 """
 
 from math import prod
@@ -11,6 +14,14 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import (
+    FLASHINFER_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flashinfer_op,
+    reference_tolerance,
+)
 from benchmarks.benchmark_base import (
     BenchmarkBase,
     ManifestBenchmark,
@@ -357,7 +368,16 @@ def test_binary_arith_bench(
 
     op = op_cls()
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 # Comparison ops (6)
@@ -403,7 +423,16 @@ def test_comparison_bench(
 
     op = _CMP_OPS[op_name]()
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 # Logical ops (2)
@@ -468,13 +497,8 @@ def test_logical_bench(
 
     # Baseline uses bool tensors
     a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
-    functors["torch"] = (
-        baseline_fn,
-        (
-            a_bool,
-            b_bool,
-        ),
-    )
+    functors["torch"] = (baseline_fn, (a_bool, b_bool))
+    functors[TORCH_COMPILE_TAG] = (compiled_reference(baseline_fn), (a_bool, b_bool))
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
@@ -533,7 +557,16 @@ def test_bitwise_bench(
 
     op = op_cls()
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 # Fused gated ops (2)
@@ -590,6 +623,8 @@ def _gelu_tanh_and_mul_baseline(x: torch.Tensor) -> torch.Tensor:
     return F.gelu(x[..., :half], approximate="tanh") * x[..., half:]
 
 
+# flashinfer names its fused gated kernels after the same three activations and
+# takes the same concatenated input, so a key here doubles as its entry-point name.
 _FUSED_BASELINES = {
     "silu_and_mul": _silu_and_mul_baseline,
     "gelu_and_mul": _gelu_and_mul_baseline,
@@ -599,8 +634,18 @@ _FUSED_BASELINES = {
 
 def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str, params: dict) -> None:
     inputs = test.gen_inputs()
+    baseline_fn = _FUSED_BASELINES[baseline_key]
+    flashinfer_fn = flashinfer_op(baseline_key)
+    assert_matches_reference(
+        flashinfer_fn, baseline_fn, *inputs, **reference_tolerance(params["dtype"])
+    )
     bm.compare(
-        {"tileops": op, "torch-ref": _FUSED_BASELINES[baseline_key]},
+        {
+            "tileops": op,
+            FLASHINFER_TAG: flashinfer_fn,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         *inputs,
         record_as=op,
         params=params,
@@ -695,7 +740,11 @@ def test_fused_gated_strategy_bench(
     kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
     baseline_fn = _FUSED_BASELINES[op_name]
     bm.compare(
-        {f"tileops-{strategy}": kernel, "torch": baseline_fn},
+        {
+            f"tileops-{strategy}": kernel,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         *inputs,
         record_as=f"{op_name}_strategy",
         params=locals(),
@@ -838,7 +887,11 @@ def test_broadcast_bench(
     op = op_cls()
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         *inputs,
         record_as=f"{op_name}_bcast",
         params=locals(),

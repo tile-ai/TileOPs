@@ -128,7 +128,15 @@ def test_gated_deltanet_prefill_bhtd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    """Head-major prefill. No FLA row: FLA takes token-major only."""
+    """Head-major prefill, timed alone."""
+    # FIXME(staged-rollout): this row records no baseline.
+    #
+    # Broken invariant: every benchmark records ≥1 non-tileops baseline.
+    # Why: FLA reads token-major only, and the workload's chunked reference is a
+    #   Python loop over chunks — at this op's 128k-token rows it costs more than
+    #   the rest of the family's benchmarks together.
+    # Cleanup: a reference that scales to 128k tokens, or an FLA entry point that
+    #   takes head-major input.
     test = GatedDeltaNetPrefillFwdWorkload(
         batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, layout=layout
     )

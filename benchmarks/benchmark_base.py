@@ -84,10 +84,12 @@ class BenchmarkBase(Generic[W], ABC):
 
     @abstractmethod
     def calculate_flops(self) -> Optional[float]:
+        """Total FLOPs of one call, or ``None`` to leave TFLOPS out of the row."""
         raise NotImplementedError
 
     @abstractmethod
     def calculate_memory(self) -> Optional[float]:
+        """Bytes moved by one call, or ``None`` to leave bandwidth out of the row."""
         raise NotImplementedError
 
     def profile(self, functor: Any, *inputs: Any) -> dict:

@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import BenchmarkBase, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
@@ -84,4 +85,13 @@ def test_deltanet_decode_bench(
     op = DeltaNetDecodeFwdOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch": test.ref_program}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )

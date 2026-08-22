@@ -10,6 +10,7 @@ from typing import Optional
 
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import BenchmarkBase, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
@@ -125,8 +126,8 @@ def test_gla_decode_bench(
             )
 
         functors["fla"] = (fla_decode, ())
-    else:
-        # --- Torch reference baseline ---
-        functors["torch"] = test.ref_program
+
+    functors["torch"] = test.ref_program
+    functors[TORCH_COMPILE_TAG] = compiled_reference(test.ref_program)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())

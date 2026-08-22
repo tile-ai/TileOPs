@@ -3,6 +3,12 @@ from typing import Any, Callable, Optional
 import pytest
 import torch
 
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    assert_matches_reference,
+    flaggems_op,
+    reference_tolerance,
+)
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
@@ -292,9 +298,17 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    bm.compare(
-        {"tileops": op, "torch-cublas": workload.torch_matmul}, a, b, record_as=op, params=locals()
-    )
+    # flag_gems' mm takes row-major operands; a transposed row is its own layout,
+    # which its kernel does not express, so those rows carry cuBLAS alone.
+    functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
+    if not trans_a and not trans_b:
+        flaggems_mm = flaggems_op("mm")
+        assert_matches_reference(
+            flaggems_mm, workload.torch_matmul, a, b, **reference_tolerance(dtype)
+        )
+        functors[FLAGGEMS_TAG] = flaggems_mm
+
+    bm.compare(functors, a, b, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())

@@ -15,6 +15,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.kernels.moe import (
     MoeGroupedGemmPersistent3WGFusedActKernel,
@@ -106,7 +107,12 @@ def test_moe_gate_up_bench(
         forced[tag] = kernel
 
     bm.compare(
-        {"tileops": op, **forced, "torch-ref": _torch_fn},
+        {
+            "tileops": op,
+            **forced,
+            "torch-ref": _torch_fn,
+            TORCH_COMPILE_TAG: compiled_reference(_torch_fn),
+        },
         a,
         b,
         true_sizes,

@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
@@ -170,19 +171,19 @@ def test_da_cumsum_fwd_bench(
             )
 
         functors["mamba"] = (mamba_fwd, ())
-    else:
 
-        def baseline(dt_raw, A, dt_bias):
-            return da_cumsum_fwd_ref(
-                dt_raw,
-                A,
-                num_chunks,
-                chunk_len,
-                dt_bias=dt_bias if has_dt_bias else None,
-                dt_softplus=dt_softplus,
-            )
+    def baseline(dt_raw, A, dt_bias):
+        return da_cumsum_fwd_ref(
+            dt_raw,
+            A,
+            num_chunks,
+            chunk_len,
+            dt_bias=dt_bias if has_dt_bias else None,
+            dt_softplus=dt_softplus,
+        )
 
-        functors["torch-ref"] = baseline
+    functors["torch-ref"] = baseline
+    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
@@ -302,12 +303,12 @@ def test_ssd_chunk_scan_fwd_bench(
             return _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
 
         functors["mamba"] = (mamba_fwd, ())
-    else:
 
-        def torch_ref(x, cb, dA_cumsum, C, prev_states, dt):
-            return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups)
+    def torch_ref(x, cb, dA_cumsum, C, prev_states, dt):
+        return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups)
 
-        functors["torch-ref"] = torch_ref
+    functors["torch-ref"] = torch_ref
+    functors[TORCH_COMPILE_TAG] = compiled_reference(torch_ref)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
@@ -397,14 +398,12 @@ def test_ssd_chunk_state_fwd_bench(
             )
 
         functors["mamba"] = (mamba_fwd, ())
-    else:
 
-        def baseline(x, Bmat, dt, dA_cumsum, seq_idx):
-            return ssd_chunk_state_fwd_ref(
-                x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx
-            )
+    def baseline(x, Bmat, dt, dA_cumsum, seq_idx):
+        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)
 
-        functors["torch-ref"] = baseline
+    functors["torch-ref"] = baseline
+    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
@@ -461,12 +460,12 @@ def test_ssd_state_passing_fwd_bench(
         torch.cuda.synchronize()
 
         functors["mamba"] = (mamba_fwd, ())
-    else:
 
-        def baseline(states, dA_chunk_cumsum, initial_states):
-            return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
+    def baseline(states, dA_chunk_cumsum, initial_states):
+        return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
-        functors["torch-ref"] = baseline
+    functors["torch-ref"] = baseline
+    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
@@ -540,15 +539,11 @@ def test_ssd_decode_bench(
     def baseline(A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 
-    functors["torch-ref"] = (
-        baseline,
-        (
-            A,
-            dt,
-            x,
-            B_in,
-            C_in,
-            state_bl,
-        ),
+    reference_args = (A, dt, x, B_in, C_in, state_bl)
+    functors["torch-ref"] = (baseline, reference_args)
+    # Its own state copy again: inductor's graph mutates it the same way eager does.
+    functors[TORCH_COMPILE_TAG] = (
+        compiled_reference(baseline),
+        (A, dt, x, B_in, C_in, state.clone()),
     )
     bm.compare(functors, A, dt, x, B_in, C_in, state_for_op, record_as=op, params=locals())

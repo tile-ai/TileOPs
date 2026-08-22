@@ -13,6 +13,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
@@ -235,20 +236,12 @@ def test_mamba2_fwd_bench(
                 C,
             ),
         )
-    else:
 
-        def _torch_wrapper(x, dt, A, B, C):
-            return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus, initial_states)
+    def _torch_wrapper(x, dt, A, B, C):
+        return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus, initial_states)
 
-        functors["torch-ref"] = (
-            _torch_wrapper,
-            (
-                x,
-                dt,
-                A,
-                B,
-                C,
-            ),
-        )
+    reference_args = (x, dt, A, B, C)
+    functors["torch-ref"] = (_torch_wrapper, reference_args)
+    functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
 
     bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states, record_as=op, params=locals())

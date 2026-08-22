@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
@@ -36,7 +37,16 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return scale * normed + shift
 
-    bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_ZERO_OP_NAME)))
@@ -52,4 +62,13 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return gate * (scale * normed + shift)
 
-    bm.compare({"tileops": op, "torch-ref": baseline_fn}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )

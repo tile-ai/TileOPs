@@ -1,7 +1,24 @@
+"""Benchmarks for InstanceNormFwdOp.
+
+flag_gems ships no instance_norm, so the tag goes to its ``group_norm`` with one
+group per channel, which computes the same thing. torch eager and inductor complete
+the row.
+"""
+
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
 
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_group_norm,
+    reference_tolerance,
+)
 from benchmarks.benchmark_base import ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
@@ -47,8 +64,23 @@ def test_instance_norm_bench(
     def baseline_fn(x, running_mean, running_var, weight, bias):
         return F.instance_norm(x, weight=weight, bias=bias, eps=1e-5)
 
+    # One group per channel is instance norm.
+    group_norm_fn = flaggems_group_norm(n, c, math.prod(spatial), c, 1e-5)
+
+    def flaggems_fn(x, running_mean, running_var, weight, bias):
+        return group_norm_fn(x, weight, bias)
+
+    assert_matches_reference(
+        flaggems_fn, baseline_fn, x, None, None, weight, bias, **reference_tolerance(dtype)
+    )
+
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {
+            "tileops": op,
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         x,
         None,
         None,
