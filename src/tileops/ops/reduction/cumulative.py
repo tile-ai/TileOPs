@@ -1,14 +1,16 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
-from abc import abstractmethod
+from math import prod
 from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.cumulative import CumulativeKernel
 
 from ..op_base import Op
+from ._boundary import register_reduction_op
 
 __all__ = ["CumprodFwdOp", "CumsumFwdOp", "CumulativeOp"]
 
@@ -22,26 +24,28 @@ class CumulativeOp(Op):
     Args:
         dim: Reduction axis (default -1). Negative values are normalized at
             forward time (`dim % x.ndim`).
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional kernel override dict.
         tune: If True, autotune tile configs.
     """
 
     _op_kind: str
 
-    # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
-    # so the static-axis frozenset is bound at forward time after dim
-    # normalization, not at the class level (per docs/design/ops-design.md § Step 3).
-    _static_axes: frozenset = frozenset()
+    #: Set by ``register_reduction_op`` on each concrete op; a base registers none.
+    _wrapped = None
 
     def __init__(
         self,
         dim: int = -1,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
         self.N = None
         self.dim = dim
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
@@ -71,75 +75,57 @@ class CumulativeOp(Op):
         # Read x + write y = 2 * M * N elements.
         return (M * N, 2 * M * N * elem_bytes)
 
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        M: int,
-        N: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        """Return a kernel built for (M, N, dtype), caching by specialization.
+    def _validate_and_normalize_dim(self, x: torch.Tensor) -> int:
+        """Validate the input and return the non-negative axis to scan.
 
-        A cache miss builds a Kernel, so a ``fullgraph=True`` caller must warm
-        every (M, N, dtype, device) it will feed the compiled callable.
+        Which devices a set of kernels runs on is the kernel's own statement, so no
+        device kind is checked here.
+
+        Raises:
+            ValueError: ``dim`` names an axis this rank does not have.
         """
-        key = (M, N, dtype, device_index)
-        return self.get_or_build_kernel(
-            "cumulative_fwd",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["cumulative_fwd"](
-                M,
-                N,
-                self._op_kind,
-                dtype,
-                tune=self.tune,
-            ),
-        )
-
-    def _validate_and_normalize_dim(self, x: torch.Tensor) -> tuple[int, int, torch.dtype]:
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
         self._validate_dtypes(x)
         ndim = x.ndim
         if not (-ndim <= self.dim < ndim):
             raise ValueError(f"dim={self.dim} out of range for {ndim}-D input")
-        dim_norm = self.dim % ndim
-        N = x.shape[dim_norm]
-        self.N = N
         self.dtype = x.dtype
-        # Bind the dynamic static-axis (param-dependent N axis) so
-        # Op-layer cache-key / introspection consumers see the committed axis.
-        self._static_axes = frozenset({(0, dim_norm)})
-        return dim_norm, N, x.dtype
+        return self.dim % ndim
 
-    @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Subclasses implement: validate, movedim, kernel call, restore."""
-        raise NotImplementedError
+        """Run the scan.
 
-    def _run(self, x: torch.Tensor) -> torch.Tensor:
-        """Shared forward implementation. Subclasses call this from `forward`."""
-        ndim = x.ndim
-        # The tensor this op declares, before the row layout its kernel wants.
-        declared = x
-        dim_norm, N, dtype = self._validate_and_normalize_dim(x)
+        One call to the operator this op registers: this is as far as dynamo traces.
+        """
+        return type(self)._wrapped(x, self._instance_key)
 
-        if dim_norm != ndim - 1:
-            x = x.movedim(dim_norm, -1)
-        post_move_shape = tuple(x.shape)
-        x = x.contiguous().reshape(-1, N)
-        M = x.shape[0]
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
 
-        # Alignment padding is handled inside the kernel via masked loads.
-        y = self._get_kernel((declared,), M, N, dtype, x.device.index)(x)
-        self._last_roofline_mn = (M, N)
-
-        y = y.reshape(post_move_shape)
-        if dim_norm != ndim - 1:
-            y = y.movedim(-1, dim_norm)
-        return y
+        Never traced: kernel construction enters a TileLang builder.
+        """
+        axis = self._validate_and_normalize_dim(x)
+        x = x.contiguous()  # handed over as the manifest declares it
+        n = x.shape[axis]
+        self.N = n
+        # From the shape, not from ``numel``: an empty scanned axis makes ``n`` zero.
+        m = prod(d for i, d in enumerate(x.shape) if i != axis)
+        self._last_roofline_mn = (m, n)
+        kernel = self.get_or_build_kernel(
+            "cumulative_fwd",
+            (x,),
+            # The kernel owns the permute, so the whole shape decides which kernel it is.
+            key=(tuple(x.shape), axis, x.dtype, x.device.index),
+            build=lambda: self.kernel_map["cumulative_fwd"](
+                m,
+                n,
+                self._op_kind,
+                x.dtype,
+                scan_axis=axis,
+                tune=self.tune,
+                device_index=x.device.index,
+            ),
+        )
+        return kernel(x)
 
 
 class CumsumFwdOp(CumulativeOp):
@@ -154,6 +140,8 @@ class CumsumFwdOp(CumulativeOp):
     Args:
         dim: Reduction axis (default -1). Negative values are normalized
             at forward time.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
 
@@ -165,9 +153,6 @@ class CumsumFwdOp(CumulativeOp):
 
     _op_kind = "sum"
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._run(x)
-
 
 class CumprodFwdOp(CumulativeOp):
     """Cumulative product operator: ``y = cumprod(x, dim)``.
@@ -178,6 +163,8 @@ class CumprodFwdOp(CumulativeOp):
     Args:
         dim: Reduction axis (default -1). Negative values are normalized
             at forward time.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
 
@@ -189,5 +176,6 @@ class CumprodFwdOp(CumulativeOp):
 
     _op_kind = "prod"
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._run(x)
+
+for _op_cls in (CumsumFwdOp, CumprodFwdOp):
+    register_reduction_op(_op_cls)

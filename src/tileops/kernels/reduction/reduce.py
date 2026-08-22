@@ -25,13 +25,15 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
+    restore_reduced,
+    rows_for_axes,
     tune_by_forward,
 )
 
@@ -801,106 +803,6 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
     return _func
 
 
-# custom_op wrappers
-
-
-@torch.library.custom_op("top::reduce_simple_fwd", mutates_args=())
-def _reduce_simple_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _simple_reduce_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
-
-
-@_reduce_simple_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, block_m, threads, x):
-    return torch.empty((M,), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::reduce_simple_tiled_fwd", mutates_args=())
-def _reduce_simple_tiled_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    tile_n: int,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _simple_reduce_kernel_tiled(M, N, op_kind, dtype_str, tile_n)(block_m, threads)(x)
-
-
-@_reduce_simple_tiled_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, tile_n, block_m, threads, x):
-    return torch.empty((M,), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::reduce_welford_fwd", mutates_args=())
-def _reduce_welford_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    correction: int,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> list[torch.Tensor]:
-    kernel = _welford_reduce_kernel(M, N, op_kind, correction, dtype_str)
-    result = kernel(block_m, threads)(x)
-    if op_kind == "var_mean":
-        # Returns (var, mean)
-        return [result[0], result[1]]
-    else:
-        return [result]
-
-
-@_reduce_welford_wrapped.register_fake
-def _(M, N, op_kind, correction, dtype_str, block_m, threads, x):
-    if op_kind == "var_mean":
-        return [
-            torch.empty((M,), dtype=x.dtype, device=x.device),
-            torch.empty((M,), dtype=x.dtype, device=x.device),
-        ]
-    return [torch.empty((M,), dtype=x.dtype, device=x.device)]
-
-
-@torch.library.custom_op("top::reduce_welford_tiled_fwd", mutates_args=())
-def _reduce_welford_tiled_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    correction: int,
-    dtype_str: str,
-    tile_n: int,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> list[torch.Tensor]:
-    kernel = _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype_str, tile_n)
-    result = kernel(block_m, threads)(x)
-    if op_kind == "var_mean":
-        return [result[0], result[1]]
-    else:
-        return [result]
-
-
-@_reduce_welford_tiled_wrapped.register_fake
-def _(M, N, op_kind, correction, dtype_str, tile_n, block_m, threads, x):
-    if op_kind == "var_mean":
-        return [
-            torch.empty((M,), dtype=x.dtype, device=x.device),
-            torch.empty((M,), dtype=x.dtype, device=x.device),
-        ]
-    return [torch.empty((M,), dtype=x.dtype, device=x.device)]
-
-
 # ReduceKernel class
 
 
@@ -916,7 +818,24 @@ class ReduceKernel(Kernel):
 
     Boundary handling for non-aligned N is performed inside the kernel via
     masked loads with identity-element fills, so no host-side ``F.pad`` is
-    needed.  The ``forward()`` method accepts raw ``(M, N)`` tensors.
+    needed.
+
+    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it: moving
+    those axes to the end, flattening to ``(M, N)`` and shaping the result back are this
+    kernel's business, so both sides of the op/backend boundary speak the declared shape.
+
+    Args:
+        M: Rows the reduction leaves — the product of the axes it keeps.
+        N: Elements each row reduces — the product of *reduce_axes*.
+        op_kind: One of sum, mean, amin, amax, prod, std, var, var_mean.
+        dtype: Element type of the input.
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
+        correction: Bessel's correction, for the Welford kinds.
+        config: Optional kernel configuration dict.
+        tune: Whether to autotune (default False).
+        device_index: CUDA device the input lives on, for the shared-memory budget.
+            ``None`` reads the current device.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -927,20 +846,25 @@ class ReduceKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
         correction: int = 1,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: "int | None" = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.M = M
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
         self.correction = correction
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._is_welford = op_kind in _WELFORD_KINDS
         self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        self._smem_budget = device_smem_budget()
+        self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
@@ -994,55 +918,57 @@ class ReduceKernel(Kernel):
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
         x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
-        tune_by_forward(self, x, warmup=warmup, rep=rep)
+        tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def forward(self, x: torch.Tensor) -> object:
+        """Reduce *reduce_axes* of *x*.
+
+        Args:
+            x: The tensor the op declares, contiguous, on a CUDA device.
+
+        Returns:
+            The reduced tensor, or ``(var, mean)`` for ``op_kind="var_mean"``.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
+        """
+        require_cuda(self, x=x)
+        in_shape = tuple(x.shape)
+        rows = rows_for_axes(x, self.reduce_axes)
+        result = self._reduce_rows(rows)
+        if self.op_kind == "var_mean":
+            var, mean = result
+            return (
+                restore_reduced(var, in_shape, self.reduce_axes, self.keepdim),
+                restore_reduced(mean, in_shape, self.reduce_axes, self.keepdim),
+            )
+        return restore_reduced(result, in_shape, self.reduce_axes, self.keepdim)
+
+    def _reduce_rows(self, x: torch.Tensor) -> object:
+        """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        block_m, threads = self.config["block_m"], self.config["threads"]
         if self._is_welford:
             if self._needs_tiling:
-                results = _reduce_welford_tiled_wrapped(
+                program = _welford_reduce_kernel_tiled(
                     self.M,
                     self.N,
                     self.op_kind,
                     self.correction,
                     self.dtype_str,
                     self.config["tile_n"],
-                    self.config["block_m"],
-                    self.config["threads"],
-                    x,
                 )
             else:
-                results = _reduce_welford_wrapped(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.correction,
-                    self.dtype_str,
-                    self.config["block_m"],
-                    self.config["threads"],
-                    x,
+                program = _welford_reduce_kernel(
+                    self.M, self.N, self.op_kind, self.correction, self.dtype_str
                 )
+            results = program(block_m, threads)(x)
             if self.op_kind == "var_mean":
                 return results[0], results[1]
-            return results[0]
+            return results
+        if self._needs_tiling:
+            program = _simple_reduce_kernel_tiled(
+                self.M, self.N, self.op_kind, self.dtype_str, self.config["tile_n"]
+            )
         else:
-            if self._needs_tiling:
-                return _reduce_simple_tiled_wrapped(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.dtype_str,
-                    self.config["tile_n"],
-                    self.config["block_m"],
-                    self.config["threads"],
-                    x,
-                )
-            else:
-                return _reduce_simple_wrapped(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.dtype_str,
-                    self.config["block_m"],
-                    self.config["threads"],
-                    x,
-                )
+            program = _simple_reduce_kernel(self.M, self.N, self.op_kind, self.dtype_str)
+        return program(block_m, threads)(x)

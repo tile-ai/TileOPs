@@ -38,11 +38,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     SHARED_MEMORY_BUDGET_BYTES,
     align_up,
+    restore_same_shape,
+    rows_for_axes,
 )
 
 __all__ = ["CumulativeKernel"]
@@ -268,54 +270,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
-# custom_op wrappers for torch.compile compatibility
-
-
-@torch.library.custom_op("top::cumulative_parallel_fwd", mutates_args=())
-def _cumulative_parallel_fwd_wrapped(
-    M: int,
-    N: int,
-    dtype_str: str,
-    block_m: int,
-    block_n: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    n_tiles = align_up(N, DEFAULT_ALIGNMENT) // block_n
-    local_fn = _parallel_scan_local_kernel(M, N, "sum", dtype_str)(block_m, block_n, threads)
-    y_local, tile_sums = local_fn(x)
-    carry_fn = _parallel_scan_carry_kernel(M, n_tiles)(threads)
-    tile_carries_exclusive = carry_fn(tile_sums)
-    propagate_fn = _parallel_scan_propagate_kernel(M, N, dtype_str)(block_m, block_n, threads)
-    return propagate_fn(y_local, tile_carries_exclusive)
-
-
-@_cumulative_parallel_fwd_wrapped.register_fake
-def _(M, N, dtype_str, block_m, block_n, threads, x):
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::cumulative_fwd", mutates_args=())
-def _cumulative_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    block_m: int,
-    block_n: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _cumulative_kernel(M, N, op_kind, dtype_str)(block_m, block_n, threads)(x)
-
-
-@_cumulative_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, block_m, block_n, threads, x):
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
-
-
 # CumulativeKernel class
 
 
@@ -329,16 +283,22 @@ class CumulativeKernel(Kernel):
 
     Boundary handling for non-aligned N is performed inside the kernel via
     masked loads with identity-element fills (0 for sum, 1 for prod), so
-    no host-side ``F.pad`` is needed.  The ``forward()`` method accepts
-    raw ``(M, N)`` tensors and returns ``(M, N_padded)`` output.
+    no host-side ``F.pad`` is needed.
+
+    ``forward`` takes the tensor the op declares and scans *scan_axis* of it; moving that
+    axis to the end, flattening to rows and putting the result back are this kernel's
+    business, so both sides of the op/backend boundary speak the declared shape.
 
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        M: Rows the scan runs over — the product of every axis but *scan_axis*.
+        N: Length of the scanned axis.
         op_kind: One of "sum", "prod".
         dtype: Data type (float32, float16, or bfloat16).
+        scan_axis: Non-negative index of the axis the scan runs along.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
+        device_index: The device the input lives on. The shared-memory budget here is a
+            constant, so this is for the architecture check alone.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -349,16 +309,19 @@ class CumulativeKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        scan_axis: int,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: "int | None" = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind not in ("sum", "prod"):
             raise ValueError(f"Unsupported op_kind '{op_kind}'. Expected one of 'sum', 'prod'.")
         self.M = M
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.scan_axis = scan_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
 
         # Parallel scan only pays off for small-M, large-N; cumprod has no
@@ -423,38 +386,49 @@ class CumulativeKernel(Kernel):
         return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the cumulative scan kernel (sequential or parallel).
+        """Scan *scan_axis* of *x*.
 
         Args:
-            x: Input tensor of shape (M, N).  Alignment padding is
-                handled internally via masked loads.
+            x: The tensor the op declares, contiguous, on a CUDA device. Alignment
+                padding is handled internally via masked loads.
 
         Returns:
-            Output tensor of shape (M, N). The prim_func writes an
-            alignment-padded row; the surplus columns are trimmed here.
+            A tensor shaped like *x*.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
         """
+        require_cuda(self, x=x)
+        in_shape = tuple(x.shape)
+        axes = (self.scan_axis,)
+        y = self._scan_rows(rows_for_axes(x, axes))
+        return restore_same_shape(y, in_shape, axes)
+
+    def _scan_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Scan the trailing axis of an ``(M, N)`` buffer.
+
+        The prim_func writes an alignment-padded row; the surplus columns are trimmed
+        here.
+        """
+        block_m, block_n = self.config["block_m"], self.config["block_n"]
+        threads = self.config["threads"]
         if self.use_parallel:
-            y = _cumulative_parallel_fwd_wrapped(
-                self.M,
-                self.N,
-                self.dtype_str,
-                self.config["block_m"],
-                self.config["block_n"],
-                self.config["threads"],
-                x,
-            )
+            y = self._parallel_scan(x, block_m, block_n, threads)
         else:
-            y = _cumulative_fwd_wrapped(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_str,
-                self.config["block_m"],
-                self.config["block_n"],
-                self.config["threads"],
-                x,
-            )
+            program = _cumulative_kernel(self.M, self.N, self.op_kind, self.dtype_str)
+            y = program(block_m, block_n, threads)(x)
         return y[:, : self.N] if y.shape[1] > self.N else y
+
+    def _parallel_scan(
+        self, x: torch.Tensor, block_m: int, block_n: int, threads: int
+    ) -> torch.Tensor:
+        """Three passes: scan each tile, scan the tile totals, add the carries."""
+        n_tiles = align_up(self.N, DEFAULT_ALIGNMENT) // block_n
+        local = _parallel_scan_local_kernel(self.M, self.N, "sum", self.dtype_str)
+        y_local, tile_sums = local(block_m, block_n, threads)(x)
+        carries = _parallel_scan_carry_kernel(self.M, n_tiles)(threads)(tile_sums)
+        propagate = _parallel_scan_propagate_kernel(self.M, self.N, self.dtype_str)
+        return propagate(block_m, block_n, threads)(y_local, carries)
 
 
 # ---------------------------------------------------------------------------

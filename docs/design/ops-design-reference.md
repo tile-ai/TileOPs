@@ -12,14 +12,13 @@ This document holds the contracts those rules emit against.
 
 Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
-| Variable                  | Family      | Purpose                                                                                                          |
-| ------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
-| `_kernel_key`             | reduction   | Kernel-map lookup key                                                                                            |
-| `_kernel_cls`             | reduction   | Kernel class reference                                                                                           |
-| `_op_kind`                | reduction   | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
-| `_kernel_handles_padding` | reduction   | `True` → kernel uses masked loads, skip host-side padding                                                        |
-| `_op_name`                | elementwise | `torch.library.custom_op` registration key                                                                       |
-| `kernel_cls`              | elementwise | Kernel class reference                                                                                           |
+| Variable      | Family      | Purpose                                                                                                          |
+| ------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `_kernel_key` | reduction   | Kernel-map lookup key                                                                                            |
+| `_kernel_cls` | reduction   | Kernel class reference                                                                                           |
+| `_op_kind`    | reduction   | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
+| `_op_name`    | elementwise | `torch.library.custom_op` registration key                                                                       |
+| `kernel_cls`  | elementwise | Kernel class reference                                                                                           |
 
 **The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
@@ -68,12 +67,11 @@ Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `auto
 
 Hooks family bases expose for op-specific semantics. The `scaffold-op` skill does NOT emit these.
 
-| Hook              | Family    | Default                     | Override example                                                   |
-| ----------------- | --------- | --------------------------- | ------------------------------------------------------------------ |
-| `_pad_value()`    | reduction | `0.0` (neutral for sum)     | `ArgmaxFwdOp._pad_value → -inf`                                    |
-| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int`              |
-| `_pre_kernel()`   | reduction | identity                    | `AllFwdOp._pre_kernel` converts unsupported storage dtypes to fp32 |
-| `_post_kernel()`  | reduction | identity                    | Convert kernel output dtype to the manifest-declared output dtype  |
+| Hook              | Family    | Default                     | Override example                                      |
+| ----------------- | --------- | --------------------------- | ----------------------------------------------------- |
+| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int` |
+
+A hook that compensates for what a kernel cannot do belongs to that kernel, not here: the op hands over the tensor its manifest declares.
 
 ### `_cache_key` override (L1-level, not family-specific)
 

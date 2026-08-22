@@ -5,11 +5,12 @@ The ``dim`` parameter accepts ``int``, ``list[int]``, or ``tuple[int, ...]``
 for multi-dim reduction. Constructor ``dim`` defaults to ``None`` (full
 reduction) for the ten ops whose manifest declares ``default: null``;
 ``ProdFwdOp`` preserves ``dim=-1``.
-The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
-Alignment padding belongs to the kernel, which masks its loads and fills with
-the reduction's identity element; the Op layer never pads.
-Kernels are cached by ``(M, N)`` so that the same op instance can handle
-varying shapes.
+
+The Op layer validates the input, normalizes its contiguity, and hands it over as the
+manifest declares it. Moving the reduced axes to the end, flattening to ``(M, N)``, the
+alignment padding and shaping the result back all belong to the kernel, so both sides of
+the op/backend boundary speak the declared shape. Kernels are cached by shape, axes,
+dtype and device, so one op instance handles varying shapes.
 """
 
 import warnings
@@ -18,12 +19,14 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.reduce import ReduceKernel
 from tileops.manifest.shape_rules import reduced_shape
 
 from ..op_base import Op
-from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
+from ._boundary import register_reduction_op
+from ._multidim import EmptyDimPolicy, normalize_dim
 
 # Op kinds that accept 0-D (scalar) input. The kernel path assumes
 # ``ndim >= 1`` (and the Welford kernel's Bessel correction is undefined for
@@ -65,24 +68,22 @@ __all__ = [
 class _ReduceOpBase(Op):
     """Common base for all reduce ops (simple, Welford, argreduce, logical, vector_norm).
 
-    Consolidates shared init params (dtype, dim, keepdim, tune), initializes
-    and owns an internal kernel cache, and handles input preparation
-    (validate, transpose, reshape to 2D) and output reshaping.
-    Subclasses declare ``_op_kind``, ``_kernel_key``, ``_kernel_cls``, and
-    override hooks as needed.  ``forward()`` is provided by this base class;
-    only ops with non-standard returns (e.g. ``VarMeanFwdOp``) need to
-    override it.
+    Holds the shared init params, the reading of ``dim``, and the one place a kernel is
+    resolved. Subclasses declare ``_op_kind``, ``_kernel_key``, ``_kernel_cls``, and
+    override hooks as needed. ``forward`` is one call to the operator the op registers;
+    an op whose returns are not a single tensor (``VarMeanFwdOp``) overrides
+    ``_eager_forward``, which runs behind that operator.
 
     Hooks for subclass customization:
 
     - ``_kernel_key``: kernel map key (default ``"reduce"``).
     - ``_kernel_cls``: kernel class (default ``ReduceKernel``).
     - ``_validate_dim()``: validate ``dim`` at init (default: accept int/list/None).
-    - ``_build_kernel_kwargs()``: extra kwargs for kernel constructor.
-    - ``_pre_kernel(x)``: transform 2D input before kernel call (default identity).
-      Returns ``(x, context)`` where *context* is passed to ``_post_kernel``.
-    - ``_post_kernel(y, context)``: transform kernel output (default identity).
+    - ``_build_kernel_kwargs(x, axes)``: extra kwargs for the kernel constructor.
     """
+
+    #: Set by ``register_reduction_op`` on each concrete op; a base registers none.
+    _wrapped = None
 
     _op_kind: str = ""  # overridden by subclasses
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
@@ -94,6 +95,7 @@ class _ReduceOpBase(Op):
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -104,11 +106,14 @@ class _ReduceOpBase(Op):
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
             keepdim: Whether to retain reduced dims as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
         self.dim = dim
         self.keepdim = keepdim
+        self.target = target
         self.tune = tune
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
@@ -161,45 +166,29 @@ class _ReduceOpBase(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._kernel_key: self._kernel_cls}
 
-    # Extra kernel kwargs (subclasses may override)
-
-    def _build_kernel_kwargs(self) -> dict:
-        """Return extra keyword arguments for the kernel constructor.
-
-        Override in subclasses to pass additional params like ``correction``.
-        """
-        return {}
-
-    # Pre/post kernel hooks (subclasses may override)
-
-    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
-        """Transform 2D input before kernel call.
-
-        Returns ``(x, context)`` where *context* is an opaque value
-        passed through to ``_post_kernel``.  Default: identity.
-        """
-        return x, None
-
-    def _post_kernel(self, y: torch.Tensor, context: object) -> torch.Tensor:
-        """Transform kernel output.  Default: identity."""
-        return y
-
     # Forward (subclasses with non-standard returns, e.g. VarMeanFwdOp,
-    # must override)
+    # must override ``_eager_forward``)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the reduce op on *x* along the configured dim."""
+        """Run the reduce op on *x* along the configured dim.
+
+        One call to the operator this op registers: this is as far as dynamo traces.
+        """
+        return type(self)._wrapped(x, self._instance_key)
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         scalar_out = self._maybe_scalar(x)
         if scalar_out is not None:
             return scalar_out
         noop_out = self._maybe_noop(x)
         if noop_out is not None:
             return noop_out
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        x, ctx = self._pre_kernel(x)
-        y = kernel(x)
-        y = self._post_kernel(y, ctx)
-        return self._reshape_output(y, orig_shape, dim_info)
+        x, kernel = self._prepare_input(x)
+        return kernel(x)
 
     # Empty-dim no-op short-circuit
 
@@ -219,10 +208,9 @@ class _ReduceOpBase(Op):
         """Validate device, dtype, and rank of the forward input.
 
         Shared by ``_prepare_input`` and the ``dim=[]`` noop short-circuit
-        so both paths enforce the same forward contract.
+        so both paths enforce the same forward contract. Which devices a set of kernels
+        runs on is the kernel's own statement, so no device kind is checked here.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
         self._validate_dtypes(x)
         self.dtype = x.dtype
         if x.ndim == 0:
@@ -301,8 +289,6 @@ class _ReduceOpBase(Op):
             # l1/l2/inf) fall through to the kernel path, which raises the
             # pre-existing ``ValueError("Input tensor must be at least 1D")``.
             return None
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
         self._validate_dtypes(x)
         self.dtype = x.dtype
         self._validate_scalar_dim()
@@ -336,10 +322,11 @@ class _ReduceOpBase(Op):
         # for the read plus the output term, instead of collapsing to
         # zero, which would under-count the actual data-movement cost.
         self._last_roofline_mn = (x.numel(), 1)
+        # ``copy=True`` because the operator this runs inside may not return an alias of
+        # its input, and ``to`` hands back the same object when the dtype already matches
+        # — which a bool input to All or Any does.
         out_dtype = self._noop_output_dtype()
-        if out_dtype is None:
-            return x
-        return x.to(out_dtype)
+        return x.clone() if out_dtype is None else x.to(out_dtype, copy=True)
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None:
@@ -394,105 +381,63 @@ class _ReduceOpBase(Op):
 
     # Kernel cache
 
-    def _get_or_create_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        M: int,
-        N: int,
-        dtype: torch.dtype,
-    ) -> object:
-        """Return a cached kernel for (M, N, dtype), creating one if needed."""
-        return self.get_or_build_kernel(
-            self._kernel_key,
-            inputs,
-            key=(M, N, dtype),
-            build=lambda: self.kernel_map[self._kernel_key](
-                M,
-                N,
-                self._op_kind,
-                dtype,
-                tune=self.tune,
-                **self._build_kernel_kwargs(),
-            ),
-        )
+    def _build_kernel_kwargs(self, x: torch.Tensor, axes: "tuple[int, ...]") -> dict:
+        """What this op's kernel takes beyond the shared arguments.
 
-    # Input preparation (validate → transpose → reshape)
+        The device is one of them: a kernel that plans against shared memory has to plan
+        against the device the input lives on, not whichever one is current.
+        """
+        return {"device_index": x.device.index}
 
-    def _prepare_input(
-        self,
-        x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Size, object, object]:
-        """Validate, derive M/N, transpose, and reshape to 2D.
+    def _reduce_axes(self, x: torch.Tensor) -> "tuple[int, ...]":
+        """The axes this call reduces, ascending and non-negative.
 
-        Returns ``(x_2d, orig_shape, dim_info, kernel)`` where
-        *dim_info* is either an ``int`` (single-dim) or ``list[int]``
-        (multi-dim).
+        Raises:
+            IndexError: ``dim`` names an axis this rank does not have. Raised before any
+                kernel is built, so an out-of-range call reaches no backend.
+        """
+        return tuple(normalize_dim(self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy))
+
+    # Input preparation (validate → normalize contiguity → resolve the kernel)
+
+    def _prepare_input(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
+        """Validate, normalize contiguity, and resolve the kernel for this call.
+
+        The row layout the kernel wants is the kernel's business, so what comes back is
+        the declared tensor and a kernel that takes it.
+
+        Returns:
+            ``(x, kernel)``, where *x* is the contiguous declared input.
         """
         self._validate_input_tensor(x)
-
-        # The tensor this op declares, before the row layout its kernel wants.
-        declared = x
-        orig_shape = x.shape
-
-        # --- multi-dim path (includes dim=None for full reduction) ---
-        if isinstance(self.dim, (list, tuple)) or self.dim is None:
-            dims = normalize_dim(
-                self.dim,
-                x.ndim,
-                empty_dim_policy=self._empty_dim_policy,
-            )
-            x, orig_shape, _kept = flatten_for_multidim(x, dims)
-            N = x.shape[-1]
-            M = prod(x.shape[:-1])
-            self._last_roofline_mn = (M, N)
-            x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel((declared,), M, N, x.dtype)
-            return x, orig_shape, dims, kernel
-
-        # --- single-dim path ---
-        if self.dim < -x.ndim or self.dim >= x.ndim:
-            raise IndexError(
-                f"Dimension out of range (expected to be in range of "
-                f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
-            )
-        dim = self.dim % x.ndim
-
-        N = x.shape[dim]
-        M = prod(s for i, s in enumerate(x.shape) if i != dim)
-        self._last_roofline_mn = (M, N)
-
-        if dim != x.ndim - 1:
-            x = x.movedim(dim, -1)
-
-        x = x.contiguous().reshape(M, N)
-
-        kernel = self._get_or_create_kernel((declared,), M, N, x.dtype)
-        return x, orig_shape, dim, kernel
-
-    # Output reshape
-
-    def _reshape_output(
-        self,
-        y: torch.Tensor,
-        orig_shape: torch.Size,
-        dim_info: Union[int, List[int]],
-    ) -> torch.Tensor:
-        """Reshape (M,) kernel output to match keepdim setting.
-
-        *dim_info* is either an ``int`` (single-dim) or ``list[int]``
-        (multi-dim).
-        """
-        if isinstance(dim_info, list):
-            return restore_multidim_shape(y, orig_shape, dim_info, self.keepdim)
-
-        dim = dim_info
-        if self.keepdim:
-            kept_shape = list(orig_shape)
-            kept_shape[dim] = 1
-            return y.reshape(kept_shape)
-        else:
-            reduced_shape = [s for i, s in enumerate(orig_shape) if i != dim]
-            return y.squeeze() if len(reduced_shape) == 0 else y.reshape(reduced_shape)
+        # Normalized here and handed over as the manifest declares it; how a kernel wants
+        # that laid out is its own business.
+        x = x.contiguous()
+        axes = self._reduce_axes(x)
+        # From the shape, not from ``numel``: an empty reduced axis makes ``n`` zero.
+        n = prod(x.shape[a] for a in axes)
+        m = prod(d for i, d in enumerate(x.shape) if i not in axes)
+        self._last_roofline_mn = (m, n)
+        extra = self._build_kernel_kwargs(x, axes)
+        kernel = self.get_or_build_kernel(
+            self._kernel_key,
+            (x,),
+            # The kernel now owns the permute, so the whole shape decides what it is,
+            # not just the row count and width it reduces. The device is in the key
+            # because the kernel plans against that device's shared memory.
+            key=(tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index),
+            build=lambda: self.kernel_map[self._kernel_key](
+                m,
+                n,
+                self._op_kind,
+                x.dtype,
+                reduce_axes=axes,
+                keepdim=self.keepdim,
+                tune=self.tune,
+                **extra,
+            ),
+        )
+        return x, kernel
 
 
 # Simple reduce ops (sum, mean, amin, amax, prod)
@@ -500,9 +445,6 @@ class _ReduceOpBase(Op):
 
 class _SimpleReduceOp(_ReduceOpBase):
     """Base for single-output reduce ops (sum, mean, amin, amax, prod).
-
-    M and N are derived from the input tensor at forward time, and kernels
-    are cached by ``(M, N)`` to avoid rebuilds.
 
     The ``dim`` default follows each op's manifest entry: ``sum``, ``mean``,
     ``amin``, and ``amax`` default to ``None`` (full reduction); ``prod``
@@ -513,6 +455,8 @@ class _SimpleReduceOp(_ReduceOpBase):
             ``tuple[int, ...]``, or ``None`` on the base class; subclasses
             may narrow this (see ``ProdFwdOp``).
         keepdim: Whether to retain the reduced dimension as size 1.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -560,20 +504,24 @@ class ProdFwdOp(_SimpleReduceOp):
         dim: int = -1,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         """Construct ProdFwdOp.
 
         Args:
-            dim (int): reduction dimension (default ``-1``).
+            dim: Reduction dimension (default ``-1``).
             keepdim: Whether to retain reduced dims as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
             dim=dim,
             keepdim=keepdim,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -592,15 +540,14 @@ class _WelfordReduceOp(_ReduceOpBase):
     """Base for Welford-based reduce ops (std, var, var_mean).
 
     Construction: ``op(dim=None, correction=1, keepdim=False)``.
-    M and N are derived from the input tensor at forward time, and kernels
-    are cached by ``(M, N)`` to avoid rebuilds.
-
     Args:
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
         correction: Bessel's correction (default 1).
         keepdim: Whether to retain the reduced dimension as size 1.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -613,6 +560,7 @@ class _WelfordReduceOp(_ReduceOpBase):
         correction: int = 1,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -624,6 +572,8 @@ class _WelfordReduceOp(_ReduceOpBase):
                 ``None``.
             correction: Bessel's correction (default 1).
             keepdim: Whether to retain reduced dims as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
@@ -631,23 +581,20 @@ class _WelfordReduceOp(_ReduceOpBase):
         super().__init__(
             dim=dim,
             keepdim=keepdim,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
 
-    def _build_kernel_kwargs(self) -> dict:
+    def _build_kernel_kwargs(self, x: torch.Tensor, axes: "tuple[int, ...]") -> dict:
         """Pass correction to the kernel constructor."""
-        return {"correction": self.correction}
+        return {**super()._build_kernel_kwargs(x, axes), "correction": self.correction}
 
     def _scalar_forward(self, x: torch.Tensor):
         """Compute Welford ops on a 0-D input from closed-form.
 
         For a single-element reduction with reduction factor ``N = 1`` and
         Bessel ``correction``:
-
-        Both branches construct the result as an operation on ``x`` so
-        the output keeps a ``grad_fn`` when ``x.requires_grad`` is
-        true, matching the PyTorch backward contract.
 
         - ``N - correction <= 0`` (i.e. ``correction >= 1``): variance
           and standard deviation are mathematically undefined; the
@@ -656,8 +603,7 @@ class _WelfordReduceOp(_ReduceOpBase):
         - ``correction == 0``: the unbiased denominator is ``N``, so the
           deviation from the mean (which equals the element itself) is
           zero for finite inputs. The result is computed as ``x - x``
-          so non-finite inputs propagate (``nan`` / ``inf`` → ``nan``)
-          and autograd history on ``x`` is preserved.
+          so non-finite inputs propagate (``nan`` / ``inf`` → ``nan``).
 
         ``VarMeanFwdOp`` overrides this hook to additionally return the
         mean (the input element).
@@ -679,28 +625,29 @@ class _WelfordReduceOp(_ReduceOpBase):
         The TileLang Welford kernel bakes ``N`` and ``correction`` into the
         generated code, so a zero denominator fails at compile time. PyTorch
         defines this degree-of-freedom case as NaN; handle it before kernel
-        dispatch.
+        dispatch. The shape comes from the manifest's rule, the same source the
+        kernel path's result is shaped by.
         """
         if self._last_roofline_mn is None:
             return None
-        M, N = self._last_roofline_mn
+        _M, N = self._last_roofline_mn
         if self.correction < N:
             return None
-        return torch.full((M,), float("nan"), dtype=x.dtype, device=x.device)
+        shape = self._reduced_shape(tuple(x.shape))
+        return torch.full(shape, float("nan"), dtype=x.dtype, device=x.device)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         scalar_out = self._maybe_scalar(x)
         if scalar_out is not None:
             return scalar_out
         noop_out = self._maybe_noop(x)
         if noop_out is not None:
             return noop_out
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
+        x, kernel = self._prepare_input(x)
         invalid_dof = self._invalid_dof_output(x)
         if invalid_dof is not None:
-            return self._reshape_output(invalid_dof, orig_shape, dim_info)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)
+            return invalid_dof
+        return kernel(x)
 
 
 class StdFwdOp(_WelfordReduceOp):
@@ -735,20 +682,27 @@ class VarMeanFwdOp(_WelfordReduceOp):
         var_out = super()._scalar_forward(x)
         return var_out, x.clone()
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _eager_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         scalar_out = self._maybe_scalar(x)
         if scalar_out is not None:
             return scalar_out
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
+        x, kernel = self._prepare_input(x)
         invalid_dof = self._invalid_dof_output(x)
         if invalid_dof is not None:
-            mean_out = x.float().mean(dim=-1).to(x.dtype)
-            return (
-                self._reshape_output(invalid_dof, orig_shape, dim_info),
-                self._reshape_output(mean_out, orig_shape, dim_info),
-            )
-        var_out, mean_out = kernel(x)
-        return (
-            self._reshape_output(var_out, orig_shape, dim_info),
-            self._reshape_output(mean_out, orig_shape, dim_info),
-        )
+            axes = self._reduce_axes(x)
+            mean_out = x.float().mean(dim=axes, keepdim=self.keepdim).to(x.dtype)
+            return invalid_dof, mean_out.reshape(invalid_dof.shape)
+        return kernel(x)
+
+
+for _op_cls in (
+    SumFwdOp,
+    MeanFwdOp,
+    AminFwdOp,
+    AmaxFwdOp,
+    ProdFwdOp,
+    StdFwdOp,
+    VarFwdOp,
+    VarMeanFwdOp,
+):
+    register_reduction_op(_op_cls)

@@ -24,6 +24,7 @@ _EVIDENCE_MODULES = (
     "tests.ops.test_moe_compile",
     "tests.ops.test_norm_compile",
     "tests.ops.test_pool",
+    "tests.ops.test_reduction_compile",
     "tests.ops.test_rms_norm",
     "tests.test_compile",
 )

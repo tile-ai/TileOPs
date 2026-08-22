@@ -69,7 +69,8 @@ class Kernel(ABC):
         "num_per_thread_arg": "num_per_thread",
     }
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, device_index: "int | None" = None, **kwargs) -> None:
+        self.device_index = device_index
         self._check_arch()
         self.config = {}
 
@@ -123,33 +124,37 @@ class Kernel(ABC):
             return "does not serve this call"
         return None
 
-    @classmethod
-    def _check_arch(cls) -> None:
+    def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.
 
-        The device is probed only by a class that constrains the architecture,
-        and only here — kernel construction is deferred to the first forward,
-        so a device is present by the time this runs. The op layer performs no
-        architecture check of its own; a role served by several kernels filters
-        candidates during selection instead.
+        Read from ``device_index``, the device the op handed over — not from whichever
+        device happens to be current, which need not be the one the input lives on. The op
+        layer performs no architecture check of its own; a role served by several kernels
+        filters candidates during selection instead.
+
+        ``device_index`` is ``None`` for a kernel whose op does not pass one yet, and the
+        current device answers instead. That is the pre-migration behaviour, kept so a
+        family that has not moved yet is unaffected; a migrated kernel states the device.
 
         Raises:
-            ValueError: When the current device architecture is not among
-                ``supported_archs``. Selection raises the same class when no
-                candidate for a dispatch key can serve a call, so a caller
-                catches one exception type whether the key has one
-                implementation or several.
+            ValueError: The device's architecture is not among ``supported_archs``.
+                Selection raises the same class when no candidate for a dispatch key can
+                serve a call, so a caller catches one exception type whether the key has
+                one implementation or several.
         """
+        cls = type(self)
         if cls.supported_archs is None:
             return
         from tileops.utils import get_sm_version
 
-        arch = get_sm_version()
+        arch = get_sm_version(self.device_index)
         if arch not in cls.supported_archs:
+            where = (
+                "the current device" if self.device_index is None else f"cuda:{self.device_index}"
+            )
             raise ValueError(
                 f"{cls.__name__} is built for architectures "
-                f"{sorted(cls.supported_archs)}, but the current device reports "
-                f"{arch}"
+                f"{sorted(cls.supported_archs)}, but {where} reports {arch}"
             )
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:

@@ -4,14 +4,12 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction.logical_reduce import (
-    _UNSUPPORTED_STORAGE_DTYPES,
-    LogicalReduceKernel,
-    to_logical_float32,
-)
+from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
 from tileops.manifest.shape_rules import reduced_shape
 
+from ._boundary import register_reduction_op
 from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
@@ -21,13 +19,13 @@ __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
 class AllFwdOp(_ReduceOpBase):
     """All reduction along ``dim``, returning bool.
 
-    Construction: ``AllFwdOp(dim=None, keepdim=False)``.  M and N
+    Construction: ``AllFwdOp(dim=None, keepdim=False)``.
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
     Supports any numeric dtype including torch.bool, int32, int64, and complex
-    types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
-    complex64, complex128) are pre-converted to float32 in forward().
+    types. A dtype TileLang cannot store as shared memory is converted inside the
+    kernel, so this op hands over the tensor its manifest declares.
 
     Empty-dim contract: ``dim=[]`` / ``dim=()`` is a no-op -- forward returns
     ``x.bool()`` with the input shape, matching ``torch.all`` semantics.
@@ -37,6 +35,8 @@ class AllFwdOp(_ReduceOpBase):
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -51,6 +51,7 @@ class AllFwdOp(_ReduceOpBase):
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -61,12 +62,15 @@ class AllFwdOp(_ReduceOpBase):
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
             keepdim: Whether to retain reduced dims as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
             dim=dim,
             keepdim=keepdim,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -75,23 +79,17 @@ class AllFwdOp(_ReduceOpBase):
         """All returns bool per manifest contract."""
         return torch.bool
 
-    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
-        """Convert unsupported storage dtypes to float32."""
-        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_float32(x)
-        return x, None
-
 
 class AnyFwdOp(_ReduceOpBase):
     """Any reduction along ``dim``, returning bool.
 
-    Construction: ``AnyFwdOp(dim=None, keepdim=False)``.  M and N
+    Construction: ``AnyFwdOp(dim=None, keepdim=False)``.
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
     Supports any numeric dtype including torch.bool, int32, int64, and complex
-    types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
-    complex64, complex128) are pre-converted to float32 in forward().
+    types. A dtype TileLang cannot store as shared memory is converted inside the
+    kernel, so this op hands over the tensor its manifest declares.
 
     Empty-dim contract: ``dim=[]`` / ``dim=()`` is a no-op -- forward returns
     ``x.bool()`` with the input shape, matching ``torch.any`` semantics.
@@ -101,6 +99,8 @@ class AnyFwdOp(_ReduceOpBase):
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -115,6 +115,7 @@ class AnyFwdOp(_ReduceOpBase):
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -125,12 +126,15 @@ class AnyFwdOp(_ReduceOpBase):
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
             keepdim: Whether to retain reduced dims as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
             dim=dim,
             keepdim=keepdim,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -139,31 +143,25 @@ class AnyFwdOp(_ReduceOpBase):
         """Any returns bool per manifest contract."""
         return torch.bool
 
-    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
-        """Convert unsupported storage dtypes to float32."""
-        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_float32(x)
-        return x, None
-
 
 class CountNonzeroFwdOp(_ReduceOpBase):
     """Count nonzero reduction along ``dim``, returning int64.
 
-    Construction: ``CountNonzeroFwdOp(dim=None)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
-    by ``(M, N)`` to avoid rebuilds.
+    Construction: ``CountNonzeroFwdOp(dim=None)``.
 
     Note: No ``keepdim`` parameter -- the reduction dimension is always
     removed, matching ``torch.count_nonzero`` semantics.
 
     Supports any numeric dtype including torch.bool, int32, int64, and complex
-    types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
-    complex64, complex128) are pre-converted to float32 in forward().
+    types. A dtype TileLang cannot store as shared memory is converted inside the
+    kernel, so this op hands over the tensor its manifest declares.
 
     Args:
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN``
+            for the in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -177,6 +175,7 @@ class CountNonzeroFwdOp(_ReduceOpBase):
         self,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -184,6 +183,7 @@ class CountNonzeroFwdOp(_ReduceOpBase):
         super().__init__(
             dim=dim,
             keepdim=False,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -202,8 +202,10 @@ class CountNonzeroFwdOp(_ReduceOpBase):
         """
         return torch.int64
 
-    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
-        """Convert unsupported storage dtypes to float32."""
-        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_float32(x)
-        return x, None
+
+for _op_cls in (
+    AllFwdOp,
+    AnyFwdOp,
+    CountNonzeroFwdOp,
+):
+    register_reduction_op(_op_cls)

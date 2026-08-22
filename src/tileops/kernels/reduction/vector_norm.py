@@ -18,13 +18,15 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
+    restore_reduced,
+    rows_for_axes,
     tune_by_forward,
 )
 
@@ -209,46 +211,6 @@ def _vector_norm_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: 
     return _func
 
 
-# custom_op wrappers for torch.compile compatibility
-
-
-@torch.library.custom_op("top::vector_norm_fwd", mutates_args=())
-def _vector_norm_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _vector_norm_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
-
-
-@torch.library.custom_op("top::vector_norm_tiled_fwd", mutates_args=())
-def _vector_norm_tiled_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    tile_n: int,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _vector_norm_kernel_tiled(M, N, op_kind, dtype_str, tile_n)(block_m, threads)(x)
-
-
-@_vector_norm_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, block_m, threads, x):
-    return torch.empty((M,), dtype=x.dtype, device=x.device)
-
-
-@_vector_norm_tiled_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, tile_n, block_m, threads, x):
-    return torch.empty((M,), dtype=x.dtype, device=x.device)
-
-
 # VectorNormKernel class
 
 
@@ -262,13 +224,23 @@ class VectorNormKernel(Kernel):
 
     Output dtype matches input dtype; internal computation in fp32.
 
+    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; the
+    permute to rows and the shape of the result are this kernel's business.
+
+    A row holding a NaN norms to NaN, matching ``torch.linalg.vector_norm``. The prim_func
+    drops NaN values, so the ``inf`` kind patches those rows here — the compensation
+    belongs to the implementation that needs it.
+
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        M: Rows the reduction leaves.
+        N: Elements each row reduces.
         op_kind: One of "l1", "l2", "inf".
         dtype: Input data type (float32, float16, bfloat16).
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
+        device_index: CUDA device the input lives on, for the shared-memory budget.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -279,10 +251,13 @@ class VectorNormKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: "int | None" = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind not in _VECTOR_NORM_KINDS:
             raise ValueError(
                 f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_VECTOR_NORM_KINDS)}."
@@ -291,9 +266,11 @@ class VectorNormKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        self._smem_budget = device_smem_budget()
+        self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
@@ -331,34 +308,37 @@ class VectorNormKernel(Kernel):
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
         x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
-        tune_by_forward(self, x, warmup=warmup, rep=rep)
+        tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._norm_rows)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the l1/l2/inf norm kernel.
+        """Norm *reduce_axes* of *x*.
 
         Args:
-            x: Input tensor of shape (M, N).
+            x: The tensor the op declares, contiguous, on a CUDA device.
 
         Returns:
-            Output tensor of shape (M,) with same dtype as input.
+            The normed tensor, same dtype as *x*.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
         """
+        require_cuda(self, x=x)
+        in_shape = tuple(x.shape)
+        rows = rows_for_axes(x, self.reduce_axes)
+        y = self._norm_rows(rows)
+        if self.op_kind == "inf":
+            nan_rows = rows.isnan().any(dim=-1)
+            if nan_rows.any():
+                y[nan_rows] = float("nan")
+        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
+
+    def _norm_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Norm the trailing axis of an ``(M, N)`` buffer."""
+        dtype_str = self.dtype_to_str(self.dtype)
         if self._needs_tiling:
-            return _vector_norm_tiled_fwd_wrapped(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_to_str(self.dtype),
-                self.config["tile_n"],
-                self.config["block_m"],
-                self.config["threads"],
-                x,
+            program = _vector_norm_kernel_tiled(
+                self.M, self.N, self.op_kind, dtype_str, self.config["tile_n"]
             )
-        return _vector_norm_fwd_wrapped(
-            self.M,
-            self.N,
-            self.op_kind,
-            self.dtype_to_str(self.dtype),
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-        )
+        else:
+            program = _vector_norm_kernel(self.M, self.N, self.op_kind, dtype_str)
+        return program(self.config["block_m"], self.config["threads"])(x)
