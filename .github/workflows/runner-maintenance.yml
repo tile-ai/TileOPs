@@ -36,6 +36,7 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -56,6 +57,12 @@ jobs:
           else
             echo "No nightly run in flight."
             echo "nightly_active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # A manual dispatch runs regardless — it is the remedy for a full disk —
+          # but the operator should see what it is about to run alongside.
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "::warning::manual dispatch overrides the nightly guard; the cache trim may hit an in-flight nightly run"
           fi
 
   reclaim-disk:

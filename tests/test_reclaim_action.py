@@ -332,9 +332,21 @@ def test_every_op_test_file_reaches_the_targeted_arm() -> None:
 def test_fork_fast_path_accepts_the_same_op_tests() -> None:
     """Otherwise a fork PR touching a nested op test is classified "outside the
     fast-path policy" rather than as the test-only change it is."""
+    import re
+
     script = _policy_script()
+    # The arm itself, not the whole script: a substring search also matches the
+    # pattern quoted in a comment, and would pass over an arm that dropped it.
+    fork_arms = [
+        a
+        for a in re.findall(r"^\s*([^\s)]*ISSUE_TEMPLATE[^)\n]*)\)\s*$", script, re.M)
+        if "tests/ops" in a
+    ]
+    assert len(fork_arms) == 1, f"expected one fork fast-path arm, found {fork_arms}"
+    listed = fork_arms[0].split("|")
+
     for pattern in _targeted_arm_patterns(script).split("|"):
-        assert f"|{pattern}|" in script, (
+        assert pattern in listed, (
             f"fork fast-path arm is missing '{pattern}'; the two arms must describe "
             "the same set of op test files"
         )
@@ -395,13 +407,15 @@ def test_reclaim_defers_to_an_in_flight_nightly() -> None:
     nightly_cron = (nightly.get(True) or nightly["on"])["schedule"][0]["cron"]
     assert maint_cron != nightly_cron, "reclaim and nightly must not share a cron"
 
+    guard = next(s for s in maint["jobs"]["nightly-guard"]["steps"] if s.get("id") == "check")
     reclaim = maint["jobs"]["reclaim-disk"]
     assert "nightly-guard" in str(reclaim["needs"])
     assert "nightly_active" in reclaim["if"]
-    # The manual dispatch is the escape hatch for a disk-full runner.
+    # The manual dispatch is the escape hatch for a disk-full runner, so it runs
+    # anyway — but not silently.
     assert "github.event_name != 'schedule'" in reclaim["if"]
+    assert "::warning::manual dispatch overrides the nightly guard" in guard["run"]
 
-    guard = next(s for s in maint["jobs"]["nightly-guard"]["steps"] if s.get("id") == "check")
     assert 'nightly_active=true" >> "$GITHUB_OUTPUT"' in guard["run"], (
         "guard must be able to report an active nightly"
     )
@@ -467,25 +481,23 @@ def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
     ok = [("pre-commit", "completed", "success", 10), ("gitleaks", "completed", "success", 11)]
     third = ("actionlint", "completed", "success", 12)
 
-    validated_then_skipped = [
-        *ok,
-        third,
+    skips = [
         ("pre-commit", "completed", "skipped", 20),
         ("gitleaks", "completed", "skipped", 21),
         ("actionlint", "completed", "skipped", 22),
     ]
-    assert _evaluate_checks(validated_then_skipped) == ("false", "")
+    assert _evaluate_checks([*ok, third, *skips]) == ("false", "")
+    assert _evaluate_checks(skips) == ("true", "")
 
-    never_validated = [
-        ("pre-commit", "completed", "skipped", 20),
-        ("gitleaks", "completed", "skipped", 21),
-        ("actionlint", "completed", "skipped", 22),
-    ]
-    assert _evaluate_checks(never_validated) == ("true", "")
-
-    assert _evaluate_checks([*ok, third][:2]) == ("true", "")  # actionlint absent
-    assert _evaluate_checks([("pre-commit", "in_progress", "", 20), *ok[1:], third]) == ("true", "")
-    assert _evaluate_checks([("pre-commit", "completed", "failure", 20), *ok[1:], third]) == (
+    assert _evaluate_checks(ok) == ("true", "")  # actionlint absent
+    assert _evaluate_checks([("pre-commit", "in_progress", "", 20), ok[1], third]) == ("true", "")
+    assert _evaluate_checks([("pre-commit", "completed", "failure", 20), ok[1], third]) == (
+        "false",
+        "pre-commit",
+    )
+    # A newer failure is the current state of a required check; an older success on
+    # the same SHA must not talk the gate into spending GPU time.
+    assert _evaluate_checks([*ok, third, ("pre-commit", "completed", "failure", 20)]) == (
         "false",
         "pre-commit",
     )

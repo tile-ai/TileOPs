@@ -61,22 +61,8 @@ jobs:
             failed=""
 
             # per_page=100 above: the default page holds 30, and a success on a
-            # later page would read as absent. Truncation now only delays.
-            #
-            # Satisfied means "some run succeeded on this SHA", not "the newest
-            # run did": preflight skips these jobs once the SHA is validated, so
-            # the skipped run is newer than the success it stands for. A skip with
-            # no prior success stays pending and fails closed. Preferring an older
-            # success to a newer failure is safe here — this gate only decides
-            # whether to spend GPU time, and the check blocks the merge on its own.
+            # later page would read as absent. Truncation only ever delays.
             for check_name in "${required_checks[@]}"; do
-              succeeded=$(echo "$checks_json" | jq -r --arg name "$check_name" '
-                [.check_runs[] | select(.name == $name and .conclusion == "success")] | length
-              ')
-              if (( succeeded > 0 )); then
-                continue
-              fi
-
               status=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
                 map(select(.name == $name)) | first | .status // ""
               ')
@@ -84,7 +70,28 @@ jobs:
                 map(select(.name == $name)) | first | .conclusion // ""
               ')
 
-              if [[ "$status" != "completed" || "$conclusion" == "skipped" ]]; then
+              if [[ "$status" != "completed" ]]; then
+                pending="true"
+                continue
+              fi
+
+              if [[ "$conclusion" == "success" ]]; then
+                continue
+              fi
+
+              # preflight skips these jobs once the SHA is validated, so a skip
+              # stands for an earlier success on this same tree and the skipped run
+              # is the newer of the two. With no such success the SHA has never been
+              # validated, so keep waiting and let the deadline fail closed. Every
+              # other conclusion is judged on the latest run alone: a check that is
+              # failing now is exactly what this gate must not spend GPU time on.
+              if [[ "$conclusion" == "skipped" ]]; then
+                succeeded=$(echo "$checks_json" | jq -r --arg name "$check_name" '
+                  [.check_runs[] | select(.name == $name and .conclusion == "success")] | length
+                ')
+                if (( succeeded > 0 )); then
+                  continue
+                fi
                 pending="true"
                 continue
               fi
