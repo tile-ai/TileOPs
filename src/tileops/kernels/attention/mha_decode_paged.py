@@ -283,7 +283,6 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     ),
                 )
                 num_blockn_in_page = page_size // block_N
-                # loop_range = T.ceildiv(seqlen_kv_b, block_N)
                 loop_range = blocks_in_split
                 offset = 0 if sid == 0 else split_length_shared[sid - 1] // block_N
 

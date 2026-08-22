@@ -176,8 +176,6 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
                 for i, j in T.Parallel(n_expand, n_expand):
                     h_frag[i, j] = T.exp2((h_frag[i, j] - tmp1[i]) * LOG2E)
 
-                # for iter_sinkhorn in T.Pipelined(sinkhorn_repeat):
-
                 for _iter_sinkhorn in T.Serial(sinkhorn_repeat):
                     T.reduce_sum(h_frag, tmp1, dim=1)
                     for j, k in T.Parallel(n_expand, n_expand):

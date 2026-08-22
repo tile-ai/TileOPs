@@ -17,10 +17,8 @@ TARGET_NUM_CTAS = int(MULTI_PROCESSOR_COUNT * 0.7)
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(
-    # out_idx=[-3, -2, -1],
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        # tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
     },
     compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
 )
