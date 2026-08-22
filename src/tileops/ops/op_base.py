@@ -163,18 +163,6 @@ class Op(ABC):
         maybe_install_eval_roofline(cls)
         maybe_install_param_names(cls)
 
-    # FIXME(staged-rollout): the three contract stubs below — _infer_output_shapes,
-    # _validate_dtypes and eval_roofline — raise NotImplementedError instead of
-    # being @abstractmethod.
-    #
-    # Broken invariant: L1 does not enforce that every concrete Op implements them.
-    # Why: marking them abstract today breaks every op under src/tileops/ops/ that has
-    #     not been migrated to docs/design/ops-design.md, and eval_roofline bodies
-    #     are emitted by scaffold-op codegen that has not run for most ops yet. The
-    #     trust model requires one migration PR per op.
-    # Cleanup: when all three are implemented across src/tileops/ops/, make all three
-    #     @abstractmethod and delete this marker.
-
     @property
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
@@ -196,6 +184,8 @@ class Op(ABC):
         ``_infer_output_shapes(self, x_shape, weight_shape)``). The uniform
         ``**shape_kwargs`` base signature exists only to make the L1 contract
         grepable and discoverable; see docs/design/ops-design.md §``_infer_output_shapes``.
+        An op the manifest calls ``implemented`` must override it — the validator's C9
+        check refuses this stub. A ``spec-only`` entry has no implementation to check.
         """
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "

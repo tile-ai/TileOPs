@@ -101,6 +101,13 @@ class FFTC2CFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fft_c2c_kernel": FFTC2CKernel}
 
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``same_as(input)`` — a transform moves no axis."""
+        return {"output": tuple(input_shape)}
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Compute 1D FFT of complex input.
 

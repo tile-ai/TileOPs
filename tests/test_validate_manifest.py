@@ -3061,12 +3061,22 @@ class TestValidatorHelperResolution:
 
         from tileops.manifest import shape_rules
 
-        ctx = {"x": types.SimpleNamespace(ndim=4), "dim": 0}
-        for name in shape_rules.__all__:
-            ok, reason = validator._eval_shape_rule(f"{name}(x, dim)", ctx)
+        # One call per helper, since they do not all take the same arguments:
+        # the predicates read a tensor-like, ``reduced_shape`` reads a shape.
+        calls = {
+            "dim_range_validity": "dim_range_validity(x, dim)",
+            "dim_uniqueness": "dim_uniqueness(x, dim)",
+            "reduced_axes": "reduced_axes(x, dim)",
+            "reduced_shape": "reduced_shape(x.shape, dim, False)",
+        }
+        assert set(calls) == set(shape_rules.__all__), calls.keys() ^ set(shape_rules.__all__)
+
+        ctx = {"x": types.SimpleNamespace(ndim=4, shape=(2, 3, 4, 5)), "dim": 0}
+        for name, call in calls.items():
+            ok, reason = validator._eval_shape_rule(call, ctx)
             assert reason is None, (name, reason)
-            # Predicate helpers return bool; reduced_axes returns frozenset
-            # — both are truthy on the canonical (ndim=4, dim=0) input.
+            # Predicates return bool, the other two a frozenset / tuple — all
+            # truthy on the canonical (ndim=4, dim=0) input.
             assert ok is True, name
 
 
@@ -3278,13 +3288,15 @@ class TestDispatchKernelInvariant:
 
 
 class TestStubOverrideGates:
-    """C6 / C7: _validate_dtypes / eval_roofline must not be base stubs."""
+    """C6 / C7 / C9: the three contract methods must not be base stubs."""
 
     def test_base_stubs_detected(self, validator):
         cls = _strict_op("StubOp", init=lambda self: None)
         errs = validator.check_c6_validate_dtypes_not_stub("StubOp", {}, cls)
         assert any("is the Op base stub" in e for e in errs), errs
         errs = validator.check_c7_eval_roofline_not_stub("StubOp", {}, cls)
+        assert any("is the Op base stub" in e for e in errs), errs
+        errs = validator.check_c9_infer_output_shapes_not_stub("StubOp", {}, cls)
         assert any("is the Op base stub" in e for e in errs), errs
 
     def test_overrides_pass(self, validator):
@@ -3293,6 +3305,7 @@ class TestStubOverrideGates:
             init=lambda self: None,
             _validate_dtypes=lambda self, *args: None,
             eval_roofline=lambda self: (0, 0),
+            _infer_output_shapes=lambda self, *shapes: {},
         )
         assert (
             validator.check_c6_validate_dtypes_not_stub(
@@ -3304,6 +3317,14 @@ class TestStubOverrideGates:
         )
         assert (
             validator.check_c7_eval_roofline_not_stub(
+                "OverriddenOp",
+                {},
+                cls,
+            )
+            == []
+        )
+        assert (
+            validator.check_c9_infer_output_shapes_not_stub(
                 "OverriddenOp",
                 {},
                 cls,

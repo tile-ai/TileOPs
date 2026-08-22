@@ -84,6 +84,18 @@ class SSDChunkScanFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        cb_shape: tuple[int, ...],
+        dA_cumsum_shape: tuple[int, ...],
+        C_shape: tuple[int, ...],
+        prev_states_shape: tuple[int, ...],
+        dt_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``y`` has the shape of *x*, ``[B, S, H, P]``."""
+        return {"y": tuple(x_shape)}
+
     def forward(
         self,
         x: torch.Tensor,

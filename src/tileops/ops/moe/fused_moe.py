@@ -157,6 +157,17 @@ class FusedMoe(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {}
 
+    def _infer_output_shapes(
+        self,
+        hidden_states_shape: tuple[int, ...],
+        gating_output_shape: tuple[int, ...],
+        w_gate_up_shape: tuple[int, ...],
+        w_down_shape: tuple[int, ...],
+        correction_bias_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: routing returns one row per token, of the input width."""
+        return {"output": tuple(hidden_states_shape)}
+
     def forward(
         self,
         hidden_states: torch.Tensor,  # [T, H]

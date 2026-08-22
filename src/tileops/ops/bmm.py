@@ -117,6 +117,14 @@ class BmmFwdOp(Op):
             build=lambda: self.kernel_map["bmm_kernel"](batch, m, n, k, dtype, tune=self.tune),
         )
 
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``d.shape == (B, M, N)``."""
+        return {"d": (a_shape[0], a_shape[1], b_shape[2])}
+
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Fast path: same input signature as the last call → reuse the already
         # built/JIT'd kernel directly.
@@ -288,6 +296,16 @@ class BmmFp8KNFwdOp(Op):
                 batch, m, n, k, dtype, self.out_dtype, device=device, tune=self.tune
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+        scale_a_shape: tuple[int, ...],
+        scale_b_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: which axis of *b* carries ``N`` follows ``B_IS_NK``."""
+        return {"d": (a_shape[0], a_shape[1], b_shape[1 if self.B_IS_NK else 2])}
 
     def forward(
         self,

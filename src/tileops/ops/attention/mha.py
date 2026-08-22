@@ -167,6 +167,18 @@ class MultiHeadAttentionBwdOp(Op):
             )
         return dict(kernel_map)
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        o_shape: tuple[int, ...],
+        do_shape: tuple[int, ...],
+        lse_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: each gradient has the shape of what it is for."""
+        return {"dq": tuple(q_shape), "dk": tuple(k_shape), "dv": tuple(v_shape)}
+
     def forward(
         self,
         q: torch.Tensor,
@@ -220,6 +232,15 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mha_decode_kernel": MHADecodeKernel}
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]
@@ -307,6 +328,17 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             is_causal=self.is_causal,
             tune=self.tune,
         )
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        real_seqlen_kv_shape: tuple[int, ...],
+        block_table_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
 
     def forward(
         self,

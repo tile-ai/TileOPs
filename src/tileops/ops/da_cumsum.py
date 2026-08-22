@@ -114,6 +114,17 @@ class DaCumsumFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        dt_shape: tuple[int, ...],
+        A_shape: tuple[int, ...],
+        dt_bias_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``[B, H, NC, chunk_len]``, with ``NC = S // chunk_len``."""
+        b, s, h = dt_shape
+        chunked = (b, h, s // self.chunk_len, self.chunk_len)
+        return {"dt_out": chunked, "dA_cumsum": chunked}
+
     def forward(
         self,
         dt: torch.Tensor,

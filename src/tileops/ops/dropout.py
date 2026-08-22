@@ -111,6 +111,13 @@ class DropoutFwdOp(Op):
         y_flat = self.kernel(x_flat)
         return y_flat.reshape(orig_shape)
 
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: masking writes one element per input element."""
+        return {"output": tuple(input_shape)}
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")

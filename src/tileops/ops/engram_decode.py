@@ -72,6 +72,20 @@ class EngramDecodeFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"engram_decode": EngramDecodeKernel}
 
+    def _infer_output_shapes(
+        self,
+        e_t_shape: tuple[int, ...],
+        h_t_shape: tuple[int, ...],
+        conv_state_shape: tuple[int, ...],
+        W_K_shape: tuple[int, ...],
+        W_V_shape: tuple[int, ...],
+        rms_w_h_shape: tuple[int, ...],
+        rms_w_v_shape: tuple[int, ...],
+        conv_w_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: one step of output, and the convolution state after it."""
+        return {"y_t": tuple(h_t_shape), "new_conv_state": tuple(conv_state_shape)}
+
     def forward(
         self,
         e_t: torch.Tensor,

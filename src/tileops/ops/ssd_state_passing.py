@@ -75,6 +75,16 @@ class SSDStatePassingFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        states_shape: tuple[int, ...],
+        dA_chunk_cumsum_shape: tuple[int, ...],
+        initial_states_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the scan writes one state per chunk, plus the last one."""
+        b, nc, h, n = states_shape
+        return {"out": (b, nc, h, n), "final_states": (b, h, n)}
+
     def forward(
         self,
         states: torch.Tensor,

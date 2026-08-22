@@ -64,6 +64,26 @@ class EngramGateConvFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"engram_gate_conv_fwd": EngramGateConvFwdKernel}
 
+    def _infer_output_shapes(
+        self,
+        H_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        rms_w_h_shape: tuple[int, ...],
+        rms_w_v_shape: tuple[int, ...],
+        conv_w_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the two ``[M, seq_len, d]`` tensors, plus four per-row statistics."""
+        rows = H_shape[:2]
+        return {
+            "Y": tuple(H_shape),
+            "vhat": tuple(H_shape),
+            "alpha": tuple(rows),
+            "rrms_h": tuple(rows),
+            "rrms_k": tuple(rows),
+            "rrms_v": tuple(rows),
+        }
+
     def forward(
         self,
         H: torch.Tensor,
@@ -158,6 +178,31 @@ class EngramGateConvBwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"engram_gate_conv_bwd": EngramGateConvBwdKernel}
+
+    def _infer_output_shapes(
+        self,
+        dY_shape: tuple[int, ...],
+        H_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        rms_w_h_shape: tuple[int, ...],
+        rms_w_v_shape: tuple[int, ...],
+        conv_w_shape: tuple[int, ...],
+        vhat_shape: tuple[int, ...],
+        alpha_shape: tuple[int, ...],
+        rrms_h_shape: tuple[int, ...],
+        rrms_k_shape: tuple[int, ...],
+        rrms_v_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dH": tuple(dY_shape),
+            "dk": tuple(dY_shape),
+            "dv": tuple(dY_shape),
+            "drms_w_h": tuple(rms_w_h_shape),
+            "drms_w_v": tuple(rms_w_v_shape),
+            "dconv_w": tuple(conv_w_shape),
+        }
 
     def forward(
         self,

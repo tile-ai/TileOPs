@@ -150,6 +150,19 @@ class FP8LightningIndexerFwdOp(Op):
     ) -> torch.Tensor:
         return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
 
+    def _infer_output_shapes(
+        self,
+        index_q_shape: tuple[int, ...],
+        index_k_shape: tuple[int, ...],
+        weights_shape: tuple[int, ...],
+        cu_seqlen_ks_shape: tuple[int, ...],
+        cu_seqlen_ke_shape: tuple[int, ...],
+        index_k_scale_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``[batch, seq_len, seq_len_kv, kv_group]``."""
+        batch, seq_len = index_q_shape[0], index_q_shape[1]
+        return {"logits": (batch, seq_len, index_k_shape[1], index_k_shape[2])}
+
     def forward(
         self,
         index_q: torch.Tensor,

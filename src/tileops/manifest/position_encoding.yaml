@@ -205,6 +205,7 @@ RopeNeoxPositionIdsFwdOp:
     shape_rules:
     - "x.ndim == 3"
     - "position_ids.shape == (x.shape[0],)"
+    - "output.shape == x.shape"
     - "x.shape[-1] % 2 == 0"
     - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= x.shape[-1])"
 

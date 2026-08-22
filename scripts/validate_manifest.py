@@ -2558,7 +2558,11 @@ def _probe_infer_parity(
     output_only_rebindings: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         for p in decl_parts:
-            if p not in input_bound:
+            # A param is bound by construction, so it is neither input-bound nor
+            # output-only: rebinding it from the inferred result would overwrite the
+            # value the op was built with, and treating it as an output symbol turns
+            # an input-only precondition into a parity error.
+            if p not in input_bound and p not in param_env:
                 output_only_symbols.add(p)
         if out_name not in result:
             continue
@@ -3968,6 +3972,28 @@ def check_c8_mutated_inputs_parity(
     return errors
 
 
+def check_c9_infer_output_shapes_not_stub(
+    op_name: str,
+    entry: dict,
+    cls: type | None,
+) -> list[str]:
+    """C9: ``_infer_output_shapes`` is not the base ``Op`` stub.
+
+    The fake a compiled op traces through reads its output shapes here, so an op
+    without one cannot state what it returns without running.
+    """
+    if cls is None:
+        return []
+    from tileops.ops.op_base import Op as _OpBase
+
+    if cls._infer_output_shapes is _OpBase._infer_output_shapes:
+        return [
+            f"[stub] {op_name}: _infer_output_shapes is the Op base stub "
+            f"(not implemented by the concrete class)"
+        ]
+    return []
+
+
 def check_c6_validate_dtypes_not_stub(
     op_name: str,
     entry: dict,
@@ -4218,6 +4244,7 @@ def validate_manifest(
                     warnings=all_warnings,
                 )
             )
+            strict_errors.extend(check_c9_infer_output_shapes_not_stub(op_name, entry, op_cls))
         if "dtype" in levels:
             strict_errors.extend(check_c6_validate_dtypes_not_stub(op_name, entry, op_cls))
         if "bench" in levels:

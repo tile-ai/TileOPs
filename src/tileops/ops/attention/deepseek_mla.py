@@ -54,6 +54,16 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mla_decode_kernel": MLADecodeWsKernel}
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        q_pe_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        k_pe_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
+
     def forward(
         self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
     ) -> torch.Tensor:

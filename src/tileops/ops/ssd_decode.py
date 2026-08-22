@@ -67,6 +67,18 @@ class SSDDecodeFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        A_shape: tuple[int, ...],
+        dt_shape: tuple[int, ...],
+        x_shape: tuple[int, ...],
+        B_in_shape: tuple[int, ...],
+        C_in_shape: tuple[int, ...],
+        state_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``y_out`` has the shape of *x*, ``[B, H, P]``."""
+        return {"y_out": tuple(x_shape)}
+
     def forward(
         self,
         A: torch.Tensor,

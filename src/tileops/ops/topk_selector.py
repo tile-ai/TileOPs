@@ -55,6 +55,16 @@ class TopkSelectorFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        index_score_shape: tuple[int, ...],
+        starts_shape: tuple[int, ...],
+        ends_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``[batch, seq_len, kv_group, topk]``."""
+        batch, seq_len, _, kv_group = index_score_shape
+        return {"indexes": (batch, seq_len, kv_group, self.topk)}
+
     def forward(self, index_score, starts, ends) -> torch.Tensor:
         if not index_score.is_cuda:
             raise ValueError("TopkSelectorFwdOp expects CUDA inputs")

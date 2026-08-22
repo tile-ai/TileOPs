@@ -96,6 +96,18 @@ class SSDChunkStateFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        Bmat_shape: tuple[int, ...],
+        dt_shape: tuple[int, ...],
+        dA_cumsum_shape: tuple[int, ...],
+        seq_idx_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``[B, NC, H, P, N]`` — chunks from *dt*, state size from *Bmat*."""
+        b, _, h, p = x_shape
+        return {"states": (b, dt_shape[2], h, p, Bmat_shape[-1])}
+
     def forward(
         self,
         x: torch.Tensor,

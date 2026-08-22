@@ -117,6 +117,15 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         """
         return {"sparse_mla_kernel": SparseMlaKernel}
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        kv_shape: tuple[int, ...],
+        indices_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o`` drops the tail dims ``q`` carries."""
+        return {"o": tuple(q_shape[:-1]) + (q_shape[-1] - self.dim_tail,)}
+
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
         Performs the forward pass of the sparse attention operation.

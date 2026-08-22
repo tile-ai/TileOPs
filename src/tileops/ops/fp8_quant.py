@@ -43,6 +43,16 @@ class FP8QuantFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        input_tensor_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: one scale per row, and the quantized tensor itself."""
+        return {
+            "scale_tensor": tuple(input_tensor_shape[:-1]),
+            "output_tensor": tuple(input_tensor_shape),
+        }
+
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if not input_tensor.is_cuda:
             raise ValueError("FP8QuantFwdOp expects a CUDA input tensor")

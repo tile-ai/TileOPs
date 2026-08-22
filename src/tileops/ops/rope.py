@@ -480,6 +480,10 @@ class _RopeOpBase(Op):
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin)
 
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs.output.shape``: ``same_as(x)`` — a rotation moves no axis."""
+        return {"output": tuple(x_shape)}
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation using internally computed cos/sin tables.
 
@@ -665,6 +669,14 @@ class RopeNeoxPositionIdsFwdOp(Op):
     def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin, position_ids)
+
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        position_ids_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
+        return {"output": tuple(x_shape)}
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         x, position_ids = self._validate_and_prepare(x, position_ids)

@@ -714,7 +714,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
       - "q.shape == (B, S, H, D + dim_tail)"
       - "kv.shape == (B, S_kv, H_kv, D + dim_tail)"
       - "indices.shape == (B, S, H_kv, topk)"
-      - "o.shape == (B, S, H, D)"
+      - "o.shape == q.shape[:-1] + (q.shape[-1] - dim_tail,)"
 
   workloads:
     - {q_shape: [1, 1024, 128, 576], kv_shape: [1, 2048, 1, 576], indices_shape: [1, 1024, 1, 2048], topk: 2048, stride_kv: 1, dim_tail: 64, q_start_index_s: 1024, dtypes: [float16], label: "single-batch-mainstream"}

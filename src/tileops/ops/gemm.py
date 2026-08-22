@@ -121,6 +121,16 @@ class GemmFwdOp(Op):
         )
         return "gemm", kernel
 
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: which axis carries ``M`` and ``N`` follows the layout flags."""
+        m = a_shape[1] if self.trans_a else a_shape[0]
+        n = b_shape[0] if self.trans_b else b_shape[1]
+        return {"d": (m, n)}
+
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Fast path: same input signature as the last call → reuse the already
         # built/JIT'd kernel directly, skipping dtype validation, shape

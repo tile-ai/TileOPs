@@ -31,10 +31,12 @@ class MHCPreFwdOp(Op):
 
     @staticmethod
     def _n_expand_from_phi_dim(phi_dim: int) -> int:
-        n_expand = int(math.isqrt(phi_dim + 1) - 1)
-        if n_expand <= 0 or n_expand * n_expand + 2 * n_expand != phi_dim:
-            raise ValueError("phi.shape[1] must equal n_expand * n_expand + 2 * n_expand")
-        return n_expand
+        """Solve ``n`` from ``phi_dim == n * n + 2 * n``, without checking it holds.
+
+        ``forward`` checks; ``_infer_output_shapes`` only needs the number, and it is
+        handed shapes rather than tensors, so it cannot report which input was wrong.
+        """
+        return int(math.isqrt(phi_dim + 1) - 1)
 
     def _get_kernel(
         self,
@@ -57,6 +59,17 @@ class MHCPreFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        phi_shape: tuple[int, ...],
+        x_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``x_res`` follows *x*; ``x_layer`` is its per-expansion slice."""
+        batch, expanded = x_shape
+        n_expand = self._n_expand_from_phi_dim(phi_shape[1])
+        return {"x_res": (batch, expanded), "x_layer": (batch, expanded // n_expand)}
+
     def forward(
         self,
         phi: torch.Tensor,
@@ -74,6 +87,8 @@ class MHCPreFwdOp(Op):
         if phi.shape[0] != x_dim:
             raise ValueError(f"phi.shape[0] must match x.shape[1]={x_dim}, got {phi.shape[0]}")
         n_expand = self._n_expand_from_phi_dim(phi.shape[1])
+        if n_expand <= 0 or n_expand * n_expand + 2 * n_expand != phi.shape[1]:
+            raise ValueError("phi.shape[1] must equal n_expand * n_expand + 2 * n_expand")
         if b.shape[0] != phi.shape[1]:
             raise ValueError(f"b.shape[0] must match phi.shape[1]={phi.shape[1]}, got {b.shape[0]}")
         if x_dim % n_expand != 0:
@@ -127,6 +142,15 @@ class MHCPostFwdOp(Op):
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        x_layer_out_shape: tuple[int, ...],
+        h_post_shape: tuple[int, ...],
+        x_res_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``x_out`` has the shape of the residual it is added to."""
+        return {"x_out": tuple(x_res_shape)}
 
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor

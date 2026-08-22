@@ -151,6 +151,21 @@ class GroupedGemmFwdOp(Op):
             build=lambda: kernel_cls(batch_sum, batch_count, n, k, **kwargs),
         )
 
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+        batch_sizes_shape: tuple[int, ...],
+        batch_offsets_shape: tuple[int, ...],
+        batch_padded_offsets_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``transpose_a`` decides whether the groups stay an axis."""
+        if self.transpose_a:
+            n = b_shape[0] if self.transpose_b else b_shape[1]
+            return {"output": (batch_sizes_shape[0], a_shape[1], n)}
+        n = b_shape[1] if self.transpose_b else b_shape[2]
+        return {"output": (a_shape[0], n)}
+
     def forward(
         self,
         a: torch.Tensor,

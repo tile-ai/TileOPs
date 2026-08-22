@@ -196,6 +196,21 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         # All sub-kernels are owned by the inner Ops (permute / GEMM / activation / unpermute).
         return {}
 
+    def _infer_output_shapes(
+        self,
+        output_shape: tuple[int, ...],
+        hidden_states_shape: tuple[int, ...],
+        w_gate_up_shape: tuple[int, ...],
+        w_down_shape: tuple[int, ...],
+        topk_weights_shape: tuple[int, ...],
+        topk_ids_shape: tuple[int, ...],
+        workspace1_shape: tuple[int, ...],
+        workspace2_shape: tuple[int, ...],
+        expert_map_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: the caller's buffer holds one row per token."""
+        return {"output": tuple(hidden_states_shape)}
+
     def forward(
         self,
         output: Tensor,

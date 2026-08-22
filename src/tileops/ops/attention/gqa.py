@@ -1057,6 +1057,22 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             self._rope_cos_cache[(device, dtype)] = cached
         return cached
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_new_shape: tuple[int, ...],
+        v_new_shape: tuple[int, ...],
+        k_pages_shape: tuple[int, ...],
+        v_pages_shape: tuple[int, ...],
+        k_scale_shape: tuple[int, ...],
+        v_scale_shape: tuple[int, ...],
+        cu_seqlens_q_shape: tuple[int, ...],
+        cache_seqlens_shape: tuple[int, ...],
+        block_table_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
+
     def forward(
         self,
         q: torch.Tensor,
@@ -1182,6 +1198,18 @@ class GroupedQueryAttentionBwdOp(Op):
             "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
         }
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        o_shape: tuple[int, ...],
+        do_shape: tuple[int, ...],
+        lse_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: each gradient has the shape of what it is for."""
+        return {"dq": tuple(q_shape), "dk": tuple(k_shape), "dv": tuple(v_shape)}
+
     def forward(
         self,
         q: torch.Tensor,
@@ -1278,6 +1306,15 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
             tune=self.tune,
         )
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
+
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]
         if real_seqlen_kv < self.seqlen_kv:
@@ -1367,6 +1404,17 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
             softcap=self.softcap,
             tune=self.tune,
         )
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        real_seqlen_kv_shape: tuple[int, ...],
+        block_table_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
 
     def forward(
         self,
@@ -1459,6 +1507,15 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         kernel = GQASlidingWindowFwdWgmmaPipelinedKernel
         return {"gqa_sliding_window_fwd_kernel": kernel}
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
 
     def forward(
         self,
@@ -1630,6 +1687,17 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         kernel = GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
         return {"gqa_sliding_window_varlen_fwd_kernel": kernel}
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        cu_seqlens_q_shape: tuple[int, ...],
+        cu_seqlens_k_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
 
     def forward(
         self,
