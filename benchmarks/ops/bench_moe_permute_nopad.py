@@ -77,8 +77,13 @@ def test_moe_permute_nopad_bench(
     functors = {"tileops": op}
 
     if expert_map is not None:
-        # No vLLM or torch column: their permute takes the whole expert table, so
-        # the two would not measure the same work.
+        # FIXME(staged-rollout): this row records no baseline.
+        #
+        # Broken invariant: every benchmark records >=1 non-tileops baseline.
+        # Why: under expert parallelism this rank owns a slice of the expert
+        #   table, and vLLM's and torch's permute both take the whole table, so
+        #   either column would time a different amount of work.
+        # Cleanup: a baseline that permutes against the local expert slice.
         bm.compare(
             functors,
             hidden_states,

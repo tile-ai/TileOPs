@@ -69,6 +69,12 @@ repos:
         language: python
         files: ^benchmarks/ops/.*\.py$
 
+      - id: bench-baseline-lint
+        name: benchmark baseline lint
+        entry: python scripts/lint/bench_baseline_lint.py
+        language: python
+        files: ^benchmarks/.*\.py$
+
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:

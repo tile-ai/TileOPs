@@ -106,11 +106,23 @@ def test_bmm_fp8_kn_bench(
 
     op = BmmFp8KNFwdOp(out_dtype=out_dtype, tune=True)
     bm = ManifestBenchmark(_FP8_KN_OP_NAME, op, workload)
-    bm.compare(
-        {"tileops": (op, (a, b_kn, scale_a, scale_b))},
-        record_as=op,
-        params=locals(),
-    )
+    functors = {
+        "tileops": (op, (a, b_kn, scale_a, scale_b)),
+        "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),
+    }
+
+    def flashinfer_fn(a_, b_, sa_, sb_):
+        return _flashinfer_bmm_fp8_per_tensor_ref(workload, a_, b_, sa_, sb_)
+
+    # b_kn is already [B, K, N], the order flashinfer's bmm_fp8 reads.
+    try:
+        flashinfer_fn(a, b_kn, scale_a, scale_b)
+    except (ImportError, RuntimeError) as exc:
+        print(f"  [skip] flashinfer-bmm-fp8: {exc}")
+    else:
+        functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kn, scale_a, scale_b))
+
+    bm.compare(functors, record_as=op, params=locals())
 
 
 @pytest.mark.parametrize(
