@@ -7,8 +7,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.gemm_call import GemmCall
 from tileops.kernels.kernel_base import Kernel
+
+from .call_spec import GemmCall
 
 GROUP_SIZE = 128
 

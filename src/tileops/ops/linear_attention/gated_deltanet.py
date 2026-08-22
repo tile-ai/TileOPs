@@ -3,19 +3,19 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.gated_deltanet import (
+from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.kernels.linear_attention.gated_deltanet import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
     GatedDeltaNetFwdProductionKernel,
     GatedDeltaNetPrefillFwdKernel,
 )
-from tileops.kernels.gated_deltanet_recurrence import (
+from tileops.kernels.linear_attention.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeFP32Kernel,
     GatedDeltaNetDecodeKernel,
     GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
-from tileops.kernels.kernel_base import Kernel
 
 from .._validation import check_tensor_shape
 from ..op_base import Op, UnmanifestedOp

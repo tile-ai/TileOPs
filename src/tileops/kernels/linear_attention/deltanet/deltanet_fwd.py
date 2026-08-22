@@ -21,13 +21,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attn_autotune import (
+
+from ..autotune import (
     default_h_block_v,
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
-from tileops.kernels.v_tile import resolve_block_v
-
+from ..v_tile import resolve_block_v
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
 __all__ = ["DeltaNetFwdKernel"]

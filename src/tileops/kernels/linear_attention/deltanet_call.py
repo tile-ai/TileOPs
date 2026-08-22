@@ -5,7 +5,7 @@ from typing import Optional
 
 import torch
 
-from .call_spec import CallSpec
+from ..call_spec import CallSpec
 
 __all__ = ["DeltaNetDecodeCall"]
 

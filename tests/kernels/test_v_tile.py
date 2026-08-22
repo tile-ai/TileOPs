@@ -7,11 +7,13 @@ this test, removing the guard passes CI on the pinned image unnoticed.
 
 import pytest
 
-from tileops.kernels.deltanet.deltanet_fwd import _h_recurrence_tl as deltanet_h_recurrence
-from tileops.kernels.gated_deltanet.gated_deltanet_fwd import (
+from tileops.kernels.linear_attention.deltanet.deltanet_fwd import (
+    _h_recurrence_tl as deltanet_h_recurrence,
+)
+from tileops.kernels.linear_attention.gated_deltanet.gated_deltanet_fwd import (
     _h_recurrence_tl as gated_h_recurrence,
 )
-from tileops.kernels.v_tile import GEMM_MIN_N
+from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 
 pytestmark = pytest.mark.smoke
 

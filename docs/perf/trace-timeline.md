@@ -27,7 +27,7 @@ Below is a complete (illustrative, single-buffer) warp-specialized GEMM with
 tracing wired in. The numbered markers `(1)`–`(7)` are the only trace-specific
 additions; each is explained below, linked to its API doc. The production
 multi-stage version lives in
-[`src/tileops/kernels/gemm.py`](https://github.com/tile-ai/TileOPs/blob/main/src/tileops/kernels/gemm.py).
+[`src/tileops/kernels/gemm/dense.py`](https://github.com/tile-ai/TileOPs/blob/main/src/tileops/kernels/gemm/dense.py).
 
 ```{ .python .annotate }
 import functools

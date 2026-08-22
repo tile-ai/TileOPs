@@ -11,9 +11,9 @@ import sys
 
 import pytest
 
-from tileops.kernels import linear_attn_autotune as la
-from tileops.kernels.deltanet import deltanet_fwd
-from tileops.kernels.gated_deltanet import gated_deltanet_fwd
+from tileops.kernels.linear_attention import autotune as la
+from tileops.kernels.linear_attention.deltanet import deltanet_fwd
+from tileops.kernels.linear_attention.gated_deltanet import gated_deltanet_fwd
 
 pytestmark = pytest.mark.smoke
 

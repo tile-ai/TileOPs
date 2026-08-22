@@ -11,8 +11,8 @@ import itertools
 import pytest
 import torch
 
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.gemm_call import GemmCall
+from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import (
     DELTANET_DECODE_KEYS,
@@ -149,7 +149,7 @@ def test_every_family_call_record_reads_the_device_when_unstated() -> None:
 @pytest.mark.smoke
 def test_gemv_region_matches_the_layouts_it_was_written_for() -> None:
     """The predicate the op used to carry, over every (m, n, layout) combination."""
-    from tileops.kernels.gemm_call import gemv_region
+    from tileops.kernels.gemm.call_spec import gemv_region
 
     for m, n, trans_a, trans_b in itertools.product([1, 8], [1, 8], [False, True], [False, True]):
         expected = (m == 1 and not trans_a and trans_b) or (n == 1 and not trans_a and not trans_b)

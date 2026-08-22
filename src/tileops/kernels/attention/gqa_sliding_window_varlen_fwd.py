@@ -18,13 +18,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.online_softmax import (
+from .call_spec import uses_sliding_window
+from .online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-
-from .call_spec import uses_sliding_window
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = [

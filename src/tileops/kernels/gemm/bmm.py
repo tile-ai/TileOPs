@@ -15,7 +15,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = [
     "BmmFp8Kernel",
     "BmmKernel",
-]  # from tileops.kernels.bmm import *
+]
 
 
 @functools.lru_cache(maxsize=64)

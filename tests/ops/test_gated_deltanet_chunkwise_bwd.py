@@ -2,7 +2,9 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase
-from tileops.kernels.gated_deltanet.gated_deltanet_bwd import GatedDeltaNetBwdKernel
+from tileops.kernels.linear_attention.gated_deltanet.gated_deltanet_bwd import (
+    GatedDeltaNetBwdKernel,
+)
 from tileops.ops import GatedDeltaNetBwdOp
 
 

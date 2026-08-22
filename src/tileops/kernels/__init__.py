@@ -20,7 +20,6 @@ from .attention import (
     NSATopkVarlenKernel,
     SparseMlaKernel,
 )
-from .bmm import BmmFp8Kernel, BmmKernel
 from .convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
@@ -31,34 +30,40 @@ from .convolution import (
     GroupConv2dKernel,
     GroupConv3dKernel,
 )
-from .deltanet import DeltaNetBwdKernel, DeltaNetFwdKernel
-from .deltanet_recurrence import (
-    DeltaNetDecodeFP32Kernel,
-    DeltaNetDecodeKernel,
-    DeltaNetDecodeRawCudaFlaStyleKernel,
-)
 from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from .fft import FFTC2CKernel
 from .fp8_lightning_indexer import FP8LightningIndexerKernel
 from .fp8_quant import FP8QuantKernel
-from .gated_deltanet import (
-    GatedDeltaNetBwdKernel,
-    GatedDeltaNetFwdKernel,
-    GatedDeltaNetFwdProductionKernel,
-    GatedDeltaNetPrefillFwdKernel,
+from .gemm import (
+    BmmFp8Kernel,
+    BmmKernel,
+    GemmFp8BlockScaledKernel,
+    GemmFp8EpilogueKernel,
+    GemmKernel,
+    GemvKernel,
 )
-from .gated_deltanet_recurrence import (
+from .grouped_gemm import GroupedGemmKernel
+from .kernel_base import Kernel
+from .linear_attention import (
+    DeltaNetBwdKernel,
+    DeltaNetDecodeFP32Kernel,
+    DeltaNetDecodeKernel,
+    DeltaNetDecodeRawCudaFlaStyleKernel,
+    DeltaNetFwdKernel,
+    GatedDeltaNetBwdKernel,
     GatedDeltaNetDecodeFP32Kernel,
     GatedDeltaNetDecodeKernel,
     GatedDeltaNetDecodeRawCudaFlaStyleKernel,
+    GatedDeltaNetFwdKernel,
+    GatedDeltaNetFwdProductionKernel,
+    GatedDeltaNetPrefillFwdKernel,
+    GLABwdKernel,
+    GLADecodeFP32Kernel,
+    GLADecodeKernel,
+    GLAFwdKernel,
 )
-from .gemm import GemmFp8BlockScaledKernel, GemmFp8EpilogueKernel, GemmKernel, GemvKernel
-from .gla import GLABwdKernel, GLAFwdKernel
-from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
-from .grouped_gemm import GroupedGemmKernel
-from .kernel_base import Kernel
 from .mhc import MHCPostKernel, MHCPreKernel
 from .moe import MoePermuteAlignKernel
 from .norm import (
