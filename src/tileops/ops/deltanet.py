@@ -123,6 +123,26 @@ class DeltaNetFwdOp(Op):
             (q, k, v, beta), batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index
         )
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the output, the per-chunk state, and the four chunk buffers."""
+        b, h, s, dk = q_shape
+        dv = v_shape[3]
+        chunks = s // self.chunk_size
+        return {
+            "o": (b, h, s, dv),
+            "S": (b, h, chunks + 1, dk, dv),
+            "Aw": (b, h, s, self.chunk_size),
+            "Au": (b, h, s, self.chunk_size),
+            "w": (b, h, s, dk),
+            "u": (b, h, s, dv),
+        }
+
     def forward(
         self,
         q: torch.Tensor,
@@ -250,6 +270,27 @@ class DeltaNetBwdOp(Op):
         self.kernel = self._get_kernel(
             inputs, batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
         )
+
+    def _infer_output_shapes(
+        self,
+        do_shape: tuple[int, ...],
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+        S_shape: tuple[int, ...],
+        Aw_shape: tuple[int, ...],
+        Au_shape: tuple[int, ...],
+        w_shape: tuple[int, ...],
+        u_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dq": tuple(q_shape),
+            "dk": tuple(k_shape),
+            "dv": tuple(v_shape),
+            "dbeta": tuple(beta_shape),
+        }
 
     def forward(
         self,

@@ -12,14 +12,11 @@ Layout convention:
     FLA inputs explicitly.
 """
 
-from typing import Optional
-
 import pytest
 import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     ManifestBenchmark,
     backward_of,
 )
@@ -27,7 +24,6 @@ from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetBHTDFwdOp, GatedDeltaNetBTHDFwdOp, GatedDeltaNetBwdOp
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
-from workloads.workload_base import FixtureBase
 
 
 def _to_fla_layout(q, k, v, g, beta):
@@ -44,20 +40,16 @@ def _to_fla_layout(q, k, v, g, beta):
 # Forward benchmark
 
 
-class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
-        return 2.0 * B * H * S * DK * DV
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        return B * H * S * (2 * DK + 2 * DV + 2) * elem
-
-
 _FWD_OP_NAME = "GatedDeltaNetBTHDFwdOp"
+_BHTD_FWD_OP_NAME = "GatedDeltaNetBHTDFwdOp"
+_BWD_OP_NAME = "GatedDeltaNetBwdOp"
+
+
+def _gdn_bhtd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
+    """Constructor arguments for one manifest workload row, head-major."""
+    batch, heads, seq_len, dim_k = workload["q_shape"]
+    dim_v = workload["v_shape"][3]
+    return batch, heads, seq_len, dim_k, dim_v, workload.get("chunk_size", 64)
 
 
 def _gdn_bthd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
@@ -96,45 +88,45 @@ def test_gated_deltanet_vs_fla_fwd(
     bm.compare({"tileops": (op, bthd), "fla": (fla_fwd, ())}, record_as=op, params=locals())
 
 
+@pytest.mark.parametrize(
+    "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
+    manifest_params(load_workloads(_BHTD_FWD_OP_NAME), _gdn_bhtd_args, tune=False),
+)
+def test_gated_deltanet_bhtd_vs_fla_fwd(
+    batch: int,
+    heads: int,
+    seq_len: int,
+    dim_k: int,
+    dim_v: int,
+    chunk_size: int,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    """The head-major forward, which is what the backward reads its state from."""
+    test = GatedDeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    inputs = test.gen_inputs()  # BHSD, the order this op takes
+    bthd = _to_fla_layout(*inputs)
+
+    op = GatedDeltaNetBHTDFwdOp(chunk_size=chunk_size, tune=tune)
+    bm = ManifestBenchmark(_BHTD_FWD_OP_NAME, op, test)
+
+    def fla_fwd():
+        return chunk_gated_delta_rule(*bthd, scale=1.0)
+
+    bm.compare({"tileops": (op, inputs), "fla": (fla_fwd, ())}, record_as=op, params=locals())
+
+
 # Backward benchmark
 
 
-class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
-        return 4.0 * B * H * S * DK * DV
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        return B * H * S * (4 * DK + 3 * DV + 4) * elem
-
-
-class GatedDeltaNetVsFlaBwdFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-            [
-                # chunk_size=32
-                (2, 4096, 4, 64, 64, 32, torch.float16, False),
-                (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
-                # chunk_size=64
-                (2, 2048, 4, 64, 64, 64, torch.float16, False),
-                (2, 4096, 4, 64, 64, 64, torch.float16, False),
-                (2, 8192, 4, 64, 64, 64, torch.float16, False),
-                (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            ],
-        ),
-    ]
-
-
-@GatedDeltaNetVsFlaBwdFixture
+@pytest.mark.parametrize(
+    "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
+    manifest_params(load_workloads(_BWD_OP_NAME), _gdn_bhtd_args, tune=False),
+)
 def test_gated_deltanet_vs_fla_bwd(
     batch: int,
-    seq_len: int,
     heads: int,
+    seq_len: int,
     dim_k: int,
     dim_v: int,
     chunk_size: int,
@@ -142,7 +134,6 @@ def test_gated_deltanet_vs_fla_bwd(
     tune: bool,
 ) -> None:
     test = GatedDeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    bm = GatedDeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
     q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
@@ -157,6 +148,7 @@ def test_gated_deltanet_vs_fla_bwd(
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
 
     bwd_op = GatedDeltaNetBwdOp(chunk_size=BC, tune=tune)
+    bm = ManifestBenchmark(_BWD_OP_NAME, bwd_op, test)
     functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---

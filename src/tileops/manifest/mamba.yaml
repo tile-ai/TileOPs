@@ -72,7 +72,7 @@ CBProducerFwdOp:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -107,10 +107,8 @@ CBProducerFwdOp:
       cb_producer: CBProducerKernel
     op: tileops/ops/cb_producer.py
     test: tests/ops/test_mamba.py
-    # Exercised through the Mamba-2 end-to-end benchmark (CB stage of
-    # Mamba2FwdOp).
-    bench: benchmarks/ops/bench_mamba2_e2e.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: true
 
 SSDChunkStateFwdOp:
   # Per-chunk SSM state: decay-weighted (P x Q) @ (Q x N) per (batch, chunk,

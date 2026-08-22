@@ -52,6 +52,11 @@ def _make_op_subclass(*, static_axes=frozenset(), override_cache_key=False):
         "_static_axes": static_axes,
         "default_kernel_map": property(lambda self: {}),
         "forward": lambda self, *a, **kw: None,
+        # The three manifest-driven methods are abstract on Op; these doubles
+        # exercise the get-or-build plumbing, so a minimal body is the contract.
+        "_infer_output_shapes": lambda self, *shapes: {},
+        "_validate_dtypes": lambda self, *args: None,
+        "eval_roofline": lambda self: (0, 0),
     }
     if override_cache_key:
         attrs["_cache_key"] = lambda self, *shapes: ("overridden",)
@@ -178,6 +183,15 @@ class _SlottedOp(Op):
     @property
     def default_kernel_map(self):
         return {}
+
+    def _infer_output_shapes(self, *shapes):
+        return {}
+
+    def _validate_dtypes(self, *args):
+        return None
+
+    def eval_roofline(self):
+        return (0, 0)
 
     def forward(self, *a, **kw):
         return None
@@ -360,6 +374,15 @@ class _TunableOp(Op):
     def forward(self, *a, **kw):
         return None
 
+    def _infer_output_shapes(self, *shapes):
+        return {}
+
+    def _validate_dtypes(self, *args):
+        return None
+
+    def eval_roofline(self):
+        return (0, 0)
+
     def build(self, dtype):
         def factory():
             kernel = _RecordingKernel(str(dtype), self._tuned)
@@ -367,7 +390,7 @@ class _TunableOp(Op):
                 kernel.autotune()
             return kernel
 
-        return self.get_or_build_kernel("fwd", key=dtype, build=factory)
+        return self.get_or_build_kernel("fwd", (), key=dtype, build=factory)
 
 
 class TestTunedMode:

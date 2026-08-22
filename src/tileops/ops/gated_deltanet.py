@@ -221,6 +221,24 @@ class GatedDeltaNetBHTDFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the output, the per-chunk state, and the two chunk buffers."""
+        b, h, s, dk = q_shape
+        dv = v_shape[3]
+        return {
+            "o": (b, h, s, dv),
+            "S": (b, h, s // self.chunk_size + 1, dk, dv),
+            "Aw": (b, h, s, self.chunk_size),
+            "Au": (b, h, s, self.chunk_size),
+        }
+
     def forward(
         self,
         q: torch.Tensor,
@@ -723,6 +741,25 @@ class GatedDeltaNetBwdOp(Op):
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        do_shape: tuple[int, ...],
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+        S_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dq": tuple(q_shape),
+            "dk": tuple(k_shape),
+            "dv": tuple(v_shape),
+            "dg": tuple(g_shape),
+            "dbeta": tuple(beta_shape),
+        }
 
     def forward(
         self,

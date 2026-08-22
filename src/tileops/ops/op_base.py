@@ -176,6 +176,7 @@ class Op(ABC):
     #: ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
+    @abstractmethod
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
 
@@ -184,14 +185,15 @@ class Op(ABC):
         ``_infer_output_shapes(self, x_shape, weight_shape)``). The uniform
         ``**shape_kwargs`` base signature exists only to make the L1 contract
         grepable and discoverable; see docs/design/ops-design.md §``_infer_output_shapes``.
-        An op the manifest calls ``implemented`` must override it — the validator's C9
-        check refuses this stub. A ``spec-only`` entry has no implementation to check.
+        Abstract: a concrete op supplies the body, and the validator's C9 check refuses
+        an op that inherits this one.
         """
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "
             "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)"
         )
 
+    @abstractmethod
     def _validate_dtypes(self, *args: torch.Tensor) -> None:
         """Validate dtypes of input tensors passed to ``forward``.
 
@@ -204,6 +206,7 @@ class Op(ABC):
             "see docs/design/ops-design.md §`_validate_dtypes` (codegen)"
         )
 
+    @abstractmethod
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance.
 

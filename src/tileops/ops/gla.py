@@ -128,6 +128,19 @@ class GLAFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        initial_state_shape: tuple[int, ...] | None,
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the output, and the state the recurrence ends on."""
+        b, s, h, dk = q_shape
+        dv = v_shape[3]
+        return {"o": (b, s, h, dv), "final_state": (b, h, dk, dv)}
+
     def forward(
         self,
         q: torch.Tensor,
@@ -242,6 +255,24 @@ class GLABwdOp(Op):
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        h_shape: tuple[int, ...],
+        do_shape: tuple[int, ...],
+        dht_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dq": tuple(q_shape),
+            "dk": tuple(k_shape),
+            "dv": tuple(v_shape),
+            "dg": tuple(g_shape),
+        }
 
     def forward(
         self,

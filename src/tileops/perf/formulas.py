@@ -345,6 +345,96 @@ def gla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]
     return int(flops), int(nbytes * elem_bytes)
 
 
+def _linear_attention_chunkwise_dims(data: dict) -> tuple[int, int, int, int, int]:
+    """``(batch, heads, seq_len, dim_k, dim_v)`` from shapes or bound attributes.
+
+    Head-major ops declare ``q [B, H, S, DK]``, token-major ones ``q [B, S, H, DK]``;
+    both store the same four numbers on the instance once a call has run.
+    """
+    if "q_shape" in data:
+        q_shape = data["q_shape"]
+        v_shape = data["v_shape"]
+        token_major = str(data.get("layout", "")).lower() == "bthd" or q_shape[1] > q_shape[2]
+        if token_major:
+            batch, seq_len, heads, dim_k = q_shape
+        else:
+            batch, heads, seq_len, dim_k = q_shape
+        return batch, heads, seq_len, dim_k, v_shape[3]
+    return (
+        int(data["batch"]),
+        int(data["heads"]),
+        int(data["seq_len"]),
+        int(data["dim_k"]),
+        int(data["dim_v"]),
+    )
+
+
+def deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the chunked DeltaNet training forward.
+
+    The model the DeltaNet benchmark has always reported: the two state matmuls a
+    chunk pass does per token, and the tensors it reads and writes — q, k, v and
+    beta in, the output out.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _linear_attention_chunkwise_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * seq_len * dim_k * dim_v
+    nbytes = batch * heads * seq_len * (2 * dim_k + 2 * dim_v + 1) * elem_bytes
+    return int(flops), int(nbytes)
+
+
+def deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the chunked DeltaNet backward, as its benchmark reports it.
+
+    Twice the forward's matmul work, and one more gradient tensor in and out.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _linear_attention_chunkwise_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 4 * batch * heads * seq_len * dim_k * dim_v
+    nbytes = batch * heads * seq_len * (4 * dim_k + 3 * dim_v + 3) * elem_bytes
+    return int(flops), int(nbytes)
+
+
+def gated_deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the Gated DeltaNet backward, as its benchmark reports it.
+
+    The gate adds one tensor in and one gradient out over the ungated backward.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _linear_attention_chunkwise_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 4 * batch * heads * seq_len * dim_k * dim_v
+    nbytes = batch * heads * seq_len * (4 * dim_k + 3 * dim_v + 4) * elem_bytes
+    return int(flops), int(nbytes)
+
+
+def gla_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the chunked GLA forward, as its benchmark reports it."""
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _linear_attention_chunkwise_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * seq_len * dim_k * dim_v
+    nbytes = batch * seq_len * heads * (2 * dim_k + 2 * dim_v) * elem_bytes
+    return int(flops), int(nbytes)
+
+
+def gla_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the chunked GLA backward, as its benchmark reports it."""
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _linear_attention_chunkwise_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 4 * batch * heads * seq_len * dim_k * dim_v
+    nbytes = batch * seq_len * heads * (4 * dim_k + 3 * dim_v) * elem_bytes
+    return int(flops), int(nbytes)
+
+
 def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
     lengths = [0] * batch
     remaining = total

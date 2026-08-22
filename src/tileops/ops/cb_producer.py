@@ -70,6 +70,15 @@ class CBProducerFwdOp(Op):
         """Default kernel map - returns kernel class, not instance."""
         return {"cb_producer": CBProducerKernel}
 
+    def _infer_output_shapes(
+        self,
+        C_mat_shape: tuple[int, ...],
+        B_mat_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: one causal ``(Q, Q)`` block per batch, chunk and group."""
+        batch, _, groups, _ = C_mat_shape
+        return {"cb": (batch, self.num_chunks, groups, self.chunk_len, self.chunk_len)}
+
     def forward(
         self,
         C_mat: torch.Tensor,
