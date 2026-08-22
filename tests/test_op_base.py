@@ -467,3 +467,55 @@ class TestInstanceKeys:
             pass
 
         assert op_base.register_instance(_Dummy()).startswith("_Dummy")
+
+
+def test_no_abstract_op_class_is_instantiated_anywhere():
+    """An abstract Op cannot be constructed, so nothing in the tree may try.
+
+    A class is abstract when it does not answer the manifest-driven contract:
+    ``_infer_output_shapes``, ``_validate_dtypes``, ``eval_roofline``. Those are
+    the family bases and the modular interfaces; a call site naming one is a call
+    site that wanted a concrete op.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+    import re
+    from pathlib import Path
+
+    import tileops.ops as ops_pkg
+
+    abstract = set()
+    for module in pkgutil.walk_packages(ops_pkg.__path__, ops_pkg.__name__ + "."):
+        try:
+            mod = importlib.import_module(module.name)
+        except Exception:  # a family whose kernels need a GPU-only import
+            continue
+        for obj in vars(mod).values():
+            if (
+                inspect.isclass(obj)
+                and issubclass(obj, Op)
+                and getattr(obj, "__abstractmethods__", None)
+            ):
+                abstract.add(obj.__name__)
+    assert abstract, "no abstract Op classes resolved — the scan is not looking at the tree"
+
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in (
+        list((root / "src").rglob("*.py"))
+        + list((root / "tests").rglob("*.py"))
+        + list((root / "benchmarks").rglob("*.py"))
+    ):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if (
+                stripped.startswith(("class ", "#", "*", '"'))
+                or "import" in stripped
+                or "``" in stripped  # prose naming a class, not a call
+            ):
+                continue
+            for name in abstract:
+                if re.search(rf"(?<![\w.]){name}\(", line):
+                    offenders.append(f"{path.relative_to(root)}:{lineno} {name}")
+    assert offenders == [], offenders

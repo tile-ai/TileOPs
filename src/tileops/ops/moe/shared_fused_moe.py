@@ -40,11 +40,12 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoe
+from tileops.ops.op_base import UnmanifestedOp
 
 __all__ = ["SharedFusedMoE"]
 
 
-class SharedFusedMoE(FusedMoe):
+class SharedFusedMoE(FusedMoe, UnmanifestedOp):
     """FusedMoE with shared expert support, optionally TP-aware.
 
     Extends FusedMoe to compute both shared and routed expert outputs.

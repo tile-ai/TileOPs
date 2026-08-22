@@ -101,34 +101,24 @@ design, calling conventions — live in
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
 - **Rule.** Sequence: (a) `self.<name> = <name>` per parameter, `target` among them; (b)
-  `self.dispatch_kernel(kernel_map)`.
-  **Construct no kernel here**, whatever the op shape: the kernel is dtype-specialized and no dtype
-  exists until `forward()` receives a tensor. `dispatch_kernel` resolves the kernel *class*, which
-  needs no tensor and reads no device property; an architecture that cannot run the op is refused
-  when a kernel is first selected or built. **Declare no kernel cache here either** — L1 owns
-  get-or-build and creates the role's entry table on first use, per
-  [Kernel caching and enumeration](../../../docs/design/ops-design.md#kernel-caching-and-enumeration).
-  - **Fully-static op** (every non-static axis committed at ctor): may precompute
-    `self._infer_output_shapes(<input>_shape=(...))` when a caller needs output shapes before
-    `forward()`. Shape inference is dtype-independent.
-  - **Arbitrary-rank op** (at least one axis unknown until forward): defer `_infer_output_shapes`
-    to `forward()`, once per unique input shape.
-- **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. "Fully-static" iff every
-  `signature.inputs` shape axis is a manifest `shape` dim name or a ctor-resolvable `static_dims`
-  key; the distinction governs when shape inference runs, not when the kernel is built.
+  `self.dispatch_kernel(kernel_map)`, which resolves the kernel *class* and needs no tensor.
+  **Construct no kernel and declare no cache here**: the kernel is dtype-specialized and no dtype
+  exists until a call arrives, and L1 owns get-or-build
+  ([Kernel caching](../../../docs/design/ops-design.md#kernel-caching-and-enumeration)).
+  A fully-static op — every `signature.inputs` axis is a manifest `shape` dim or a ctor-resolvable
+  `static_dims` key — may precompute `self._infer_output_shapes(<input>_shape=(...))` for callers
+  that need the output shape before the first call; anything else defers it.
 - **Example (arbitrary-rank).**
   ```python
   self.N = N
   self.dim = dim
   self.target = target
   self.tune = tune
-  # M unknown at init (only N committed via static_dims), and no dtype
-  # is known at all; the kernel is built on the first call from both.
   self.dispatch_kernel(kernel_map)
   ```
-- **Common mistakes.** `_infer_output_shapes` before `dispatch_kernel`; hard-coding the kernel
-  class instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; declaring a
-  private cache dict instead of calling `Op.get_or_build_kernel` in `forward()`.
+- **Common mistakes.** `_infer_output_shapes` before `dispatch_kernel`; hard-coding the kernel class
+  instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; a private cache
+  dict in place of `Op.get_or_build_kernel`.
 
 ### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
 
@@ -165,9 +155,11 @@ design, calling conventions — live in
   scaffold's scope, see
   [Compile Dispatch Boundary](../../../docs/design/ops-design.md#compile-dispatch-boundary).
 - **Derivation.** Validation expressions come from each `static_dims` entry's
-  `<tensor>.shape[<axis>]` RHS. Axis normalisation mirrors the param evaluation in `static_dims` +
-  `shape_rules`. The role is the `kernel_map` dispatch key whose kernel the factory builds; the key
-  names every input the factory closes over.
+  `<tensor>.shape[<axis>]` RHS; the role is the `kernel_map` dispatch key whose kernel the factory
+  builds. A specialization that implies more than a dtype — a compute dtype differing from the
+  semantic one, an output dtype no input supplies — makes the entry one frozen record rather than a
+  bare kernel, and those fields never live in `self.*`
+  ([Forward keying](../../../docs/design/ops-design-reference.md#base-class-protocol)).
 - **What the op does not do.** It states no device requirement — the kernel it fetched does that —
   and it does not reshape for the kernel: rank reduction, padding and their inverses belong to the
   kernel's own call wrapper, so a backend is handed the shapes the manifest declares.
@@ -179,10 +171,7 @@ design, calling conventions — live in
           raise ValueError(f"dim {self.dim} out of range for x.ndim={x.ndim}")
       dim = self.dim % x.ndim
       if x.shape[dim] != self.N:
-          raise ValueError(
-              f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
-              f"got {x.shape[dim]}"
-          )
+          raise ValueError(f"expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}")
       self._static_axes = frozenset({(0, dim)})
       self.dtype = x.dtype
       x = x.contiguous()
@@ -196,16 +185,10 @@ design, calling conventions — live in
       )
       return kernel(x)
   ```
-- **Entry.** The entry is the kernel when dtype is the whole story; when a specialization implies
-  more — a compute dtype differing from the semantic one, an output dtype no input supplies — it is
-  one frozen record holding them together. Those fields MUST NOT live in `self.*` attributes
-  written while building the kernel: a second dtype leaves them describing the first.
-- **Common mistakes.** Keying on shape alone — a second
-  dtype then silently reuses the first dtype's kernel; a `.is_cuda` or `device.type` check in the
-  op; reshaping before the fetch, which hands a backend a shape the manifest never declares;
-  binding `self._static_axes` before the axis is non-negative; constructing the kernel outside the
-  factory, or passing an already-built kernel where a factory is expected — the build then runs on
-  every call, hit or miss; fetching a kernel at two sites in one op.
+- **Common mistakes.** Building a kernel in a traced `forward`; keying on shape alone, so a second
+  dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; reshaping before the fetch;
+  binding `self._static_axes` before the axis is non-negative; passing an already-built kernel where
+  a factory is expected, which rebuilds on every call; fetching a kernel at two sites in one op.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 
@@ -272,46 +255,27 @@ design, calling conventions — live in
 
 ### Slot S21: <a id="slot-s21"></a> `_static_axes` class attribute
 
-- **Rule.** Declare `_static_axes: frozenset[tuple[int, int]]` of `(input_index, axis)` pairs,
-  where `input_index` indexes `signature.inputs` and `axis` is **non-negative**. Commit at one of
-  two points:
+- **Rule.** `frozenset[tuple[int, int]]` of `(input_index, axis)` pairs, `input_index` indexing
+  `signature.inputs` and `axis` non-negative — `Op` indexes `*input_shapes` non-negatively. Per
+  manifest `static_dims` entry `<kwarg>: <tensor>.shape[<axis>]`:
 
-  - **Ctor time**, as a class-level literal, when every axis resolves to a non-negative integer
-    without knowing runtime rank (manifest declares `static_dims: M: "x.shape[0]"`).
-  - **`forward()` time**, with an empty class-level default, when an axis depends on runtime rank —
-    most often a ctor param that may be negative (`static_dims: N: "x.shape[dim]"`, `dim` defaulting
-    to `-1`). Normalise the axis (`dim % x.ndim`), then assign
-    `self._static_axes = frozenset({(i, <resolved_axis>)})`. Alternatively override `_cache_key`
-    and project the shape inline, never populating `_static_axes`.
-
-  An empty frozenset is a legal class-level default: no axes committed yet. Never store a negative
-  axis — the `Op` base indexes `*input_shapes` non-negatively.
-
-- **Derivation.** Per manifest `static_dims` entry `<kwarg>: <tensor>.shape[<axis>]`:
-
-  - `<axis>` resolvable to a non-negative literal at class-definition time → class-level
+  - `<axis>` is a non-negative literal → class-level
     `_static_axes = frozenset({(input_index_of_<tensor>, <axis>)})`.
-  - `<axis>` a ctor param, or a negative literal whose normalised value depends on runtime rank →
-    class-level `frozenset()`, then assign in `forward()` after the `static_dims` check, or
-    override `_cache_key`.
-  - PyTorch-aligned reduction with `dim=None` → empty frozenset (see
-    [manifest.md § Empty static_dims](../../../docs/design/manifest.md#empty-static_dims)).
+  - `<axis>` is a ctor param or a negative literal → class-level `frozenset()`, then assign in
+    `forward()` after the `static_dims` check and after `dim % x.ndim`, or override `_cache_key`
+    and project inline instead.
+  - No `static_dims` (a reduction taking `dim=None`) → `frozenset()`, and override `_cache_key`
+    unless a once-per-type `UserWarning` is acceptable. See
+    [manifest.md § Empty static_dims](../../../docs/design/manifest.md#empty-static_dims).
 
 - **Example.**
 
   ```python
   class ExampleCumsumFwdOp(Op):
-      # static_dims: N: "x.shape[dim]" — axis is parameter-dependent
-      # (and dim may be negative), so the concrete (input_index, axis)
-      # pair is resolved at forward() time after dim % x.ndim
-      # normalization. Class-level default is empty.
+      # static_dims: N: "x.shape[dim]" — dim is a ctor param and may be
+      # negative, so the pair is resolved in forward().
       _static_axes: frozenset[tuple[int, int]] = frozenset()
   ```
 
-- **Common mistakes.** Omitting `_static_axes` when `static_dims` is non-empty — `Op`'s empty
-  default then silently disables static-axis projection in `_cache_key`; emitting a literal
-  `(input_index, axis)` when `axis` is a ctor param, which yields a wrong axis under arbitrary
-  rank; binding `self._static_axes` in `__init__`, where `x.ndim` is unknown so a negative `dim`
-  cannot be normalised; storing a negative axis; leaving `_static_axes` empty without overriding
-  `_cache_key`, which emits a once-per-type `UserWarning` (see
-  [Optional Hooks](../../../docs/design/ops-design-reference.md#optional-hooks-appendix)).
+- **Common mistakes.** A literal pair when the axis is a ctor param, which is the wrong axis under
+  arbitrary rank; binding it in `__init__`, where `x.ndim` is unknown; storing a negative axis.

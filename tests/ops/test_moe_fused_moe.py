@@ -14,7 +14,6 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import (
-    FusedMoe,
     FusedMoeFwdOp,
     FusedTopKOp,
 )
@@ -191,7 +190,7 @@ def test_fused_moe_qwen3(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoe(
+    op_nopad = FusedMoeFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -269,7 +268,7 @@ def test_fused_moe_deterministic(case):
     w_gate_up = torch.randn(ne, ff * 2, hs, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(ne, hs, ff, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoe(
+    op = FusedMoeFwdOp(
         num_tokens=nt,
         num_experts=ne,
         top_k=tk,
@@ -413,7 +412,7 @@ def test_fused_moe_kimi(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoe(
+    op_nopad = FusedMoeFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -467,7 +466,7 @@ def test_expert_map_local_filter() -> None:
     expert_map_rank1[E // 2 :] = torch.arange(E // 2, dtype=torch.int32, device=dev)
 
     # Full output (no expert_map)
-    op_full = FusedMoe(
+    op_full = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -477,7 +476,7 @@ def test_expert_map_local_filter() -> None:
     out_full = op_full(hidden, gating, w_gate_up, w_down)
 
     # Rank-0 partial output (local experts 0..3)
-    op_r0 = FusedMoe(
+    op_r0 = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -489,7 +488,7 @@ def test_expert_map_local_filter() -> None:
     out_r0 = op_r0(hidden, gating, w_gate_up[: E // 2], w_down[: E // 2])
 
     # Rank-1 partial output (local experts 4..7)
-    op_r1 = FusedMoe(
+    op_r1 = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -623,7 +622,7 @@ def test_fused_moe_vs_vllm(
     fk = FusedTopKOp(num_tokens, num_experts, top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
-    op = FusedMoe(
+    op = FusedMoeFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -674,7 +673,7 @@ def test_fused_moe_fwd_op_identity() -> None:
     assert out.shape == (T, H)
     assert out.dtype == dtype
 
-    ref_op = FusedMoe(
+    ref_op = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -715,7 +714,7 @@ def test_fused_moe_fwd_correction_bias_identity() -> None:
     assert out.shape == (T, H)
     assert out.dtype == dtype
 
-    ref_op = FusedMoe(
+    ref_op = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -741,7 +740,7 @@ def test_prepare_finalize_without_experts_raises() -> None:
     from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 
     with pytest.raises(ValueError, match="experts="):
-        FusedMoe(
+        FusedMoeFwdOp(
             num_tokens=16,
             num_experts=4,
             top_k=2,
