@@ -12,7 +12,7 @@ import torch
 from tileops.kernels.bmm import BmmFp8Kernel, BmmKernel
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op
+from ..op_base import Op
 
 __all__ = ["BmmFp8KNFwdOp", "BmmFp8NKFwdOp", "BmmFwdOp"]
 

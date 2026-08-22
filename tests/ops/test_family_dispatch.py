@@ -13,9 +13,15 @@ import torch
 
 from tileops.kernels.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.gemm_call import GemmCall
-from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS, DeltaNetDecodeFwdOp
-from tileops.ops.gated_deltanet import GATED_DELTANET_DECODE_KEYS, GatedDeltaNetDecodeFwdOp
-from tileops.ops.gemm import GemmFwdOp
+from tileops.ops.gemm.gemm import GemmFwdOp
+from tileops.ops.linear_attention.deltanet_recurrence import (
+    DELTANET_DECODE_KEYS,
+    DeltaNetDecodeFwdOp,
+)
+from tileops.ops.linear_attention.gated_deltanet import (
+    GATED_DELTANET_DECODE_KEYS,
+    GatedDeltaNetDecodeFwdOp,
+)
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="selection reads the device architecture"

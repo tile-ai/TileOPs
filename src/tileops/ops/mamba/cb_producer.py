@@ -8,7 +8,8 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
-from tileops.ops.op_base import Op, check_tensor_shape
+
+from ..op_base import Op, check_tensor_shape
 
 __all__ = ["CBProducerFwdOp"]
 

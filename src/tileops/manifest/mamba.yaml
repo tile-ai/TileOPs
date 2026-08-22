@@ -62,7 +62,7 @@ DaCumsumFwdOp:
     kernel: tileops/kernels/mamba/da_cumsum.py
     kernel_map:
       da_cumsum_fwd: DaCumsumFwdKernel
-    op: tileops/ops/da_cumsum.py
+    op: tileops/ops/mamba/da_cumsum.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
@@ -105,7 +105,7 @@ CBProducerFwdOp:
     kernel: tileops/kernels/mamba/cb_producer.py
     kernel_map:
       cb_producer: CBProducerKernel
-    op: tileops/ops/cb_producer.py
+    op: tileops/ops/mamba/cb_producer.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
@@ -144,7 +144,7 @@ SSDChunkStateFwdOp:
     kernel: tileops/kernels/mamba/ssd_chunk_state.py
     kernel_map:
       ssd_chunk_state_fwd: SSDChunkStateFwdKernel
-    op: tileops/ops/ssd_chunk_state.py
+    op: tileops/ops/mamba/ssd_chunk_state.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
@@ -183,7 +183,7 @@ SSDStatePassingFwdOp:
     kernel: tileops/kernels/mamba/ssd_state_passing.py
     kernel_map:
       ssd_state_passing_fwd: SSDStatePassingFwdKernel
-    op: tileops/ops/ssd_state_passing.py
+    op: tileops/ops/mamba/ssd_state_passing.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
@@ -222,7 +222,7 @@ SSDChunkScanFwdOp:
     kernel: tileops/kernels/mamba/ssd_chunk_scan.py
     kernel_map:
       ssd_chunk_scan_fwd: SSDChunkScanFwdKernel
-    op: tileops/ops/ssd_chunk_scan.py
+    op: tileops/ops/mamba/ssd_chunk_scan.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
@@ -261,7 +261,7 @@ SSDDecodeFwdOp:
     kernel: tileops/kernels/mamba/ssd_decode.py
     kernel_map:
       ssd_decode: SSDDecodeKernel
-    op: tileops/ops/ssd_decode.py
+    op: tileops/ops/mamba/ssd_decode.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba.py
     bench_manifest_driven: true
@@ -313,7 +313,7 @@ Mamba2FwdOp:
     func: "tileops.perf.formulas.mamba2_fwd_roofline"
 
   source:
-    kernel: tileops/ops/mamba2_fwd.py
+    kernel: tileops/ops/mamba/mamba2_fwd.py
     # This composite registers no kernel of its own; the five it drives belong
     # to the sub-ops it builds, and each is a replacement point.
     kernel_map:
@@ -322,7 +322,7 @@ Mamba2FwdOp:
       ssd_chunk_state_fwd: SSDChunkStateFwdKernel
       ssd_state_passing_fwd: SSDStatePassingFwdKernel
       ssd_chunk_scan_fwd: SSDChunkScanFwdKernel
-    op: tileops/ops/mamba2_fwd.py
+    op: tileops/ops/mamba/mamba2_fwd.py
     test: tests/ops/test_mamba.py
     bench: benchmarks/ops/bench_mamba2_e2e.py
     bench_manifest_driven: true

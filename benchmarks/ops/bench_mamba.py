@@ -6,12 +6,12 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops.cb_producer import CBProducerFwdOp
-from tileops.ops.da_cumsum import DaCumsumFwdOp
-from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
-from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.ssd_decode import SSDDecodeFwdOp
-from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.ops.mamba.cb_producer import CBProducerFwdOp
+from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
+from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     CBProducerFwdWorkload,
     DaCumsumFwdWorkload,

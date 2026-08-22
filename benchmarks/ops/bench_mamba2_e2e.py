@@ -17,7 +17,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
-from tileops.ops.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from workloads.mamba2_e2e import Mamba2FwdWorkload
 
 # Optional mamba_ssm Triton baseline

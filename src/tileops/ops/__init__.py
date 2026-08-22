@@ -18,21 +18,30 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .bmm import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
 from .convolution import (
     Conv1dFwdOp,
     Conv2dFwdOp,
     Conv3dFwdOp,
 )
-from .da_cumsum import DaCumsumFwdOp
-from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
-from .deltanet_recurrence import DeltaNetDecodeFwdOp
 from .dropout import DropoutFwdOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CFwdOp
 from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from .fp8_quant import FP8QuantFwdOp
-from .gated_deltanet import (
+from .gemm import (
+    BmmFp8KNFwdOp,
+    BmmFp8NKFwdOp,
+    BmmFwdOp,
+    GemmFp8FwdOp,
+    GemmFwdOp,
+    GemmW4A16FwdOp,
+    GroupedGemmFwdOp,
+)
+from .linear_attention import (
+    DeltaNetBwdOp,
+    DeltaNetDecodeFwdOp,
+    DeltaNetFwdOp,
+    DeltaNetOp,
     GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
@@ -40,13 +49,18 @@ from .gated_deltanet import (
     GatedDeltaNetOp,
     GatedDeltaNetPrefillBHTDFwdOp,
     GatedDeltaNetPrefillBTHDFwdOp,
+    GLABwdOp,
+    GLADecodeFwdOp,
+    GLAFwdOp,
 )
-from .gated_linear_attn import GLADecodeFwdOp
-from .gemm import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
-from .gla import GLABwdOp, GLAFwdOp
-from .grouped_gemm import GroupedGemmFwdOp
-from .mamba2_fwd import Mamba2FwdOp
-from .mhc import MHCPostFwdOp, MHCPreFwdOp
+from .mamba import (
+    DaCumsumFwdOp,
+    Mamba2FwdOp,
+    SSDChunkScanFwdOp,
+    SSDChunkStateFwdOp,
+    SSDDecodeFwdOp,
+    SSDStatePassingFwdOp,
+)
 from .moe import MoePermuteAlignFwdOp
 from .norm import (
     AdaLayerNormFwdOp,
@@ -111,10 +125,7 @@ from .rope import (
     RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
-from .ssd_chunk_scan import SSDChunkScanFwdOp
-from .ssd_chunk_state import SSDChunkStateFwdOp
-from .ssd_decode import SSDDecodeFwdOp
-from .ssd_state_passing import SSDStatePassingFwdOp
+from .sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
 from .topk_selector import TopkSelectorFwdOp
 
 __all__ = [

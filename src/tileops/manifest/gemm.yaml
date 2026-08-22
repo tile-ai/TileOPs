@@ -50,7 +50,7 @@ GemmFwdOp:
 
   source:
     kernel: tileops/kernels/gemm.py
-    op: tileops/ops/gemm.py
+    op: tileops/ops/gemm/gemm.py
     test: tests/ops/test_gemm.py
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
@@ -101,7 +101,7 @@ GemmFp8FwdOp:
 
   source:
     kernel: tileops/kernels/gemm.py
-    op: tileops/ops/gemm.py
+    op: tileops/ops/gemm/gemm.py
     test: tests/ops/test_gemm.py
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
@@ -146,7 +146,7 @@ GemmW4A16FwdOp:
 
   source:
     kernel: tileops/kernels/gemm_w4a16.py
-    op: tileops/ops/gemm.py
+    op: tileops/ops/gemm/gemm.py
     test: tests/ops/test_gemm.py
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
@@ -200,7 +200,7 @@ GroupedGemmFwdOp:
     kernel_map:
       grouped_gemm_kernel: GroupedGemmKernel
       grouped_gemm_persistent_3wg_kernel: GroupedGemmPersistent3WGKernel
-    op: tileops/ops/grouped_gemm.py
+    op: tileops/ops/gemm/grouped_gemm.py
     test: tests/ops/test_grouped_gemm.py
     bench: benchmarks/ops/bench_grouped_gemm.py
     bench_manifest_driven: true
