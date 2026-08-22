@@ -262,7 +262,7 @@ def _masked_fill_tensor_value_fwd_fake(
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(input.shape), tuple(mask.shape), tuple(value.shape))
     return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype("MaskedFillFwdOp", input.dtype)
+        shapes["output"], dtype=resolve_output_dtype(MaskedFillFwdOp.__name__, input.dtype)
     )
 
 
@@ -284,7 +284,7 @@ def _masked_fill_fwd_fake(
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(input.shape), tuple(mask.shape))
     return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype("MaskedFillScalarFwdOp", input.dtype)
+        shapes["output"], dtype=resolve_output_dtype(MaskedFillScalarFwdOp.__name__, input.dtype)
     )
 
 

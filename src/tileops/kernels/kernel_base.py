@@ -4,24 +4,11 @@ from typing import Any, Callable, Dict, Optional, Union
 import torch
 from tilelang.autotuner import autotune
 
+__all__ = ["Kernel"]
+
 #: Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
 #: supplier. Distinct from ``None``, which means "no supplier".
 _INHERIT_SUPPLY_PROG = object()
-
-
-def require_cuda(kernel: "Kernel", **tensors: Optional[torch.Tensor]) -> None:
-    """Raise unless every named tensor is on a CUDA device.
-
-    The op layer checks that a call's tensors agree on a device; which devices a set of
-    kernels runs on is the kernel's own statement. An ``optional: true`` input the call
-    did not pass arrives as ``None`` and is skipped.
-    """
-    for name, tensor in tensors.items():
-        if tensor is not None and not tensor.is_cuda:
-            raise ValueError(
-                f"{type(kernel).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
-                "Another target's backend serves other devices."
-            )
 
 
 def _int_tensor_input_names(jit_kernel: Any, seeds: Dict[str, Any]) -> list[str]:
@@ -156,6 +143,20 @@ class Kernel(ABC):
                 f"{cls.__name__} is built for architectures "
                 f"{sorted(cls.supported_archs)}, but {where} reports {arch}"
             )
+
+    def _require_cuda(self, **tensors: Optional[torch.Tensor]) -> None:
+        """Raise unless every named tensor is on a CUDA device.
+
+        The op layer checks that a call's tensors agree on a device; which devices a set of
+        kernels runs on is the kernel's own statement. An ``optional: true`` input the call
+        did not pass arrives as ``None`` and is skipped.
+        """
+        for name, tensor in tensors.items():
+            if tensor is not None and not tensor.is_cuda:
+                raise ValueError(
+                    f"{type(self).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
+                    "Another target's backend serves other devices."
+                )
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
         if tune and self.autotune_configs is None:

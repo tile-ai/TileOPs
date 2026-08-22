@@ -2,13 +2,13 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.deltanet_recurrence import (
+from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
-from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 

@@ -9,7 +9,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.trace import trace
 from tileops.utils import get_sm_version, str2dtype
 
-from .gemm_call import gemv_region
+from .call_spec import gemv_region
 
 __all__ = [
     "GemmFp8BlockScaledKernel",

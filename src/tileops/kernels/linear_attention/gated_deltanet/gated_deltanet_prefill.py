@@ -16,8 +16,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.v_tile import resolve_block_v
 
+from ..v_tile import resolve_block_v
 from .gated_deltanet_fwd import (
     _LOG2E,
     _chunk_local_cumsum,
@@ -111,7 +111,7 @@ def _prefill_partitioned_initial_state_bthd(
     raw_sequence_lengths: tuple[int, ...] | None = None,
     min_partition_chunks: int = 0,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-    from tileops.kernels.gated_deltanet.gdn_prefill import (
+    from .prefill import (
         correct_initial_states,
         fused_gdr_h,
         get_warmup_chunks,
@@ -836,7 +836,7 @@ def _gated_deltanet_production_bthd(
     min_partition_chunks: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
     """Run the production recurrence shared by BTHD prefill and forward."""
-    from .gdn_prefill import fused_gdr_fwd
+    from .prefill import fused_gdr_fwd
 
     batch, seq_len, head = q.shape[:3]
     g_cum = _prefill_chunk_local_cumsum_bthd_tl(

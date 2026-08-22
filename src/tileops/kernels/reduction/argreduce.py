@@ -12,7 +12,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import restore_reduced, rows_for_axes
 
 __all__ = ["ArgreduceKernel"]
@@ -674,7 +674,7 @@ class ArgreduceKernel(Kernel):
         Raises:
             ValueError: *x* is not on a CUDA device.
         """
-        require_cuda(self, x=x)
+        self._require_cuda(x=x)
         in_shape = tuple(x.shape)
         if self.M == 0:
             empty = torch.empty((0,), dtype=torch.int64, device=x.device)

@@ -263,7 +263,9 @@ def _clamp_tensor_fwd_fake(
         None if min is None else tuple(min.shape),
         None if max is None else tuple(max.shape),
     )
-    return input.new_empty(shapes["output"], dtype=resolve_output_dtype("ClampFwdOp", input.dtype))
+    return input.new_empty(
+        shapes["output"], dtype=resolve_output_dtype(ClampFwdOp.__name__, input.dtype)
+    )
 
 
 ClampFwdOp._wrapped = _clamp_tensor_fwd

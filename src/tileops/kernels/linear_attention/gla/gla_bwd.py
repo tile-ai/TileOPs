@@ -20,8 +20,8 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.v_tile import GEMM_MIN_N
 
+from ..v_tile import GEMM_MIN_N
 from .gla_fwd import _gla_precompute_g_kernel
 
 __all__ = ["GLABwdKernel"]

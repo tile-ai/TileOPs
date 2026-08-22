@@ -39,7 +39,7 @@ PreluFwdOp:
     bytes: "(2 * N + W) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/prelu.py
     kernel_map:
       prelu: PreluFwdKernel
     op: tileops/ops/elementwise/prelu.py
@@ -83,7 +83,7 @@ MaskedFillFwdOp:
     func: "tileops.perf.formulas.masked_fill_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/masked_fill.py
     kernel_map:
       masked_fill_tensor_value: MaskedFillTensorValueFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
@@ -125,7 +125,7 @@ MaskedFillScalarFwdOp:
     func: "tileops.perf.formulas.masked_fill_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/masked_fill.py
     kernel_map:
       masked_fill: MaskedFillFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
@@ -158,7 +158,7 @@ AddFwdOp:
     func: "tileops.perf.formulas.add_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       add: AddFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -189,7 +189,7 @@ SubFwdOp:
     func: "tileops.perf.formulas.sub_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       sub: SubFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -218,7 +218,7 @@ MulFwdOp:
     func: "tileops.perf.formulas.mul_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       mul: MulFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -250,7 +250,7 @@ DivFwdOp:
     func: "tileops.perf.formulas.div_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       div: DivFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -279,7 +279,7 @@ RemainderFwdOp:
     func: "tileops.perf.formulas.remainder_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       remainder: RemainderFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -308,7 +308,7 @@ PowFwdOp:
     func: "tileops.perf.formulas.pow_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       pow: PowFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -337,7 +337,7 @@ FloorDivideFwdOp:
     func: "tileops.perf.formulas.floor_divide_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       floor_divide: FloorDivideFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -371,7 +371,7 @@ LerpFwdOp:
     func: "tileops.perf.formulas.lerp_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       lerp: LerpFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -400,7 +400,7 @@ MaximumFwdOp:
     func: "tileops.perf.formulas.maximum_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       maximum: MaximumFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -429,7 +429,7 @@ MinimumFwdOp:
     func: "tileops.perf.formulas.minimum_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/arithmetic.py
     kernel_map:
       minimum: MinimumFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
@@ -458,7 +458,7 @@ EqFwdOp:
     func: "tileops.perf.formulas.eq_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       eq: EqFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -487,7 +487,7 @@ NeFwdOp:
     func: "tileops.perf.formulas.ne_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       ne: NeFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -516,7 +516,7 @@ GtFwdOp:
     func: "tileops.perf.formulas.gt_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       gt: GtFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -545,7 +545,7 @@ LtFwdOp:
     func: "tileops.perf.formulas.lt_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       lt: LtFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -574,7 +574,7 @@ GeFwdOp:
     func: "tileops.perf.formulas.ge_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       ge: GeFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -603,7 +603,7 @@ LeFwdOp:
     func: "tileops.perf.formulas.le_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       le: LeFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -632,7 +632,7 @@ LogicalAndFwdOp:
     func: "tileops.perf.formulas.logical_and_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/logical.py
     kernel_map:
       logical_and: LogicalAndFwdKernel
     op: tileops/ops/elementwise/logical.py
@@ -661,7 +661,7 @@ LogicalOrFwdOp:
     func: "tileops.perf.formulas.logical_or_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/logical.py
     kernel_map:
       logical_or: LogicalOrFwdKernel
     op: tileops/ops/elementwise/logical.py
@@ -690,7 +690,7 @@ BitwiseAndFwdOp:
     func: "tileops.perf.formulas.bitwise_and_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/bitwise.py
     kernel_map:
       bitwise_and: BitwiseAndFwdKernel
     op: tileops/ops/elementwise/bitwise.py
@@ -719,7 +719,7 @@ BitwiseOrFwdOp:
     func: "tileops.perf.formulas.bitwise_or_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/bitwise.py
     kernel_map:
       bitwise_or: BitwiseOrFwdKernel
     op: tileops/ops/elementwise/bitwise.py
@@ -748,7 +748,7 @@ BitwiseXorFwdOp:
     func: "tileops.perf.formulas.bitwise_xor_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/bitwise.py
     kernel_map:
       bitwise_xor: BitwiseXorFwdKernel
     op: tileops/ops/elementwise/bitwise.py

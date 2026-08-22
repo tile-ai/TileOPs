@@ -17,14 +17,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.online_softmax import (
+from .call_spec import uses_sliding_window
+from .online_softmax import (
     LOG2E,
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-
-from .call_spec import uses_sliding_window
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]

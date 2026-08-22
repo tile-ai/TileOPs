@@ -35,7 +35,7 @@ BmmFwdOp:
     func: "tileops.perf.formulas.bmm_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/bmm.py
+    kernel: tileops/kernels/gemm/bmm.py
     op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
@@ -87,7 +87,7 @@ BmmFp8KNFwdOp:
     func: "tileops.perf.formulas.bmm_fp8_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/bmm.py
+    kernel: tileops/kernels/gemm/bmm.py
     op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
@@ -138,7 +138,7 @@ BmmFp8NKFwdOp:
     func: "tileops.perf.formulas.bmm_fp8_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/bmm.py
+    kernel: tileops/kernels/gemm/bmm.py
     op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py

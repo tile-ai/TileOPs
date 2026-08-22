@@ -9,6 +9,16 @@ The online softmax algorithm computes softmax incrementally over blocks:
 
 import tilelang.language as T
 
+__all__ = [
+    "LOG2E",
+    "make_apply_softcap",
+    "make_log2e_scale",
+    "make_online_softmax",
+    "make_online_softmax_with_mask_guard",
+    "make_online_softmax_with_score_scale",
+    "make_rescale",
+]
+
 # log2(e) -- used to convert exp(x) into exp2(x * log2(e))
 # which allows the compiler to fuse the multiply into an ffma instruction.
 LOG2E = 1.44269504

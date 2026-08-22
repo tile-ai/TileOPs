@@ -66,7 +66,7 @@ Conv1dFwdOp:
     bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out + (C_out if has_bias else 0)) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution/conv1d.py
     kernel_map:
       conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
@@ -172,7 +172,7 @@ Conv2dFwdOp:
     bytes: "(N * C_in * H * W + C_out * C_in_g * kH * kW + N * C_out * out_H * out_W + (C_out if has_bias else 0)) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution/conv2d.py
     kernel_map:
       conv2d_kernel: Conv2dKernel
       conv2d_1x1_kernel: Conv2d1x1Kernel
@@ -259,7 +259,7 @@ Conv3dFwdOp:
     bytes: "(N * C_in * D * H * W + C_out * C_in_g * kD * kH * kW + N * C_out * out_D * out_H * out_W + (C_out if has_bias else 0)) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/convolution.py
+    kernel: tileops/kernels/convolution/conv3d.py
     kernel_map:
       conv3d_kernel: Conv3dKernel
       group_conv3d_kernel: GroupConv3dKernel

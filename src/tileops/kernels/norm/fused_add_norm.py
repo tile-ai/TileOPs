@@ -20,7 +20,7 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
@@ -174,7 +174,7 @@ class FusedAddLayerNormKernel(Kernel):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        require_cuda(self, x=x, residual=residual, weight=weight, bias=bias)
+        self._require_cuda(x=x, residual=residual, weight=weight, bias=bias)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
@@ -336,7 +336,7 @@ class FusedAddRMSNormKernel(Kernel):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        require_cuda(self, x=x, residual=residual, weight=weight)
+        self._require_cuda(x=x, residual=residual, weight=weight)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

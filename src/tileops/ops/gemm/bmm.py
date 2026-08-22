@@ -9,7 +9,7 @@ from typing import ClassVar, Dict, Hashable, Optional, Set, Tuple
 
 import torch
 
-from tileops.kernels.bmm import BmmFp8Kernel, BmmKernel
+from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op

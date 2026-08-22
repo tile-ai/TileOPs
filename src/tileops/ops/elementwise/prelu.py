@@ -146,7 +146,7 @@ def _prelu_fwd(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torc
 def _prelu_fwd_fake(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
-    return x.new_empty(shapes["output"], dtype=resolve_output_dtype("PreluFwdOp", x.dtype))
+    return x.new_empty(shapes["output"], dtype=resolve_output_dtype(PreluFwdOp.__name__, x.dtype))
 
 
 PreluFwdOp._wrapped = _prelu_fwd

@@ -50,44 +50,6 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
-def check_tensor_shape(name: str, tensor: torch.Tensor, shape: "tuple[int, ...]") -> None:
-    """Gate a declared input's device and shape. Dtypes are ``_validate_dtypes``' job."""
-    if not tensor.is_cuda:
-        raise ValueError(f"{name} must be a CUDA tensor")
-    if tuple(tensor.shape) != tuple(shape):
-        raise ValueError(f"{name} must have shape {list(shape)}, got {list(tensor.shape)}")
-
-
-def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
-    """The device of the first tensor a call carries, one level into sequences."""
-    for value in (*args, *kwargs.values()):
-        if isinstance(value, torch.Tensor):
-            return value.device
-        if isinstance(value, (tuple, list)):
-            for item in value:
-                if isinstance(item, torch.Tensor):
-                    return item.device
-    return None
-
-
-def _entry_kernels(entry: object) -> "list[Kernel]":
-    """Return the kernels one entry holds.
-
-    An entry is a kernel, a sequence of kernels built together, or a dataclass
-    carrying them alongside what else the specialization implies. An entry that
-    hides its kernels from this walk is invisible to ``autotune``.
-    """
-    if isinstance(entry, Kernel):
-        return [entry]
-    if isinstance(entry, (tuple, list)):
-        return [k for item in entry for k in _entry_kernels(item)]
-    if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
-        return [
-            k for f in dataclasses.fields(entry) for k in _entry_kernels(getattr(entry, f.name))
-        ]
-    return []
-
-
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -370,7 +332,7 @@ class Op(ABC):
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
                 path keys on the input signature instead.
             build: How the *in-tree* kernel is constructed, called once per key. See
-                ``_entry_kernels`` for what it may return.
+                ``Op._entry_kernels`` for what it may return.
 
         Returns:
             The stored entry, identical across calls describing the same specialization.
@@ -521,6 +483,38 @@ class Op(ABC):
                 seen.add(id(kernel))
                 yield kernel
 
+    @staticmethod
+    def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
+        """The device of the first tensor a call carries, one level into sequences."""
+        for value in (*args, *kwargs.values()):
+            if isinstance(value, torch.Tensor):
+                return value.device
+            if isinstance(value, (tuple, list)):
+                for item in value:
+                    if isinstance(item, torch.Tensor):
+                        return item.device
+        return None
+
+    @staticmethod
+    def _entry_kernels(entry: object) -> "list[Kernel]":
+        """Return the kernels one entry holds.
+
+        An entry is a kernel, a sequence of kernels built together, or a dataclass
+        carrying them alongside what else the specialization implies. An entry that
+        hides its kernels from this walk is invisible to ``autotune``.
+        """
+        if isinstance(entry, Kernel):
+            return [entry]
+        if isinstance(entry, (tuple, list)):
+            return [k for item in entry for k in Op._entry_kernels(item)]
+        if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
+            return [
+                k
+                for f in dataclasses.fields(entry)
+                for k in Op._entry_kernels(getattr(entry, f.name))
+            ]
+        return []
+
     def _walk_ops(self) -> Iterator["Op"]:
         """Yield this op and the ops it runs kernels through, each one once."""
         seen: set[int] = set()
@@ -538,8 +532,8 @@ class Op(ABC):
         for op in self._walk_ops():
             for entries in (getattr(op, "_kernel_roles", None) or {}).values():
                 for entry in entries.values():
-                    yield from _entry_kernels(entry)
-            yield from _entry_kernels(getattr(op, "kernel", None))
+                    yield from self._entry_kernels(entry)
+            yield from self._entry_kernels(getattr(op, "kernel", None))
 
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
@@ -600,7 +594,7 @@ class Op(ABC):
         Raises:
             OpNotAvailableError: The selected target registers no builder for this op.
         """
-        device = _first_tensor_device(args, kwargs)
+        device = self._first_tensor_device(args, kwargs)
         target = select_target(self.target, device)
         if target is None:
             self._settled_target = None

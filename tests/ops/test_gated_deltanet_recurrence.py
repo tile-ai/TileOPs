@@ -2,8 +2,10 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.gated_deltanet_recurrence import GatedDeltaNetDecodeRawCudaFlaStyleKernel
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.kernels.linear_attention.gated_deltanet_recurrence import (
+    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
+)
 from tileops.ops import GatedDeltaNetDecodeFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GATED_DELTANET_DECODE_KEYS
 from workloads.linear_attention import (

@@ -2,15 +2,15 @@ from typing import Dict, Hashable, Optional, Tuple
 
 import torch
 
-from tileops.kernels.gemm import (
+from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaledKernel,
     GemmFp8EpilogueKernel,
     GemmKernel,
     GemvKernel,
 )
-from tileops.kernels.gemm_call import GemmCall
-from tileops.kernels.gemm_w4a16 import GROUP_SIZE, GemmW4A16Kernel
-from tileops.kernels.gemm_w4a16_decode import GemmW4A16DecodeKernel
+from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
+from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op

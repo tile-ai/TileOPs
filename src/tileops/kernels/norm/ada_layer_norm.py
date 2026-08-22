@@ -26,7 +26,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 from ._config import select_row_config, select_row_configs
@@ -301,7 +301,7 @@ class AdaLayerNormKernel(Kernel):
             ValueError: An input is not on a CUDA device, or ``gate`` is missing while
                 ``has_gate``.
         """
-        require_cuda(self, x=x, scale=scale, shift=shift, gate=gate)
+        self._require_cuda(x=x, scale=scale, shift=shift, gate=gate)
         if self.has_gate and gate is None:
             raise ValueError("gate tensor is required when has_gate=True")
 

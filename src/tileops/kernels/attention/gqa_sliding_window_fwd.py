@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import make_log2e_scale
+
+from .online_softmax import make_log2e_scale
 
 __all__ = [
     "GQASlidingWindowFwdWgmmaPipelinedKernel",

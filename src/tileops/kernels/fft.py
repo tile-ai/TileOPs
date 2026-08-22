@@ -8,6 +8,8 @@ import torch
 
 from .kernel_base import Kernel
 
+__all__ = ["FFTC2CKernel"]
+
 # Sufficient precision for twiddle angles
 _PI = 3.14159265358979323846
 

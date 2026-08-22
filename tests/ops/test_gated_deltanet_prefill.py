@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.gated_deltanet.gdn_prefill import cp_fwd
+from tileops.kernels.linear_attention.gated_deltanet.prefill import cp_fwd
 from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
 from workloads.linear_attention import (

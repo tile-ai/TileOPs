@@ -7,7 +7,8 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.v_tile import GEMM_MIN_N
+
+from ..v_tile import GEMM_MIN_N
 
 LOG2_E = 1.44269504
 

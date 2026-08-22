@@ -22,7 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
     "BatchNormBwdKernel",
@@ -310,8 +310,7 @@ class BatchNormFwdTrainKernel(Kernel):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        require_cuda(
-            self,
+        self._require_cuda(
             x=x,
             weight=weight,
             bias=bias,
@@ -446,8 +445,7 @@ class BatchNormFwdInferKernel(Kernel):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        require_cuda(
-            self,
+        self._require_cuda(
             x=x,
             weight=weight,
             bias=bias,
@@ -672,7 +670,7 @@ class BatchNormBwdKernel(Kernel):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        require_cuda(self, grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
         grad_weight = torch.empty(self.C, device=grad_out.device, dtype=torch.float32)
         grad_bias = torch.empty(self.C, device=grad_out.device, dtype=torch.float32)
         grad_x = self.kernel(

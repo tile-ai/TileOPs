@@ -18,8 +18,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.v_tile import resolve_block_v
 
+from ..v_tile import resolve_block_v
 from .gated_deltanet_fwd import _LOG2E
 
 __all__ = [

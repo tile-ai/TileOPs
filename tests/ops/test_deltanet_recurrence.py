@@ -3,8 +3,8 @@ import torch
 
 import tileops.ops.linear_attention.deltanet_recurrence as deltanet_ops
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.deltanet_recurrence import (
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,

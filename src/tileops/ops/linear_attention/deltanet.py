@@ -2,13 +2,14 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deltanet import (
+from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
     DeltaNetFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op, UnmanifestedOp, check_tensor_shape
+from .._validation import check_tensor_shape
+from ..op_base import Op, UnmanifestedOp
 
 __all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetOp"]
 
