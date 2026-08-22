@@ -640,7 +640,7 @@ AllFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
 
   workloads:
     # Mask validation (batch, seq_len)
@@ -685,7 +685,7 @@ AnyFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
 
   workloads:
     # Mask validation (batch, seq_len)

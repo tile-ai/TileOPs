@@ -154,7 +154,7 @@ class _Ranked:
         self.ndim = ndim
 
 
-def reduced_shape(shape: Any, dim: Any, keepdim: bool = False) -> tuple:
+def reduced_shape(shape: Any, dim: Any, keepdim: bool = False, empty_dim: str = "full") -> tuple:
     """Return the shape left after reducing *shape* over *dim*.
 
     The op layer and the manifest call the same function, so an op's
@@ -166,10 +166,15 @@ def reduced_shape(shape: Any, dim: Any, keepdim: bool = False) -> tuple:
         dim: An int, ``None``, or a list/tuple of ints, read the way
             :func:`reduced_axes` reads it.
         keepdim: Whether a reduced axis stays as a length-1 axis.
+        empty_dim: What an empty list/tuple means, matching the op layer's
+            ``_empty_dim_policy``: ``"full"`` reduces every axis, ``"noop"``
+            reduces none. An op that rejects an empty ``dim`` never gets here.
 
     Returns:
         The output shape. Reducing every axis without *keepdim* gives ``()``.
     """
+    if empty_dim == "noop" and isinstance(dim, (list, tuple)) and len(dim) == 0:
+        return tuple(shape)
     axes = reduced_axes(_Ranked(len(shape)), dim)
     if keepdim:
         return tuple(1 if i in axes else d for i, d in enumerate(shape))

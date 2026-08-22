@@ -116,7 +116,16 @@ class _ReduceOpBase(Op):
 
     def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: the reduced axes leave, or stay as size 1."""
-        return {"output": reduced_shape(x_shape, self.dim, self.keepdim)}
+        return {"output": self._reduced_shape(x_shape)}
+
+    def _reduced_shape(self, x_shape: tuple[int, ...]) -> tuple[int, ...]:
+        """The output shape, read with this op's empty-``dim`` policy."""
+        return reduced_shape(
+            x_shape,
+            self.dim,
+            self.keepdim,
+            "noop" if self._empty_dim_policy == "noop" else "full",
+        )
 
     # Dim validation (subclasses may override)
 
@@ -711,7 +720,7 @@ class VarMeanFwdOp(_WelfordReduceOp):
 
     def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: both outputs are the reduced shape."""
-        shape = reduced_shape(x_shape, self.dim, self.keepdim)
+        shape = self._reduced_shape(x_shape)
         return {"var": shape, "mean": shape}
 
     _op_kind = "var_mean"

@@ -190,7 +190,7 @@ class CountNonzeroFwdOp(_ReduceOpBase):
 
     def _infer_output_shapes(self, x_shape: Tuple[int, ...]) -> Dict[str, Tuple[int, ...]]:
         """Manifest ``shape_rules``: no ``keepdim`` param, so a reduced axis always goes."""
-        return {"output": reduced_shape(x_shape, self.dim, False)}
+        return {"output": reduced_shape(x_shape, self.dim, False, self._empty_dim_policy)}
 
     def _noop_output_dtype(self) -> torch.dtype:
         """count_nonzero returns int64 per manifest contract.

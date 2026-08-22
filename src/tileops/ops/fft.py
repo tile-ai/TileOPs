@@ -143,7 +143,7 @@ class FFTC2CFwdOp(Op):
         self.n = n
         self.dtype = x.dtype
         self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
-        kernel = self._get_kernel((input), n, batch_size, x.dtype, x.device.index)
+        kernel = self._get_kernel((input,), n, batch_size, x.dtype, x.device.index)
         self.kernel = kernel
         y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
 
