@@ -226,12 +226,10 @@ def _gemm_args(w: dict, dtype: torch.dtype) -> tuple:
 
 
 def _gemm_fp8_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(m, n, k, scale_mode, dtype)``."""
     return (w["m"], w["n"], w["k"], w["scale_mode"], dtype)
 
 
 def _gemm_w4a16_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(m, n, k, group_size, dtype)``."""
     return (w["m"], w["n"], w["k"], int(w.get("group_size", 128)), dtype)
 
 

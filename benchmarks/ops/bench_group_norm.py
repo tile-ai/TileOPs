@@ -23,7 +23,6 @@ _OP_NAME = "GroupNormFwdOp"
 
 
 def _group_norm_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(n, c, spatial, num_groups, dtype, tune)``."""
     n, c, *spatial = w["x_shape"]
     if "num_groups" not in w:
         raise KeyError("Workload manifest must contain 'num_groups'")

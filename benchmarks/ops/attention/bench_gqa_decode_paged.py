@@ -10,7 +10,7 @@ from benchmarks.benchmark_base import (
     then_dtype,
     workload_params,
 )
-from benchmarks.ops.attention.manifest_params import gqa_decode_paged_args
+from benchmarks.ops.attention.workload_args import gqa_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionDecodePagedWorkload

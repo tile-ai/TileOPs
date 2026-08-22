@@ -12,7 +12,7 @@ from benchmarks.benchmark_base import (
     then_dtype,
     workload_params,
 )
-from benchmarks.ops.attention.manifest_params import (
+from benchmarks.ops.attention.workload_args import (
     gqa_prefill_args,
     gqa_prefill_paged_args,
     gqa_qkv_args,

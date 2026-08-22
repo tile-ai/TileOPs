@@ -614,7 +614,6 @@ _MAX_POOL3D_INDICES_OP_NAME = "MaxPool3dIndicesFwdOp"
 
 
 def _avg_pool1d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one avg_pool1d case."""
     n, c_in, l_in = workload["input_shape"]
     kernel_size = workload["kernel_size"]
     stride = workload.get("stride")
@@ -760,7 +759,6 @@ def test_avg_pool1d_bench(
 
 
 def _avg_pool2d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one avg_pool2d case."""
     n, c_in, h_in, w_in = workload["input_shape"]
     kernel_size = tuple(workload["kernel_size"])
     stride = workload.get("stride")
@@ -845,7 +843,6 @@ def test_avg_pool2d_bench(
 
 
 def _avg_pool3d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one avg_pool3d case."""
     n, c_in, d_in, h_in, w_in = workload["input_shape"]
     kernel_size = tuple(workload["kernel_size"])
     stride = workload.get("stride")
@@ -933,7 +930,6 @@ def test_avg_pool3d_bench(
 
 
 def _max_pool2d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one max_pool2d case."""
     n, c_in, h_in, w_in = workload["input_shape"]
     kernel_size = tuple(workload["kernel_size"])
     stride = workload.get("stride")
@@ -1077,7 +1073,6 @@ def test_max_pool2d_indices_bench(
 
 
 def _max_pool1d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one max_pool1d case."""
     n, c_in, l_in = workload["input_shape"]
     kernel_size = workload["kernel_size"]
     kernel_size = tuple(kernel_size) if isinstance(kernel_size, list) else (kernel_size,)
@@ -1219,7 +1214,6 @@ def test_max_pool1d_indices_bench(
 
 
 def _max_pool3d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one max_pool3d case."""
     n, c_in, d_in, h_in, w_in = workload["input_shape"]
     kernel_size = workload["kernel_size"]
     kernel_size = tuple(kernel_size) if isinstance(kernel_size, list) else (kernel_size,) * 3
@@ -1389,7 +1383,6 @@ class AdaptiveMaxPool2dBenchmarkWorkload(AdaptivePool2dWorkload):
 
 
 def _adaptive_pool2d_args(workload: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one adaptive_pool2d case."""
     n, c_in, h_in, w_in = workload["input_shape"]
     output_size = tuple(workload["output_size"])
     return (

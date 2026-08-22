@@ -14,7 +14,6 @@ _ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
 
 
 def _ada_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(m, n, dtype)`` for one case."""
     m, n = w["x_shape"]
     return (m, n, dtype)
 

@@ -8,7 +8,7 @@ from benchmarks.benchmark_base import (
     then_dtype,
     workload_params,
 )
-from benchmarks.ops.attention.manifest_params import mha_qkv_args
+from benchmarks.ops.attention.workload_args import mha_qkv_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import (

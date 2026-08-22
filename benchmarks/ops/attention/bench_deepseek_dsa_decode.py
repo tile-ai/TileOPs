@@ -7,7 +7,7 @@ from benchmarks.benchmark_base import (
     then_dtype,
     workload_params,
 )
-from benchmarks.ops.attention.manifest_params import dsa_decode_args
+from benchmarks.ops.attention.workload_args import dsa_decode_args
 from tileops.manifest import load_workloads
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek import DsaDecodeWorkload

@@ -76,11 +76,6 @@ class ConvCase:
         return asdict(self)
 
 
-def _mark(w: dict, dtype: torch.dtype, index: int) -> tuple:
-    """First manifest workload of an op is the smoke case; the rest are full."""
-    return (pytest.mark.smoke if index == 0 else pytest.mark.full,)
-
-
 def _conv_args(w: dict, dtype: torch.dtype, kernel_keys: tuple[str, ...]) -> tuple:
     """One :class:`ConvCase` for this row and dtype.
 
@@ -303,7 +298,7 @@ _CONV1D_KERNEL_KEYS = ("kW",)
     workload_params(
         load_workloads(_CONV1D_OP),
         functools.partial(_conv_args, kernel_keys=_CONV1D_KERNEL_KEYS),
-        marks=_mark,
+        smoke_first=True,
     ),
 )
 def test_conv1d_bench(case: ConvCase) -> None:
@@ -329,7 +324,7 @@ _CONV2D_KERNEL_KEYS = ("kH", "kW")
     workload_params(
         load_workloads(_CONV2D_OP),
         functools.partial(_conv_args, kernel_keys=_CONV2D_KERNEL_KEYS),
-        marks=_mark,
+        smoke_first=True,
     ),
 )
 def test_conv2d_bench(case: ConvCase) -> None:
@@ -355,7 +350,7 @@ _CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
     workload_params(
         load_workloads(_CONV3D_OP),
         functools.partial(_conv_args, kernel_keys=_CONV3D_KERNEL_KEYS),
-        marks=_mark,
+        smoke_first=True,
     ),
 )
 def test_conv3d_bench(case: ConvCase) -> None:

@@ -216,23 +216,18 @@ def workload_params(
     smoke_first: bool = False,
     marks: "Callable[[dict, torch.dtype, int], tuple] | None" = None,
 ) -> list:
-    """The one place a manifest workload becomes a pytest case.
+    """The one place a manifest workload row becomes a pytest case.
 
-    One case per (row, dtype in that row's ``dtypes``), with the id
-    ``f"{label}-{dtype}"`` — so a label never has to spell a dtype. What varies
-    per family is only how a row becomes positional args, which is *build_args*;
-    compose it with :func:`fields` and :func:`then_dtype`.
-
-    Args:
-        workloads: Rows from ``load_workloads``.
-        build_args: ``(row, dtype) -> positional args`` for one case.
-        smoke_first: Mark the first row's cases ``smoke`` and the rest ``full``.
-        marks: ``(row, dtype, row_index) -> marks`` when a case's marks depend on
-            its dtype. A row carrying ``bench_skip_reason`` is skipped either way.
+    One case per (row, dtype in its ``dtypes``), ided ``f"{label}-{dtype}"`` so a
+    label never has to spell a dtype. *build_args* maps a row and that dtype to
+    the case's positional args — the one thing that differs per family; compose
+    it with :func:`fields` and :func:`then_dtype`. *marks* takes
+    ``(row, dtype, row_index)`` for marks that depend on the dtype, and
+    *smoke_first* marks the first row ``smoke`` and the rest ``full``.
     """
     params: list = []
     for index, w in enumerate(workloads):
-        # A row the manifest says to skip is skipped whatever else decides marks.
+        # A row the manifest says to skip is skipped whichever else applies.
         skip = (
             (pytest.mark.skip(reason=w["bench_skip_reason"]),) if w.get("bench_skip_reason") else ()
         )
@@ -252,13 +247,9 @@ def workload_params(
 
 
 def fields(*keys: str, dtype_last: bool = False) -> "Callable[[dict, torch.dtype], tuple]":
-    """Row values under *keys*, positionally.
-
-    A key ending in ``dtype`` resolves to the ``torch.dtype`` it names, so a row
-    declaring an input and an output dtype keeps them apart. With *dtype_last*
-    the case's dtype follows the keyed values, for a test whose signature ends
-    in ``dtype`` while the row does not name one.
-    """
+    """Row values under *keys*, positionally; a key ending in ``dtype`` resolves to
+    the ``torch.dtype`` it names, and *dtype_last* appends the case's dtype for a
+    test whose signature ends in one the row does not name."""
 
     def build(w: dict, dtype: torch.dtype) -> tuple:
         values = tuple(getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys)
@@ -272,9 +263,8 @@ def then_dtype(
     *,
     tune: bool | None = None,
 ) -> "Callable[[dict, torch.dtype], tuple]":
-    """Append the case's dtype to what *row_args* returns, and *tune* after it
-    when the test takes one. *row_args* is a family's row-to-args function; it
-    reads the row only, since the dtype is the axis this adds."""
+    """Append the case's dtype to what *row_args* returns, and *tune* after it when
+    the test takes one. *row_args* reads the row only."""
 
     def build(w: dict, dtype: torch.dtype) -> tuple:
         tail = (dtype,) if tune is None else (dtype, tune)
@@ -284,13 +274,10 @@ def then_dtype(
 
 
 def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
-    """Convert manifest workload dicts for *op_name* to pytest params.
-
-    Single-tensor-input convenience wrapper over :func:`workload_params`: it
-    reads the manifest, checks each row against the signature, and yields
-    ``pytest.param(shape, dtype)``; with ``include_extra=True`` a third element
-    carries the op-call params declared on the row (e.g. ``{"dim": 0}``).
-    """
+    """Single-tensor-input wrapper over :func:`workload_params`: reads the manifest,
+    checks each row against the signature, and yields ``pytest.param(shape,
+    dtype)``; with *include_extra* a third element carries the row's op-call
+    params (e.g. ``{"dim": 0}``)."""
     workloads = load_workloads(op_name)  # canonical not-found error
     shape_key, allowed = _workload_contract(op_name)
     for w in workloads:
@@ -318,8 +305,8 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
         # case sharing the row.
         return (shape, dtype, dict(_workload_extra_params(w, shape_key)))
 
-    # A row with no label is named by its shape, as the reports did before. The
-    # rows are the manifest's own dicts, so name a copy rather than writing to them.
+    # Name a copy: an unlabelled row is named by its shape, as the reports did
+    # before, and the rows are the manifest's own dicts.
     rows = [
         w if "label" in w else {**w, "label": "x".join(str(s) for s in w[shape_key])}
         for w in workloads

@@ -95,13 +95,11 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
 
 
 def _fwd_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(N, C, spatial, dtype, tune, training)``."""
     n, c, *spatial = w["x_shape"]
     return (n, c, tuple(spatial), dtype, True, False)
 
 
 def _bwd_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(N, C, spatial, dtype)``."""
     n, c, *spatial = w["x_shape"]
     return (n, c, tuple(spatial), dtype)
 

@@ -103,7 +103,6 @@ def _assert_fused_add_matches(fn, reference, x, residual, weight, eps, **toleran
 
 
 def _norm_args(w: dict, dtype: torch.dtype) -> tuple:
-    """``(m, n, dtype, tune)`` for one case."""
     m, n = w["x_shape"]
     return (m, n, dtype, True)
 

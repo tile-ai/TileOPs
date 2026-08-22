@@ -3,10 +3,6 @@ from typing import Any
 import torch
 
 
-def torch_dtype(dtype_name: str) -> torch.dtype:
-    return getattr(torch, dtype_name)
-
-
 def mha_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, bool]:
     batch, seq_len, heads, dim = workload["q_shape"]
     return batch, seq_len, heads, dim, workload.get("is_causal", True)
@@ -99,7 +95,7 @@ def gqa_prefill_paged_args(
         workload.get("fuse_rope", False),
         workload.get("rotary_dim"),
         workload.get("softcap"),
-        torch_dtype(workload["cache_dtype"]) if workload.get("cache_dtype") else None,
+        getattr(torch, workload["cache_dtype"]) if workload.get("cache_dtype") else None,
     )
 
 
