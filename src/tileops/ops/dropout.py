@@ -85,13 +85,18 @@ class DropoutFwdOp(Op):
             )
         return self.N_total * self.dtype.itemsize * 2
 
-    def _get_kernel(self, x: torch.Tensor) -> Kernel:
+    def _get_kernel(self, x: torch.Tensor, rows: torch.Tensor) -> Kernel:
+        """Fetch the kernel for *x*, handing over *x* itself rather than *rows*.
+
+        *rows* is the flat view the kernel wants; *x* is what the signature declares.
+        """
         return self.get_or_build_kernel(
             self._op_name,
-            key=(x.numel(), x.dtype, x.device.index),
+            (x,),
+            key=(rows.numel(), rows.dtype, rows.device.index),
             build=lambda: self.kernel_map[self._op_name](
-                x.numel(),
-                x.dtype,
+                rows.numel(),
+                rows.dtype,
                 p=self.p,
                 seed=self.seed,
                 tune=self.tune,
@@ -107,7 +112,7 @@ class DropoutFwdOp(Op):
             return torch.zeros_like(x)
         orig_shape = x.shape
         x_flat = x.contiguous().reshape(-1)
-        self.kernel = self._get_kernel(x_flat)
+        self.kernel = self._get_kernel(x, x_flat)
         y_flat = self.kernel(x_flat)
         return y_flat.reshape(orig_shape)
 

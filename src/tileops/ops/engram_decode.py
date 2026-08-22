@@ -51,9 +51,10 @@ class EngramDecodeFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "engram_decode",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["engram_decode"](
                 self.batch,
@@ -132,7 +133,9 @@ class EngramDecodeFwdOp(Op):
         h_t = h_t.contiguous()
         conv_state = conv_state.contiguous()
 
-        return self._get_kernel(e_t.dtype)(
+        return self._get_kernel(
+            (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w), e_t.dtype
+        )(
             e_t,
             h_t,
             conv_state,

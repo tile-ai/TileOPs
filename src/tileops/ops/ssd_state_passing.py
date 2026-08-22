@@ -43,6 +43,7 @@ class SSDStatePassingFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         num_chunks: int,
         n_heads: int,
@@ -63,6 +64,7 @@ class SSDStatePassingFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "ssd_state_passing_fwd",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["ssd_state_passing_fwd"](
                 batch,
@@ -119,6 +121,7 @@ class SSDStatePassingFwdOp(Op):
         self.dtype = states.dtype
         self.initial_states_shape = None if initial_states is None else tuple(initial_states.shape)
         self.kernel = self._get_kernel(
+            (states, dA_chunk_cumsum, initial_states),
             batch,
             num_chunks,
             n_heads,

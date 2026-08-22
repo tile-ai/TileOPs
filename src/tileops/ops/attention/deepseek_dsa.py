@@ -83,9 +83,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "sparse_mla_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["sparse_mla_kernel"](
                 self.batch,
@@ -143,4 +144,4 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         """
         self._validate_dtypes(q, kv, indices)
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, kv, indices)
+        return self._get_kernel((q, kv, indices), q.dtype)(q, kv, indices)

@@ -149,10 +149,13 @@ class SharedFusedMoE(FusedMoe):
             shared_ffn_size // tp_size if shared_ffn_size is not None else None
         )
 
-    def _shared_mlp_kernel_for(self, dtype: torch.dtype) -> Kernel:
+    def _shared_mlp_kernel_for(
+        self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype
+    ) -> Kernel:
         """Return the shared-expert MLP kernel for *dtype*, building on first use."""
         return self.get_or_build_kernel(
             "shared_expert_mlp",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["shared_expert_mlp"](
                 num_tokens=self.num_tokens,
@@ -238,10 +241,9 @@ class SharedFusedMoE(FusedMoe):
                 gate_up_shard = shared_w_gate_up
                 down_shard = shared_w_down
 
-            shared_out = self._shared_mlp_kernel_for(hidden_states.dtype)(
-                hidden_states,
-                gate_up_shard,
-                down_shard,
+            shared_tensors = (hidden_states, gate_up_shard, down_shard)
+            shared_out = self._shared_mlp_kernel_for(shared_tensors, hidden_states.dtype)(
+                *shared_tensors
             )
         else:
             shared_out = None

@@ -88,6 +88,7 @@ class GLAFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         heads: int,
@@ -111,6 +112,7 @@ class GLAFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GLAFwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GLAFwdKernel"](
                 batch,
@@ -153,7 +155,9 @@ class GLAFwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
+        )
         return self.kernel(q, k, v, g, initial_state)
 
 
@@ -201,6 +205,7 @@ class GLABwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         heads: int,
@@ -223,6 +228,7 @@ class GLABwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GLABwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GLABwdKernel"](
                 batch,
@@ -272,5 +278,7 @@ class GLABwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g, h, do, dht), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
+        )
         return self.kernel(q, k, v, g, h, do, dht, has_initial_state)

@@ -73,6 +73,7 @@ class CumulativeOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         M: int,
         N: int,
         dtype: torch.dtype,
@@ -86,6 +87,7 @@ class CumulativeOp(Op):
         key = (M, N, dtype, device_index)
         return self.get_or_build_kernel(
             "cumulative_fwd",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["cumulative_fwd"](
                 M,
@@ -120,6 +122,8 @@ class CumulativeOp(Op):
     def _run(self, x: torch.Tensor) -> torch.Tensor:
         """Shared forward implementation. Subclasses call this from `forward`."""
         ndim = x.ndim
+        # The tensor this op declares, before the row layout its kernel wants.
+        declared = x
         dim_norm, N, dtype = self._validate_and_normalize_dim(x)
 
         if dim_norm != ndim - 1:
@@ -129,7 +133,7 @@ class CumulativeOp(Op):
         M = x.shape[0]
 
         # Alignment padding is handled inside the kernel via masked loads.
-        y = self._get_kernel(M, N, dtype, x.device.index)(x)
+        y = self._get_kernel((declared,), M, N, dtype, x.device.index)(x)
         self._last_roofline_mn = (M, N)
 
         y = y.reshape(post_move_shape)

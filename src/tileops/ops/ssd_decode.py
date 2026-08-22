@@ -50,6 +50,7 @@ class SSDDecodeFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         n_heads: int,
         d_head: int,
@@ -61,6 +62,7 @@ class SSDDecodeFwdOp(Op):
         key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "ssd_decode",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["ssd_decode"](
                 batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
@@ -136,7 +138,14 @@ class SSDDecodeFwdOp(Op):
         self.n_groups = n_groups
         self.dtype = x.dtype
         self.kernel = self._get_kernel(
-            batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index
+            (A, dt, x, B_in, C_in, state),
+            batch,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            x.dtype,
+            x.device.index,
         )
 
         A = A.contiguous()

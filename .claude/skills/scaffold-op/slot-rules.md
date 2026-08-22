@@ -209,8 +209,8 @@ design, calling conventions — live in
 
 - **Rule.** Take one `<input>_shape: tuple` per manifest `signature.inputs`; return `Dict[str, tuple]` keyed by output name. Derive from manifest `shape_rules` (see
   [manifest.md § Rules](../../../docs/design/manifest.md#rules)). The L1 base raises
-  `NotImplementedError` as a `FIXME(staged-rollout)` stub; every concrete op supplies a body. CI
-  exercises the method with mock inputs and reports disagreement with `shape_rules` as a hard L2
+  `NotImplementedError`; every op the manifest calls `implemented` supplies a body, which the
+  validator's C9 check requires. CI exercises the method with mock inputs and reports disagreement with `shape_rules` as a hard L2
   error.
 - **Example.**
   ```python
@@ -225,7 +225,7 @@ design, calling conventions — live in
 
 - **Rule.** Positional parameters match `signature.inputs`; raise `ValueError` on an invalid dtype
   combination. Derive from manifest `dtype` (union) and `dtype_combos`. L1 stub raises
-  `NotImplementedError` (`FIXME(staged-rollout)`). The validator probes `dtype_combos`, declared
+  `NotImplementedError`; check C6 requires the override. The validator probes `dtype_combos`, declared
   unions and out-of-union negatives exhaustively; divergence is a hard L3 error.
 - **Example.**
   ```python
@@ -242,7 +242,7 @@ design, calling conventions — live in
   binds, `self.dtype` among them — so `eval_roofline` is defined only after at least one
   `forward()`. Derive from manifest `roofline.vars` / `.flops` / `.bytes`; see
   [`roofline.md` §4.4](../../../docs/design/roofline.md#44-op-codegen). L1 stub raises
-  `NotImplementedError` (`FIXME(staged-rollout)`).
+  `NotImplementedError`; check C7 requires the override.
 - **Example.**
   ```python
   def eval_roofline(self) -> tuple[int, int]:

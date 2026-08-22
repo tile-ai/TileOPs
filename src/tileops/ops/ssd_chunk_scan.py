@@ -46,6 +46,7 @@ class SSDChunkScanFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         num_chunks: int,
         chunk_len: int,
@@ -70,6 +71,7 @@ class SSDChunkScanFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "ssd_chunk_scan_fwd",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["ssd_chunk_scan_fwd"](
                 batch,
@@ -155,6 +157,7 @@ class SSDChunkScanFwdOp(Op):
         self.n_groups = n_groups
         self.dtype = x.dtype
         self.kernel = self._get_kernel(
+            (x, cb, dA_cumsum, C, prev_states, dt),
             batch,
             num_chunks,
             chunk_len,

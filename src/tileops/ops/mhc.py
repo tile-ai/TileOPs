@@ -40,6 +40,7 @@ class MHCPreFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         n_expand: int,
         c_x: int,
@@ -49,6 +50,7 @@ class MHCPreFwdOp(Op):
         key = (batch, n_expand, c_x, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "mhc_pre_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["mhc_pre_kernel"](
                 batch,
@@ -98,7 +100,7 @@ class MHCPreFwdOp(Op):
         self.n_expand = n_expand
         self.c_x = c_x
         self.dtype = x.dtype
-        self.kernel = self._get_kernel(batch, n_expand, c_x, x.dtype, x.device.index)
+        self.kernel = self._get_kernel((phi, x, b), batch, n_expand, c_x, x.dtype, x.device.index)
         return self.kernel(
             phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, sinkhorn_eps
         )
@@ -124,6 +126,7 @@ class MHCPostFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         n_expand: int,
         c_x: int,
@@ -133,6 +136,7 @@ class MHCPostFwdOp(Op):
         key = (batch, n_expand, c_x, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "mhc_post_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["mhc_post_kernel"](
                 batch,
@@ -174,6 +178,11 @@ class MHCPostFwdOp(Op):
         self.c_x = c_x
         self.dtype = x_layer_out.dtype
         self.kernel = self._get_kernel(
-            batch, n_expand, c_x, x_layer_out.dtype, x_layer_out.device.index
+            (x_layer_out, h_post, x_res),
+            batch,
+            n_expand,
+            c_x,
+            x_layer_out.dtype,
+            x_layer_out.device.index,
         )
         return self.kernel(x_layer_out, h_post, x_res)

@@ -184,6 +184,7 @@ class GatedDeltaNetBHTDFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -206,6 +207,7 @@ class GatedDeltaNetBHTDFwdOp(Op):
         )
         return self.get_or_build_kernel(
             kernel_name,
+            inputs,
             key=key,
             build=lambda: self.kernel_map[kernel_name](
                 batch,
@@ -253,7 +255,9 @@ class GatedDeltaNetBHTDFwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g, beta), batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
+        )
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
@@ -340,6 +344,7 @@ class GatedDeltaNetBTHDFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -356,6 +361,7 @@ class GatedDeltaNetBTHDFwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "GatedDeltaNetFwdProductionKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GatedDeltaNetFwdProductionKernel"](
                 batch,
@@ -403,7 +409,9 @@ class GatedDeltaNetBTHDFwdOp(Op):
         self.seq_len = seq_len
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g, beta), batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
+        )
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
@@ -497,6 +505,7 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -520,6 +529,7 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GatedDeltaNetPrefillFwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GatedDeltaNetPrefillFwdKernel"](
                 batch,
@@ -582,7 +592,15 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
         self.chunk_size = chunk_size
         self.dtype = q.dtype
         self.kernel = self._get_kernel(
-            batch, heads, seq_len, chunk_size, dim_k, self.dim_v, q.dtype, q.device.index
+            (q, k, v, g, beta),
+            batch,
+            heads,
+            seq_len,
+            chunk_size,
+            dim_k,
+            self.dim_v,
+            q.dtype,
+            q.device.index,
         )
 
     def eval_roofline(self) -> tuple[int, int]:
@@ -679,6 +697,7 @@ class GatedDeltaNetBwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -690,6 +709,7 @@ class GatedDeltaNetBwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "GatedDeltaNetBwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
                 batch,
@@ -736,7 +756,9 @@ class GatedDeltaNetBwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (do, q, k, v, g, beta, S), batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
+        )
         dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, S)
         return dq, dk, dv, dg, dbeta
 
@@ -833,6 +855,7 @@ class GatedDeltaNetOp(Op):
         )
         return self.get_or_build_kernel(
             "GatedDeltaNetFwdKernel",
+            (q, k, v, g, beta),
             key=key,
             build=lambda: (
                 self.kernel_map["GatedDeltaNetFwdKernel"](
@@ -922,6 +945,7 @@ class GatedDeltaNetDecodeFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         dim_k: int,
@@ -945,7 +969,7 @@ class GatedDeltaNetDecodeFwdOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel(chosen, key=key, build=build)
+        return self.get_or_build_kernel(chosen, inputs, key=key, build=build)
 
     def _infer_output_shapes(
         self,
@@ -1022,7 +1046,9 @@ class GatedDeltaNetDecodeFwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = q.dtype
-        self.kernel = self._get_kernel(batch, heads, dim_k, dim_v, q.dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g, beta, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
+        )
 
     def _validate_output_shapes(
         self,

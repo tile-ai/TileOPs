@@ -213,9 +213,10 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mha_decode_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["mha_decode_kernel"](
                 self.batch,
@@ -252,7 +253,7 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
                 v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode="constant", value=0
             )
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv)
+        return self._get_kernel((q, k, v), q.dtype)(q, k, v, real_seqlen_kv)
 
 
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
@@ -282,7 +283,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         call = self._attention_call(dtype)
         key = self.select_kernel_key(MHA_PAGED_DECODE_KEYS, call)
 
@@ -299,7 +300,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
                 tune=call.tune,
             )
 
-        return self.get_or_build_kernel(key, key=dtype, build=build)
+        return self.get_or_build_kernel(key, inputs, key=dtype, build=build)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -349,7 +350,9 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         block_table: torch.Tensor,
     ) -> torch.Tensor:
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv, block_table)
+        return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
+            q, k, v, real_seqlen_kv, block_table
+        )
 
 
 # torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)

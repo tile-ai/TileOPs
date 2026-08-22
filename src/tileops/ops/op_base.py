@@ -386,14 +386,6 @@ class Op(ABC):
             # traced frame's attribute writes until after the graph has run, so a
             # ``forward`` behind the compile boundary arrives here still ``_UNRESOLVED``
             # and would take the in-tree path on the very call that chose a target.
-            #
-            # FIXME(staged-rollout): a call handing over no tensors probes no device.
-            #
-            # Broken invariant: a first compiled call takes the in-tree path when the
-            #     target would have come from device detection, where eager raises.
-            # Why: ``inputs`` is what carries a device down here, and most op classes
-            #     still call this without it.
-            # Cleanup: delete this marker once every op hands over ``inputs=``.
             self._resolve_builder(tuple(inputs), {})
 
         try:

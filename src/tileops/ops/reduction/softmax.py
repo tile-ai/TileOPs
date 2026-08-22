@@ -100,6 +100,8 @@ class _SoftmaxBaseOp(Op):
         Supports ``dim=list[int]`` for multi-dim reduction (logsumexp).
         """
         self._validate(x)
+        # The tensor this op declares, before the row layout its kernel wants.
+        declared = x
         orig_shape = x.shape
 
         # Resolve dim=None per call (don't mutate self.dim) so the same op
@@ -129,6 +131,7 @@ class _SoftmaxBaseOp(Op):
             self._last_roofline_spec = (M, N, dtype)
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(
+                (declared,),
                 M,
                 N,
                 dtype=dtype,
@@ -172,6 +175,7 @@ class _SoftmaxBaseOp(Op):
 
         # Get or create cached kernel for this (M, N, device).
         kernel = self._get_or_create_kernel(
+            (declared,),
             M,
             N,
             dtype=dtype,
@@ -204,6 +208,7 @@ class _SoftmaxBaseOp(Op):
 
     def _get_or_create_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         M: int,
         N: int,
         dtype: torch.dtype,
@@ -212,6 +217,7 @@ class _SoftmaxBaseOp(Op):
         """Return a cached kernel for (M, N, dtype, device), creating one if needed."""
         return self.get_or_build_kernel(
             self._kernel_key,
+            inputs,
             key=(M, N, dtype, device_index),
             build=lambda: self.kernel_map[self._kernel_key](
                 M,

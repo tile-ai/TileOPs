@@ -43,6 +43,7 @@ class FP8LightningIndexerFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         heads: int,
@@ -65,6 +66,7 @@ class FP8LightningIndexerFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "fp8_lightning_indexer_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
                 batch,
@@ -123,7 +125,14 @@ class FP8LightningIndexerFwdOp(Op):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.kernel = self._get_kernel(
-            batch, seq_len, heads, index_dim, seq_len_kv, kv_group, index_q.device.index
+            (index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale),
+            batch,
+            seq_len,
+            heads,
+            index_dim,
+            seq_len_kv,
+            kv_group,
+            index_q.device.index,
         )
 
     def torch_quant_forward(

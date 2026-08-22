@@ -93,7 +93,9 @@ class GemmFwdOp(Op):
             None if self.dtype is None else str(self.dtype),
         )
 
-    def _get_kernel(self, m: int, n: int, k: int, dtype: torch.dtype) -> Tuple[str, Kernel]:
+    def _get_kernel(
+        self, inputs: "tuple[torch.Tensor | None, ...]", m: int, n: int, k: int, dtype: torch.dtype
+    ) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
 
         ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path, else
@@ -107,6 +109,7 @@ class GemmFwdOp(Op):
             gemv_cls = self.kernel_map["gemv_kernel"]
             kernel = self.get_or_build_kernel(
                 "gemv_kernel",
+                inputs,
                 key=(mode, m, n, k, dtype),
                 build=lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
             )
@@ -114,6 +117,7 @@ class GemmFwdOp(Op):
 
         kernel = self.get_or_build_kernel(
             "gemm_kernel",
+            inputs,
             key=(m, n, k, dtype),
             build=lambda: self.kernel_map["gemm_kernel"](
                 m, n, k, dtype, tune=self.tune, trans_a=self.trans_a, trans_b=self.trans_b
@@ -145,7 +149,7 @@ class GemmFwdOp(Op):
             self.dtype = a.dtype
             self.a_shape = tuple(a.shape)
             self.b_shape = tuple(b.shape)
-            mode, kernel = self._get_kernel(m, n, k, a.dtype)
+            mode, kernel = self._get_kernel((a, b), m, n, k, a.dtype)
             # Expose the active kernel so autotune()/introspection can find it.
             self.kernel = kernel
             self._active = (mode, kernel, n, m)
@@ -287,6 +291,7 @@ class GemmFp8FwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         kernel_name: str,
         m: int,
         n: int,
@@ -297,6 +302,7 @@ class GemmFp8FwdOp(Op):
     ) -> Kernel:
         return self.get_or_build_kernel(
             kernel_name,
+            inputs,
             key=(m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
             build=lambda: self.kernel_map[kernel_name](
                 m, n, k, dtype, self.out_dtype, tune=self.tune
@@ -333,7 +339,14 @@ class GemmFp8FwdOp(Op):
             self.has_bias = bias is not None
             kernel_name = self._select_kernel_name(scale_a, scale_b, m, n, k)
             kernel = self._get_kernel(
-                kernel_name, m, n, k, a.dtype, tuple(scale_a.shape), tuple(scale_b.shape)
+                (a, b, scale_a, scale_b, bias),
+                kernel_name,
+                m,
+                n,
+                k,
+                a.dtype,
+                tuple(scale_a.shape),
+                tuple(scale_b.shape),
             )
             self.kernel = kernel
             self._active = kernel
@@ -459,6 +472,7 @@ class GemmW4A16FwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         m: int,
         n: int,
         k: int,
@@ -468,6 +482,7 @@ class GemmW4A16FwdOp(Op):
         key_name = self.select_kernel_key(("gemm_w4a16_decode_kernel", "gemm_w4a16_kernel"), call)
         return self.get_or_build_kernel(
             key_name,
+            inputs,
             key=(m, n, k, dtype, self.group_size),
             build=lambda: self.kernel_map[key_name](
                 m, n, k, dtype, tune=self.tune, group_size=self.group_size
@@ -500,7 +515,9 @@ class GemmW4A16FwdOp(Op):
             self.packed_weight_shape = tuple(packed_weight.shape)
             self.weight_scale_shape = tuple(weight_scale.shape)
             self.weight_zero_shape = tuple(weight_zero.shape)
-            kernel = self._get_kernel(m, n, k, activation.dtype)
+            kernel = self._get_kernel(
+                (activation, packed_weight, weight_scale, weight_zero), m, n, k, activation.dtype
+            )
             self.kernel = kernel
             self._active = kernel
             self._active_sig = sig

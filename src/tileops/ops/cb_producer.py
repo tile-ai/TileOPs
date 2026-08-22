@@ -49,9 +49,10 @@ class CBProducerFwdOp(Op):
         # Use standard Op dispatch pattern
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "cb_producer",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["cb_producer"](
                 self.batch,
@@ -94,4 +95,4 @@ class CBProducerFwdOp(Op):
                 )
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return self._get_kernel(C_mat.dtype)(C_mat, B_mat)
+        return self._get_kernel((C_mat, B_mat), C_mat.dtype)(C_mat, B_mat)

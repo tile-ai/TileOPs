@@ -32,6 +32,7 @@ class TopkSelectorFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         seq_len_kv: int,
@@ -42,6 +43,7 @@ class TopkSelectorFwdOp(Op):
         key = (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "topk_selector_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["topk_selector_kernel"](
                 batch,
@@ -89,7 +91,13 @@ class TopkSelectorFwdOp(Op):
         self.kv_group = kv_group
         self.in_dtype = index_score.dtype
         self.kernel = self._get_kernel(
-            batch, seq_len, seq_len_kv, kv_group, index_score.dtype, index_score.device.index
+            (index_score, starts, ends),
+            batch,
+            seq_len,
+            seq_len_kv,
+            kv_group,
+            index_score.dtype,
+            index_score.device.index,
         )
 
         return self.kernel(index_score, starts, ends)

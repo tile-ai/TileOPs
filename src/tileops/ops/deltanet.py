@@ -60,6 +60,7 @@ class DeltaNetFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -71,6 +72,7 @@ class DeltaNetFwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "DeltaNetFwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["DeltaNetFwdKernel"](
                 batch,
@@ -118,7 +120,7 @@ class DeltaNetFwdOp(Op):
         self.dim_v = v.shape[-1]
         self.dtype = dtype
         self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index
+            (q, k, v, beta), batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index
         )
 
     def forward(
@@ -181,6 +183,7 @@ class DeltaNetBwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -192,6 +195,7 @@ class DeltaNetBwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "DeltaNetBwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["DeltaNetBwdKernel"](
                 batch,
@@ -207,6 +211,7 @@ class DeltaNetBwdOp(Op):
 
     def _bind_from_inputs(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -242,7 +247,9 @@ class DeltaNetBwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            inputs, batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
+        )
 
     def forward(
         self,
@@ -274,7 +281,7 @@ class DeltaNetBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        self._bind_from_inputs(do, q, k, v, beta)
+        self._bind_from_inputs((do, q, k, v, beta, S, Aw, Au, w, u), do, q, k, v, beta)
         dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta
 
@@ -379,6 +386,7 @@ class DeltaNetOp(Op):
         )
         return self.get_or_build_kernel(
             "DeltaNetFwdKernel",
+            (q, k, v, beta),
             key=key,
             build=lambda: (
                 self.kernel_map["DeltaNetFwdKernel"](

@@ -23,9 +23,17 @@ class _ArgreduceOpBase(_ReduceOpBase):
     Only the preparation differs, so that is all this overrides.
     """
 
-    def _get_or_create_strided_kernel(self, M: int, N: int, inner_stride: int, dtype):
+    def _get_or_create_strided_kernel(
+        self,
+        inputs: "tuple[torch.Tensor | None, ...]",
+        M: int,
+        N: int,
+        inner_stride: int,
+        dtype,
+    ):
         return self.get_or_build_kernel(
             self._kernel_key,
+            inputs,
             key=(M, N, dtype, inner_stride),
             build=lambda: self.kernel_map[self._kernel_key](
                 M,
@@ -61,7 +69,7 @@ class _ArgreduceOpBase(_ReduceOpBase):
 
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
         self._last_roofline_mn = (M, N)
-        kernel = self._get_or_create_strided_kernel(M, N, inner_stride, x.dtype)
+        kernel = self._get_or_create_strided_kernel((x,), M, N, inner_stride, x.dtype)
         return x.reshape(-1), x.shape, dim, kernel
 
 

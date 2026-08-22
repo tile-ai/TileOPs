@@ -387,6 +387,7 @@ class _ReduceOpBase(Op):
 
     def _get_or_create_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         M: int,
         N: int,
         dtype: torch.dtype,
@@ -394,6 +395,7 @@ class _ReduceOpBase(Op):
         """Return a cached kernel for (M, N, dtype), creating one if needed."""
         return self.get_or_build_kernel(
             self._kernel_key,
+            inputs,
             key=(M, N, dtype),
             build=lambda: self.kernel_map[self._kernel_key](
                 M,
@@ -419,6 +421,8 @@ class _ReduceOpBase(Op):
         """
         self._validate_input_tensor(x)
 
+        # The tensor this op declares, before the row layout its kernel wants.
+        declared = x
         orig_shape = x.shape
 
         # --- multi-dim path (includes dim=None for full reduction) ---
@@ -433,7 +437,7 @@ class _ReduceOpBase(Op):
             M = prod(x.shape[:-1])
             self._last_roofline_mn = (M, N)
             x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N, x.dtype)
+            kernel = self._get_or_create_kernel((declared,), M, N, x.dtype)
             return x, orig_shape, dims, kernel
 
         # --- single-dim path ---
@@ -453,7 +457,7 @@ class _ReduceOpBase(Op):
 
         x = x.contiguous().reshape(M, N)
 
-        kernel = self._get_or_create_kernel(M, N, x.dtype)
+        kernel = self._get_or_create_kernel((declared,), M, N, x.dtype)
         return x, orig_shape, dim, kernel
 
     # Output reshape
