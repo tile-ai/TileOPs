@@ -27,14 +27,14 @@ RMSNormFwdOp:
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "70b-prefill"}
+    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "405b-prefill"}
+    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "405b-decode"}
 
   roofline:
     vars:
@@ -78,14 +78,14 @@ LayerNormFwdOp:
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "70b-prefill"}
+    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "405b-prefill"}
+    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "405b-decode"}
 
   roofline:
     vars:
@@ -220,11 +220,11 @@ FusedAddLayerNormFwdOp:
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "70b-prefill"}
+    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "70b-decode"}
 
   roofline:
     vars:
@@ -267,14 +267,14 @@ FusedAddRMSNormFwdOp:
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "70b-prefill"}
+    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-    - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-    - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "405b-prefill"}
+    - {x_shape: [1, 16384], dtypes: [bfloat16], label: "405b-decode"}
 
   roofline:
     vars:
