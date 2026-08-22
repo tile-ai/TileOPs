@@ -1,6 +1,11 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
+"""Which lowering the prefill GEMMs get, installed as ``T.gemm_v1``.
+
+The kernels call ``T.gemm_v1`` rather than ``T.gemm`` so that
+``TILEOPS_GDN_PREFILL_GEMM_V1_MODE`` can pick among the lowerings below.
+"""
 
 from __future__ import annotations
 
@@ -49,7 +54,7 @@ def _read_ptr(buf: Any):
 
 
 @T.macro
-def _gemm_ss_compat(
+def _gemm_ss_extern(
     a,
     b,
     c,
@@ -78,7 +83,7 @@ def _gemm_ss_compat(
 
 
 @T.macro
-def _wgmma_gemm_sync_compat(
+def _wgmma_gemm_sync(
     a,
     b,
     c,
@@ -104,10 +109,10 @@ def _wgmma_gemm_sync_compat(
     T.warpgroup_fence_operand(c, num_regs=num_regs)
 
 
-def install_gemm_v1_compat() -> None:
+def install_gemm_v1() -> None:
     original_gemm = T.gemm
 
-    def gemm_v1_compat(
+    def _gemm_v1(
         a,
         b,
         c,
@@ -129,7 +134,7 @@ def install_gemm_v1_compat() -> None:
             os.environ.get("FLASHQLA_TL019_GEMM_V1_MODE", "default"),
         )
         if mode == "wgmma" and a_dtype in ("float16", "bfloat16") and a_dtype == b_dtype:
-            return _wgmma_gemm_sync_compat(
+            return _wgmma_gemm_sync(
                 a,
                 b,
                 c,
@@ -148,7 +153,7 @@ def install_gemm_v1_compat() -> None:
             and k >= 16
             and k % 16 == 0
         ):
-            return _gemm_ss_compat(
+            return _gemm_ss_extern(
                 a,
                 b,
                 c,
@@ -168,4 +173,4 @@ def install_gemm_v1_compat() -> None:
             clear_accum=clear_accum,
         )
 
-    T.gemm_v1 = gemm_v1_compat  # type: ignore[attr-defined]
+    T.gemm_v1 = _gemm_v1  # type: ignore[attr-defined]
