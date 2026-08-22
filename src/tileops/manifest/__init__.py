@@ -83,7 +83,7 @@ def load_workloads(op_name: str) -> list[dict[str, Any]]:
 
     >>> workloads = load_workloads("RMSNormFwdOp")
     >>> workloads[0]
-    {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-3.1-8b-prefill'}
+    {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-8b-prefill'}
     """
     ops = load_manifest()
     if op_name not in ops:

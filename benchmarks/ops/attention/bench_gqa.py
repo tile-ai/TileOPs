@@ -413,7 +413,7 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
         True,
         torch.float16,
         False,
-        id="llama-3.1-8b-prefill-varlen-uniform-fp16",
+        id="llama-8b-prefill-varlen-uniform-fp16",
     ),
     pytest.param(
         4,
@@ -425,7 +425,7 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
         True,
         torch.float16,
         False,
-        id="llama-3.1-8b-prefill-varlen-mixed-fp16",
+        id="llama-8b-prefill-varlen-mixed-fp16",
     ),
     pytest.param(
         2,
@@ -437,7 +437,7 @@ _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
         True,
         torch.bfloat16,
         False,
-        id="llama-3.1-70b-prefill-varlen-q-lt-kv-bf16",
+        id="llama-70b-prefill-varlen-q-lt-kv-bf16",
     ),
 ]
 

@@ -135,13 +135,21 @@ _SINUSOIDAL_OP = "SinusoidalFwdOp"
 
 
 def _generative_params(workloads: list, keys: tuple) -> list:
-    """Manifest workloads -> params; first workload smoke, rest full."""
+    """Manifest workloads -> params; first workload smoke, rest full.
+
+    The id ends with the dtype the case runs, so a label never has to spell one.
+    """
     params = []
     for i, w in enumerate(workloads):
         values = [w[k] for k in keys]
-        dtype = getattr(torch, w["dtypes"][0])
+        dtype_name = w["dtypes"][0]
         mark = pytest.mark.smoke if i == 0 else pytest.mark.full
-        params.append(pytest.param(*values, dtype, marks=mark, id=w.get("label", f"w{i}")))
+        label = w.get("label", f"w{i}")
+        params.append(
+            pytest.param(
+                *values, getattr(torch, dtype_name), marks=mark, id=f"{label}-{dtype_name}"
+            )
+        )
     return params
 
 

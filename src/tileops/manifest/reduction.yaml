@@ -27,11 +27,11 @@ SoftmaxFwdOp:
   workloads:
     # Attention weight matrices (batch * heads, seq, seq)
   - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k"}
   - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits (batch, vocab_size)
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
+  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits"}
 
   roofline:
     vars:
@@ -76,11 +76,11 @@ LogSoftmaxFwdOp:
   workloads:
     # Attention weight matrices
   - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k"}
   - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
+  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits"}
 
   roofline:
     vars:

@@ -248,16 +248,19 @@ def workload_field_params(workloads: list, keys: tuple) -> list:
     """Turn manifest workload dicts into pytest params.
 
     First workload is marked ``smoke``, the rest ``full``. Keys ending in
-    ``dtype`` are resolved to ``torch.dtype`` values.
+    ``dtype`` are resolved to ``torch.dtype`` values, and the case id ends with
+    the dtype it runs, so a label never has to spell one.
     """
     params = []
     for i, w in enumerate(workloads):
         args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
+        dtype_keys = [k for k in keys if k.endswith("dtype")]
+        suffix = "".join(f"-{w[k]}" for k in dtype_keys)
         params.append(
             pytest.param(
                 *args,
                 marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
-                id=w["label"],
+                id=f"{w['label']}{suffix}",
             )
         )
     return params

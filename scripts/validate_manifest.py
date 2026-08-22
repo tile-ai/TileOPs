@@ -453,6 +453,32 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
     return errors
 
 
+# A case id ends with the dtype the case runs, so a label spelling one renders it
+# twice. Both spellings of each dtype are listed, since labels use the short one.
+_DTYPE_LABEL_TOKENS = {
+    "float16": ("fp16", "f16", "float16"),
+    "bfloat16": ("bf16", "bfloat16"),
+    "float32": ("fp32", "f32", "float32"),
+    "float64": ("fp64", "f64", "float64"),
+    "float8_e4m3fn": ("fp8", "e4m3"),
+    "float8_e5m2": ("e5m2",),
+    "int8": ("int8",),
+    "int32": ("int32",),
+    "int64": ("int64",),
+}
+
+
+def _label_names_its_own_dtype(label: str, dtypes: list) -> str | None:
+    """The dtype token a label repeats from its own ``dtypes``, if any."""
+    for dtype in dtypes:
+        if not isinstance(dtype, str):
+            continue
+        for token in _DTYPE_LABEL_TOKENS.get(dtype, ()):
+            if re.search(rf"(?<![a-z0-9]){token}(?![a-z0-9])", label):
+                return token
+    return None
+
+
 def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
     """Workload policy: count, dtypes, required-param pinning, R21 keys."""
     errors: list[str] = []
@@ -484,6 +510,15 @@ def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
         missing_params = required_params - set(w.keys())
         if missing_params:
             err(f"workloads[{i}] missing required param(s): {sorted(missing_params)}")
+        label = w.get("label")
+        dtypes = w.get("dtypes")
+        if isinstance(label, str) and isinstance(dtypes, list):
+            repeated = _label_names_its_own_dtype(label, dtypes)
+            if repeated is not None:
+                err(
+                    f"workloads[{i}] label {label!r} names {repeated!r}, a dtype the "
+                    f"row already lists in 'dtypes'; the case id appends it"
+                )
     if isinstance(entry.get("signature"), dict):
         errors.extend(_check_single_input_workload_keys(op_name, entry["signature"], workloads))
     return errors

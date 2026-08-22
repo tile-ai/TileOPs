@@ -529,6 +529,26 @@ class TestWorkloadPolicy:
         entry = _make_entry(params={"dim": {"type": "int", "default": -1}})
         assert validator.check_l0("test_op", entry) == []
 
+    def test_label_repeating_its_own_dtype_fails(self, validator):
+        """A label may not spell a dtype the case id already appends."""
+        entry = _make_entry()
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["float16"], "label": "tokens-1k-fp16"},
+            {"x_shape": [8, 8192], "dtypes": ["bfloat16"], "label": "tokens-8k"},
+        ]
+        errors = validator.check_l0("test_op", entry)
+        assert any("workloads[0]" in e and "'fp16'" in e for e in errors), errors
+        assert not any("workloads[1]" in e for e in errors), errors
+
+    def test_label_may_name_a_dtype_the_row_does_not_run(self, validator):
+        """``fp8`` in a bf16 row names the kernel path, not the case's dtype."""
+        entry = _make_entry()
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["bfloat16"], "label": "prefill-fp8-cache"},
+            {"x_shape": [8, 8192], "dtypes": ["bfloat16"], "label": "decode-fp8-cache"},
+        ]
+        assert validator.check_l0("test_op", entry) == []
+
 
 class TestOutputShapeDeclaration:
     """Every output declares a shape, or the signature has shape_rules."""
