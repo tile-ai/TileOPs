@@ -1721,6 +1721,14 @@ class TestInferShapeParity:
                 _ = self.some_attr
                 return {"y": tuple(x_shape)}
 
+            # Concrete like any op: the mock self is built with ``cls.__new__``,
+            # which an abstract class refuses.
+            def _validate_dtypes(self, *args):
+                return None
+
+            def eval_roofline(self):
+                return (0, 0)
+
         entry = {
             "signature": _sig(
                 {"x": "float16"},
