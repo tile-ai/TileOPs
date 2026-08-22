@@ -3296,16 +3296,16 @@ class TestDispatchKernelInvariant:
 
 
 class TestStubOverrideGates:
-    """C6 / C7 / C9: the three contract methods must not be base stubs."""
+    """C6: the three manifest-driven methods are the concrete class's."""
 
     def test_base_stubs_detected(self, validator):
         cls = _strict_op("StubOp", init=lambda self: None)
-        errs = validator.check_c6_validate_dtypes_not_stub("StubOp", {}, cls)
-        assert any("is the Op base stub" in e for e in errs), errs
-        errs = validator.check_c7_eval_roofline_not_stub("StubOp", {}, cls)
-        assert any("is the Op base stub" in e for e in errs), errs
-        errs = validator.check_c9_infer_output_shapes_not_stub("StubOp", {}, cls)
-        assert any("is the Op base stub" in e for e in errs), errs
+        errs = validator.check_c6_contract_methods_implemented("StubOp", {}, cls)
+        assert [e.split(": ")[1].split(" is")[0] for e in errs] == [
+            "_infer_output_shapes",
+            "_validate_dtypes",
+            "eval_roofline",
+        ], errs
 
     def test_overrides_pass(self, validator):
         cls = _strict_op(
@@ -3315,30 +3315,7 @@ class TestStubOverrideGates:
             eval_roofline=lambda self: (0, 0),
             _infer_output_shapes=lambda self, *shapes: {},
         )
-        assert (
-            validator.check_c6_validate_dtypes_not_stub(
-                "OverriddenOp",
-                {},
-                cls,
-            )
-            == []
-        )
-        assert (
-            validator.check_c7_eval_roofline_not_stub(
-                "OverriddenOp",
-                {},
-                cls,
-            )
-            == []
-        )
-        assert (
-            validator.check_c9_infer_output_shapes_not_stub(
-                "OverriddenOp",
-                {},
-                cls,
-            )
-            == []
-        )
+        assert validator.check_c6_contract_methods_implemented("OverriddenOp", {}, cls) == []
 
 
 class TestStrictAdvisoryMode:

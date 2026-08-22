@@ -9,7 +9,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op
+from ..op_base import UnmanifestedOp
 
 __all__ = [
     "NSACmpFwdVarlenOp",
@@ -18,7 +18,7 @@ __all__ = [
 ]
 
 
-class NSATopkVarlenOp(Op):
+class NSATopkVarlenOp(UnmanifestedOp):
     def __init__(
         self,
         seq_num: int,
@@ -71,7 +71,7 @@ class NSATopkVarlenOp(Op):
         return self._get_kernel(tensors, q.dtype)(*tensors)
 
 
-class NSAFwdVarlenOp(Op):
+class NSAFwdVarlenOp(UnmanifestedOp):
     def __init__(
         self,
         batch: int,
@@ -124,7 +124,7 @@ class NSAFwdVarlenOp(Op):
         return self._get_kernel(tensors, q.dtype)(*tensors)
 
 
-class NSACmpFwdVarlenOp(Op):
+class NSACmpFwdVarlenOp(UnmanifestedOp):
     def __init__(
         self,
         seq_num: int,

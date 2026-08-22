@@ -167,11 +167,6 @@ class LayerNormFwdOp(Op):
         return kernel(x, weight, bias)
 
 
-# Registration happens at import time and once per qualified name, the schema is read off
-# the annotations so ``self`` cannot appear, and the instance is therefore recovered from a
-# string key: src/tileops/ops/compile_boundary.py.
-
-
 @torch.library.custom_op("top::norm_layer_norm_fwd", mutates_args=())
 def _layer_norm_fwd(
     x: torch.Tensor,

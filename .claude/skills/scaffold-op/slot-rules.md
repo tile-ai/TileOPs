@@ -244,7 +244,7 @@ design, calling conventions — live in
   binds, `self.dtype` among them — so `eval_roofline` is defined only after at least one
   `forward()`. Derive from manifest `roofline.vars` / `.flops` / `.bytes`; see
   [`roofline.md` §4.4](../../../docs/design/roofline.md#44-op-codegen). L1 stub raises
-  `NotImplementedError`; check C7 requires the override.
+  `NotImplementedError`; check C6 requires the override.
 - **Example.**
   ```python
   def eval_roofline(self) -> tuple[int, int]:

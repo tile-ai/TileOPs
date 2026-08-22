@@ -8,7 +8,7 @@ from tileops.kernels.deltanet import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op
+from .op_base import Op, UnmanifestedOp
 
 __all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetOp"]
 
@@ -344,7 +344,7 @@ class _DeltaNetFunction(torch.autograd.Function):
         return dq, dk, dv, dbeta, None, None
 
 
-class DeltaNetOp(Op):
+class DeltaNetOp(UnmanifestedOp):
     """Combined DeltaNet fwd+bwd operator with autograd support (ungated).
 
     Wraps ``DeltaNetFwdKernel`` and ``DeltaNetBwdKernel`` in a

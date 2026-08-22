@@ -23,7 +23,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op
+from ..op_base import Op, UnmanifestedOp
 from ..rope import base_freqs
 from .selection import (
     DECODE_KEYS,
@@ -552,7 +552,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         return gqa_prefill_varlen_fwd_roofline(**kwargs)
 
 
-class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
+class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
     """Packed variable-length GQA prefill. Layout: THD.
 
     ``cu_seqlens_q`` and ``cu_seqlens_kv`` describe packed per-request ranges.

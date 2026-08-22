@@ -3921,7 +3921,7 @@ def check_c8_mutated_inputs_parity(
     against; a mutation it declares is then unverified rather than wrong, so it warns.
     """
     errors: list[str] = []
-    if cls is None or _is_spec_only(entry):
+    if cls is None:
         return errors
     inputs = entry.get("signature", {}).get("inputs")
     declared = {
@@ -3978,62 +3978,25 @@ def check_c8_mutated_inputs_parity(
     return errors
 
 
-def check_c9_infer_output_shapes_not_stub(
+def check_c6_contract_methods_implemented(
     op_name: str,
     entry: dict,
     cls: type | None,
 ) -> list[str]:
-    """C9: ``_infer_output_shapes`` is not the base ``Op`` stub.
+    """The three manifest-driven methods are the concrete class's, not ``Op``'s.
 
-    The fake a compiled op traces through reads its output shapes here, so an op
-    without one cannot state what it returns without running.
+    ``Op`` declares them abstract, so a class that skips one cannot be constructed;
+    this says which one is missing, before anything tries.
     """
     if cls is None:
         return []
     from tileops.ops.op_base import Op as _OpBase
 
-    if cls._infer_output_shapes is _OpBase._infer_output_shapes:
-        return [
-            f"[stub] {op_name}: _infer_output_shapes is the Op base stub "
-            f"(not implemented by the concrete class)"
-        ]
-    return []
-
-
-def check_c6_validate_dtypes_not_stub(
-    op_name: str,
-    entry: dict,
-    cls: type | None,
-) -> list[str]:
-    """C6: ``_validate_dtypes`` is not the base ``Op`` stub."""
-    if cls is None:
-        return []
-    from tileops.ops.op_base import Op as _OpBase
-
-    if cls._validate_dtypes is _OpBase._validate_dtypes:
-        return [
-            f"[stub] {op_name}: _validate_dtypes is the Op base stub "
-            f"(not implemented by the concrete class)"
-        ]
-    return []
-
-
-def check_c7_eval_roofline_not_stub(
-    op_name: str,
-    entry: dict,
-    cls: type | None,
-) -> list[str]:
-    """C7: ``eval_roofline`` is not the base ``Op`` stub."""
-    if cls is None:
-        return []
-    from tileops.ops.op_base import Op as _OpBase
-
-    if cls.eval_roofline is _OpBase.eval_roofline:
-        return [
-            f"[stub] {op_name}: eval_roofline is the Op base stub "
-            f"(not implemented by the concrete class)"
-        ]
-    return []
+    return [
+        f"[stub] {op_name}: {name} is the Op base stub (not implemented by the concrete class)"
+        for name in ("_infer_output_shapes", "_validate_dtypes", "eval_roofline")
+        if getattr(cls, name) is getattr(_OpBase, name)
+    ]
 
 
 # Triage aids only — routing is structural (the orchestrator extends
@@ -4250,11 +4213,7 @@ def validate_manifest(
                     warnings=all_warnings,
                 )
             )
-            strict_errors.extend(check_c9_infer_output_shapes_not_stub(op_name, entry, op_cls))
-        if "dtype" in levels:
-            strict_errors.extend(check_c6_validate_dtypes_not_stub(op_name, entry, op_cls))
-        if "bench" in levels:
-            strict_errors.extend(check_c7_eval_roofline_not_stub(op_name, entry, op_cls))
+            strict_errors.extend(check_c6_contract_methods_implemented(op_name, entry, op_cls))
 
         # bench: benchmark uses manifest workloads
         if "bench" in levels:

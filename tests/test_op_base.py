@@ -201,7 +201,7 @@ class _SlottedOp(Op):
             self.builds.append((role, key))
             return _RecordingKernel(name, self._tuned)
 
-        return self.get_or_build_kernel(role, key=key, build=factory)
+        return self.get_or_build_kernel(role, (), key=key, build=factory)
 
 
 class TestGetOrBuildKernel:
@@ -254,11 +254,13 @@ class TestIterKernels:
             def populate(self):
                 self.get_or_build_kernel(
                     "pair",
+                    (),
                     key=torch.float16,
                     build=lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)),
                 )
                 self.get_or_build_kernel(
                     "entry",
+                    (),
                     key=torch.bfloat16,
                     build=lambda: Entry(_RecordingKernel("record", tuned), torch.float32),
                 )
@@ -324,7 +326,7 @@ class TestIterKernels:
                 return (delegate,)
 
         composite = CompositeOp(tuned)
-        composite.get_or_build_kernel("fwd", key=torch.float16, build=lambda: shared)
+        composite.get_or_build_kernel("fwd", (), key=torch.float16, build=lambda: shared)
         assert [k.name for k in composite.iter_kernels()] == ["shared"]
 
 

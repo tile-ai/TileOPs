@@ -23,12 +23,12 @@ from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 
-from ..op_base import Op
+from ..op_base import UnmanifestedOp
 
 __all__ = ["FusedMoe", "FusedMoeFwdOp"]
 
 
-class FusedMoe(Op):
+class FusedMoe(UnmanifestedOp):
     """Shared composite implementation for routed MoE FFN ops.
 
     The concrete manifest identity (`FusedMoeFwdOp`) subclasses this; the

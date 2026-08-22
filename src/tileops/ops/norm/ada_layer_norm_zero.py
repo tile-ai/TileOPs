@@ -149,11 +149,6 @@ class AdaLayerNormZeroFwdOp(Op):
         return kernel(x, scale, shift, gate)
 
 
-# Registration happens at import time and once per qualified name, the schema is read off
-# the annotations so ``self`` cannot appear, and the instance is therefore recovered from a
-# string key: src/tileops/ops/compile_boundary.py.
-
-
 @torch.library.custom_op("top::norm_ada_layer_norm_zero_fwd", mutates_args=())
 def _norm_ada_layer_norm_zero_fwd(
     x: torch.Tensor,

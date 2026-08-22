@@ -17,7 +17,7 @@ from tileops.kernels.gated_deltanet_recurrence import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op
+from .op_base import Op, UnmanifestedOp
 
 __all__ = [
     "GatedDeltaNetBHTDFwdOp",
@@ -818,7 +818,7 @@ class _GatedDeltaNetFunction(torch.autograd.Function):
         return dq, dk, dv, dg, dbeta, None, None
 
 
-class GatedDeltaNetOp(Op):
+class GatedDeltaNetOp(UnmanifestedOp):
     """Combined Gated DeltaNet fwd+bwd operator with autograd support.
 
     Wraps ``GatedDeltaNetFwdKernel`` and ``GatedDeltaNetBwdKernel`` in a

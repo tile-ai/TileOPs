@@ -26,7 +26,7 @@ from tileops.kernels.pool import (
 from tileops.kernels.pool.common import pool_output_dim
 
 from .compile_boundary import get_instance
-from .op_base import Op
+from .op_base import Op, UnmanifestedOp
 
 __all__ = [
     "AdaptiveAvgPool2dFwdOp",
@@ -119,7 +119,7 @@ def validate_pool_params(
         raise ValueError("divisor_override must not be zero")
 
 
-class MeanPoolingForwardOp(Op):
+class MeanPoolingForwardOp(UnmanifestedOp):
     def __init__(
         self,
         batch_size: int,
