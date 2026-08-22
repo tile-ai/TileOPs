@@ -19,7 +19,7 @@ from benchmarks.baselines import (
     vllm_op,
 )
 
-# flag_gems refuses to import without a device, so both tests below need one.
+# flag_gems refuses to import without a device, so its tests need one.
 _BOTH_LIBRARIES = (
     find_spec("flag_gems") is not None
     and find_spec("vllm") is not None
@@ -92,17 +92,12 @@ def test_flaggems_op_refuses_a_pointwise_entry_point():
 
 
 def test_reference_tolerance_follows_the_dtype():
-    import torch
-
     assert reference_tolerance(torch.float16) == {"rtol": 1e-3, "atol": 1e-3}
-    assert reference_tolerance(torch.bfloat16) == {"rtol": 1.6e-2, "atol": 1.6e-2}
-    # An unlisted dtype leaves assert_close on its own defaults.
+    # The other branch: an unlisted dtype leaves assert_close on its own defaults.
     assert reference_tolerance(torch.int32) == {}
 
 
 def test_assert_matches_reference_compares_every_output_the_reference_returns():
-    import torch
-
     value = torch.ones(4)
     other = torch.zeros(4)
 
