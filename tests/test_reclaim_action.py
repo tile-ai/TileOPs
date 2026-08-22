@@ -21,6 +21,7 @@ runner or the Tilelang runtime. Must stay fast and hermetic.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -279,3 +280,237 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
         s for s in gpu_job["steps"] if (s.get("name") or "").startswith("Checkout trusted actions")
     )
     assert "needs.security-policy.outputs.is_fork" in str(ref_step["with"]["ref"])
+
+
+# gpu-smoke targeted test selection
+
+
+def _policy_script() -> str:
+    import yaml
+
+    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
+    policy_job = wf["jobs"]["security-policy"]
+    step = next(s for s in policy_job["steps"] if s.get("id") == "policy")
+    return step["run"]
+
+
+def _targeted_arm_patterns(script: str) -> str:
+    """The `case` arm that turns a changed test file into a targeted pytest target."""
+    import re
+
+    arms = re.findall(r"^\s*(tests/ops[^)\n]*)\)\s*$", script, re.M)
+    assert len(arms) == 1, f"expected one tests/ops case arm, found {arms}"
+    return arms[0]
+
+
+def _case_matches(patterns: str, path: str) -> bool:
+    proc = subprocess.run(
+        ["bash", "-c", f'case "$1" in {patterns}) exit 0 ;; *) exit 1 ;; esac', "_", path],
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def test_every_op_test_file_reaches_the_targeted_arm() -> None:
+    """A file the arm misses falls through to the catch-all and runs the whole suite,
+    and the catch-all's reason reads like policy rather than a miss."""
+    patterns = _targeted_arm_patterns(_policy_script())
+    op_tests = sorted(p for p in (REPO_ROOT / "tests" / "ops").rglob("test_*.py"))
+    assert op_tests, "expected test files under tests/ops"
+
+    unmatched = [
+        str(p.relative_to(REPO_ROOT))
+        for p in op_tests
+        if not _case_matches(patterns, str(p.relative_to(REPO_ROOT)))
+    ]
+    assert not unmatched, (
+        f"case arm '{patterns}' does not select these op tests, so changing one of them "
+        f"runs the whole suite instead: {unmatched}"
+    )
+
+
+def test_fork_fast_path_accepts_the_same_op_tests() -> None:
+    """Otherwise a fork PR touching a nested op test is classified "outside the
+    fast-path policy" rather than as the test-only change it is."""
+    import re
+
+    script = _policy_script()
+    # The arm itself, not the whole script: a substring search also matches the
+    # pattern quoted in a comment, and would pass over an arm that dropped it. The
+    # `;;` requirement is what keeps a comment shaped like an arm from matching.
+    fork_arms = [
+        a
+        for a in re.findall(
+            r"^[ \t]*([^\s)#][^\s)]*ISSUE_TEMPLATE[^)\n]*)\)\n(?:.*\n)*?[ \t]*;;\s*$",
+            script,
+            re.M,
+        )
+        if "tests/ops" in a
+    ]
+    assert len(fork_arms) == 1, f"expected one fork fast-path arm, found {fork_arms}"
+    listed = fork_arms[0].split("|")
+
+    for pattern in _targeted_arm_patterns(script).split("|"):
+        assert pattern in listed, (
+            f"fork fast-path arm is missing '{pattern}'; the two arms must describe "
+            "the same set of op test files"
+        )
+
+
+# preflight manifest gate
+
+PREFLIGHT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "preflight.yml"
+
+
+def test_manifest_gate_covers_every_manifest_file() -> None:
+    """`validate-manifest` is the only job that runs the validator and is gated on
+    this arm, so a file the arm misses leaves no failing check to read — just an
+    absent one."""
+    import re
+
+    import yaml
+
+    wf = yaml.safe_load(PREFLIGHT_WORKFLOW.read_text())
+    step = next(
+        s for s in wf["jobs"]["detect-changes"]["steps"] if "manifest=false" in (s.get("run") or "")
+    )
+    arms = re.findall(r"^\s*(src/tileops/manifest[^)\n]*)\)\s*$", step["run"], re.M)
+    assert len(arms) == 1, f"expected one manifest case arm, found {arms}"
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "src/tileops/manifest"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert tracked, "expected tracked files under src/tileops/manifest"
+
+    ungated = [f for f in tracked if not _case_matches(arms[0], f)]
+    assert not ungated, (
+        f"case arm '{arms[0]}' does not gate these manifest files, so changing one of "
+        f"them skips validate-manifest: {ungated}"
+    )
+
+
+# runner maintenance vs nightly
+
+MAINTENANCE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "runner-maintenance.yml"
+NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
+
+
+def test_reclaim_defers_to_an_in_flight_nightly() -> None:
+    """A concurrent trim deletes work nightly is doing: `sentinel-repair` cannot tell
+    an autotune run mid-write from a crashed one. Nightly may run to its declared
+    ceiling, so the separation has to be a guard, and it has to fail closed."""
+    import yaml
+
+    maint = yaml.safe_load(MAINTENANCE_WORKFLOW.read_text())
+    nightly = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())
+    # `on` is the YAML 1.1 boolean `true` once parsed.
+    maint_cron = (maint.get(True) or maint["on"])["schedule"][0]["cron"]
+    nightly_cron = (nightly.get(True) or nightly["on"])["schedule"][0]["cron"]
+    assert maint_cron != nightly_cron, "reclaim and nightly must not share a cron"
+
+    guard = next(s for s in maint["jobs"]["nightly-guard"]["steps"] if s.get("id") == "check")
+    reclaim = maint["jobs"]["reclaim-disk"]
+    assert "nightly-guard" in str(reclaim["needs"])
+    assert "nightly_active" in reclaim["if"]
+    # The manual dispatch is the escape hatch for a disk-full runner, so it runs
+    # anyway — but not silently.
+    assert "github.event_name != 'schedule'" in reclaim["if"]
+    assert "::warning::manual dispatch overrides the nightly guard" in guard["run"]
+
+    assert 'nightly_active=true" >> "$GITHUB_OUTPUT"' in guard["run"], (
+        "guard must be able to report an active nightly"
+    )
+    assert '-z "$active"' in guard["run"], "guard must fail closed when the query fails"
+
+
+# gpu-smoke required-check evaluation
+
+
+def _required_check_loop() -> str:
+    """The loop that turns preflight check-runs into pending / failed / satisfied."""
+    script = _policy_script_of("ci-prereq", "check")
+    start = script.index('for check_name in "${required_checks[@]}"; do')
+    # YAML strips the block scalar's common indentation, so the loop's own
+    # indentation is whatever survives, not the column it occupies in the file.
+    indent = script[:start].rpartition("\n")[2]
+    end = script.index(f"\n{indent}done", start)
+    return script[start:end]
+
+
+def _policy_script_of(job: str, step_id: str) -> str:
+    import yaml
+
+    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
+    step = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == step_id)
+    return step["run"]
+
+
+def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
+    """Run the workflow's own loop over synthetic check-runs."""
+    import json
+
+    checks_json = json.dumps(
+        {"check_runs": [{"name": n, "status": s, "conclusion": c, "id": i} for n, s, c, i in runs]}
+    )
+    # Every verdict in the loop comes out of jq, so a jq that is missing or errors
+    # yields empty strings — and empty reads as "no success, not completed", a
+    # plausible-looking pending rather than a failure. set -e plus the guard below
+    # turn that into an error instead of a wrong answer.
+    # check_ever_succeeded is the workflow's one call out to the API; stubbing it
+    # against the same synthetic runs keeps the loop text under test verbatim.
+    harness = f"""
+    set -euo pipefail
+    all_runs={json.dumps(checks_json)}
+    latest_checks=$(echo "$all_runs" | jq '.check_runs | group_by(.name) | map(max_by(.id))')
+    [[ -n "$latest_checks" ]]
+    check_ever_succeeded() {{
+      local hits
+      hits=$(echo "$all_runs" | jq -r --arg name "$1" \
+        '[.check_runs[] | select(.name == $name and .conclusion == "success")] | length')
+      [[ -n "$hits" && "$hits" -gt 0 ]]
+    }}
+    required_checks=(pre-commit gitleaks actionlint)
+    pending="false"
+    failed=""
+    {_required_check_loop()}
+    done
+    echo "$pending $failed"
+    """
+    out = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, check=True
+    ).stdout.split()
+    return out[0], (out[1] if len(out) > 1 else "")
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="executes the workflow's jq calls")
+def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
+    """Blocking on a skipped run burned the 900s deadline and skipped GPU smoke with
+    "Timed out" in the log, so a PR could reach ready with GPU smoke never having
+    run. A skip with no prior success must still fail closed."""
+    ok = [("pre-commit", "completed", "success", 10), ("gitleaks", "completed", "success", 11)]
+    third = ("actionlint", "completed", "success", 12)
+
+    skips = [
+        ("pre-commit", "completed", "skipped", 20),
+        ("gitleaks", "completed", "skipped", 21),
+        ("actionlint", "completed", "skipped", 22),
+    ]
+    assert _evaluate_checks([*ok, third, *skips]) == ("false", "")
+    assert _evaluate_checks(skips) == ("true", "")
+
+    assert _evaluate_checks(ok) == ("true", "")  # actionlint absent
+    assert _evaluate_checks([("pre-commit", "in_progress", "", 20), ok[1], third]) == ("true", "")
+    assert _evaluate_checks([("pre-commit", "completed", "failure", 20), ok[1], third]) == (
+        "false",
+        "pre-commit",
+    )
+    # A newer failure is the current state of a required check; an older success on
+    # the same SHA must not talk the gate into spending GPU time.
+    assert _evaluate_checks([*ok, third, ("pre-commit", "completed", "failure", 20)]) == (
+        "false",
+        "pre-commit",
+    )

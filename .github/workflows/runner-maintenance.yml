@@ -1,30 +1,78 @@
 name: Runner Maintenance
 
-# Heavy disk reclamation for the self-hosted runner. Runs once per day at
-# 18:00 UTC (02:00 Asia/Shanghai) so it lands in an off-peak window. Per-PR
-# `gpu-smoke` jobs only attempt the heavier reclaim path when disk is under
-# pressure, and still rate-limit the expensive cache-trim pass via a
-# cooldown; this scheduled job forces the full cleanup pass on days with
-# little PR traffic.
+# Forces the full disk reclamation that per-PR `gpu-smoke` only attempts under
+# disk pressure, for days with little PR traffic. 22:00 UTC is 06:00
+# Asia/Shanghai: off-peak, and past the observed tail of the 18:00 nightly.
 #
-# GPU smoke and nightly share the persistent cache tree bind-mounted at
-# `/ci-cache/*` inside the runner container.
+# `force-reclaim` bypasses the cooldown and the free-space threshold, and the
+# trim is destructive in a way a concurrent writer cannot survive:
+# `sentinel-repair` removes any atomic cache subdir lacking its sentinel, and an
+# autotune run mid-write looks exactly like a crashed one. Nightly may run to
+# its 380-minute ceiling, so the clock alone cannot keep them apart.
 
 on:
   schedule:
-    - cron: "0 18 * * *"
+    - cron: "0 22 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: runner-maintenance
   cancel-in-progress: false
 
 jobs:
-  reclaim-disk:
+  # GitHub-hosted: answering this must not occupy the pool it protects, and the
+  # self-hosted image is not assumed to carry `gh`.
+  nightly-guard:
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    runs-on: ubuntu-latest
+    outputs:
+      nightly_active: ${{ steps.check.outputs.nightly_active }}
+    steps:
+      - name: Check for an in-flight nightly run
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Filtered client-side: a `status=` filter needs every non-terminal state
+          # spelled out, and one wrong value turns a 422 into a permanent skip.
+          active=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?per_page=20" \
+            --jq '[.workflow_runs[] | select(.status != "completed")] | length' || echo "")
+
+          # Fail closed: a skipped reclaim costs a day, a concurrent one costs the
+          # nightly run.
+          if [[ -z "$active" ]]; then
+            echo "::warning::could not query nightly runs; assuming one is in flight"
+            echo "nightly_active=true" >> "$GITHUB_OUTPUT"
+          elif (( active > 0 )); then
+            echo "$active nightly run(s) not completed; deferring reclaim to the next schedule."
+            echo "nightly_active=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No nightly run in flight."
+            echo "nightly_active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # A manual dispatch runs regardless — it is the remedy for a full disk —
+          # but the operator should see what it is about to run alongside.
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "::warning::manual dispatch overrides the nightly guard; the cache trim may hit an in-flight nightly run"
+          fi
+
+  reclaim-disk:
+    needs: nightly-guard
+    # A manual dispatch is the escape hatch for a disk-full runner, so the guard
+    # only gates the scheduled run.
+    if: >-
+      ${{ github.repository == 'tile-ai/TileOPs'
+          && (github.event_name != 'schedule'
+              || needs.nightly-guard.outputs.nightly_active != 'true') }}
     # `shared` (not `fork`) keeps maintenance on the resident shared-cache runners; the
     # destructive autotuner age-trim must never run against a fork pool's overlay cache.
     runs-on: [self-hosted, tile-ops, shared]

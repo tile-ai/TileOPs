@@ -451,8 +451,6 @@ jobs:
   packaging:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [op_test]
-    permissions:
-      contents: write
     runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
@@ -521,10 +519,3 @@ jobs:
             packaging_smoke.xml
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Publish wheel to GitHub Release (tag only)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.whl
-          fail_on_unmatched_files: true
