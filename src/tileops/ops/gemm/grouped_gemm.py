@@ -10,7 +10,7 @@ from tileops.kernels.grouped_gemm import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
-from .op_base import Op
+from ..op_base import Op
 
 __all__ = ["GroupedGemmFwdOp"]
 

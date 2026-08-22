@@ -1,9 +1,10 @@
-# Batched GEMM family.
+# Batched GEMM. A shard of the gemm family, kept in its own file because the
+# batched entries share a shape contract the dense ones do not.
 #
 # BmmFwdOp: strict 3D-3D batched matrix multiplication
 BmmFwdOp:
   ref_api: "torch.bmm"
-  family: bmm
+  family: gemm
   status: implemented
 
   signature:
@@ -35,7 +36,7 @@ BmmFwdOp:
 
   source:
     kernel: tileops/kernels/bmm.py
-    op: tileops/ops/bmm.py
+    op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
     bench_manifest_driven: true
@@ -47,7 +48,7 @@ BmmFwdOp:
 # mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
 BmmFp8KNFwdOp:
   ref_api: "none"
-  family: bmm
+  family: gemm
   status: implemented
 
   signature:
@@ -87,7 +88,7 @@ BmmFp8KNFwdOp:
 
   source:
     kernel: tileops/kernels/bmm.py
-    op: tileops/ops/bmm.py
+    op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
     bench_manifest_driven: true
@@ -98,7 +99,7 @@ BmmFp8NKFwdOp:
   # K innermost, the order the fp8-TN kernel reads, so b arrives without a
   # transpose. Same kernel as BmmFp8KNFwdOp; only b's memory order differs.
   ref_api: "none"
-  family: bmm
+  family: gemm
   status: implemented
 
   signature:
@@ -138,7 +139,7 @@ BmmFp8NKFwdOp:
 
   source:
     kernel: tileops/kernels/bmm.py
-    op: tileops/ops/bmm.py
+    op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
     bench_manifest_driven: true

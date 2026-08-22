@@ -7,7 +7,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba import DaCumsumFwdKernel
 from tileops.manifest import load_manifest
 
-from .op_base import Op
+from ..op_base import Op
 
 __all__ = ["DaCumsumFwdOp"]
 

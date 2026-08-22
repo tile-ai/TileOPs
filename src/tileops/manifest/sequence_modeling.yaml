@@ -47,7 +47,7 @@ EngramGateConvFwdOp:
     kernel: tileops/kernels/engram/engram_fwd.py
     kernel_map:
       engram_gate_conv_fwd: EngramGateConvFwdKernel
-    op: tileops/ops/engram.py
+    op: tileops/ops/sequence_modeling/engram.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
@@ -107,7 +107,7 @@ EngramGateConvBwdOp:
     kernel: tileops/kernels/engram/engram_bwd.py
     kernel_map:
       engram_gate_conv_bwd: EngramGateConvBwdKernel
-    op: tileops/ops/engram.py
+    op: tileops/ops/sequence_modeling/engram.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
@@ -159,7 +159,7 @@ EngramDecodeFwdOp:
     kernel: tileops/kernels/engram/engram_decode.py
     kernel_map:
       engram_decode: EngramDecodeKernel
-    op: tileops/ops/engram_decode.py
+    op: tileops/ops/sequence_modeling/engram_decode.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
     bench_manifest_driven: true
@@ -233,7 +233,7 @@ MHCPreFwdOp:
     kernel: tileops/kernels/mhc/mhc_pre.py
     kernel_map:
       mhc_pre_kernel: MHCPreKernel
-    op: tileops/ops/mhc.py
+    op: tileops/ops/sequence_modeling/mhc.py
     test: tests/ops/test_mhc.py
     bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: true
@@ -268,7 +268,7 @@ MHCPostFwdOp:
     kernel: tileops/kernels/mhc/mhc_post.py
     kernel_map:
       mhc_post_kernel: MHCPostKernel
-    op: tileops/ops/mhc.py
+    op: tileops/ops/sequence_modeling/mhc.py
     test: tests/ops/test_mhc.py
     bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: true

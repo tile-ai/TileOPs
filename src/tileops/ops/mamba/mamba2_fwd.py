@@ -31,9 +31,9 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
+from ..op_base import Op
 from .cb_producer import CBProducerFwdOp
 from .da_cumsum import DaCumsumFwdOp
-from .op_base import Op
 from .ssd_chunk_scan import SSDChunkScanFwdOp
 from .ssd_chunk_state import SSDChunkStateFwdOp
 from .ssd_state_passing import SSDStatePassingFwdOp

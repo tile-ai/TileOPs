@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmKernel
-from tileops.ops.grouped_gemm import GroupedGemmFwdOp
+from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.utils import get_sm_version
 from workloads.grouped_gemm import (
     GroupedGemmWorkload,

@@ -152,7 +152,7 @@ def test_moe_unpermute_serves_two_dtypes_from_one_instance():
 
 @pytest.mark.smoke
 def test_cb_producer_serves_two_dtypes_from_one_instance():
-    from tileops.ops.cb_producer import CBProducerFwdOp
+    from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
     op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state)

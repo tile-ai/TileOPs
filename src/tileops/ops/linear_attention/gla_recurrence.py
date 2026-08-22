@@ -2,33 +2,20 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.deltanet_recurrence import (
-    DeltaNetDecodeFP32Kernel,
-    DeltaNetDecodeKernel,
-    DeltaNetDecodeRawCudaFlaStyleKernel,
-)
+from tileops.kernels.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op
+from ..op_base import Op
 
-__all__ = ["DeltaNetDecodeFwdOp"]
-
-#: Implementations of the DeltaNet decode slot.
-DELTANET_DECODE_KEYS = (
-    "DeltaNetDecodeFP32Kernel",
-    "DeltaNetDecodeRawCudaFlaStyleKernel",
-    "DeltaNetDecodeKernel",
-)
+__all__ = ["GLADecodeFwdOp"]
 
 
-class DeltaNetDecodeFwdOp(Op):
-    """DeltaNet decode (single-step recurrence, ungated).
+class GLADecodeFwdOp(Op):
+    """GLA (Gated Linear Attention) decode (single-step recurrence).
 
-    Computes one step of the delta rule (no gate):
-        v_new = beta * (v - S @ k)
-        o     = S @ q + (q . k) * v_new
-        S_new = S + outer(k, v_new)
+    Computes one step of the gated linear attention recurrence:
+        S_new = diag(exp(gk)) @ S + outer(k, v)
+        o     = scale * q^T @ S_new
 
     Layout: BHD (batch, head, dim).
     Supports float32, float16, and bfloat16 with fp32 accumulation.
@@ -39,6 +26,7 @@ class DeltaNetDecodeFwdOp(Op):
 
     def __init__(
         self,
+        scale: float = -1.0,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -46,19 +34,18 @@ class DeltaNetDecodeFwdOp(Op):
         self.heads = None
         self.dim_k = None
         self.dim_v = None
+        self.scale = scale
         self.dtype = None
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
         self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "DeltaNetDecodeKernel": DeltaNetDecodeKernel,
-            "DeltaNetDecodeFP32Kernel": DeltaNetDecodeFP32Kernel,
-            "DeltaNetDecodeRawCudaFlaStyleKernel": DeltaNetDecodeRawCudaFlaStyleKernel,
+            "GLADecodeKernel": GLADecodeKernel,
+            "GLADecodeFP32Kernel": GLADecodeFP32Kernel,
         }
 
     def _get_kernel(
@@ -71,33 +58,34 @@ class DeltaNetDecodeFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
-        call = DeltaNetDecodeCall(
-            batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=self.tune
-        )
-        chosen = self.select_kernel_key(DELTANET_DECODE_KEYS, call)
+        key = (batch, heads, dim_k, dim_v, self.scale, dtype, device_index, self.tune)
 
         def build() -> Kernel:
-            return self.kernel_map[chosen](
+            if dtype == torch.float32:
+                kernel_cls = self.kernel_map["GLADecodeFP32Kernel"]
+            else:
+                kernel_cls = self.kernel_map["GLADecodeKernel"]
+            return kernel_cls(
                 batch,
                 heads,
                 dim_k,
                 dim_v,
+                scale=self.scale,
                 dtype=Kernel.dtype_to_str(dtype),
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel(chosen, inputs, key=key, build=build)
+        return self.get_or_build_kernel("GLADecodeKernel", inputs, key=key, build=build)
 
     def _infer_output_shapes(
         self,
         q_shape: tuple[int, ...],
         k_shape: tuple[int, ...],
         v_shape: tuple[int, ...],
-        beta_shape: tuple[int, ...],
+        gk_shape: tuple[int, ...],
         state_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        del k_shape, beta_shape
+        del k_shape, gk_shape
         return {
             "o": (q_shape[0], q_shape[1], v_shape[-1]),
             "new_state": state_shape,
@@ -108,13 +96,13 @@ class DeltaNetDecodeFwdOp(Op):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        beta: torch.Tensor,
+        gk: torch.Tensor,
         state: torch.Tensor,
     ) -> None:
         dtype = q.dtype
         if dtype not in (torch.float32, torch.float16, torch.bfloat16):
             raise ValueError(f"Unsupported dtype: {dtype}")
-        for name, tensor in (("q", q), ("k", k), ("v", v), ("beta", beta), ("state", state)):
+        for name, tensor in (("q", q), ("k", k), ("v", v), ("gk", gk), ("state", state)):
             if tensor.dtype != dtype:
                 raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
 
@@ -123,7 +111,7 @@ class DeltaNetDecodeFwdOp(Op):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        beta: torch.Tensor,
+        gk: torch.Tensor,
         state: torch.Tensor,
     ) -> None:
         if q.ndim != 3:
@@ -134,27 +122,26 @@ class DeltaNetDecodeFwdOp(Op):
         dim_v = v.shape[2]
         q_shape = (batch, heads, dim_k)
         v_shape = (batch, heads, dim_v)
-        beta_shape = (batch, heads)
         state_shape = (batch, heads, dim_k, dim_v)
         expected_shapes = (
             ("q", q, q_shape),
             ("k", k, q_shape),
             ("v", v, v_shape),
-            ("beta", beta, beta_shape),
+            ("gk", gk, q_shape),
             ("state", state, state_shape),
         )
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
                 raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
-        if not all(tensor.is_cuda for tensor in (q, k, v, beta, state)):
-            raise ValueError("q, k, v, beta, and state must be CUDA tensors")
+        if not all(tensor.is_cuda for tensor in (q, k, v, gk, state)):
+            raise ValueError("q, k, v, gk, and state must be CUDA tensors")
         self.batch = batch
         self.heads = heads
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = q.dtype
         self.kernel = self._get_kernel(
-            (q, k, v, beta, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
+            (q, k, v, gk, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
         )
 
     def _validate_output_shapes(
@@ -172,40 +159,20 @@ class DeltaNetDecodeFwdOp(Op):
             )
 
     def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import deltanet_decode_roofline
+        from tileops.perf.formulas import gla_decode_roofline
 
-        return deltanet_decode_roofline(self)
+        return gla_decode_roofline(self)
 
     def forward(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        beta: torch.Tensor,
+        gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        sig = (
-            q.shape,
-            k.shape,
-            v.shape,
-            beta.shape,
-            state.shape,
-            q.dtype,
-            k.dtype,
-            v.dtype,
-            beta.dtype,
-            state.dtype,
-            q.device,
-            k.device,
-            v.device,
-            beta.device,
-            state.device,
-            getattr(self, "tune", None),
-        )
-        if sig != getattr(self, "_active_sig", None):
-            self._validate_dtypes(q, k, v, beta, state)
-            self._validate_shapes(q, k, v, beta, state)
-            self._active_sig = sig
-        o, new_state = self.kernel(q, k, v, beta, state)
+        self._validate_dtypes(q, k, v, gk, state)
+        self._validate_shapes(q, k, v, gk, state)
+        o, new_state = self.kernel(q, k, v, gk, state)
         self._validate_output_shapes(o, new_state)
         return o, new_state

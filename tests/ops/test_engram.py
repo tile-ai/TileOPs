@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.engram_decode import EngramDecodeFwdOp
+from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
+from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from workloads.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
