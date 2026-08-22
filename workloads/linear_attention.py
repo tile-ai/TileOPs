@@ -299,9 +299,10 @@ class GLAChunkwiseWorkload(WorkloadBase):
         k = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
         v = torch.randn(B, T, H, V, device="cuda", dtype=self.dtype) * 0.1
         g = -torch.rand(B, T, H, K, device="cuda", dtype=self.dtype)
-        # Absent means None: the recurrence then starts from zeros.
+        # Absent means None: the recurrence then starts from zeros. Present, it is
+        # fp32, the dtype the recurrence carries the state in.
         initial_state = (
-            torch.randn(B, H, K, V, device="cuda", dtype=self.dtype) * 0.1
+            torch.randn(B, H, K, V, device="cuda", dtype=torch.float32) * 0.1
             if self.has_initial_state
             else None
         )

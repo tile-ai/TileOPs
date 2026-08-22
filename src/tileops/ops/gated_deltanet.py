@@ -17,7 +17,7 @@ from tileops.kernels.gated_deltanet_recurrence import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op, UnmanifestedOp
+from .op_base import Op, UnmanifestedOp, check_tensor_shape
 
 __all__ = [
     "GatedDeltaNetBHTDFwdOp",
@@ -788,6 +788,8 @@ class GatedDeltaNetBwdOp(Op):
         batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
             q, k, v, g, beta, self.chunk_size, do=do
         )
+        self._validate_dtypes(do, q, k, v, g, beta, S)
+        check_tensor_shape("S", S, (batch, heads, seq_len // self.chunk_size + 1, dim_k, dim_v))
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len

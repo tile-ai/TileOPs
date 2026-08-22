@@ -69,7 +69,6 @@ def test_gla_fwd(
     fwd_op = GLAFwdOp(
         chunk_size=BC,
         scale=scale,
-        output_final_state=False,
         tune=tune,
     )
     op_o, _ = fwd_op.forward(q, k, v, g)

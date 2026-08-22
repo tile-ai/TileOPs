@@ -8,7 +8,7 @@ from tileops.kernels.deltanet import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op, UnmanifestedOp
+from .op_base import Op, UnmanifestedOp, check_tensor_shape
 
 __all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetOp"]
 
@@ -104,10 +104,8 @@ class DeltaNetFwdOp(Op):
             raise ValueError("v must have shape [batch, heads, seq_len, dim_v]")
         if beta.shape != (batch, heads, seq_len):
             raise ValueError("beta must have shape [batch, heads, seq_len]")
+        self._validate_dtypes(q, k, v, beta)
         dtype = q.dtype
-        for name, tensor in (("k", k), ("v", v), ("beta", beta)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
         if seq_len % self.chunk_size != 0:
             raise ValueError(
                 f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
@@ -229,15 +227,9 @@ class DeltaNetBwdOp(Op):
             ),
         )
 
-    def _bind_from_inputs(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> None:
+    def _bind_from_inputs(self, inputs: "tuple[torch.Tensor, ...]") -> None:
+        """Validate the ten declared inputs, then bind the kernel they select."""
+        do, q, k, v, beta, S, Aw, Au, w, u = inputs
         if not all(tensor.is_cuda for tensor in (do, q, k, v, beta)):
             raise ValueError("do, q, k, v, and beta must be CUDA tensors")
         if q.ndim != 4:
@@ -252,14 +244,18 @@ class DeltaNetBwdOp(Op):
             raise ValueError("do must have shape [batch, heads, seq_len, dim_v]")
         if beta.shape != (batch, heads, seq_len):
             raise ValueError("beta must have shape [batch, heads, seq_len]")
+        self._validate_dtypes(*inputs)
         dtype = q.dtype
-        for name, tensor in (("do", do), ("k", k), ("v", v), ("beta", beta)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
         if seq_len % self.chunk_size != 0:
             raise ValueError(
                 f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
             )
+        chunk = self.chunk_size
+        check_tensor_shape("S", S, (batch, heads, seq_len // chunk + 1, dim_k, dim_v))
+        check_tensor_shape("Aw", Aw, (batch, heads, seq_len, chunk))
+        check_tensor_shape("Au", Au, (batch, heads, seq_len, chunk))
+        check_tensor_shape("w", w, (batch, heads, seq_len, dim_k))
+        check_tensor_shape("u", u, (batch, heads, seq_len, dim_v))
 
         self.batch = batch
         self.heads = heads
@@ -322,7 +318,7 @@ class DeltaNetBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        self._bind_from_inputs((do, q, k, v, beta, S, Aw, Au, w, u), do, q, k, v, beta)
+        self._bind_from_inputs((do, q, k, v, beta, S, Aw, Au, w, u))
         dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta
 

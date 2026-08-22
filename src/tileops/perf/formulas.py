@@ -375,43 +375,55 @@ def _chunkwise_dims_bound(data: dict) -> tuple[int, int, int, int, int]:
 def deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for the chunked DeltaNet training forward, head-major.
 
-    Two state matmuls per token, and the tensors one chunk pass moves: q, k, v and
-    beta in, the output out.
+    Two state matmuls per token. In: q, k, v, beta. Out: the output, the four chunk
+    buffers the backward reads, and the per-chunk state, which is fp32 whatever the
+    inputs are.
     """
     data = _shape_or_attrs(op, kwargs)
     batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
+    chunk = int(data.get("chunk_size", 64))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     flops = 2 * batch * heads * seq_len * dim_k * dim_v
-    nbytes = batch * heads * seq_len * (2 * dim_k + 2 * dim_v + 1) * elem_bytes
+    per_token = (2 * dim_k + dim_v + 1) + (dim_v + 2 * chunk + dim_k + dim_v)
+    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
+    nbytes = batch * heads * seq_len * per_token * elem_bytes + state * 4
     return int(flops), int(nbytes)
 
 
 def deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for the chunked DeltaNet backward, head-major.
 
-    Twice the forward's matmul work, and one more gradient tensor in and out.
+    Twice the forward's matmul work. In: do, q, k, v, beta and the chunk buffers the
+    forward saved, the fp32 state among them. Out: the four gradients.
     """
     data = _shape_or_attrs(op, kwargs)
     batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
+    chunk = int(data.get("chunk_size", 64))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    nbytes = batch * heads * seq_len * (4 * dim_k + 3 * dim_v + 3) * elem_bytes
+    per_token = (3 * dim_k + 3 * dim_v + 1 + 2 * chunk) + (2 * dim_k + dim_v + 1)
+    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
+    nbytes = batch * heads * seq_len * per_token * elem_bytes + state * 4
     return int(flops), int(nbytes)
 
 
 def gated_deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for the Gated DeltaNet backward, head-major.
 
-    The gate adds one tensor in and one gradient out over the ungated backward.
+    The gate adds one tensor in and one gradient out over the ungated backward. The
+    per-chunk state the forward saved is read in the input dtype.
     """
     data = _shape_or_attrs(op, kwargs)
     batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
+    chunk = int(data.get("chunk_size", 64))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    nbytes = batch * heads * seq_len * (4 * dim_k + 3 * dim_v + 4) * elem_bytes
+    tokens = batch * heads * seq_len
+    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
+    nbytes = (tokens * (4 * dim_k + 3 * dim_v + 4) + state) * elem_bytes
     return int(flops), int(nbytes)
 
 
@@ -422,18 +434,31 @@ def gla_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     flops = 2 * batch * heads * seq_len * dim_k * dim_v
-    nbytes = batch * seq_len * heads * (2 * dim_k + 2 * dim_v) * elem_bytes
+    tokens = batch * seq_len * heads
+    # in: q, k, v, g; out: o and the fp32 final state.
+    nbytes = tokens * (3 * dim_k + 2 * dim_v) * elem_bytes + batch * heads * dim_k * dim_v * 4
     return int(flops), int(nbytes)
 
 
 def gla_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked GLA backward, token-major: twice the forward's matmuls."""
+    """Roofline for the chunked GLA backward, token-major: twice the forward's matmuls.
+
+    In: q, k, v, g, do in the input dtype, plus the fp32 per-chunk states and the
+    final-state gradient. Out: four gradients, which the kernel accumulates in fp32.
+    """
     data = _shape_or_attrs(op, kwargs)
     batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bshd(data)
+    chunk = int(data.get("chunk_size", 64))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    nbytes = batch * seq_len * heads * (4 * dim_k + 3 * dim_v) * elem_bytes
+    tokens = batch * seq_len * heads
+    states = batch * heads * dim_k * dim_v * (seq_len // chunk + 2)
+    nbytes = (
+        tokens * (3 * dim_k + 2 * dim_v) * elem_bytes
+        + tokens * (3 * dim_k + dim_v) * 4
+        + states * 4
+    )
     return int(flops), int(nbytes)
 
 

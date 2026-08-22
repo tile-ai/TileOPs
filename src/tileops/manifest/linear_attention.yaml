@@ -267,11 +267,6 @@ GLADecodeFwdOp:
     bench: benchmarks/ops/bench_gla_recurrence.py
     bench_manifest_driven: true
 
-# The remaining code-present chunkwise/training Linear Attention surfaces are
-# intentionally spec-only for this pass. They expose backward-only artifacts
-# (Aw/Au/w/u/h) or optional initial/final state choices that need a separate
-# release-facing wrapper before they should count as implemented manifest ops.
-
 GatedDeltaNetBHTDFwdOp:
   # Training forward in head-major (BHTD) order. GatedDeltaNetBwdOp reads the S
   # this returns, in this order; token-major callers want GatedDeltaNetBTHDFwdOp.
@@ -484,24 +479,22 @@ GLAFwdOp:
       v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
       g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
       # The state a caller may seed the recurrence with; not passing it starts
-      # from zeros.
-      initial_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]", optional: true}
+      # from zeros. Same dtype as final_state, so one call's state feeds the next.
+      initial_state: {dtype: "float32", shape: "[B, H, DK, DV]", optional: true}
     outputs:
       o: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      # The recurrence carries the state in fp32 whatever the inputs are, and the
-      # slot is None when output_final_state is false.
+      # The recurrence carries the state in fp32 whatever the inputs are.
       final_state: {dtype: "float32", shape: "[B, H, DK, DV]"}
     params:
       chunk_size: {type: int, default: 64}
       scale: {type: float, default: -1.0}
-      output_final_state: {type: bool, default: false}
     shape_rules:
     - "S % chunk_size == 0"
   workloads:
-  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], chunk_size: 64, scale: 0.125, output_final_state: true, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s2k-h4-d64"}
-  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, output_final_state: true, dtypes: [float16, bfloat16], label: "gla-init-b2-s4k-h4-d64"}
-  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], chunk_size: 64, scale: 0.125, output_final_state: true, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s8k-h4-d64"}
-  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, output_final_state: true, dtypes: [float16, bfloat16], label: "gla-init-b2-s16k-h4-d64"}
+  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s4k-h4-d64"}
+  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s8k-h4-d64"}
+  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s16k-h4-d64"}
   roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
   source:
     kernel: tileops/kernels/gla/gla_fwd.py

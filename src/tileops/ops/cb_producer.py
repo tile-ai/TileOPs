@@ -8,7 +8,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
-from tileops.ops.op_base import Op
+from tileops.ops.op_base import Op, check_tensor_shape
 
 __all__ = ["CBProducerFwdOp"]
 
@@ -92,16 +92,12 @@ class CBProducerFwdOp(Op):
         Returns:
             cb: [B, C, G, Q, Q]  dtype
         """
+        self._validate_dtypes(C_mat, B_mat)
         S = self.num_chunks * self.chunk_len
         expected_shape = (self.batch, S, self.n_groups, self.d_state)
         self.dtype = C_mat.dtype
-        for name, t in (("C_mat", C_mat), ("B_mat", B_mat)):
-            if t.dtype != C_mat.dtype:
-                raise ValueError(f"{name}.dtype={t.dtype} does not match C_mat.dtype={C_mat.dtype}")
-            if t.shape != torch.Size(expected_shape):
-                raise ValueError(
-                    f"{name}.shape={tuple(t.shape)} does not match expected {expected_shape}"
-                )
+        check_tensor_shape("C_mat", C_mat, expected_shape)
+        check_tensor_shape("B_mat", B_mat, expected_shape)
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         return self._get_kernel((C_mat, B_mat), C_mat.dtype)(C_mat, B_mat)

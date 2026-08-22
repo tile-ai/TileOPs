@@ -50,6 +50,14 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
+def check_tensor_shape(name: str, tensor: torch.Tensor, shape: "tuple[int, ...]") -> None:
+    """Gate a declared input's device and shape. Dtypes are ``_validate_dtypes``' job."""
+    if not tensor.is_cuda:
+        raise ValueError(f"{name} must be a CUDA tensor")
+    if tuple(tensor.shape) != tuple(shape):
+        raise ValueError(f"{name} must have shape {list(shape)}, got {list(tensor.shape)}")
+
+
 def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
     """The device of the first tensor a call carries, one level into sequences."""
     for value in (*args, *kwargs.values()):

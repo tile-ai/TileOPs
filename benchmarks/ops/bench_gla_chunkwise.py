@@ -73,7 +73,7 @@ def test_gla_fwd_bench(
 
     # --- TileOPs ---
     scale = dim_k**-0.5
-    op = GLAFwdOp(chunk_size=chunk_size, scale=scale, output_final_state=True, tune=tune)
+    op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
     bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
     functors = {"tileops": op.forward}
 
