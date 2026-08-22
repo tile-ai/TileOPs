@@ -58,6 +58,7 @@ LayerNormFwdOp:
   ref_api: "torch.nn.functional.layer_norm"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -109,6 +110,7 @@ AdaLayerNormFwdOp:
   ref_api: "none"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -153,6 +155,7 @@ AdaLayerNormZeroFwdOp:
   ref_api: "none"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -199,6 +202,7 @@ FusedAddLayerNormFwdOp:
   ref_api: "none"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -248,6 +252,7 @@ FusedAddRMSNormFwdOp:
   ref_api: "none"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -302,12 +307,13 @@ BatchNormFwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
-      running_mean: {dtype: "float32"}
-      running_var: {dtype: "float32"}
+      running_mean: {dtype: "float32", mutated: true}
+      running_var: {dtype: "float32", mutated: true}
       weight: {dtype: "float32"}
       bias: {dtype: "float32"}
     outputs:
@@ -355,6 +361,7 @@ BatchNormBwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -408,6 +415,7 @@ GroupNormFwdOp:
   ref_api: "torch.nn.functional.group_norm"
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -471,6 +479,7 @@ InstanceNormFwdOp:
   # use_input_stats=False normalizes by.
   family: normalization
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -519,14 +528,14 @@ InstanceNormFwdOp:
     # Per element: subtract mean + square for var + normalize = 3; affine adds
     # scale + bias, matching GroupNorm (InstanceNorm = GroupNorm with G=C).
     flops: "(5 if affine else 3) * N * C * spatial_size"
-    # Read x + write output; affine reads weight and bias (C each); passed
-    # running stats are read and written back, 2 * C float32 each way.
+    # Read x + write output; affine reads weight and bias (C each); the two passed
+    # running stats are read, C float32 each.
     bytes: "(2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes + (2 * C * 4 if reads_running_stats else 0)"
 
   source:
-    kernel: tileops/kernels/norm/group_norm.py
+    kernel: tileops/kernels/norm/instance_norm.py
     kernel_map:
-      group_norm: GroupNormKernel
+      instance_norm: InstanceNormKernel
       instance_norm_no_affine: InstanceNormNoAffineKernel
     op: tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py

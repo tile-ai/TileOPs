@@ -655,3 +655,46 @@ def ssd_decode_ref(
     # y_out[b, h, p] = sum_n state[b, h, p, n] * C[b, h, n]
     y_out = torch.einsum("bhpn,bhn->bhp", state.float(), C_heads)
     return y_out
+
+
+def cb_producer_fwd_ref(
+    C_mat: torch.Tensor,
+    B_mat: torch.Tensor,
+    num_chunks: int,
+    chunk_len: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Causal C@B coupling matrix: ``cb[b,c,g,l,s] = C[b,cQ+l,g,:] @ B[b,cQ+s,g,:]`` for s <= l."""
+    batch, _, groups, state = C_mat.shape
+    c_chunked = C_mat.reshape(batch, num_chunks, chunk_len, groups, state)
+    b_chunked = B_mat.reshape(batch, num_chunks, chunk_len, groups, state)
+    cb = torch.einsum("bcqgn,bcsgn->bcgqs", c_chunked.float(), b_chunked.float())
+    mask = torch.tril(torch.ones(chunk_len, chunk_len, device=C_mat.device, dtype=torch.bool))
+    return (cb * mask).to(dtype)
+
+
+class CBProducerFwdWorkload(WorkloadBase):
+    def __init__(
+        self,
+        batch: int,
+        num_chunks: int,
+        n_groups: int,
+        chunk_len: int,
+        d_state: int,
+        dtype: torch.dtype,
+    ):
+        self.batch = batch
+        self.num_chunks = num_chunks
+        self.n_groups = n_groups
+        self.chunk_len = chunk_len
+        self.d_state = d_state
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        shape = (self.batch, self.num_chunks * self.chunk_len, self.n_groups, self.d_state)
+        c_mat = torch.randn(shape, dtype=self.dtype, device="cuda") * 0.1
+        b_mat = torch.randn(shape, dtype=self.dtype, device="cuda") * 0.1
+        return c_mat, b_mat
+
+    def ref_program(self, C_mat, B_mat):
+        return cb_producer_fwd_ref(C_mat, B_mat, self.num_chunks, self.chunk_len, self.dtype)

@@ -9,49 +9,52 @@ Layout convention:
     Both TileOPs and FLA use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
 """
 
-from typing import Optional
-
 import pytest
 import torch
 from fla.ops.gla import chunk_gla
 
-from benchmarks.benchmark_base import BenchmarkBase, backward_of
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of
+from benchmarks.ops.attention.manifest_params import manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import GLABwdOp, GLAFwdOp
 from workloads.linear_attention import GLAChunkwiseWorkload
-from workloads.workload_base import FixtureBase
+
+_FWD_OP_NAME = "GLAFwdOp"
+_BWD_OP_NAME = "GLABwdOp"
+
+
+def _gla_args(workload: dict) -> tuple[int, int, int, int, int, int, bool]:
+    """Constructor arguments for one manifest workload row.
+
+    A row that declares ``initial_state_shape`` seeds the recurrence; one that does
+    not starts from zeros, which is the other half of the optional input's contract.
+    """
+    batch, seq_len, heads, dim_k = workload["q_shape"]
+    dim_v = workload["v_shape"][3]
+    return (
+        batch,
+        seq_len,
+        heads,
+        dim_k,
+        dim_v,
+        workload.get("chunk_size", 64),
+        "initial_state_shape" in workload,
+    )
+
+
+def _gla_bwd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
+    """Constructor arguments for one manifest workload row; the backward takes no state."""
+    batch, seq_len, heads, dim_k = workload["q_shape"]
+    return batch, seq_len, heads, dim_k, workload["v_shape"][3], workload.get("chunk_size", 64)
+
 
 # Forward benchmark
 
 
-class GLAFwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
-        return 2.0 * B * H * T * K * V
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        return B * T * H * (2 * K + 2 * V) * elem
-
-
-class GLAFwdFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-            [
-                (2, 2048, 4, 64, 64, 64, torch.float16, False),
-                (2, 4096, 4, 64, 64, 64, torch.float16, False),
-                (2, 8192, 4, 64, 64, 64, torch.float16, False),
-                (2, 16384, 4, 64, 64, 64, torch.float16, False),
-                (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            ],
-        ),
-    ]
-
-
-@GLAFwdFixture
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim_k, dim_v, chunk_size, has_initial_state, dtype, tune",
+    manifest_params(load_workloads(_FWD_OP_NAME), _gla_args, tune=False),
+)
 def test_gla_fwd_bench(
     batch: int,
     seq_len: int,
@@ -59,23 +62,26 @@ def test_gla_fwd_bench(
     dim_k: int,
     dim_v: int,
     chunk_size: int,
+    has_initial_state: bool,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GLAChunkwiseWorkload(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
-    bm = GLAFwdBenchmark(test)
+    test = GLAChunkwiseWorkload(
+        batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, has_initial_state
+    )
     inputs = test.gen_inputs()
 
     # --- TileOPs ---
     scale = dim_k**-0.5
     op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
+    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
     functors = {"tileops": op.forward}
 
     # --- FLA ---
-    q, k, v, g = inputs
+    q, k, v, g, initial_state = inputs
 
     def fla_fwd():
-        return chunk_gla(q, k, v, g, scale=scale)
+        return chunk_gla(q, k, v, g, scale=scale, initial_state=initial_state)
 
     functors["fla"] = (fla_fwd, ())
 
@@ -85,40 +91,15 @@ def test_gla_fwd_bench(
 # Backward benchmark
 
 
-class GLABwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
-        return 4.0 * B * H * T * K * V
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        return B * T * H * (4 * K + 3 * V) * elem
-
-
-class GLABwdFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-            [
-                (2, 2048, 4, 64, 64, 64, torch.float16, False),
-                (2, 4096, 4, 64, 64, 64, torch.float16, False),
-                (2, 8192, 4, 64, 64, 64, torch.float16, False),
-                (2, 16384, 4, 64, 64, 64, torch.float16, False),
-                (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            ],
-        ),
-    ]
-
-
 @pytest.mark.xfail(
     reason="TileLang emits a WGMMA descriptor for a B operand whose layout the "
     "assert rejects: 'Not a canonical GMMA_MN layout'. Fails on main too.",
     strict=False,
 )
-@GLABwdFixture
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+    manifest_params(load_workloads(_BWD_OP_NAME), _gla_bwd_args, tune=False),
+)
 def test_gla_bwd_bench(
     batch: int,
     seq_len: int,
@@ -130,7 +111,6 @@ def test_gla_bwd_bench(
     tune: bool,
 ) -> None:
     test = GLAChunkwiseWorkload(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
-    bm = GLABwdBenchmark(test)
 
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
     scale = K**-0.5
@@ -148,6 +128,7 @@ def test_gla_bwd_bench(
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
 
     bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
+    bm = ManifestBenchmark(_BWD_OP_NAME, bwd_op, test)
     functors = {"tileops": (bwd_op.forward, (q, k, v, g, h, do, dht))}
 
     # --- FLA: the backward node, called directly ---

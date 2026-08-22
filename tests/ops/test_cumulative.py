@@ -318,7 +318,7 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, parallel: b
         f"({M}, {N}) {dtype}: max_diff={torch.abs(y - ref).max()}"
     )
 
-    kernel = op._get_kernel(M, N, dtype, x.device.index)
+    kernel = op._get_kernel((), M, N, dtype, x.device.index)
     assert kernel.use_parallel == parallel, f"({M}, {N}): unexpected backend"
     if parallel:
         assert kernel.config["block_n"] == (256 if N > 16384 else 128)

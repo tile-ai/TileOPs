@@ -1,10 +1,12 @@
-from typing import Dict, Optional, Sequence
+from typing import ClassVar, Dict, Optional, Sequence, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 from .norm_base import normalized_shape_to_n
 
@@ -28,36 +30,39 @@ class LayerNormFwdOp(Op):
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
-    Note:
-        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims. For
-        non-aligned hidden dims, boundary handling is performed inside the
-        kernel rather than by allocating padded tensors in the Op layer. The
-        leading-dims product ``M`` is bound on the first forward call; if a
-        subsequent call uses a different ``M``, the kernel is rebuilt for the
-        new value.
-
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
             ``None`` uses the PyTorch default ``1e-5``.
+        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+            in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
+    #: Manifest ``params.eps.default``, which PyTorch shares. The signature default and the
+    #: ``None`` normalization both read it, so the two cannot drift apart.
+    DEFAULT_EPS = 1e-5
+
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_layer_norm_fwd",)
+
     def __init__(
         self,
         normalized_shape: Sequence[int],
-        eps: Optional[float] = 1e-5,
+        eps: Optional[float] = DEFAULT_EPS,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
-        # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
-        self.eps = 1e-5 if eps is None else float(eps)
+        # The manifest type is ``float | None``: an explicit None means the same default,
+        # so a backend is handed a number either way.
+        self.eps = self.DEFAULT_EPS if eps is None else float(eps)
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._last_m: Optional[int] = None
@@ -65,6 +70,15 @@ class LayerNormFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"layer_norm": LayerNormKernel}
+
+    def _infer_output_shapes(
+        self,
+        x_shape: Tuple[int, ...],
+        weight_shape: Tuple[int, ...],
+        bias_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
+        return {"output": tuple(x_shape)}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_m is None or self.dtype is None:
@@ -88,31 +102,38 @@ class LayerNormFwdOp(Op):
         """Apply layer normalization.
 
         Args:
-            x: Input tensor with trailing shape equal to
-                ``normalized_shape`` on CUDA.
-            weight: Affine scale of shape ``normalized_shape`` on CUDA.
-            bias: Affine shift of shape ``normalized_shape`` on CUDA.
+            x: Input tensor with trailing shape equal to ``normalized_shape``.
+            weight: Affine scale of shape ``normalized_shape``.
+            bias: Affine shift of shape ``normalized_shape``.
 
         Returns:
             Normalized tensor of the same shape as *x*.
 
         Raises:
-            ValueError: If tensors are not on CUDA, dtypes mismatch, or
-                shapes are incompatible with the configured
-                ``normalized_shape``.
+            ValueError: Dtypes or devices disagree, or shapes are incompatible with the
+                configured ``normalized_shape``. Raised from inside the operator, by
+                :meth:`_eager_forward`.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if not weight.is_cuda:
-            raise ValueError("weight must be a CUDA tensor")
-        if not bias.is_cuda:
-            raise ValueError("bias must be a CUDA tensor")
+        return _layer_norm_fwd(x, weight, bias, self._instance_key)
+
+    def _eager_forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
+        """
         self._validate_dtypes(x, weight, bias)
         self.dtype = x.dtype
-        if weight.dtype != x.dtype:
-            raise ValueError(f"Expected weight.dtype {x.dtype}, got {weight.dtype}")
-        if bias.dtype != x.dtype:
-            raise ValueError(f"Expected bias.dtype {x.dtype}, got {bias.dtype}")
+        for name, t in (("weight", weight), ("bias", bias)):
+            if t.device != x.device or t.dtype != x.dtype:
+                raise ValueError(
+                    f"{name} must be on {x.device} with dtype {x.dtype}, "
+                    f"got {t.device} and {t.dtype}"
+                )
 
         ns = self.normalized_shape
         k = len(ns)
@@ -126,25 +147,45 @@ class LayerNormFwdOp(Op):
         if tuple(bias.shape) != ns:
             raise ValueError(f"Expected bias shape {ns}, got {tuple(bias.shape)}")
 
-        orig_shape = x.shape
-        x = x.contiguous().reshape(-1, self.N)
-        weight = weight.contiguous().reshape(self.N)
-        bias = bias.contiguous().reshape(self.N)
-        m_actual = x.shape[0]
-        key = (m_actual, x.dtype)
+        # The op normalizes contiguity and hands over what the manifest declares; how a
+        # kernel wants that laid out is its own business.
+        x = x.contiguous()
+        weight = weight.contiguous()
+        bias = bias.contiguous()
         kernel = self.get_or_build_kernel(
             "layer_norm",
-            key=key,
+            (x, weight, bias),
+            key=x.dtype,  # this instance's in-tree cache key
             build=lambda: self.kernel_map["layer_norm"](
-                m_actual,
                 self.N,
                 self.eps,
                 x.dtype,
                 tune=self.tune,
             ),
         )
-        self._last_m = m_actual
+        self._last_m = x.numel() // self.N
+        return kernel(x, weight, bias)
 
-        y = kernel(x, weight, bias)
 
-        return y.reshape(orig_shape)
+@torch.library.custom_op("top::norm_layer_norm_fwd", mutates_args=())
+def _layer_norm_fwd(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(x, weight, bias)
+
+
+@_layer_norm_fwd.register_fake
+def _layer_norm_fwd_fake(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape), tuple(bias.shape))
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake.
+    return x.new_empty(shapes["output"])

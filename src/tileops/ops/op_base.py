@@ -50,6 +50,14 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
+def check_tensor_shape(name: str, tensor: torch.Tensor, shape: "tuple[int, ...]") -> None:
+    """Gate a declared input's device and shape. Dtypes are ``_validate_dtypes``' job."""
+    if not tensor.is_cuda:
+        raise ValueError(f"{name} must be a CUDA tensor")
+    if tuple(tensor.shape) != tuple(shape):
+        raise ValueError(f"{name} must have shape {list(shape)}, got {list(tensor.shape)}")
+
+
 def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
     """The device of the first tensor a call carries, one level into sequences."""
     for value in (*args, *kwargs.values()):
@@ -163,41 +171,20 @@ class Op(ABC):
         maybe_install_eval_roofline(cls)
         maybe_install_param_names(cls)
 
-    # FIXME(staged-rollout): the three contract stubs below — _infer_output_shapes,
-    # _validate_dtypes and eval_roofline — raise NotImplementedError instead of
-    # being @abstractmethod.
-    #
-    # Broken invariant: L1 does not enforce that every concrete Op implements them.
-    # Why: marking them abstract today breaks every op under src/tileops/ops/ that has
-    #     not been migrated to docs/design/ops-design.md, and eval_roofline bodies
-    #     are emitted by scaffold-op codegen that has not run for most ops yet. The
-    #     trust model requires one migration PR per op.
-    # Cleanup: when all three are implemented across src/tileops/ops/, make all three
-    #     @abstractmethod and delete this marker.
-
     @property
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    # FIXME(staged-rollout): compile_op_names defaults to empty instead of being required.
-    #
-    # Broken invariant: an op that declares ``torch_compile_fullgraph`` is not forced to
-    #     say which operators are its own, so nothing checks that the node in the graph
-    #     belongs to the op rather than to a kernel.
-    # Why: most ops still register their custom op in src/tileops/kernels/, where there
-    #     is no op-level name to declare.
-    # Cleanup: once every op that declares ``torch_compile_fullgraph`` names its
-    #     operators, have ``register_compile_contract`` reject an empty tuple, and delete
-    #     this marker.
-
     #: Operators this op registers on the torch.compile boundary. Naming them is what lets
     #: a test assert the traced graph holds nothing else, which is what keeps the graph the
     #: same when another target serves the op. A tuple because a conditional in-place write
-    #: registers two; empty means no boundary yet. Registration happens once per class, so
-    #: this is class state.
+    #: registers two. Registration happens once per class, so this is class state; an op
+    #: that declares ``torch_compile_fullgraph`` names its operators, which
+    #: ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
+    @abstractmethod
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
 
@@ -206,12 +193,15 @@ class Op(ABC):
         ``_infer_output_shapes(self, x_shape, weight_shape)``). The uniform
         ``**shape_kwargs`` base signature exists only to make the L1 contract
         grepable and discoverable; see docs/design/ops-design.md §``_infer_output_shapes``.
+        Abstract: a concrete op supplies the body, and the validator's C6 check names
+        it when a class inherits this one instead.
         """
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "
             "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)"
         )
 
+    @abstractmethod
     def _validate_dtypes(self, *args: torch.Tensor) -> None:
         """Validate dtypes of input tensors passed to ``forward``.
 
@@ -224,6 +214,7 @@ class Op(ABC):
             "see docs/design/ops-design.md §`_validate_dtypes` (codegen)"
         )
 
+    @abstractmethod
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance.
 
@@ -358,7 +349,7 @@ class Op(ABC):
     def get_or_build_kernel(
         self,
         name: str,
-        inputs: "Sequence[torch.Tensor | None]" = (),
+        inputs: "Sequence[torch.Tensor | None]",
         *,
         key: Hashable = None,
         build: Optional[Callable[[], _Entry]] = None,
@@ -406,14 +397,6 @@ class Op(ABC):
             # traced frame's attribute writes until after the graph has run, so a
             # ``forward`` behind the compile boundary arrives here still ``_UNRESOLVED``
             # and would take the in-tree path on the very call that chose a target.
-            #
-            # FIXME(staged-rollout): a call handing over no tensors probes no device.
-            #
-            # Broken invariant: a first compiled call takes the in-tree path when the
-            #     target would have come from device detection, where eager raises.
-            # Why: ``inputs`` is what carries a device down here, and most op classes
-            #     still call this without it.
-            # Cleanup: delete this marker once every op hands over ``inputs=``.
             self._resolve_builder(tuple(inputs), {})
 
         try:
@@ -676,4 +659,35 @@ class Op(ABC):
             for i, shape in enumerate(input_shapes)
             for axis, s in enumerate(shape)
             if (i, axis) not in self._static_axes
+        )
+
+
+class UnmanifestedOp(Op):
+    """An op the manifest does not name, and what that costs it.
+
+    The three contract methods are derived from a manifest entry — generated for
+    the dtype and roofline, hand-written for the shapes. An op with no entry has
+    nothing to derive them from: no target can be asked to serve it, no benchmark
+    can report a roofline for it, and no compiled caller can be told its output
+    shape. Inheriting this states that, and lists the ops it applies to: grep the
+    class name.
+
+    Every one of them is a gap to close by writing the entry, not by staying here.
+    """
+
+    def _infer_output_shapes(self, *shapes: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        raise NotImplementedError(
+            f"{type(self).__name__} has no manifest entry, so its output shapes are "
+            f"not declared anywhere"
+        )
+
+    def _validate_dtypes(self, *args: torch.Tensor) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} has no manifest entry, so its dtype contract is "
+            f"not declared anywhere"
+        )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError(
+            f"{type(self).__name__} has no manifest entry, so it has no roofline model"
         )

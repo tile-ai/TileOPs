@@ -42,6 +42,7 @@ class FFTC2CFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         n: int,
         batch_size: int,
         dtype: torch.dtype,
@@ -50,6 +51,7 @@ class FFTC2CFwdOp(Op):
         key = (n, batch_size, dtype, device_index)
         return self.get_or_build_kernel(
             "fft_c2c_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["fft_c2c_kernel"](
                 n,
@@ -101,6 +103,13 @@ class FFTC2CFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fft_c2c_kernel": FFTC2CKernel}
 
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``same_as(input)`` — a transform moves no axis."""
+        return {"output": tuple(input_shape)}
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Compute 1D FFT of complex input.
 
@@ -134,7 +143,7 @@ class FFTC2CFwdOp(Op):
         self.n = n
         self.dtype = x.dtype
         self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
-        kernel = self._get_kernel(n, batch_size, x.dtype, x.device.index)
+        kernel = self._get_kernel((input,), n, batch_size, x.dtype, x.device.index)
         self.kernel = kernel
         y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
 

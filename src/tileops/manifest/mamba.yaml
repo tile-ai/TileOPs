@@ -72,7 +72,7 @@ CBProducerFwdOp:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
   ref_api: "none"
   family: mamba
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -107,10 +107,8 @@ CBProducerFwdOp:
       cb_producer: CBProducerKernel
     op: tileops/ops/cb_producer.py
     test: tests/ops/test_mamba.py
-    # Exercised through the Mamba-2 end-to-end benchmark (CB stage of
-    # Mamba2FwdOp).
-    bench: benchmarks/ops/bench_mamba2_e2e.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: true
 
 SSDChunkStateFwdOp:
   # Per-chunk SSM state: decay-weighted (P x Q) @ (Q x N) per (batch, chunk,
@@ -230,8 +228,8 @@ SSDChunkScanFwdOp:
     bench_manifest_driven: true
 
 SSDDecodeFwdOp:
-  # Single-token Mamba-2 SSD decode step. state is updated in place (read +
-  # write); y_out is the only returned tensor. The D * x skip connection and
+  # Single-token Mamba-2 SSD decode step. y_out is the only returned tensor;
+  # state carries mutated: true, so whoever serves this op writes it. The D * x skip connection and
   # z-gate are not fused here.
   ref_api: "none"
   family: mamba
@@ -244,7 +242,7 @@ SSDDecodeFwdOp:
       x: {dtype: "float16 | bfloat16", shape: "[B, H, P]"}
       B_in: {dtype: "same_as(x)", shape: "[B, G, N]"}
       C_in: {dtype: "same_as(x)", shape: "[B, G, N]"}
-      state: {dtype: "float32", shape: "[B, H, P, N]"}
+      state: {dtype: "float32", shape: "[B, H, P, N]", mutated: true}
     outputs:
       y_out: {dtype: "float32", shape: "[B, H, P]"}
     params: {}

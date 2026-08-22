@@ -151,7 +151,7 @@ class ExampleCumsumFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 ```
 
-**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params`); no extras except `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
+**Validation.** Every `__init__` parameter has a manifest source (`static_dims` or `signature.params`); no extras except `target` / `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Manifest parameters keep manifest order; a param declaring `kw_only: true` goes after `*`, and `static_dims` entries take no defaults. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
 **Reference.** [Slot S21](../../.claude/skills/scaffold-op/slot-rules.md#slot-s21), [S12](../../.claude/skills/scaffold-op/slot-rules.md#slot-s12), [S13](../../.claude/skills/scaffold-op/slot-rules.md#slot-s13).
 

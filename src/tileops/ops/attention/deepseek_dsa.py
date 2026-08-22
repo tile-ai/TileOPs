@@ -83,9 +83,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "sparse_mla_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["sparse_mla_kernel"](
                 self.batch,
@@ -117,6 +118,15 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         """
         return {"sparse_mla_kernel": SparseMlaKernel}
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        kv_shape: tuple[int, ...],
+        indices_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o`` drops the tail dims ``q`` carries."""
+        return {"o": tuple(q_shape[:-1]) + (q_shape[-1] - self.dim_tail,)}
+
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
         Performs the forward pass of the sparse attention operation.
@@ -134,4 +144,4 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         """
         self._validate_dtypes(q, kv, indices)
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, kv, indices)
+        return self._get_kernel((q, kv, indices), q.dtype)(q, kv, indices)

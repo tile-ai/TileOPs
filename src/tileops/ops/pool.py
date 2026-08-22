@@ -26,7 +26,7 @@ from tileops.kernels.pool import (
 from tileops.kernels.pool.common import pool_output_dim
 
 from .compile_boundary import get_instance
-from .op_base import Op
+from .op_base import Op, UnmanifestedOp
 
 __all__ = [
     "AdaptiveAvgPool2dFwdOp",
@@ -119,7 +119,7 @@ def validate_pool_params(
         raise ValueError("divisor_override must not be zero")
 
 
-class MeanPoolingForwardOp(Op):
+class MeanPoolingForwardOp(UnmanifestedOp):
     def __init__(
         self,
         batch_size: int,
@@ -141,11 +141,12 @@ class MeanPoolingForwardOp(Op):
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
-        # Hands over no tensors and takes no ``target=``: this op has no manifest entry, so a
-        # target's builder could not be told what to build. In-tree only until it has one.
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
+        # Takes no ``target=``: this op has no manifest entry, so a target's builder could
+        # not be told what to build. In-tree only until it has one.
         return self.get_or_build_kernel(
             "mean_pooling_fwd_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
                 **self._kernel_params,
@@ -163,7 +164,7 @@ class MeanPoolingForwardOp(Op):
         offsets: torch.Tensor,
         indices: torch.Tensor,
     ) -> torch.Tensor:
-        kernel = self._get_kernel(x.dtype)
+        kernel = self._get_kernel((x, offsets, indices), x.dtype)
         out = kernel(x, offsets, indices=indices)
         self.dtype = x.dtype
         return out

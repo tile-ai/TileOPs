@@ -66,7 +66,7 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     m, n = 16, 1152
     test = AdaLayerNormTest(m, n, dtype)
     inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(m, n, test.eps, dtype, has_gate=False)
+    kernel = AdaLayerNormKernel(n, test.eps, dtype, has_gate=False)
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
@@ -82,7 +82,6 @@ def test_ada_layer_norm_async_copy_handles_row_tail() -> None:
     test = AdaLayerNormTest(m, n, dtype)
     inputs = test.gen_inputs()
     kernel = AdaLayerNormKernel(
-        m,
         n,
         test.eps,
         dtype,
@@ -142,7 +141,7 @@ def test_ada_layer_norm_async_policy_edge_correctness(
     m = 4
     test = AdaLayerNormTest(m, n, dtype)
     inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(m, n, test.eps, dtype, has_gate=False)
+    kernel = AdaLayerNormKernel(n, test.eps, dtype, has_gate=False)
     if n == 514:
         assert kernel.use_cp_async
     actual = kernel(*inputs)

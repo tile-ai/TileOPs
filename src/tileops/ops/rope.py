@@ -418,7 +418,9 @@ class _RopeOpBase(Op):
             x_elems = self.batch * self.seq_len * self.num_heads * self.head_dim
         return (2 * x_elems + cos_sin_elems) * elem
 
-    def _get_kernel(self, device_index: int | None) -> Kernel:
+    def _get_kernel(
+        self, inputs: "tuple[torch.Tensor | None, ...]", device_index: int | None
+    ) -> Kernel:
         key = (
             self.seq_len,
             self.head_dim,
@@ -431,6 +433,7 @@ class _RopeOpBase(Op):
         )
         return self.get_or_build_kernel(
             self._op_name,
+            inputs,
             key=key,
             build=lambda: self.kernel_map[self._op_name](
                 seq_len=self.seq_len,
@@ -468,7 +471,7 @@ class _RopeOpBase(Op):
         if self.head_dim <= 0 or self.head_dim % 2 != 0:
             raise ValueError("head_dim must be positive and even")
         self.dtype = x.dtype
-        self.kernel = self._get_kernel(x.device.index)
+        self.kernel = self._get_kernel((x,), x.device.index)
         return x.contiguous()
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -479,6 +482,10 @@ class _RopeOpBase(Op):
         """
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin)
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs.output.shape``: ``same_as(x)`` — a rotation moves no axis."""
+        return {"output": tuple(x_shape)}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation using internally computed cos/sin tables.
@@ -598,7 +605,9 @@ class RopeNeoxPositionIdsFwdOp(Op):
             )
         return self._freq_cache[key]
 
-    def _get_kernel(self, device_index: int | None) -> Kernel:
+    def _get_kernel(
+        self, inputs: "tuple[torch.Tensor | None, ...]", device_index: int | None
+    ) -> Kernel:
         key = (
             self.num_tokens,
             self.num_heads,
@@ -611,6 +620,7 @@ class RopeNeoxPositionIdsFwdOp(Op):
         )
         return self.get_or_build_kernel(
             self._op_name,
+            inputs,
             key=key,
             build=lambda: self.kernel_map[self._op_name](
                 num_tokens=self.num_tokens,
@@ -659,12 +669,20 @@ class RopeNeoxPositionIdsFwdOp(Op):
             or bool(torch.any(position_ids >= self.max_position).item())
         ):
             raise ValueError("position_ids must be in [0, max_position)")
-        self.kernel = self._get_kernel(x.device.index)
+        self.kernel = self._get_kernel((x, position_ids), x.device.index)
         return x.contiguous(), position_ids.to(torch.int32).contiguous()
 
     def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin, position_ids)
+
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        position_ids_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
+        return {"output": tuple(x_shape)}
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         x, position_ids = self._validate_and_prepare(x, position_ids)

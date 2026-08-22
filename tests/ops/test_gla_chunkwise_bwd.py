@@ -121,7 +121,6 @@ def test_gla_bwd(
     fwd_op = GLAFwdOp(
         chunk_size=BC,
         scale=scale,
-        output_final_state=False,
     )
     o_fwd, _ = fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32

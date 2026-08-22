@@ -8,7 +8,7 @@ from tileops.kernels.deltanet import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op
+from .op_base import Op, UnmanifestedOp, check_tensor_shape
 
 __all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetOp"]
 
@@ -60,6 +60,7 @@ class DeltaNetFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -71,6 +72,7 @@ class DeltaNetFwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "DeltaNetFwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["DeltaNetFwdKernel"](
                 batch,
@@ -102,10 +104,8 @@ class DeltaNetFwdOp(Op):
             raise ValueError("v must have shape [batch, heads, seq_len, dim_v]")
         if beta.shape != (batch, heads, seq_len):
             raise ValueError("beta must have shape [batch, heads, seq_len]")
+        self._validate_dtypes(q, k, v, beta)
         dtype = q.dtype
-        for name, tensor in (("k", k), ("v", v), ("beta", beta)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
         if seq_len % self.chunk_size != 0:
             raise ValueError(
                 f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
@@ -118,8 +118,28 @@ class DeltaNetFwdOp(Op):
         self.dim_v = v.shape[-1]
         self.dtype = dtype
         self.kernel = self._get_kernel(
-            batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index
+            (q, k, v, beta), batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index
         )
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the output, the per-chunk state, and the four chunk buffers."""
+        b, h, s, dk = q_shape
+        dv = v_shape[3]
+        chunks = s // self.chunk_size
+        return {
+            "o": (b, h, s, dv),
+            "S": (b, h, chunks + 1, dk, dv),
+            "Aw": (b, h, s, self.chunk_size),
+            "Au": (b, h, s, self.chunk_size),
+            "w": (b, h, s, dk),
+            "u": (b, h, s, dv),
+        }
 
     def forward(
         self,
@@ -181,6 +201,7 @@ class DeltaNetBwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         seq_len: int,
@@ -192,6 +213,7 @@ class DeltaNetBwdOp(Op):
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "DeltaNetBwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["DeltaNetBwdKernel"](
                 batch,
@@ -205,14 +227,9 @@ class DeltaNetBwdOp(Op):
             ),
         )
 
-    def _bind_from_inputs(
-        self,
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> None:
+    def _bind_from_inputs(self, inputs: "tuple[torch.Tensor, ...]") -> None:
+        """Validate the ten declared inputs, then bind the kernel they select."""
+        do, q, k, v, beta, S, Aw, Au, w, u = inputs
         if not all(tensor.is_cuda for tensor in (do, q, k, v, beta)):
             raise ValueError("do, q, k, v, and beta must be CUDA tensors")
         if q.ndim != 4:
@@ -227,14 +244,18 @@ class DeltaNetBwdOp(Op):
             raise ValueError("do must have shape [batch, heads, seq_len, dim_v]")
         if beta.shape != (batch, heads, seq_len):
             raise ValueError("beta must have shape [batch, heads, seq_len]")
+        self._validate_dtypes(*inputs)
         dtype = q.dtype
-        for name, tensor in (("do", do), ("k", k), ("v", v), ("beta", beta)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
         if seq_len % self.chunk_size != 0:
             raise ValueError(
                 f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
             )
+        chunk = self.chunk_size
+        check_tensor_shape("S", S, (batch, heads, seq_len // chunk + 1, dim_k, dim_v))
+        check_tensor_shape("Aw", Aw, (batch, heads, seq_len, chunk))
+        check_tensor_shape("Au", Au, (batch, heads, seq_len, chunk))
+        check_tensor_shape("w", w, (batch, heads, seq_len, dim_k))
+        check_tensor_shape("u", u, (batch, heads, seq_len, dim_v))
 
         self.batch = batch
         self.heads = heads
@@ -242,7 +263,30 @@ class DeltaNetBwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            inputs, batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
+        )
+
+    def _infer_output_shapes(
+        self,
+        do_shape: tuple[int, ...],
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+        S_shape: tuple[int, ...],
+        Aw_shape: tuple[int, ...],
+        Au_shape: tuple[int, ...],
+        w_shape: tuple[int, ...],
+        u_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dq": tuple(q_shape),
+            "dk": tuple(k_shape),
+            "dv": tuple(v_shape),
+            "dbeta": tuple(beta_shape),
+        }
 
     def forward(
         self,
@@ -274,7 +318,7 @@ class DeltaNetBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        self._bind_from_inputs(do, q, k, v, beta)
+        self._bind_from_inputs((do, q, k, v, beta, S, Aw, Au, w, u))
         dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta
 
@@ -296,7 +340,7 @@ class _DeltaNetFunction(torch.autograd.Function):
         return dq, dk, dv, dbeta, None, None
 
 
-class DeltaNetOp(Op):
+class DeltaNetOp(UnmanifestedOp):
     """Combined DeltaNet fwd+bwd operator with autograd support (ungated).
 
     Wraps ``DeltaNetFwdKernel`` and ``DeltaNetBwdKernel`` in a
@@ -379,6 +423,7 @@ class DeltaNetOp(Op):
         )
         return self.get_or_build_kernel(
             "DeltaNetFwdKernel",
+            (q, k, v, beta),
             key=key,
             build=lambda: (
                 self.kernel_map["DeltaNetFwdKernel"](

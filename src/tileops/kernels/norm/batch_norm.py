@@ -2,9 +2,9 @@
 
 Reference: Ioffe & Szegedy (2015) https://arxiv.org/abs/1502.03167
 
-Input layout expected by all kernels: (C, L) where C is the channel count and
-L = N * H * W * ... is the product of batch and spatial dimensions.  The op
-layer is responsible for reshaping the user-facing tensor to this layout.
+The prim_funcs work on (C, L) where C is the channel count and L = N * H * W * ... is
+the product of batch and spatial dimensions. Each kernel takes the user-facing
+(N, C, *spatial) tensor and moves it into that layout itself.
 
 Performance notes:
   - Persistent path (block_l >= L): loads all L elements into shared memory once
@@ -22,7 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, require_cuda
 
 __all__ = [
     "BatchNormBwdKernel",
@@ -76,6 +76,19 @@ def _find_best_block_l(L: int) -> dict:
 
 
 # Training forward
+
+
+def _to_cl(t: torch.Tensor) -> torch.Tensor:
+    """Move (N, C, *spatial) into the (C, L) layout the prim_funcs read."""
+    channels = t.shape[1]
+    return t.permute(1, 0, *range(2, t.ndim)).reshape(channels, -1).contiguous()
+
+
+def _from_cl(t: torch.Tensor, original_shape: torch.Size) -> torch.Tensor:
+    """Move a (C, L) result back to the shape the caller handed over."""
+    batch, channels, *spatial = original_shape
+    restored = t.reshape(channels, batch, *spatial)
+    return restored.permute(1, 0, *range(2, restored.ndim)).contiguous()
 
 
 @functools.lru_cache(maxsize=32)
@@ -280,25 +293,38 @@ class BatchNormFwdTrainKernel(Kernel):
     def forward(
         self,
         x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
     ):
-        """Run training forward pass.
+        """Run training forward pass on an ``(N, C, *spatial)`` input.
+
+        Moving the input into the ``(C, L)`` layout, and the output back, happens here.
 
         Returns:
-            y: Normalized output tensor.
+            y: Normalized output, shaped like *x*.
             mean_out: Per-channel batch mean (saved for backward).
             rstd_out: Per-channel reciprocal std (saved for backward).
+
+        Raises:
+            ValueError: An input is not on a CUDA device.
         """
+        require_cuda(
+            self,
+            x=x,
+            weight=weight,
+            bias=bias,
+            running_mean=running_mean,
+            running_var=running_var,
+        )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         y = self.kernel(
             self.config["block_l"],
             self.config["threads"],
-        )(x, weight, bias, running_mean, running_var, mean_out, rstd_out)
-        return y, mean_out, rstd_out
+        )(_to_cl(x), weight, bias, running_mean, running_var, mean_out, rstd_out)
+        return _from_cl(y, x.shape), mean_out, rstd_out
 
 
 # Inference forward
@@ -405,16 +431,35 @@ class BatchNormFwdInferKernel(Kernel):
     def forward(
         self,
         x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel(
+        """Run inference forward pass on an ``(N, C, *spatial)`` input.
+
+        Moving the input into the ``(C, L)`` layout, and the output back, happens here.
+
+        Returns:
+            Normalized output, shaped like *x*.
+
+        Raises:
+            ValueError: An input is not on a CUDA device.
+        """
+        require_cuda(
+            self,
+            x=x,
+            weight=weight,
+            bias=bias,
+            running_mean=running_mean,
+            running_var=running_var,
+        )
+        y = self.kernel(
             self.config["block_l"],
             self.config["num_stages"],
             self.config["threads"],
-        )(x, weight, bias, running_mean, running_var)
+        )(_to_cl(x), weight, bias, running_mean, running_var)
+        return _from_cl(y, x.shape)
 
 
 # Backward
@@ -615,17 +660,23 @@ class BatchNormBwdKernel(Kernel):
         mean: torch.Tensor,
         rstd: torch.Tensor,
     ):
-        """Run backward pass.
+        """Run the backward pass on ``(N, C, *spatial)`` inputs.
+
+        Moving the inputs into the ``(C, L)`` layout, and ``grad_x`` back, happens here.
 
         Returns:
-            grad_x: Gradient w.r.t. input.
+            grad_x: Gradient w.r.t. the input, shaped like *x*.
             grad_weight: Gradient w.r.t. affine scale (gamma).
             grad_bias: Gradient w.r.t. affine shift (beta).
+
+        Raises:
+            ValueError: An input is not on a CUDA device.
         """
+        require_cuda(self, grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
         grad_weight = torch.empty(self.C, device=grad_out.device, dtype=torch.float32)
         grad_bias = torch.empty(self.C, device=grad_out.device, dtype=torch.float32)
         grad_x = self.kernel(
             self.config["block_l"],
             self.config["threads"],
-        )(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
-        return grad_x, grad_weight, grad_bias
+        )(_to_cl(grad_out), _to_cl(x), weight, mean, rstd, grad_weight, grad_bias)
+        return _from_cl(grad_x, x.shape), grad_weight, grad_bias

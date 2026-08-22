@@ -109,6 +109,7 @@ class GroupedGemmFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch_sum: int,
         batch_count: int,
         n: int,
@@ -147,9 +148,25 @@ class GroupedGemmFwdOp(Op):
 
         return key_name, self.get_or_build_kernel(
             key_name,
+            inputs,
             key=key,
             build=lambda: kernel_cls(batch_sum, batch_count, n, k, **kwargs),
         )
+
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+        batch_sizes_shape: tuple[int, ...],
+        batch_offsets_shape: tuple[int, ...],
+        batch_padded_offsets_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``transpose_a`` decides whether the groups stay an axis."""
+        if self.transpose_a:
+            n = b_shape[0] if self.transpose_b else b_shape[1]
+            return {"output": (batch_sizes_shape[0], a_shape[1], n)}
+        n = b_shape[1] if self.transpose_b else b_shape[2]
+        return {"output": (a_shape[0], n)}
 
     def forward(
         self,
@@ -171,7 +188,15 @@ class GroupedGemmFwdOp(Op):
         self.N = n
         self.K = k
         self.dtype = dtype
-        key_name, self.kernel = self._get_kernel(batch_sum, batch_count, n, k, dtype, device_index)
+        key_name, self.kernel = self._get_kernel(
+            (a, b, batch_sizes, batch_offsets, batch_padded_offsets),
+            batch_sum,
+            batch_count,
+            n,
+            k,
+            dtype,
+            device_index,
+        )
         if key_name == "grouped_gemm_persistent_3wg_kernel":
             # It reads the tight layout straight off batch_sizes / batch_offsets
             # and has no use for the padded ones.

@@ -27,11 +27,11 @@ class TestBatchNormFwdValidation:
         return x, weight, bias, rm, rv
 
     def test_rejects_cpu_tensor(self):
+        """The op layer is device-agnostic; the requirement belongs to these kernels."""
         op = self._make_op()
-        x_cpu = torch.randn(4, 8, 4, 4, dtype=torch.float16)
-        _, weight, bias, rm, rv = self._make_inputs()
-        with pytest.raises(ValueError, match="CUDA"):
-            op(x_cpu, rm, rv, weight, bias)
+        x, weight, bias, rm, rv = self._make_inputs(device="cpu")
+        with pytest.raises(ValueError, match="is a CUDA kernel"):
+            op(x, rm, rv, weight, bias)
 
     def test_rejects_wrong_dtype(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp

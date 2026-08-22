@@ -78,7 +78,7 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = FusedAddLayerNormFwdOp(M=m, N=n)
+    op = FusedAddLayerNormFwdOp()
 
     # Reference on contiguous copies
     test = FusedAddLayerNormTest(m, n, dtype)

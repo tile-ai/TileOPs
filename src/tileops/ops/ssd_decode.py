@@ -50,6 +50,7 @@ class SSDDecodeFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         n_heads: int,
         d_head: int,
@@ -61,11 +62,24 @@ class SSDDecodeFwdOp(Op):
         key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "ssd_decode",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["ssd_decode"](
                 batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        A_shape: tuple[int, ...],
+        dt_shape: tuple[int, ...],
+        x_shape: tuple[int, ...],
+        B_in_shape: tuple[int, ...],
+        C_in_shape: tuple[int, ...],
+        state_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``y_out`` has the shape of *x*, ``[B, H, P]``."""
+        return {"y_out": tuple(x_shape)}
 
     def forward(
         self,
@@ -124,7 +138,14 @@ class SSDDecodeFwdOp(Op):
         self.n_groups = n_groups
         self.dtype = x.dtype
         self.kernel = self._get_kernel(
-            batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index
+            (A, dt, x, B_in, C_in, state),
+            batch,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            x.dtype,
+            x.device.index,
         )
 
         A = A.contiguous()

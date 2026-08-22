@@ -63,6 +63,7 @@ class DeltaNetDecodeFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         heads: int,
         dim_k: int,
@@ -86,7 +87,7 @@ class DeltaNetDecodeFwdOp(Op):
                 tune=self.tune,
             )
 
-        return self.get_or_build_kernel(chosen, key=key, build=build)
+        return self.get_or_build_kernel(chosen, inputs, key=key, build=build)
 
     def _infer_output_shapes(
         self,
@@ -152,7 +153,9 @@ class DeltaNetDecodeFwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = q.dtype
-        self.kernel = self._get_kernel(batch, heads, dim_k, dim_v, q.dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, beta, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
+        )
 
     def _validate_output_shapes(
         self,

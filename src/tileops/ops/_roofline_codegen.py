@@ -424,7 +424,7 @@ def _validate_vars_expr(
     small comprehensions, calls to whitelisted helpers, and references
     to bound names (params, ``elem_bytes``, earlier vars, helpers).
     Tensor inputs may not appear as bare values, except an
-    ``optional: true`` input inside ``is None`` / ``is not None`` (R18.1);
+    ``optional: true`` input inside ``is None`` / ``is not None``;
     comprehension target
     names bind to a child scope reachable only inside the comprehension.
     Forbidden constructs raise ``ValueError`` so class construction

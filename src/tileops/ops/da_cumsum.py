@@ -75,6 +75,7 @@ class DaCumsumFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         num_chunks: int,
         n_heads: int,
@@ -98,6 +99,7 @@ class DaCumsumFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "da_cumsum_fwd",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["da_cumsum_fwd"](
                 batch,
@@ -113,6 +115,17 @@ class DaCumsumFwdOp(Op):
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        dt_shape: tuple[int, ...],
+        A_shape: tuple[int, ...],
+        dt_bias_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``[B, H, NC, chunk_len]``, with ``NC = S // chunk_len``."""
+        b, s, h = dt_shape
+        chunked = (b, h, s // self.chunk_len, self.chunk_len)
+        return {"dt_out": chunked, "dA_cumsum": chunked}
 
     def forward(
         self,
@@ -154,7 +167,13 @@ class DaCumsumFwdOp(Op):
         self.num_chunks = seq_len // self.chunk_len
         self.dt_bias_shape = None if dt_bias is None else tuple(dt_bias.shape)
         self.kernel = self._get_kernel(
-            batch, self.num_chunks, n_heads, seq_len, dt_bias is not None, dt.device.index
+            (dt, A, dt_bias),
+            batch,
+            self.num_chunks,
+            n_heads,
+            seq_len,
+            dt_bias is not None,
+            dt.device.index,
         )
 
         dt = dt.contiguous()

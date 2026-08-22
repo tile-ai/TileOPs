@@ -27,6 +27,7 @@ class FP8QuantFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len_kv: int,
         kv_group: int,
@@ -37,11 +38,22 @@ class FP8QuantFwdOp(Op):
         key = (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "fp8_quant_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["fp8_quant_kernel"](
                 batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        input_tensor_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: one scale per row, and the quantized tensor itself."""
+        return {
+            "scale_tensor": tuple(input_tensor_shape[:-1]),
+            "output_tensor": tuple(input_tensor_shape),
+        }
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if not input_tensor.is_cuda:
@@ -61,6 +73,12 @@ class FP8QuantFwdOp(Op):
         self.index_dim = index_dim
         self.in_dtype = input_tensor.dtype
         self.kernel = self._get_kernel(
-            batch, seq_len_kv, kv_group, index_dim, input_tensor.dtype, input_tensor.device.index
+            (input_tensor),
+            batch,
+            seq_len_kv,
+            kv_group,
+            index_dim,
+            input_tensor.dtype,
+            input_tensor.device.index,
         )
         return self.kernel(input_tensor)

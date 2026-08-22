@@ -6,8 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import pool_output_dim, require_cuda
+from tileops.kernels.kernel_base import Kernel, require_cuda
+from tileops.kernels.pool.common import pool_output_dim
 
 __all__ = ["AvgPool3dKernel", "AvgPool3dSpatialKernel"]
 

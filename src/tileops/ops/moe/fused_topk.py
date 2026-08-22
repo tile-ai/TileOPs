@@ -7,12 +7,12 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.fused_topk import FusedTopKKernel
 
-from ..op_base import Op
+from ..op_base import UnmanifestedOp
 
 __all__ = ["FusedTopKOp"]
 
 
-class FusedTopKOp(Op):
+class FusedTopKOp(UnmanifestedOp):
     """MoE top-k routing operator.
 
     Applies scoring (softmax or sigmoid) to router logits and selects the
@@ -66,6 +66,7 @@ class FusedTopKOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         num_tokens: int,
         num_experts: int,
         top_k: int,
@@ -75,6 +76,7 @@ class FusedTopKOp(Op):
         key = (num_tokens, num_experts, top_k, device_index, with_correction_bias)
         return self.get_or_build_kernel(
             "fused_topk_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["fused_topk_kernel"](
                 num_tokens=num_tokens,
@@ -149,6 +151,7 @@ class FusedTopKOp(Op):
         self.num_experts = num_experts
         self.dtype = gating_output.dtype
         kernel = self._get_kernel(
+            (gating_output, correction_bias),
             num_tokens,
             num_experts,
             self.top_k,

@@ -104,6 +104,7 @@ class BmmFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         m: int,
         n: int,
@@ -113,9 +114,18 @@ class BmmFwdOp(Op):
         """Return the cached BmmKernel for the given dims, building lazily."""
         return self.get_or_build_kernel(
             "bmm_kernel",
+            inputs,
             key=(batch, m, n, k, dtype),
             build=lambda: self.kernel_map["bmm_kernel"](batch, m, n, k, dtype, tune=self.tune),
         )
+
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``d.shape == (B, M, N)``."""
+        return {"d": (a_shape[0], a_shape[1], b_shape[2])}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Fast path: same input signature as the last call → reuse the already
@@ -129,7 +139,7 @@ class BmmFwdOp(Op):
             self.dtype = a.dtype
             self.a_shape = tuple(a.shape)
             self.b_shape = tuple(b.shape)
-            kernel = self._get_kernel(batch, m, n, k, a.dtype)
+            kernel = self._get_kernel((a, b), batch, m, n, k, a.dtype)
             # Expose the active kernel so autotune()/introspection can find it.
             self.kernel = kernel
             self._active_kernel = kernel
@@ -274,6 +284,7 @@ class BmmFp8KNFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         m: int,
         n: int,
@@ -283,11 +294,22 @@ class BmmFp8KNFwdOp(Op):
     ) -> Kernel:
         return self.get_or_build_kernel(
             "bmm_fp8_kernel",
+            inputs,
             key=(batch, m, n, k, dtype, self.out_dtype, device),
             build=lambda: self.kernel_map["bmm_fp8_kernel"](
                 batch, m, n, k, dtype, self.out_dtype, device=device, tune=self.tune
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        a_shape: tuple[int, ...],
+        b_shape: tuple[int, ...],
+        scale_a_shape: tuple[int, ...],
+        scale_b_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: which axis of *b* carries ``N`` follows ``B_IS_NK``."""
+        return {"d": (a_shape[0], a_shape[1], b_shape[1 if self.B_IS_NK else 2])}
 
     def forward(
         self,
@@ -317,7 +339,9 @@ class BmmFp8KNFwdOp(Op):
             self.b_shape = tuple(b.shape)
             self.scale_a_shape = tuple(scale_a.shape)
             self.scale_b_shape = tuple(scale_b.shape)
-            kernel = self._get_kernel(batch, m, n, k, a.dtype, device=a.device)
+            kernel = self._get_kernel(
+                (a, b, scale_a, scale_b), batch, m, n, k, a.dtype, device=a.device
+            )
             self._active = kernel
             self._active_sig = sig
         if self.B_IS_NK:

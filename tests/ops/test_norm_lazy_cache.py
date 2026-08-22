@@ -34,15 +34,16 @@ class _FakeBatchNormFwdInferKernel(Kernel):
 
     def forward(
         self,
-        x_cl: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
     ) -> torch.Tensor:
+        x_cl = _to_cl(x)
         y = (x_cl.float() - running_mean[:, None]) * torch.rsqrt(running_var[:, None] + self.eps)
         y = y * weight[:, None] + bias[:, None]
-        return y.to(self.dtype)
+        return _from_cl(y.to(self.dtype), x.shape)
 
 
 class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
@@ -60,12 +61,13 @@ class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
 
     def forward(
         self,
-        x_cl: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x_cl = _to_cl(x)
         mean = x_cl.float().mean(dim=1)
         var = x_cl.float().var(dim=1, unbiased=False)
         rstd = torch.rsqrt(var + self.eps)
@@ -73,7 +75,7 @@ class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
         running_var.mul_(1 - self.momentum).add_(self.momentum * var)
         y = (x_cl.float() - mean[:, None]) * rstd[:, None]
         y = y * weight[:, None] + bias[:, None]
-        return y.to(self.dtype), mean, rstd
+        return _from_cl(y.to(self.dtype), x.shape), mean, rstd
 
 
 class _FakeBatchNormBwdKernel(Kernel):
@@ -92,12 +94,14 @@ class _FakeBatchNormBwdKernel(Kernel):
 
     def forward(
         self,
-        grad_out_cl: torch.Tensor,
-        x_cl: torch.Tensor,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
         weight: torch.Tensor,
         mean: torch.Tensor,
         rstd: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        grad_out_cl = _to_cl(grad_out)
+        x_cl = _to_cl(x)
         grad_out_f = grad_out_cl.float()
         x_hat = (x_cl.float() - mean[:, None]) * rstd[:, None]
         grad_bias = grad_out_f.sum(dim=1)
@@ -108,7 +112,7 @@ class _FakeBatchNormBwdKernel(Kernel):
             * (self.L * grad_out_f - grad_bias[:, None] - x_hat * grad_weight[:, None])
             / self.L
         )
-        return grad_x.to(self.dtype), grad_weight, grad_bias
+        return _from_cl(grad_x.to(self.dtype), x.shape), grad_weight, grad_bias
 
 
 def _batch_norm_infer_ref(
@@ -149,11 +153,8 @@ def _batch_norm_bwd_ref(
     mean: torch.Tensor,
     rstd: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    grad_out_cl = _to_cl(grad_out)
-    x_cl = _to_cl(x)
     kernel = _FakeBatchNormBwdKernel(x.shape[1], grad_out.numel() // x.shape[1], x.dtype)
-    grad_x_cl, grad_weight, grad_bias = kernel(grad_out_cl, x_cl, weight, mean, rstd)
-    return _from_cl(grad_x_cl, x.shape), grad_weight, grad_bias
+    return kernel(grad_out, x, weight, mean, rstd)
 
 
 @pytest.mark.smoke

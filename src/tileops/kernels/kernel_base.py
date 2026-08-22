@@ -9,6 +9,21 @@ from tilelang.autotuner import autotune
 _INHERIT_SUPPLY_PROG = object()
 
 
+def require_cuda(kernel: "Kernel", **tensors: Optional[torch.Tensor]) -> None:
+    """Raise unless every named tensor is on a CUDA device.
+
+    The op layer checks that a call's tensors agree on a device; which devices a set of
+    kernels runs on is the kernel's own statement. An ``optional: true`` input the call
+    did not pass arrives as ``None`` and is skipped.
+    """
+    for name, tensor in tensors.items():
+        if tensor is not None and not tensor.is_cuda:
+            raise ValueError(
+                f"{type(kernel).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
+                "Another target's backend serves other devices."
+            )
+
+
 def _int_tensor_input_names(jit_kernel: Any, seeds: Dict[str, Any]) -> list[str]:
     """Integer tensor parameters *jit_kernel* takes as inputs, outputs excluded.
 

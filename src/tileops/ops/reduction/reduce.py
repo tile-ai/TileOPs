@@ -20,6 +20,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.reduce import ReduceKernel
+from tileops.manifest.shape_rules import reduced_shape
 
 from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
@@ -112,6 +113,19 @@ class _ReduceOpBase(Op):
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: tuple[int, int] | None = None
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: the reduced axes leave, or stay as size 1."""
+        return {"output": self._reduced_shape(x_shape)}
+
+    def _reduced_shape(self, x_shape: tuple[int, ...]) -> tuple[int, ...]:
+        """The output shape, read with this op's empty-``dim`` policy."""
+        return reduced_shape(
+            x_shape,
+            self.dim,
+            self.keepdim,
+            "noop" if self._empty_dim_policy == "noop" else "full",
+        )
 
     # Dim validation (subclasses may override)
 
@@ -382,6 +396,7 @@ class _ReduceOpBase(Op):
 
     def _get_or_create_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         M: int,
         N: int,
         dtype: torch.dtype,
@@ -389,6 +404,7 @@ class _ReduceOpBase(Op):
         """Return a cached kernel for (M, N, dtype), creating one if needed."""
         return self.get_or_build_kernel(
             self._kernel_key,
+            inputs,
             key=(M, N, dtype),
             build=lambda: self.kernel_map[self._kernel_key](
                 M,
@@ -414,6 +430,8 @@ class _ReduceOpBase(Op):
         """
         self._validate_input_tensor(x)
 
+        # The tensor this op declares, before the row layout its kernel wants.
+        declared = x
         orig_shape = x.shape
 
         # --- multi-dim path (includes dim=None for full reduction) ---
@@ -428,7 +446,7 @@ class _ReduceOpBase(Op):
             M = prod(x.shape[:-1])
             self._last_roofline_mn = (M, N)
             x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N, x.dtype)
+            kernel = self._get_or_create_kernel((declared,), M, N, x.dtype)
             return x, orig_shape, dims, kernel
 
         # --- single-dim path ---
@@ -448,7 +466,7 @@ class _ReduceOpBase(Op):
 
         x = x.contiguous().reshape(M, N)
 
-        kernel = self._get_or_create_kernel(M, N, x.dtype)
+        kernel = self._get_or_create_kernel((declared,), M, N, x.dtype)
         return x, orig_shape, dim, kernel
 
     # Output reshape
@@ -699,6 +717,11 @@ class VarFwdOp(_WelfordReduceOp):
 
 class VarMeanFwdOp(_WelfordReduceOp):
     """Variance and mean reduction."""
+
+    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: both outputs are the reduced shape."""
+        shape = self._reduced_shape(x_shape)
+        return {"var": shape, "mean": shape}
 
     _op_kind = "var_mean"
 

@@ -234,7 +234,7 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
 
 
 def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> str:
-    kernel = op._get_kernel(dtype)
+    kernel = op._get_kernel((), dtype)
     if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
         return "prefill_ws_causal"
     if isinstance(kernel, GQAPrefillFwdKernel):

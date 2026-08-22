@@ -63,9 +63,10 @@ class MoeUnpermuteFwdOp(Op):
         self._routed_scaling_factor = routed_scaling_factor
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "unpermute_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["unpermute_kernel"](
                 self.total_tokens,
@@ -130,7 +131,9 @@ class MoeUnpermuteFwdOp(Op):
         """
         self._validate_dtypes(mm2_pad, fwd_idx, topk_weights)
         self.dtype = mm2_pad.dtype
-        return self._get_kernel(mm2_pad.dtype)(mm2_pad, fwd_idx, topk_weights, out=out)
+        return self._get_kernel((mm2_pad, fwd_idx, topk_weights), mm2_pad.dtype)(
+            mm2_pad, fwd_idx, topk_weights, out=out
+        )
 
 
 @torch.library.custom_op("top::moe_unpermute_fwd", mutates_args=())

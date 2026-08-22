@@ -121,9 +121,7 @@ LogSumExpFwdOp:
     - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, int) or len(dim) > 0"
     - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim})))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim})][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Attention weight matrices
@@ -177,9 +175,7 @@ SumFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -230,9 +226,7 @@ MeanFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -275,9 +269,7 @@ AmaxFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -320,9 +312,7 @@ AminFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -374,9 +364,7 @@ ProdFwdOp:
       keepdim: {type: bool, default: false}
     shape_rules:
     - "-x.ndim <= dim < x.ndim"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - 1)"
-    - "not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -423,9 +411,7 @@ VarFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state variance (Llama-3.1-8B)
@@ -469,9 +455,7 @@ StdFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state std (Llama-3.1-8B)
@@ -516,11 +500,8 @@ VarMeanFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "var.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(var.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(var.ndim))"
-    - "mean.ndim == var.ndim"
-    - "mean.shape == var.shape"
+    - "var.shape == reduced_shape(x.shape, dim, keepdim)"
+    - "mean.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state var+mean (Llama-3.1-8B)
@@ -566,10 +547,7 @@ ArgmaxFwdOp:
       keepdim: {type: bool, default: false}
     shape_rules:
     - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
-    - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
-    - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-    - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # LM head argmax (batch, vocab_size) -- greedy decoding
@@ -613,10 +591,7 @@ ArgminFwdOp:
       keepdim: {type: bool, default: false}
     shape_rules:
     - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
-    - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
-    - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-    - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # LM head argmin
@@ -665,9 +640,7 @@ AllFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
 
   workloads:
     # Mask validation (batch, seq_len)
@@ -712,9 +685,7 @@ AnyFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
 
   workloads:
     # Mask validation (batch, seq_len)
@@ -754,9 +725,8 @@ CountNonzeroFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "output.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-    - "output.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.shape == reduced_shape(x.shape, dim, False)"
 
   workloads:
     # Sparsity analysis (batch, hidden_dim)
@@ -809,9 +779,7 @@ L1NormFwdOp:
     - "ord == 1"
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state L1 norm (Llama-3.1-8B)
@@ -860,9 +828,7 @@ L2NormFwdOp:
     - "ord == 2"
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state L2 norm (Llama-3.1-8B)
@@ -911,9 +877,7 @@ InfNormFwdOp:
     - "ord == float('inf')"
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state inf norm (Llama-3.1-8B)

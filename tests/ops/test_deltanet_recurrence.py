@@ -252,7 +252,7 @@ def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
     """Whatever selection picks is constructed with the op's autotune setting."""
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map(), tune=tune)
 
-    kernel = op._get_kernel(1, 32, 128, 128, torch.bfloat16, device_index=None)
+    kernel = op._get_kernel((), 1, 32, 128, 128, torch.bfloat16, device_index=None)
 
     assert kernel.kwargs["tune"] is tune
 

@@ -145,8 +145,45 @@ def reduced_axes(x: Any, dim: Any) -> frozenset:
     return frozenset(range(x.ndim))
 
 
+class _Ranked:
+    """The ``.ndim`` view of a shape tuple, so :func:`reduced_axes` can read it."""
+
+    __slots__ = ("ndim",)
+
+    def __init__(self, ndim: int) -> None:
+        self.ndim = ndim
+
+
+def reduced_shape(shape: Any, dim: Any, keepdim: bool = False, empty_dim: str = "full") -> tuple:
+    """Return the shape left after reducing *shape* over *dim*.
+
+    The op layer and the manifest call the same function, so an op's
+    ``_infer_output_shapes`` and its ``shape_rules`` cannot disagree about which
+    axes a reduction removes.
+
+    Args:
+        shape: The input shape, as a sequence of ints.
+        dim: An int, ``None``, or a list/tuple of ints, read the way
+            :func:`reduced_axes` reads it.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
+        empty_dim: What an empty list/tuple means, matching the op layer's
+            ``_empty_dim_policy``: ``"full"`` reduces every axis, ``"noop"``
+            reduces none. An op that rejects an empty ``dim`` never gets here.
+
+    Returns:
+        The output shape. Reducing every axis without *keepdim* gives ``()``.
+    """
+    if empty_dim == "noop" and isinstance(dim, (list, tuple)) and len(dim) == 0:
+        return tuple(shape)
+    axes = reduced_axes(_Ranked(len(shape)), dim)
+    if keepdim:
+        return tuple(1 if i in axes else d for i, d in enumerate(shape))
+    return tuple(d for i, d in enumerate(shape) if i not in axes)
+
+
 __all__ = [
     "dim_range_validity",
     "dim_uniqueness",
     "reduced_axes",
+    "reduced_shape",
 ]

@@ -1,10 +1,12 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import AdaLayerNormKernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 
 __all__ = ["AdaLayerNormZeroFwdOp"]
@@ -34,28 +36,26 @@ class AdaLayerNormZeroFwdOp(Op):
         Handles non-contiguous inputs and non-power-of-two hidden dims.
 
     Args:
-        M: Optional committed row count for strict compatibility. Preferred
-            API infers it from ``x.shape[:-1]``.
-        N: Optional committed hidden dimension. Preferred API infers it from
-            ``x.shape[-1]``.
-        eps: Epsilon for numerical stability.
+        eps: Epsilon for numerical stability (manifest ``params.eps``).
+        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+            in-tree kernels, or ``None`` to decide from the input device.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
+    #: The operator this op registers; a test asserts the graph holds nothing else.
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_ada_layer_norm_zero_fwd",)
+
     def __init__(
         self,
-        M: Optional[int] = None,
-        N: Optional[int] = None,
         eps: float = 1e-5,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self._committed_M = M
-        self._committed_N = N
         self.eps = eps
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: Optional[tuple[int, int]] = None
@@ -63,6 +63,16 @@ class AdaLayerNormZeroFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ada_layer_norm": AdaLayerNormKernel}
+
+    def _infer_output_shapes(
+        self,
+        x_shape: Tuple[int, ...],
+        scale_shape: Tuple[int, ...],
+        shift_shape: Tuple[int, ...],
+        gate_shape: Tuple[int, ...],
+    ) -> Dict[str, Tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
+        return {"output": tuple(x_shape)}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None or self.dtype is None:
@@ -74,91 +84,94 @@ class AdaLayerNormZeroFwdOp(Op):
         elem_bytes = self.dtype.itemsize
         return 6 * M * N, 5 * M * N * elem_bytes
 
-    def _get_kernel(
-        self,
-        M: int,
-        N: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (M, N, dtype, device_index)
-        return self.get_or_build_kernel(
-            "ada_layer_norm",
-            key=key,
-            build=lambda: self.kernel_map["ada_layer_norm"](
-                M,
-                N,
-                self.eps,
-                dtype,
-                has_gate=True,
-                tune=self.tune,
-            ),
-        )
-
     def forward(
-        self,
-        x: torch.Tensor,
-        scale: torch.Tensor,
-        shift: torch.Tensor,
-        gate: torch.Tensor,
+        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
     ) -> torch.Tensor:
         """Apply adaptive layer normalization with zero-init gating.
 
         Args:
-            x: Input tensor of shape ``(*leading, N)`` on CUDA.
-            scale: Per-token scale tensor of shape ``(*leading, N)`` on CUDA.
-            shift: Per-token shift tensor of shape ``(*leading, N)`` on CUDA.
-            gate: Per-token gate tensor of shape ``(*leading, N)`` on CUDA.
+            x: Tensor of shape ``(*leading, N)``.
+            scale: Tensor of shape ``(*leading, N)``.
+            shift: Tensor of shape ``(*leading, N)``.
+            gate: Tensor of shape ``(*leading, N)``.
 
         Returns:
-            Normalized, modulated, and gated tensor of the same shape as *x*.
+            Tensor of the same shape as *x*.
 
         Raises:
-            ValueError: If tensors are not on CUDA, dtypes mismatch,
-                or shapes are incompatible with the configured dimensions.
+            ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
+                :meth:`_eager_forward`.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if not scale.is_cuda:
-            raise ValueError("scale must be a CUDA tensor")
-        if not shift.is_cuda:
-            raise ValueError("shift must be a CUDA tensor")
-        if not gate.is_cuda:
-            raise ValueError("gate must be a CUDA tensor")
-        expected_dtype = x.dtype
-        if scale.dtype != expected_dtype:
-            raise ValueError(f"Expected scale.dtype {expected_dtype}, got {scale.dtype}")
-        if shift.dtype != expected_dtype:
-            raise ValueError(f"Expected shift.dtype {expected_dtype}, got {shift.dtype}")
-        if gate.dtype != expected_dtype:
-            raise ValueError(f"Expected gate.dtype {expected_dtype}, got {gate.dtype}")
+        return _norm_ada_layer_norm_zero_fwd(x, scale, shift, gate, self._instance_key)
+
+    def _eager_forward(
+        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
+        """
+        self._validate_dtypes(x, scale, shift, gate)
+        self.dtype = x.dtype
+        if scale.dtype != x.dtype:
+            raise ValueError(f"Expected scale.dtype {x.dtype}, got {scale.dtype}")
         if scale.shape != x.shape:
-            raise ValueError(f"Expected scale shape {x.shape}, got {scale.shape}")
+            raise ValueError(f"Expected scale shape {tuple(x.shape)}, got {tuple(scale.shape)}")
+        if shift.dtype != x.dtype:
+            raise ValueError(f"Expected shift.dtype {x.dtype}, got {shift.dtype}")
         if shift.shape != x.shape:
-            raise ValueError(f"Expected shift shape {x.shape}, got {shift.shape}")
+            raise ValueError(f"Expected shift shape {tuple(x.shape)}, got {tuple(shift.shape)}")
+        if gate.dtype != x.dtype:
+            raise ValueError(f"Expected gate.dtype {x.dtype}, got {gate.dtype}")
         if gate.shape != x.shape:
-            raise ValueError(f"Expected gate shape {x.shape}, got {gate.shape}")
-        N = x.shape[-1]
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected hidden dim {self._committed_N}, got {N}")
+            raise ValueError(f"Expected gate shape {tuple(x.shape)}, got {tuple(gate.shape)}")
 
-        orig_shape = x.shape
-        x = x.contiguous().reshape(-1, N)
-        scale = scale.contiguous().reshape(-1, N)
-        shift = shift.contiguous().reshape(-1, N)
-        gate = gate.contiguous().reshape(-1, N)
-        M_actual = x.shape[0]
-        if self._committed_M is not None and M_actual != self._committed_M:
-            raise ValueError(
-                f"Expected M={self._committed_M} (product of leading dims), got {M_actual}"
-            )
-        self.M = M_actual
-        self.N = N
-        dtype = expected_dtype
-        assert dtype is not None
-        kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
-        y = kernel(x, scale, shift, gate)
-        self._last_roofline_mn = (M_actual, N)
-        self.dtype = expected_dtype
+        # The op normalizes contiguity and hands over what the manifest declares; how a
+        # kernel wants that laid out is its own business.
+        x = x.contiguous()
+        scale = scale.contiguous()
+        shift = shift.contiguous()
+        gate = gate.contiguous()
+        n = x.shape[-1]
+        kernel = self.get_or_build_kernel(
+            "ada_layer_norm",
+            (x, scale, shift, gate),
+            key=(n, x.dtype),  # this instance's in-tree cache key
+            build=lambda: self.kernel_map["ada_layer_norm"](
+                n,
+                self.eps,
+                x.dtype,
+                has_gate=True,
+                tune=self.tune,
+            ),
+        )
+        self._last_roofline_mn = (x.numel() // n, n)
+        return kernel(x, scale, shift, gate)
 
-        return y.reshape(orig_shape)
+
+@torch.library.custom_op("top::norm_ada_layer_norm_zero_fwd", mutates_args=())
+def _norm_ada_layer_norm_zero_fwd(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    gate: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(x, scale, shift, gate)
+
+
+@_norm_ada_layer_norm_zero_fwd.register_fake
+def _norm_ada_layer_norm_zero_fwd_fake(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    gate: torch.Tensor,
+    instance_key: str,
+) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(
+        tuple(x.shape), tuple(scale.shape), tuple(shift.shape), tuple(gate.shape)
+    )
+    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
+    # non-contiguous public input's strides must not survive into the fake.
+    return x.new_empty(shapes["output"])

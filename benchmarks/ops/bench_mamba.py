@@ -6,12 +6,14 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
+from tileops.ops.cb_producer import CBProducerFwdOp
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
+    CBProducerFwdWorkload,
     DaCumsumFwdWorkload,
     SSDChunkScanFwdWorkload,
     SSDChunkStateFwdWorkload,
@@ -20,11 +22,42 @@ from workloads.mamba import (
     ssd_state_passing_fwd_ref,
 )
 
+_CB_PRODUCER_OP_NAME = "CBProducerFwdOp"
 _DA_CUMSUM_OP_NAME = "DaCumsumFwdOp"
 _CHUNK_STATE_OP_NAME = "SSDChunkStateFwdOp"
 _CHUNK_SCAN_OP_NAME = "SSDChunkScanFwdOp"
 _STATE_PASSING_OP_NAME = "SSDStatePassingFwdOp"
 _DECODE_OP_NAME = "SSDDecodeFwdOp"
+
+
+def _cb_producer_args(w: dict) -> tuple:
+    """Constructor arguments for one manifest workload row."""
+    return w["batch"], w["num_chunks"], w["n_groups"], w["chunk_len"], w["d_state"]
+
+
+@pytest.mark.parametrize(
+    "batch, num_chunks, n_groups, chunk_len, d_state, dtype, tune",
+    manifest_params(load_workloads(_CB_PRODUCER_OP_NAME), _cb_producer_args, tune=False),
+)
+def test_cb_producer_fwd_bench(
+    batch: int,
+    num_chunks: int,
+    n_groups: int,
+    chunk_len: int,
+    d_state: int,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
+    test = CBProducerFwdWorkload(batch, num_chunks, n_groups, chunk_len, d_state, dtype)
+    inputs = test.gen_inputs()
+
+    op = CBProducerFwdOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
+    bm = ManifestBenchmark(_CB_PRODUCER_OP_NAME, op, test)
+
+    bm.compare(
+        {"tileops": op, "torch": (test.ref_program, inputs)}, *inputs, record_as=op, params=locals()
+    )
 
 
 def _da_cumsum_args(w: dict) -> tuple:

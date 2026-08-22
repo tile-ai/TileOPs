@@ -89,7 +89,7 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     )
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op._get_kernel(torch.float16)
+        op._get_kernel((), torch.float16)
 
 
 @pytest.mark.smoke
@@ -117,7 +117,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     op = AutoDiscoveredIncompatibleOp(batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op._get_kernel(torch.float16)
+        op._get_kernel((), torch.float16)
 
 
 @pytest.mark.smoke

@@ -4,7 +4,7 @@
 
 - `kernel_map` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel class names. Manifest declares it; agents implement the listed Kernels. See [scaffold-op § Slot S14](../skills/scaffold-op/slot-rules.md#slot-s14).
 
-- Op `__init__` is keyword-only (`def __init__(self, *, ...)`). Parameter names come from the manifest: `shape` dim names (fixed-rank), `static_dims` keys (arbitrary-rank), `params` keys. Only manifest-declared information belongs in `__init__`.
+- Op `__init__` takes manifest parameters positionally, in manifest order — `shape` dim names (fixed-rank), `static_dims` keys (arbitrary-rank), `params` keys — and a param declaring `kw_only: true` after `*`. `target`, `kernel_map` and `tune` are keyword-only. Only manifest-declared information belongs in `__init__`.
 
 - Arbitrary-rank ops declare construction-time values via manifest `static_dims`. Each entry is a single-axis reference `<tensor>.shape[<const_or_param>]`; other dims come from tensors at forward time. See [manifest.md R20](../../docs/design/manifest.md).
 

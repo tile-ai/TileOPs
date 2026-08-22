@@ -46,8 +46,8 @@ def test_rms_norm_serves_two_dtypes_from_one_instance():
 
 
 @pytest.mark.smoke
-def test_layer_norm_keys_on_both_shape_and_dtype():
-    """A second dtype at the same shape must not reuse the first entry."""
+def test_layer_norm_keys_on_dtype():
+    """A second dtype must not reuse the first entry."""
     n = 256
     op = LayerNormFwdOp(normalized_shape=(n,))
     for dtype in _DTYPES:
@@ -55,7 +55,7 @@ def test_layer_norm_keys_on_both_shape_and_dtype():
         w = torch.randn(n, dtype=dtype, device="cuda")
         b = torch.randn(n, dtype=dtype, device="cuda")
         assert op(x, w, b).dtype == dtype
-    assert set(op.built_kernels("layer_norm")) == {(16, dt) for dt in _DTYPES}
+    assert set(op.built_kernels("layer_norm")) == set(_DTYPES)
 
 
 @pytest.mark.smoke
@@ -81,8 +81,8 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
     )
 
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128)
-    fp16 = op._get_kernel(torch.float16)
-    bf16 = op._get_kernel(torch.bfloat16)
+    fp16 = op._get_kernel((), torch.float16)
+    bf16 = op._get_kernel((), torch.bfloat16)
     assert fp16.__class__.__name__ == "GQADecodeBs1Kernel"
     assert bf16.__class__.__name__ == "GQADecodeKernel"
     _assert_two_entries(op)
@@ -104,7 +104,7 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
         v = torch.randn_like(k)
         output = op(q, k, v)
         assert output.dtype == dtype
-        kernel = op._get_kernel(dtype)
+        kernel = op._get_kernel((), dtype)
         assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
         assert kernel.dtype == dtype
     _assert_two_entries(op)
@@ -123,7 +123,7 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         v = torch.randn_like(q)
         output = op(q, k, v)
         assert output.dtype == dtype
-        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
+        assert op._get_kernel((), dtype).__class__.__name__ == "GQAPrefillFwdKernel"
     _assert_two_entries(op._gqa_op)
 
     # MHA builds no kernel of its own, so autotune has to reach the delegate's

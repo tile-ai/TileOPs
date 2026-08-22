@@ -61,7 +61,7 @@ def _stub_op(**kwargs):
 
     class StubOp(RMSNormFwdOp):
         def forward(self, x, weight):
-            return self.get_or_build_kernel("stub", key=x.dtype, build=lambda: None)
+            return self.get_or_build_kernel("stub", (), key=x.dtype, build=lambda: None)
 
     StubOp.__name__ = "StubOp"
     return StubOp(normalized_shape=NORMALIZED_SHAPE, **kwargs)
@@ -572,3 +572,41 @@ def test_an_explicit_target_serves_a_pool_op_no_detector_claims_the_device():
         "ceil_mode": False,
     }
     assert torch.equal(out, torch.full_like(out, 7)), "the target's kernel produced the result"
+
+
+# --------------------------------------------------------------------------------------
+# Five inputs, two of them written: BatchNormFwdOp at the seam
+# --------------------------------------------------------------------------------------
+
+
+def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
+    """Order is the only thing that tells a backend which tensor is which."""
+    received = []
+
+    def build_kernel(*inputs, **params):
+        def kernel(x, running_mean, running_var, weight, bias):
+            received.append((x, running_mean, running_var, weight, bias))
+            return torch.full_like(x, 7)
+
+        return kernel
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("BatchNormFwdOp", "acme", build_kernel)
+    from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
+    x = torch.randn(2, 4, 8, 8, dtype=DTYPE)
+    channels = [torch.randn(4, dtype=torch.float32) for _ in range(4)]
+    running_mean, running_var, weight, bias = channels
+
+    out = BatchNormFwdOp()(x, running_mean, running_var, weight, bias)
+
+    ((got_x, got_mean, got_var, got_weight, got_bias),) = received
+    assert got_x.shape == x.shape
+    for got, expected in (
+        (got_mean, running_mean),
+        (got_var, running_var),
+        (got_weight, weight),
+        (got_bias, bias),
+    ):
+        assert torch.equal(got, expected)
+    assert torch.equal(out, torch.full_like(x, 7))

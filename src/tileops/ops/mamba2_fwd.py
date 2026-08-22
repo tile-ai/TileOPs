@@ -168,6 +168,20 @@ class Mamba2FwdOp(Op):
 
     # Forward
 
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        dt_shape: tuple[int, ...],
+        A_shape: tuple[int, ...],
+        B_shape: tuple[int, ...],
+        C_shape: tuple[int, ...],
+        dt_bias_shape: tuple[int, ...],
+        initial_states_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``y`` follows *x*, the states carry the state size of *B*."""
+        b, s, h, p = x_shape
+        return {"y": (b, s, h, p), "final_states": (b, h, p, B_shape[-1])}
+
     def forward(
         self,
         x: torch.Tensor,

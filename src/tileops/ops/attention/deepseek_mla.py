@@ -34,9 +34,10 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mla_decode_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["mla_decode_kernel"](
                 self.batch,
@@ -54,9 +55,19 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mla_decode_kernel": MLADecodeWsKernel}
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        q_pe_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        k_pe_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        return {"o": tuple(q_shape)}
+
     def forward(
         self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
     ) -> torch.Tensor:
         self._validate_dtypes(q, q_pe, k, k_pe)
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, q_pe, k, k_pe)
+        return self._get_kernel((q, q_pe, k, k_pe), q.dtype)(q, q_pe, k, k_pe)

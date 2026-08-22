@@ -52,6 +52,7 @@ class SSDChunkStateFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         num_chunks: int,
         chunk_len: int,
@@ -80,6 +81,7 @@ class SSDChunkStateFwdOp(Op):
         )
         return self.get_or_build_kernel(
             "ssd_chunk_state_fwd",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["ssd_chunk_state_fwd"](
                 batch,
@@ -95,6 +97,18 @@ class SSDChunkStateFwdOp(Op):
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        Bmat_shape: tuple[int, ...],
+        dt_shape: tuple[int, ...],
+        dA_cumsum_shape: tuple[int, ...],
+        seq_idx_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: ``[B, NC, H, P, N]`` — chunks from *dt*, state size from *Bmat*."""
+        b, _, h, p = x_shape
+        return {"states": (b, dt_shape[2], h, p, Bmat_shape[-1])}
 
     def forward(
         self,
@@ -148,6 +162,7 @@ class SSDChunkStateFwdOp(Op):
         self.dtype = x.dtype
         self.seq_idx_shape = None if seq_idx is None else tuple(seq_idx.shape)
         self.kernel = self._get_kernel(
+            (x, Bmat, dt, dA_cumsum, seq_idx),
             batch,
             num_chunks,
             chunk_len,

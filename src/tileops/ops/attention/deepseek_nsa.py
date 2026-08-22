@@ -9,7 +9,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op
+from ..op_base import UnmanifestedOp
 
 __all__ = [
     "NSACmpFwdVarlenOp",
@@ -18,7 +18,7 @@ __all__ = [
 ]
 
 
-class NSATopkVarlenOp(Op):
+class NSATopkVarlenOp(UnmanifestedOp):
     def __init__(
         self,
         seq_num: int,
@@ -42,9 +42,10 @@ class NSATopkVarlenOp(Op):
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "nsa_topk_varlen_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["nsa_topk_varlen_kernel"](
                 **self._kernel_params,
@@ -66,10 +67,11 @@ class NSATopkVarlenOp(Op):
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
+        tensors = (q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
+        return self._get_kernel(tensors, q.dtype)(*tensors)
 
 
-class NSAFwdVarlenOp(Op):
+class NSAFwdVarlenOp(UnmanifestedOp):
     def __init__(
         self,
         batch: int,
@@ -92,9 +94,10 @@ class NSAFwdVarlenOp(Op):
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "nsa_fwd_varlen_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
                 **self._kernel_params,
@@ -117,12 +120,11 @@ class NSAFwdVarlenOp(Op):
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(
-            q, k, v, block_indices, block_counts, offsets, token_indices
-        )
+        tensors = (q, k, v, block_indices, block_counts, offsets, token_indices)
+        return self._get_kernel(tensors, q.dtype)(*tensors)
 
 
-class NSACmpFwdVarlenOp(Op):
+class NSACmpFwdVarlenOp(UnmanifestedOp):
     def __init__(
         self,
         seq_num: int,
@@ -159,9 +161,10 @@ class NSACmpFwdVarlenOp(Op):
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "nsa_cmp_fwd_varlen_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
                 **self._kernel_params,
@@ -183,4 +186,5 @@ class NSACmpFwdVarlenOp(Op):
         token_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         self.dtype = q.dtype
-        return self._get_kernel(q.dtype)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
+        tensors = (q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
+        return self._get_kernel(tensors, q.dtype)(*tensors)

@@ -22,8 +22,7 @@ from tileops.ops.moe.abc import (
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["FusedMoe", "FusedMoeFwdOp"]
 
@@ -156,6 +155,17 @@ class FusedMoe(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {}
+
+    def _infer_output_shapes(
+        self,
+        hidden_states_shape: tuple[int, ...],
+        gating_output_shape: tuple[int, ...],
+        w_gate_up_shape: tuple[int, ...],
+        w_down_shape: tuple[int, ...],
+        correction_bias_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: routing returns one row per token, of the input width."""
+        return {"output": tuple(hidden_states_shape)}
 
     def forward(
         self,

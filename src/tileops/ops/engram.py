@@ -46,9 +46,10 @@ class EngramGateConvFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "engram_gate_conv_fwd",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["engram_gate_conv_fwd"](
                 self.M,
@@ -63,6 +64,26 @@ class EngramGateConvFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"engram_gate_conv_fwd": EngramGateConvFwdKernel}
+
+    def _infer_output_shapes(
+        self,
+        H_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        rms_w_h_shape: tuple[int, ...],
+        rms_w_v_shape: tuple[int, ...],
+        conv_w_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the two ``[M, seq_len, d]`` tensors, plus four per-row statistics."""
+        rows = H_shape[:2]
+        return {
+            "Y": tuple(H_shape),
+            "vhat": tuple(H_shape),
+            "alpha": tuple(rows),
+            "rrms_h": tuple(rows),
+            "rrms_k": tuple(rows),
+            "rrms_v": tuple(rows),
+        }
 
     def forward(
         self,
@@ -104,7 +125,9 @@ class EngramGateConvFwdOp(Op):
         k = k.contiguous()
         v = v.contiguous()
 
-        return self._get_kernel(H.dtype)(H, k, v, rms_w_h, rms_w_v, conv_w)
+        return self._get_kernel((H, k, v, rms_w_h, rms_w_v, conv_w), H.dtype)(
+            H, k, v, rms_w_h, rms_w_v, conv_w
+        )
 
 
 class EngramGateConvBwdOp(Op):
@@ -141,9 +164,10 @@ class EngramGateConvBwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "engram_gate_conv_bwd",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["engram_gate_conv_bwd"](
                 self.M,
@@ -158,6 +182,31 @@ class EngramGateConvBwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"engram_gate_conv_bwd": EngramGateConvBwdKernel}
+
+    def _infer_output_shapes(
+        self,
+        dY_shape: tuple[int, ...],
+        H_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        rms_w_h_shape: tuple[int, ...],
+        rms_w_v_shape: tuple[int, ...],
+        conv_w_shape: tuple[int, ...],
+        vhat_shape: tuple[int, ...],
+        alpha_shape: tuple[int, ...],
+        rrms_h_shape: tuple[int, ...],
+        rrms_k_shape: tuple[int, ...],
+        rrms_v_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dH": tuple(dY_shape),
+            "dk": tuple(dY_shape),
+            "dv": tuple(dY_shape),
+            "drms_w_h": tuple(rms_w_h_shape),
+            "drms_w_v": tuple(rms_w_v_shape),
+            "dconv_w": tuple(conv_w_shape),
+        }
 
     def forward(
         self,
@@ -222,7 +271,9 @@ class EngramGateConvBwdOp(Op):
         v = v.contiguous()
         vhat = vhat.contiguous()
 
-        return self._get_kernel(dY.dtype)(
+        return self._get_kernel(
+            (dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v), dY.dtype
+        )(
             dY,
             H,
             k,

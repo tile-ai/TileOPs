@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.gla import GLABwdKernel, GLAFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
-from .op_base import Op
+from .op_base import Op, check_tensor_shape
 
 __all__ = ["GLABwdOp", "GLAFwdOp"]
 
@@ -33,11 +33,6 @@ def _resolve_gla_bthd(
     if do is not None and do.shape != (batch, seq_len, heads, dim_v):
         raise ValueError("do must have shape [batch, seq_len, heads, dim_v]")
     dtype = q.dtype
-    for name, tensor in (("k", k), ("v", v), ("g", g)):
-        if tensor.dtype != dtype:
-            raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-    if do is not None and do.dtype != dtype:
-        raise ValueError(f"do.dtype must be {dtype}, got {do.dtype}")
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
     return batch, seq_len, heads, dim_k, dim_v, dtype
@@ -53,7 +48,6 @@ class GLAFwdOp(Op):
     Args:
         chunk_size: Chunk size for chunked linear attention.
         scale: Query scale factor (default: dim_k**-0.5).
-        output_final_state: Whether to return the final hidden state.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """
@@ -62,7 +56,6 @@ class GLAFwdOp(Op):
         self,
         chunk_size: int = 64,
         scale: float = -1.0,
-        output_final_state: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -73,7 +66,6 @@ class GLAFwdOp(Op):
         self.dim_v = None
         self.chunk_size = chunk_size
         self.scale = scale
-        self.output_final_state = output_final_state
         self.dtype = None
         self.tune = tune
 
@@ -88,6 +80,7 @@ class GLAFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         heads: int,
@@ -104,13 +97,13 @@ class GLAFwdOp(Op):
             dim_v,
             self.chunk_size,
             self.scale,
-            self.output_final_state,
             dtype,
             device_index,
             self.tune,
         )
         return self.get_or_build_kernel(
             "GLAFwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GLAFwdKernel"](
                 batch,
@@ -120,11 +113,24 @@ class GLAFwdOp(Op):
                 dim_v,
                 self.chunk_size,
                 scale=self.scale,
-                output_final_state=self.output_final_state,
+                output_final_state=True,
                 dtype=dtype,
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        initial_state_shape: tuple[int, ...] | None,
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: the output, and the state the recurrence ends on."""
+        b, s, h, dk = q_shape
+        dv = v_shape[3]
+        return {"o": (b, s, h, dv), "final_state": (b, h, dk, dv)}
 
     def forward(
         self,
@@ -133,7 +139,7 @@ class GLAFwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         initial_state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run GLA forward.
 
         Args:
@@ -141,19 +147,25 @@ class GLAFwdOp(Op):
             k: Key tensor [B, T, H, K].
             v: Value tensor [B, T, H, V].
             g: Log-space forget gates [B, T, H, K].
-            initial_state: Optional initial hidden state [B, H, K, V].
+            initial_state: Optional fp32 initial hidden state [B, H, K, V]; absent
+                starts the recurrence from zeros.
 
         Returns:
-            Tuple of (o, final_state). final_state is None if output_final_state=False.
+            Tuple of (o, final_state).
         """
         batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(q, k, v, g, self.chunk_size)
+        self._validate_dtypes(q, k, v, g, initial_state=initial_state)
+        if initial_state is not None:
+            check_tensor_shape("initial_state", initial_state, (batch, heads, dim_k, dim_v))
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g, initial_state), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
+        )
         return self.kernel(q, k, v, g, initial_state)
 
 
@@ -201,6 +213,7 @@ class GLABwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         heads: int,
@@ -223,6 +236,7 @@ class GLABwdOp(Op):
         )
         return self.get_or_build_kernel(
             "GLABwdKernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["GLABwdKernel"](
                 batch,
@@ -236,6 +250,24 @@ class GLABwdOp(Op):
                 tune=self.tune,
             ),
         )
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        h_shape: tuple[int, ...],
+        do_shape: tuple[int, ...],
+        dht_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: each gradient has the shape of what it is for."""
+        return {
+            "dq": tuple(q_shape),
+            "dk": tuple(k_shape),
+            "dv": tuple(v_shape),
+            "dg": tuple(g_shape),
+        }
 
     def forward(
         self,
@@ -266,11 +298,17 @@ class GLABwdOp(Op):
         batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
             q, k, v, g, self.chunk_size, do=do
         )
+        self._validate_dtypes(q, k, v, g, h, do, dht)
+        chunks = seq_len // self.chunk_size
+        check_tensor_shape("h", h, (batch, chunks + 1, heads, dim_k, dim_v))
+        check_tensor_shape("dht", dht, (batch, heads, dim_k, dim_v))
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.kernel = self._get_kernel(batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
+        self.kernel = self._get_kernel(
+            (q, k, v, g, h, do, dht), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
+        )
         return self.kernel(q, k, v, g, h, do, dht, has_initial_state)

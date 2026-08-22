@@ -15,7 +15,7 @@ ReluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -92,7 +92,7 @@ SiluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -129,7 +129,7 @@ HardswishFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -166,7 +166,7 @@ HardsigmoidFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -203,7 +203,7 @@ MishFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -240,7 +240,7 @@ SeluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -277,7 +277,7 @@ LeakyReluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -315,7 +315,7 @@ EluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -353,7 +353,7 @@ HardtanhFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
