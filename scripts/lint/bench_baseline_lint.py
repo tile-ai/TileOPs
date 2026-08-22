@@ -21,8 +21,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = REPO_ROOT / "benchmarks"
 
-OURS = "tileops"
+OURS = "tileops"  # tags start with it: "tileops", "tileops-nopad-3wg", f"tileops_{variant}"
 MARKER = "FIXME(staged-rollout)"
+
+
+def _theirs(tags: set[str]) -> set[str]:
+    """The tags naming somebody else's implementation."""
+    return {t for t in tags if not t.startswith(OURS)}
 
 
 def _literal_keys(node: ast.AST) -> set[str]:
@@ -66,14 +71,55 @@ def _tags_of(name: str, func: ast.AST, before: int) -> set[str] | None:
     return tags
 
 
+def _recorded_tags(func: ast.AST) -> tuple[set[str], bool]:
+    """Literal tags a ``record(..., tag=...)`` names in *func*, and whether any is opaque.
+
+    The benchmarks that time one implementation at a time reach the report this
+    way instead of through ``compare``.
+    """
+    tags: set[str] = set()
+    opaque = False
+    for node in ast.walk(func):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "record"
+        ):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "tag":
+                continue
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                tags.add(kw.value.value)
+            else:
+                opaque = True
+    return tags, opaque
+
+
 def unbaselined_comparisons(text: str) -> list[int]:
-    """Line of every ``compare(...)`` that names no baseline and carries no marker."""
+    """Line of every comparison that names no baseline and carries no marker."""
     tree = ast.parse(text)
     marked = [i for i, line in enumerate(text.split("\n"), start=1) if MARKER in line]
     findings = []
     for func in ast.walk(tree):
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        compares = [
+            n
+            for n in ast.walk(func)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "compare"
+        ]
+        if not compares:
+            tags, opaque = _recorded_tags(func)
+            if (
+                tags
+                and not opaque
+                and not _theirs(tags)
+                and not any(func.lineno <= m <= func.end_lineno for m in marked)
+            ):
+                findings.append(func.lineno)
         for node in ast.walk(func):
             if not (
                 isinstance(node, ast.Call)
@@ -91,7 +137,7 @@ def unbaselined_comparisons(text: str) -> list[int]:
                 tags = _tags_of(arg.id, func, node.lineno)
             else:
                 continue  # a call or comprehension builds it
-            if tags and not (tags - {OURS}):
+            if tags and not _theirs(tags):
                 findings.append(node.lineno)
     return findings
 
@@ -107,9 +153,8 @@ def main(argv: list[str]) -> int:
         for lineno in findings:
             failed = True
             print(
-                f"{path}:{lineno}: comparison names only {OURS!r}. Add an implementation "
-                f"that is not ours, or say why the row has none with a {MARKER} block "
-                f"above it.",
+                f"{path}:{lineno}: comparison names no implementation but ours. Add one, "
+                f"or say why the row has none with a {MARKER} block above it.",
                 file=sys.stderr,
             )
     return 1 if failed else 0

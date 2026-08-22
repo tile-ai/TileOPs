@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
+from benchmarks.baselines import assert_matches_reference
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillFwdOp
@@ -76,6 +77,35 @@ def _make_inputs(case: GQAFp8TensorCoreBenchCase) -> tuple[torch.Tensor, ...]:
     )
 
 
+def _torch_sdpa_dequant_fwd(case: GQAFp8TensorCoreBenchCase):
+    """Dequantize with the descales, then attend in the output dtype.
+
+    Needs nothing optional, so the row reports a comparison whether or not flash-attn 3
+    is installed. ``scaled_dot_product_attention`` avoids the ``seq_len x seq_len`` score
+    matrix a per-head loop would materialize -- 12 GiB at the largest row.
+    """
+    group_size = case.heads // case.heads_kv
+
+    def _run(q, k, v, cu_q, cu_kv, q_descale, k_descale, v_descale):
+        del cu_q, cu_kv
+        batch, seq_len, dim = case.batch, case.seq_len, case.dim
+        heads, heads_kv = case.heads, case.heads_kv
+        q_deq = q.float().reshape(batch, seq_len, heads_kv, group_size, dim)
+        q_deq = (q_deq * q_descale[:, None, :, None, None]).reshape(batch, seq_len, heads, dim)
+        k_deq = k.float().reshape(batch, seq_len, heads_kv, dim) * k_descale[:, None, :, None]
+        v_deq = v.float().reshape(batch, seq_len, heads_kv, dim) * v_descale[:, None, :, None]
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q_deq.transpose(1, 2).to(case.out_dtype),
+            k_deq.transpose(1, 2).to(case.out_dtype),
+            v_deq.transpose(1, 2).to(case.out_dtype),
+            is_causal=False,
+            enable_gqa=True,
+        )
+        return out.transpose(1, 2).reshape(batch * seq_len, heads, dim)
+
+    return _run
+
+
 def _fa3_gqa_fp8_fwd(case: GQAFp8TensorCoreBenchCase):
     try:
         from flash_attn_interface import flash_attn_func
@@ -127,7 +157,12 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     torch.cuda.synchronize()
 
     bm = ManifestBenchmark(_OP_NAME, op, case)
-    functors = {"tileops": op}
+    sdpa_fn = _torch_sdpa_dequant_fwd(case)
+    # The tolerance tests/ops/attention/test_gqa_fp8.py holds its own dequantized
+    # reference to: fp8 quantization is the whole difference between the two.
+    assert_matches_reference(op, sdpa_fn, *inputs, atol=5e-2, rtol=5e-2)
+
+    functors = {"tileops": op, "torch-sdpa-dequant": sdpa_fn}
     fa3_fn = _fa3_gqa_fp8_fwd(case)
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
