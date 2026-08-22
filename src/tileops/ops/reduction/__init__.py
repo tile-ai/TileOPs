@@ -31,8 +31,6 @@ from .reduce import (
 )
 from .softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 
-# from .cummax import CummaxOp
-# from .cummin import CumminOp
 # --- VectorNormKernel ops ---
 from .vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
@@ -50,11 +48,6 @@ __all__: list[str] = [
     "SumFwdOp",
     "VarMeanFwdOp",
     "VarFwdOp",
-    # "ReduceMaxOp",
-    # "ReduceMeanOp",
-    # "ReduceMinOp",
-    # "ReduceProdOp",
-    # "ReduceSumOp",
     # --- SoftmaxKernel ops ---
     "SoftmaxFwdOp",
     "LogSoftmaxFwdOp",
@@ -65,8 +58,6 @@ __all__: list[str] = [
     # --- CumulativeKernel ops ---
     "CumsumFwdOp",
     "CumprodFwdOp",
-    # "CummaxOp",
-    # "CumminOp",
     # --- VectorNormKernel ops ---
     "InfNormFwdOp",
     "L1NormFwdOp",

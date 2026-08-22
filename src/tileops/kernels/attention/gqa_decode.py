@@ -196,7 +196,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                # loop_range = T.ceildiv((seqlen_kv // num_split), valid_block_N)
                 loop_range = T.ceildiv(split_length_shared[sid], block_N)
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):

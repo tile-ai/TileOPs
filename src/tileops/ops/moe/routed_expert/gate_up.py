@@ -14,6 +14,7 @@ from tileops.kernels.moe import (
 
 from ...compile_boundary import get_instance
 from ...op_base import Op
+from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGateUpFwdOp"]
 
@@ -24,7 +25,7 @@ _GATE_UP_KEYS = ("moe_grouped_gemm_fused_act_kernel", "moe_grouped_gemm_act_kern
 _GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
-class MoeGateUpFwdOp(Op):
+class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
     """Gate/up GEMM and its gated activation.
 
     Takes the tight permuted rows and the stacked gate||up weights, and returns
@@ -139,28 +140,6 @@ class MoeGateUpFwdOp(Op):
             [numel, ffn] activated output.
         """
         return _moe_gate_up_fwd(a, b, true_sizes, true_offsets, self._instance_key)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        true_sizes: torch.Tensor,
-        true_offsets: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo
-        cannot follow.
-        """
-        self._validate_dtypes(a, b, true_sizes, true_offsets)
-        for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
-            if t.device != a.device:
-                raise ValueError(f"{name} must be on {a.device}, got {t.device}")
-        self.dtype = a.dtype
-        # The op hands over what the manifest declares; how a kernel wants it laid
-        # out is its own business.
-        inputs = tuple(t.contiguous() for t in (a, b, true_sizes, true_offsets))
-        return self._get_kernel(inputs, a.dtype)(*inputs)
 
 
 @torch.library.custom_op("top::moe_gate_up_fwd", mutates_args=())
