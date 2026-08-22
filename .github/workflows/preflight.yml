@@ -285,6 +285,21 @@ jobs:
       - name: Run actionlint
         run: actionlint -color
 
+      # These assert what the workflows select, which actionlint cannot see. They
+      # run here rather than under gpu-smoke because they need `jq` — the runner
+      # image has none, and the suite skipped its own regression there.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # --noconftest: tests/conftest.py imports torch, which this job has no
+      # other reason to install. Nothing in this file uses a fixture from it.
+      - name: Run workflow contract tests
+        run: |
+          pip install pytest pyyaml -c constraints.txt
+          python -m pytest -q --noconftest tests/test_reclaim_action.py
+
   compile-contract-gate:
     # Always-on by design: no detect-changes path condition, so manifest-only
     # and test-only PRs both run the declaration/evidence equality test.
