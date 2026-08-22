@@ -102,13 +102,14 @@ def _assert_fused_add_matches(fn, reference, x, residual, weight, eps, **toleran
     torch.testing.assert_close(residual_copy, expected_add, **tolerance)
 
 
-_RMS_OP_NAME = "RMSNormFwdOp"
+def _norm_params(workloads: list[dict]) -> list:
+    """One param per manifest row and dtype: ``(m, n, dtype, tune)``.
 
-
-def _rms_params():
-    """Convert manifest workloads to pytest params: (m, n, dtype, tune)."""
+    Takes rows, not an op name, so each call site keeps the literal
+    ``load_workloads(<OpName>)`` the manifest validator matches.
+    """
     params = []
-    for w in load_workloads(_RMS_OP_NAME):
+    for w in workloads:
         m, n = w["x_shape"]
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
@@ -117,7 +118,10 @@ def _rms_params():
     return params
 
 
-@pytest.mark.parametrize("m, n, dtype, tune", _rms_params())
+_RMS_OP_NAME = "RMSNormFwdOp"
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _norm_params(load_workloads(_RMS_OP_NAME)))
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
@@ -150,25 +154,7 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 _FUSED_RMS_OP_NAME = "FusedAddRMSNormFwdOp"
 
 
-def _fused_rms_params():
-    params = []
-    # Autotune has no valid configs for N=16384 (Llama-405B hidden_dim).
-    _XFAIL_LABELS = {"llama-3.1-405b-prefill", "llama-3.1-405b-decode"}
-    for w in load_workloads(_FUSED_RMS_OP_NAME):
-        m, n = w["x_shape"]
-        label = w.get("label", f"{m}x{n}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            marks = ()
-            if label in _XFAIL_LABELS:
-                marks = pytest.mark.xfail(
-                    reason="autotune has no valid configs for N=16384", strict=False
-                )
-            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}", marks=marks))
-    return params
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _fused_rms_params())
+@pytest.mark.parametrize("m, n, dtype, tune", _norm_params(load_workloads(_FUSED_RMS_OP_NAME)))
 def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
@@ -201,18 +187,7 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
 _LN_OP_NAME = "LayerNormFwdOp"
 
 
-def _ln_params():
-    params = []
-    for w in load_workloads(_LN_OP_NAME):
-        m, n = w["x_shape"]
-        label = w.get("label", f"{m}x{n}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
-    return params
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _ln_params())
+@pytest.mark.parametrize("m, n, dtype, tune", _norm_params(load_workloads(_LN_OP_NAME)))
 def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
@@ -255,18 +230,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
 _FUSED_LN_OP_NAME = "FusedAddLayerNormFwdOp"
 
 
-def _fused_ln_params():
-    params = []
-    for w in load_workloads(_FUSED_LN_OP_NAME):
-        m, n = w["x_shape"]
-        label = w.get("label", f"{m}x{n}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
-    return params
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _fused_ln_params())
+@pytest.mark.parametrize("m, n, dtype, tune", _norm_params(load_workloads(_FUSED_LN_OP_NAME)))
 def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
