@@ -1,0 +1,227 @@
+"""Elementwise kernels, one module per category.
+
+Each module is named after the ``ops/elementwise`` module holding the ops it serves.
+The templates every kernel here is built from are in ``_base``, which is the only
+module the others import from.
+"""
+
+import torch
+
+from ._base import (
+    BinaryKernel,
+    FusedGatedKernel,
+    UnaryKernel,
+    coalesce_broadcast_dims,
+)
+from .activations import (
+    EluFwdKernel,
+    GeluAndMulFwdKernel,
+    GeluFwdKernel,
+    GeluTanhAndMulFwdKernel,
+    GeluTanhFwdKernel,
+    HardsigmoidFwdKernel,
+    HardswishFwdKernel,
+    HardtanhFwdKernel,
+    LeakyReluFwdKernel,
+    MishFwdKernel,
+    ReluFwdKernel,
+    SeluFwdKernel,
+    SigmoidFwdKernel,
+    SiluAndMulFwdKernel,
+    SiluFwdKernel,
+    SoftplusFwdKernel,
+    TanhFwdKernel,
+)
+from .alibi import AlibiFwdKernel
+from .arithmetic import (
+    AddFwdKernel,
+    DivFwdKernel,
+    DivTruncFwdKernel,
+    FloorDivideFwdKernel,
+    LerpFwdKernel,
+    LerpTensorFwdKernel,
+    MaximumFwdKernel,
+    MinimumFwdKernel,
+    MulFwdKernel,
+    PowFwdKernel,
+    RemainderFwdKernel,
+    SubFwdKernel,
+)
+from .bitwise import (
+    BitwiseAndBoolStorageFwdKernel,
+    BitwiseAndFwdKernel,
+    BitwiseNotFwdKernel,
+    BitwiseOrBoolStorageFwdKernel,
+    BitwiseOrFwdKernel,
+    BitwiseXorBoolStorageFwdKernel,
+    BitwiseXorFwdKernel,
+)
+from .clamp import (
+    ClampFwdKernel,
+    ClampTensorFwdKernel,
+)
+from .comparison import (
+    EqBoolStorageFwdKernel,
+    EqFwdKernel,
+    GeBoolStorageFwdKernel,
+    GeFwdKernel,
+    GtBoolStorageFwdKernel,
+    GtFwdKernel,
+    IsfiniteFwdKernel,
+    IsinfFwdKernel,
+    IsnanFwdKernel,
+    LeBoolStorageFwdKernel,
+    LeFwdKernel,
+    LtBoolStorageFwdKernel,
+    LtFwdKernel,
+    NeBoolStorageFwdKernel,
+    NeFwdKernel,
+)
+from .logical import (
+    LogicalAndBoolStorageFwdKernel,
+    LogicalAndFwdKernel,
+    LogicalNotBoolStorageFwdKernel,
+    LogicalNotFwdKernel,
+    LogicalOrBoolStorageFwdKernel,
+    LogicalOrFwdKernel,
+)
+from .masked_fill import (
+    MaskedFillFwdKernel,
+    MaskedFillTensorValueFwdKernel,
+)
+from .math_unary import (
+    AbsFwdKernel,
+    CeilFwdKernel,
+    CosFwdKernel,
+    ErfFwdKernel,
+    ExpFwdKernel,
+    Expm1FwdKernel,
+    FloorFwdKernel,
+    Log1pFwdKernel,
+    LogFwdKernel,
+    NegFwdKernel,
+    ReciprocalFwdKernel,
+    RoundFwdKernel,
+    RsqrtFwdKernel,
+    SignFwdKernel,
+    SinFwdKernel,
+    SqrtFwdKernel,
+    TruncFwdKernel,
+)
+from .nan_to_num import NanToNumFwdKernel
+from .prelu import PreluFwdKernel
+from .sinusoidal import SinusoidalFwdKernel
+from .where import WhereFwdKernel
+
+# Bool operands are served by the uint8-backed siblings imported above. Declaring
+# the pairing here — rather than having the op pick a second kernel_map slot and
+# a storage dtype — keeps the choice inside this backend. A backend with native
+# bool declares nothing and serves bool from its general implementation.
+for _primary, _impl in (
+    (EqFwdKernel, EqBoolStorageFwdKernel),
+    (NeFwdKernel, NeBoolStorageFwdKernel),
+    (GtFwdKernel, GtBoolStorageFwdKernel),
+    (LtFwdKernel, LtBoolStorageFwdKernel),
+    (GeFwdKernel, GeBoolStorageFwdKernel),
+    (LeFwdKernel, LeBoolStorageFwdKernel),
+    (LogicalAndFwdKernel, LogicalAndBoolStorageFwdKernel),
+    (LogicalOrFwdKernel, LogicalOrBoolStorageFwdKernel),
+    (LogicalNotFwdKernel, LogicalNotBoolStorageFwdKernel),
+    (BitwiseAndFwdKernel, BitwiseAndBoolStorageFwdKernel),
+    (BitwiseOrFwdKernel, BitwiseOrBoolStorageFwdKernel),
+    (BitwiseXorFwdKernel, BitwiseXorBoolStorageFwdKernel),
+    # masked_fill needs no sibling: the same kernel serves bool in uint8 storage.
+    (MaskedFillFwdKernel, MaskedFillFwdKernel),
+    (MaskedFillTensorValueFwdKernel, MaskedFillTensorValueFwdKernel),
+):
+    _primary.BOOL_IMPL = (_impl, torch.uint8)
+
+__all__ = [
+    "AbsFwdKernel",
+    "AddFwdKernel",
+    "AlibiFwdKernel",
+    "BinaryKernel",
+    "BitwiseAndBoolStorageFwdKernel",
+    "BitwiseAndFwdKernel",
+    "BitwiseNotFwdKernel",
+    "BitwiseOrBoolStorageFwdKernel",
+    "BitwiseOrFwdKernel",
+    "BitwiseXorBoolStorageFwdKernel",
+    "BitwiseXorFwdKernel",
+    "CeilFwdKernel",
+    "ClampFwdKernel",
+    "ClampTensorFwdKernel",
+    "CosFwdKernel",
+    "DivFwdKernel",
+    "DivTruncFwdKernel",
+    "EluFwdKernel",
+    "EqBoolStorageFwdKernel",
+    "EqFwdKernel",
+    "ErfFwdKernel",
+    "ExpFwdKernel",
+    "Expm1FwdKernel",
+    "FloorDivideFwdKernel",
+    "FloorFwdKernel",
+    "FusedGatedKernel",
+    "GeBoolStorageFwdKernel",
+    "GeFwdKernel",
+    "GeluAndMulFwdKernel",
+    "GeluFwdKernel",
+    "GeluTanhAndMulFwdKernel",
+    "GeluTanhFwdKernel",
+    "GtBoolStorageFwdKernel",
+    "GtFwdKernel",
+    "HardsigmoidFwdKernel",
+    "HardswishFwdKernel",
+    "HardtanhFwdKernel",
+    "IsfiniteFwdKernel",
+    "IsinfFwdKernel",
+    "IsnanFwdKernel",
+    "LeBoolStorageFwdKernel",
+    "LeFwdKernel",
+    "LeakyReluFwdKernel",
+    "LerpFwdKernel",
+    "LerpTensorFwdKernel",
+    "Log1pFwdKernel",
+    "LogFwdKernel",
+    "LogicalAndBoolStorageFwdKernel",
+    "LogicalAndFwdKernel",
+    "LogicalNotBoolStorageFwdKernel",
+    "LogicalNotFwdKernel",
+    "LogicalOrBoolStorageFwdKernel",
+    "LogicalOrFwdKernel",
+    "LtBoolStorageFwdKernel",
+    "LtFwdKernel",
+    "MaskedFillFwdKernel",
+    "MaskedFillTensorValueFwdKernel",
+    "MaximumFwdKernel",
+    "MinimumFwdKernel",
+    "MishFwdKernel",
+    "MulFwdKernel",
+    "NanToNumFwdKernel",
+    "NeBoolStorageFwdKernel",
+    "NeFwdKernel",
+    "NegFwdKernel",
+    "PowFwdKernel",
+    "PreluFwdKernel",
+    "ReciprocalFwdKernel",
+    "ReluFwdKernel",
+    "RemainderFwdKernel",
+    "RoundFwdKernel",
+    "RsqrtFwdKernel",
+    "SeluFwdKernel",
+    "SigmoidFwdKernel",
+    "SignFwdKernel",
+    "SiluAndMulFwdKernel",
+    "SiluFwdKernel",
+    "SinFwdKernel",
+    "SinusoidalFwdKernel",
+    "SoftplusFwdKernel",
+    "SqrtFwdKernel",
+    "SubFwdKernel",
+    "TanhFwdKernel",
+    "TruncFwdKernel",
+    "UnaryKernel",
+    "WhereFwdKernel",
+    "coalesce_broadcast_dims",
+]

@@ -34,7 +34,7 @@ ExpFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       exp: ExpFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -67,7 +67,7 @@ LogFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       log: LogFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -100,7 +100,7 @@ SqrtFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       sqrt: SqrtFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -133,7 +133,7 @@ RsqrtFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       rsqrt: RsqrtFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -166,7 +166,7 @@ AbsFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       abs: AbsFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -199,7 +199,7 @@ NegFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       neg: NegFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -234,7 +234,7 @@ ReciprocalFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       reciprocal: ReciprocalFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -268,7 +268,7 @@ SignFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       sign: SignFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -301,7 +301,7 @@ SinFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       sin: SinFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -334,7 +334,7 @@ CosFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       cos: CosFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -367,7 +367,7 @@ FloorFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       floor: FloorFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -400,7 +400,7 @@ CeilFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       ceil: CeilFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -435,7 +435,7 @@ RoundFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       round: RoundFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -468,7 +468,7 @@ TruncFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       trunc: TruncFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -501,7 +501,7 @@ ErfFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       erf: ErfFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -535,7 +535,7 @@ Log1pFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       log1p: Log1pFwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -569,7 +569,7 @@ Expm1FwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/math_unary.py
     kernel_map:
       expm1: Expm1FwdKernel
     op: tileops/ops/elementwise/math_unary.py
@@ -604,7 +604,7 @@ SigmoidFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       sigmoid: SigmoidFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -639,7 +639,7 @@ TanhFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       tanh: TanhFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -673,7 +673,7 @@ LogicalNotFwdOp:
     bytes: "N * elem_bytes + N"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/logical.py
     kernel_map:
       logical_not: LogicalNotFwdKernel
     op: tileops/ops/elementwise/logical.py
@@ -706,7 +706,7 @@ BitwiseNotFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/bitwise.py
     kernel_map:
       bitwise_not: BitwiseNotFwdKernel
     op: tileops/ops/elementwise/bitwise.py
@@ -740,7 +740,7 @@ IsnanFwdOp:
     bytes: "N * elem_bytes + N"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       isnan: IsnanFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -774,7 +774,7 @@ IsinfFwdOp:
     bytes: "N * elem_bytes + N"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       isinf: IsinfFwdKernel
     op: tileops/ops/elementwise/comparison.py
@@ -808,7 +808,7 @@ IsfiniteFwdOp:
     bytes: "N * elem_bytes + N"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/comparison.py
     kernel_map:
       isfinite: IsfiniteFwdKernel
     op: tileops/ops/elementwise/comparison.py

@@ -1,0 +1,478 @@
+"""Activation kernels, parameter-free and parametric, plus the fused gated forms."""
+
+import functools
+
+import tilelang
+import tilelang.language as T
+
+from ._base import (
+    _FLOAT_DTYPES,
+    FloatUnaryKernel,
+    FusedGatedKernel,
+    ParametricUnaryKernel,
+    _fp8_accum_dtype_str,
+)
+
+__all__ = [
+    "EluFwdKernel",
+    "GeluAndMulFwdKernel",
+    "GeluFwdKernel",
+    "GeluTanhAndMulFwdKernel",
+    "GeluTanhFwdKernel",
+    "HardsigmoidFwdKernel",
+    "HardswishFwdKernel",
+    "HardtanhFwdKernel",
+    "LeakyReluFwdKernel",
+    "MishFwdKernel",
+    "ReluFwdKernel",
+    "SeluFwdKernel",
+    "SigmoidFwdKernel",
+    "SiluAndMulFwdKernel",
+    "SiluFwdKernel",
+    "SoftplusFwdKernel",
+    "TanhFwdKernel",
+]
+
+
+class ReluFwdKernel(FloatUnaryKernel):
+    """ReLU: y = max(x, 0)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
+
+
+class GeluFwdKernel(FloatUnaryKernel):
+    """Element-wise GELU using the standard erf formulation."""
+
+    @staticmethod
+    def op_func(x):
+        inv_sqrt_2 = T.cast(0.7071067811865476, "float32")
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
+
+
+class GeluTanhFwdKernel(FloatUnaryKernel):
+    """Element-wise GELU using the tanh approximation.
+
+    Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
+    matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
+    """
+
+    @staticmethod
+    def op_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")
+        coeff = T.cast(0.044715, "float32")
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        x_f32 = T.cast(x, "float32")
+        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+        return half * x_f32 * (one + T.tanh(inner))
+
+
+class SiluFwdKernel(FloatUnaryKernel):
+    """Element-wise SiLU (Swish): x * sigmoid(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return x * T.sigmoid(x)
+
+
+class SigmoidFwdKernel(FloatUnaryKernel):
+    """Element-wise sigmoid(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.sigmoid(x)
+
+
+class TanhFwdKernel(FloatUnaryKernel):
+    """Element-wise tanh(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.tanh(T.cast(x, "float32"))
+
+
+class HardswishFwdKernel(FloatUnaryKernel):
+    """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
+
+    @staticmethod
+    def op_func(x):
+        three = T.cast(3.0, "float32")
+        six = T.cast(6.0, "float32")
+        zero = T.cast(0.0, "float32")
+        clamped = T.min(T.max(x + three, zero), six)
+        return x * clamped / six
+
+
+class HardsigmoidFwdKernel(FloatUnaryKernel):
+    """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
+
+    @staticmethod
+    def op_func(x):
+        three = T.cast(3.0, "float32")
+        six = T.cast(6.0, "float32")
+        zero = T.cast(0.0, "float32")
+        return T.min(T.max(x + three, zero), six) / six
+
+
+class MishFwdKernel(FloatUnaryKernel):
+    """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
+
+    @staticmethod
+    def op_func(x):
+        one = T.cast(1.0, "float32")
+        return x * T.tanh(T.log(one + T.exp(x)))
+
+
+class SeluFwdKernel(FloatUnaryKernel):
+    """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
+
+    alpha = 1.6732632423543772, scale = 1.0507009873554805
+    """
+
+    @staticmethod
+    def op_func(x):
+        alpha = T.cast(1.6732632423543772, "float32")
+        scale = T.cast(1.0507009873554805, "float32")
+        one = T.cast(1.0, "float32")
+        zero = T.cast(0.0, "float32")
+        x32 = T.cast(x, "float32")
+        return scale * T.if_then_else(x32 > zero, x32, alpha * (T.exp(x32) - one))
+
+
+@functools.lru_cache(maxsize=32)
+def _make_leaky_relu_kernel(
+    N, dtype, negative_slope, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
+    """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
+
+    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
+    -> fragment store for coalesced memory access.
+
+    For fp8 dtypes, uses explicit_parallel with fp16 accumulation (register_copy
+    is unreliable for 8-bit fragments).
+    """
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+        accum = _fp8_accum_dtype_str()
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            v = T.cast(val, accum)
+                            zero = T.cast(0, accum)
+                            slope = T.cast(negative_slope, accum)
+                            result = T.if_then_else(v > zero, v, slope * v)
+                            y[idx] = T.Cast(out_dtype, result)
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
+                        zero = T.cast(0, val.dtype)
+                        slope = T.cast(negative_slope, val.dtype)
+                        y_reg[i * npt_arg + j] = T.if_then_else(val > zero, val, slope * val)
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+    return kernel
+
+
+class LeakyReluFwdKernel(ParametricUnaryKernel):
+    """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
+
+    def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
+        self.negative_slope = negative_slope
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_leaky_relu_kernel
+
+    def _builder_args(self):
+        return (self.negative_slope,)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=256, npt=8):
+    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            zero = T.cast(0, "float32")
+                            a = T.cast(alpha, "float32")
+                            one = T.cast(1.0, "float32")
+                            v32 = T.cast(val, "float32")
+                            y[idx] = T.if_then_else(
+                                v32 > zero,
+                                T.Cast(out_dtype, v32),
+                                T.Cast(out_dtype, a * (T.exp(v32) - one)),
+                            )
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
+                        zero = T.cast(0, "float32")
+                        a = T.cast(alpha, "float32")
+                        one = T.cast(1.0, "float32")
+                        v32 = T.cast(val, "float32")
+                        y_reg[i * npt_arg + j] = T.if_then_else(
+                            v32 > zero,
+                            val,
+                            T.Cast(val.dtype, a * (T.exp(v32) - one)),
+                        )
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+    return kernel
+
+
+class EluFwdKernel(ParametricUnaryKernel):
+    """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
+
+    def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
+        self.alpha = alpha
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_elu_kernel
+
+    def _builder_args(self):
+        return (self.alpha,)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_hardtanh_kernel(
+    N, dtype, min_val, max_val, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
+    """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            lo = T.cast(min_val, "float32")
+                            hi = T.cast(max_val, "float32")
+                            v32 = T.cast(val, "float32")
+                            y[idx] = T.Cast(out_dtype, T.min(T.max(v32, lo), hi))
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
+                        lo = T.cast(min_val, "float32")
+                        hi = T.cast(max_val, "float32")
+                        v32 = T.cast(val, "float32")
+                        y_reg[i * npt_arg + j] = T.Cast(val.dtype, T.min(T.max(v32, lo), hi))
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+    return kernel
+
+
+class HardtanhFwdKernel(ParametricUnaryKernel):
+    """Hardtanh: y = clamp(x, min_val, max_val)."""
+
+    def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
+        self.min_val = min_val
+        self.max_val = max_val
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_hardtanh_kernel
+
+    def _builder_args(self):
+        return (self.min_val, self.max_val)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_softplus_kernel(
+    N, dtype, beta, threshold, output_dtype=None, is_fp8=False, threads=256, npt=8
+):
+    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            v32 = T.cast(val, "float32")
+                            b = T.cast(beta, "float32")
+                            t = T.cast(threshold, "float32")
+                            one = T.cast(1.0, "float32")
+                            scaled = v32 * b
+                            sp = T.log(one + T.exp(scaled)) / b
+                            y[idx] = T.if_then_else(
+                                scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
+                            )
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
+                        v32 = T.cast(val, "float32")
+                        b = T.cast(beta, "float32")
+                        t = T.cast(threshold, "float32")
+                        one = T.cast(1.0, "float32")
+                        scaled = v32 * b
+                        sp = T.log(one + T.exp(scaled)) / b
+                        y_reg[i * npt_arg + j] = T.if_then_else(
+                            scaled > t,
+                            val,
+                            T.Cast(val.dtype, sp),
+                        )
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+    return kernel
+
+
+class SoftplusFwdKernel(ParametricUnaryKernel):
+    """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
+
+    def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
+        self.beta = beta
+        self.threshold = threshold
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_softplus_kernel
+
+    def _builder_args(self):
+        return (self.beta, self.threshold)
+
+
+class SiluAndMulFwdKernel(FusedGatedKernel):
+    """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def activation_func(x):
+        # exp2 form (fp32): exp2 lowers to one MUFU.EX2 vs expf's multi-op sequence.
+        g = T.Cast("float32", x)
+        one = T.cast(1.0, "float32")
+        log2e = T.cast(1.4426950408889634, "float32")
+        return g / (one + T.exp2(-g * log2e))
+
+
+class GeluAndMulFwdKernel(FusedGatedKernel):
+    """GELU-and-Mul: y = gelu(gate) * value.
+
+    Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    erf is computed in float32 to avoid missing half-precision intrinsic.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def activation_func(x):
+        inv_sqrt2 = T.cast(0.7071067811865476, "float32")  # 1/sqrt(2)
+        half = T.cast(0.5, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        x_f32 = T.Cast("float32", x)
+        erf_val = T.Cast(x.dtype, T.erf(x_f32 * inv_sqrt2))
+        return x * half * (one + erf_val)
+
+
+class GeluTanhAndMulFwdKernel(FusedGatedKernel):
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
+
+    Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def activation_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")  # sqrt(2/pi)
+        coeff = T.cast(0.044715, "float32")  # GELU tanh approx coefficient
+        half = T.cast(0.5, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        x_f32 = T.Cast("float32", x)
+        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+        tanh_val = T.Cast(x.dtype, T.tanh(inner))
+        return half * x * (one + tanh_val)

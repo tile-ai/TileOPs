@@ -43,7 +43,7 @@ SiluAndMulFwdOp:
     bytes: "3 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       silu_and_mul: SiluAndMulFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -84,7 +84,7 @@ GeluAndMulFwdOp:
     bytes: "3 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       gelu_and_mul: GeluAndMulFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -126,7 +126,7 @@ GeluTanhAndMulFwdOp:
     bytes: "3 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       gelu_tanh_and_mul: GeluTanhAndMulFwdKernel
     op: tileops/ops/elementwise/activations.py

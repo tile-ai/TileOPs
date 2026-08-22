@@ -5,10 +5,13 @@ Shipped source (code, docstrings, comments) must not reference issue/PR
 numbers, acceptance-criteria labels, review rounds, or follow-up markers;
 those belong to the review process, not the artifact. Flags, per line:
 
-- ``#`` followed by 3+ digits (an issue/PR-number reference), unless the
-  token reads as a CSS hex color: ``#`` followed by exactly 3, 4, 6, or 8
-  hex characters ending at a word boundary (``#fff``, ``#191a16``,
-  ``#112233``).
+- ``#`` followed by 3+ digits (an issue/PR-number reference), unless the token
+  reads as a CSS hex color: ``#`` followed by exactly 3, 4, 6, or 8 hex
+  characters, at least one of them a letter (``#fff``, ``#191a16``). Length
+  alone cannot settle it, because issue numbers land on color lengths too, so an
+  all-digit token counts as a reference at every length. An all-digit color
+  would be a false positive; the tree has none, and every color in it carries a
+  letter.
 - ``AC-<n>`` labels.
 - ``round-<n> review`` phrases.
 - ``Follow-up: #<n>`` markers.
@@ -24,10 +27,10 @@ import re
 import sys
 from pathlib import Path
 
-# A hash-number token, captured with its full hex extent so a CSS hex color
-# (#fff, #1234, #191a16, #11223344) can be recognized and exempted.
+# Captured with its full hex extent, so the color test below can read the whole token.
 _HASH_TOKEN = re.compile(r"(?<![0-9A-Za-z])#([0-9a-fA-F]+)\b")
 _CSS_HEX_LENGTHS = frozenset({3, 4, 6, 8})
+_HEX_LETTER = re.compile(r"[a-fA-F]")
 
 _PLAIN_PATTERNS = (
     ("AC label", re.compile(r"\bAC-[0-9]+\b")),
@@ -44,8 +47,9 @@ def _hash_number_violations(line: str) -> list[str]:
     violations = []
     for match in _HASH_TOKEN.finditer(line):
         token = match.group(1)
-        if len(token) in _CSS_HEX_LENGTHS:
-            continue  # reads as a CSS hex color
+        # A hex letter is what marks a color; its length does not.
+        if len(token) in _CSS_HEX_LENGTHS and _HEX_LETTER.search(token):
+            continue
         if re.fullmatch(r"[0-9]{3,}", token):
             violations.append(match.group(0))
     return violations
