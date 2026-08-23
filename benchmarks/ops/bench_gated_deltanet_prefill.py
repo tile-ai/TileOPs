@@ -134,21 +134,28 @@ def test_gated_deltanet_prefill_bhtd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    """Head-major prefill, timed alone."""
-    # FIXME(staged-rollout): this row records no baseline.
-    #
-    # Broken invariant: every benchmark records ≥1 non-tileops baseline.
-    # Why: FLA reads token-major only, and the workload's chunked reference is a
-    #   Python loop over chunks — at this op's 128k-token rows it costs more than
-    #   the rest of the family's benchmarks together.
-    # Cleanup: a reference that scales to 128k tokens, or an FLA entry point that
-    #   takes head-major input.
+    """Head-major prefill against FLA in its own token-major layout.
+
+    FLA reads token-major only, so its inputs are converted outside the timed region:
+    each row compares the two kernels in the layout each was written for. A head-major
+    caller reaching for FLA also pays that conversion, which this row does not report.
+
+    Neither tag is asserted, for the reason this module's docstring gives.
+    """
     test = GatedDeltaNetPrefillFwdWorkload(
         batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, layout=layout
     )
+    inputs = test.gen_inputs()
+
     op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
     bm = ManifestBenchmark(_BHTD_OP_NAME, op, test)
-    bm.compare({"tileops": op}, *test.gen_inputs(), record_as=op, params=locals())
+    fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
+    bm.compare(
+        {"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)},
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 @pytest.mark.parametrize(
