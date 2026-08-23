@@ -18,12 +18,12 @@ class FusedAddRMSNormFwdOp(Op):
     Computes the residual sum followed by RMS normalization in a single
     fused kernel:
 
-    .. math::
-
-        \\begin{aligned}
-        r &= x + \\mathrm{residual} \\\\
-        y &= \\frac{r}{\\sqrt{\\mathrm{mean}(r^2) + \\epsilon}} \\cdot w
-        \\end{aligned}
+    $$
+    \\begin{aligned}
+    r &= x + \\mathrm{residual} \\\\
+    y &= \\frac{r}{\\sqrt{\\mathrm{mean}(r^2) + \\epsilon}} \\cdot w
+    \\end{aligned}
+    $$
 
     Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
     reuse the pre-norm sum without recomputation.
@@ -103,7 +103,7 @@ class FusedAddRMSNormFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _norm_fused_add_rms_norm_fwd(x, residual, weight, self._instance_key)
 

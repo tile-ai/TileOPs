@@ -114,7 +114,7 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
     def schedule_for(cls, numel: int, num_experts: int, k: int) -> dict | None:
         """The short-group schedule this shape asks for, or ``None`` for the default.
 
-        See :mod:`..grouped_gemm.regimes` for the regimes. A subclass that changes
+        See `..grouped_gemm.regimes` for the regimes. A subclass that changes
         which shapes it wants fused overrides this with it, so the two answers
         cannot disagree.
         """

@@ -18,10 +18,10 @@ class AdaLayerNormZeroFwdOp(Op):
     Applies layer normalization with per-token adaptive scale, shift, and
     gating:
 
-    .. math::
-
-        y = g \\cdot \\left( s \\cdot \\frac{x - \\mathrm{E}[x]}
-            {\\sqrt{\\mathrm{Var}[x] + \\epsilon}} + d \\right)
+    $$
+    y = g \\cdot \\left( s \\cdot \\frac{x - \\mathrm{E}[x]}
+    {\\sqrt{\\mathrm{Var}[x] + \\epsilon}} + d \\right)
+    $$
 
     where *s* (scale), *d* (shift), and *g* (gate) are per-token tensors of
     shape ``(M, N)``, pre-computed by the caller from a conditioning signal.
@@ -100,7 +100,7 @@ class AdaLayerNormZeroFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _norm_ada_layer_norm_zero_fwd(x, scale, shift, gate, self._instance_key)
 

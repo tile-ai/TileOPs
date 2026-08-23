@@ -3,7 +3,7 @@
 Wraps BatchNormFwdTrainKernel, BatchNormFwdInferKernel, and BatchNormBwdKernel
 in a standard TileOPs Op interface.
 
-User-facing API mirrors :func:`torch.nn.functional.batch_norm`:
+User-facing API mirrors `torch.nn.functional.batch_norm`:
 
     fwd_op = BatchNormFwdOp(training=False, momentum=0.1, eps=1e-5)
     y = fwd_op(x, running_mean, running_var, weight, bias)
@@ -43,15 +43,15 @@ class BatchNormFwdOp(Op):
 
     Computes batch normalization over the channel dimension:
 
-    .. math::
-
-        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
-            \\cdot \\gamma + \\beta
+    $$
+    y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+    \\cdot \\gamma + \\beta
+    $$
 
     where the mean and variance are computed per channel over ``(N, *spatial)``
     elements.
 
-    Mirrors :func:`torch.nn.functional.batch_norm`: ``forward`` accepts
+    Mirrors `torch.nn.functional.batch_norm`: ``forward`` accepts
     ``(input, running_mean, running_var, weight, bias)`` in PyTorch's
     positional order and returns only the normalized output. Internal
     mean/rstd computed in training mode stay private; callers needing them

@@ -2,9 +2,9 @@
 
 Instance Normalization (IN) is a special case of Group Normalization (GN)
 where ``num_groups = C`` (each channel is its own group). The affine path
-delegates to :class:`GroupNormKernel` with that grouping.
+delegates to `GroupNormKernel` with that grouping.
 
-User-facing API mirrors :func:`torch.nn.functional.instance_norm`:
+User-facing API mirrors `torch.nn.functional.instance_norm`:
 
     op = InstanceNormFwdOp()
     y = op(x, running_mean, running_var, weight, bias)
@@ -37,10 +37,10 @@ class InstanceNormFwdOp(Op):
     Computes instance normalization over spatial dimensions for each
     ``(batch, channel)`` independently:
 
-    .. math::
-
-        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
-            \\cdot w + b
+    $$
+    y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+    \\cdot w + b
+    $$
 
     where the mean and variance are computed over ``*spatial`` for each
     sample-channel pair, and the trailing affine applies only when ``weight``
@@ -52,9 +52,9 @@ class InstanceNormFwdOp(Op):
 
     Note:
         Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+). The affine
-        call delegates to :class:`GroupNormKernel` with one group per channel,
+        call delegates to `GroupNormKernel` with one group per channel,
         which applies the per-channel affine itself; without affine it
-        delegates to :class:`InstanceNormNoAffineKernel`.
+        delegates to `InstanceNormNoAffineKernel`.
 
     Args:
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
@@ -251,7 +251,7 @@ class InstanceNormFwdOp(Op):
             ValueError: A dtype mismatches, a shape is incompatible, one half of a pair
                 is passed, or ``use_input_stats=False`` without running stats.
             NotImplementedError: ``use_input_stats=False`` combined with the affine
-                tensors. Both raised from inside the operator, by :meth:`_eager_forward`.
+                tensors. Both raised from inside the operator, by `_eager_forward`.
         """
         return _norm_instance_norm_fwd(
             x, running_mean, running_var, weight, bias, self._instance_key

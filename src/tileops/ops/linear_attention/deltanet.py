@@ -21,7 +21,7 @@ class DeltaNetFwdOp(Op):
 
     Layout: BHSD (batch, head, seq_len, dim).
 
-    .. note:: Layout convention difference with FLA
+    !!! note "Layout convention difference with FLA"
 
         TileOPs uses **BHSD** layout: ``q/k [B, H, S, DK]``, ``v [B, H, S, DV]``,
         ``beta [B, H, S]``.

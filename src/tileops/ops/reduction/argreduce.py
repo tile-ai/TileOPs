@@ -22,7 +22,7 @@ class _ArgreduceOpBase(_ReduceOpBase):
     copies the whole tensor, or give a thread each output element and stride along the
     axis, which reads the original buffer coalesced. Which one pays off follows from the
     row count, the axis length and its stride — all three facts the kernel already holds,
-    so the choice is the kernel's (:class:`~tileops.kernels.reduction.argreduce.ArgreduceKernel`).
+    so the choice is the kernel's (`tileops.kernels.reduction.argreduce.ArgreduceKernel`).
     This op's part is the stride, which the shape and the reduced axis decide.
     """
 

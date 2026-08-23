@@ -115,9 +115,9 @@ def reduced_axes(x: Any, dim: Any) -> frozenset:
     (parity check skipped). Anything else (``None``, a set, a string) falls
     through to the "all axes" branch.
 
-    Pair this helper with :func:`dim_range_validity` and
-    :func:`dim_uniqueness` so range / uniqueness violations surface
-    before the output-shape rules consult :func:`reduced_axes`.
+    Pair this helper with `dim_range_validity` and
+    `dim_uniqueness` so range / uniqueness violations surface
+    before the output-shape rules consult `reduced_axes`.
 
     Args:
         x: A tensor-like object exposing ``.ndim``.
@@ -146,7 +146,7 @@ def reduced_axes(x: Any, dim: Any) -> frozenset:
 
 
 class _Ranked:
-    """The ``.ndim`` view of a shape tuple, so :func:`reduced_axes` can read it."""
+    """The ``.ndim`` view of a shape tuple, so `reduced_axes` can read it."""
 
     __slots__ = ("ndim",)
 
@@ -164,7 +164,7 @@ def reduced_shape(shape: Any, dim: Any, keepdim: bool = False, empty_dim: str = 
     Args:
         shape: The input shape, as a sequence of ints.
         dim: An int, ``None``, or a list/tuple of ints, read the way
-            :func:`reduced_axes` reads it.
+            `reduced_axes` reads it.
         keepdim: Whether a reduced axis stays as a length-1 axis.
         empty_dim: What an empty list/tuple means, matching the op layer's
             ``_empty_dim_policy``: ``"full"`` reduces every axis, ``"noop"``

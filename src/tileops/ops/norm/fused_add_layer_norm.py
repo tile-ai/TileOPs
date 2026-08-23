@@ -18,13 +18,13 @@ class FusedAddLayerNormFwdOp(Op):
     Computes the residual sum followed by layer normalization in a single
     fused kernel:
 
-    .. math::
-
-        \\begin{aligned}
-        r &= x + \\mathrm{residual} \\\\
-        y &= \\frac{r - \\mathrm{E}[r]}{\\sqrt{\\mathrm{Var}[r] + \\epsilon}}
-            \\cdot w + b
-        \\end{aligned}
+    $$
+    \\begin{aligned}
+    r &= x + \\mathrm{residual} \\\\
+    y &= \\frac{r - \\mathrm{E}[r]}{\\sqrt{\\mathrm{Var}[r] + \\epsilon}}
+    \\cdot w + b
+    \\end{aligned}
+    $$
 
     Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
     reuse the pre-norm sum without recomputation.
@@ -106,7 +106,7 @@ class FusedAddLayerNormFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _norm_fused_add_layer_norm_fwd(x, residual, weight, bias, self._instance_key)
 

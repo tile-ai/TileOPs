@@ -5,7 +5,7 @@ its own group). The math reduces exactly to the GroupNorm row-wise kernel
 on a reshape of ``(N, C, *spatial) -> (N*C, spatial_size)``.
 
 The TileLang bodies are GroupNorm's; these classes exist so that
-:mod:`tileops.ops.norm.instance_norm` and the manifest can name an
+`tileops.ops.norm.instance_norm` and the manifest can name an
 InstanceNorm-specific kernel, and so that both take the five inputs
 ``InstanceNormFwdOp``'s signature declares.
 """

@@ -305,7 +305,7 @@ class GroupNormKernel(Kernel):
 def _group_norm_no_affine_kernel(M, D, eps, dtype):
     """Build a row-wise normalization kernel for shape (M, D) without affine.
 
-    Same numerics and same boundary handling as :func:`_group_norm_kernel`,
+    Same numerics and same boundary handling as `_group_norm_kernel`,
     but omits the trailing weight/bias multiply-add — output is
     ``(x - mean) * rstd``. Used for the no-affine variants of GroupNorm and
     InstanceNorm.
@@ -381,7 +381,7 @@ class GroupNormNoAffineKernel(Kernel):
 
     Computes ``y = (x - mean) * rstd`` row-wise for shape ``(M, D)`` reshaped
     inputs. Shares the build/launch parameters and shared-memory layout of
-    :class:`GroupNormKernel`; only the output stage differs (no weight/bias
+    `GroupNormKernel`; only the output stage differs (no weight/bias
     multiply-add). Used by the no-affine variants of GroupNorm and
     InstanceNorm.
 
