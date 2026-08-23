@@ -58,6 +58,9 @@ What the flags are for:
 - `--build-arg TILEOPS_RUNNER_IMAGE` — bakes the tag in, so a run reports which image produced
   it; the registry cannot answer that later. `-e TILEOPS_RUNNER_IMAGE=<tag>` overrides it for an
   image built before this. With neither, the nightly reports the image as unknown.
+- `--build-arg FLASH_ATTENTION_FORCE_BUILD=TRUE` — compiles FlashAttention-2 instead of
+  taking the prebuilt wheel from its GitHub releases. Slower; reach for it only where that
+  download keeps failing.
 - `--target runtime`, `--target fa2`, … — build an earlier stage to debug.
 
 ## Bump the tilelang commit

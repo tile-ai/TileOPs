@@ -27,6 +27,14 @@ def main() -> int:
 
     print(f"flashinfer {flashinfer.__version__}")
 
+    # A missing baseline costs the column, not the run, so nothing else notices.
+    import flag_gems  # noqa: F401 - import is the check
+    import flash_attn
+    import flash_attn_interface
+
+    assert flash_attn_interface.flash_attn_func is not None
+    print(f"flash-attn {flash_attn.__version__} | flash-attn-3 | flag_gems")
+
     import mamba_ssm
     import selective_scan_cuda  # noqa: F401 - import is the check
     from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined

@@ -66,6 +66,30 @@ if bindings_pin is not None and not bindings_pin.specifier.contains(
         f"{bindings_pin.specifier}. Install cupti-python with --no-deps."
     )
 
+# A missing baseline costs the column, not the run, so nothing else notices. FA3 is
+# imported because a returned 0 has meant an installed wrapper with no extension behind
+# it; the rest are checked for presence, since flag_gems and flashinfer want a device.
+try:
+    import flash_attn_interface
+
+    assert flash_attn_interface.flash_attn_func is not None
+except Exception as exc:  # noqa: BLE001 - a half-built FA3 raises several ways
+    sys.exit(
+        f"FAIL: flash_attn_interface does not import ({exc}). Eleven attention "
+        "benchmarks name `fa3` and would silently drop the column."
+    )
+
+for dist, why in (
+    ("flash-attn", "the FA2 columns"),
+    ("flag_gems", "the flaggems columns"),
+    ("flashinfer-python", "the flashinfer columns"),
+    ("flash-linear-attention", "the linear-attention columns"),
+):
+    try:
+        md.version(dist)
+    except md.PackageNotFoundError:
+        sys.exit(f"FAIL: {dist} is not installed; {why} would be missing.")
+
 print(
     f"runtime-stack OK: tilelang {tilelang.__version__} | "
     f"torch {torch.__version__} (cuda {torch.version.cuda}) | "
