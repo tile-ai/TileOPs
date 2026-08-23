@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
+from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.benchmark_base import (
     BenchmarkBase,
     BenchmarkReport,
@@ -480,6 +481,42 @@ def test_gqa_prefill_varlen_fwd_bench(
     )
 
 
+def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
+    """FlashAttention-3 over the same paged cache, or None where it cannot serve the row.
+
+    It reads the pages, appends the new KV in place and applies the softcap in one launch,
+    so it times the work the op does rather than a materialized reference.
+    """
+    if fuse_rope or cache_dtype is not None:
+        return None
+    try:
+        from flash_attn_interface import flash_attn_with_kvcache
+    except ImportError:
+        return None
+
+    shape = (test.batch * test.max_pages_per_req, test.page_size, test.heads_kv, test.dim)
+
+    def _run(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, seqlens, table, max_q):
+        del k_scale, v_scale
+        out = flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_pages.view(shape),
+            v_cache=v_pages.view(shape),
+            k=k_new,
+            v=v_new,
+            cache_seqlens=seqlens,
+            page_table=table,
+            cu_seqlens_q=cu_q,
+            cu_seqlens_k_new=cu_q,
+            max_seqlen_q=max_q,
+            causal=test.is_causal,
+            softcap=float(softcap or 0.0),
+        )
+        return out[0] if isinstance(out, tuple) else out
+
+    return _run
+
+
 def _fp8_paged_cache_inputs(
     test: GQAPrefillPagedWithKVCacheFwdWorkload,
 ) -> tuple[torch.Tensor, ...]:
@@ -606,5 +643,18 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     op.cache_lens = cache_lens
     op.max_seqlen_q = test.max_seqlen_q
     bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    fa3_fn = _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap)
+    if fa3_fn is None:
+        # FIXME(staged-rollout): this row records no baseline.
+        #
+        # Broken invariant: every benchmark records >=1 non-tileops baseline.
+        # Why: flash_attn_with_kvcache is the only installed implementation that attends
+        #   over a paged cache in place, and it takes neither a fused-RoPE row, where the
+        #   op builds its own rotary table, nor an fp8 cache, which needs q's dtype.
+        # Cleanup: reach those rows too, or a second paged implementation.
+        result = bm.profile(op, *inputs)
+        BenchmarkReport.record(op, locals(), result, tag="tileops")
+        return
+
+    assert_matches_reference(op, fa3_fn, *inputs, **reference_tolerance(dtype))
+    bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs, record_as=op, params=locals())
