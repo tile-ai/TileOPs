@@ -161,6 +161,12 @@ class FP8LightningIndexerWorkload(WorkloadBase):
             ]
         )
         assert len(ks) == len(ke) == self.seq_len
+        if int(ks.min()) >= self.seq_len_kv:
+            raise ValueError(
+                f"no query row reaches a key: ranges start at {int(ks.min())} and "
+                f"seq_len_kv is {self.seq_len_kv}. These offsets span the "
+                f"{self.seq_len * cp_size} keys of a context-parallel sequence"
+            )
         return ks, ke
 
     def gen_inputs(

@@ -2,6 +2,10 @@
 
 Workload shapes come from the ops manifest; roofline FLOP and byte counts
 come from the op's ``eval_roofline()`` via :class:`ManifestBenchmark`.
+
+The reference materializes the ``[batch, heads, seq_len, seq_len_kv]`` scores the op
+folds into its matmul epilogue, and peaks near 104 GB on these rows. A device that
+cannot hold that fails in the reference rather than in the op.
 """
 
 import pytest

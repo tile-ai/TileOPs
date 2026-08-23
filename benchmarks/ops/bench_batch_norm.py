@@ -1,9 +1,9 @@
 """Benchmark for BatchNormFwdOp and BatchNormBwdOp.
 
 Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes. The
-forward row adds flag_gems' batch_norm and cuDNN through inductor; the backward row
-stays on the autograd reference alone, which is a node driven on this thread and not
-work either of those performs.
+forward row adds flag_gems' batch_norm and cuDNN through inductor. The backward row
+carries two torch tags: an autograd node driven on this thread, and aten's backward
+kernel by itself. The difference between them is the forward the autograd one rebuilds.
 """
 
 import math
@@ -91,6 +91,27 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
     return backward_of(y)(grad_out.float())
 
 
+def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
+    """aten's batch-norm backward, run by itself on the saved statistics.
+
+    The float32 casts are load-bearing rather than overhead: handed float16 this kernel
+    forms the channel gradients in float16 too, and the reduction over every spatial
+    element then lands far outside tolerance.
+    """
+    return torch.ops.aten.native_batch_norm_backward(
+        grad_out.float(),
+        x.float(),
+        weight.float(),
+        None,
+        None,
+        mean,
+        rstd,
+        True,
+        1e-5,
+        [True, True, True],
+    )
+
+
 # Manifest-driven params
 
 
@@ -155,6 +176,16 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
+    # A reduction this long disagrees with the reference's order past float32's tolerance.
+    assert_matches_reference(_aten_bn_bwd, _torch_bn_bwd, *inputs, rtol=1e-3, atol=1e-3)
+
     bm.compare(
-        {"tileops": op, "torch-autograd": _torch_bn_bwd}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-autograd": _torch_bn_bwd,
+            "torch-native-batch-norm": _aten_bn_bwd,
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )
