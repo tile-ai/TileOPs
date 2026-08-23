@@ -10,6 +10,7 @@ from ._base import (
     _BINARY_FULL_DTYPES,
     _BINARY_NO_BOOL_DTYPES,
     _FLOAT_DTYPES,
+    _TRANSCENDENTAL_STRATEGY,
     BinaryKernel,
     ParametricUnaryKernel,
     _AlphaScaledBinaryKernel,
@@ -128,6 +129,8 @@ class RemainderFwdKernel(BinaryKernel):
 
 class PowFwdKernel(BinaryKernel):
     """Element-wise power: y = a ** b."""
+
+    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 

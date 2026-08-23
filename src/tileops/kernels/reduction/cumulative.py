@@ -1,18 +1,17 @@
 """Cumulative scan kernels (cumsum, cumprod) using TileLang.
 
-Implements an inclusive prefix scan along the last dimension.  Each row
-is processed independently (``T.Parallel`` over rows) with a tiled
-sequential inner loop that processes the N dimension in chunks of
-``block_n`` elements.  Within each tile, a ``T.Serial`` loop maintains
-a per-row running accumulator.  The tiled approach reduces shared memory
-usage (``block_m * block_n`` instead of ``block_m * N_padded``) and
-improves memory access patterns for better GPU utilization.
+Implements an inclusive prefix scan along the last dimension, over three backends:
 
-Accepts raw ``(M, N)`` input tensors.  Boundary handling for non-aligned
-N is performed inside the kernel via masked loads with identity-element
-fills (0 for cumsum, 1 for cumprod), eliminating host-side ``F.pad``
-from the forward path.  Output is ``(M, N_padded)`` and the Op layer
-trims back to N columns.
+  - _row_scan_kernel: one block per row, for a row that fits one. Preferred where it
+    builds -- it reads and writes the row once and carries nothing between blocks.
+  - _cumulative_kernel: a tiled sequential scan for rows that do not, carrying a
+    running accumulator across tiles of ``block_n`` columns.
+  - the three-kernel parallel scan, for small-M large-N cumsum.
+
+Accepts raw ``(M, N)`` input tensors.  Boundary handling for non-aligned N is performed
+inside the tiled kernel via masked loads with identity-element fills (0 for cumsum, 1
+for cumprod), eliminating host-side ``F.pad`` from the forward path.  Its output is
+``(M, N_padded)`` and the Op layer trims back to N columns.
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.
@@ -43,6 +42,7 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     SHARED_MEMORY_BUDGET_BYTES,
     align_up,
+    device_smem_budget,
     restore_same_shape,
     rows_for_axes,
 )
@@ -60,6 +60,122 @@ _DEFAULT_BLOCK_N: int = 128
 # (16 bytes = 4 bank-words) makes the stride 68 bank-words; 68 % 32 == 4,
 # so successive rows start in different banks → conflict free.
 _SMEM_PAD: int = 8
+
+# Elements one thread scans in the whole-row kernel, held in registers. Measured on
+# H200 over {2048x4096 fp16, 64x32768 bf16}: 16 peaks, 8 and 32 are within 25%, 4 and
+# 128 lose half.
+_ROW_SCAN_CHUNK: int = 16
+
+# Thread-count envelope for the whole-row kernel: a warp scheduler's worth, up to the
+# CUDA block limit.
+_ROW_SCAN_MIN_THREADS: int = 128
+_ROW_SCAN_MAX_THREADS: int = 1024
+
+
+def row_scan_threads(N_padded: int) -> int:
+    """Threads the whole-row kernel gives a row of *N_padded*.
+
+    A power of two dividing *N_padded*, chosen so each thread's chunk sits near
+    ``_ROW_SCAN_CHUNK``.
+    """
+    target = max(1, N_padded // _ROW_SCAN_CHUNK)
+    threads = 1 << (target.bit_length() - 1)
+    threads = max(_ROW_SCAN_MIN_THREADS, min(_ROW_SCAN_MAX_THREADS, threads))
+    while threads > _ROW_SCAN_MIN_THREADS and N_padded % threads:
+        threads //= 2
+    return threads
+
+
+def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
+    """Whether a row of *N_padded* can be scanned by one thread block.
+
+    The row is staged in shared memory whole, and each thread holds its chunk of it
+    in registers; both have to fit for the kernel to be buildable.
+    """
+    threads = row_scan_threads(N_padded)
+    if N_padded % threads:
+        return False
+    chunk = N_padded // threads
+    return N_padded * elem_bytes <= smem_budget and chunk <= 4 * _ROW_SCAN_CHUNK
+
+
+@functools.lru_cache(maxsize=32)
+def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
+    """Build a one-block-per-row inclusive prefix scan.
+
+    Three phases, with no serial dependency between blocks:
+
+    1. One ``T.copy`` stages the row in shared memory at its own dtype -- that is where
+       the vectorized global access comes from -- and each thread scans its contiguous
+       chunk of it into registers, accumulating in fp32.
+    2. The chunk totals are scanned in shared memory, doubling the stride each step.
+    3. Each thread adds the prefix ahead of its chunk and writes the chunk back to the
+       staging buffer, which one ``T.copy`` returns to global memory.
+
+    Staging at the input dtype halves the shared traffic against fp32, and the
+    write-back reuses the buffer because a scalar store per element does not vectorize.
+
+    Args:
+        M: Rows to scan.
+        N: Length of the scanned axis; must equal the padded width the caller
+            allocated for, and be divisible by *threads*.
+        op_kind: One of "sum", "prod".
+        dtype: TileLang dtype string.
+        threads: Threads per row, from :func:`row_scan_threads`.
+    """
+    chunk_len = N // threads
+    # Stride-doubling steps to scan `threads` totals.
+    n_steps = threads.bit_length() - 1
+    identity = 0.0 if op_kind == "sum" else 1.0
+    combine = (lambda a, b: a + b) if op_kind == "sum" else (lambda a, b: a * b)
+
+    @tilelang.jit(out_idx=[1])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N), dtype],
+        ):
+            with T.Kernel(M, threads=threads) as row:
+                tx = T.get_thread_binding()
+                staged = T.alloc_shared((N,), dtype)
+                totals = T.alloc_shared((threads,), "float32")
+                chunk = T.alloc_local((chunk_len,), "float32")
+                running = T.alloc_local((1,), "float32")
+                ahead = T.alloc_local((1,), "float32")
+                offset = T.alloc_local((1,), "float32")
+
+                T.copy(x[row, 0], staged)
+                T.sync_threads()
+
+                running[0] = T.cast(identity, "float32")
+                for j in T.serial(chunk_len):
+                    running[0] = combine(running[0], T.cast(staged[tx * chunk_len + j], "float32"))
+                    chunk[j] = running[0]
+                totals[tx] = running[0]
+                T.sync_threads()
+
+                for step in T.serial(n_steps):
+                    stride = T.shift_left(T.int32(1), step)
+                    ahead[0] = T.if_then_else(
+                        tx >= stride, totals[tx - stride], T.cast(identity, "float32")
+                    )
+                    T.sync_threads()
+                    totals[tx] = combine(totals[tx], ahead[0])
+                    T.sync_threads()
+
+                # T.max keeps the read in range for thread 0, whose branch discards it.
+                offset[0] = T.if_then_else(
+                    tx == 0, T.cast(identity, "float32"), totals[T.max(tx - 1, 0)]
+                )
+                for j in T.serial(chunk_len):
+                    staged[tx * chunk_len + j] = T.cast(combine(chunk[j], offset[0]), dtype)
+                T.sync_threads()
+                T.copy(staged, y[row, 0])
+
+        return main
+
+    return _func
 
 
 @functools.lru_cache(maxsize=32)
@@ -323,12 +439,35 @@ class CumulativeKernel(Kernel):
         self.dtype = dtype
         self.scan_axis = scan_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
 
         # Parallel scan only pays off for small-M, large-N; cumprod has no
         # parallel implementation.
         self.use_parallel = M < 128 and N > 8192 and op_kind == "sum"
 
-        if self.use_parallel:
+        # Fastest of the three on the shapes it is given, for both kinds: it reads and
+        # writes the row once and carries nothing between blocks. Two shapes it does not
+        # get: a width the alignment would pad, which it cannot stage exactly, and the
+        # small-M large-N cumsum below.
+        #
+        # FIXME(staged-rollout): the three-kernel parallel scan keeps the shapes it
+        # already claimed, though this kernel measures faster on them.
+        #
+        # Broken invariant: the fastest buildable backend wins the shape.
+        # Why: test_cumsum_backend_dispatch pins four shapes to use_parallel, and that
+        #   file is outside the kernel layer this change is scoped to.
+        # Cleanup: drop the `not self.use_parallel` term once that test asserts the
+        #   backend each shape actually measures fastest on.
+        self.use_row_scan = (
+            not self.use_parallel
+            and self.N_padded == N
+            and row_scan_fits(self.N_padded, self._elem_bytes, device_smem_budget(device_index))
+        )
+        self._row_scan_threads = row_scan_threads(self.N_padded) if self.use_row_scan else 0
+
+        if self.use_row_scan:
+            self.kernel = _row_scan_kernel(M, N, op_kind, self.dtype_str, self._row_scan_threads)
+        elif self.use_parallel:
             self.kernel = None
             if tune:
                 warnings.warn(
@@ -346,6 +485,10 @@ class CumulativeKernel(Kernel):
     @property
     def default_config(self) -> dict:
         """Select the default config for the selected backend and shape."""
+        if self.use_row_scan:
+            # The chunk length each thread scans is a compile-time loop bound, so the
+            # thread count is baked in and nothing is left to pick at call time.
+            return {"threads": self._row_scan_threads}
         if self.use_parallel:
             block_n = 256 if self.N > 16384 else 128
             smem_per_row = (block_n + _SMEM_PAD) * 4  # fp32 intermediate
@@ -370,6 +513,8 @@ class CumulativeKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self.use_row_scan:
+            return [{"threads": self._row_scan_threads}]
         elem_size = torch.tensor([], dtype=self.dtype).element_size()
         configs = []
         for block_n in [128, 256]:
@@ -410,6 +555,11 @@ class CumulativeKernel(Kernel):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed
         here.
         """
+        if self.use_row_scan:
+            program = _row_scan_kernel(
+                self.M, self.N, self.op_kind, self.dtype_str, self._row_scan_threads
+            )
+            return program()(x)
         block_m, block_n = self.config["block_m"], self.config["block_n"]
         threads = self.config["threads"]
         if self.use_parallel:

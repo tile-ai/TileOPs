@@ -60,122 +60,73 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
     # the kernel dtype where needed inside the generated kernel.
     _neg_inf = float("-inf")
 
-    if op_kind == "softmax":
+    # The row is staged in shared memory and every pass reads it from there, so the
+    # kernel holds one fragment of row width rather than one per intermediate. That
+    # matters more than the staging costs: a thread's slice of a
+    # ``(block_m, N_padded)`` fragment is ``block_m * N_padded / threads`` registers,
+    # and three such fragments put the row in local memory instead.
+    @tilelang.jit(out_idx=[1])
+    def _func(block_m, threads):
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N_padded), dtype],
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
+                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                row_max = T.alloc_fragment((block_m,), "float32")
+                row_sum = T.alloc_fragment((block_m,), "float32")
+                log_sum = T.alloc_fragment((block_m,), "float32")
 
-        @tilelang.jit(out_idx=[1])
-        def _func(block_m, threads):
-            @T.prim_func
-            def main(
-                x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, N_padded), dtype],
-            ):
-                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                    row_max = T.alloc_fragment((block_m,), "float32")
-                    row_sum = T.alloc_fragment((block_m,), "float32")
-
-                    if _needs_pad:
-                        # Kernel-side boundary handling: element-wise load
-                        # with T.if_then_else masking for padding columns
-                        # and row-tail safety (M % block_m != 0).
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(N_padded):
-                                x_f32[i, j] = T.if_then_else(
-                                    T.And(pid_m * block_m + i < M, j < N),
-                                    T.cast(x[pid_m * block_m + i, j], "float32"),
-                                    T.cast(_neg_inf, "float32"),
-                                )
-                    else:
-                        T.copy(x[pid_m * block_m, 0], shared_buf)
-                        T.copy(shared_buf, x_local)
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(N_padded):
-                                x_f32[i, j] = T.cast(x_local[i, j], "float32")
-
-                    T.fill(row_max, -T.infinity("float32"))
-                    T.reduce_max(x_f32, row_max, dim=1, clear=False)
-
+                if _needs_pad:
+                    # Kernel-side boundary handling: element-wise load
+                    # with T.if_then_else masking for padding columns
+                    # and row-tail safety (M % block_m != 0).
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
-                    T.reduce_sum(x_f32, row_sum, dim=1)
+                            shared_buf[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                x[pid_m * block_m + i, j],
+                                T.cast(_neg_inf, dtype),
+                            )
+                else:
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                    out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+
+                T.fill(row_max, -T.infinity("float32"))
+                T.reduce_max(x_f32, row_max, dim=1, clear=False)
+
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
+                T.reduce_sum(x_f32, row_sum, dim=1)
+
+                if op_kind == "softmax":
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            out_f32[i, j] = x_f32[i, j] / row_sum[i]
-
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            x_local[i, j] = out_f32[i, j]
-                    T.copy(x_local, shared_buf)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
-
-            return main
-
-    else:  # log_softmax
-
-        @tilelang.jit(out_idx=[1])
-        def _func(block_m, threads):
-            @T.prim_func
-            def main(
-                x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, N_padded), dtype],
-            ):
-                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                    row_max = T.alloc_fragment((block_m,), "float32")
-                    row_sum = T.alloc_fragment((block_m,), "float32")
-
-                    if _needs_pad:
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(N_padded):
-                                x_f32[i, j] = T.if_then_else(
-                                    T.And(pid_m * block_m + i < M, j < N),
-                                    T.cast(x[pid_m * block_m + i, j], "float32"),
-                                    T.cast(_neg_inf, "float32"),
-                                )
-                    else:
-                        T.copy(x[pid_m * block_m, 0], shared_buf)
-                        T.copy(shared_buf, x_local)
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(N_padded):
-                                x_f32[i, j] = T.cast(x_local[i, j], "float32")
-
-                    T.fill(row_max, -T.infinity("float32"))
-                    T.reduce_max(x_f32, row_max, dim=1, clear=False)
-
-                    # Compute exp(x - max) into a separate fragment so x_f32
-                    # retains the original values for the stable log_softmax
-                    # formula: (x - max) - log(sum(exp(x - max))).
-                    exp_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            exp_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
-                    T.reduce_sum(exp_f32, row_sum, dim=1)
-
-                    log_sum = T.alloc_fragment((block_m,), "float32")
+                            x_f32[i, j] = x_f32[i, j] / row_sum[i]
+                else:
                     for i in T.Parallel(block_m):
                         log_sum[i] = T.log(row_sum[i])
-
-                    # log_softmax = (x - max) - log(sum), avoids log(0) on
-                    # padding columns (they stay at -inf via subtraction).
-                    out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    # log_softmax = (x - max) - log(sum), which avoids log(0) on
+                    # padding columns; x comes back from shared memory because the
+                    # exponentials overwrote the fragment holding it.
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            out_f32[i, j] = x_f32[i, j] - row_max[i] - log_sum[i]
+                            x_f32[i, j] = (
+                                T.cast(shared_buf[i, j], "float32") - row_max[i] - log_sum[i]
+                            )
 
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            x_local[i, j] = out_f32[i, j]
-                    T.copy(x_local, shared_buf)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        shared_buf[i, j] = T.cast(x_f32[i, j], dtype)
+                T.copy(shared_buf, y[pid_m * block_m, 0])
 
-            return main
+        return main
 
     return _func
 
@@ -224,7 +175,6 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     # --- Pass 1 fragments ---
                     shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                    tile_local = T.alloc_fragment((block_m, tile_n), dtype)
                     tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
                     row_max = T.alloc_fragment((block_m,), "float32")
@@ -245,10 +195,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                    T.copy(shared_buf, tile_local)
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
-                                            tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                                 with T.Else():
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
@@ -262,10 +211,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                            T.copy(shared_buf, tile_local)
                             for i in T.serial(block_m):
                                 for j in T.Parallel(tile_n):
-                                    tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                         T.fill(tile_max, -T.infinity("float32"))
                         T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
@@ -296,22 +244,20 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     # compute_tile_n accounts for 2x shared memory via
                     # num_buffers=2.
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
-                    p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
-                    # Pass 2: normalize (cast + compute fused, write-back
-                    # reuses p2_f32 -> p2_local to avoid an extra fragment)
+                    # Pass 2: normalize, then cast the tile back into the shared
+                    # buffer it was read from
                     for t in T.Serial(num_tiles):
                         if _needs_mask:
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                                    T.copy(p2_shared, p2_local)
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
                                             p2_f32[i, j] = (
                                                 T.exp(
-                                                    T.cast(p2_local[i, j], "float32") - row_max[i]
+                                                    T.cast(p2_shared[i, j], "float32") - row_max[i]
                                                 )
                                                 * inv_sum[i]
                                             )
@@ -332,18 +278,16 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                            T.copy(p2_shared, p2_local)
                             for i in T.serial(block_m):
                                 for j in T.Parallel(tile_n):
                                     p2_f32[i, j] = (
-                                        T.exp(T.cast(p2_local[i, j], "float32") - row_max[i])
+                                        T.exp(T.cast(p2_shared[i, j], "float32") - row_max[i])
                                         * inv_sum[i]
                                     )
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                p2_local[i, j] = p2_f32[i, j]
-                        T.copy(p2_local, p2_shared)
+                                p2_shared[i, j] = T.cast(p2_f32[i, j], dtype)
                         T.copy(p2_shared, y[pid_m * block_m, t * tile_n])
 
             return main
@@ -360,7 +304,6 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     # --- Pass 1 fragments ---
                     shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                    tile_local = T.alloc_fragment((block_m, tile_n), dtype)
                     tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
                     row_max = T.alloc_fragment((block_m,), "float32")
@@ -378,10 +321,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                    T.copy(shared_buf, tile_local)
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
-                                            tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                                 with T.Else():
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
@@ -395,10 +337,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                            T.copy(shared_buf, tile_local)
                             for i in T.serial(block_m):
                                 for j in T.Parallel(tile_n):
-                                    tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                         T.fill(tile_max, -T.infinity("float32"))
                         T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
@@ -423,7 +364,6 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     # --- Pass 2: dedicated shared + register fragments ---
                     # (Same aliasing workaround as softmax -- see note above.)
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
-                    p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
                     # Pass 2: log-normalize (cast + compute fused)
@@ -432,11 +372,10 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                                    T.copy(p2_shared, p2_local)
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
                                             p2_f32[i, j] = (
-                                                T.cast(p2_local[i, j], "float32")
+                                                T.cast(p2_shared[i, j], "float32")
                                                 - row_max[i]
                                                 - log_sum[i]
                                             )
@@ -455,17 +394,15 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                            T.copy(p2_shared, p2_local)
                             for i in T.serial(block_m):
                                 for j in T.Parallel(tile_n):
                                     p2_f32[i, j] = (
-                                        T.cast(p2_local[i, j], "float32") - row_max[i] - log_sum[i]
+                                        T.cast(p2_shared[i, j], "float32") - row_max[i] - log_sum[i]
                                     )
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                p2_local[i, j] = p2_f32[i, j]
-                        T.copy(p2_local, p2_shared)
+                                p2_shared[i, j] = T.cast(p2_f32[i, j], dtype)
                         T.copy(p2_shared, y[pid_m * block_m, t * tile_n])
 
             return main
@@ -624,9 +561,11 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
     def default_config(self) -> dict:
         """Select default block_m based on shared memory budget.
 
-        For the single-tile path (tile_n == 0), prefer the largest
-        block_m that fits in shared memory -- row-level parallelism is
-        free when the full row is in registers.
+        For the single-tile path (tile_n == 0), prefer the *smallest* block_m.
+        Measured on H200 at 1024x4096 fp16, bandwidth falls monotonically as rows are
+        added to a block, from 1.76 TB/s at one row to 0.19 at sixteen: each extra row
+        hands every thread another ``N_padded / threads`` registers until the fragment
+        spills, and the kernel then re-reads its own row through L2 on every pass.
 
         For the tiled path, prefer the block_m that **minimises the
         number of N-tiles** (i.e. maximises tile_n).  Fewer tiles means
@@ -646,10 +585,11 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                 tn = self._tile_n_for_block_m(bm)
             except ValueError:
                 continue
+            if tn == 0 and not self._planner.frag_fits(bm, self.N_padded, _DEFAULT_TUNE_THREADS):
+                continue
             if tn == 0 and best_tile_n == 0:
-                # Both single-tile: prefer larger block_m (row reuse is free)
-                best_bm = bm
-                best_tile_n = tn
+                # Both single-tile, and block_m=1 is where the loop starts: keep it.
+                pass
             elif tn == 0 and best_tile_n != 0:
                 # Switching from tiled to single-tile is always better
                 best_bm = bm

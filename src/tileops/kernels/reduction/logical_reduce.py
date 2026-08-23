@@ -1,6 +1,6 @@
 """Logical reduce kernels (any, all, count_nonzero) using TileLang.
 
-Casts input to bool (0/1 as float32), then reduces:
+Truthiness is decided as each element is loaded, then reduced:
   - any: reduce_max (1 if any element is non-zero)
   - all: reduce_min (1 if all elements are non-zero)
   - count_nonzero: reduce_sum (count of non-zero elements per row)
@@ -8,7 +8,9 @@ Casts input to bool (0/1 as float32), then reduces:
 Operates on raw 2D (M, N) tensors; the kernel handles 256-element alignment
 padding internally via masked loads with the appropriate identity value.
 
-Output is bool for any/all, int64 for count_nonzero.
+A bool input is read at its own width: the prim_func declares int8, which the tensor
+is reinterpreted into, and writes its int8 result back the same way. Output is bool for
+any/all, int64 for count_nonzero.
 """
 
 import functools
@@ -30,34 +32,48 @@ from tileops.kernels.reduction._primitives import (
     tune_by_forward,
 )
 
-__all__ = ["LogicalReduceKernel", "to_logical_float32"]
+__all__ = ["LogicalReduceKernel", "storage_dtype_for", "to_logical_storage"]
 
 _LOGICAL_REDUCE_KINDS = {"any", "all", "count_nonzero"}
 
-# TileLang does not support bool, integer, or complex dtypes as a storage
-# dtype for T.alloc_shared / T.copy. When the caller's dtype is one of these,
-# we use float32 internally instead. The Op layer is responsible for
-# pre-converting the tensor to float32 before calling the kernel.
+# Dtypes the prim_func cannot take as a storage dtype, mapped to one it can.
+#
+# bool is one byte wide and its values are the byte patterns 0 and 1, so int8
+# reinterprets it for free. Widening to float32 instead would read and write four times
+# the bytes, across two kernels the reduction does not need.
 _FLOAT32_STORAGE_DTYPE = torch.float32
-_UNSUPPORTED_STORAGE_DTYPES = frozenset(
+_INT8_STORAGE_DTYPE = torch.int8
+_BYTE_REINTERPRETED_DTYPES = frozenset({torch.bool})
+_WIDENED_STORAGE_DTYPES = frozenset(
     {
-        torch.bool,
         torch.complex64,
         torch.complex128,
         torch.int32,
         torch.int64,
     }
 )
+_UNSUPPORTED_STORAGE_DTYPES = _BYTE_REINTERPRETED_DTYPES | _WIDENED_STORAGE_DTYPES
 
 
-def to_logical_float32(x: torch.Tensor) -> torch.Tensor:
-    """Convert an unsupported-storage-dtype tensor to float32 for kernel dispatch.
+def storage_dtype_for(dtype: torch.dtype) -> torch.dtype:
+    """The dtype the prim_func declares for an input of *dtype*."""
+    if dtype in _BYTE_REINTERPRETED_DTYPES:
+        return _INT8_STORAGE_DTYPE
+    if dtype in _WIDENED_STORAGE_DTYPES:
+        return _FLOAT32_STORAGE_DTYPE
+    return dtype
 
-    - bool:        True -> 1.0, False -> 0.0
-    - int32/int64: direct cast to float32
-    - complex:     nonzero (either real or imaginary part != 0) -> 1.0, else 0.0
+
+def to_logical_storage(x: torch.Tensor) -> torch.Tensor:
+    """Present *x* to the kernel in a storage dtype the prim_func declares.
+
+    - bool:        reinterpreted as int8, which copies nothing.
+    - int32/int64: cast to float32.
+    - complex:     nonzero (either real or imaginary part != 0) -> 1.0, else 0.0.
     """
-    if x.dtype in (torch.bool, torch.int32, torch.int64):
+    if x.dtype in _BYTE_REINTERPRETED_DTYPES:
+        return x.view(_INT8_STORAGE_DTYPE)
+    if x.dtype in (torch.int32, torch.int64):
         return x.to(torch.float32)
     # complex: element is "truthy" if real != 0 OR imag != 0
     return ((x.real != 0) | (x.imag != 0)).to(torch.float32)
@@ -104,34 +120,33 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                 bool_vals = T.alloc_fragment((block_m, N_padded), "float32")
                 result = T.alloc_fragment((block_m,), "float32")
                 out_local = T.alloc_fragment(
                     (block_m,), "int8" if op_kind != "count_nonzero" else "int64"
                 )
 
+                # Truthiness is decided at the load: keeping the value in a second
+                # fragment would double a tile's registers to carry a number no
+                # reduction below reads.
                 if _needs_pad:
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            x_f32[i, j] = T.if_then_else(
+                            val = T.if_then_else(
                                 T.And(pid_m * block_m + i < M, j < N),
                                 T.cast(x[pid_m * block_m + i, j], "float32"),
                                 T.cast(_pad_val, "float32"),
                             )
+                            bool_vals[i, j] = T.if_then_else(val != 0.0, 1.0, 0.0)
                 else:
                     # Load via shared memory
                     T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                    # Cast to fp32
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                # Cast to bool (0.0 or 1.0)
-                for i in T.serial(block_m):
-                    for j in T.Parallel(N_padded):
-                        bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+                            bool_vals[i, j] = T.if_then_else(
+                                T.cast(shared_buf[i, j], "float32") != 0.0, 1.0, 0.0
+                            )
 
                 if op_kind == "any":
                     # any: result is 1 if max(bool_vals) == 1
@@ -185,7 +200,6 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
             out: T.Tensor[(M,), "int8" if op_kind != "count_nonzero" else "int64"],  # noqa: F821
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                x_f32 = T.alloc_fragment((block_m, tile_n), "float32")
                 bool_vals = T.alloc_fragment((block_m, tile_n), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
                 tile_acc = T.alloc_fragment((block_m,), "float32")
@@ -199,9 +213,11 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
                     T.fill(acc, 0.0)
 
                 for t in T.Serial(num_tiles):
+                    # As in the untiled kernel, truthiness is decided at the load so a
+                    # tile costs one fragment.
                     for i in T.serial(block_m):
                         for j in T.Parallel(tile_n):
-                            x_f32[i, j] = T.if_then_else(
+                            val = T.if_then_else(
                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                 T.cast(
                                     x[pid_m * block_m + i, t * tile_n + j],
@@ -209,10 +225,7 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
                                 ),
                                 T.cast(_pad_val, "float32"),
                             )
-
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(tile_n):
-                            bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+                            bool_vals[i, j] = T.if_then_else(val != 0.0, 1.0, 0.0)
 
                     if op_kind == "any":
                         T.reduce_max(bool_vals, tile_acc, dim=1)
@@ -305,11 +318,9 @@ class LogicalReduceKernel(Kernel):
         self.dtype = dtype
         self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
-        # TileLang cannot handle bool, integer, or complex dtypes as
-        # shared-memory storage dtypes; remap all unsupported dtypes -> float32.
-        self._kernel_dtype = (
-            _FLOAT32_STORAGE_DTYPE if dtype in _UNSUPPORTED_STORAGE_DTYPES else dtype
-        )
+        # TileLang cannot store bool, integer or complex; each maps to a storage
+        # dtype it declares, bool to the same-width int8.
+        self._kernel_dtype = storage_dtype_for(dtype)
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
         self._smem_budget = device_smem_budget(device_index)
@@ -349,9 +360,13 @@ class LogicalReduceKernel(Kernel):
         """Autotune logical reduce, benchmarking tiled configs directly."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-        x = torch.randn(
-            self.M, self.N, dtype=self._kernel_dtype, device=torch.cuda.current_device()
-        )
+        device = torch.cuda.current_device()
+        if self._kernel_dtype.is_floating_point:
+            x = torch.randn(self.M, self.N, dtype=self._kernel_dtype, device=device)
+        else:
+            # The int8 storage a bool input is reinterpreted into has no normal
+            # distribution; the sweep only needs a mix of zero and non-zero.
+            x = torch.randint(0, 2, (self.M, self.N), dtype=self._kernel_dtype, device=device)
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -370,7 +385,7 @@ class LogicalReduceKernel(Kernel):
         self._require_cuda(x=x)
         in_shape = tuple(x.shape)
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_float32(x)
+            x = to_logical_storage(x)
         rows = rows_for_axes(x, self.reduce_axes)
         y = self._reduce_rows(rows)
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
@@ -391,4 +406,6 @@ class LogicalReduceKernel(Kernel):
         counted = program(self.config["block_m"], self.config["threads"])(x)
         if self.op_kind == "count_nonzero":
             return counted.to(torch.int64)
-        return counted.bool()
+        # The prim_func writes 0 or 1 into int8, which is bool's own representation,
+        # so the declared dtype is a reinterpretation rather than a second kernel.
+        return counted.view(torch.bool)

@@ -70,6 +70,11 @@ AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
 # Thread count used when no candidate sweep runs.
 DEFAULT_THREADS: int = 128
 
+# Tile elements one thread may hold across its live fragments before ptxas spills the
+# tile to local memory, after which every pass re-reads it through L2. A
+# ``(block_m, cols)`` fragment gives a thread ``block_m * cols / threads`` of them.
+FRAGMENT_ELEMS_PER_THREAD: int = 64
+
 
 def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
     """Return the column count one thread-block pass covers.
@@ -92,6 +97,9 @@ class BlockConfigPlanner:
     Args:
         num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
             Welford's two-pass kernels allocate 2.
+        frag_slots: ``(block_m, tile_n)`` fragments the kernel keeps alive at once.
+            Registers, not shared memory: a tile that fits in shared memory can still
+            spill.
     """
 
     _BLOCK_MS = (1, 2, 4, 8)
@@ -104,11 +112,13 @@ class BlockConfigPlanner:
         elem_bytes: int,
         smem_budget: int,
         num_buffers: int = 1,
+        frag_slots: int = 1,
     ):
         self.N_padded = N_padded
         self.elem_bytes = elem_bytes
         self.smem_budget = smem_budget
         self.num_buffers = num_buffers
+        self.frag_slots = frag_slots
 
     @property
     def _row_bytes(self) -> int:
@@ -119,10 +129,28 @@ class BlockConfigPlanner:
         """
         return self.N_padded * self.elem_bytes
 
+    def frag_elems(self, block_m: int, cols: int, threads: int) -> int:
+        """Tile elements one thread holds across every live fragment."""
+        return -(-block_m * cols // threads) * self.frag_slots
+
+    def frag_fits(self, block_m: int, cols: int, threads: int) -> bool:
+        """Whether a ``(block_m, cols)`` tile stays in registers for this pair."""
+        return self.frag_elems(block_m, cols, threads) <= FRAGMENT_ELEMS_PER_THREAD
+
     @property
     def needs_tiling(self) -> bool:
-        """Whether one padded row exceeds the column cap or the smem budget."""
-        return self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
+        """Whether one padded row exceeds what a single untiled pass can hold.
+
+        Three capacities, any one of which forces the tiled kernel: the vectorizer's
+        column cap, shared memory, and the register file. The register question is
+        asked of the narrowest untiled configuration, one row over
+        ``DEFAULT_THREADS`` threads, since a larger ``block_m`` only adds to it.
+        """
+        return (
+            self.N_padded > MAX_SINGLE_TILE_COLS
+            or self._row_bytes > self.smem_budget
+            or not self.frag_fits(1, self.N_padded, DEFAULT_THREADS)
+        )
 
     def _column_alignment(self, block_m: int, threads: int) -> int:
         """Column granularity a tile must respect for this pair.
@@ -144,7 +172,9 @@ class BlockConfigPlanner:
         """
         # Single-tile probe: one buffer, because the single-tile kernels hold
         # the row in fragments and allocate no second shared copy.
-        if self.N_padded <= MAX_SINGLE_TILE_COLS:
+        if self.N_padded <= MAX_SINGLE_TILE_COLS and self.frag_fits(
+            block_m, self.N_padded, threads
+        ):
             single = compute_tile_n(
                 block_m,
                 self.elem_bytes,
@@ -154,6 +184,11 @@ class BlockConfigPlanner:
             if single == self.N_padded:
                 return 0
 
+        # The register budget bounds the untiled probe above, not the tile width. A
+        # tiled kernel passes over each tile once and moves on, so a spilled tile costs
+        # a spill it streams through where a narrower one costs another whole tile:
+        # measured on H200, summing 2M bf16 elements is 18% slower at a tile of 8192
+        # than at the 32512 that spills.
         col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         return compute_tile_n(
             block_m,
@@ -240,20 +275,19 @@ class BlockConfigPlanner:
         return ""
 
     def _untiled_block_ms(self, threads: int, budget: int | None = None) -> list[int]:
-        """Row counts an untiled kernel can build within *budget*.
+        """Row counts an untiled kernel can build within *budget*, ascending.
 
         ``default_config`` passes the conservative ``SHARED_MEMORY_BUDGET_BYTES``
-        and the sweep passes the device budget.  Largest-that-fits is a
-        capacity rule, not a performance one -- at 2048x4096 fp16 on H200,
-        ``block_m=4`` beats ``block_m=8`` on sum, var and l2 alike -- so the
-        untuned path stays inside the smaller envelope and the sweep, which
-        times every row count, is what reaches the wider one.
+        and the sweep passes the device budget.  Capacity only, not a ranking:
+        which of these to run untuned is ``default_config``'s call.
         """
         max_block_m = (budget or self.smem_budget) // self._row_bytes
         return [
             bm
             for bm in self._BLOCK_MS
-            if bm <= max_block_m and self.layout_ok(bm, self.N_padded, threads)
+            if bm <= max_block_m
+            and self.layout_ok(bm, self.N_padded, threads)
+            and self.frag_fits(bm, self.N_padded, threads)
         ]
 
     def _num_tiles(self, tile_n: int) -> int:
@@ -266,8 +300,12 @@ class BlockConfigPlanner:
                 DEFAULT_THREADS,
                 budget=SHARED_MEMORY_BUDGET_BYTES,
             )
+            # The fewest rows a block can take, not the most it can hold. Measured on
+            # H200 at 2048x4096 fp16 over sum, amax, l2 and var, bandwidth falls
+            # monotonically with block_m -- 2.34 TB/s at one row against 2.06 at eight
+            # for sum -- because a row per block is what keeps blocks resident.
             return {
-                "block_m": block_ms[-1] if block_ms else 1,
+                "block_m": block_ms[0] if block_ms else 1,
                 "threads": DEFAULT_THREADS,
             }
 
@@ -849,11 +887,13 @@ class RowTiledAutotuneMixin:
             if tile_n == 0:
                 # Single-tile regime: explore multiple block_m values.
                 for bm in [1, 2, 4, 8, 16]:
+                    # Ask the planner both questions at once -- can this row count
+                    # build a tile, and is it the whole row. A separate shared-memory
+                    # probe answers neither and lets the register budget raise here.
                     try:
-                        compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
+                        bm_tile_n = self._tile_n_for_block_m(bm)
                     except ValueError:
                         continue
-                    bm_tile_n = self._tile_n_for_block_m(bm)
                     if bm_tile_n != 0:
                         continue
                     if bm > max_block_m_no_tile:

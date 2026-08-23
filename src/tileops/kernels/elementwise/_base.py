@@ -35,6 +35,10 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
+#: What a kernel whose ``op_func`` calls a transcendental declares, for the reason
+#: ``UnaryKernel.DEFAULT_STRATEGY`` gives.
+_TRANSCENDENTAL_STRATEGY = "explicit_parallel"
+
 __all__ = [
     "BinaryKernel",
     "FloatPredicateKernel",
@@ -45,6 +49,11 @@ __all__ = [
     "UnaryKernel",
     "coalesce_broadcast_dims",
 ]
+
+#: Threads per block. Measured on H200 over {sigmoid, silu, isnan, bitwise_not}: 128
+#: beats 256 and 512 on every one.
+_DEFAULT_THREADS: int = 128
+
 
 _BITWISE_DTYPES = (
     torch.bool,
@@ -87,21 +96,60 @@ def _is_fp8(dtype: torch.dtype) -> bool:
     return dtype in _FP8_DTYPES
 
 
-def _strategy_npt(strategy: str, dtype: torch.dtype) -> int:
-    """Return the default num_per_thread for a strategy + dtype pair.
+#: Bytes one thread reads, which sets the default ``num_per_thread`` for an element
+#: width: one 128-bit access. Measured on H200 over {sigmoid, silu, isnan, round, rsqrt,
+#: bitwise_not}, 8 bytes or fewer loses a third of the bandwidth, and 32 is within a few
+#: percent at 256M elements but 15% behind at 16M.
+_BYTES_PER_THREAD: int = 16
 
-    Strategy-aware heuristic (from H200 benchmarks):
-    - explicit_parallel: npt=4 for fp16/bf16 (42% bandwidth gain vs npt=8)
-    - register_copy: npt=8 for fp16/bf16 (vectorized 128-bit loads)
-    - fp32: npt=4 for all strategies (4 bytes x 4 = 128-bit alignment)
-    - fp8: handled separately by callers (npt=16)
+#: Floor on elements per thread, so a wide dtype keeps a loop to vectorize.
+_MIN_NUM_PER_THREAD: int = 4
+
+#: Ceiling on elements per thread for a bool output a kernel cannot produce at the full
+#: width. TileLang vectorizes a comparison's result, and the CUDA codegen has no
+#: ``boolx8``; an intrinsic returning bool has no such intermediate. Which side a kernel
+#: is on is ``WIDE_BOOL_OUTPUT``.
+_BOOL_OUTPUT_MAX_NUM_PER_THREAD: int = 4
+
+#: Threads a block may hold, the CUDA limit.
+_MAX_THREADS: int = 1024
+
+#: Blocks a launch aims for before it trades elements per thread away for more of them.
+#: Above this, bandwidth is flat; below it the tensor is latency-bound and the blocks
+#: are worth more than the wider access. Measured on H200 at 30720 fp16 elements: 240
+#: blocks read 0.083 TB/s where 15 read 0.052.
+_TARGET_BLOCKS: int = 256
+
+
+def _launch_shape(
+    dtype: torch.dtype,
+    output_dtype=None,
+    n_total=None,
+    wide_bool_output: bool = False,
+) -> tuple[int, int]:
+    """Return the ``(threads, num_per_thread)`` one launch runs with.
+
+    A thread reads ``_BYTES_PER_THREAD`` whatever the element width; measured on H200,
+    both looping strategies peak at the same bytes per thread. Two things move it:
+
+    - A bool output the kernel cannot widen takes ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``
+      elements per thread, and the block widens to keep covering as many elements as it
+      would have. Measured on H200 at 16M fp16, ``logical_not`` reads 2.87 TB/s over 256
+      threads against 2.38 over 128.
+    - A tensor too small to reach ``_TARGET_BLOCKS`` narrows the thread's share instead,
+      which is the trade the block count is worth having.
     """
-    if dtype == torch.float32:
-        return 4
-    # fp16 / bf16: strategy-dependent
-    if strategy == "explicit_parallel" and dtype in (torch.float16, torch.bfloat16):
-        return 4
-    return 8
+    elem_bytes = torch.tensor([], dtype=dtype).element_size()
+    npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
+    threads = _DEFAULT_THREADS
+    if output_dtype == torch.bool and not wide_bool_output:
+        capped = min(npt, _BOOL_OUTPUT_MAX_NUM_PER_THREAD)
+        threads = min(_MAX_THREADS, threads * npt // capped)
+        npt = capped
+    if n_total is not None:
+        while npt > 1 and n_total < threads * npt * _TARGET_BLOCKS:
+            npt //= 2
+    return threads, npt
 
 
 def _fp8_needs_nonsaturating_cast(dtype: torch.dtype) -> bool:
@@ -239,12 +287,18 @@ def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
 
 @functools.lru_cache(maxsize=32)
 def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
-    """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
-    block_size = threads * num_per_thread
+    """Strategy 2: N elements per thread via T.Parallel(threads, npt).
+
+    The grid comes from the specialized arguments, not from *threads* and
+    *num_per_thread*: those name the maker's cache entry, and a call indexing a
+    narrower block than the grid was sized for leaves part of the tensor unwritten.
+    """
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -259,12 +313,17 @@ def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_
 
 @functools.lru_cache(maxsize=32)
 def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
-    """Strategy 3: fragment load → compute → fragment store."""
-    block_size = threads * num_per_thread
+    """Strategy 3: fragment load → compute → fragment store.
+
+    Grid and fragment extent come from the specialized arguments, for the reason
+    :func:`_make_unary_explicit` gives.
+    """
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -623,14 +682,18 @@ def _make_fused_gated_explicit(
     ``_make_fused_gated_direct``).  fp8 accumulation belongs to the caller, which
     wraps ``op_func`` via ``_wrap_fp8_accumulation``.
 
+    The grid comes from the specialized arguments, for the reason
+    :func:`_make_unary_explicit` gives.
+
     Args:
         output_dtype: TileLang dtype string for the output tensor. Defaults to dtype.
     """
-    block_N = threads * num_per_thread
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
+        block_N = threads_arg * npt_arg
+
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
@@ -667,11 +730,20 @@ class UnaryKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    # Benchmark (H200): register_copy wins for fp16/bf16 across all tested shapes;
-    # fp32 small shapes show variance between register_copy and explicit_parallel.
+    #: Which strategy wins splits by how much work ``op_func`` does per element, so
+    #: each kernel declares it. Measured on H200 at 16M and 256M fp16 elements:
+    #: register_copy leads by 10-14% where the body is an instruction or two (round,
+    #: rsqrt, sign, relu) and trails by 20-22% where it is a transcendental (sigmoid,
+    #: silu, erf, gelu, mish), which has the arithmetic to hide behind the loads
+    #: explicit_parallel issues. register_copy is the default because the cheap bodies
+    #: are the majority; ``_TRANSCENDENTAL_STRATEGY`` names the other side.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
+    #: Whether a bool result survives the full ``num_per_thread``. A comparison's does
+    #: not: see ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``. Only a kernel whose ``op_func``
+    #: gets its bool from an intrinsic sets this.
+    WIDE_BOOL_OUTPUT = False
 
     @staticmethod
     def op_func(x):
@@ -793,9 +865,11 @@ class UnaryKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             # fp8: 1 byte per element, 16 elements = 128-bit alignment
-            return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
-        npt = _strategy_npt(self.strategy, self.dtype)
-        return {"strategy": self.strategy, "threads": 256, "num_per_thread": npt}
+            return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
+        threads, npt = _launch_shape(
+            self.dtype, self.output_dtype, self.N_total, self.WIDE_BOOL_OUTPUT
+        )
+        return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -893,6 +967,8 @@ class BinaryKernel(Kernel):
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
+    #: As ``UnaryKernel.WIDE_BOOL_OUTPUT``. Every bool-output kernel here compares.
+    WIDE_BOOL_OUTPUT = False
 
     @staticmethod
     def op_func(a, b):
@@ -1056,9 +1132,11 @@ class BinaryKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
-            return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
-        npt = _strategy_npt(self.strategy, self.dtype)
-        return {"strategy": self.strategy, "threads": 256, "num_per_thread": npt}
+            return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
+        threads, npt = _launch_shape(
+            self.dtype, self.output_dtype, self.N_total, self.WIDE_BOOL_OUTPUT
+        )
+        return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1228,13 +1306,13 @@ class FusedGatedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
-            return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
+            return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
         if self.strategy == "explicit_parallel" and self.dtype in (torch.float16, torch.bfloat16):
             # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
             # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128.
             return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
-        npt = _strategy_npt(self.strategy, self.dtype)
-        return {"strategy": self.strategy, "threads": 256, "num_per_thread": npt}
+        threads, npt = _launch_shape(self.dtype, self.output_dtype, self.M * self.N)
+        return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1329,7 +1407,7 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
 
     @property
     def default_config(self) -> dict:
-        return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
+        return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
 
     def forward(self, x):
         as_bool = x.dtype == torch.bool
@@ -1353,7 +1431,7 @@ class _Uint8StorageBinaryKernel(BinaryKernel):
 
     @property
     def default_config(self) -> dict:
-        return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
+        return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
 
     def forward(self, a, b):
         as_bool = a.dtype == torch.bool
