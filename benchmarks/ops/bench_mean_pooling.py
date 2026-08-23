@@ -3,7 +3,11 @@ from typing import List, Optional
 import pytest
 import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+)
 from benchmarks.benchmark_base import BenchmarkBase
 from tileops.ops import MeanPoolingForwardOp
 from workloads.nsa_utils import prepare_chunk_indices
@@ -56,6 +60,24 @@ _MEAN_POOLING_BENCH_PARAMS = [
         id="varlen-tail",
     ),
 ]
+
+
+def _torch_view_mean(test: MeanPoolingWorkload):
+    """The same mean over a reshaped view, or None where the chunks are ragged.
+
+    ``ref_program`` averages one slice per chunk, a launch each. Where every chunk is
+    full the chunk axis is a reshape away and the pooling is a single reduction.
+    """
+    if test.use_offsets != 0 or test.seq_len % test.chunk_size:
+        return None
+
+    chunks = test.seq_len // test.chunk_size
+
+    def fn(x, *_):
+        b, _, h, d = x.shape
+        return x.view(b, chunks, test.chunk_size, h, d).mean(dim=2)
+
+    return fn
 
 
 @pytest.mark.parametrize(
@@ -128,13 +150,14 @@ def test_mean_pooling_bench(
 
     op = MeanPoolingForwardOp(**params)
 
-    bm.compare(
-        {
-            "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
-        },
-        *inputs,
-        record_as=op,
-        params=locals(),
-    )
+    functors = {
+        "tileops": op,
+        "torch-ref": test.ref_program,
+        TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+    }
+    view_mean = _torch_view_mean(test)
+    if view_mean is not None:
+        assert_matches_reference(view_mean, test.ref_program, *inputs)
+        functors["torch-view-mean"] = view_mean
+
+    bm.compare(functors, *inputs, record_as=op, params=locals())
