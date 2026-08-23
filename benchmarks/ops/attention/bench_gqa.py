@@ -410,6 +410,29 @@ def test_gqa_prefill_fwd_bench(
     bm.compare(functors, *packed_inputs, record_as=op, params=locals())
 
 
+def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):
+    """FlashAttention-3 over the same packed-varlen layout."""
+    try:
+        from flash_attn_interface import flash_attn_varlen_func
+    except ImportError:
+        return None
+
+    def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv):
+        out = flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            test.max_seqlen_q,
+            test.max_seqlen_kv,
+            causal=test.is_causal,
+        )
+        return out[0] if isinstance(out, tuple) else out
+
+    return _run
+
+
 _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
     pytest.param(
         4,
@@ -473,12 +496,14 @@ def test_gqa_prefill_varlen_fwd_bench(
     )
     bm = GQAPrefillVarlenFwdBenchmark(test)
 
-    bm.compare(
-        {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)},
-        *inputs,
-        record_as=op,
-        params=locals(),
-    )
+    functors = {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}
+    fa3_fn = _fa3_gqa_prefill_varlen(test)
+    if fa3_fn is not None:
+        assert_matches_reference(
+            fa3_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
+        )
+        functors["fa3"] = fa3_fn
+    bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
 def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
