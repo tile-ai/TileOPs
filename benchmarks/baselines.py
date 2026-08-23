@@ -18,12 +18,14 @@ from typing import Any, Callable, Optional
 import torch
 
 __all__ = [
+    "DEEPGEMM_TAG",
     "FLAGGEMS_TAG",
     "FLASHINFER_TAG",
     "TORCH_COMPILE_TAG",
     "VLLM_TAG",
     "assert_matches_reference",
     "compiled_reference",
+    "deepgemm_op",
     "flaggems_dims",
     "flaggems_group_norm",
     "flaggems_op",
@@ -41,6 +43,7 @@ _TOLERANCES = {
     torch.float64: (1e-7, 1e-7),
 }
 
+DEEPGEMM_TAG = "deepgemm"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
@@ -176,6 +179,15 @@ def flaggems_group_norm(n: int, c: int, hxw: int, groups: int, eps: float) -> Ca
         return fn(x, weight, bias, n, c, hxw, groups, eps)[0]
 
     return baseline_fn
+
+
+def deepgemm_op(name: str) -> Callable:
+    """Return the ``deep_gemm`` entry point *name*.
+
+    Its GEMMs write into a caller-allocated output and return ``None``, so an adapter
+    allocates before it calls.
+    """
+    return _resolve("deep_gemm", name, "deepgemm")
 
 
 def flashinfer_op(name: str) -> Callable:

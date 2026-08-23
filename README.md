@@ -7,9 +7,9 @@
 
 <p>
     <a href="https://github.com/tile-ai/tilelang"><img src="https://img.shields.io/badge/built%20on-TileLang-1E90FF" alt="Built on TileLang"></a>
-    <a href="https://github.com/tile-ai/TileOPs/tree/main/src/tileops/manifest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
-    <a href="https://github.com/tile-ai/TileOPs/tree/main/benchmarks"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+    <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
+    <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
+    <a href="https://tile-ai.github.io/TileOPs.github.io/api/"><img src="https://img.shields.io/badge/docs-API%20reference-1E90FF" alt="API reference"></a>
     <!-- <a href="https://pypi.org/project/src/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version"></a> -->
   </p>
 
@@ -18,7 +18,8 @@
     <a href="#built-for-agents"><b>Why it's different</b></a> ·
     <a href="#how-it-works"><b>How it works</b></a> ·
     <a href="#installation"><b>Installation</b></a> ·
-    <a href="#documentation"><b>Docs</b></a>
+    <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><b>Benchmarks</b></a> ·
+    <a href="https://tile-ai.github.io/TileOPs.github.io/"><b>Docs</b></a>
   </p>
 </div>
 
@@ -122,7 +123,10 @@ build troubleshooting.
 | [roofline.md](docs/design/roofline.md)         | How performance is scored against Speed-of-Light |
 | [trust-model.md](docs/design/trust-model.md)   | What each layer may assume about the others      |
 
-API reference and performance tables: [TileOPs.github.io](https://github.com/tile-ai/TileOPs.github.io).
+The rendered site carries what this table cannot: the
+[API reference](https://tile-ai.github.io/TileOPs.github.io/api/) generated from the operator
+signatures, and the [performance tables](https://tile-ai.github.io/TileOPs.github.io/benchmarks/)
+from the nightly run, each operator against the tuned libraries it competes with.
 
 ## Contributing
 

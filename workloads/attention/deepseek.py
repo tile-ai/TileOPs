@@ -579,15 +579,42 @@ class DsaDecodeWorkload(WorkloadBase):
                     indices[b, t, h, : len(i_i)] = i_i
         return q, kv, indices
 
+    def selection_mask(self, indices: torch.Tensor) -> torch.Tensor:
+        """Return the ``[batch, kv heads, q, kv]`` mask this workload's top-k selection implies.
+
+        The mask combines the selected positions with the compressed causal limit.
+        ``ref_program`` and any baseline attending over the same selection both read it,
+        so the two cannot drift apart.
+        """
+        idx = indices.transpose(1, 2)
+        b, g, sq, _ = idx.shape
+        sk = self.seq_len_kv
+        q_start_index_s = self.q_start_index_s
+        if q_start_index_s is None:
+            q_start_index_s = sk * self.stride_kv - sq
+        device = indices.device
+        compressed_causal_mask = torch.arange(
+            q_start_index_s, sq + q_start_index_s, dtype=torch.int32, device=device
+        ).view(-1, 1) >= torch.arange(
+            self.stride_kv - 1,
+            sk * self.stride_kv,
+            self.stride_kv,
+            dtype=torch.int32,
+            device=device,
+        ).view(1, -1)
+
+        mask = torch.zeros(b, g, sq, sk + 1, dtype=torch.bool, device=device).scatter(
+            3, idx.long(), 1
+        )[..., :-1]
+        mask = mask & compressed_causal_mask.view(1, 1, sq, sk)
+        mask[:, :, : self.stride_kv - 1, 0] = True
+        return mask
+
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         q = q.float()
         kv = kv.float()
-        indices = indices.transpose(1, 2)
         b, sq, h, dim_q = q.shape
         b, sk, g, _ = kv.shape
-        q_start_index_s = self.q_start_index_s
-        if self.q_start_index_s is None:
-            q_start_index_s = sk * self.stride_kv - sq
 
         assert kv.shape[-1] == self.dim + self.dim_tail, "you should assign dim otherwise"
         dim = self.dim
@@ -597,21 +624,7 @@ class DsaDecodeWorkload(WorkloadBase):
         b, _, _, dim_v = v.shape
         g_index = g
         h_index = h // g
-        compressed_causal_mask = torch.arange(
-            q_start_index_s, sq + q_start_index_s, dtype=torch.int32, device="cuda"
-        ).view(-1, 1) >= torch.arange(
-            self.stride_kv - 1,
-            sk * self.stride_kv,
-            self.stride_kv,
-            dtype=torch.int32,
-            device="cuda",
-        ).view(1, -1)
-
-        mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
-        mask = mask[..., :-1]
-        mask = mask & compressed_causal_mask.view(1, 1, sq, sk)
-        mask[:, :, : self.stride_kv - 1, 0] = True
-        mask = mask.view(b, g_index, 1, sq, sk)
+        mask = self.selection_mask(indices).view(b, g_index, 1, sq, sk)
 
         q = q.view(b, sq, g, -1, dim_q)
         score = torch.einsum("bmghd,bngd->bghmn", q, k)
