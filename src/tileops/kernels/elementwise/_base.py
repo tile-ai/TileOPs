@@ -105,11 +105,44 @@ _BYTES_PER_THREAD: int = 16
 #: Floor on elements per thread, so a wide dtype keeps a loop to vectorize.
 _MIN_NUM_PER_THREAD: int = 4
 
-#: Ceiling on elements per thread for a bool output a kernel cannot produce at the full
-#: width. TileLang vectorizes a comparison's result, and the CUDA codegen has no
-#: ``boolx8``; an intrinsic returning bool has no such intermediate. Which side a kernel
-#: is on is ``WIDE_BOOL_OUTPUT``.
+#: Ceiling on elements per thread for a bool result stored as bool. TileLang plans a
+#: ``boolx8`` for a vectorized bool value and the CUDA codegen has no type for it. Only
+#: the paths that cannot route through ``_BOOL_STORAGE_DTYPE`` pay this.
 _BOOL_OUTPUT_MAX_NUM_PER_THREAD: int = 4
+
+#: What a bool result is written through where the kernel can choose. int8 is the same
+#: width as bool and 0/1 are the same two byte patterns, so nothing is copied to hand the
+#: tensor back as bool -- and no bool value exists for TileLang to widen into a ``boolx8``.
+#: Measured on H200 at 16M fp16: logical_not reads 3.50 TB/s this way against 2.88 storing
+#: bool, isnan 3.50 against 2.76.
+_BOOL_STORAGE_DTYPE: str = "int8"
+
+
+def _stored_as_bool_storage(op_func, arity: int):
+    """Wrap *op_func* so its bool result lands as ``_BOOL_STORAGE_DTYPE``.
+
+    The predicate is consumed by ``T.if_then_else`` rather than assigned, which is what
+    keeps a vectorized bool from being formed in the first place.
+    """
+    if arity == 1:
+
+        def wrapped(x):
+            return T.if_then_else(
+                op_func(x),
+                T.cast(1, _BOOL_STORAGE_DTYPE),
+                T.cast(0, _BOOL_STORAGE_DTYPE),
+            )
+    else:
+
+        def wrapped(a, b):
+            return T.if_then_else(
+                op_func(a, b),
+                T.cast(1, _BOOL_STORAGE_DTYPE),
+                T.cast(0, _BOOL_STORAGE_DTYPE),
+            )
+
+    return wrapped
+
 
 #: Threads a block may hold, the CUDA limit.
 _MAX_THREADS: int = 1024
@@ -122,32 +155,35 @@ _TARGET_BLOCKS: int = 256
 
 
 def _launch_shape(
+    strategy: str,
     dtype: torch.dtype,
     output_dtype=None,
     n_total=None,
-    wide_bool_output: bool = False,
+    stores_bool: bool = True,
 ) -> tuple[int, int]:
     """Return the ``(threads, num_per_thread)`` one launch runs with.
 
     A thread reads ``_BYTES_PER_THREAD`` whatever the element width; measured on H200,
     both looping strategies peak at the same bytes per thread. Two things move it:
 
-    - A bool output the kernel cannot widen takes ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``
+    - A bool result actually stored as bool takes ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``
       elements per thread, and the block widens to keep covering as many elements as it
-      would have. Measured on H200 at 16M fp16, ``logical_not`` reads 2.87 TB/s over 256
-      threads against 2.38 over 128.
+      would have. A result routed through ``_BOOL_STORAGE_DTYPE`` has no such limit.
     - A tensor too small to reach ``_TARGET_BLOCKS`` narrows the thread's share instead,
-      which is the trade the block count is worth having.
+      which is the trade the block count is worth having. It stops at
+      ``_MIN_NUM_PER_THREAD``: measured on H200 at 30720 fp16 elements, 1, 2 and 4
+      elements per thread all read 0.083 TB/s, so there is nothing below it to win.
     """
     elem_bytes = torch.tensor([], dtype=dtype).element_size()
     npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
     threads = _DEFAULT_THREADS
-    if output_dtype == torch.bool and not wide_bool_output:
+    if output_dtype == torch.bool and stores_bool:
         capped = min(npt, _BOOL_OUTPUT_MAX_NUM_PER_THREAD)
         threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
-    if n_total is not None:
-        while npt > 1 and n_total < threads * npt * _TARGET_BLOCKS:
+    # ``direct`` takes one element per thread, so it has no share to trade for blocks.
+    if n_total is not None and strategy != "direct":
+        while npt > _MIN_NUM_PER_THREAD and n_total < threads * npt * _TARGET_BLOCKS:
             npt //= 2
     return threads, npt
 
@@ -740,10 +776,6 @@ class UnaryKernel(Kernel):
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
-    #: Whether a bool result survives the full ``num_per_thread``. A comparison's does
-    #: not: see ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``. Only a kernel whose ``op_func``
-    #: gets its bool from an intrinsic sets this.
-    WIDE_BOOL_OUTPUT = False
 
     @staticmethod
     def op_func(x):
@@ -811,16 +843,21 @@ class UnaryKernel(Kernel):
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
             )
+        # A bool result goes through int8 wherever a fragment carries it: the store is
+        # then an ordinary byte store, so nothing caps ``num_per_thread``.
+        self._bool_via_int8 = bool_output and self.strategy == "register_copy"
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
-        """Return op_func wrapped with fp8->fp16 accumulation if needed.
+        """Return op_func wrapped for the output the kernel declares.
 
-        Delegates to the shared ``_wrap_fp8_accumulation`` helper.
-        When ``OUTPUT_DTYPE`` is set (e.g. bool-output ops) fp8 wrapping is
-        skipped because the kernel already outputs a non-fp8 type.
+        A bool result is wrapped to land as ``_BOOL_STORAGE_DTYPE``; otherwise fp8
+        accumulation is the only wrapping, via ``_wrap_fp8_accumulation``. When
+        ``OUTPUT_DTYPE`` is set the kernel already outputs a non-fp8 type.
         """
+        if self._bool_via_int8:
+            return _stored_as_bool_storage(self.op_func, arity=1)
         if self.OUTPUT_DTYPE is not None:
             return self.op_func
         return _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=1)
@@ -859,6 +896,8 @@ class UnaryKernel(Kernel):
 
     @property
     def output_dtype_str(self) -> str:
+        if self._bool_via_int8:
+            return _BOOL_STORAGE_DTYPE
         return self.dtype_to_str(self.output_dtype)
 
     @property
@@ -867,7 +906,7 @@ class UnaryKernel(Kernel):
             # fp8: 1 byte per element, 16 elements = 128-bit alignment
             return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
         threads, npt = _launch_shape(
-            self.dtype, self.output_dtype, self.N_total, self.WIDE_BOOL_OUTPUT
+            self.strategy, self.dtype, self.output_dtype, self.N_total, not self._bool_via_int8
         )
         return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
 
@@ -930,6 +969,9 @@ class UnaryKernel(Kernel):
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(_flat(x))
+        if self._bool_via_int8:
+            # 0 and 1 in int8 are bool's own byte patterns, so this copies nothing.
+            result = result.view(torch.bool)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result.reshape(x.shape)
@@ -967,8 +1009,6 @@ class BinaryKernel(Kernel):
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
-    #: As ``UnaryKernel.WIDE_BOOL_OUTPUT``. Every bool-output kernel here compares.
-    WIDE_BOOL_OUTPUT = False
 
     @staticmethod
     def op_func(a, b):
@@ -1053,13 +1093,14 @@ class BinaryKernel(Kernel):
             # register_copy requires same-shape contiguous inputs (no
             # broadcast); silently downgrade to explicit_parallel when
             # the caller requests register_copy on broadcast shapes.
-            if requested == "register_copy" and (not self._same_shape or bool_output):
+            if requested == "register_copy" and not self._same_shape:
                 self.strategy = "explicit_parallel"
             else:
                 self.strategy = requested
-        elif self._same_shape and not bool_output:
+        elif self._same_shape:
             # register_copy gives vectorized 128-bit loads, ~2-3x faster
-            # for complex op_funcs that block TVM's auto-vectorizer.
+            # for complex op_funcs that block TVM's auto-vectorizer, and it is where a
+            # bool result can be carried as int8 rather than stored as bool.
             self.strategy = "register_copy"
         else:
             self.strategy = self.DEFAULT_STRATEGY
@@ -1067,16 +1108,20 @@ class BinaryKernel(Kernel):
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
             )
+        # As in UnaryKernel: a bool result rides in an int8 fragment where there is one.
+        self._bool_via_int8 = bool_output and self.strategy == "register_copy"
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
-        """Return op_func wrapped with fp8->fp16 accumulation if needed.
+        """Return op_func wrapped for the output the kernel declares.
 
-        Delegates to the shared ``_wrap_fp8_accumulation`` helper (arity=2).
-        When ``OUTPUT_DTYPE`` is set (e.g. comparison/logical ops) fp8 wrapping
-        is skipped because the kernel already outputs a non-fp8 type.
+        A bool result is wrapped to land as ``_BOOL_STORAGE_DTYPE``; otherwise fp8
+        accumulation is the only wrapping, via ``_wrap_fp8_accumulation`` (arity=2). When
+        ``OUTPUT_DTYPE`` is set the kernel already outputs a non-fp8 type.
         """
+        if self._bool_via_int8:
+            return _stored_as_bool_storage(self.op_func, arity=2)
         if self.OUTPUT_DTYPE is not None:
             return self.op_func
         return _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=2)
@@ -1088,6 +1133,8 @@ class BinaryKernel(Kernel):
         kernel_output_dtype = (
             self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
         )
+        if self._bool_via_int8:
+            kernel_output_dtype = _BOOL_STORAGE_DTYPE
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
@@ -1134,7 +1181,7 @@ class BinaryKernel(Kernel):
         if _is_fp8(self.dtype):
             return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
         threads, npt = _launch_shape(
-            self.dtype, self.output_dtype, self.N_total, self.WIDE_BOOL_OUTPUT
+            self.strategy, self.dtype, self.output_dtype, self.N_total, not self._bool_via_int8
         )
         return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
 
@@ -1197,6 +1244,9 @@ class BinaryKernel(Kernel):
     def forward(self, a, b):
         self._require_cuda(a=a, b=b)
         result = self._compiled_fn(_flat(a), _flat(b))
+        if self._bool_via_int8:
+            # 0 and 1 in int8 are bool's own byte patterns, so this copies nothing.
+            result = result.view(torch.bool)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result.reshape(self.result_shape)
@@ -1307,11 +1357,16 @@ class FusedGatedKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
-        if self.strategy == "explicit_parallel" and self.dtype in (torch.float16, torch.bfloat16):
+        if self.strategy == "explicit_parallel":
             # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
-            # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128.
-            return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
-        threads, npt = _launch_shape(self.dtype, self.output_dtype, self.M * self.N)
+            # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128, and
+            # measured on H200 over 4096x4096 and 2048x14336 fp32 the two thread counts
+            # tie, so it keeps the wider block.
+            if self.dtype in (torch.float16, torch.bfloat16):
+                return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
+            if self.dtype == torch.float32:
+                return {"strategy": self.strategy, "threads": 256, "num_per_thread": 4}
+        threads, npt = _launch_shape(self.strategy, self.dtype, self.output_dtype, self.M * self.N)
         return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
 
     @property
@@ -1381,16 +1436,24 @@ class FloatUnaryKernel(UnaryKernel):
 
 
 class FloatPredicateKernel(FloatUnaryKernel):
-    """Unary kernel base for float predicates with bool output."""
+    """Unary kernel base for float predicates with bool output.
 
-    DEFAULT_STRATEGY = "explicit_parallel"
+    Takes the fragment strategy, which is what lets the bool result ride in an int8
+    fragment instead of being stored as bool.
+    """
+
+    DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = torch.bool
 
 
 class LogicalUnaryKernel(UnaryKernel):
-    """Unary kernel base for logical predicates with bool output."""
+    """Unary kernel base for logical predicates with bool output.
 
-    DEFAULT_STRATEGY = "explicit_parallel"
+    As ``FloatPredicateKernel``: the fragment strategy carries the result as int8. A
+    dtype the vectorized load cannot lower is still forced to the scalar path.
+    """
+
+    DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
