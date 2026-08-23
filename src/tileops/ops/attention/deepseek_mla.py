@@ -24,6 +24,13 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            pe_dim: Manifest ``params.pe_dim``, ``int``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -68,6 +75,17 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     def forward(
         self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            q_pe: Input tensor, dtype ``same_as(q)``.
+            k: Input tensor, dtype ``same_as(q)``.
+            k_pe: Input tensor, dtype ``same_as(q)``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
+        """
         self._validate_dtypes(q, q_pe, k, k_pe)
         self.dtype = q.dtype
         return self._get_kernel((q, q_pe, k, k_pe), q.dtype)(q, q_pe, k, k_pe)

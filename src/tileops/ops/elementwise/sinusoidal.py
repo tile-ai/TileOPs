@@ -23,16 +23,6 @@ class SinusoidalFwdOp(Op):
         zero tensor inputs and constructs its output entirely from
         ``__init__`` parameters; no compile-time wrapping is needed.
 
-    Args:
-        seq_len: Sequence length.
-        d_model: Model dimension.
-        dtype: Torch dtype.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None``. Nothing is probed: with no tensor input
-            there is no device to detect, so the in-tree kernels serve unless a target
-            is named.
-        kernel_map: Optional dispatch override mapping kernel keys to
-            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "sinusoidal"
@@ -46,6 +36,19 @@ class SinusoidalFwdOp(Op):
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            seq_len: Sequence length.
+            d_model: Model dimension.
+            dtype: Torch dtype.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None``. Nothing is probed: with no tensor input
+                there is no device to detect, so the in-tree kernels serve unless a target
+                is named.
+            kernel_map: Optional dispatch override mapping kernel keys to
+                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+        """
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
@@ -77,6 +80,11 @@ class SinusoidalFwdOp(Op):
     def forward(self) -> torch.Tensor:
         # The op promised ``self.dtype``; whichever storage the backend chose to
         # compute in is its own business and does not reach the caller.
+        """Run the op on the inputs the manifest declares.
+
+        Returns:
+            ``output``, as the manifest declares.
+        """
         kernel = self.get_or_build_kernel(
             self._op_name,
             (),  # no tensor input, so no device to detect: in-tree only

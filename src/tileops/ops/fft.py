@@ -24,12 +24,15 @@ class FFTC2CFwdOp(Op):
     Uses pre-computed twiddle factor LUT and shared-memory butterfly fusion
     for optimal GPU performance.
 
-    Args:
-        tune: Whether to enable autotuning (default: False)
-        kernel_map: Optional custom kernel mapping for testing
     """
 
     def __init__(self, tune: bool = False, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune: Whether to enable autotuning (default: False)
+            kernel_map: Optional custom kernel mapping for testing
+        """
         self.n = None
         self.dtype = None
         self.tune = tune

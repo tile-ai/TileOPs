@@ -132,8 +132,10 @@ class MoeUnpermuteKernel(Kernel):
             ``Kernel.init_config``.
 
     Example:
-        >>> kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
-        >>> output = kernel(mm2_pad, fwd_idx, topk_weights)
+        ```python linenums="1"
+        kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
+        output = kernel(mm2_pad, fwd_idx, topk_weights)
+        ```
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

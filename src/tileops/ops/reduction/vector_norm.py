@@ -19,18 +19,6 @@ class L1NormFwdOp(_ReduceOpBase):
 
     Construction: ``L1NormFwdOp(dim=None, keepdim=False)``.
 
-    Args:
-        dim: Reduction dimension (default ``None`` -> full reduction, matching
-            ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
-            ``None``.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        ord: Norm order. Must equal 1 for ``L1NormFwdOp`` (manifest fixes
-            ``ord == 1``); accepted as a kwarg to mirror
-            ``torch.linalg.vector_norm``.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "l1"
@@ -49,6 +37,21 @@ class L1NormFwdOp(_ReduceOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default ``None`` -> full reduction, matching
+                ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
+                ``None``.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            ord: Norm order. Must equal 1 for ``L1NormFwdOp`` (manifest fixes
+                ``ord == 1``); accepted as a kwarg to mirror
+                ``torch.linalg.vector_norm``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         if ord != self._required_ord:
             raise ValueError(
                 f"{type(self).__name__} only supports ord={self._required_ord!r}, got ord={ord!r}"
@@ -68,18 +71,6 @@ class L2NormFwdOp(_ReduceOpBase):
 
     Construction: ``L2NormFwdOp(dim=None, keepdim=False)``.
 
-    Args:
-        dim: Reduction dimension (default ``None`` -> full reduction, matching
-            ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
-            ``None``.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        ord: Norm order. Must equal 2 for ``L2NormFwdOp`` (manifest fixes
-            ``ord == 2``); accepted as a kwarg to mirror
-            ``torch.linalg.vector_norm``.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "l2"
@@ -98,6 +89,21 @@ class L2NormFwdOp(_ReduceOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default ``None`` -> full reduction, matching
+                ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
+                ``None``.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            ord: Norm order. Must equal 2 for ``L2NormFwdOp`` (manifest fixes
+                ``ord == 2``); accepted as a kwarg to mirror
+                ``torch.linalg.vector_norm``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         if ord != self._required_ord:
             raise ValueError(
                 f"{type(self).__name__} only supports ord={self._required_ord!r}, got ord={ord!r}"
@@ -121,18 +127,6 @@ class InfNormFwdOp(_ReduceOpBase):
     torch.linalg.vector_norm(ord=inf) semantics. The kernel drops NaN values and patches
     those rows itself, so the compensation stays with the implementation that needs it.
 
-    Args:
-        dim: Reduction dimension (default ``None`` -> full reduction, matching
-            ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
-            ``None``.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        ord: Norm order. Must equal ``float('inf')`` for ``InfNormFwdOp``
-            (manifest fixes ``ord == float('inf')``); accepted as a kwarg to
-            mirror ``torch.linalg.vector_norm``.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "inf"
@@ -151,6 +145,21 @@ class InfNormFwdOp(_ReduceOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default ``None`` -> full reduction, matching
+                ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
+                ``None``.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            ord: Norm order. Must equal ``float('inf')`` for ``InfNormFwdOp``
+                (manifest fixes ``ord == float('inf')``); accepted as a kwarg to
+                mirror ``torch.linalg.vector_norm``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         if ord != self._required_ord:
             raise ValueError(
                 f"{type(self).__name__} only supports ord={self._required_ord!r}, got ord={ord!r}"

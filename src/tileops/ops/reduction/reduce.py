@@ -540,16 +540,7 @@ class _WelfordReduceOp(_ReduceOpBase):
     """Base for Welford-based reduce ops (std, var, var_mean).
 
     Construction: ``op(dim=None, correction=1, keepdim=False)``.
-    Args:
-        dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
-            multi-dim reduction.
-        correction: Bessel's correction (default 1).
-        keepdim: Whether to retain the reduced dimension as size 1.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
+
     """
 
     _empty_dim_policy: EmptyDimPolicy = "full"
@@ -576,6 +567,17 @@ class _WelfordReduceOp(_ReduceOpBase):
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
+
+        Args:
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+                multi-dim reduction.
+            correction: Bessel's correction (default 1).
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default False).
         """
         self.correction = correction
         super().__init__(

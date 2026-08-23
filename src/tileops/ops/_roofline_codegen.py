@@ -58,6 +58,7 @@ class _ShapeProxy:
     __slots__ = ("shape", "ndim")
 
     def __init__(self, shape: tuple) -> None:
+        """Build the op. Shapes and dtype are taken from the first call."""
         self.shape = tuple(shape)
         self.ndim = len(self.shape)
 
@@ -225,6 +226,7 @@ class _VarsExprValidator(ast.NodeVisitor):
         input_names: set[str],
         optional_names: set[str] | None = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call."""
         self.op_name = op_name
         self.var_name = var_name
         # Cleared by ``visit_Compare`` when they carry a presence test.

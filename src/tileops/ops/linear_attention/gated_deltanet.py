@@ -150,10 +150,6 @@ class GatedDeltaNetBHTDFwdOp(Op):
     ``g/beta [B, H, S]``. ``GatedDeltaNetBwdOp`` consumes the ``S`` this returns,
     in the same layout. Token-major callers want ``GatedDeltaNetBTHDFwdOp``.
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -162,6 +158,13 @@ class GatedDeltaNetBHTDFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -293,10 +296,6 @@ class GatedDeltaNetBTHDFwdOp(Op):
     ``chunk_size=64``, equal K/V dimensions in {64, 128}, and float16 or
     bfloat16. Any other call is refused, naming what it failed.
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -305,6 +304,13 @@ class GatedDeltaNetBTHDFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -458,6 +464,13 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Manifest ``params.chunk_size``, ``int | None``, default ``None``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -636,6 +649,18 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            g: Input tensor, dtype ``same_as(q)``.
+            beta: Input tensor, dtype ``same_as(q)``.
+
+        Returns:
+            ``o``, ``final_state``, as the manifest declares. Shape rules: ``final_state.shape == (B, H, DK, DV)``.
+        """
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
@@ -685,10 +710,6 @@ class GatedDeltaNetBwdOp(Op):
 
     Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dg, dbeta).
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -697,6 +718,13 @@ class GatedDeltaNetBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -809,6 +837,7 @@ class _GatedDeltaNetFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, g, beta, fwd_kernel, bwd_kernel):
+        """Run the op on ``q``, ``k``, ``v``, ``g``, ``beta``, ``fwd_kernel`` and ``bwd_kernel``."""
         o, S, Aw, Au = fwd_kernel(q, k, v, g, beta)
         ctx.save_for_backward(q, k, v, g, beta, S)
         ctx.bwd_kernel = bwd_kernel
@@ -836,10 +865,6 @@ class GatedDeltaNetOp(UnmanifestedOp):
 
     Layout: BHSD (batch, head, seq_len, dim).
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -848,6 +873,13 @@ class GatedDeltaNetOp(UnmanifestedOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -965,6 +997,12 @@ class GatedDeltaNetDecodeFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.heads = None
         self.dim_k = None
@@ -1119,6 +1157,19 @@ class GatedDeltaNetDecodeFwdOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            g: Input tensor, dtype ``same_as(q)``.
+            beta: Input tensor, dtype ``same_as(q)``.
+            state: Input tensor, dtype ``same_as(q)``.
+
+        Returns:
+            ``o``, ``new_state``, as the manifest declares. Shape rules: ``o.shape == (B, H, DV)``; ``new_state.shape == (B, H, DK, DV)``.
+        """
         sig = (
             q.shape,
             k.shape,

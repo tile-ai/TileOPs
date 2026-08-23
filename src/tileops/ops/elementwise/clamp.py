@@ -35,11 +35,6 @@ class ClampFwdOp(_PerDtypeKernels, Op):
     gets built. One instance therefore serves ``clamp``, ``clamp_min`` and
     ``clamp_max``, one specialization each.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "clamp"
@@ -52,6 +47,14 @@ class ClampFwdOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         self.input_shape: Optional[tuple] = None
@@ -148,20 +151,21 @@ class ClampFwdOp(_PerDtypeKernels, Op):
         min: Optional[torch.Tensor] = None,
         max: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            min: Input tensor, dtype ``same_as(input)``. Optional.
+            max: Input tensor, dtype ``same_as(input)``. Optional.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)``; ``min is None or max is not None or output.shape == broadcast_shapes(input.shape, min.shape)``; ``max is None or min is not None or output.shape == broadcast_shapes(input.shape, max.shape)``.
+        """
         return type(self)._wrapped(input, min, max, self._instance_key)
 
 
 class ClampScalarFwdOp(_PerDtypeKernels, Op):
-    """Scalar-bound clamp (``torch.clamp(input, min: Number|None, max: Number|None)``).
-
-    Args:
-        min: Lower bound (Number or None).
-        max: Upper bound (Number or None).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
-    """
+    """Scalar-bound clamp (``torch.clamp(input, min: Number|None, max: Number|None)``)."""
 
     _op_name = "clamp"
     _wrapped = None
@@ -175,6 +179,16 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            min: Lower bound (Number or None).
+            max: Upper bound (Number or None).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         if min is None and max is None:
             raise ValueError(
                 "ClampScalarFwdOp requires at least one of `min` or `max` to be a "
@@ -228,6 +242,14 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
         return result
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == input.shape``.
+        """
         return type(self)._wrapped(input, self._instance_key)
 
 

@@ -30,6 +30,13 @@ class GLADecodeFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            scale: Manifest ``params.scale``, ``float``, default ``-1.0``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.heads = None
         self.dim_k = None
@@ -171,6 +178,18 @@ class GLADecodeFwdOp(Op):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            gk: Input tensor, dtype ``same_as(q)``.
+            state: Input tensor, dtype ``same_as(q)``.
+
+        Returns:
+            ``o``, ``new_state``, as the manifest declares. Shape rules: ``o.shape == (B, H, DV)``; ``new_state.shape == (B, H, DK, DV)``.
+        """
         self._validate_dtypes(q, k, v, gk, state)
         self._validate_shapes(q, k, v, gk, state)
         o, new_state = self.kernel(q, k, v, gk, state)

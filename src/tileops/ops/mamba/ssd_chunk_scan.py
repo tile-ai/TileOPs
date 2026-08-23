@@ -19,8 +19,6 @@ class SSDChunkScanFwdOp(Op):
       out[l, p] = exp(dA_cumsum[l]) * (C[l] @ prev_states)
                 + sum_{s <= l} cb[l, s] * exp(dA_cumsum[l] - dA_cumsum[s]) * dt[s] * x[s, p]
 
-    Args:
-        tune:       Whether to autotune tile config on construction.
     """
 
     def __init__(
@@ -28,6 +26,11 @@ class SSDChunkScanFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune:       Whether to autotune tile config on construction.
+        """
         self.batch = None
         self.num_chunks = None
         self.chunk_len = None
@@ -95,7 +98,7 @@ class SSDChunkScanFwdOp(Op):
         prev_states_shape: tuple[int, ...],
         dt_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``y`` has the shape of *x*, ``[B, S, H, P]``."""
+        """Manifest ``outputs``: ``y`` has the shape of *x*, $[B \\times S \\times H \\times P]$."""
         return {"y": tuple(x_shape)}
 
     def forward(

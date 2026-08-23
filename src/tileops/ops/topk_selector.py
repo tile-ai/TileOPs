@@ -14,6 +14,13 @@ class TopkSelectorFwdOp(Op):
     def __init__(
         self, topk: int, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            topk: Manifest ``params.topk``, ``int``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.seq_len = None
         self.seq_len_kv = None
@@ -63,11 +70,21 @@ class TopkSelectorFwdOp(Op):
         starts_shape: tuple[int, ...],
         ends_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``[batch, seq_len, kv_group, topk]``."""
+        """Manifest ``outputs``: $[batch \\times seq\\_len \\times kv\\_group \\times topk]$."""
         batch, seq_len, _, kv_group = index_score_shape
         return {"indexes": (batch, seq_len, kv_group, self.topk)}
 
     def forward(self, index_score, starts, ends) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            index_score: Input tensor, dtype ``float32``.
+            starts: Input tensor, dtype ``int32``.
+            ends: Input tensor, dtype ``int32``.
+
+        Returns:
+            ``indexes``, as the manifest declares.
+        """
         if not index_score.is_cuda:
             raise ValueError("TopkSelectorFwdOp expects CUDA inputs")
         if index_score.ndim != 4:

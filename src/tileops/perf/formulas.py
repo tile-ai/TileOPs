@@ -1366,8 +1366,8 @@ def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
 def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for batched FP8 GEMM ``BmmFp8KNFwdOp``.
 
-    Layout matches the fp16 ``bmm_fwd_roofline``: ``a: [B, M, K]``,
-    ``b: [B, K, N]``. Per-tensor scales only and no fused bias, so bytes are
+    Layout matches the fp16 ``bmm_fwd_roofline``: ``a``: $[B \\times M \\times K]$,
+    ``b``: $[B \\times K \\times N]$. Per-tensor scales only and no fused bias, so bytes are
     ``B*M*K`` (A, fp8) + ``B*K*N`` (B, fp8) + ``B*M*N`` (C, ``out_dtype``)
     + 8 for the two batch-independent fp32 scales.
 

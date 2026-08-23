@@ -18,21 +18,13 @@ __all__ = ["BmmFp8KNFwdOp", "BmmFp8NKFwdOp", "BmmFwdOp"]
 
 
 class BmmFwdOp(Op):
-    """Batched dense GEMM: ``d[i] = a[i] @ b[i]``.
+    """Batched dense GEMM: $d_i = a_i \\mathbin{@} b_i \\quad \\text{for } i \\in [0, B)$.
 
-    Input shapes are strict 3D — ``a: [B, M, K]``, ``b: [B, K, N]``,
-    ``d: [B, M, N]``. Batch and contraction dims are checked at
-    ``forward()`` time;  The kernel is compiled on first use for each ``(batch, m, n, k, dtype)`` combo
-    and cached.
+    Shapes are strictly 3D: ``a`` is $[B \\times M \\times K]$, ``b`` is
+    $[B \\times K \\times N]$, and ``d`` is $[B \\times M \\times N]$. The batch and
+    contraction dims are checked at ``forward()`` time. A kernel is compiled on first
+    use for each ``(batch, m, n, k, dtype)`` combination and cached.
 
-    Args:
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune (applied when a kernel is first built).
-
-    Example:
-        >>> op = BmmFwdOp()
-        >>> d = op(a, b)                          # a=[B,M,K], b=[B,K,N] -> d=[B,M,N]
-        >>> flops, nbytes = op.eval_roofline()    # valid after the forward
     """
 
     def __init__(
@@ -40,6 +32,12 @@ class BmmFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. No shape or dtype is bound until the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         # (batch, m, n, k, dtype) -> Kernel instance; built lazily on first use.
@@ -62,7 +60,7 @@ class BmmFwdOp(Op):
         a: torch.Tensor,
         b: torch.Tensor,
     ) -> Tuple[int, int, int, int]:
-        """Derive logical ``(batch, m, n, k)`` from ``[B,M,K]`` and ``[B,K,N]``.
+        """Derive logical ``(batch, m, n, k)`` from $[B \\times M \\times K]$ and $[B \\times K \\times N]$.
 
         Raises:
             ValueError: If ranks are wrong, batch dims mismatch, or the
@@ -128,6 +126,26 @@ class BmmFwdOp(Op):
         return {"d": (a_shape[0], a_shape[1], b_shape[2])}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Multiply the two batches, one GEMM per batch item.
+
+        Args:
+            a: Left operand, $[B \\times M \\times K]$.
+            b: Right operand, $[B \\times K \\times N]$.
+
+        Returns:
+            The product, $[B \\times M \\times N]$, in the dtype of the inputs.
+
+        Raises:
+            ValueError: The operands disagree on dtype or device, either is not 3D,
+                or their batch or contraction dims do not match.
+
+        Example:
+            ```python linenums="1"
+            op = BmmFwdOp()
+            d = op(a, b)                          # a=[B,M,K], b=[B,K,N] -> d=[B,M,N]
+            flops, nbytes = op.eval_roofline()    # valid after the forward
+            ```
+        """
         # Fast path: same input signature as the last call → reuse the already
         # built/JIT'd kernel directly.
         sig = (a.shape, b.shape, a.dtype, b.dtype)
@@ -149,20 +167,12 @@ class BmmFwdOp(Op):
 
 
 class BmmFp8KNFwdOp(Op):
-    """Batched FP8 GEMM over ``b`` in ``[B, K, N]``: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
+    """Batched FP8 GEMM over ``b`` in $[B \\times K \\times N]$: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
 
     This is torch.bmm's memory order. The fp8-TN WGMMA kernel wants K innermost,
-    so this op transposes ``b`` before the call; ``BmmFp8NKFwdOp`` takes ``[B, N, K]``
+    so this op transposes ``b`` before the call; ``BmmFp8NKFwdOp`` takes $[B \\times N \\times K]$
     and hands it over as it stands.
-    Args:
-        out_dtype: Output tensor dtype (``torch.float16`` or ``torch.bfloat16``).
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune (applied when a kernel is first built).
 
-    Example:
-        >>> op = BmmFp8KNFwdOp(out_dtype=torch.bfloat16)
-        >>> d = op(a, b_kn, scale_a, scale_b)
-        >>> flops, nbytes = op.eval_roofline()    # valid after the forward
     """
 
     #: Whether ``b`` arrives with K innermost, which is what the kernel wants.
@@ -174,6 +184,13 @@ class BmmFp8KNFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            out_dtype: Output tensor dtype (``torch.float16`` or ``torch.bfloat16``).
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune (applied when a kernel is first built).
+        """
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
@@ -318,6 +335,29 @@ class BmmFp8KNFwdOp(Op):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> torch.Tensor:
+        """Multiply the two FP8 batches and apply the two scales.
+
+        Args:
+            a: Left operand, $[B \\times M \\times K]$, ``torch.float8_e4m3fn``.
+            b: Right operand, $[B \\times K \\times N]$, same dtype as ``a``.
+            scale_a: Per-tensor scale for ``a``, a 0-dim ``torch.float32`` tensor.
+            scale_b: Per-tensor scale for ``b``, a 0-dim ``torch.float32`` tensor.
+
+        Returns:
+            The scaled product, $[B \\times M \\times N]$, in ``out_dtype``.
+
+        Raises:
+            ValueError: An input is not on CUDA, a dtype is not the one listed above,
+                a scale is not 0-dim, the batch or contraction dims do not match, or
+                $K$ is not a multiple of 32 — the FP8 WGMMA K-step.
+
+        Example:
+            ```python linenums="1"
+            op = BmmFp8KNFwdOp(out_dtype=torch.bfloat16)
+            d = op(a, b_kn, scale_a, scale_b)
+            flops, nbytes = op.eval_roofline()    # valid after the forward
+            ```
+        """
         sig = (
             a.shape,
             b.shape,
@@ -369,16 +409,21 @@ class BmmFp8KNFwdOp(Op):
 
 
 class BmmFp8NKFwdOp(BmmFp8KNFwdOp):
-    """Batched FP8 GEMM over ``b`` in ``[B, N, K]``.
+    """Batched FP8 GEMM over ``b`` in $[B \\times N \\times K]$.
 
     K is innermost, which is the order the fp8-TN WGMMA kernel reads, so ``b``
     reaches it without a transpose. Same kernel and same arithmetic as
     ``BmmFp8KNFwdOp``; only the memory order ``b`` arrives in differs, and memory
     order is part of the signature, so it is its own entry.
 
+    ``b`` is $[B \\times N \\times K]$; every other argument, the return value and the
+    errors are ``BmmFp8KNFwdOp.forward``'s.
+
     Example:
-        >>> op = BmmFp8NKFwdOp(out_dtype=torch.bfloat16)
-        >>> d = op(a, b_nk, scale_a, scale_b)
+        ```python linenums="1"
+        op = BmmFp8NKFwdOp(out_dtype=torch.bfloat16)
+        d = op(a, b_nk, scale_a, scale_b)
+        ```
     """
 
     B_IS_NK: ClassVar[bool] = True

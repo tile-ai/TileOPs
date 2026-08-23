@@ -19,23 +19,6 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
 
     The layout of the operation is BSHD.
 
-    Args:
-        batch (int): The batch size.
-        heads (int): The number of attention heads.
-        seq_len (int): The length of the input sequence.
-        seq_len_kv (int): The length of the key-value sequence.
-        dim (int): The dimension of the attention vectors.
-        dim_tail (int): The dimension of the tail portion of the attention vectors.
-        topk (int): The number of top elements to consider in sparse attention.
-        stride_kv (int): The stride for the key-value sequence.
-        heads_kv (int): The number of key-value heads.
-        q_start_index_s (int): The start index for queries in the sequence.
-        sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
-        is_causal (bool, default=True): Whether the attention is causal
-                    (True for causal, False for non-causal).
-        kernel_map (Optional[Dict[str, Kernel]], default=None):
-                    Optional mapping for custom kernels.
-        tune (bool, default=False): Whether to enable kernel tuning.
     """
 
     def __init__(
@@ -55,6 +38,26 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            batch (int): The batch size.
+            heads (int): The number of attention heads.
+            seq_len (int): The length of the input sequence.
+            seq_len_kv (int): The length of the key-value sequence.
+            dim (int): The dimension of the attention vectors.
+            dim_tail (int): The dimension of the tail portion of the attention vectors.
+            topk (int): The number of top elements to consider in sparse attention.
+            stride_kv (int): The stride for the key-value sequence.
+            heads_kv (int): The number of key-value heads.
+            q_start_index_s (int): The start index for queries in the sequence.
+            sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
+            is_causal (bool, default=True): Whether the attention is causal
+                        (True for causal, False for non-causal).
+            kernel_map (Optional[Dict[str, Kernel]], default=None):
+                        Optional mapping for custom kernels.
+            tune (bool, default=False): Whether to enable kernel tuning.
+        """
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len

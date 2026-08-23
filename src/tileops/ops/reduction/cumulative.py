@@ -21,13 +21,6 @@ class CumulativeOp(Op):
     Subclasses must override `_op_kind` (class attribute) — the kernel's
     op-kind dispatch string (`"sum"` or `"prod"`).
 
-    Args:
-        dim: Reduction axis (default -1). Negative values are normalized at
-            forward time (`dim % x.ndim`).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dict.
-        tune: If True, autotune tile configs.
     """
 
     _op_kind: str
@@ -43,6 +36,16 @@ class CumulativeOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction axis (default -1). Negative values are normalized at
+                forward time (`dim % x.ndim`).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: If True, autotune tile configs.
+        """
         self.N = None
         self.dim = dim
         self.target = target
@@ -146,9 +149,11 @@ class CumsumFwdOp(CumulativeOp):
         tune: Whether to autotune (default False).
 
     Example:
-        >>> op = CumsumFwdOp()
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-        >>> y = op(x)  # shape: (1024, 4096)
+        ```python linenums="1"
+        op = CumsumFwdOp()
+        x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+        y = op(x)  # shape: (1024, 4096)
+        ```
     """
 
     _op_kind = "sum"
@@ -169,9 +174,11 @@ class CumprodFwdOp(CumulativeOp):
         tune: Whether to autotune (default False).
 
     Example:
-        >>> op = CumprodFwdOp()
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda") * 0.01 + 0.99
-        >>> y = op(x)  # shape: (1024, 4096)
+        ```python linenums="1"
+        op = CumprodFwdOp()
+        x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda") * 0.01 + 0.99
+        y = op(x)  # shape: (1024, 4096)
+        ```
     """
 
     _op_kind = "prod"

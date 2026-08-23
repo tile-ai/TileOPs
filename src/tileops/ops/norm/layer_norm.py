@@ -30,15 +30,6 @@ class LayerNormFwdOp(Op):
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
-    Args:
-        normalized_shape: Trailing-axis shape tuple over which the
-            reduction runs (manifest ``params.normalized_shape``).
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-            ``None`` uses the PyTorch default ``1e-5``.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: Manifest ``params.eps.default``, which PyTorch shares. The signature default and the
@@ -57,6 +48,18 @@ class LayerNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            normalized_shape: Trailing-axis shape tuple over which the
+                reduction runs (manifest ``params.normalized_shape``).
+            eps: Epsilon for numerical stability (manifest ``params.eps``).
+                ``None`` uses the PyTorch default ``1e-5``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
         # The manifest type is ``float | None``: an explicit None means the same default,

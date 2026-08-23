@@ -31,18 +31,11 @@ class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
     Takes the tight permuted rows and the stacked gate||up weights, and returns
     activated rows of width ``ffn``.
 
-    Args:
-        numel: T * top_k tight row count.
-        num_experts: Number of local experts E.
-        ffn: FFN width; ``b`` holds 2*ffn rows (gate||up).
-        k: Hidden size K.
-        activation: 'silu_and_mul' or 'gelu_and_mul'.
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune.
-
     Example:
-        >>> op = MoeGateUpFwdOp(numel=4096, num_experts=128, ffn=2048, k=7168)
-        >>> act = op(a, b, true_sizes, true_offsets)  # [4096, 2048]
+        ```python linenums="1"
+        op = MoeGateUpFwdOp(numel=4096, num_experts=128, ffn=2048, k=7168)
+        act = op(a, b, true_sizes, true_offsets)  # [4096, 2048]
+        ```
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -58,6 +51,17 @@ class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            numel: T * top_k tight row count.
+            num_experts: Number of local experts E.
+            ffn: FFN width; ``b`` holds 2*ffn rows (gate||up).
+            k: Hidden size K.
+            activation: 'silu_and_mul' or 'gelu_and_mul'.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune.
+        """
         self.numel = numel
         self.num_experts = num_experts
         self.ffn = ffn

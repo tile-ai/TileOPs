@@ -27,18 +27,12 @@ class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
     Accepts tight A[T*K, K] inputs (no padding between experts) from
     MoePermuteNoPadOp, producing tight C[T*K, N] outputs.
 
-    Args:
-        numel: T * top_k, total (token, expert) pairs = tight row count.
-        num_experts: Total number of experts E.
-        n: Output feature dimension N (e.g. 2*ffn_size or hidden_size).
-        k: Input feature dimension K (hidden_size or ffn_size).
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune.
-
     Example:
-        >>> op = MoeGroupedGemmNopadFwdOp(numel=16384, num_experts=256, n=4096, k=2048,
-        ...)
-        >>> C = op(A, B, true_sizes, true_offsets)  # [numel, N]
+        ```python linenums="1"
+        op = MoeGroupedGemmNopadFwdOp(numel=16384, num_experts=256, n=4096, k=2048,
+        )
+        C = op(A, B, true_sizes, true_offsets)  # [numel, N]
+        ```
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -53,6 +47,16 @@ class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            numel: T * top_k, total (token, expert) pairs = tight row count.
+            num_experts: Total number of experts E.
+            n: Output feature dimension N (e.g. 2*ffn_size or hidden_size).
+            k: Input feature dimension K (hidden_size or ffn_size).
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune.
+        """
         self.numel = numel
         self.num_experts = num_experts
         self.n = n

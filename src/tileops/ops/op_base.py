@@ -60,12 +60,14 @@ class Op(ABC):
     - Autotuning interface
 
     Examples:
-        >>> from tileops.ops import MultiHeadAttentionFwdOp
-        >>> op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
-        >>> Q, K, V = op.gen_inputs()
-        >>> output = op(Q, K, V)
-        >>> op.check()  # Verify correctness
-        >>> latency = op.profile()  # Benchmark performance
+        ```python linenums="1"
+        from tileops.ops import MultiHeadAttentionFwdOp
+        op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
+        Q, K, V = op.gen_inputs()
+        output = op(Q, K, V)
+        op.check()  # Verify correctness
+        latency = op.profile()  # Benchmark performance
+        ```
 
     Attributes:
         kernel: single kernel, for ops that hold one; ops that build per
@@ -552,6 +554,7 @@ class Op(ABC):
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
+        """Run the op."""
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:

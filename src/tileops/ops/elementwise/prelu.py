@@ -26,12 +26,6 @@ class PreluFwdOp(_PerDtypeKernels, Op):
     with ndim >= 2, dimension 0 for 1-D inputs. Both the shape and the channel
     count arrive with the tensors.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional dispatch override mapping kernel keys to
-            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
-        tune: Whether to autotune.
     """
 
     _op_name = "prelu"
@@ -44,6 +38,15 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional dispatch override mapping kernel keys to
+                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         # The synthesized eval_roofline resolves each signature.inputs entry as
@@ -127,6 +130,15 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            weight: Input tensor, dtype ``same_as(input)``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == input.shape``.
+        """
         return type(self)._wrapped(input, weight, self._instance_key)
 
 

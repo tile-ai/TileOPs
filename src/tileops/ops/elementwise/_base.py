@@ -68,7 +68,7 @@ def _validate_scalar_param_repr(
     - Signed int: any value in ``[iinfo.min, iinfo.max]``, truncated toward
       zero. NaN/Inf and out-of-range raise.
     - ``uint8``: ints in ``[-255, 255]``, negatives wrapping via ``& 0xFF``;
-      float scalars must be in ``[0, 255]``.
+      float scalars must be in $[0 \\times 255]$.
 
     Floats always accept ``NaN`` and require finite values in ``finfo`` range.
     ``+/-Inf`` passes only under ``allow_nonfinite_float`` — used by
@@ -376,11 +376,6 @@ class UnaryOp(_PerDtypeKernels, Op):
     Subclass must set ``kernel_cls`` and ``_op_name``. The element count arrives with
     the tensor, so nothing about shape is a construction parameter.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     kernel_cls: type
@@ -399,6 +394,14 @@ class UnaryOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         self.input_shape: Optional[tuple] = None
@@ -482,6 +485,7 @@ class UnaryOp(_PerDtypeKernels, Op):
         return result
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input``."""
         return type(self)._wrapped(input, self._instance_key)
 
 
@@ -492,11 +496,6 @@ class BinaryOp(_PerDtypeKernels, Op):
     the tensors; the broadcast *lowering* — dim coalescing and stride synthesis — is the
     kernel's, so this class only hands the two shapes down.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     kernel_cls: type
@@ -540,6 +539,14 @@ class BinaryOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         self.input_shape: Optional[tuple] = None
@@ -637,6 +644,7 @@ class BinaryOp(_PerDtypeKernels, Op):
         return result
 
     def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input`` and ``other``."""
         return type(self)._wrapped(input, other, self._instance_key)
 
 
@@ -649,11 +657,6 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     Subclass must set ``kernel_cls`` and ``_op_name``. Both dimensions arrive with the
     tensor.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     kernel_cls: type
@@ -668,6 +671,14 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         self.x_shape: Optional[tuple] = None
@@ -742,6 +753,7 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         return result
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``x``."""
         return type(self)._wrapped(x, self._instance_key)
 
 
@@ -765,6 +777,7 @@ class _UnaryActivationMixin:
     _wrapped_inplace = None
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input``."""
         if self.inplace:
             type(self)._wrapped_inplace(input, self._instance_key)
             return input
@@ -790,6 +803,13 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
         self.inplace = inplace
 
@@ -843,6 +863,13 @@ class _AlphaScaledBinaryOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.alpha = alpha
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
@@ -876,6 +903,7 @@ class _IntFallbackCall:
     """
 
     def __init__(self, handler):
+        """Build the op. Shapes and dtype are taken from the first call."""
         self._handler = handler
 
     def __call__(self, input: torch.Tensor) -> torch.Tensor:
@@ -930,6 +958,13 @@ class _GeluApproximateBase(UnaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         if approximate not in ("none", "tanh"):
             raise ValueError(
                 f"{type(self).__name__}: approximate must be 'none' or 'tanh', got {approximate!r}"

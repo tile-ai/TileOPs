@@ -146,6 +146,13 @@ class GroupedQueryAttentionFwdOp(Op):
     ) -> None:
         # Nothing downstream validates these: this op builds its kernel itself,
         # so a zero heads_kv would surface as ZeroDivisionError inside a region.
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, seq_len=seq_len)
         self.batch = batch
@@ -256,11 +263,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
     prefill uses the same fixed public tensor list. Scale tensors are required
     for manifest stability; non-FP8 kernels ignore them.
 
-    Args:
-        dtype: Element type of ``o``. The inputs do not determine it: identical
-            float8_e4m3fn q/k/v admit either a float16 or a bfloat16 output, so
-            the caller chooses here. For float16 / bfloat16 inputs it must equal
-            their element type.
     """
 
     def __init__(
@@ -282,6 +284,14 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dtype: Element type of ``o``. The inputs do not determine it: identical
+                float8_e4m3fn q/k/v admit either a float16 or a bfloat16 output, so
+                the caller chooses here. For float16 / bfloat16 inputs it must equal
+                their element type.
+        """
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         if is_causal and max_seqlen_q > max_seqlen_kv:
@@ -513,6 +523,21 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         k_scale: torch.Tensor,
         v_scale: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16 | float8_e4m3fn``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            cu_seqlens_q: Input tensor, dtype ``int32``.
+            cu_seqlens_kv: Input tensor, dtype ``int32``.
+            q_scale: Input tensor, dtype ``float32``.
+            k_scale: Input tensor, dtype ``float32``.
+            v_scale: Input tensor, dtype ``float32``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (total_q, H, D)``.
+        """
         self._validate_dtypes(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
         self._validate_common_shapes(
             q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
@@ -576,6 +601,12 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         self.batch = batch
@@ -732,6 +763,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on ``q``, ``k``, ``v``, ``cu_seqlens_q`` and ``cu_seqlens_kv``."""
         self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
         self.dtype = q.dtype
         tensors = (q, k, v, cu_seqlens_q, cu_seqlens_kv)
@@ -789,6 +821,22 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            max_pages_per_req: Manifest ``params.max_pages_per_req``, ``int``.
+            page_size: Manifest ``params.page_size``, ``int``.
+            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
+            cache_dtype: Manifest ``params.cache_dtype``, ``dtype | None``, default ``None``.
+            sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``.
+            softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+            fuse_rope: Manifest ``params.fuse_rope``, ``bool``, default ``False``.
+            rope_base: Manifest ``params.rope_base``, ``float``, default ``10000.0``.
+            max_position: Manifest ``params.max_position``, ``int | None``, default ``None``.
+            rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
+        """
         _validate_gqa_dims(heads, heads_kv, dim)
         if fuse_rope:
             rotary_dim = _rope_rotary_dim(dim, rotary_dim)
@@ -1094,6 +1142,23 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         block_table: torch.Tensor,
         max_seqlen_q: int,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k_new: Input tensor, dtype ``same_as(q)``.
+            v_new: Input tensor, dtype ``same_as(q)``.
+            k_pages: Input tensor, dtype ``float16 | bfloat16 | float8_e4m3fn``.
+            v_pages: Input tensor, dtype ``same_as(k_pages)``.
+            k_scale: Input tensor, dtype ``float32``.
+            v_scale: Input tensor, dtype ``float32``.
+            cu_seqlens_q: Input tensor, dtype ``int32``.
+            cache_seqlens: Input tensor, dtype ``int32``.
+            block_table: Input tensor, dtype ``int32``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (total_q, H, D)``.
+        """
         self._validate_forward_inputs(
             q,
             k_new,
@@ -1171,6 +1236,13 @@ class GroupedQueryAttentionBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1243,6 +1315,19 @@ class GroupedQueryAttentionBwdOp(Op):
         do: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            o: Input tensor, dtype ``same_as(q)``.
+            do: Input tensor, dtype ``same_as(q)``.
+            lse: Input tensor, dtype ``float32``.
+
+        Returns:
+            ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H_kv, D)``; ``dv.shape == (B, S, H_kv, D)``.
+        """
         do = do.contiguous()
         self._validate_dtypes(q, k, v, o, do, lse)
         self.dtype = q.dtype
@@ -1272,6 +1357,12 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_gqa_dims(heads, heads_kv, dim)
         self.batch = batch
         self.heads = heads
@@ -1340,6 +1431,16 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
         return {"o": tuple(q_shape)}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
+        """
         real_seqlen_kv = k.shape[1]
         if real_seqlen_kv < self.seqlen_kv:
             k = F.pad(
@@ -1355,7 +1456,7 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
 
 
 class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
-    """Paged GQA decode with dynamic KV cache. Layout: Q [batch, heads, dim] (BHD);
+    """Paged GQA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times heads \\times dim]$ (BHD);
     K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
@@ -1372,6 +1473,15 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            page_size: Manifest ``params.page_size``, ``int``.
+            sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``.
+            softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_gqa_dims(heads, heads_kv, dim)
         self.batch = batch
         self.heads = heads
@@ -1448,6 +1558,18 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            real_seqlen_kv: Input tensor, dtype ``int32``.
+            block_table: Input tensor, dtype ``int32``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
+        """
         self.dtype = q.dtype
         return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
             q, k, v, real_seqlen_kv, block_table
@@ -1464,17 +1586,6 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
 
     Use window_size_left=-1 / window_size_right=-1 for no restriction.
 
-    Args:
-        batch: Batch size.
-        heads: Number of query heads.
-        heads_kv: Number of KV heads (must divide heads evenly).
-        seq_len: Sequence length (same for Q, K, V).
-        dim: Head dimension.
-        is_causal: Whether to apply causal masking.
-        window_size_left: Left window size (-1 = unlimited).
-        window_size_right: Right window size (-1 = unlimited).
-        kernel_map: Optional override for hardware-specific kernel dispatch.
-        tune: Whether to run autotuning on kernel instantiation.
     """
 
     def __init__(
@@ -1490,6 +1601,20 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            batch: Batch size.
+            heads: Number of query heads.
+            heads_kv: Number of KV heads (must divide heads evenly).
+            seq_len: Sequence length (same for Q, K, V).
+            dim: Head dimension.
+            is_causal: Whether to apply causal masking.
+            window_size_left: Left window size (-1 = unlimited).
+            window_size_right: Right window size (-1 = unlimited).
+            kernel_map: Optional override for hardware-specific kernel dispatch.
+            tune: Whether to run autotuning on kernel instantiation.
+        """
         if heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
         if window_size_left != -1 and window_size_left < 0:
@@ -1554,12 +1679,12 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
         """Run fixed-length GQA sliding window forward.
 
         Args:
-            q: Query tensor, shape [batch, seq_len, heads, dim].
-            k: Key tensor, shape [batch, seq_len, heads_kv, dim].
-            v: Value tensor, shape [batch, seq_len, heads_kv, dim].
+            q: Query tensor, shape $[batch \\times seq\\_len \\times heads \\times dim]$.
+            k: Key tensor, shape $[batch \\times seq\\_len \\times heads\\_kv \\times dim]$.
+            v: Value tensor, shape $[batch \\times seq\\_len \\times heads\\_kv \\times dim]$.
 
         Returns:
-            Output tensor, shape [batch, seq_len, heads, dim].
+            Output tensor, shape $[batch \\times seq\\_len \\times heads \\times dim]$.
         """
         for t, name in [(q, "q"), (k, "k"), (v, "v")]:
             if t.device.type != "cuda":
@@ -1640,17 +1765,6 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
       k_pos >= q_pos + offset - window_size_left   (window_size_left >= 0)
       k_pos <= q_pos + offset + window_size_right  (window_size_right >= 0)
 
-    Args:
-        batch: Number of sequences in the batch.
-        heads: Number of query heads.
-        heads_kv: Number of KV heads (must divide heads evenly).
-        dim: Head dimension.
-        is_causal: Whether to apply causal masking.
-        window_size_left: Left window size (-1 = unlimited).
-        window_size_right: Right window size (-1 = unlimited).
-        accum_dtype: Accumulator data type for intermediate computations.
-        kernel_map: Optional override for hardware-specific kernel dispatch.
-        tune: Whether to run autotuning on kernel instantiation.
     """
 
     def __init__(
@@ -1666,6 +1780,20 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            batch: Number of sequences in the batch.
+            heads: Number of query heads.
+            heads_kv: Number of KV heads (must divide heads evenly).
+            dim: Head dimension.
+            is_causal: Whether to apply causal masking.
+            window_size_left: Left window size (-1 = unlimited).
+            window_size_right: Right window size (-1 = unlimited).
+            accum_dtype: Accumulator data type for intermediate computations.
+            kernel_map: Optional override for hardware-specific kernel dispatch.
+            tune: Whether to run autotuning on kernel instantiation.
+        """
         if heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
         if window_size_left != -1 and window_size_left < 0:
@@ -1741,15 +1869,15 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         """Run variable-length GQA sliding window forward.
 
         Args:
-            q: Query tensor, shape [total_q, heads, dim].
-            k: Key tensor, shape [total_k, heads_kv, dim].
-            v: Value tensor, shape [total_k, heads_kv, dim].
-            cu_seqlens_q: Cumulative Q lengths, shape [batch+1], dtype int32.
-            cu_seqlens_k: Cumulative K lengths, shape [batch+1], dtype int32.
+            q: Query tensor, shape $[total\\_q \\times heads \\times dim]$.
+            k: Key tensor, shape $[total\\_k \\times heads\\_kv \\times dim]$.
+            v: Value tensor, shape $[total\\_k \\times heads\\_kv \\times dim]$.
+            cu_seqlens_q: Cumulative Q lengths, shape $[batch+1]$, dtype int32.
+            cu_seqlens_k: Cumulative K lengths, shape $[batch+1]$, dtype int32.
             max_seqlen_q: Maximum Q sequence length across the batch.
 
         Returns:
-            Output tensor, shape [total_q, heads, dim].
+            Output tensor, shape $[total\\_q \\times heads \\times dim]$.
         """
         for t, name in [(q, "q"), (k, "k"), (v, "v")]:
             if t.device.type != "cuda":

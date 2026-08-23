@@ -21,14 +21,6 @@ class CBProducerFwdOp(Op):
     Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
     with causal masking (cb[l,s] = 0 if s > l).
 
-    Args:
-        batch: Batch size
-        num_chunks: Number of chunks
-        n_groups: Number of groups
-        chunk_len: Chunk length (Q)
-        d_state: State dimension (N)
-        tune: Whether to autotune
-        kernel_map: Optional pre-initialized kernels
     """
 
     def __init__(
@@ -41,6 +33,17 @@ class CBProducerFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            batch: Batch size
+            num_chunks: Number of chunks
+            n_groups: Number of groups
+            chunk_len: Chunk length (Q)
+            d_state: State dimension (N)
+            tune: Whether to autotune
+            kernel_map: Optional pre-initialized kernels
+        """
         self.batch = batch
         self.num_chunks = num_chunks
         self.n_groups = n_groups

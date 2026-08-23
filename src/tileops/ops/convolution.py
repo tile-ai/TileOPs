@@ -242,6 +242,17 @@ class Conv1dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            stride: Manifest ``params.stride``, ``int | tuple[int]``, default ``1``.
+            padding: Manifest ``params.padding``, ``int | tuple[int] | str``, default ``0``.
+            dilation: Manifest ``params.dilation``, ``int | tuple[int]``, default ``1``.
+            groups: Manifest ``params.groups``, ``int``, default ``1``.
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_positive_int("groups", groups, "Conv1d")
         self.n = None
         self.c_in = None
@@ -574,6 +585,17 @@ class Conv2dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            stride: Manifest ``params.stride``, ``int | tuple[int, int]``, default ``1``.
+            padding: Manifest ``params.padding``, ``int | tuple[int, int] | str``, default ``0``.
+            dilation: Manifest ``params.dilation``, ``int | tuple[int, int]``, default ``1``.
+            groups: Manifest ``params.groups``, ``int``, default ``1``.
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_positive_int("groups", groups, "Conv2d")
         self.n = None
         self.c_in = None
@@ -976,6 +998,17 @@ class Conv3dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            stride: Manifest ``params.stride``, ``int | tuple[int, int, int]``, default ``1``.
+            padding: Manifest ``params.padding``, ``int | tuple[int, int, int] | str``, default ``0``.
+            dilation: Manifest ``params.dilation``, ``int | tuple[int, int, int]``, default ``1``.
+            groups: Manifest ``params.groups``, ``int``, default ``1``.
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         _validate_positive_int("groups", groups, "Conv3d")
         self.n = None
         self.c_in = None

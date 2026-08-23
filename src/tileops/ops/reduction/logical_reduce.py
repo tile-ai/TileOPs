@@ -30,15 +30,6 @@ class AllFwdOp(_ReduceOpBase):
     Empty-dim contract: ``dim=[]`` / ``dim=()`` is a no-op -- forward returns
     ``x.bool()`` with the input shape, matching ``torch.all`` semantics.
 
-    Args:
-        dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
-            multi-dim reduction.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "all"
@@ -66,6 +57,16 @@ class AllFwdOp(_ReduceOpBase):
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
+
+        Args:
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+                multi-dim reduction.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
         """
         super().__init__(
             dim=dim,
@@ -94,15 +95,6 @@ class AnyFwdOp(_ReduceOpBase):
     Empty-dim contract: ``dim=[]`` / ``dim=()`` is a no-op -- forward returns
     ``x.bool()`` with the input shape, matching ``torch.any`` semantics.
 
-    Args:
-        dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
-            multi-dim reduction.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "any"
@@ -130,6 +122,16 @@ class AnyFwdOp(_ReduceOpBase):
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
+
+        Args:
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+                multi-dim reduction.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
         """
         super().__init__(
             dim=dim,
@@ -156,14 +158,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     types. A dtype TileLang cannot store as shared memory is converted inside the
     kernel, so this op hands over the tensor its manifest declares.
 
-    Args:
-        dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
-            multi-dim reduction.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "count_nonzero"
@@ -180,6 +174,17 @@ class CountNonzeroFwdOp(_ReduceOpBase):
         tune: bool = False,
     ):
         # count_nonzero never keeps dim (matches torch.count_nonzero)
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+                multi-dim reduction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         super().__init__(
             dim=dim,
             keepdim=False,

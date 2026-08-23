@@ -58,18 +58,6 @@ class SharedFusedMoE(FusedMoe, UnmanifestedOp):
         The returned shared_out is a partial sum; the caller must all-reduce
         across TP ranks. The routed expert path is not affected.
 
-    Args:
-        shared_ffn_size: FFN intermediate size for the shared expert (full size,
-            before TP sharding). If None, no shared expert is computed.
-        tp_size: Tensor parallel world size. Default 1 (no TP).
-        tp_rank: This rank's index in the TP group. Default 0.
-        num_experts_local: Number of experts this rank owns; required with
-            expert_map. See FusedMoe.
-        prepare_finalize: Override the PrepareAndFinalize implementation.
-        experts: Override the Experts implementation.
-        kernel_map: Override the dispatched kernel map.
-        Other args: same as FusedMoe.
-
     Returns:
         (shared_output, routed_output): tuple of [T, H] tensors.
             shared_output is None when shared_ffn_size is None.
@@ -102,6 +90,21 @@ class SharedFusedMoE(FusedMoe, UnmanifestedOp):
         # silently produce mixed outputs (routed=gelu, shared=silu). Validate
         # before super().__init__() to avoid building routed experts that
         # would be discarded by the exception.
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            shared_ffn_size: FFN intermediate size for the shared expert (full size,
+                before TP sharding). If None, no shared expert is computed.
+            tp_size: Tensor parallel world size. Default 1 (no TP).
+            tp_rank: This rank's index in the TP group. Default 0.
+            num_experts_local: Number of experts this rank owns; required with
+                expert_map. See FusedMoe.
+            prepare_finalize: Override the PrepareAndFinalize implementation.
+            experts: Override the Experts implementation.
+            kernel_map: Override the dispatched kernel map.
+
+        Every other parameter is ``FusedMoe``'s, with the same meaning.
+        """
         if shared_ffn_size is not None and activation != "silu_and_mul":
             raise NotImplementedError(
                 "SharedFusedMoE shared-expert path only supports "

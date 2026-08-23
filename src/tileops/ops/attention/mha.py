@@ -48,6 +48,13 @@ class MultiHeadAttentionFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -123,6 +130,13 @@ class MultiHeadAttentionBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -188,6 +202,19 @@ class MultiHeadAttentionBwdOp(Op):
         do: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            o: Input tensor, dtype ``same_as(q)``.
+            do: Input tensor, dtype ``same_as(q)``.
+            lse: Input tensor, dtype ``float32``.
+
+        Returns:
+            ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H, D)``; ``dv.shape == (B, S, H, D)``.
+        """
         return self._gqa_op(q, k, v, o, do, lse)
 
 
@@ -204,6 +231,12 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -244,6 +277,16 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         return {"o": tuple(q_shape)}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
+        """
         real_seqlen_kv = k.shape[1]
         if real_seqlen_kv < self.seqlen_kv:
             k = F.pad(
@@ -257,7 +300,7 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
 
 
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
-    """Paged MHA decode with dynamic KV cache. Layout: Q [batch, seqlen_q, heads, dim] (BSHD);
+    """Paged MHA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times seqlen\\_q \\times heads \\times dim]$ (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
@@ -273,6 +316,14 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            page_size: Manifest ``params.page_size``, ``int``.
+            is_causal: Manifest ``params.is_causal``, ``bool``, default ``False``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -349,6 +400,18 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            q: Input tensor, dtype ``float16 | bfloat16``.
+            k: Input tensor, dtype ``same_as(q)``.
+            v: Input tensor, dtype ``same_as(q)``.
+            real_seqlen_kv: Input tensor, dtype ``int32``.
+            block_table: Input tensor, dtype ``int32``.
+
+        Returns:
+            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
+        """
         self.dtype = q.dtype
         return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
             q, k, v, real_seqlen_kv, block_table

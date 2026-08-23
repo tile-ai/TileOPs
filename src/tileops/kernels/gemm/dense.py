@@ -359,8 +359,8 @@ def _gemm_kernel(
     One producer warpgroup (128 threads) issues TMA loads into a double-buffered
     SMEM ring; one consumer warpgroup (128 threads) runs the WGMMA and accumulates
     over K. All four layouts are covered by ``trans_a`` / ``trans_b`` (forwarded to
-    the WGMMA transpose flags): ``A`` is ``[M,K]`` (or ``[K,M]`` transposed), ``B``
-    is ``[K,N]`` (or ``[N,K]`` transposed), ``C`` is ``[M,N]``. fp16 / bf16 inputs,
+    the WGMMA transpose flags): ``A`` is $[M \\times K]$ (or $[K \\times M]$ transposed), ``B``
+    is $[K \\times N]$ (or $[N \\times K]$ transposed), ``C`` is $[M \\times N]$. fp16 / bf16 inputs,
     fp32 accumulation. The auto warp-specialization pass is disabled so it does not
     fire on top of this manual layout.
 
@@ -374,8 +374,8 @@ def _gemm_kernel(
         m: Rows of ``op(A)`` / ``C``.
         n: Columns of ``op(B)`` / ``C``.
         k: Contraction dim.
-        trans_a: Whether ``A`` is stored transposed (``[K, M]``).
-        trans_b: Whether ``B`` is stored transposed (``[N, K]``).
+        trans_a: Whether ``A`` is stored transposed ($[K \\times M]$).
+        trans_b: Whether ``B`` is stored transposed ($[N \\times K]$).
         dtype: Activation / weight dtype string (``"float16"`` or ``"bfloat16"``).
         traced: Build with in-kernel timeline markers materialized (``True``) or
             stripped to zero cost (``False``). **Part of the cache key**: traced

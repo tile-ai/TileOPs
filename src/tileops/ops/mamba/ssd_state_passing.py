@@ -19,8 +19,6 @@ class SSDStatePassingFwdOp(Op):
 
     with s_{-1} = initial_states, or 0 when it is not passed.
 
-    Args:
-        tune:               Whether to autotune tile config on construction.
     """
 
     def __init__(
@@ -28,6 +26,11 @@ class SSDStatePassingFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune:               Whether to autotune tile config on construction.
+        """
         self.batch = None
         self.num_chunks = None
         self.n_heads = None

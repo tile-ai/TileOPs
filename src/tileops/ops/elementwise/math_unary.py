@@ -141,6 +141,7 @@ class _RoundDecimalsCall:
     """
 
     def __init__(self, decimals: int):
+        """Build the op. Shapes and dtype are taken from the first call."""
         self._decimals = decimals
 
     def __call__(self, input: torch.Tensor) -> torch.Tensor:
@@ -163,12 +164,6 @@ class RoundFwdOp(_IntIdentityUnaryOp):
     fixed for the instance and handed to whichever kernel serves the op; in-tree, a
     non-zero value selects ``_RoundDecimalsCall``.
 
-    Args:
-        decimals: Number of decimal places to round to (manifest
-            ``params.decimals``, default 0).
-        target: Which set of kernels serves this op.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "round"
@@ -182,6 +177,15 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            decimals: Number of decimal places to round to (manifest
+                ``params.decimals``, default 0).
+            target: Which set of kernels serves this op.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.decimals = int(decimals)
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 

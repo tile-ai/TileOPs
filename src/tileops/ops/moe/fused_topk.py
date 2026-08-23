@@ -18,25 +18,13 @@ class FusedTopKOp(UnmanifestedOp):
     Applies scoring (softmax or sigmoid) to router logits and selects the
     top-k experts per token.
 
-    Args:
-        num_tokens: Optional committed number of input tokens T. Preferred
-            API infers it from ``gating_output.shape[0]``.
-        num_experts: Optional committed number of experts E. Preferred API
-            infers it from ``gating_output.shape[1]``.
-        top_k: Number of experts to select per token K.
-        scoring_func: "softmax" (Qwen3/Qwen2) or "sigmoid" (DeepSeek-V3/GLM-4/Kimi K2).
-        renormalize: If True, normalize top-k weights to sum to 1.
-        scoring_func: see above. Passing ``correction_bias`` to ``forward``
-            requires ``"sigmoid"``: the bias is added to sigmoid scores for
-            selection only, and the output weights stay the original scores.
-        kernel_map: Optional kernel map override.
-        config: Optional kernel config dict.
-
     Example:
-        >>> op = FusedTopKOp(top_k=8)
-        >>> topk_weights, topk_ids = op(gating_output)
-        >>> # topk_weights: [512, 8] float32
-        >>> # topk_ids:     [512, 8] int32
+        ```python linenums="1"
+        op = FusedTopKOp(top_k=8)
+        topk_weights, topk_ids = op(gating_output)
+        # topk_weights: [512, 8] float32
+        # topk_ids:     [512, 8] int32
+        ```
     """
 
     def __init__(
@@ -49,6 +37,22 @@ class FusedTopKOp(UnmanifestedOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         config: Optional[dict] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            num_tokens: Optional committed number of input tokens T. Preferred
+                API infers it from ``gating_output.shape[0]``.
+            num_experts: Optional committed number of experts E. Preferred API
+                infers it from ``gating_output.shape[1]``.
+            top_k: Number of experts to select per token K.
+            scoring_func: "softmax" (Qwen3/Qwen2) or "sigmoid" (DeepSeek-V3/GLM-4/Kimi K2).
+            renormalize: If True, normalize top-k weights to sum to 1.
+            scoring_func: see above. Passing ``correction_bias`` to ``forward``
+                requires ``"sigmoid"``: the bias is added to sigmoid scores for
+                selection only, and the output weights stay the original scores.
+            kernel_map: Optional kernel map override.
+            config: Optional kernel config dict.
+        """
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k

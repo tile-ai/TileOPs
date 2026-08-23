@@ -1,6 +1,6 @@
 """Batched GEMM kernel for BmmFwdOp.
 
-Shapes are strict 3D-3D — ``a: [B, M, K]``, ``b: [B, K,N]``, ``c: [B, M, N]``.
+Shapes are strict 3D-3D — ``a``: $[B \\times M \\times K]$, ``b``: $[B \\times K \\times N]$, ``c``: $[B \\times M \\times N]$.
 """
 
 import functools

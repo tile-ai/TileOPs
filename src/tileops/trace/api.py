@@ -74,8 +74,9 @@ class _Trace:
         """Whether tracing is on for this process (default ``False``).
 
         Example:
-            >>> trace.enabled
-            False
+            ```python linenums="1"
+            trace.enabled         # False
+            ```
         """
         return self._enabled
 
@@ -84,8 +85,9 @@ class _Trace:
         """Output directory for dumped artifacts (default ``"debug"``).
 
         Example:
-            >>> trace.output
-            'debug'
+            ```python linenums="1"
+            trace.output          # 'debug'
+            ```
         """
         return self._output
 
@@ -100,8 +102,10 @@ class _Trace:
                 Defaults to ``"debug"`` (gitignored).
 
         Example:
-            >>> trace.enable()              # dumps under debug/
-            >>> trace.enable("out/traces")  # or a directory of your choosing
+            ```python linenums="1"
+            trace.enable()              # dumps under debug/
+            trace.enable("out/traces")  # or a directory of your choosing
+            ```
         """
         self._enabled = True
         self._output = output
@@ -110,7 +114,9 @@ class _Trace:
         """Turn tracing off for this process.
 
         Example:
-            >>> trace.disable()
+            ```python linenums="1"
+            trace.disable()
+            ```
         """
         self._enabled = False
 
@@ -130,9 +136,11 @@ class _Trace:
             A ``with`` context manager.
 
         Example:
-            >>> with trace.group("producer", lead=0):
-            ...     with trace.range("tma"):
-            ...         ...  # only thread 0 records
+            ```python linenums="1"
+            with trace.group("producer", lead=0):
+                with trace.range("tma"):
+                    ...  # only thread 0 records
+            ```
         """
         return GroupScope(name, lead)
 
@@ -152,12 +160,14 @@ class _Trace:
             A ``with`` context manager.
 
         Example:
-            >>> with trace.range("mma", lane="wgmma"):
-            ...     T.wgmma_gemm(...)
-            >>> # Explicitly tag each iteration with its index:
-            >>> for i in range(N):
-            ...     with trace.range("iteration", payload=i):
-            ...         work()
+            ```python linenums="1"
+            with trace.range("mma", lane="wgmma"):
+                T.wgmma_gemm(...)
+            # Explicitly tag each iteration with its index:
+            for i in range(N):
+                with trace.range("iteration", payload=i):
+                    work()
+            ```
         """
         return RangeScope(name, lane, payload)
 
@@ -176,13 +186,15 @@ class _Trace:
             A token to pass to ``range_end``.
 
         Example:
-            >>> tok = trace.range_start("phase")
-            >>> ...  # work
-            >>> trace.range_end(tok)
-            >>> # Explicitly tag with payload:
-            >>> tok = trace.range_start("iteration", payload=i)
-            >>> ...
-            >>> trace.range_end(tok)
+            ```python linenums="1"
+            tok = trace.range_start("phase")
+            ...  # work
+            trace.range_end(tok)
+            # Explicitly tag with payload:
+            tok = trace.range_start("iteration", payload=i)
+            ...
+            trace.range_end(tok)
+            ```
         """
         return open_range(name, lane, payload)
 
@@ -193,7 +205,9 @@ class _Trace:
             tok: The token returned by ``range_start``.
 
         Example:
-            >>> trace.range_end(tok)
+            ```python linenums="1"
+            trace.range_end(tok)
+            ```
         """
         close_range(tok)
 
@@ -207,7 +221,9 @@ class _Trace:
             lane: Render sub-lane, interned dynamically (default ``"main"``).
 
         Example:
-            >>> trace.record("iter", payload=ki)  # tag the mark with the loop index
+            ```python linenums="1"
+            trace.record("iter", payload=ki)  # tag the mark with the loop index
+            ```
         """
         emit_instant(name, payload, lane)
 
@@ -223,7 +239,9 @@ class _Trace:
             dst_name: Destination (consumer-side) range name.
 
         Example:
-            >>> trace.dag("arrive", "wait")  # producer "arrive" -> consumer "wait"
+            ```python linenums="1"
+            trace.dag("arrive", "wait")  # producer "arrive" -> consumer "wait"
+            ```
         """
         declare_flow(src_name, dst_name)
 
@@ -246,10 +264,12 @@ class _Trace:
             Negative output indices for ``@tilelang.jit``.
 
         Example:
-            >>> @tilelang.jit(out_idx=trace.out_idx(1))          # follows the switch
-            ... def factory(): ...
-            >>> @tilelang.jit(out_idx=trace.out_idx(1, traced))  # cached builder
-            ... def factory(): ...
+            ```python linenums="1"
+            @tilelang.jit(out_idx=trace.out_idx(1))          # follows the switch
+            def factory(): ...
+            @tilelang.jit(out_idx=trace.out_idx(1, traced))  # cached builder
+            def factory(): ...
+            ```
         """
         enabled = self._enabled if traced is None else traced
         n = n_outputs + 1 if enabled else n_outputs
@@ -273,10 +293,12 @@ class _Trace:
             output when traced).
 
         Example:
-            >>> def factory():
-            ...     @T.prim_func
-            ...     def main(...): ...
-            ...     return trace.finalize(main, traced, max_events=1024)
+            ```python linenums="1"
+            def factory():
+                @T.prim_func
+                def main(...): ...
+                return trace.finalize(main, traced, max_events=1024)
+            ```
         """
         enabled = self._enabled if traced is None else traced
         return self.lower(primfunc, max_events) if enabled else self.strip(primfunc)
@@ -294,7 +316,9 @@ class _Trace:
             The lowered ``PrimFunc`` with a trailing ``slots`` int64 output.
 
         Example:
-            >>> return trace.lower(main, max_events=1024)
+            ```python linenums="1"
+            return trace.lower(main, max_events=1024)
+            ```
         """
         return passes.lower(primfunc, max_events=max_events)
 
@@ -311,7 +335,9 @@ class _Trace:
             A ``PrimFunc`` with markers no-opped, signature unchanged.
 
         Example:
-            >>> return trace.strip(main)
+            ```python linenums="1"
+            return trace.strip(main)
+            ```
         """
         return passes.strip(primfunc)
 
@@ -338,8 +364,10 @@ class _Trace:
             The kernel's real outputs: a single tensor, or a tuple in order.
 
         Example:
-            >>> compiled = build()(block=128)
-            >>> c = trace.run(compiled, (a, b), stem="gemm_128x256x512")
+            ```python linenums="1"
+            compiled = build()(block=128)
+            c = trace.run(compiled, (a, b), stem="gemm_128x256x512")
+            ```
         """
         out = compiled(*inputs)
         if not self._enabled:
@@ -363,8 +391,10 @@ class _Trace:
             A flat list of ``Slice`` / ``Instant`` events.
 
         Example:
-            >>> *_, slots = compiled(a, b)
-            >>> events = trace.decode(compiled, slots)
+            ```python linenums="1"
+            *_, slots = compiled(a, b)
+            events = trace.decode(compiled, slots)
+            ```
         """
         maps = passes.lookup_meta(compiled)
         return _decode(
@@ -391,9 +421,10 @@ class _Trace:
             The base path written (no extension); ``{base}.html`` exists.
 
         Example:
-            >>> base = trace.dump(events, compiled, stem="gemm_128x256x512")
-            >>> base
-            'debug/gemm_128x256x512'
+            ```python linenums="1"
+            base = trace.dump(events, compiled, stem="gemm_128x256x512")
+            base                  # 'debug/gemm_128x256x512'
+            ```
         """
         os.makedirs(self._output, exist_ok=True)
         base = os.path.join(self._output, stem)
@@ -418,7 +449,9 @@ class _Trace:
             sm_clock_ghz: Locked SM clock in GHz for the ``~ns`` hover column.
 
         Example:
-            >>> trace.export_html(events, "timeline.html", compiled=compiled)
+            ```python linenums="1"
+            trace.export_html(events, "timeline.html", compiled=compiled)
+            ```
         """
         maps = passes.lookup_meta(compiled)
         _export_timeline_html(

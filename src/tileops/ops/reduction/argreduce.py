@@ -42,16 +42,6 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
 
     Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.
 
-    Args:
-        dim: Reduction dimension. ``None`` (the default) matches
-            ``torch.argmax(x)`` semantics: the input is treated as a
-            contiguous flattened 1D buffer and the returned index is into
-            that flattened tensor.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "argmax"
@@ -67,6 +57,19 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension. ``None`` (the default) matches
+                ``torch.argmax(x)`` semantics: the input is treated as a
+                contiguous flattened 1D buffer and the returned index is into
+                that flattened tensor.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         super().__init__(
             dim=dim,
             keepdim=keepdim,
@@ -95,16 +98,6 @@ class ArgminFwdOp(_ArgreduceOpBase):
 
     Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.
 
-    Args:
-        dim: Reduction dimension. ``None`` (the default) matches
-            ``torch.argmin(x)`` semantics: the input is treated as a
-            contiguous flattened 1D buffer and the returned index is into
-            that flattened tensor.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "argmin"
@@ -120,6 +113,19 @@ class ArgminFwdOp(_ArgreduceOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension. ``None`` (the default) matches
+                ``torch.argmin(x)`` semantics: the input is treated as a
+                contiguous flattened 1D buffer and the returned index is into
+                that flattened tensor.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         super().__init__(
             dim=dim,
             keepdim=keepdim,

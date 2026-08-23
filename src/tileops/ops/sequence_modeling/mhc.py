@@ -15,6 +15,12 @@ class MHCPreFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.n_expand = None
         self.c_x = None
@@ -83,6 +89,16 @@ class MHCPreFwdOp(Op):
         sinkhorn_repeat: int,
         sinkhorn_eps: float = 0.02,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            phi: Input tensor, dtype ``float32``.
+            x: Input tensor, dtype ``bfloat16``.
+            b: Input tensor, dtype ``float32``.
+
+        Returns:
+            ``x_res``, ``x_layer``, as the manifest declares.
+        """
         if phi.ndim != 2 or x.ndim != 2 or b.ndim != 1:
             raise ValueError("MHCPreFwdOp expects phi/x/b shapes [D, P], [B, D], [P]")
         batch, x_dim = x.shape
@@ -110,6 +126,12 @@ class MHCPostFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.n_expand = None
         self.c_x = None
@@ -159,6 +181,16 @@ class MHCPostFwdOp(Op):
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            x_layer_out: Input tensor, dtype ``bfloat16``.
+            h_post: Input tensor, dtype ``float32``.
+            x_res: Input tensor, dtype ``bfloat16``.
+
+        Returns:
+            ``x_out``, as the manifest declares.
+        """
         if x_layer_out.ndim != 2 or h_post.ndim != 2 or x_res.ndim != 2:
             raise ValueError("MHCPostFwdOp expects x_layer_out/h_post/x_res to be 2D tensors")
         batch, c_x = x_layer_out.shape

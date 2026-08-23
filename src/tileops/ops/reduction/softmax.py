@@ -39,12 +39,6 @@ class _SoftmaxBaseOp(Op):
     resolved. A subclass sets ``_op_kind``, ``_kernel_key`` and ``_kernel_cls``, and
     overrides ``_kernel_ctor_kwargs`` when its kernel takes something else.
 
-    Args:
-        dim: Reduction dimension (default -1).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
     """
 
     #: Set by ``register_reduction_op`` on each concrete op; a base registers none.
@@ -64,6 +58,15 @@ class _SoftmaxBaseOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default -1).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default False).
+        """
         self.dim = dim
         self.keepdim = False
         self.target = target
@@ -182,16 +185,6 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
     Output has the same shape and dtype as input. The reduction-dim extent
     ``N`` and dtype are inferred from ``x`` during ``forward()``.
 
-    Args:
-        dim: Reduction dimension (default ``None``, matching PyTorch's
-            ``torch.nn.functional.softmax``). When ``None``, the axis is
-            resolved at forward time using PyTorch's implicit-axis rule
-            (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
-            deprecation ``UserWarning`` is emitted.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
     """
 
     _op_kind = "softmax"
@@ -206,6 +199,19 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default ``None``, matching PyTorch's
+                ``torch.nn.functional.softmax``). When ``None``, the axis is
+                resolved at forward time using PyTorch's implicit-axis rule
+                (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
+                deprecation ``UserWarning`` is emitted.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default False).
+        """
         super().__init__(dim=dim, target=target, kernel_map=kernel_map, tune=tune)
 
 
@@ -215,16 +221,6 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
     Output has the same shape and dtype as input. The reduction-dim extent
     ``N`` and dtype are inferred from ``x`` during ``forward()``.
 
-    Args:
-        dim: Reduction dimension (default ``None``, matching PyTorch's
-            ``torch.nn.functional.log_softmax``). When ``None``, the axis is
-            resolved at forward time using PyTorch's implicit-axis rule
-            (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
-            deprecation ``UserWarning`` is emitted.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
     """
 
     _op_kind = "log_softmax"
@@ -239,6 +235,19 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default ``None``, matching PyTorch's
+                ``torch.nn.functional.log_softmax``). When ``None``, the axis is
+                resolved at forward time using PyTorch's implicit-axis rule
+                (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
+                deprecation ``UserWarning`` is emitted.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default False).
+        """
         super().__init__(dim=dim, target=target, kernel_map=kernel_map, tune=tune)
 
 
@@ -248,13 +257,6 @@ class LogSumExpFwdOp(_SoftmaxBaseOp):
     Output shape is input shape without the reduction dimension
     (or with size-1 if keepdim=True).
 
-    Args:
-        dim: Reduction dimension (default -1).
-        keepdim: Retain reduced dimension (default False).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
     """
 
     _op_kind = "logsumexp"
@@ -271,6 +273,16 @@ class LogSumExpFwdOp(_SoftmaxBaseOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension (default -1).
+            keepdim: Retain reduced dimension (default False).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default False).
+        """
         super().__init__(dim=dim, target=target, kernel_map=kernel_map, tune=tune)
         self.keepdim = keepdim
 
