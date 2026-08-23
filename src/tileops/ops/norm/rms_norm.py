@@ -33,7 +33,7 @@ __all__ = ["RMSNormFwdOp"]
 class RMSNormFwdOp(Op):
     """Standalone Root Mean Square (RMS) Norm operator.
 
-    Mirrors :func:`torch.nn.functional.rms_norm`. Computes::
+    Mirrors `torch.nn.functional.rms_norm`. Computes::
 
         y = x * rsqrt(mean(x ** 2, trailing_axes) + eps) * weight
 
@@ -119,7 +119,7 @@ class RMSNormFwdOp(Op):
         Raises:
             ValueError: Dtypes or devices disagree, or shapes are incompatible with the
                 configured ``normalized_shape``. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _rms_norm_fwd(x, weight, self._instance_key)
 

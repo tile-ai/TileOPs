@@ -66,7 +66,7 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
     Args:
         op: The op's manifest key, e.g. ``"RMSNormFwdOp"``.
         target: The name this backend gives its set of kernels.
-        build_kernel: Called with a :class:`~.protocol.TensorSpec` per input and the op's
+        build_kernel: Called with a `.protocol.TensorSpec` per input and the op's
             params by keyword. Must be lazy: importing this module must not compile anything.
 
     Raises:
@@ -157,7 +157,7 @@ def load_failure_suffix() -> str:
 
 
 class RegistryState(NamedTuple):
-    """What :func:`snapshot` captures, named so :func:`restore` cannot mis-order it."""
+    """What `snapshot` captures, named so `restore` cannot mis-order it."""
 
     detectors: dict[str, DetectFn]
     builders: dict[tuple[str, str], BuildKernel]
@@ -182,7 +182,7 @@ def snapshot() -> RegistryState:
 
 
 def restore(state: RegistryState) -> None:
-    """Undo everything since the matching :func:`snapshot`."""
+    """Undo everything since the matching `snapshot`."""
     global default_target, _loaded
     with LOCK:
         DETECTORS.clear()

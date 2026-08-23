@@ -32,10 +32,10 @@ class GroupNormFwdOp(Op):
 
     Computes group normalization over ``(C/num_groups, *spatial)`` slices:
 
-    .. math::
-
-        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
-            \\cdot w + b
+    $$
+    y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+    \\cdot w + b
+    $$
 
     where the mean and variance are computed per group over
     ``(C/num_groups, *spatial)`` elements.
@@ -154,7 +154,7 @@ class GroupNormFwdOp(Op):
         Raises:
             ValueError: Only one of ``weight`` / ``bias`` is given, dtypes disagree, or a
                 shape is incompatible with *x*. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _norm_group_norm_fwd(x, weight, bias, self._instance_key)
 

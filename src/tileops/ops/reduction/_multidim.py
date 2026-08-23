@@ -3,7 +3,7 @@
 Turning ``dim`` into the axes a call reduces is the op's contract: which forms an empty
 ``dim`` takes, and which values a given rank accepts, differ per op and are declared in
 the manifest. What a kernel then does with those axes — the permute to rows and back —
-lives in :mod:`tileops.kernels.reduction._primitives`.
+lives in `tileops.kernels.reduction._primitives`.
 """
 
 from __future__ import annotations

@@ -41,5 +41,5 @@ def register_instance(op: object) -> str:
 
 
 def get_instance(key: str) -> object:
-    """Resolve a key registered by :func:`register_instance`."""
+    """Resolve a key registered by `register_instance`."""
     return _OP_REGISTRY[key]

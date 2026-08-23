@@ -106,7 +106,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """The schedule this shape asks for; see :mod:`.regimes`."""
+        """The schedule this shape asks for; see `.regimes`."""
         if rows_per_group_regime(self.numel, self.num_experts) is not None and _tiling_divides(
             self.N, self.K
         ):

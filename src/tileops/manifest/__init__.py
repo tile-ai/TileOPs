@@ -4,13 +4,13 @@ The manifest is split across one or more YAML files per op family in this
 package directory. Most families use a single file, but large families
 (e.g., ``elementwise``) are sharded across multiple files. At load time,
 all files are merged into a single ``ops`` dict; duplicate op names
-across files raise :class:`ValueError`.
+across files raise `ValueError`.
 
 Public entry points:
 
-- :func:`load_workloads` — return the workloads list for an op.
-- :func:`load_manifest` — return the full merged ``ops`` dict.
-- :func:`manifest_files` — list the YAML files contributing to the manifest.
+- `load_workloads` — return the workloads list for an op.
+- `load_manifest` — return the full merged ``ops`` dict.
+- `manifest_files` — list the YAML files contributing to the manifest.
 """
 
 from __future__ import annotations

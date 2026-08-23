@@ -744,7 +744,7 @@ def restore_same_shape(
     in_shape: "tuple[int, ...]",
     axes: "tuple[int, ...]",
 ) -> torch.Tensor:
-    """Undo :func:`rows_for_axes` on a result that kept its input's shape.
+    """Undo `rows_for_axes` on a result that kept its input's shape.
 
     For an op that writes one element per input element — softmax, a prefix scan — whose
     row layout is unwound rather than collapsed.
@@ -768,7 +768,7 @@ class RowTiledAutotuneMixin:
     value costs a recompilation.
 
     A subclass must set, before autotuning: ``_planner`` (a
-    :class:`BlockConfigPlanner`), ``_smem_budget``, ``N_padded``, ``_elem_bytes``,
+    `BlockConfigPlanner`), ``_smem_budget``, ``N_padded``, ``_elem_bytes``,
     and ``_MAX_TILE_N_CANDIDATES``.
     """
 

@@ -1,6 +1,6 @@
 """TileOPs: TileLang kernels for efficient LLM inference.
 
-The names below steer dispatch; a *backend* imports :mod:`tileops.backend` instead. They
+The names below steer dispatch; a *backend* imports `tileops.backend` instead. They
 resolve on first access (PEP 562), so importing this package pulls in neither torch nor any
 backend — the manifest tooling reads YAML where neither is installed.
 """

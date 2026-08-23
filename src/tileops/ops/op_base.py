@@ -559,7 +559,7 @@ class Op(ABC):
 
         Settles which set of kernels serves this instance, once, then delegates to
         ``forward`` — which is the same for every target. The only fork is inside
-        :meth:`get_or_build_kernel`, which settles it a second time when this settling
+        `get_or_build_kernel`, which settles it a second time when this settling
         could not reach it; see there.
 
         A call that fails settles nothing. Otherwise one invalid call would aim the instance

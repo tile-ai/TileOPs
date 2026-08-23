@@ -76,9 +76,9 @@ def _resolve_tensor_binding(
     1. ``self.<name>`` exposes ``.shape`` (a real tensor or any object
        exposing ``.shape`` / ``.ndim``).
     2. ``self.<name>_shape`` is a shape tuple/list; wrapped in a
-       :class:`_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
+       `_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
 
-    Anything else raises :class:`ValueError`, naming the op and the input, so a
+    Anything else raises `ValueError`, naming the op and the input, so a
     missing binding is diagnosable rather than a vacuous ``'NoneType' object has
     no attribute 'shape'`` from inside the generated body.
 

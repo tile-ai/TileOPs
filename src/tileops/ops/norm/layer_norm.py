@@ -19,12 +19,12 @@ class LayerNormFwdOp(Op):
     Computes layer normalization over the trailing ``normalized_shape``
     axes:
 
-    .. math::
+    $$
+    y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+    \\cdot w + b
+    $$
 
-        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
-            \\cdot w + b
-
-    Mirrors :func:`torch.nn.functional.layer_norm`. ``normalized_shape``
+    Mirrors `torch.nn.functional.layer_norm`. ``normalized_shape``
     is the only entry point (the manifest spec).
 
     Supported dtypes:
@@ -112,7 +112,7 @@ class LayerNormFwdOp(Op):
         Raises:
             ValueError: Dtypes or devices disagree, or shapes are incompatible with the
                 configured ``normalized_shape``. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _layer_norm_fwd(x, weight, bias, self._instance_key)
 

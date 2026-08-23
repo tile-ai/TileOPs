@@ -17,10 +17,10 @@ class AdaLayerNormFwdOp(Op):
 
     Applies layer normalization with per-token adaptive scale and shift:
 
-    .. math::
-
-        y = s \\cdot \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x]
-            + \\epsilon}} + d
+    $$
+    y = s \\cdot \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x]
+    + \\epsilon}} + d
+    $$
 
     where *s* (scale) and *d* (shift) are per-token tensors of shape
     ``(M, N)``, pre-computed by the caller from a conditioning signal.
@@ -95,7 +95,7 @@ class AdaLayerNormFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _norm_ada_layer_norm_fwd(x, scale, shift, self._instance_key)
 

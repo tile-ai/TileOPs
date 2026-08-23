@@ -404,7 +404,7 @@ class Conv1dFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
-                operator, by :meth:`_eager_forward`.
+                operator, by `_eager_forward`.
         """
         return _conv1d_fwd(input, weight, bias, self._instance_key)
 
@@ -803,7 +803,7 @@ class Conv2dFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
-                operator, by :meth:`_eager_forward`.
+                operator, by `_eager_forward`.
         """
         return _conv2d_fwd(input, weight, bias, self._instance_key)
 
@@ -1174,7 +1174,7 @@ class Conv3dFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
-                operator, by :meth:`_eager_forward`.
+                operator, by `_eager_forward`.
         """
         return _conv3d_fwd(input, weight, bias, self._instance_key)
 

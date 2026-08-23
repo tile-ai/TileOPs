@@ -27,9 +27,9 @@ the target picks a kernel.
 
 Depends on torch only — importing this does not import tilelang.
 
-:mod:`~tileops.backend.protocol` is what crosses the boundary,
-:mod:`~tileops.backend.errors` what goes wrong, :mod:`~tileops.backend.registry` the tables,
-:mod:`~tileops.backend.dispatch` how they are read. ``select_target``,
+`tileops.backend.protocol` is what crosses the boundary,
+`tileops.backend.errors` what goes wrong, `tileops.backend.registry` the tables,
+`tileops.backend.dispatch` how they are read. ``select_target``,
 ``detect_target`` and ``registered_kernel_builder`` live in ``dispatch`` but are not
 exported: only the op layer reads the tables, and a second public path to them is a second
 thing to keep consistent.
