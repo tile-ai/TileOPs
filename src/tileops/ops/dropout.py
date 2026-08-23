@@ -36,12 +36,6 @@ class DropoutFwdOp(Op):
     Uses T.rng_init / T.rng_rand_float (backed by cuRAND Philox4_32_10
     by default) for per-thread random number generation.
 
-    Args:
-        p: Drop probability in [0, 1].
-        seed: Integer seed for RNG.
-        training: If False, dropout is disabled (identity pass-through).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "dropout"
@@ -55,6 +49,15 @@ class DropoutFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            p: Drop probability in [0, 1].
+            seed: Integer seed for RNG.
+            training: If False, dropout is disabled (identity pass-through).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         if not (0.0 <= p <= 1.0):
             raise ValueError(f"Dropout probability must be in [0, 1], got {p}")
         self.N_total = None
@@ -124,6 +127,14 @@ class DropoutFwdOp(Op):
         return {"output": tuple(input_shape)}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+
+        Returns:
+            ``output``, as the manifest declares.
+        """
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):

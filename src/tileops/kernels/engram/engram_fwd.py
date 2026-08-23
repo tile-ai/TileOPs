@@ -287,15 +287,15 @@ class EngramGateConvFwdKernel(Kernel):
         """Run the fused gate + conv forward pass.
 
         Args:
-            H: Hidden states of shape ``(M, seq_len, d)``.
-            k: Key projection of shape ``(M, seq_len, d)``.
-            v: Value projection of shape ``(M, seq_len, d)``.
-            rms_w_h: RMSNorm weight of shape ``(d,)`` for ``H`` and ``k``.
-            rms_w_v: RMSNorm weight of shape ``(d,)`` for the gated value.
-            conv_w: Depthwise conv weights of shape ``(4, d)``.
+            H: Hidden states of shape $[M \\times seq\\_len \\times d]$.
+            k: Key projection of shape $[M \\times seq\\_len \\times d]$.
+            v: Value projection of shape $[M \\times seq\\_len \\times d]$.
+            rms_w_h: RMSNorm weight of shape $[d]$ for ``H`` and ``k``.
+            rms_w_v: RMSNorm weight of shape $[d]$ for the gated value.
+            conv_w: Depthwise conv weights of shape $[4 \\times d]$.
 
         Returns:
-            ``[Y, vhat, alpha, rrms_h, rrms_k, rrms_v]``. ``Y`` and ``vhat``
+            $[Y \\times vhat \\times alpha \\times rrms\\_h \\times rrms\\_k \\times rrms\\_v]$. ``Y`` and ``vhat``
             are ``(M, seq_len, d)``; the alignment padding the prim_func
             requires is applied and trimmed here.
         """

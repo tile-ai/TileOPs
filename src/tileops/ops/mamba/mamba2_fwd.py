@@ -48,10 +48,6 @@ class Mamba2FwdOp(Op):
     a single callable whose interface matches mamba_chunk_scan_combined from
     the official mamba_ssm library.
 
-    Args:
-        chunk_size:         Tokens per chunk (default 256).
-        dt_softplus:        Apply softplus to (dt + dt_bias) before use.
-        tune:               Whether to autotune tile configs on construction.
     """
 
     def __init__(
@@ -61,6 +57,13 @@ class Mamba2FwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size:         Tokens per chunk (default 256).
+            dt_softplus:        Apply softplus to (dt + dt_bias) before use.
+            tune:               Whether to autotune tile configs on construction.
+        """
         self.batch = None
         self.seqlen = None
         self.chunk_size = chunk_size

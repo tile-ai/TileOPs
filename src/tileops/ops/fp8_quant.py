@@ -12,6 +12,12 @@ __all__ = ["FP8QuantFwdOp"]
 
 class FP8QuantFwdOp(Op):
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.seq_len_kv = None
         self.kv_group = None
@@ -56,6 +62,14 @@ class FP8QuantFwdOp(Op):
         }
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input_tensor: Input tensor, dtype ``float16 | bfloat16 | float32``.
+
+        Returns:
+            ``scale_tensor``, ``output_tensor``, as the manifest declares.
+        """
         if not input_tensor.is_cuda:
             raise ValueError("FP8QuantFwdOp expects a CUDA input tensor")
         if input_tensor.ndim != 4:

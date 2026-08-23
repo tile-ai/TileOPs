@@ -300,7 +300,7 @@ class BatchNormFwdTrainKernel(Kernel):
     ):
         """Run training forward pass on an ``(N, C, *spatial)`` input.
 
-        Moving the input into the ``(C, L)`` layout, and the output back, happens here.
+        Moving the input into the $[C \\times L]$ layout, and the output back, happens here.
 
         Returns:
             y: Normalized output, shaped like *x*.
@@ -437,7 +437,7 @@ class BatchNormFwdInferKernel(Kernel):
     ) -> torch.Tensor:
         """Run inference forward pass on an ``(N, C, *spatial)`` input.
 
-        Moving the input into the ``(C, L)`` layout, and the output back, happens here.
+        Moving the input into the $[C \\times L]$ layout, and the output back, happens here.
 
         Returns:
             Normalized output, shaped like *x*.
@@ -660,7 +660,7 @@ class BatchNormBwdKernel(Kernel):
     ):
         """Run the backward pass on ``(N, C, *spatial)`` inputs.
 
-        Moving the inputs into the ``(C, L)`` layout, and ``grad_x`` back, happens here.
+        Moving the inputs into the $[C \\times L]$ layout, and ``grad_x`` back, happens here.
 
         Returns:
             grad_x: Gradient w.r.t. the input, shaped like *x*.

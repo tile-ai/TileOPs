@@ -23,11 +23,6 @@ class EngramGateConvFwdOp(Op):
     Returns Y plus saved intermediates for backward (strategy B):
         vhat, alpha, rrms_h, rrms_k, rrms_v
 
-    Args:
-        M: Batch size.
-        seq_len: Sequence length.
-        d: Model hidden dimension.
-        eps: RMSNorm epsilon (default 1e-6).
     """
 
     def __init__(
@@ -39,6 +34,14 @@ class EngramGateConvFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            M: Batch size.
+            seq_len: Sequence length.
+            d: Model hidden dimension.
+            eps: RMSNorm epsilon (default 1e-6).
+        """
         self.M = M
         self.seq_len = seq_len
         self.d = d
@@ -74,7 +77,7 @@ class EngramGateConvFwdOp(Op):
         rms_w_v_shape: tuple[int, ...],
         conv_w_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: the two ``[M, seq_len, d]`` tensors, plus four per-row statistics."""
+        """Manifest ``outputs``: the two $[M \\times seq\\_len \\times d]$ tensors, plus four per-row statistics."""
         rows = H_shape[:2]
         return {
             "Y": tuple(H_shape),
@@ -141,11 +144,6 @@ class EngramGateConvBwdOp(Op):
         dW_K = E^T @ dk
         dW_V = E^T @ dv
 
-    Args:
-        M: Batch size.
-        seq_len: Sequence length.
-        d: Model hidden dimension.
-        eps: RMSNorm epsilon (default 1e-6).
     """
 
     def __init__(
@@ -157,6 +155,14 @@ class EngramGateConvBwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            M: Batch size.
+            seq_len: Sequence length.
+            d: Model hidden dimension.
+            eps: RMSNorm epsilon (default 1e-6).
+        """
         self.M = M
         self.seq_len = seq_len
         self.d = d

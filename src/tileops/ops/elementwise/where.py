@@ -28,12 +28,6 @@ class WhereFwdOp(_PerDtypeKernels, Op):
     with ``condition`` to produce the output. The three operand shapes arrive with
     the tensors; broadcasting them is the kernel's business.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional dispatch override mapping kernel keys to
-            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
-        tune: Whether to autotune.
     """
 
     _op_name = "where"
@@ -51,6 +45,15 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional dispatch override mapping kernel keys to
+                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         self.condition_shape: Optional[tuple] = None
@@ -147,6 +150,16 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            condition: Input tensor, dtype ``bool``.
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            other: Input tensor, dtype ``same_as(input)``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)``.
+        """
         return type(self)._wrapped(condition, input, other, self._instance_key)
 
 

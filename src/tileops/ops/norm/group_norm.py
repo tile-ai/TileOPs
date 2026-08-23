@@ -53,14 +53,6 @@ class GroupNormFwdOp(Op):
     pass neither for ``torch.nn.GroupNorm(affine=False)``. Passing one alone
     is an error — the manifest states the same in ``shape_rules``.
 
-    Args:
-        num_groups: Number of groups (manifest ``params.num_groups``).
-            Must divide *C* evenly.
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -75,6 +67,17 @@ class GroupNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            num_groups: Number of groups (manifest ``params.num_groups``).
+                Must divide *C* evenly.
+            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.num_groups = num_groups
         self.dtype: Optional[torch.dtype] = None
         self.eps = eps
@@ -144,8 +147,8 @@ class GroupNormFwdOp(Op):
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)``.
-            weight: Affine scale of shape ``(C,)``, or ``None``.
-            bias: Affine shift of shape ``(C,)``, or ``None``.
+            weight: Affine scale of shape $[C]$, or ``None``.
+            bias: Affine shift of shape $[C]$, or ``None``.
                 ``weight`` and ``bias`` are one switch: give both or neither.
 
         Returns:

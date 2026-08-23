@@ -340,8 +340,10 @@ class MoePermuteAlignKernel(Kernel):
         GEMM index contract, so there is no free element type to select.
 
     Example:
-        >>> kernel = MoePermuteAlignKernel(numel=32, num_experts=8, block_size=16)
-        >>> sorted_ids, expert_ids, num_post_pad = kernel(topk_ids)
+        ```python linenums="1"
+        kernel = MoePermuteAlignKernel(numel=32, num_experts=8, block_size=16)
+        sorted_ids, expert_ids, num_post_pad = kernel(topk_ids)
+        ```
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

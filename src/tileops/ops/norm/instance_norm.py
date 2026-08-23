@@ -56,19 +56,6 @@ class InstanceNormFwdOp(Op):
         which applies the per-channel affine itself; without affine it
         delegates to `InstanceNormNoAffineKernel`.
 
-    Args:
-        use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
-            ``True`` (the default), per-instance statistics are computed from
-            the input. ``False`` normalizes by the passed running stats, and
-            is implemented for the affine-free call only.
-        momentum: Mirrors ``torch.nn.functional.instance_norm``. Stored on the
-            op instance for API parity with PyTorch but unused: neither path
-            updates the running stats.
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -84,6 +71,22 @@ class InstanceNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
+                ``True`` (the default), per-instance statistics are computed from
+                the input. ``False`` normalizes by the passed running stats, and
+                is implemented for the affine-free call only.
+            momentum: Mirrors ``torch.nn.functional.instance_norm``. Stored on the
+                op instance for API parity with PyTorch but unused: neither path
+                updates the running stats.
+            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.dtype: Optional[torch.dtype] = None
         self.use_input_stats = use_input_stats
         self.momentum = momentum
@@ -236,11 +239,11 @@ class InstanceNormFwdOp(Op):
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)``.
-            running_mean: Per-channel running mean of shape ``(C,)``, dtype
+            running_mean: Per-channel running mean of shape $[C]$, dtype
                 ``torch.float32``, on ``x``'s device. Required when
                 ``use_input_stats=False``.
             running_var: Per-channel running variance, same constraints.
-            weight: Affine scale of shape ``(C,)``, ``x``'s dtype. Must be passed
+            weight: Affine scale of shape $[C]$, ``x``'s dtype. Must be passed
                 together with ``bias``.
             bias: Affine shift, same constraints as ``weight``.
 

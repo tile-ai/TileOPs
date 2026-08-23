@@ -729,7 +729,7 @@ def restore_reduced(
     axes: "tuple[int, ...]",
     keepdim: bool,
 ) -> torch.Tensor:
-    """Shape an ``(M,)`` result the way the reduction's caller expects.
+    """Shape an $[M]$ result the way the reduction's caller expects.
 
     Reducing every axis without *keepdim* gives a 0-D tensor.
     """

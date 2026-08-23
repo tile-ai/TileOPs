@@ -94,6 +94,14 @@ class DivFwdOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            rounding_mode: Manifest ``params.rounding_mode``, ``str | None``, default ``None``.
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         if rounding_mode not in _DIV_KERNEL_BY_ROUNDING_MODE:
             raise ValueError(
                 f"DivFwdOp received rounding_mode={rounding_mode!r}; "
@@ -149,12 +157,6 @@ class LerpFwdOp(BinaryOp):
     kernel. This enables compile-time folding but means a new Op instance is
     needed for each distinct weight value.
 
-    Args:
-        weight: Scalar interpolation weight, fixed at construction (manifest
-            ``params.weight``, default 0.5).
-        target: Which set of kernels serves this op.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "lerp"
@@ -173,6 +175,15 @@ class LerpFwdOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            weight: Scalar interpolation weight, fixed at construction (manifest
+                ``params.weight``, default 0.5).
+            target: Which set of kernels serves this op.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.weight = weight
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
@@ -202,10 +213,6 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
     broadcasts together with ``input`` and ``end`` to the output shape. The scalar-weight
     overload is handled separately by ``LerpFwdOp``.
 
-    Args:
-        target: Which set of kernels serves this op.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "lerp_tensor"
@@ -223,6 +230,13 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.target = target
         self.tune = tune
         self.input_shape: Optional[tuple] = None
@@ -303,6 +317,16 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            end: Input tensor, dtype ``same_as(input)``.
+            weight: Input tensor, dtype ``same_as(input)``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)``.
+        """
         return type(self)._wrapped(input, end, weight, self._instance_key)
 
 

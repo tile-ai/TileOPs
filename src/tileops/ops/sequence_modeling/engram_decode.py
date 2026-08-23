@@ -19,14 +19,6 @@ class EngramDecodeFwdOp(Op):
     at runtime, this op compiles with max_conv_len and accepts the actual
     conv_state length at runtime without recompilation.
 
-    Args:
-        batch: Batch size.
-        d_mem: Memory embedding dimension.
-        d: Model hidden dimension.
-        max_conv_len: Max conv cache capacity (compile-time).
-        conv_kernel_size: Number of conv taps w (model param, e.g. 4).
-        dilation: Dilation factor δ (model param, e.g. max N-gram order).
-        eps: RMSNorm epsilon (default 1e-6).
     """
 
     def __init__(
@@ -41,6 +33,17 @@ class EngramDecodeFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            batch: Batch size.
+            d_mem: Memory embedding dimension.
+            d: Model hidden dimension.
+            max_conv_len: Max conv cache capacity (compile-time).
+            conv_kernel_size: Number of conv taps w (model param, e.g. 4).
+            dilation: Dilation factor δ (model param, e.g. max N-gram order).
+            eps: RMSNorm epsilon (default 1e-6).
+        """
         self.batch = batch
         self.d_mem = d_mem
         self.d = d

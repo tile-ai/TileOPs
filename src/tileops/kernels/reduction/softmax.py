@@ -191,7 +191,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
       Pass 1 (all tiles): compute running max and rescaled running sum.
       Pass 2 (all tiles): normalize using global max and sum.
 
-    The input tensor has the raw shape ``(M, N)`` (no host-side padding).
+    The input tensor has the raw shape $[M \\times N]$ (no host-side padding).
     Boundary handling for the last tile (where ``t * tile_n + j`` may
     exceed ``N``) is performed inside the kernel via ``T.if_then_else``
     masked loads.  Output columns are ``total_cols = num_tiles * tile_n``.

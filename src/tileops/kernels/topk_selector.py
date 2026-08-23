@@ -274,7 +274,7 @@ def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) 
 
 
 class TopkSelectorKernel(Kernel):
-    """Per-row top-k index selection over an ``[B, S, S_kv, G]`` score tensor.
+    """Per-row top-k index selection over an $[B \\times S \\times S\\_kv \\times G]$ score tensor.
 
     Args:
         batch: Batch size.

@@ -25,8 +25,6 @@ class SSDDecodeFwdOp(Op):
     The skip connection (D * x) and output gate (z * silu) are not fused
     here and must be applied by the caller if needed.
 
-    Args:
-        tune:     Whether to autotune tile config on construction.
     """
 
     def __init__(
@@ -34,6 +32,11 @@ class SSDDecodeFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune:     Whether to autotune tile config on construction.
+        """
         self.batch = None
         self.n_heads = None
         self.d_head = None
@@ -78,7 +81,7 @@ class SSDDecodeFwdOp(Op):
         C_in_shape: tuple[int, ...],
         state_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``y_out`` has the shape of *x*, ``[B, H, P]``."""
+        """Manifest ``outputs``: ``y_out`` has the shape of *x*, $[B \\times H \\times P]$."""
         return {"y_out": tuple(x_shape)}
 
     def forward(

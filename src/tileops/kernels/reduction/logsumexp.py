@@ -119,7 +119,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
       Single pass: compute running max and rescaled running sum.
       Then: logsumexp = max + log(sum).
 
-    The input tensor has the raw shape ``(M, N)`` (no host-side padding).
+    The input tensor has the raw shape $[M \\times N]$ (no host-side padding).
     Boundary handling for the last tile is performed via masked loads.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)

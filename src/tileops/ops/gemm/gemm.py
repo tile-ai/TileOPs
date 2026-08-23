@@ -26,22 +26,16 @@ class GemmFwdOp(Op):
     is built (and cached) on first use for each ``(m, n, k, dtype)`` — mirroring
     DeepGEMM's compile-on-first-call + per-config cache.
 
-    Layouts via ``(trans_a, trans_b)`` (== DeepGEMM ``nt``/``nn``/``tn``/``tt``):
-      - ``(False, True)``  NT (default): ``A @ Bᵀ``
-      - ``(False, False)`` NN:           ``A @ B``
-      - ``(True,  False)`` TN:           ``Aᵀ @ B``
-      - ``(True,  True)``  TT:           ``Aᵀ @ Bᵀ``
+    The ``(trans_a, trans_b)`` pair selects one of four layouts, matching DeepGEMM's
+    ``nt`` / ``nn`` / ``tn`` / ``tt``:
 
-    Args:
-        trans_a: Whether ``a`` is stored transposed (``[K, M]``).
-        trans_b: Whether ``b`` is stored transposed (``[N, K]``). Default ``True`` (NT).
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune (applied when a kernel is first built).
+    | Flags | Layout | Product |
+    | --- | --- | --- |
+    | ``(False, True)`` | NT, the default | $d = a \\mathbin{@} b^{\\top}$ |
+    | ``(False, False)`` | NN | $d = a \\mathbin{@} b$ |
+    | ``(True, False)`` | TN | $d = a^{\\top} \\mathbin{@} b$ |
+    | ``(True, True)`` | TT | $d = a^{\\top} \\mathbin{@} b^{\\top}$ |
 
-    Example:
-        >>> op = GemmFwdOp()                       # NT by default
-        >>> d = op(a, b)                         # a=[M,K], b=[N,K] -> d=[M,N]
-        >>> flops, nbytes = op.eval_roofline()   # valid after the forward
     """
 
     def __init__(
@@ -51,6 +45,14 @@ class GemmFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            trans_a: Whether ``a`` is stored transposed ($[K \\times M]$).
+            trans_b: Whether ``b`` is stored transposed ($[N \\times K]$). Default ``True`` (NT).
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune (applied when a kernel is first built).
+        """
         self.trans_a = trans_a
         self.trans_b = trans_b
         self.tune = tune
@@ -136,6 +138,26 @@ class GemmFwdOp(Op):
         return {"d": (m, n)}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Multiply the two matrices under the layout the constructor selected.
+
+        Args:
+            a: Left operand, $[M \\times K]$, or $[K \\times M]$ when ``trans_a``.
+            b: Right operand, $[N \\times K]$ under the default NT layout, or
+                $[K \\times N]$ when ``trans_b`` is false.
+
+        Returns:
+            The product, $[M \\times N]$, in the dtype of the inputs.
+
+        Raises:
+            ValueError: The contraction dims the two operands contribute do not match.
+
+        Example:
+            ```python linenums="1"
+            op = GemmFwdOp()                      # NT by default
+            d = op(a, b)                          # a=[M,K], b=[N,K] -> d=[M,N]
+            flops, nbytes = op.eval_roofline()    # valid after the forward
+            ```
+        """
         # Fast path: same input signature as the last call → reuse the already
         # built/JIT'd kernel directly, skipping dtype validation, shape
         # inference, and the cache lookup (this is the steady state in
@@ -166,9 +188,9 @@ class GemmFwdOp(Op):
 class GemmFp8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred.
 
-    Public layout is ``a=[M, K]`` and ``b=[N, K]``. ``scale_a`` and
-    ``scale_b`` must be either per-tensor ``(1, 1)`` scales or block128
-    scales with shapes ``(M, ceil(K / 128))`` and ``(N, ceil(K / 128))``.
+    Public layout is ``a``: $[M \\times K]$ and ``b``: $[N \\times K]$. ``scale_a`` and
+    ``scale_b`` must be either per-tensor $[1 \\times 1]$ scales or block128
+    scales with shapes $[M \\times \\lceil K/128 \\rceil]$ and $[N \\times \\lceil K/128 \\rceil]$.
     """
 
     def __init__(
@@ -177,6 +199,13 @@ class GemmFp8FwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            out_dtype: Output dtype.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
@@ -317,6 +346,32 @@ class GemmFp8FwdOp(Op):
         scale_b: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Multiply the two FP8 matrices, apply the scales, and add the bias.
+
+        Args:
+            a: Left operand, $[M \\times K]$, ``torch.float8_e4m3fn``.
+            b: Right operand, $[N \\times K]$, same dtype as ``a``.
+            scale_a: ``torch.float32`` scales for ``a``: per-tensor $[1 \\times 1]$, or
+                block128 $[M \\times \\lceil K/128 \\rceil]$.
+            scale_b: The same for ``b``: $[1 \\times 1]$ or
+                $[N \\times \\lceil K/128 \\rceil]$. Both scales take the same form.
+            bias: Optional bias, $[N]$, in ``out_dtype``.
+
+        Returns:
+            The scaled product plus bias, $[M \\times N]$, in ``out_dtype``.
+
+        Raises:
+            ValueError: A dtype is not one of those listed above, ``a`` or ``b`` is not
+                2D, the contraction dims do not match, the two scales are not both
+                per-tensor or both block128, or the bias is not $[N]$.
+
+        Example:
+            ```python linenums="1"
+            op = GemmFp8FwdOp(out_dtype=torch.bfloat16)
+            d = op(a, b, scale_a, scale_b)        # per-tensor scales
+            flops, nbytes = op.eval_roofline()    # valid after the forward
+            ```
+        """
         sig = (
             a.shape,
             b.shape,
@@ -358,10 +413,10 @@ class GemmFp8FwdOp(Op):
 class GemmW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
 
-    Public layout is ``activation=[M, K]`` and ``packed_weight=[N, K / 2]``.
+    Public layout is ``activation``: $[M \\times K]$ and ``packed_weight``: $[N \\times K/2]$.
     Two unsigned INT4 values are packed per byte: the low nibble stores even K
     and the high nibble stores odd K. ``weight_scale`` and ``weight_zero`` are
-    group128 metadata with shape ``[N, K / 128]``. The kernel dequantizes the
+    group128 metadata with shape $[N \\times K/128]$. The kernel dequantizes the
     current W4 tile into A16 shared memory and computes ``activation @ W.T``.
     """
 
@@ -371,6 +426,13 @@ class GemmW4A16FwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            group_size: Manifest ``params.group_size``, ``int``, default ``128``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         if group_size != GROUP_SIZE:
             raise ValueError(
                 f"GemmW4A16FwdOp currently supports group_size={GROUP_SIZE}, got {group_size}"
@@ -496,6 +558,30 @@ class GemmW4A16FwdOp(Op):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
+        """Dequantize the INT4 weight tile by tile and multiply.
+
+        Args:
+            activation: Activations, $[M \\times K]$, ``torch.float16``.
+            packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8`` — two INT4
+                values per byte, even $K$ in the low nibble.
+            weight_scale: Group scales, $[N \\times K/128]$, ``torch.float32``.
+            weight_zero: Group zero points, $[N \\times K/128]$, ``torch.uint8``.
+
+        Returns:
+            The product, $[M \\times N]$, in ``torch.float16``.
+
+        Raises:
+            ValueError: A dtype is not one of those listed above, ``activation`` or
+                ``packed_weight`` is not 2D, $K$ is odd, $K$ is not divisible by
+                ``group_size``, or a packed or metadata shape disagrees with $K$.
+
+        Example:
+            ```python linenums="1"
+            op = GemmW4A16FwdOp()
+            d = op(activation, packed_weight, weight_scale, weight_zero)
+            flops, nbytes = op.eval_roofline()    # valid after the forward
+            ```
+        """
         sig = (
             activation.shape,
             packed_weight.shape,

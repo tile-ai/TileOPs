@@ -224,18 +224,18 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         """Run the grouped GEMM ``C[e] = A[e] @ B[e]^T`` for every expert.
 
         Args:
-            A: ``[numel, K]`` tokens, grouped by expert (tight, no padding).
-            B: ``[num_experts, N, K]`` expert weights (NT layout).
-            true_sizes: ``[num_experts]`` int32 row count per expert.
-            true_offsets: ``[num_experts]`` int32 start offset per expert in A.
-            out: optional ``[numel, N]`` output buffer to write into and reuse
+            A: $[numel \\times K]$ tokens, grouped by expert (tight, no padding).
+            B: $[num\\_experts \\times N \\times K]$ expert weights (NT layout).
+            true_sizes: $[num\\_experts]$ int32 row count per expert.
+            true_offsets: $[num\\_experts]$ int32 start offset per expert in A.
+            out: optional $[numel \\times N]$ output buffer to write into and reuse
                 across calls. Allocated internally with ``torch.empty`` if omitted.
                 Must be contiguous and must not overlap ``A`` or ``B`` in memory
                 (the kernel reads inputs and writes the output concurrently).
                 Disjoint slices of a shared workspace buffer are allowed.
 
         Returns:
-            The ``[numel, N]`` output (``out`` if provided).
+            The $[numel \\times N]$ output (``out`` if provided).
         """
         block_m = self.config["block_m"]
         block_n = self.config["block_n"]

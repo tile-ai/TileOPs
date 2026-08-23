@@ -16,14 +16,16 @@ __all__ = ["GroupedGemmFwdOp"]
 
 
 class GroupedGemmFwdOp(Op):
-    """
-    Grouped GEMM with configurable transpose modes.
+    """Grouped GEMM with configurable transpose modes.
 
-    Supports four layouts via (transpose_a, transpose_b):
-      - (False, True)  NT: A @ B^T -> C
-      - (False, False)  NN: A @ B   -> C
-      - (True,  False) TN: A^T @ B  -> C
-      - (True,  True)  TT: A^T @ B^T -> C
+    The ``(transpose_a, transpose_b)`` pair selects one of four layouts:
+
+    | Flags | Layout | Product |
+    | --- | --- | --- |
+    | ``(False, True)`` | NT | $C = A \\mathbin{@} B^{\\top}$ |
+    | ``(False, False)`` | NN | $C = A \\mathbin{@} B$ |
+    | ``(True, False)`` | TN | $C = A^{\\top} \\mathbin{@} B$ |
+    | ``(True, True)`` | TT | $C = A^{\\top} \\mathbin{@} B^{\\top}$ |
     """
 
     def __init__(
@@ -33,6 +35,14 @@ class GroupedGemmFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            transpose_a: Manifest ``params.transpose_a``, ``bool``, default ``False``.
+            transpose_b: Manifest ``params.transpose_b``, ``bool``, default ``True``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch_sum = None
         self.batch_count = None
         self.N = None
@@ -176,6 +186,34 @@ class GroupedGemmFwdOp(Op):
         batch_offsets: torch.Tensor,
         batch_padded_offsets: torch.Tensor,
     ) -> torch.Tensor:
+        """Run one GEMM per group, with the groups packed along a single axis.
+
+        Args:
+            a: Activations for every group, $[\\mathit{batch\\_sum} \\times K]$, or
+                $[K \\times \\mathit{batch\\_sum}]$ when ``transpose_a``.
+            b: Per-group weights, $[\\mathit{batch\\_count} \\times N \\times K]$ when
+                ``transpose_a`` is false, or $[\\mathit{batch\\_sum} \\times N]$ when it is.
+            batch_sizes: Rows per group, 1D ``torch.int32``.
+            batch_offsets: Start row of each group in ``a``, 1D ``torch.int32``.
+            batch_padded_offsets: Start row of each group in the padded output,
+                1D ``torch.int32``.
+
+        Returns:
+            The per-group products, $[\\mathit{batch\\_sum} \\times N]$, in the dtype of
+            the inputs.
+
+        Raises:
+            ValueError: ``a`` or ``b`` is not on CUDA, their dtypes differ or are
+                neither float16 nor bfloat16, the metadata tensors are not 1D int32 of
+                equal length, or the operand ranks and dims disagree with the layout
+                flags.
+
+        Example:
+            ```python linenums="1"
+            op = GroupedGemmFwdOp()               # NT by default
+            d = op(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
+            ```
+        """
         batch_sum, batch_count, n, k, dtype, device_index = self._resolve_spec(
             a,
             b,

@@ -31,11 +31,6 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
     ``value`` must be a 0-dim Tensor. The kernel reads ``value`` at forward time,
     which is consistent with the 0-dim semantics.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional dispatch override mapping kernel keys to
-            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "masked_fill"
@@ -47,6 +42,14 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional dispatch override mapping kernel keys to
+                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+        """
         self.target = target
         self.input_shape: Optional[tuple] = None
         self.mask_shape: Optional[tuple] = None
@@ -125,6 +128,16 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         mask: torch.Tensor,
         value: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``.
+            mask: Input tensor, dtype ``bool``.
+            value: Input tensor, dtype ``same_as(input)``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == broadcast_shapes(input.shape, mask.shape)``.
+        """
         return type(self)._wrapped(input, mask, value, self._instance_key)
 
 
@@ -140,18 +153,6 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
     whatever storage the selected kernel requires; the op passes and receives
     semantic bool either way.
 
-    Args:
-        value: Scalar fill value (bool / int / float). Range-validated
-            against the element type of the call with PyTorch
-            ``Tensor.masked_fill`` coercion: bool reduces non-zero to
-            ``True``; integer dtypes range-check the real value against
-            ``torch.iinfo`` and truncate floats toward zero (``1.5 -> 1``);
-            ``torch.uint8`` additionally wraps Python ints in ``[-255, 0)``
-            via two's complement.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional dispatch override mapping kernel keys to
-            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "masked_fill"
@@ -164,6 +165,21 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            value: Scalar fill value (bool / int / float). Range-validated
+                against the element type of the call with PyTorch
+                ``Tensor.masked_fill`` coercion: bool reduces non-zero to
+                ``True``; integer dtypes range-check the real value against
+                ``torch.iinfo`` and truncate floats toward zero (``1.5 -> 1``);
+                ``torch.uint8`` additionally wraps Python ints in ``[-255, 0)``
+                via two's complement.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional dispatch override mapping kernel keys to
+                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+        """
         self.value = value
         self.target = target
         self.input_shape: Optional[tuple] = None
@@ -230,6 +246,15 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         return result
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``.
+            mask: Input tensor, dtype ``bool``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == broadcast_shapes(input.shape, mask.shape)``.
+        """
         return type(self)._wrapped(input, mask, self._instance_key)
 
 

@@ -23,8 +23,6 @@ class SSDChunkStateFwdOp(Op):
               * dt[b, h, c, l]
               * (1 if seq_idx is None else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
-    Args:
-        tune:       Whether to autotune tile config on construction.
     """
 
     def __init__(
@@ -32,6 +30,11 @@ class SSDChunkStateFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune:       Whether to autotune tile config on construction.
+        """
         self.batch = None
         self.num_chunks = None
         self.chunk_len = None
@@ -106,7 +109,7 @@ class SSDChunkStateFwdOp(Op):
         dA_cumsum_shape: tuple[int, ...],
         seq_idx_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``[B, NC, H, P, N]`` — chunks from *dt*, state size from *Bmat*."""
+        """Manifest ``outputs``: $[B \\times NC \\times H \\times P \\times N]$ — chunks from *dt*, state size from *Bmat*."""
         b, _, h, p = x_shape
         return {"states": (b, dt_shape[2], h, p, Bmat_shape[-1])}
 

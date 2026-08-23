@@ -37,12 +37,6 @@ class FusedAddLayerNormFwdOp(Op):
         Handles non-contiguous inputs and non-power-of-two hidden dims
         by padding to 256-element alignment.
 
-    Args:
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -56,6 +50,15 @@ class FusedAddLayerNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.eps = eps
         self.target = target
         self.tune = tune
@@ -97,8 +100,8 @@ class FusedAddLayerNormFwdOp(Op):
         Args:
             x: Input tensor of shape ``(*leading, N)``.
             residual: Residual tensor of the same shape as *x*.
-            weight: Affine scale of shape ``(N,)``.
-            bias: Affine shift of shape ``(N,)``.
+            weight: Affine scale of shape $[N]$.
+            bias: Affine shift of shape $[N]$.
 
         Returns:
             ``(y, residual_out)``, where *residual_out* is ``x + residual``, both of the

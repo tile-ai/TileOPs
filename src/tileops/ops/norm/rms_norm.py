@@ -40,22 +40,13 @@ class RMSNormFwdOp(Op):
     where the reduction runs over the trailing ``len(normalized_shape)``
     axes; ``normalized_shape`` is the only entry point (the manifest spec).
 
-    Args:
-        normalized_shape: Trailing-axis shape tuple over which the
-            reduction runs (manifest ``params.normalized_shape``).
-        eps: Epsilon for numerical stability (manifest ``params.eps``). ``None``
-            selects the same default the signature carries. Normalized here, so a
-            backend is handed the number rather than ``None``.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: Whether to autotune (default ``False``).
-
     Example:
-        >>> op = RMSNormFwdOp(normalized_shape=(4096,))
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-        >>> w = torch.randn(4096, dtype=torch.float16, device="cuda")
-        >>> y = op(x, w)  # shape: (1024, 4096)
+        ```python linenums="1"
+        op = RMSNormFwdOp(normalized_shape=(4096,))
+        x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+        w = torch.randn(4096, dtype=torch.float16, device="cuda")
+        y = op(x, w)  # shape: (1024, 4096)
+        ```
     """
 
     #: Manifest ``params.eps.default``. The signature default and the ``None``
@@ -74,6 +65,19 @@ class RMSNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            normalized_shape: Trailing-axis shape tuple over which the
+                reduction runs (manifest ``params.normalized_shape``).
+            eps: Epsilon for numerical stability (manifest ``params.eps``). ``None``
+                selects the same default the signature carries. Normalized here, so a
+                backend is handed the number rather than ``None``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: Whether to autotune (default ``False``).
+        """
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
         # The manifest type is ``float | None``: an explicit None means the same default,

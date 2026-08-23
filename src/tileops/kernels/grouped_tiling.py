@@ -19,9 +19,10 @@ class GroupTiling:
     """Tiles enumerated per group, for ``num_groups`` groups of ``block_m`` rows.
 
     Example:
-        >>> tiling = GroupTiling(num_groups=16, block_m=64)
-        >>> tiling.tile_upper_bound(4096)
-        80
+        ```python linenums="1"
+        tiling = GroupTiling(num_groups=16, block_m=64)
+        tiling.tile_upper_bound(4096) # 80
+        ```
     """
 
     def __init__(self, num_groups: int, block_m: int) -> None:

@@ -12,8 +12,8 @@ Variants and frequency computation:
 - **RopeLongRopeFwdOp**: per-dimension rescaled frequencies
 
 Layouts:
-- ``"1d"``: input shape ``(seq_len, head_dim)``
-- ``"2d"``: input shape ``(batch, seq_len, num_heads, head_dim)``
+- ``"1d"``: input shape $[seq\\_len \\times head\\_dim]$
+- ``"2d"``: input shape $[batch \\times seq\\_len \\times num\\_heads \\times head\\_dim]$
 
 torch.compile support:
 - All 5 concrete ops are registered via @torch.library.custom_op at module
@@ -350,10 +350,6 @@ class _RopeOpBase(Op):
     Cos/sin tables are computed lazily at forward time on the same device as
     the input tensor, avoiding device-mismatch issues in multi-GPU settings.
 
-    Args:
-        layout: "1d" or "2d".
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     kernel_cls: type
@@ -366,6 +362,13 @@ class _RopeOpBase(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            layout: "1d" or "2d".
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.seq_len = None
         self.head_dim = None
         self.dtype = None
@@ -515,11 +518,6 @@ class RopeNeoxFwdOp(_RopeOpBase):
 
     Reference: GPT-NeoX / HuggingFace transformers RotaryEmbedding.
 
-    Args:
-        layout: "1d" or "2d".
-        base: Frequency base (default 10000).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "rope_neox"
@@ -532,6 +530,14 @@ class RopeNeoxFwdOp(_RopeOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            layout: "1d" or "2d".
+            base: Frequency base (default 10000).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.base = base
         super().__init__(layout, kernel_map, tune)
 
@@ -555,6 +561,15 @@ class RopeNeoxPositionIdsFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            max_position: Manifest ``params.max_position``, ``int``.
+            base: Manifest ``params.base``, ``float``, default ``10000.0``.
+            rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         if rotary_dim is not None and rotary_dim <= 0:
             raise ValueError("rotary_dim must be positive")
         if rotary_dim is not None and rotary_dim % 2 != 0:
@@ -685,6 +700,15 @@ class RopeNeoxPositionIdsFwdOp(Op):
         return {"output": tuple(x_shape)}
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            x: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            position_ids: Input tensor, dtype ``int32 | int64``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == x.shape``.
+        """
         x, position_ids = self._validate_and_prepare(x, position_ids)
         wrapped = type(self)._wrapped
         if wrapped is not None:
@@ -699,11 +723,6 @@ class RopeNonNeoxFwdOp(_RopeOpBase):
 
     Reference: Su et al., "RoFormer: Enhanced Transformer with Rotary Position Embedding".
 
-    Args:
-        layout: "1d" or "2d".
-        base: Frequency base (default 10000).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "rope_non_neox"
@@ -716,6 +735,14 @@ class RopeNonNeoxFwdOp(_RopeOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            layout: "1d" or "2d".
+            base: Frequency base (default 10000).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.base = base
         super().__init__(layout, kernel_map, tune)
 
@@ -733,15 +760,6 @@ class RopeLlama31FwdOp(_RopeOpBase):
 
     Reference: Meta Llama 3.1 model implementation.
 
-    Args:
-        layout: "1d" or "2d".
-        base: Frequency base (default 10000).
-        scale_factor: Scaling factor for low frequencies (default 8.0).
-        low_freq_factor: Low-frequency wavelen threshold (default 1.0).
-        high_freq_factor: High-frequency wavelen threshold (default 4.0).
-        original_max_position: Original max position (default 8192).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "rope_llama31"
@@ -758,6 +776,18 @@ class RopeLlama31FwdOp(_RopeOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            layout: "1d" or "2d".
+            base: Frequency base (default 10000).
+            scale_factor: Scaling factor for low frequencies (default 8.0).
+            low_freq_factor: Low-frequency wavelen threshold (default 1.0).
+            high_freq_factor: High-frequency wavelen threshold (default 4.0).
+            original_max_position: Original max position (default 8192).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.base = base
         self.scale_factor = scale_factor
         self.low_freq_factor = low_freq_factor
@@ -787,16 +817,6 @@ class RopeYarnFwdOp(_RopeOpBase):
 
     Reference: Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
 
-    Args:
-        layout: "1d" or "2d".
-        base: Frequency base (default 10000).
-        scale: Context extension scale (default 16.0).
-        original_max_position: Original max position (default 4096).
-        beta_fast: Fast decay boundary (default 32.0).
-        beta_slow: Slow decay boundary (default 1.0).
-        attn_factor: Attention scaling factor (default 1.0).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "rope_yarn"
@@ -814,6 +834,19 @@ class RopeYarnFwdOp(_RopeOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            layout: "1d" or "2d".
+            base: Frequency base (default 10000).
+            scale: Context extension scale (default 16.0).
+            original_max_position: Original max position (default 4096).
+            beta_fast: Fast decay boundary (default 32.0).
+            beta_slow: Slow decay boundary (default 1.0).
+            attn_factor: Attention scaling factor (default 1.0).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.base = base
         self.scale = scale
         self.original_max_position = original_max_position
@@ -847,16 +880,6 @@ class RopeLongRopeFwdOp(_RopeOpBase):
     Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
     Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
 
-    Args:
-        layout: "1d" or "2d".
-        base: Frequency base (default 10000).
-        rescale_factors: Per-dimension rescale factors (ext_factors) of shape
-            (head_dim // 2,). These multiply the divisor.
-        max_position_embeddings: Extended max position length (default 4096).
-        original_max_position_embeddings: Original max position length
-            (default 4096).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "rope_longrope"
@@ -872,6 +895,19 @@ class RopeLongRopeFwdOp(_RopeOpBase):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            layout: "1d" or "2d".
+            base: Frequency base (default 10000).
+            rescale_factors: Per-dimension rescale factors (ext_factors) of shape
+                (head_dim // 2,). These multiply the divisor.
+            max_position_embeddings: Extended max position length (default 4096).
+            original_max_position_embeddings: Original max position length
+                (default 4096).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         self.base = base
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings

@@ -38,27 +38,13 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     forward() output shape is (T, H): reduction is done internally by
     MoeUnpermuteFwdOp, so make_weighted_reduce() returns WeightedReduceNoOp.
 
-    Args:
-        num_tokens: Number of input tokens T (rows of hidden_states).
-        num_experts: Total number of experts E in the routing table.
-        num_experts_local: Number of those experts this rank owns; the weights
-            and both grouped GEMMs are sized by it. Equal to ``num_experts``
-            outside expert parallelism.
-        top_k: Number of experts each token is routed to (K).
-        hidden_size: Model hidden dimension H (GEMM contraction dim for
-            gate_up, output dim for down).
-        ffn_size: Per-expert FFN intermediate dimension F.
-        routed_scaling_factor: Scalar applied to the final reduced output.
-            Defaults to 1.0 (no scaling).
-        kernel_map: Optional kernel overrides forwarded to the inner Ops.
-        activation: Gated activation applied to gate_up: 'silu_and_mul' or
-            'gelu_and_mul'.
-
     Example:
-        >>> experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-        ...     num_tokens=512, num_experts=128, num_experts_local=128, top_k=8,
-        ...     hidden_size=7168, ffn_size=2048,
-        ... )
+        ```python linenums="1"
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=512, num_experts=128, num_experts_local=128, top_k=8,
+            hidden_size=7168, ffn_size=2048,
+        )
+        ```
     """
 
     def __init__(
@@ -74,6 +60,24 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         *,
         activation: str = "silu_and_mul",
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            num_tokens: Number of input tokens T (rows of hidden_states).
+            num_experts: Total number of experts E in the routing table.
+            num_experts_local: Number of those experts this rank owns; the weights
+                and both grouped GEMMs are sized by it. Equal to ``num_experts``
+                outside expert parallelism.
+            top_k: Number of experts each token is routed to (K).
+            hidden_size: Model hidden dimension H (GEMM contraction dim for
+                gate_up, output dim for down).
+            ffn_size: Per-expert FFN intermediate dimension F.
+            routed_scaling_factor: Scalar applied to the final reduced output.
+                Defaults to 1.0 (no scaling).
+            kernel_map: Optional kernel overrides forwarded to the inner Ops.
+            activation: Gated activation applied to gate_up: 'silu_and_mul' or
+                'gelu_and_mul'.
+        """
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens
         self.num_experts = num_experts

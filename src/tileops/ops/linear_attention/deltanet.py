@@ -29,10 +29,6 @@ class DeltaNetFwdOp(Op):
         FLA (``fla.ops.delta_rule.chunk_delta_rule``) uses **BTHN**
         layout: ``q/k [B, T, H, K]``, ``v [B, T, H, V]``, ``beta [B, T, H]``.
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -41,6 +37,13 @@ class DeltaNetFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -170,10 +173,6 @@ class DeltaNetBwdOp(Op):
 
     Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dbeta).
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -182,6 +181,13 @@ class DeltaNetBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -329,6 +335,7 @@ class _DeltaNetFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, beta, fwd_kernel, bwd_kernel):
+        """Run the op on ``q``, ``k``, ``v``, ``beta``, ``fwd_kernel`` and ``bwd_kernel``."""
         o, S, Aw, Au, w, u = fwd_kernel(q, k, v, beta)
         ctx.save_for_backward(q, k, v, beta, S, Aw, Au, w, u)
         ctx.bwd_kernel = bwd_kernel
@@ -350,10 +357,6 @@ class DeltaNetOp(UnmanifestedOp):
 
     Layout: BHSD (batch, head, seq_len, dim).
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -362,6 +365,13 @@ class DeltaNetOp(UnmanifestedOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.heads = None
         self.seq_len = None

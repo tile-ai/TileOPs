@@ -35,6 +35,12 @@ class NSATopkVarlenOp(UnmanifestedOp):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune: Whether to autotune, applied when a kernel is first built.
+            kernel_map: Optional kernel override dict.
+        """
         params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map")}
         for key, value in params.items():
             setattr(self, key, value)
@@ -66,6 +72,7 @@ class NSATopkVarlenOp(UnmanifestedOp):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on ``q``, ``k_cmp``, ``lse_in``, ``offsets``, ``chunk_offsets`` and ``token_indices``."""
         self.dtype = q.dtype
         tensors = (q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
         return self._get_kernel(tensors, q.dtype)(*tensors)
@@ -87,6 +94,12 @@ class NSAFwdVarlenOp(UnmanifestedOp):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune: Whether to autotune, applied when a kernel is first built.
+            kernel_map: Optional kernel override dict.
+        """
         params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map")}
         for key, value in params.items():
             setattr(self, key, value)
@@ -119,6 +132,7 @@ class NSAFwdVarlenOp(UnmanifestedOp):
         offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
+        """Run the op on ``q``, ``k``, ``v``, ``block_indices``, ``block_counts``, ``offsets`` and ``token_indices``."""
         self.dtype = q.dtype
         tensors = (q, k, v, block_indices, block_counts, offsets, token_indices)
         return self._get_kernel(tensors, q.dtype)(*tensors)
@@ -141,6 +155,12 @@ class NSACmpFwdVarlenOp(UnmanifestedOp):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            tune: Whether to autotune, applied when a kernel is first built.
+            kernel_map: Optional kernel override dict.
+        """
         params = {
             "seq_num": seq_num,
             "c_seq_len": c_seq_len,
@@ -185,6 +205,7 @@ class NSACmpFwdVarlenOp(UnmanifestedOp):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the op on ``q``, ``k_cmp``, ``v_cmp``, ``offsets``, ``chunk_offsets`` and ``token_indices``."""
         self.dtype = q.dtype
         tensors = (q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
         return self._get_kernel(tensors, q.dtype)(*tensors)

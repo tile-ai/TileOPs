@@ -328,9 +328,11 @@ class MoeGroupedGemmNopadKernel(Kernel):
         tune: Whether to autotune.
 
     Example:
-        >>> kernel = MoeGroupedGemmNopadKernel(numel=16384, num_experts=256, N=4096, K=2048,
-        ...                               dtype=torch.bfloat16)
-        >>> C = kernel(A, B, true_sizes, true_offsets)  # [numel, N]
+        ```python linenums="1"
+        kernel = MoeGroupedGemmNopadKernel(numel=16384, num_experts=256, N=4096, K=2048,
+                                      dtype=torch.bfloat16)
+        C = kernel(A, B, true_sizes, true_offsets)  # [numel, N]
+        ```
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

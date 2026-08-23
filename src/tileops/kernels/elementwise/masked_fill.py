@@ -146,7 +146,7 @@ def _make_masked_fill_tensor_value_kernel(
             x: data tensor (length N).
             mask: bool mask packed as uint8 (length N).
             value: scalar fill value carried as a length-1 tensor (``forward``
-                reshapes the 0-dim Tensor to ``(1,)``).
+                reshapes the 0-dim Tensor to $[1]$).
 
         Output:
             out: ``out[i] = value[0] if mask[i] else x[i]``.

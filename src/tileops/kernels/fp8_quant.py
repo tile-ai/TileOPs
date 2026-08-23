@@ -90,7 +90,7 @@ def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, num_stages, block_m, *in
 
 
 class FP8QuantKernel(Kernel):
-    """Per-group fp8 quantization of a ``[B, S_kv, G, D]`` index tensor.
+    """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
     Args:
         batch: Batch size.

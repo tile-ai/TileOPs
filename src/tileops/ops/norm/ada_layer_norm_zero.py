@@ -24,7 +24,7 @@ class AdaLayerNormZeroFwdOp(Op):
     $$
 
     where *s* (scale), *d* (shift), and *g* (gate) are per-token tensors of
-    shape ``(M, N)``, pre-computed by the caller from a conditioning signal.
+    shape $[M \\times N]$, pre-computed by the caller from a conditioning signal.
     Linear projection from the conditioning input to scale/shift/gate is the
     caller's responsibility.
 
@@ -35,12 +35,6 @@ class AdaLayerNormZeroFwdOp(Op):
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
         Handles non-contiguous inputs and non-power-of-two hidden dims.
 
-    Args:
-        eps: Epsilon for numerical stability (manifest ``params.eps``).
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -54,6 +48,15 @@ class AdaLayerNormZeroFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.eps = eps
         self.target = target
         self.tune = tune

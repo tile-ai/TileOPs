@@ -283,8 +283,10 @@ class MoePermuteNopadKernel(Kernel):
             warning from ``Kernel.init_config``.
 
     Example:
-        >>> kernel = MoePermuteNopadKernel(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
-        >>> perm_h, offsets, sizes, expert_offset, fwd_idx = kernel(hidden_states, topk_ids)
+        ```python linenums="1"
+        kernel = MoePermuteNopadKernel(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
+        perm_h, offsets, sizes, expert_offset, fwd_idx = kernel(hidden_states, topk_ids)
+        ```
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

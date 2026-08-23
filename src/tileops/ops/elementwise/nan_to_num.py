@@ -14,25 +14,7 @@ from ._base import _PerDtypeKernels, _validate_scalar_param_repr
 
 
 class NanToNumFwdOp(_PerDtypeKernels, Op):
-    """NanToNum: replace NaN, +Inf, -Inf with specified values.
-
-    Args:
-        nan: Replacement for NaN (default 0.0).
-        posinf: Replacement for +Inf. Manifest default ``None`` resolves
-            to the largest finite value representable in the element type of the
-            call (matches ``torch.nan_to_num``). Explicit values
-            must also be representable in that dtype end-to-end; values
-            that fit only in the kernel's intermediate dtype (e.g. fp16
-            for fp8_e5m2) are rejected so the post-cast cannot resurface
-            them as Inf.
-        neginf: Replacement for -Inf. Manifest default ``None`` resolves
-            to the smallest (most negative) finite value representable
-            in the element type of the call.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-            the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
-    """
+    """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
     _op_name = "nan_to_num"
     _wrapped = None
@@ -47,6 +29,25 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            nan: Replacement for NaN (default 0.0).
+            posinf: Replacement for +Inf. Manifest default ``None`` resolves
+                to the largest finite value representable in the element type of the
+                call (matches ``torch.nan_to_num``). Explicit values
+                must also be representable in that dtype end-to-end; values
+                that fit only in the kernel's intermediate dtype (e.g. fp16
+                for fp8_e5m2) are rejected so the post-cast cannot resurface
+                them as Inf.
+            neginf: Replacement for -Inf. Manifest default ``None`` resolves
+                to the smallest (most negative) finite value representable
+                in the element type of the call.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune the kernel.
+        """
         self.nan = nan
         self.posinf = posinf
         self.neginf = neginf
@@ -108,4 +109,12 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
         return result
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+
+        Returns:
+            ``output``, as the manifest declares. Shape rules: ``output.shape == input.shape``.
+        """
         return type(self)._wrapped(input, self._instance_key)

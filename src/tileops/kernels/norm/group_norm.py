@@ -40,7 +40,7 @@ __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 
 def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
-    """Return the channel owning element ``(row, col)`` of the (M, D) reshape.
+    """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
 
     Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
     ``m % G``, and column ``d`` holds that group's local channel
@@ -265,8 +265,8 @@ class GroupNormKernel(Kernel):
 
         Args:
             x: Input of shape ``(N, C, *spatial)``, contiguous, on a CUDA device.
-            weight: Affine scale of shape ``(C,)`` on the same device.
-            bias: Affine shift of shape ``(C,)`` on the same device.
+            weight: Affine scale of shape $[C]$ on the same device.
+            bias: Affine shift of shape $[C]$ on the same device.
 
         Returns:
             Tensor shaped like *x*.
@@ -379,7 +379,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
 class GroupNormNoAffineKernel(Kernel):
     """GroupNorm forward kernel without affine scale/shift.
 
-    Computes ``y = (x - mean) * rstd`` row-wise for shape ``(M, D)`` reshaped
+    Computes ``y = (x - mean) * rstd`` row-wise for shape $[M \\times D]$ reshaped
     inputs. Shares the build/launch parameters and shared-memory layout of
     `GroupNormKernel`; only the output stage differs (no weight/bias
     multiply-add). Used by the no-affine variants of GroupNorm and

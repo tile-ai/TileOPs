@@ -32,12 +32,6 @@ class DaCumsumFwdOp(Op):
     Note: dt_out is cast to the target dtype for storage efficiency, but dA_cumsum
     is computed from the fp32 dt values before casting, ensuring numerical precision.
 
-    Args:
-        chunk_len:    Tokens per chunk.
-        dt_softplus:  Whether to apply softplus (with bypass for dt > 20) to dt.
-        dt_min:       Lower clamp bound applied after bias and softplus.
-        dt_max:       Upper clamp bound applied after bias and softplus.
-        tune:         Whether to autotune tile config on construction.
     """
 
     def __init__(
@@ -50,6 +44,15 @@ class DaCumsumFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_len:    Tokens per chunk.
+            dt_softplus:  Whether to apply softplus (with bypass for dt > 20) to dt.
+            dt_min:       Lower clamp bound applied after bias and softplus.
+            dt_max:       Upper clamp bound applied after bias and softplus.
+            tune:         Whether to autotune tile config on construction.
+        """
         declared = _dt_out_dtypes()
         if dtype not in declared:
             supported = ", ".join(str(dt) for dt in declared)
@@ -122,7 +125,7 @@ class DaCumsumFwdOp(Op):
         A_shape: tuple[int, ...],
         dt_bias_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``[B, H, NC, chunk_len]``, with ``NC = S // chunk_len``."""
+        """Manifest ``outputs``: $[B \\times H \\times NC \\times chunk\\_len]$, with ``NC = S // chunk_len``."""
         b, s, h = dt_shape
         chunked = (b, h, s // self.chunk_len, self.chunk_len)
         return {"dt_out": chunked, "dA_cumsum": chunked}

@@ -46,11 +46,6 @@ class GLAFwdOp(Op):
 
     Layout: BTHD (batch, seq_len, heads, dim).
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        scale: Query scale factor (default: dim_k**-0.5).
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -60,6 +55,14 @@ class GLAFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            scale: Query scale factor (default: dim_k**-0.5).
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.seq_len = None
         self.heads = None
@@ -179,11 +182,6 @@ class GLABwdOp(Op):
 
     Layout: BTHD (batch, seq_len, heads, dim).
 
-    Args:
-        chunk_size: Chunk size for chunked linear attention.
-        scale: Query scale factor (default: dim_k**-0.5).
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
     """
 
     def __init__(
@@ -193,6 +191,14 @@ class GLABwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            chunk_size: Chunk size for chunked linear attention.
+            scale: Query scale factor (default: dim_k**-0.5).
+            kernel_map: Optional kernel overrides.
+            tune: Whether to autotune kernels.
+        """
         self.batch = None
         self.seq_len = None
         self.heads = None

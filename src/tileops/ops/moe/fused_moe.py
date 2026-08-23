@@ -33,23 +33,6 @@ class FusedMoe(Op):
     The concrete manifest identity (`FusedMoeFwdOp`) subclasses this; the
     routing-and-expert pipeline below is shared with `SharedFusedMoE`.
 
-    Args:
-        num_tokens: T -- number of input tokens.
-        num_experts: E -- total number of experts (global count).
-        top_k: K -- experts selected per token.
-        hidden_size: H -- model hidden dimension.
-        ffn_size: F -- per-expert intermediate dimension.
-        scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
-        renormalize: Renormalize top-k weights to sum to 1.
-        routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
-        expert_map: [E_global] int32 for Expert Parallel local filtering.
-        num_experts_local: Number of experts this rank owns. Required with
-            `expert_map` and rejected without it: it sizes the expert
-            pipeline's kernels, which are built here, and reading it off the
-            map would mean a device read at construction.
-        prepare_finalize: Override the PrepareAndFinalize implementation.
-        experts: Override the Experts implementation.
-        kernel_map: Override the dispatched kernel map.
     """
 
     def __init__(
@@ -70,6 +53,26 @@ class FusedMoe(Op):
         *,
         activation: str = "silu_and_mul",
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            num_tokens: T -- number of input tokens.
+            num_experts: E -- total number of experts (global count).
+            top_k: K -- experts selected per token.
+            hidden_size: H -- model hidden dimension.
+            ffn_size: F -- per-expert intermediate dimension.
+            scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
+            renormalize: Renormalize top-k weights to sum to 1.
+            routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
+            expert_map: [E_global] int32 for Expert Parallel local filtering.
+            num_experts_local: Number of experts this rank owns. Required with
+                `expert_map` and rejected without it: it sizes the expert
+                pipeline's kernels, which are built here, and reading it off the
+                map would mean a device read at construction.
+            prepare_finalize: Override the PrepareAndFinalize implementation.
+            experts: Override the Experts implementation.
+            kernel_map: Override the dispatched kernel map.
+        """
         if (expert_map is None) != (num_experts_local is None):
             raise ValueError(
                 "expert_map and num_experts_local go together: the map carries the "
@@ -175,6 +178,7 @@ class FusedMoe(Op):
         w_down: torch.Tensor,  # [E, H, F]
         correction_bias: Optional[torch.Tensor] = None,  # [E] float32
     ) -> torch.Tensor:  # [T, H]
+        """Run the op on ``hidden_states``, ``gating_output``, ``w_gate_up``, ``w_down`` and ``correction_bias``."""
         topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
         # The roofline counts the bias bytes of the call that ran, so this is
         # set once routing succeeded. Keep the shape, not the tensor: the op
@@ -260,6 +264,20 @@ class FusedMoeFwdOp(FusedMoe):
         *,
         activation: str = "silu_and_mul",
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            num_tokens: Manifest ``params.num_tokens``, ``int``.
+            num_experts: Manifest ``params.num_experts``, ``int``.
+            top_k: Manifest ``params.top_k``, ``int``.
+            hidden_size: Manifest ``params.hidden_size``, ``int``.
+            ffn_size: Manifest ``params.ffn_size``, ``int``.
+            scoring_func: Manifest ``params.scoring_func``, ``str``, default ``'softmax'``.
+            renormalize: Manifest ``params.renormalize``, ``bool``, default ``False``.
+            routed_scaling_factor: Manifest ``params.routed_scaling_factor``, ``float``, default ``1.0``.
+            kernel_map: Optional kernel override dict.
+            activation: Manifest ``params.activation``, ``str``, default ``'silu_and_mul'``.
+        """
         super().__init__(
             num_tokens=num_tokens,
             num_experts=num_experts,

@@ -16,7 +16,7 @@ Forward returns the normalized output only (manifest contract); ``mean`` and
 backward pass can recompute on the original input.
 
 Input tensors accept any shape ``(N, C, *spatial)``; the kernel moves them into its
-``(C, L)`` layout. ``L = N * prod(spatial)`` must be divisible by the kernel's block_l
+$[C \\times L]$ layout. ``L = N * prod(spatial)`` must be divisible by the kernel's block_l
 (chosen automatically by the kernel's default_config).
 """
 
@@ -60,16 +60,6 @@ class BatchNormFwdOp(Op):
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
-    Args:
-        training: Whether the batch statistics come from this call's input, which is also
-            what decides whether the running statistics are written (manifest
-            ``params.training``).
-        momentum: Running-stat update momentum (used in training mode).
-        eps: Epsilon for numerical stability.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -85,6 +75,19 @@ class BatchNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            training: Whether the batch statistics come from this call's input, which is also
+                what decides whether the running statistics are written (manifest
+                ``params.training``).
+            momentum: Running-stat update momentum (used in training mode).
+            eps: Epsilon for numerical stability.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.dtype: Optional[torch.dtype] = None
         self.training = training
         self.eps = eps
@@ -220,15 +223,15 @@ class BatchNormFwdOp(Op):
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
-            running_mean: Running mean of shape ``(C,)`` on the same CUDA
+            running_mean: Running mean of shape $[C]$ on the same CUDA
                 device as ``x``, with dtype ``torch.float32``. Updated
                 in-place during training.
-            running_var: Running variance of shape ``(C,)`` on the same
+            running_var: Running variance of shape $[C]$ on the same
                 CUDA device as ``x``, with dtype ``torch.float32``. Updated
                 in-place during training.
-            weight: Affine scale (gamma) of shape ``(C,)`` on the same CUDA
+            weight: Affine scale (gamma) of shape $[C]$ on the same CUDA
                 device as ``x``.
-            bias: Affine shift (beta) of shape ``(C,)`` on the same CUDA
+            bias: Affine shift (beta) of shape $[C]$ on the same CUDA
                 device as ``x``.
 
         Returns:
@@ -248,11 +251,6 @@ class BatchNormBwdOp(Op):
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
-    Args:
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
@@ -265,6 +263,14 @@ class BatchNormBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: If ``True``, autotune tile configurations.
+        """
         self.dtype: Optional[torch.dtype] = None
         self.target = target
         self.tune = tune
@@ -385,18 +391,18 @@ class BatchNormBwdOp(Op):
         Args:
             grad_out: Upstream gradient of shape ``(N, C, *spatial)``.
             x: Original input tensor of shape ``(N, C, *spatial)``.
-            weight: Affine scale (gamma) of shape ``(C,)`` on the same CUDA
+            weight: Affine scale (gamma) of shape $[C]$ on the same CUDA
                 device as ``x``. Internally cast to ``torch.float32`` for the
                 backward kernel.
             mean: Per-channel batch mean from the forward pass, shape
                 ``(C,)``. Expected as ``torch.float32``.
             rstd: Per-channel reciprocal std from the forward pass,
-                shape ``(C,)``. Expected as ``torch.float32``.
+                shape $[C]$. Expected as ``torch.float32``.
 
         Returns:
             Tuple of ``(grad_x, grad_weight, grad_bias)`` where ``grad_x``
-            has the same shape as ``x``, ``grad_weight`` has shape ``(C,)``,
-            and ``grad_bias`` has shape ``(C,)``.
+            has the same shape as ``x``, ``grad_weight`` has shape $[C]$,
+            and ``grad_bias`` has shape $[C]$.
         """
         return _batch_norm_bwd_wrapped(grad_out, x, weight, mean, rstd, self._instance_key)
 
