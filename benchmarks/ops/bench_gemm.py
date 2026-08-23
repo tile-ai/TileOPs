@@ -291,7 +291,8 @@ def _gemm_args(w: dict, dtype: torch.dtype) -> tuple:
 
 
 def _gemm_fp8_args(w: dict, dtype: torch.dtype) -> tuple:
-    return (w["m"], w["n"], w["k"], w["scale_mode"], dtype)
+    """``(m, n, k, scale_mode, bias, dtype)``; ``bias_shape`` selects the bias epilogue."""
+    return (w["m"], w["n"], w["k"], w["scale_mode"], bool(w.get("bias_shape")), dtype)
 
 
 def _gemm_w4a16_args(w: dict, dtype: torch.dtype) -> tuple:
