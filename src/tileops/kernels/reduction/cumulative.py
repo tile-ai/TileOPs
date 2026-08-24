@@ -61,11 +61,8 @@ _DEFAULT_BLOCK_N: int = 128
 # so successive rows start in different banks → conflict free.
 _SMEM_PAD: int = 8
 
-# Elements one thread scans in the whole-row kernel, held in registers. Wider chunks
-# mean fewer threads competing for the staging buffer, and the gain runs well past the
-# point where a thread's chunk stops fitting a register vector: bandwidth measured on
-# H200 at 2048x4096 fp16 is 3.44 TB/s at 64, 3.21 at 32, 3.02 at 16, 2.05 at 8. At 128
-# it falls back to 3.30, so the peak is here.
+# Elements one thread scans in the whole-row kernel, held in registers. Measured on H200
+# at 2048x4096 fp16: 3.44 TB/s at 64, 3.30 at 128, 3.21 at 32, 3.02 at 16, 2.05 at 8.
 _ROW_SCAN_CHUNK: int = 64
 
 # Columns of shared-memory padding per thread chunk. Each thread reads its own chunk

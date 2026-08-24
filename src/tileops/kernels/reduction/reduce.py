@@ -863,9 +863,8 @@ class ReduceKernel(Kernel):
     Supports SM80+ architectures. Uses 256-element alignment for shared memory
     copies. Dispatches to simple or Welford kernel based on op_kind.
 
-    When ``N_padded`` exceeds ``MAX_SINGLE_TILE_COLS``, tiled kernel variants
-    are used that iterate over N in chunks of ``tile_n`` columns, avoiding the
-    TileLang vectorizer limit at the 32768-column boundary.
+    A row that exceeds any of the capacities ``BlockConfigPlanner`` tracks goes to a
+    tiled variant, which iterates over N in chunks of ``tile_n`` columns.
 
     Boundary handling for non-aligned N is performed inside the kernel via
     masked loads with identity-element fills, so no host-side ``F.pad`` is

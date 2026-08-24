@@ -47,13 +47,11 @@ __all__ = [
 # shared memory instructions.  Sub-categories may override this default.
 DEFAULT_ALIGNMENT: int = 256
 
-# Widest single fragment/shared-memory tile the reduction kernels plan.
-# The two hard ceilings, shared memory and the register file, are checked
-# separately; this one bounds the tile at the widest width measured to help.
-# It has to be the power of two and not a value below it: a cap under a
-# power-of-two row width splits a row of exactly that width into two tiles, and
-# on H200 counting the nonzeros of 32 rows of 32768 fp16 reads 0.649 TB/s in one
-# tile against 0.493 in two.
+# Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
+# and the register file are checked separately. A cap below a power-of-two row width
+# splits a row of exactly that width in two, which is what fixes it here rather than
+# lower: on H200, counting the nonzeros of 32 rows of 32768 fp16 reads 0.649 TB/s in
+# one tile against 0.493 in two.
 MAX_SINGLE_TILE_COLS: int = 32768
 
 # Default shared memory budget per SM (48 KiB) used to compute the maximum

@@ -185,8 +185,8 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
 def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int):
     """Build a tiled TileLang any/all/count_nonzero kernel.
 
-    Iterates over the reduction dimension in chunks of ``tile_n`` columns,
-    avoiding TileLang's single-fragment column limit at 32768 columns.
+    Iterates over the reduction dimension in chunks of ``tile_n`` columns, for the
+    rows a single pass cannot hold.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
