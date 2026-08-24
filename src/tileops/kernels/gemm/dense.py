@@ -113,9 +113,18 @@ class GemmFp8BlockScaledKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # Block scaling keeps both the unscaled WGMMA fragment and the scaled
+        # accumulator live. Narrow one output axis on the register-bound prefill
+        # shapes where the additional CTAs recover occupancy.
+        if (self.m, self.n, self.k) == (4096, 2112, 7168):
+            block_m, block_n = 128, 64
+        elif (self.m, self.n, self.k) == (4096, 4096, 7168):
+            block_m, block_n = 64, 128
+        else:
+            block_m, block_n = 128, 128
         return {
-            "block_m": 128,
-            "block_n": 128,
+            "block_m": block_m,
+            "block_n": block_n,
             "block_k": 128,
             "num_stages": 3,
             "threads": 256,

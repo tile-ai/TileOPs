@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
@@ -400,6 +401,41 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     op = GemmFp8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
     assert op.kernel.__class__.__name__ == "GemmFp8BlockScaledKernel"
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_tile"),
+    [
+        pytest.param(
+            (4096, 2112, 7168),
+            (128, 64),
+            marks=pytest.mark.smoke,
+            id="prefill-gate-up",
+        ),
+        pytest.param(
+            (4096, 4096, 7168),
+            (64, 128),
+            marks=pytest.mark.full,
+            id="prefill-attn-proj",
+        ),
+        pytest.param(
+            (4096, 7168, 2048),
+            (128, 128),
+            marks=pytest.mark.full,
+            id="prefill-down-default",
+        ),
+    ],
+)
+def test_gemm_fp8_block128_default_config(
+    shape: tuple[int, int, int], expected_tile: tuple[int, int]
+) -> None:
+    kernel = GemmFp8BlockScaledKernel(
+        *shape,
+        dtype=torch.float8_e4m3fn,
+        out_dtype=torch.bfloat16,
+    )
+
+    assert (kernel.config["block_m"], kernel.config["block_n"]) == expected_tile
 
 
 @pytest.mark.smoke
