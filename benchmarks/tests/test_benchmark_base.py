@@ -1,4 +1,5 @@
 import ast
+import statistics
 from pathlib import Path
 
 import pytest
@@ -224,7 +225,9 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
 def test_a_copy_is_read_only_where_the_case_asks_for_copies():
     """A device-to-device copy is device work, and out of the reading unless asked for.
 
-    ``Tensor.clone`` is the whole of it: no kernel, one copy.
+    ``Tensor.clone`` is the whole of it: no kernel, one copy. A case that does not ask
+    for copies has nothing left to attribute, which is the same refusal as a call that
+    never reached the device.
     """
     x = torch.empty(8 * 1024 * 1024, device="cuda", dtype=torch.float16)
 
@@ -234,6 +237,30 @@ def test_a_copy_is_read_only_where_the_case_asks_for_copies():
     samples = bench_kernel(x.clone, count_copies=True)
     assert all(s.n_kernels == 1 for s in samples)
     assert all(s.device_busy_ms > 0 for s in samples)
+    assert all(s.uncounted_copy_ms == 0 for s in samples)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_a_copy_left_out_of_the_reading_is_reported_beside_it():
+    """A call that both launches and copies reads without the copy, and says how much."""
+    x = torch.empty(8 * 1024 * 1024, device="cuda", dtype=torch.float16)
+
+    def clone_then_scale():
+        y = x.clone()
+        y.mul_(2)
+        return y
+
+    samples = bench_kernel(clone_then_scale)
+    assert all(s.n_kernels == 1 for s in samples)
+    assert all(s.uncounted_copy_ms > 0 for s in samples)
+
+    counted = bench_kernel(clone_then_scale, count_copies=True)
+    assert all(s.n_kernels == 2 for s in counted)
+    assert all(s.uncounted_copy_ms == 0 for s in counted)
+    assert statistics.median(s.device_busy_ms for s in counted) > statistics.median(
+        s.device_busy_ms for s in samples
+    )
 
 
 @pytest.mark.smoke

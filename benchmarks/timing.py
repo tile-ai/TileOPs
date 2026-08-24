@@ -89,14 +89,6 @@ class CUPTIError(RuntimeError):
     """The CUPTI collector is unavailable or could not be operated."""
 
 
-class UncountedCopyError(RuntimeError):
-    """The timed call copied on the device and its case does not count copies.
-
-    Not a CUPTI failure: the instrument worked and the case has to say whether the copy
-    is part of computing the result. Raised outside the fallback so no setting hides it.
-    """
-
-
 def _load_cupti():
     global _CUPTI
     if _CUPTI is not None:
@@ -350,7 +342,13 @@ class Sample(NamedTuple):
     n_kernels: int | None
     """Kernels attributed to the call, or None when the timer cannot see them.
 
-    A copy counts as one where the row asked for copies; see ``count_copies``.
+    A copy counts as one where the case asked for copies; see ``count_copies``.
+    """
+    uncounted_copy_ms: float = 0.0
+    """Device time in copies the call issued and this case left out of the reading.
+
+    Zero for a case that counts copies, and for one that issues none. Anything else is
+    a reading that omits work: see ``count_copies``.
     """
 
 
@@ -397,8 +395,9 @@ def _attributed_samples(
     the record was taken and then discarded, which is what ``dropped`` distinguishes.
 
     A device-to-device copy the call issued is device work like any other. Where the case
-    does not count copies it is refused rather than dropped, because a call that computes
-    part of its result with a copy would otherwise read as faster than it is.
+    does not count copies it is left out of ``device_busy_ms`` and reported in
+    ``uncounted_copy_ms``, so a call that computes part of its result with a copy is
+    visibly reading faster than it is rather than silently.
     """
     claimed: dict[int, list[dict]] = {}
     orphans = []
@@ -412,15 +411,20 @@ def _attributed_samples(
         else:
             claimed.setdefault(iteration, []).append(kernel)
 
+    uncounted: dict[int, float] = {}
     if not count_copies:
-        copied = [k for group in claimed.values() for k in group if k.get("is_copy")]
-        if copied:
-            raise UncountedCopyError(
-                f"{len(copied)} device-to-device copies belong to the timed call but "
-                f"this case does not count them, so its reading would leave that work "
-                f"out. Pass count_copies=True to compare, or bench_kernel, for a case "
-                f"where a copy is part of computing the result."
-            )
+        for iteration, group in list(claimed.items()):
+            copies = [k for k in group if k.get("is_copy")]
+            if not copies:
+                continue
+            uncounted[iteration] = _kernel_busy_us(copies) * 1e-3
+            kept = [k for k in group if not k.get("is_copy")]
+            # An iteration that only copied has nothing left to time, which is the
+            # same as one that never reached the device.
+            if kept:
+                claimed[iteration] = kept
+            else:
+                del claimed[iteration]
 
     unmeasured = [i for i in range(n_repeat) if i not in claimed]
     if orphans or unmeasured:
@@ -455,6 +459,7 @@ def _attributed_samples(
             device_busy_ms=_kernel_busy_us(claimed[i]) * 1e-3,
             latency_ms=_kernel_span_us(claimed[i]) * 1e-3,
             n_kernels=len(claimed[i]),
+            uncounted_copy_ms=uncounted.get(i, 0.0),
         )
         for i in range(n_repeat)
     ]

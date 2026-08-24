@@ -179,6 +179,10 @@ class BenchmarkBase(Generic[W], ABC):
             "gap_ms": latency - busy,
             "n_samples": len(samples),
         }
+        copy_ms = statistics.median(s.uncounted_copy_ms for s in samples)
+        if copy_ms > 0:
+            # A row whose reading omits work says so in the row, next to the number.
+            result["uncounted_copy_ms"] = copy_ms
         counts = [s.n_kernels for s in samples]
         if all(c is not None for c in counts):
             # The largest count observed: a median would round a call that varies
