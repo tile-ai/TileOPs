@@ -299,8 +299,8 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
     [
         (64, 16384, torch.float32, "row_scan"),
         (64, 32768, torch.bfloat16, "row_scan"),
-        (64, 8200, torch.float32, "parallel"),  # a padded width the row scan declines
-        (64, 8200, torch.bfloat16, "parallel"),  # same, at the other element width
+        (64, 8200, torch.float32, "parallel_scan"),  # a padded width the row scan declines
+        (64, 8200, torch.bfloat16, "parallel_scan"),  # same, at the other element width
     ],
 )
 def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: str) -> None:
@@ -323,9 +323,8 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     # The kernel the call built, not one refetched by a key: the key is a read-back of
     # the arguments and says nothing about which backend was chosen.
     (kernel,) = op.built_kernels("cumulative_fwd").values()
-    chosen = "row_scan" if kernel.use_row_scan else "parallel" if kernel.use_parallel else "tiled"
-    assert chosen == backend, f"({M}, {N}): took {chosen}"
-    if chosen == "parallel":
+    assert kernel.strategy == backend, f"({M}, {N}): took {kernel.strategy}"
+    if kernel.strategy == "parallel_scan":
         assert kernel.config["block_n"] == (256 if N > 16384 else 128)
 
 
