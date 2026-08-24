@@ -29,41 +29,18 @@ from .heuristics import SWAP_AB_MPAD, best_config, gemv_config, small_batch_conf
 # WGMMA (``wait_wgmma(1)``) and frees that slot while the WGMMA it just issued
 # stays in flight, overlapping the next ``barrier_wait``.
 #
-# Three details are load-bearing and were each paid for in measurement; changing
-# any of them back needs new numbers:
+# ``ps*[0]`` holds the previous slot in a register; recomputing it puts a second
+# modulo in the hot loop and measures worse. ``_gemm_coop2_kernel`` is the one
+# kernel that needs its own ``gi_*`` counters — its persistent wave loop carries
+# the ring across tiles, so the ring index outlives one tile's ``ki``. The
+# kernels differ on where they fence ``warpgroup_fence_operand``; no form has
+# changed a result here.
 #
-# - ``ps*[0]`` carries the previous slot in a register. Recomputing it as
-#   ``(ki - 1) % num_stages`` adds a second modulo to the hot loop and cost
-#   4-13% on the coop2 rows (worst at ``num_stages=5``: prefill-gate-up
-#   0.904 -> 0.803; k-dominant 1.021 -> 0.886).
-# - Slot indices are dynamic. Unrolling the dispatch to hand each op a
-#   compile-time index (``for s in range(num_stages): if slot == s:``) was
-#   believed to be required by the timeline tracer; it is not — dynamic
-#   indexing decodes to the same traced timeline event-for-event and runs
-#   2-3% faster.
-# - ``_gemm_coop2_kernel`` is the only kernel that needs its own ``gi_*``
-#   counters: its persistent wave loop carries the ring across tiles, so the
-#   ring index outlives one tile's ``ki``. Elsewhere such a counter is
-#   identically equal to ``ki``.
-#
-# ``warpgroup_fence_operand`` placement is *not* settled and the kernels below
-# differ on it: the single-consumer pair and coop2s fence inside the
-# deferred-release branch, the two coop2 kernels only after the final drain.
-# Neither form has ever changed a result here, and the one attempt to unify them
-# changed ``ps*[0]`` in the same run, so it separated nothing. Settling it needs
-# a single-axis measurement at coop2's accumulator width (``nr = 128`` at
-# ``block_n = 256``), where per-iteration cost is largest.
-#
-# Named-barrier ids for the per-warpgroup epilogues of the 2-consumer kernels.
-# TileLang allocates its own ids for the syncs it inserts around a
-# fragment-to-shared copy, and it hands them out from the bottom: with 4 and 5
-# here it took 3 for one consumer and 4 for the other, so that consumer's
-# implicit barrier aliased the other's explicit one and could release it early
-# -- a store could then read a half-written ``c_smem``. Five of the six shipped
-# coop2 configs aliased that way (``compute-sanitizer --tool synccheck`` flags
-# it; results stayed right only because the two warpgroups run near lockstep).
-# Keep these clear of the range TileLang allocates from, and re-run synccheck
-# over the generated source after touching either epilogue.
+# Named-barrier ids for the 2-consumer epilogues must stay clear of the range
+# TileLang allocates from for the syncs it inserts around a fragment-to-shared
+# copy: it hands those out from the bottom, so ids 4 and 5 aliased them and one
+# warpgroup could release the other's barrier. Re-run ``compute-sanitizer
+# --tool synccheck`` over the generated source after touching either epilogue.
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
@@ -543,9 +520,8 @@ def _gemm_kernel(
         # constraint). It also only pays off on multi-wave grids: T.copy's
         # store drains via tma_store_wait, and that drain is hidden by the
         # next wave's compute. On a single wave it sits exposed on the
-        # critical path and loses to fire-and-forget scalar stores (measured
-        # on H200: decode shapes -13..-22%). Resolved at trace time; the
-        # fallback keeps the supported-shape envelope unchanged.
+        # critical path and loses to fire-and-forget scalar stores. Resolved at
+        # trace time; the fallback serves the same shapes.
         grid_size = -(-n // block_n) * -(-m // block_m)
         tma_epilogue = (n * 2) % 16 == 0 and grid_size > sm_count
 
@@ -909,14 +885,13 @@ def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") 
             w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
             c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
-            # Flat 1-D tiling over all m*n outputs. The 2-D (block_m, block_n)
-            # tiling launched only ceil(m/bm)*ceil(n/bn) CTAs — e.g. 34 for a
-            # 128x2112 output, ~26% of an H200's 132 SMs, so the reduce ran
-            # memory-starved. A flat grid sizes CTAs to the element count, so
-            # the reduce runs at full occupancy; adjacent threads touch
-            # adjacent (gi, gj), keeping the workspace reads and C write
-            # coalesced. ``elems_per_cta=1024`` (264 CTAs for 128x2112)
-            # measured fastest across {256..4096}.
+            # Flat 1-D tiling over all m*n outputs: a 2-D (block_m, block_n)
+            # grid sizes itself to the tile count, which on a skinny output is a
+            # fraction of the SMs and leaves the reduce memory-starved. Sizing
+            # CTAs to the element count runs it at full occupancy, and adjacent
+            # threads touch adjacent (gi, gj), so workspace reads and the C write
+            # stay coalesced. ``elems_per_cta=1024`` measured fastest of
+            # {256..4096}.
             total = m * n
             with T.Kernel(T.ceildiv(total, elems_per_cta), threads=256) as bx:
                 base = bx * elems_per_cta
@@ -1930,45 +1905,17 @@ class GemmKernel(Kernel):
         self.init_config(config, tune)
 
     # Per-shape tuned overrides (H200), keyed by
-    # ``(m, n, k, trans_a, trans_b, dtype_str)``. Exact hits are authoritative;
+    # ``(m, n, k, trans_a, trans_b, dtype_str)``. An exact hit is authoritative;
     # every other shape falls to the analytic selector (see ``default_config``).
-    # Entries without a structure flag merge over the modal base config.
-    # Entries are locked in only when a per-shape config beats the selector's
-    # pick reproducibly (small-M kernels are event-timing-noisy; a marginal
-    # win that flips sign across runs is left unpinned).
-    #
-    # Gains below are CUPTI kernel-only + L2-flush (the acceptance protocol);
-    # small-M weight matrices fit in L2, so an unflushed event loop
-    # over-reports them badly.
-    #   square-1k: 64x128x128 doubles the M-tile count over the modal 128-row
-    #     tile and deepens block_k reuse.
-    #
-    # Large-M NT prefill shapes route to the 2-consumer persistent kernel
-    # (``coop2``: 1 producer + 2 math warpgroups, split-A / shared-B, static-wave
-    # persistent loop + grouped tile swizzle), matching cuBLAS's Hopper
-    # cooperative layout (see ``_gemm_coop2_kernel``). Fields: block_n, block_k,
-    # num_stages, group_size_m, stage_n (epilogue SMEM chunk width; 0 = full
-    # block_n). block_m is fixed at 128 (two 64-row consumers). The entries
-    # below only pin per-shape tuning:
-    #   prefill-attn / k-dominant / wide-n: ns=3 g=16 (deepest full-epilogue
-    #     ring bn=256/bk=64 allows in 227 KB SMEM).
-    #   prefill-down (shallow K=2048): block_k=64 with a half-width (stage_n=128)
-    #     epilogue. Chunking the store halves the C staging, which buys the
-    #     fourth ring stage inside 227 KB; that beats spending the same SMEM on
-    #     a bk=32 ring deep enough to reach ns=6 (0.921-0.927x vs 0.910-0.916x,
-    #     three independent rounds). stage_n=32 measures the same as 128 — what
-    #     pays is freeing the SMEM, not the chunk width.
-    #     The same swap on wide-n is a mirage: it read +1.8pp in one round and
-    #     -1.5pp in two more, on a row where cuBLASLt's algorithm choice swings
-    #     the baseline 394-435 us between rounds. wide-n keeps ns=3/stage_n=0.
-    #   gate-up (N=2112): block_n=192 (2112=192*11, no tail waste — bn=256
-    #     wastes the 8.25th tile and drops to 0.68x); ns=5, stage_n=96.
+    # An entry without a structure flag merges over the modal base config, and an
+    # entry is pinned only where a per-shape config beats the selector's pick
+    # reproducibly under the acceptance protocol (CUPTI kernel-only, L2 flushed).
+    # Each comment below states the geometry that decides the entry; what it was
+    # measured against is in the commit that added it.
     _TUNED_CONFIGS: dict = {
-        # decode-gate-up (M=128, large K=7168): the 2-consumer split-K mainloop
-        # (bn=64 -> 33 n-tiles x split_k=4 = 132 CTAs, one full wave) beats the
-        # single-consumer split-K. 0.98x -> 1.04x cuBLAS (K is long enough to
-        # amortize the reduce). Small-K decode shapes (decode-down) stay on the
-        # single-consumer path — there the K-slice is too short to amortize.
+        # decode-gate-up: bn=64 gives 33 n-tiles, and split_k=4 fills exactly one
+        # wave at 132 CTAs. K is long enough here to amortize the reduce pass;
+        # the shallow-K decode shapes below are not.
         (128, 2112, 7168, False, True, "bfloat16"): {
             "coop2_splitk": True,
             "block_n": 64,
@@ -1976,10 +1923,8 @@ class GemmKernel(Kernel):
             "num_stages": 4,
             "split_k": 4,
         },
-        # square-1k (NN): the single-tile 2-consumer kernel (``coop2s``) is the
-        # only structure that clears the 0.87x ceiling the single-consumer tile
-        # menu tops out at — it reproduces cuBLAS's own 384-thread / 128x64
-        # layout on this shape. 0.82x -> 0.94x. See ``_gemm_coop2s_kernel``.
+        # square-1k: too small for a persistent wave, so ``_gemm_coop2s_kernel``
+        # takes it — one tile, two consumers, cuBLAS's own 384-thread 128x64 shape.
         (1024, 1024, 1024, False, False, "float16"): {
             "coop2s": True,
             "block_n": 64,
@@ -1992,16 +1937,11 @@ class GemmKernel(Kernel):
             "block_k": 128,
             "num_stages": 4,
         },
-        # decode-down family (skinny-M NT, n=7168, k=2048): the non-warp-
-        # specialized pipelined kernel (``simple``) wins the short-mainloop
-        # regime (16 K-iters, ~1 CTA wave) by ~4% over the WS kernel — the
-        # producer warpgroup's fixed costs outweigh its deeper ring there.
-        # Verified per-rep interleaved, two independent fresh-build rounds.
-        # m=128: pairing the two M tiles per N column into a (1, 2) cluster
-        # co-schedules their B streams (second read resolves in L2), worth a
-        # further ~2.5% (15.3 -> 14.9 us; cuBLAS nvjet gets its extra margin
-        # from TMA multicast, which TileLang cannot express). Swizzle is off
-        # because TileLang rejects the annotation for clusters on Y.
+        # decode-down family: 16 K-iterations over ~1 CTA wave is too short a
+        # mainloop to repay a producer warpgroup, so these take the pipelined
+        # ``simple`` kernel. At m=128 a (1, 2) cluster pairs the two M tiles
+        # sharing an N column so the second B read resolves in L2; swizzle stays
+        # off, TileLang rejecting the annotation for clusters on Y.
         (128, 7168, 2048, False, True, "bfloat16"): {
             "simple": True,
             "block_m": 64,
@@ -2107,9 +2047,7 @@ class GemmKernel(Kernel):
     # ``default_config`` on the shapes those paths win. ``tune=True``
     # therefore falls back to ``default_config``; per-shape tuning runs the
     # CUPTI kernel-only protocol offline and pins winners in
-    # ``_TUNED_CONFIGS`` (measurement note there). TileLang's event backend
-    # does flush L2 before each timed rep; the residual event-vs-CUPTI delta
-    # is launch-gap wall time and mean aggregation (µs-scale).
+    # ``_TUNED_CONFIGS``.
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Simple (non-warp-specialized) pipelined path for short-mainloop
