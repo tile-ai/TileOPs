@@ -34,7 +34,6 @@ class EqFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
@@ -54,7 +53,6 @@ class NeFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
@@ -74,7 +72,6 @@ class GtFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
@@ -94,7 +91,6 @@ class LtFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
@@ -114,7 +110,6 @@ class GeFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
@@ -134,7 +129,6 @@ class LeFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):

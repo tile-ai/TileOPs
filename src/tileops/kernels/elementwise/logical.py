@@ -26,7 +26,6 @@ class LogicalAndFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
@@ -48,7 +47,6 @@ class LogicalOrFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
-    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):

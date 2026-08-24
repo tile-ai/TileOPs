@@ -25,6 +25,30 @@ from tileops.kernels.elementwise import (
     SiluAndMulFwdKernel,
 )
 
+# Regression: a parametric kernel's block extent has to follow the config it is given
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("threads", "npt"),
+    [(128, 4), (256, 4), (512, 8), (1024, 8)],
+)
+def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -> None:
+    """Every element is written whatever ``threads * npt`` the config asks for.
+
+    The builder is handed the default config and the JIT the actual one, so a block
+    extent taken from the builder's arguments leaves part of each block untouched.
+    """
+    n = 4096 * 7 + 13
+    x = torch.randn(n, device="cuda", dtype=torch.float16)
+    kernel = LeakyReluFwdKernel(
+        n, torch.float16, 0.01, config={"threads": threads, "num_per_thread": npt}
+    )
+    torch.testing.assert_close(
+        kernel.forward(x), torch.nn.functional.leaky_relu(x, 0.01), rtol=1e-3, atol=1e-3
+    )
+
+
 # Fix 1: npt 3-way check in default_config
 
 
@@ -122,45 +146,6 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
     ):
         kernel = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16)
     assert kernel.output_dtype == torch.float16
-
-
-@pytest.mark.full
-def test_unary_default_config_preserves_strategy_npt_split():
-    """Unary kernels should keep the explicit_parallel/register_copy npt split."""
-    with (
-        patch.object(ReluFwdKernel, "_build_kernel", return_value=None),
-        patch.object(ReluFwdKernel, "init_config"),
-    ):
-        explicit = ReluFwdKernel(
-            N_total=1024,
-            dtype=torch.float16,
-            config={"strategy": "explicit_parallel"},
-        )
-        register = ReluFwdKernel(
-            N_total=1024,
-            dtype=torch.float16,
-            config={"strategy": "register_copy"},
-        )
-    assert explicit.default_config["num_per_thread"] == 4
-    assert register.default_config["num_per_thread"] == 8
-
-
-@pytest.mark.full
-def test_binary_default_config_preserves_strategy_npt_split():
-    """Binary kernels should keep the explicit_parallel/register_copy npt split."""
-    common_kwargs = {
-        "a_shape": (1024,),
-        "b_shape": (1024,),
-        "dtype": torch.float16,
-    }
-    with (
-        patch.object(AddFwdKernel, "_build_kernel", return_value=None),
-        patch.object(AddFwdKernel, "init_config"),
-    ):
-        explicit = AddFwdKernel(config={"strategy": "explicit_parallel"}, **common_kwargs)
-        register = AddFwdKernel(config={"strategy": "register_copy"}, **common_kwargs)
-    assert explicit.default_config["num_per_thread"] == 4
-    assert register.default_config["num_per_thread"] == 8
 
 
 @pytest.mark.full

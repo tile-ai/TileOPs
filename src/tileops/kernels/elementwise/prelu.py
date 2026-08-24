@@ -30,13 +30,14 @@ def _make_prelu_kernel(
     improve memory coalescing for the main data path.
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
         accum = _fp8_accum_dtype_str()
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -63,6 +64,8 @@ def _make_prelu_kernel(
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),

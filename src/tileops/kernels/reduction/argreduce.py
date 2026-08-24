@@ -6,33 +6,37 @@ row length; input layout remains the responsibility of the reduction Op layer.
 """
 
 import functools
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import restore_reduced, rows_for_axes
+from tileops.kernels.reduction._primitives import (
+    FRAGMENT_ELEMS_PER_THREAD,
+    SHARED_MEMORY_BUDGET_BYTES,
+    ceildiv_int,
+    restore_reduced,
+    rows_for_axes,
+    torch_dtype_nbytes,
+)
 
 __all__ = ["ArgreduceKernel"]
 
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
 _WARP_SIZE = 32
 _NUM_ACCUMULATORS = 4
-# Where splitting a row pays, measured on H200 (132 SMs) over M x N with CUPTI
-# kernel time, best split against the block-per-row kernel:
-#
-#         N=8192      N=32768     N=102400
-#   M=4   multi 3.3x  multi 7.3x  multi 4.2x
-#   M=16  cta   1.4x  multi 1.7x  multi 3.6x
-#   M=64  cta   1.4x  multi 1.5x  multi 3.8x
-#   M=256 cta   1.4x  multi 1.5x  multi 2.4x
-#   M=1024 cta  1.3x  cta   1.1x  cta   1.05x
-#
-#: Thresholds below are measured on H200, not derived; the grid behind each is
-#: in the commit that introduced it.
-#:
+
+#: Magnitude bits of a float32 pattern -- everything but the sign; see _ordering_key.
+_KEY_MAGNITUDE = 0x7FFFFFFF
+
+#: The key every NaN takes: int32's largest, so no number outranks one and two NaNs tie.
+_KEY_NAN = 0x7FFFFFFF
+
+#: Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
+_KEY_IDENTITY = -(2**31)
+# Row-splitting thresholds are measured defaults.
 #: A row shorter than this is a handful of passes; splitting cannot save more
 #: than the second pass costs.
 _SPLIT_MIN_N = 32768
@@ -85,121 +89,142 @@ def _lanes_per_row(n: int) -> int:
     return lanes
 
 
+def _ordering_key(op_kind: str):
+    """Build the macro turning one element into the int32 key the reduction ranks by.
+
+    Ranking bit patterns collapses PyTorch's ordering -- NaN over every number, two NaNs
+    equal, ties to the lower index -- into one integer compare. Spelled out per element
+    it costs a dozen instructions, and this kernel is short of its bandwidth by about
+    the same factor. Callers bind the result to a local before ranking it: a macro
+    argument is substituted at every mention, so passing the call directly would
+    recompute the key once per comparison the merge makes.
+
+    Negating first turns argmin into argmax and leaves a NaN a NaN, so NaN outranks in
+    both. The key is the magnitude bits, negated in two's complement when the sign bit
+    is set: that orders the whole line, and it sends both zeros to 0 without a test,
+    which is what lets the index break their tie the way PyTorch does. A positive NaN's
+    magnitude already outranks +inf's; the negated ones do not, so NaN is answered
+    outright.
+    """
+    negate = op_kind == "argmin"
+
+    @T.macro
+    def key_of(value):
+        cast = T.cast(value, "float32")
+        oriented = -cast if negate else cast
+        bits = T.reinterpret(oriented, "int32")
+        sign = bits >> 31
+        magnitude = T.bitwise_and(bits, T.int32(_KEY_MAGNITUDE))
+        ordered = T.bitwise_xor(magnitude, sign) - sign
+        return T.if_then_else(oriented != oriented, T.int32(_KEY_NAN), ordered)
+
+    return key_of
+
+
+class _PairOps(NamedTuple):
+    set_identity: object
+    init_accumulators: object
+    update: object
+    advance: object
+    merge_accumulators: object
+    warp_reduce: object
+
+
 def _make_pair_ops(op_kind: str, n: int):
     """Create argreduce-local pair operations shared by all launch paths."""
 
     @T.macro
-    def set_identity(values, indices, slot):
-        if op_kind == "argmax":
-            values[slot] = -T.infinity("float32")
-        else:
-            values[slot] = T.infinity("float32")
+    def set_identity(keys, indices, slot):
+        keys[slot] = T.int32(_KEY_IDENTITY)
         indices[slot] = T.int32(n)
 
     @T.macro
-    def init_accumulators(values, indices):
+    def init_accumulators(keys, indices):
         for accumulator in T.serial(_NUM_ACCUMULATORS):
-            set_identity(values, indices, accumulator)
+            set_identity(keys, indices, accumulator)
 
     @T.macro
-    def update(values, indices, slot, candidate_value, candidate_index):
-        """Merge a candidate into a slot under PyTorch's argreduce ordering.
-
-        NaN outranks every number, equal rank breaks to the lower index, and
-        two NaNs are equal in rank — the last of which no float comparison can
-        express, since every comparison between them is false.
-        """
-        candidate_nan = T.isnan(candidate_value)
-        current_nan = T.isnan(values[slot])
-        both_numeric = not candidate_nan and not current_nan
-        if op_kind == "argmax":
-            outranks = both_numeric and candidate_value > values[slot]
-        else:
-            outranks = both_numeric and candidate_value < values[slot]
-        same_rank = (candidate_nan and current_nan) or (
-            both_numeric and candidate_value == values[slot]
-        )
-        better = (
-            (candidate_nan and not current_nan)
-            or outranks
-            or (same_rank and candidate_index < indices[slot])
-        )
-        if better:
-            values[slot] = candidate_value
+    def update(keys, indices, slot, candidate_key, candidate_index):
+        """Merge a candidate into a slot: higher key wins, an equal key breaks low."""
+        if candidate_key > keys[slot] or (
+            candidate_key == keys[slot] and candidate_index < indices[slot]
+        ):
+            keys[slot] = candidate_key
             indices[slot] = T.cast(candidate_index, "int32")
 
     @T.macro
-    def merge_accumulators(values, indices, best_value, best_index):
-        best_value[0] = values[0]
-        best_index[0] = indices[0]
-        for accumulator in T.serial(1, _NUM_ACCUMULATORS):
-            update(
-                best_value,
-                best_index,
-                0,
-                values[accumulator],
-                indices[accumulator],
-            )
+    def advance(keys, indices, slot, candidate_key, candidate_index):
+        """Merge a candidate reached after everything in the slot: one key comparison.
+
+        A streaming loop hands a slot ascending indices, so an equal key cannot win.
+        """
+        if candidate_key > keys[slot]:
+            keys[slot] = candidate_key
+            indices[slot] = T.cast(candidate_index, "int32")
 
     @T.macro
-    def warp_reduce(best_value, best_index, stages, width):
+    def merge_accumulators(keys, indices, best_key, best_index):
+        best_key[0] = keys[0]
+        best_index[0] = indices[0]
+        for accumulator in T.serial(1, _NUM_ACCUMULATORS):
+            update(best_key, best_index, 0, keys[accumulator], indices[accumulator])
+
+    @T.macro
+    def warp_reduce(best_key, best_index, stages, width):
         for stage in T.serial(stages):
             mask = T.int32(width // 2) >> stage
-            candidate_value = T.shfl_xor(best_value[0], mask, width=width)
-            candidate_index = T.shfl_xor(best_index[0], mask, width=width)
             update(
-                best_value,
+                best_key,
                 best_index,
                 0,
-                candidate_value,
-                candidate_index,
+                T.shfl_xor(best_key[0], mask, width=width),
+                T.shfl_xor(best_index[0], mask, width=width),
             )
 
-    return (
-        set_identity,
-        init_accumulators,
-        update,
-        merge_accumulators,
-        warp_reduce,
+    return _PairOps(
+        set_identity=set_identity,
+        init_accumulators=init_accumulators,
+        update=update,
+        advance=advance,
+        merge_accumulators=merge_accumulators,
+        warp_reduce=warp_reduce,
     )
 
 
 def _make_block_reduce(
-    set_identity,
-    merge_accumulators,
-    warp_reduce,
+    ops: _PairOps,
     num_warps: int,
 ):
     """Create the register-to-block pair reduction used by CTA kernels."""
 
     @T.macro
     def block_reduce(
-        values,
+        keys,
         indices,
-        best_value,
+        best_key,
         best_index,
-        warp_values,
+        warp_keys,
         warp_indices,
         tx,
     ):
         lane = tx % _WARP_SIZE
         warp = tx // _WARP_SIZE
 
-        merge_accumulators(values, indices, best_value, best_index)
-        warp_reduce(best_value, best_index, 5, _WARP_SIZE)
+        ops.merge_accumulators(keys, indices, best_key, best_index)
+        ops.warp_reduce(best_key, best_index, 5, _WARP_SIZE)
 
         if lane == 0:
-            warp_values[warp] = best_value[0]
+            warp_keys[warp] = best_key[0]
             warp_indices[warp] = best_index[0]
         T.sync_threads()
 
-        set_identity(best_value, best_index, 0)
+        ops.set_identity(best_key, best_index, 0)
         if lane < num_warps:
-            best_value[0] = warp_values[lane]
+            best_key[0] = warp_keys[lane]
             best_index[0] = warp_indices[lane]
 
         if warp == 0:
-            warp_reduce(best_value, best_index, 5, _WARP_SIZE)
+            ops.warp_reduce(best_key, best_index, 5, _WARP_SIZE)
 
     return block_reduce
 
@@ -214,13 +239,8 @@ def _argreduce_warp_kernel(M: int, N: int, op_kind: str, dtype: str):
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m: int, threads: int):
-        (
-            _,
-            init_accumulators,
-            update,
-            merge_accumulators,
-            warp_reduce,
-        ) = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(op_kind, N)
+        key_of = _ordering_key(op_kind)
 
         @T.prim_func
         def main(
@@ -232,26 +252,22 @@ def _argreduce_warp_kernel(M: int, N: int, op_kind: str, dtype: str):
                 row = pid * block_m + tx // lanes
                 lane = tx % lanes
 
-                values = T.alloc_local((_NUM_ACCUMULATORS,), "float32")
+                keys = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
-                best_value = T.alloc_local((1,), "float32")
+                candidate = T.alloc_local((1,), "int32")
+                best_key = T.alloc_local((1,), "int32")
                 best_index = T.alloc_local((1,), "int32")
-                init_accumulators(values, indices)
+                ops.init_accumulators(keys, indices)
 
                 for iteration in T.serial(iterations):
                     for accumulator in T.serial(_NUM_ACCUMULATORS):
                         index = iteration * items_per_iteration + accumulator * lanes + lane
                         if row < M and index < N:
-                            update(
-                                values,
-                                indices,
-                                accumulator,
-                                T.cast(x[row, index], "float32"),
-                                index,
-                            )
+                            candidate[0] = key_of(x[row, index])
+                            ops.advance(keys, indices, accumulator, candidate[0], index)
 
-                merge_accumulators(values, indices, best_value, best_index)
-                warp_reduce(best_value, best_index, log_lanes, lanes)
+                ops.merge_accumulators(keys, indices, best_key, best_index)
+                ops.warp_reduce(best_key, best_index, log_lanes, lanes)
 
                 if row < M and lane == 0:
                     out[row] = T.cast(best_index[0], "int64")
@@ -272,50 +288,80 @@ def _argreduce_output_kernel(
     """Build the output-parallel kernel for a contiguous non-last-axis reduction.
 
     The reduction axis is strided here and the output axis is contiguous, so a
-    thread takes an output element and walks the axis: adjacent threads then
+    thread takes output elements and walks the axis: adjacent threads then
     read adjacent addresses. Transposing into a last-axis layout instead copies
     the whole tensor and hands a row of ``N`` elements to a block built for long
     rows — on the manifest's 3d workload the copy alone is nearly half the time.
+
+    A block covers ``block_m`` consecutive outputs over ``threads`` threads, and a
+    thread takes every ``threads``-th of them so that neighbours stay neighbours in
+    both the store and the walk. Where the whole span is one contiguous run of each
+    axis position, it is staged in shared memory first and the walk reads from
+    there, which is what lets the global read widen from one element per thread to a
+    vector: measured on the manifest's 3d workload, 2.36 TB/s against 2.09 for
+    walking the axis in global memory.
     """
-    iterations = (N + _NUM_ACCUMULATORS - 1) // _NUM_ACCUMULATORS
+    elem_bytes = torch_dtype_nbytes(dtype)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m: int, threads: int):
-        set_identity, init_accumulators, update, merge_accumulators, _ = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(op_kind, N)
+        key_of = _ordering_key(op_kind)
+        per_thread = max(1, block_m // threads)
+        span = per_thread * threads
+        # Staging needs one contiguous run, no masked tail, and a tile within budget.
+        stage = (
+            span == block_m
+            and M % span == 0
+            and inner_stride % span == 0
+            and N * span * elem_bytes <= SHARED_MEMORY_BUDGET_BYTES
+        )
 
         @T.prim_func
         def main(
             x: T.Tensor[(M * N,), dtype],
             out: T.Tensor[(M,), "int64"],  # noqa: F821
         ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid:
+            with T.Kernel(T.ceildiv(M, span), threads=threads) as pid:
                 tx = T.get_thread_binding()
-                row = pid * block_m + tx
-                outer = row // inner_stride
-                inner = row % inner_stride
+                tile = T.alloc_shared((N, span if stage else 1), dtype)
+                keys = T.alloc_local((per_thread,), "int32")
+                indices = T.alloc_local((per_thread,), "int32")
+                candidate = T.alloc_local((1,), "int32")
 
-                values = T.alloc_local((_NUM_ACCUMULATORS,), "float32")
-                indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
-                best_value = T.alloc_local((1,), "float32")
-                best_index = T.alloc_local((1,), "int32")
-                init_accumulators(values, indices)
+                if stage:
+                    outer = (pid * span) // inner_stride
+                    inner = (pid * span) % inner_stride
+                    for index, column in T.Parallel(N, span):
+                        tile[index, column] = x[
+                            outer * N * inner_stride + index * inner_stride + inner + column
+                        ]
+                    T.sync_threads()
 
-                for iteration in T.serial(iterations):
-                    for accumulator in T.serial(_NUM_ACCUMULATORS):
-                        index = iteration * _NUM_ACCUMULATORS + accumulator
-                        if row < M and index < N:
-                            offset = outer * N * inner_stride + index * inner_stride + inner
-                            update(
-                                values,
-                                indices,
-                                accumulator,
-                                T.cast(x[offset], "float32"),
-                                index,
-                            )
+                for slot in T.serial(per_thread):
+                    ops.set_identity(keys, indices, slot)
 
-                merge_accumulators(values, indices, best_value, best_index)
-                if row < M:
-                    out[row] = T.cast(best_index[0], "int64")
+                for index in T.serial(N):
+                    for slot in T.serial(per_thread):
+                        column = slot * threads + tx
+                        if stage:
+                            candidate[0] = key_of(tile[index, column])
+                            ops.advance(keys, indices, slot, candidate[0], index)
+                        else:
+                            row = pid * span + column
+                            if row < M:
+                                offset = (
+                                    (row // inner_stride) * N * inner_stride
+                                    + index * inner_stride
+                                    + row % inner_stride
+                                )
+                                candidate[0] = key_of(x[offset])
+                                ops.advance(keys, indices, slot, candidate[0], index)
+
+                for slot in T.serial(per_thread):
+                    row = pid * span + slot * threads + tx
+                    if row < M:
+                        out[row] = T.cast(indices[slot], "int64")
 
         return main
 
@@ -324,25 +370,27 @@ def _argreduce_output_kernel(
 
 @functools.lru_cache(maxsize=64)
 def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
-    """Build the block-per-row kernel used for long rows."""
+    """Build the block-per-row kernel used for long rows.
+
+    A row the block can hold in registers is read once into a fragment, and the column
+    index each key belongs to is the loop variable over that fragment, so nothing has to
+    carry it. That reads the row a vector at a time and keeps it there: measured on H200
+    at 2048x4096 fp16, 2.21 TB/s against 2.02 for walking it in global, where reading the
+    row alone is bounded at 2.35. The gain widens with the row -- at 256x32768, 2.12
+    against 1.65.
+
+    A row too wide for that is walked in global instead, one element per thread per
+    access.
+    """
 
     @tilelang.jit(out_idx=[1])
     def _func(threads: int):
         num_warps = threads // _WARP_SIZE
         iterations = (N + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
-        (
-            set_identity,
-            init_accumulators,
-            update,
-            merge_accumulators,
-            warp_reduce,
-        ) = _make_pair_ops(op_kind, N)
-        block_reduce = _make_block_reduce(
-            set_identity,
-            merge_accumulators,
-            warp_reduce,
-            num_warps,
-        )
+        held = threads * FRAGMENT_ELEMS_PER_THREAD >= N
+        ops = _make_pair_ops(op_kind, N)
+        key_of = _ordering_key(op_kind)
+        block_reduce = _make_block_reduce(ops, num_warps)
 
         @T.prim_func
         def main(
@@ -351,32 +399,39 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
         ):
             with T.Kernel(M, threads=threads) as row:
                 tx = T.get_thread_binding()
-                warp_values = T.alloc_shared((num_warps,), "float32")
+                warp_keys = T.alloc_shared((num_warps,), "int32")
                 warp_indices = T.alloc_shared((num_warps,), "int32")
-                values = T.alloc_local((_NUM_ACCUMULATORS,), "float32")
+                row_frag = T.alloc_fragment((1, N if held else 1), dtype)
+                # Four slots either way, so both paths share the block reduction below.
+                keys = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
-                best_value = T.alloc_local((1,), "float32")
+                candidate = T.alloc_local((1,), "int32")
+                best_key = T.alloc_local((1,), "int32")
                 best_index = T.alloc_local((1,), "int32")
-                init_accumulators(values, indices)
+                ops.init_accumulators(keys, indices)
 
-                for iteration in T.serial(iterations):
-                    for accumulator in T.serial(_NUM_ACCUMULATORS):
-                        index = iteration * threads * _NUM_ACCUMULATORS + accumulator * threads + tx
-                        if index < N:
-                            update(
-                                values,
-                                indices,
-                                accumulator,
-                                T.cast(x[row, index], "float32"),
-                                index,
+                if held:
+                    T.copy(x[row : row + 1, :], row_frag)
+                    # The fragment order is unstated, so this merge compares indices.
+                    for _, column in T.Parallel(1, N):
+                        candidate[0] = key_of(row_frag[0, column])
+                        ops.update(keys, indices, 0, candidate[0], column)
+                else:
+                    for iteration in T.serial(iterations):
+                        for accumulator in T.serial(_NUM_ACCUMULATORS):
+                            index = (
+                                iteration * threads * _NUM_ACCUMULATORS + accumulator * threads + tx
                             )
+                            if index < N:
+                                candidate[0] = key_of(x[row, index])
+                                ops.advance(keys, indices, accumulator, candidate[0], index)
 
                 block_reduce(
-                    values,
+                    keys,
                     indices,
-                    best_value,
+                    best_key,
                     best_index,
-                    warp_values,
+                    warp_keys,
                     warp_indices,
                     tx,
                 )
@@ -409,24 +464,14 @@ def _argreduce_multicta_partial_kernel(
         num_partials = M * ctas_per_row
         num_warps = threads // _WARP_SIZE
         iterations = (chunk_size + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
-        (
-            set_identity,
-            init_accumulators,
-            update,
-            merge_accumulators,
-            warp_reduce,
-        ) = _make_pair_ops(op_kind, N)
-        block_reduce = _make_block_reduce(
-            set_identity,
-            merge_accumulators,
-            warp_reduce,
-            num_warps,
-        )
+        ops = _make_pair_ops(op_kind, N)
+        key_of = _ordering_key(op_kind)
+        block_reduce = _make_block_reduce(ops, num_warps)
 
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            partial_values: T.Tensor[(num_partials,), "float32"],  # noqa: F821
+            partial_keys: T.Tensor[(num_partials,), "int32"],  # noqa: F821
             partial_indices: T.Tensor[(num_partials,), "int32"],  # noqa: F821
         ):
             with T.Kernel(num_partials, threads=threads) as partial:
@@ -436,13 +481,14 @@ def _argreduce_multicta_partial_kernel(
                 chunk_start = split * chunk_size
                 chunk_end = T.min(chunk_start + chunk_size, N)
 
-                warp_values = T.alloc_shared((num_warps,), "float32")
+                warp_keys = T.alloc_shared((num_warps,), "int32")
                 warp_indices = T.alloc_shared((num_warps,), "int32")
-                values = T.alloc_local((_NUM_ACCUMULATORS,), "float32")
+                keys = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
-                best_value = T.alloc_local((1,), "float32")
+                candidate = T.alloc_local((1,), "int32")
+                best_key = T.alloc_local((1,), "int32")
                 best_index = T.alloc_local((1,), "int32")
-                init_accumulators(values, indices)
+                ops.init_accumulators(keys, indices)
 
                 for iteration in T.serial(iterations):
                     for accumulator in T.serial(_NUM_ACCUMULATORS):
@@ -453,25 +499,20 @@ def _argreduce_multicta_partial_kernel(
                             + tx
                         )
                         if index < chunk_end:
-                            update(
-                                values,
-                                indices,
-                                accumulator,
-                                T.cast(x[row, index], "float32"),
-                                index,
-                            )
+                            candidate[0] = key_of(x[row, index])
+                            ops.advance(keys, indices, accumulator, candidate[0], index)
 
                 block_reduce(
-                    values,
+                    keys,
                     indices,
-                    best_value,
+                    best_key,
                     best_index,
-                    warp_values,
+                    warp_keys,
                     warp_indices,
                     tx,
                 )
                 if tx == 0:
-                    partial_values[partial] = best_value[0]
+                    partial_keys[partial] = best_key[0]
                     partial_indices[partial] = best_index[0]
 
         return main
@@ -493,15 +534,15 @@ def _argreduce_multicta_final_kernel(
 
     # A lane walks its share of the row's partials, so the split is free to be
     # wider than a warp; reading one partial per lane would drop the rest.
-    partials_per_lane = -(-ctas_per_row // _WARP_SIZE)
+    partials_per_lane = ceildiv_int(ctas_per_row, _WARP_SIZE)
 
     @tilelang.jit(out_idx=[2])
     def _func():
-        set_identity, _, update, _, warp_reduce = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(op_kind, N)
 
         @T.prim_func
         def main(
-            partial_values: T.Tensor[(num_partials,), "float32"],  # noqa: F821
+            partial_keys: T.Tensor[(num_partials,), "int32"],  # noqa: F821
             partial_indices: T.Tensor[(num_partials,), "int32"],  # noqa: F821
             out: T.Tensor[(M,), "int64"],  # noqa: F821
         ):
@@ -509,22 +550,22 @@ def _argreduce_multicta_final_kernel(
                 tx = T.get_thread_binding()
                 row = pid * rows_per_block + tx // _WARP_SIZE
                 lane = tx % _WARP_SIZE
-                best_value = T.alloc_local((1,), "float32")
+                best_key = T.alloc_local((1,), "int32")
                 best_index = T.alloc_local((1,), "int32")
-                set_identity(best_value, best_index, 0)
+                ops.set_identity(best_key, best_index, 0)
 
                 for step in T.serial(partials_per_lane):
                     partial = step * _WARP_SIZE + lane
                     if row < M and partial < ctas_per_row:
-                        update(
-                            best_value,
+                        ops.update(
+                            best_key,
                             best_index,
                             0,
-                            partial_values[row * ctas_per_row + partial],
+                            partial_keys[row * ctas_per_row + partial],
                             partial_indices[row * ctas_per_row + partial],
                         )
 
-                warp_reduce(best_value, best_index, 5, _WARP_SIZE)
+                ops.warp_reduce(best_key, best_index, 5, _WARP_SIZE)
                 if row < M and lane == 0:
                     out[row] = T.cast(best_index[0], "int64")
 
@@ -622,10 +663,16 @@ class ArgreduceKernel(Kernel):
         lanes = _lanes_per_row(self.N)
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
         block_m = max(1, target_threads // lanes)
-        if self.strategy in {"cta", "multi_cta"}:
+        if self.strategy == "cta":
+            # Enough threads that the row fits in fragments.
+            wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
+            threads = min(1024, max(256, 1 << max(0, wanted - 1).bit_length()))
+            block_m = 1
+        elif self.strategy == "multi_cta":
             block_m, threads = 1, 256
         elif self.strategy == "output":
-            block_m, threads = 256, 256
+            # Four outputs per thread: the span the staged read wants.
+            block_m, threads = 512, 128
         else:
             threads = block_m * lanes
         return self._knobs(
@@ -645,9 +692,13 @@ class ArgreduceKernel(Kernel):
                 for c in _row_split_candidates(self.N)
             ]
         elif self.strategy == "cta":
-            candidates = [{"threads": t} for t in (128, 256, 512)]
+            candidates = [{"threads": t} for t in (128, 256, 512, 1024)]
         elif self.strategy == "output":
-            candidates = [{"block_m": t, "threads": t} for t in (128, 256, 512, 1024)]
+            candidates = [
+                {"block_m": threads * per_thread, "threads": threads}
+                for threads in (128, 256, 512)
+                for per_thread in (1, 2, 4)
+            ]
         else:
             lanes = _lanes_per_row(self.N)
             candidates = []
@@ -690,19 +741,12 @@ class ArgreduceKernel(Kernel):
         block_m = self.config.get("block_m", 1)
         threads = self.config["threads"]
         if self.strategy == "output":
-            program = _argreduce_output_kernel(
-                self.M, self.N, self.inner_stride, self.op_kind, self.dtype_str
-            )
-            return program(block_m, threads)(x)
+            return self.kernel(block_m, threads)(x)
         if self.strategy == "cta":
-            return _argreduce_cta_kernel(self.M, self.N, self.op_kind, self.dtype_str)(threads)(x)
+            return self.kernel(threads)(x)
         if self.strategy == "multi_cta":
             ctas_per_row = self.config.get("ctas_per_row", 1)
-            partial = _argreduce_multicta_partial_kernel(
-                self.M, self.N, self.op_kind, self.dtype_str
-            )
-            partial_values, partial_indices = partial(threads, ctas_per_row)(x)
+            partial_keys, partial_indices = self.kernel(threads, ctas_per_row)(x)
             final = _argreduce_multicta_final_kernel(self.M, self.N, self.op_kind, ctas_per_row)
-            return final()(partial_values, partial_indices)
-        program = _argreduce_warp_kernel(self.M, self.N, self.op_kind, self.dtype_str)
-        return program(block_m, threads)(x)
+            return final()(partial_keys, partial_indices)
+        return self.kernel(block_m, threads)(x)

@@ -30,6 +30,7 @@ __all__ = [
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
     "align_up",
+    "ceildiv_int",
     "compute_tile_n",
     "device_smem_budget",
     "make_cumulative_scan",
@@ -40,6 +41,7 @@ __all__ = [
     "restore_reduced",
     "restore_same_shape",
     "rows_for_axes",
+    "torch_dtype_nbytes",
     "tune_by_forward",
 ]
 
@@ -47,14 +49,9 @@ __all__ = [
 # shared memory instructions.  Sub-categories may override this default.
 DEFAULT_ALIGNMENT: int = 256
 
-# Maximum column count for a single fragment/shared-memory tile.
-# TileLang's vectorizer fails when the *column dimension* of a
-# fragment or shared buffer reaches 32768 (a LLVM scalable-vector
-# boundary).  Empirical testing on H200 (SM90) confirms that
-# 32512 columns compile and execute correctly, while 32768 triggers
-# the "scalable vector" error.  We use 32512 (= 32768 - 256) as the
-# safe upper bound.
-MAX_SINGLE_TILE_COLS: int = 32512
+# Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
+# and the register file are checked separately.
+MAX_SINGLE_TILE_COLS: int = 32768
 
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
 # block_m that fits within a single thread block's shared memory allocation.
@@ -65,10 +62,25 @@ SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 VECTOR_ACCESS_BYTES: int = 16
 
 # Thread counts offered by the reduction autotune candidate lists.
-AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
+AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)
 
 # Thread count used when no candidate sweep runs.
-DEFAULT_THREADS: int = 128
+DEFAULT_THREADS: int = 256
+
+# Tile elements one thread may hold across its live fragments before ptxas spills.
+FRAGMENT_ELEMS_PER_THREAD: int = 64
+
+
+def ceildiv_int(x: int, y: int) -> int:
+    """Return ``ceil(x / y)`` for positive integer dimensions."""
+    return -(-x // y)
+
+
+def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
+    """Return element size for a torch dtype object or dtype-name string."""
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype)
+    return torch.empty(0, dtype=dtype).element_size()
 
 
 def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
@@ -92,6 +104,9 @@ class BlockConfigPlanner:
     Args:
         num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
             Welford's two-pass kernels allocate 2.
+        frag_slots: ``(block_m, tile_n)`` fragments the kernel keeps alive at once.
+            Registers, not shared memory: a tile that fits in shared memory can still
+            spill.
     """
 
     _BLOCK_MS = (1, 2, 4, 8)
@@ -104,11 +119,13 @@ class BlockConfigPlanner:
         elem_bytes: int,
         smem_budget: int,
         num_buffers: int = 1,
+        frag_slots: int = 1,
     ):
         self.N_padded = N_padded
         self.elem_bytes = elem_bytes
         self.smem_budget = smem_budget
         self.num_buffers = num_buffers
+        self.frag_slots = frag_slots
 
     @property
     def _row_bytes(self) -> int:
@@ -119,20 +136,38 @@ class BlockConfigPlanner:
         """
         return self.N_padded * self.elem_bytes
 
+    def frag_elems(self, block_m: int, cols: int, threads: int) -> int:
+        """Tile elements one thread holds across every live fragment."""
+        return ceildiv_int(block_m * cols, threads) * self.frag_slots
+
+    def frag_fits(self, block_m: int, cols: int, threads: int) -> bool:
+        """Whether a ``(block_m, cols)`` tile stays in registers for this pair."""
+        return self.frag_elems(block_m, cols, threads) <= FRAGMENT_ELEMS_PER_THREAD
+
     @property
     def needs_tiling(self) -> bool:
-        """Whether one padded row exceeds the column cap or the smem budget."""
-        return self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
+        """Whether one padded row exceeds what a single untiled pass can hold.
+
+        Three capacities, any one of which forces the tiled kernel: the tile column
+        cap, shared memory, and the register file. The register question is
+        asked of the narrowest untiled configuration, one row over
+        ``DEFAULT_THREADS`` threads, since a larger ``block_m`` only adds to it.
+        """
+        return (
+            self.N_padded > MAX_SINGLE_TILE_COLS
+            or self._row_bytes > self.smem_budget
+            or not self.frag_fits(1, self.N_padded, DEFAULT_THREADS)
+        )
 
     def _column_alignment(self, block_m: int, threads: int) -> int:
         """Column granularity a tile must respect for this pair.
 
-        ``block_m == 1`` needs only the ``T.copy`` alignment: one row cannot
-        have a row-to-row thread-map shift, and the coarser granularity would
-        only quantise the width away from an exact divisor of N_padded.
+        ``block_m == 1`` has no row-to-row thread-map shift to respect, so the
+        ``T.copy`` alignment would be enough for the copy itself -- but the fragment
+        still has to divide across the block, which is what ``layout_ok`` measures.
         """
         if block_m == 1:
-            return DEFAULT_ALIGNMENT
+            return max(DEFAULT_ALIGNMENT, threads)
         return reduce_column_alignment(self.elem_bytes, threads)
 
     def tile_n_for(self, block_m: int, threads: int) -> int:
@@ -144,7 +179,9 @@ class BlockConfigPlanner:
         """
         # Single-tile probe: one buffer, because the single-tile kernels hold
         # the row in fragments and allocate no second shared copy.
-        if self.N_padded <= MAX_SINGLE_TILE_COLS:
+        if self.N_padded <= MAX_SINGLE_TILE_COLS and self.frag_fits(
+            block_m, self.N_padded, threads
+        ):
             single = compute_tile_n(
                 block_m,
                 self.elem_bytes,
@@ -154,6 +191,7 @@ class BlockConfigPlanner:
             if single == self.N_padded:
                 return 0
 
+        # The register budget bounds the untiled probe above, not the tile width.
         col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         return compute_tile_n(
             block_m,
@@ -207,10 +245,13 @@ class BlockConfigPlanner:
         stays as the guard.  Everything it admits builds; some of what it
         rejects would now build too.
 
-        ``block_m == 1`` is unconstrained: a single row cannot shift.
+        ``block_m == 1`` has no row-to-row shift, but the columns still have to divide
+        across the block: layout inference finds no layout otherwise. Exact over 72 of
+        72 combinations of nine widths, four thread counts and fp16/fp32 -- a
+        ``(1, cols)`` fragment builds if and only if ``threads`` divides ``cols``.
         """
         if block_m == 1:
-            return True
+            return cols % threads == 0
         one_pass = reduce_column_alignment(self.elem_bytes, threads)
         return cols % one_pass == 0 or one_pass % cols == 0
 
@@ -230,6 +271,11 @@ class BlockConfigPlanner:
                 f"shared memory, over the {self.smem_budget} budget"
             )
         if not self.layout_ok(block_m, tile_n, threads):
+            if block_m == 1:
+                return (
+                    f"tile_n={tile_n} is not a multiple of threads={threads}, so a "
+                    f"(1, tile_n) fragment has no reducible layout"
+                )
             one_pass = reduce_column_alignment(self.elem_bytes, threads)
             return (
                 f"tile_n={tile_n} neither divides nor is a multiple of the "
@@ -240,20 +286,19 @@ class BlockConfigPlanner:
         return ""
 
     def _untiled_block_ms(self, threads: int, budget: int | None = None) -> list[int]:
-        """Row counts an untiled kernel can build within *budget*.
+        """Row counts an untiled kernel can build within *budget*, ascending.
 
         ``default_config`` passes the conservative ``SHARED_MEMORY_BUDGET_BYTES``
-        and the sweep passes the device budget.  Largest-that-fits is a
-        capacity rule, not a performance one -- at 2048x4096 fp16 on H200,
-        ``block_m=4`` beats ``block_m=8`` on sum, var and l2 alike -- so the
-        untuned path stays inside the smaller envelope and the sweep, which
-        times every row count, is what reaches the wider one.
+        and the sweep passes the device budget.  Capacity only, not a ranking:
+        which of these to run untuned is ``default_config``'s call.
         """
         max_block_m = (budget or self.smem_budget) // self._row_bytes
         return [
             bm
             for bm in self._BLOCK_MS
-            if bm <= max_block_m and self.layout_ok(bm, self.N_padded, threads)
+            if bm <= max_block_m
+            and self.layout_ok(bm, self.N_padded, threads)
+            and self.frag_fits(bm, self.N_padded, threads)
         ]
 
     def _num_tiles(self, tile_n: int) -> int:
@@ -266,8 +311,9 @@ class BlockConfigPlanner:
                 DEFAULT_THREADS,
                 budget=SHARED_MEMORY_BUDGET_BYTES,
             )
+            # The fewest rows a block can take, not the most it can hold.
             return {
-                "block_m": block_ms[-1] if block_ms else 1,
+                "block_m": block_ms[0] if block_ms else 1,
                 "threads": DEFAULT_THREADS,
             }
 
@@ -842,18 +888,18 @@ class RowTiledAutotuneMixin:
         budget = self._smem_budget
         smem_per_row = self.N_padded * self._elem_bytes
         max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
-        threads_list = [128, 256]
+        threads_list = list(AUTOTUNE_THREADS)
 
         configs = []
         for tile_n in self._tile_n_candidates():
             if tile_n == 0:
                 # Single-tile regime: explore multiple block_m values.
                 for bm in [1, 2, 4, 8, 16]:
+                    # Can this row count build a tile, and is that tile the whole row.
                     try:
-                        compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
+                        bm_tile_n = self._tile_n_for_block_m(bm)
                     except ValueError:
                         continue
-                    bm_tile_n = self._tile_n_for_block_m(bm)
                     if bm_tile_n != 0:
                         continue
                     if bm > max_block_m_no_tile:

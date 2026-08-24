@@ -494,12 +494,13 @@ def test_logical_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    functors = {"tileops": op}
-
-    # Baseline uses bool tensors
-    a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
-    functors["torch"] = (baseline_fn, (a_bool, b_bool))
-    functors[TORCH_COMPILE_TAG] = (compiled_reference(baseline_fn), (a_bool, b_bool))
+    # The baseline takes the tensors the row declares, as the op does: ``bool`` copies
+    # read one byte per element against the op's two, both credited with two.
+    functors = {
+        "tileops": op,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 

@@ -79,9 +79,13 @@ class BitwiseNotFwdKernel(UnaryKernel):
 
     Uses XOR with ``-1`` (all-ones) because ``T.bitwise_not`` fails on
     vectorized ``int4`` CUDA types.
+
+    Takes the base class's looping strategy: one element per thread reads four bytes
+    where the dtype allows sixteen, and measured on H200 at 256M int32 elements that is
+    the difference between 2.5 and 4.3 TB/s. A bool input is still coerced to the scalar
+    path, by the dtype rule in ``UnaryKernel``.
     """
 
-    DEFAULT_STRATEGY = "direct"
     SUPPORTED_DTYPES = _BITWISE_DTYPES
 
     @staticmethod

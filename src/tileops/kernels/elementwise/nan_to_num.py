@@ -25,12 +25,13 @@ def _make_nan_to_num_kernel(
     -> fragment store for coalesced memory access.
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -59,6 +60,8 @@ def _make_nan_to_num_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:

@@ -1,24 +1,7 @@
-"""Reduce kernels (sum, mean, amin, amax, prod, std, var, var_mean) using TileLang.
-
-Two kernel families:
-  - _simple_reduce_kernel: single-pass reduce for sum/mean/amin/amax/prod.
-  - _welford_reduce_kernel: two-pass Welford for std/var/var_mean.
-
-Both accept raw ``(M, N)`` tensors.  Boundary handling for non-aligned N
-is performed inside the kernel via masked loads with identity-element fills,
-eliminating host-side ``F.pad`` from the forward path.  When ``N`` is already
-a multiple of ``DEFAULT_ALIGNMENT``, the fast vectorized ``T.copy`` path is
-used.
-
-When ``N_padded`` exceeds ``MAX_SINGLE_TILE_COLS`` (TileLang's vectorizer
-limit at the 32768-column boundary), tiled variants iterate over N in
-chunks of ``tile_n`` columns, accumulating partial results across tiles.
-
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions.
-"""
+"""Reduce kernels (sum, mean, amin, amax, prod, std, var, var_mean)."""
 
 import functools
+from dataclasses import dataclass
 from typing import Optional
 
 import tilelang
@@ -31,24 +14,50 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_THREADS,
     BlockConfigPlanner,
     align_up,
+    ceildiv_int,
     device_smem_budget,
     restore_reduced,
     rows_for_axes,
+    torch_dtype_nbytes,
     tune_by_forward,
 )
 
 __all__ = ["ReduceKernel"]
 
-# Supported simple op kinds and their T.reduce_* mapping
-_SIMPLE_REDUCE_MAP = {
-    "sum": "reduce_sum",
-    "mean": "reduce_sum",
-    "amax": "reduce_max",
-    "amin": "reduce_min",
-    "prod": "reduce_sum",  # prod uses log-sum-exp trick
+_WELFORD_KINDS = {"std", "var", "var_mean"}
+
+_WARP_LANES = 32
+
+# Stride-halving shuffle steps that reduce one warp.
+_WARP_STAGES = 5
+
+_FRAG_SLOTS = {
+    "std": 2,
+    "var": 2,
+    "var_mean": 2,
 }
 
-_WELFORD_KINDS = {"std", "var", "var_mean"}
+
+@dataclass(frozen=True)
+class LeadingAxisReducePolicy:
+    """Launch heuristics for reductions down contiguous leading axes."""
+
+    cols_per_thread: int = 8
+
+    threads: int = 64
+
+    target_blocks: int = 512
+
+
+@dataclass(frozen=True)
+class ProductReducePolicy:
+    """Launch heuristics for product reductions."""
+
+    cols_per_thread: int = 8
+
+
+_LEADING_POLICY = LeadingAxisReducePolicy()
+_PROD_POLICY = ProductReducePolicy()
 
 
 # Simple reduce kernel
@@ -68,22 +77,15 @@ def _pad_value_for_op(op_kind: str) -> float:
 
 @functools.lru_cache(maxsize=32)
 def _simple_reduce_kernel(M, N, op_kind, dtype):
-    """Build a simple reduce kernel for sum/mean/amax/amin/prod.
+    """Build a simple reduce kernel for sum/mean/amax/amin.
 
     Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
     ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
     loads that substitute the identity element for out-of-bounds columns
     (kernel-side boundary handling).  When ``N`` is already aligned, the
     fast ``T.copy`` path is used.
-
-    For prod, we compute exp(sum(log(abs(x)))) * sign, which is numerically
-    more stable than direct T.reduce_prod for large N.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
-
-    if op_kind == "prod":
-        return _prod_reduce_kernel(M, N, dtype)
-
     _needs_pad = N_padded != N
     _pad_val = _pad_value_for_op(op_kind)
 
@@ -163,9 +165,6 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
     total_cols = num_tiles * tile_n
     _needs_mask = total_cols > N
     _pad_val = _pad_value_for_op(op_kind)
-
-    if op_kind == "prod":
-        return _prod_reduce_kernel_tiled(M, N, dtype, tile_n)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
@@ -250,73 +249,148 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
-def _prod_reduce_kernel(M, N, dtype):
-    """Product reduce via log-sum-exp: exp(sum(log(|x|))) * sign.
+_LEADING_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
 
-    Accepts an ``(M, N)`` input tensor.  Padding columns are filled with
-    ``1.0`` (the identity for product) via ``T.if_then_else`` when ``N``
-    is not a multiple of ``DEFAULT_ALIGNMENT``.
+
+def leading_axis_split(shape: "tuple[int, ...]", axes: "tuple[int, ...]") -> "tuple[int, int]":
+    """Split *shape* into ``(reduced, kept)`` element counts for a leading-axis reduce.
+
+    Only valid when *axes* is ``(0, 1, ... k-1)``: the reduced axes are then the
+    outermost ones, so a contiguous tensor reshapes to ``(reduced, kept)`` for free and
+    the reduction runs down the rows of that view.
     """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    _needs_pad = N_padded != N
+    k = len(axes)
+    reduced = 1
+    for d in shape[:k]:
+        reduced *= d
+    kept = 1
+    for d in shape[k:]:
+        kept *= d
+    return reduced, kept
+
+
+def reduces_leading_axes(ndim: int, axes: "tuple[int, ...]") -> bool:
+    """Whether *axes* is a non-empty proper prefix of the axes of an *ndim* tensor."""
+    return 0 < len(axes) < ndim and tuple(axes) == tuple(range(len(axes)))
+
+
+def leading_row_splits(reduced: int, kept: int, threads: int) -> int:
+    """How many ways to split the reduced axis so the grid fills the device."""
+    block_b = threads * _LEADING_POLICY.cols_per_thread
+    column_blocks = ceildiv_int(kept, block_b)
+    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
+
+
+def _make_leading_reduce_ops(op_kind: str, divisor: float, out_dtype: str):
+    """Create the per-op macros used by the leading-axis reduction."""
+
+    @T.macro
+    def init(acc):
+        if op_kind == "amax":
+            T.fill(acc, -T.infinity("float32"))
+        elif op_kind == "amin":
+            T.fill(acc, T.infinity("float32"))
+        else:
+            T.fill(acc, 0.0)
+
+    @T.macro
+    def combine(acc, slot, value):
+        if op_kind == "amax":
+            acc[slot] = T.max(acc[slot], value)
+        elif op_kind == "amin":
+            acc[slot] = T.min(acc[slot], value)
+        else:
+            acc[slot] = acc[slot] + value
+
+    @T.macro
+    def finish(out_local, slot, accumulated):
+        if divisor:
+            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
+        else:
+            out_local[slot] = T.cast(accumulated, out_dtype)
+
+    return init, combine, finish
+
+
+@functools.lru_cache(maxsize=32)
+def _leading_reduce_kernel(
+    A: int,
+    B: int,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    threads: int,
+    splits: int,
+    divisor: float,
+):
+    """Build a reduce down the leading axes of an ``(A, B)`` view.
+
+    One accumulator per output column, walked down the rows the block owns. Adjacent
+    threads take adjacent columns, so every row of the walk is one coalesced pass and
+    the tensor is read once in the layout it already has. The alternative -- permuting
+    the reduced axes to the end and making that contiguous -- reads and writes the whole
+    tensor before the reduction has read anything, which is three passes where this is
+    one.
+
+    The grid is ``(column blocks, splits)``: a leading-axis reduction has only as many
+    output columns as the axes it keeps, and one block per column tile would leave an
+    H200 running four of them.
+
+    Args:
+        A: Elements the reduction consumes per output column.
+        B: Output columns.
+        op_kind: One of ``_LEADING_AXIS_KINDS``.
+        in_dtype: TileLang dtype string of the input.
+        out_dtype: TileLang dtype string of the output. A split pass writes fp32
+            partials whatever it read; the pass that finishes writes the declared dtype.
+        threads: Threads per block.
+        splits: Row slices, each its own block row. Above 1 the output is one row of
+            partials per slice, for a second call with ``splits=1`` to finish.
+        divisor: What the accumulator is divided by before the output cast, or 0 for
+            none. Mean's divisor is the row count of the whole reduction, which a
+            second pass over partials can no longer see.
+    """
+    block_b = threads * _LEADING_POLICY.cols_per_thread
+    rows_per_split = ceildiv_int(A, splits)
+    exact = B % block_b == 0
+    init_acc, combine, finish = _make_leading_reduce_ops(op_kind, divisor, out_dtype)
 
     @tilelang.jit(out_idx=[1])
-    def _func(block_m, threads):
+    def _func():
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), dtype],
+            x: T.Tensor[(A, B), in_dtype],
+            out: T.Tensor[(splits * B,), out_dtype],
         ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                log_abs = T.alloc_fragment((block_m, N_padded), "float32")
-                sign_neg = T.alloc_fragment((block_m, N_padded), "float32")
-                acc_log = T.alloc_fragment((block_m,), "float32")
-                acc_sign = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment((block_m,), dtype)
+            with T.Kernel(T.ceildiv(B, block_b), splits, threads=threads) as (pid_b, pid_a):
+                acc = T.alloc_fragment((block_b,), "float32")
+                out_local = T.alloc_fragment((block_b,), out_dtype)
 
-                if _needs_pad:
-                    # Kernel-side boundary handling: fill out-of-bounds
-                    # columns with 1.0 (identity for product).
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            x_f32[i, j] = T.if_then_else(
-                                T.And(pid_m * block_m + i < M, j < N),
-                                T.cast(x[pid_m * block_m + i, j], "float32"),
-                                T.cast(1.0, "float32"),
-                            )
+                init_acc(acc)
+
+                for step in T.serial(rows_per_split):
+                    row = pid_a * rows_per_split + step
+                    for j in T.Parallel(block_b):
+                        col = pid_b * block_b + j
+                        in_range = row < A if exact else T.And(row < A, col < B)
+                        val = T.if_then_else(
+                            in_range,
+                            T.cast(x[row, col], "float32"),
+                            T.cast(_pad_value_for_op(op_kind), "float32"),
+                        )
+                        combine(acc, j, val)
+
+                for j in T.Parallel(block_b):
+                    finish(out_local, j, acc[j])
+
+                if exact:
+                    T.copy(out_local, out[pid_a * B + pid_b * block_b])
                 else:
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                # Compute log(|x|) and count negatives
-                # Padded positions are 1.0, so log(1.0)=0 (neutral for sum)
-                # and sign_neg=0 (non-negative).
-                for i in T.serial(block_m):
-                    for j in T.Parallel(N_padded):
-                        abs_val = T.abs(x_f32[i, j])
-                        # Use a small epsilon to avoid log(0)
-                        log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
-                        # 1 if negative, 0 if non-negative
-                        sign_neg[i, j] = T.if_then_else(x_f32[i, j] < 0.0, 1.0, 0.0)
-
-                T.reduce_sum(log_abs, acc_log, dim=1)
-                T.reduce_sum(sign_neg, acc_sign, dim=1)
-
-                for i in T.Parallel(block_m):
-                    prod_val = T.exp(acc_log[i])
-                    # If odd number of negatives, negate
-                    # Use fmod to check parity
-                    neg_count_mod2 = acc_sign[i] - T.floor(acc_sign[i] / 2.0) * 2.0
-                    prod_val = T.if_then_else(neg_count_mod2 > 0.5, -prod_val, prod_val)
-                    out_local[i] = T.cast(prod_val, dtype)
-
-                T.copy(out_local, out[pid_m * block_m])
+                    for j in T.Parallel(block_b):
+                        # TileLang requires T.If/T.Then as nested context managers.
+                        with T.If(pid_b * block_b + j < B):  # noqa: SIM117
+                            with T.Then():
+                                out[pid_a * B + pid_b * block_b + j] = out_local[j]
 
         return main
 
@@ -324,97 +398,57 @@ def _prod_reduce_kernel(M, N, dtype):
 
 
 @functools.lru_cache(maxsize=32)
-def _prod_reduce_kernel_tiled(M, N, dtype, tile_n):
-    """Tiled product reduce via log-sum-exp for N_padded > MAX_SINGLE_TILE_COLS.
-
-    Iterates over N in chunks of ``tile_n``, accumulating log(|x|) sums
-    and negative-element counts across tiles.
-    """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    num_tiles = (N_padded + tile_n - 1) // tile_n
-    total_cols = num_tiles * tile_n
-    _needs_mask = total_cols > N
+def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
+    """Build a product reduce: one block per row, multiplying in fp32."""
+    chunk = threads * _PROD_POLICY.cols_per_thread
+    tiles = ceildiv_int(N, chunk)
+    exact = tiles * chunk == N
+    num_warps = threads // _WARP_LANES
 
     @tilelang.jit(out_idx=[1])
-    def _func(block_m, threads):
+    def _func():
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
             out: T.Tensor[(M,), dtype],
         ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-                log_abs = T.alloc_fragment((block_m, tile_n), "float32")
-                sign_neg = T.alloc_fragment((block_m, tile_n), "float32")
-                tile_log = T.alloc_fragment((block_m,), "float32")
-                tile_sign = T.alloc_fragment((block_m,), "float32")
-                acc_log = T.alloc_fragment((block_m,), "float32")
-                acc_sign = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment((block_m,), dtype)
+            with T.Kernel(M, threads=threads) as row:
+                tx = T.get_thread_binding()
+                running = T.alloc_local((1,), "float32")
+                warp_prod = T.alloc_shared((num_warps,), "float32")
+                staged = T.alloc_shared((chunk,), dtype)
 
-                T.fill(acc_log, 0.0)
-                T.fill(acc_sign, 0.0)
-
-                for t in T.Serial(num_tiles):
-                    if _needs_mask:
-                        with T.If(t < num_tiles - 1):
-                            with T.Then():
-                                T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                for i in T.serial(block_m):
-                                    for j in T.Parallel(tile_n):
-                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                            with T.Else():
-                                for i in T.serial(block_m):
-                                    for j in T.Parallel(tile_n):
-                                        tile_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                t * tile_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            T.cast(1.0, "float32"),
-                                        )
-                    else:
-                        T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(tile_n):
-                            abs_val = T.abs(tile_f32[i, j])
-                            log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
-                            sign_neg[i, j] = T.if_then_else(
-                                tile_f32[i, j] < 0.0,
-                                1.0,
-                                0.0,
+                running[0] = T.cast(1.0, "float32")
+                for t in T.serial(tiles):
+                    for i in T.Parallel(chunk):
+                        staged[i] = x[row, t * chunk + i]
+                    T.sync_threads()
+                    for c in T.serial(_PROD_POLICY.cols_per_thread):
+                        held = staged[tx * _PROD_POLICY.cols_per_thread + c]
+                        if exact:
+                            running[0] = running[0] * T.cast(held, "float32")
+                        else:
+                            col = (t * threads + tx) * _PROD_POLICY.cols_per_thread + c
+                            running[0] = running[0] * T.if_then_else(
+                                col < N, T.cast(held, "float32"), T.cast(1.0, "float32")
                             )
+                    T.sync_threads()
 
-                    T.reduce_sum(log_abs, tile_log, dim=1)
-                    T.reduce_sum(sign_neg, tile_sign, dim=1)
-
-                    for i in T.Parallel(block_m):
-                        acc_log[i] = acc_log[i] + tile_log[i]
-                        acc_sign[i] = acc_sign[i] + tile_sign[i]
-
-                for i in T.Parallel(block_m):
-                    prod_val = T.exp(acc_log[i])
-                    neg_count_mod2 = acc_sign[i] - T.floor(acc_sign[i] / 2.0) * 2.0
-                    prod_val = T.if_then_else(neg_count_mod2 > 0.5, -prod_val, prod_val)
-                    out_local[i] = T.cast(prod_val, dtype)
-
-                T.copy(out_local, out[pid_m * block_m])
+                for stage in T.serial(_WARP_STAGES):
+                    running[0] = running[0] * T.shfl_xor(
+                        running[0], T.int32(_WARP_LANES // 2) >> stage, width=_WARP_LANES
+                    )
+                if tx % _WARP_LANES == 0:
+                    warp_prod[tx // _WARP_LANES] = running[0]
+                T.sync_threads()
+                if tx == 0:
+                    for w in T.serial(1, num_warps):
+                        warp_prod[0] = warp_prod[0] * warp_prod[w]
+                    out[row] = T.cast(warp_prod[0], dtype)
 
         return main
 
     return _func
-
-
-# Welford reduce kernel (std, var, var_mean)
 
 
 @functools.lru_cache(maxsize=32)
@@ -812,9 +846,8 @@ class ReduceKernel(Kernel):
     Supports SM80+ architectures. Uses 256-element alignment for shared memory
     copies. Dispatches to simple or Welford kernel based on op_kind.
 
-    When ``N_padded`` exceeds ``MAX_SINGLE_TILE_COLS``, tiled kernel variants
-    are used that iterate over N in chunks of ``tile_n`` columns, avoiding the
-    TileLang vectorizer limit at the 32768-column boundary.
+    A row that exceeds any of the capacities ``BlockConfigPlanner`` tracks goes to a
+    tiled variant, which iterates over N in chunks of ``tile_n`` columns.
 
     Boundary handling for non-aligned N is performed inside the kernel via
     masked loads with identity-element fills, so no host-side ``F.pad`` is
@@ -863,32 +896,40 @@ class ReduceKernel(Kernel):
         self.correction = correction
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._is_welford = op_kind in _WELFORD_KINDS
-        self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
+        self._is_prod = op_kind == "prod"
+        # Whether the axes are a proper prefix needs the rank, so forward settles it.
+        self._leading_axis_kind = op_kind in _LEADING_AXIS_KINDS and self.reduce_axes == tuple(
+            range(len(self.reduce_axes))
+        )
+        self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
             self._smem_budget,
             num_buffers=2 if self._is_welford else 1,
+            frag_slots=_FRAG_SLOTS.get(op_kind, 1),
         )
         self._needs_tiling = self._planner.needs_tiling
+        self.strategy = self._select_strategy()
 
-        if not self._needs_tiling:
-            if self._is_welford:
-                self.kernel = _welford_reduce_kernel(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.correction,
-                    self.dtype_str,
-                )
-            else:
-                self.kernel = _simple_reduce_kernel(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.dtype_str,
-                )
+        if self.strategy == "prod":
+            self.kernel = _prod_reduce_kernel(self.M, self.N, self.dtype_str, DEFAULT_THREADS)
+        elif self.strategy == "welford":
+            self.kernel = _welford_reduce_kernel(
+                self.M,
+                self.N,
+                self.op_kind,
+                self.correction,
+                self.dtype_str,
+            )
+        elif self.strategy == "simple":
+            self.kernel = _simple_reduce_kernel(
+                self.M,
+                self.N,
+                self.op_kind,
+                self.dtype_str,
+            )
         # For tiled path, kernel is built lazily using tile_n from config.
         # Tiled kernels use wrapped dispatch functions (not a single self.kernel),
         # so standard autotune via self.kernel is not applicable -- see autotune().
@@ -904,6 +945,14 @@ class ReduceKernel(Kernel):
             reason = self._planner.reject_tile_n(bm, self.config["tile_n"], threads)
             if reason:
                 raise ValueError(reason)
+
+    def _select_strategy(self) -> str:
+        """Return the row-wise reduction backend selected by op kind and shape."""
+        if self._is_prod:
+            return "prod"
+        if self._is_welford:
+            return "welford_tiled" if self._needs_tiling else "welford"
+        return "simple_tiled" if self._needs_tiling else "simple"
 
     @property
     def default_config(self) -> dict:
@@ -934,6 +983,9 @@ class ReduceKernel(Kernel):
         """
         self._require_cuda(x=x)
         in_shape = tuple(x.shape)
+        if self._leading_axis_kind and reduces_leading_axes(x.ndim, self.reduce_axes):
+            columns = self._reduce_leading_axes(x)
+            return restore_reduced(columns, in_shape, self.reduce_axes, self.keepdim)
         rows = rows_for_axes(x, self.reduce_axes)
         result = self._reduce_rows(rows)
         if self.op_kind == "var_mean":
@@ -944,11 +996,60 @@ class ReduceKernel(Kernel):
             )
         return restore_reduced(result, in_shape, self.reduce_axes, self.keepdim)
 
+    def _reduce_leading_axes(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce the leading axes of *x* down to one value per kept column.
+
+        Splitting the reduced axis is what fills the grid, and each slice leaves an
+        fp32 partial row; a second call over those rows finishes the op. The partials
+        are a few thousand values against the millions the first pass reads, so the
+        second call costs about nothing.
+        """
+        reduced, kept = leading_axis_split(tuple(x.shape), self.reduce_axes)
+        flat = x.reshape(reduced, kept)
+        splits = leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
+        divisor = float(reduced) if self.op_kind == "mean" else 0.0
+        if splits == 1:
+            single = _leading_reduce_kernel(
+                reduced,
+                kept,
+                self.op_kind,
+                self.dtype_str,
+                self.dtype_str,
+                _LEADING_POLICY.threads,
+                1,
+                divisor,
+            )
+            return single()(flat)
+        partials = _leading_reduce_kernel(
+            reduced,
+            kept,
+            self.op_kind,
+            self.dtype_str,
+            "float32",
+            _LEADING_POLICY.threads,
+            splits,
+            0.0,
+        )()(flat)
+        # Partials are summed even for mean, whose divisor is the whole row count.
+        finish = _leading_reduce_kernel(
+            splits,
+            kept,
+            "sum" if self.op_kind == "mean" else self.op_kind,
+            "float32",
+            self.dtype_str,
+            _LEADING_POLICY.threads,
+            1,
+            divisor,
+        )
+        return finish()(partials.reshape(splits, kept))
+
     def _reduce_rows(self, x: torch.Tensor) -> object:
         """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        if self.strategy == "prod":
+            return self.kernel()(x)
         block_m, threads = self.config["block_m"], self.config["threads"]
-        if self._is_welford:
-            if self._needs_tiling:
+        if self.strategy in {"welford", "welford_tiled"}:
+            if self.strategy == "welford_tiled":
                 program = _welford_reduce_kernel_tiled(
                     self.M,
                     self.N,
@@ -958,17 +1059,15 @@ class ReduceKernel(Kernel):
                     self.config["tile_n"],
                 )
             else:
-                program = _welford_reduce_kernel(
-                    self.M, self.N, self.op_kind, self.correction, self.dtype_str
-                )
+                program = self.kernel
             results = program(block_m, threads)(x)
             if self.op_kind == "var_mean":
                 return results[0], results[1]
             return results
-        if self._needs_tiling:
+        if self.strategy == "simple_tiled":
             program = _simple_reduce_kernel_tiled(
                 self.M, self.N, self.op_kind, self.dtype_str, self.config["tile_n"]
             )
         else:
-            program = _simple_reduce_kernel(self.M, self.N, self.op_kind, self.dtype_str)
+            program = self.kernel
         return program(block_m, threads)(x)

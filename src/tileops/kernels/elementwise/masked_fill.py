@@ -40,12 +40,13 @@ def _make_masked_fill_kernel(
         non-saturating cast to e5m2.
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -69,6 +70,8 @@ def _make_masked_fill_kernel(
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -152,12 +155,13 @@ def _make_masked_fill_tensor_value_kernel(
             out: ``out[i] = value[0] if mask[i] else x[i]``.
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -183,6 +187,8 @@ def _make_masked_fill_tensor_value_kernel(
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),

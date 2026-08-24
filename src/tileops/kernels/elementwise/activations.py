@@ -11,6 +11,7 @@ from ._base import (
     FusedGatedKernel,
     ParametricUnaryKernel,
     _fp8_accum_dtype_str,
+    _log_for_output_precision,
 )
 
 __all__ = [
@@ -76,7 +77,13 @@ class SiluFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return x * T.sigmoid(x)
+        """x / (1 + exp(-x)), in fp32.
+
+        Running the exponential in fp32 improves both speed and fp32-reference error.
+        """
+        one = T.cast(1.0, "float32")
+        wide = T.cast(x, "float32")
+        return wide / (one + T.exp(-wide))
 
 
 class SigmoidFwdKernel(FloatUnaryKernel):
@@ -84,7 +91,12 @@ class SigmoidFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.sigmoid(x)
+        """1 / (1 + exp(-x)), in fp32.
+
+        Running the exponential in fp32 improves both speed and fp32-reference error.
+        """
+        one = T.cast(1.0, "float32")
+        return one / (one + T.exp(-T.cast(x, "float32")))
 
 
 class TanhFwdKernel(FloatUnaryKernel):
@@ -121,10 +133,27 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
 class MishFwdKernel(FloatUnaryKernel):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
+    #: Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
+    _SATURATION: float = 20.0
+
     @staticmethod
     def op_func(x):
-        one = T.cast(1.0, "float32")
-        return x * T.tanh(T.log(one + T.exp(x)))
+        """One transcendental where the definition spells out three.
+
+        With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
+        this avoids extra transcendentals and keeps the small values ``log(1 + e)``
+        rounds away. Past ``_SATURATION`` the ratio is 1 to every bit fp32 carries,
+        which is also what keeps ``e^2`` finite.
+        """
+        two = T.cast(2.0, "float32")
+        wide = T.cast(x, "float32")
+        e = T.exp(wide)
+        saturated = e * e + two * e
+        return T.if_then_else(
+            wide > T.cast(MishFwdKernel._SATURATION, "float32"),
+            wide,
+            wide * saturated / (saturated + two),
+        )
 
 
 class SeluFwdKernel(FloatUnaryKernel):
@@ -156,13 +185,14 @@ def _make_leaky_relu_kernel(
     is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
         accum = _fp8_accum_dtype_str()
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -181,6 +211,8 @@ def _make_leaky_relu_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -218,12 +250,13 @@ class LeakyReluFwdKernel(ParametricUnaryKernel):
 def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -246,6 +279,8 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=2
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -291,12 +326,13 @@ def _make_hardtanh_kernel(
 ):
     """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -314,6 +350,8 @@ def _make_hardtanh_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -355,12 +393,13 @@ def _make_softplus_kernel(
 ):
     """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -373,7 +412,7 @@ def _make_softplus_kernel(
                             t = T.cast(threshold, "float32")
                             one = T.cast(1.0, "float32")
                             scaled = v32 * b
-                            sp = T.log(one + T.exp(scaled)) / b
+                            sp = _log_for_output_precision(val, one + T.exp(scaled)) / b
                             y[idx] = T.if_then_else(
                                 scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
                             )
@@ -383,6 +422,8 @@ def _make_softplus_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -396,7 +437,7 @@ def _make_softplus_kernel(
                         t = T.cast(threshold, "float32")
                         one = T.cast(1.0, "float32")
                         scaled = v32 * b
-                        sp = T.log(one + T.exp(scaled)) / b
+                        sp = _log_for_output_precision(val, one + T.exp(scaled)) / b
                         y_reg[i * npt_arg + j] = T.if_then_else(
                             scaled > t,
                             val,

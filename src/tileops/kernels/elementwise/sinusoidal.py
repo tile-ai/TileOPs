@@ -28,10 +28,11 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
     Output shape: (seq_len, d_model).
     """
     N_total = seq_len * d_model
-    block_size = threads * npt
 
     @tilelang.jit(out_idx=[0])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(out: T.Tensor((N_total,), dtype)):
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:

@@ -1,37 +1,9 @@
-"""Cumulative scan kernels (cumsum, cumprod) using TileLang.
-
-Implements an inclusive prefix scan along the last dimension.  Each row
-is processed independently (``T.Parallel`` over rows) with a tiled
-sequential inner loop that processes the N dimension in chunks of
-``block_n`` elements.  Within each tile, a ``T.Serial`` loop maintains
-a per-row running accumulator.  The tiled approach reduces shared memory
-usage (``block_m * block_n`` instead of ``block_m * N_padded``) and
-improves memory access patterns for better GPU utilization.
-
-Accepts raw ``(M, N)`` input tensors.  Boundary handling for non-aligned
-N is performed inside the kernel via masked loads with identity-element
-fills (0 for cumsum, 1 for cumprod), eliminating host-side ``F.pad``
-from the forward path.  Output is ``(M, N_padded)`` and the Op layer
-trims back to N columns.
-
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions.
-
-Shared memory padding:
-  ``shared_in`` and ``shared_out`` are allocated with ``SMEM_PAD`` extra
-  columns so that adjacent rows land on different shared-memory banks,
-  eliminating the 32-way bank conflict observed with unpadded layouts.
-  For fp16/bf16 (2 bytes/element) the row stride in 4-byte bank words is
-  ``(block_n + SMEM_PAD) / 2``.  Choosing SMEM_PAD=8 makes the stride
-  68 words, which is not a multiple of 32, so each successive row starts
-  in a different bank set.  Element-wise indexing (``smem[i, j]``) is
-  used for all smem<->fragment transfers and all global<->smem transfers
-  to avoid shape and alignment mismatches with ``T.copy``.
-"""
+"""Cumulative scan kernels (cumsum, cumprod) using TileLang."""
 
 import functools
 import itertools
 import warnings
+from dataclasses import dataclass
 from typing import Optional
 
 import tilelang
@@ -43,23 +15,139 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     SHARED_MEMORY_BUDGET_BYTES,
     align_up,
+    device_smem_budget,
     restore_same_shape,
     rows_for_axes,
+    torch_dtype_nbytes,
 )
 
 __all__ = ["CumulativeKernel"]
 
-# Tile size along the N dimension for the prefix scan.
-# Must be a multiple of DEFAULT_ALIGNMENT for T.copy shared memory alignment.
-_DEFAULT_BLOCK_N: int = 128
 
-# Shared memory padding to eliminate bank conflicts.
-# H200/H100 has 32 banks × 4 bytes.  For fp16/bf16 (2 bytes/elem), a row of
-# block_n=128 elements = 256 bytes = 64 bank-words.  64 % 32 == 0, so every
-# row starts at the same bank → 32-way conflicts.  Adding SMEM_PAD=8 elements
-# (16 bytes = 4 bank-words) makes the stride 68 bank-words; 68 % 32 == 4,
-# so successive rows start in different banks → conflict free.
-_SMEM_PAD: int = 8
+@dataclass(frozen=True)
+class CumulativeScanPolicy:
+    """Shape and shared-memory heuristics for cumulative scan kernels."""
+
+    # Multiple of DEFAULT_ALIGNMENT for T.copy shared memory alignment.
+    default_block_n: int = 128
+
+    # Breaks shared-memory bank conflicts for fp16/bf16 row staging.
+    smem_pad: int = 8
+
+    row_scan_chunk: int = 64
+    row_scan_pad_bytes: int = 16
+    row_scan_min_threads: int = 64
+    row_scan_max_threads: int = 1024
+
+
+_SCAN_POLICY = CumulativeScanPolicy()
+
+
+def row_scan_threads(N_padded: int) -> int:
+    """Threads the whole-row kernel gives a row of *N_padded*."""
+    threads = _SCAN_POLICY.row_scan_min_threads
+    widest = threads
+    while threads <= _SCAN_POLICY.row_scan_max_threads:
+        if N_padded % threads == 0:
+            widest = threads
+            if N_padded // threads <= _SCAN_POLICY.row_scan_chunk:
+                return threads
+        threads *= 2
+    return widest
+
+
+def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
+    """Whether a row of *N_padded* can be scanned by one thread block."""
+    threads = row_scan_threads(N_padded)
+    if N_padded % threads:
+        return False
+    chunk = N_padded // threads
+    staged = threads * (chunk + _SCAN_POLICY.row_scan_pad_bytes // elem_bytes) * elem_bytes
+    return staged <= smem_budget and chunk <= _SCAN_POLICY.row_scan_chunk
+
+
+@functools.lru_cache(maxsize=32)
+def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
+    """Build a one-block-per-row inclusive prefix scan.
+
+    Three phases, with no serial dependency between blocks:
+
+    1. The row is staged in shared memory at its own dtype, one padded row of the tile
+       per thread chunk, and each thread scans its chunk into registers in fp32.
+    2. The chunk totals are scanned in shared memory, doubling the stride each step.
+    3. Each thread adds the prefix ahead of its chunk and writes the chunk back to the
+       staging tile, which returns it to global memory.
+
+    Both transfers between global and the tile run over the row in column-major thread
+    order, so consecutive threads read consecutive columns and the access coalesces; the
+    tile's padding is what keeps a thread's own chunk off one bank. Staging at the input
+    dtype halves the shared traffic against fp32, and the write-back reuses the tile
+    because a scalar global store per element does not coalesce.
+
+    Args:
+        M: Rows to scan.
+        N: Length of the scanned axis; must equal the padded width the caller
+            allocated for, and be divisible by *threads*.
+        op_kind: One of "sum", "prod".
+        dtype: TileLang dtype string.
+        threads: Threads per row, from :func:`row_scan_threads`.
+    """
+    chunk_len = N // threads
+    pad = _SCAN_POLICY.row_scan_pad_bytes // torch_dtype_nbytes(dtype)
+    # Stride-doubling steps to scan `threads` totals.
+    n_steps = threads.bit_length() - 1
+    identity = 0.0 if op_kind == "sum" else 1.0
+    combine = (lambda a, b: a + b) if op_kind == "sum" else (lambda a, b: a * b)
+
+    @tilelang.jit(out_idx=[1])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N), dtype],
+        ):
+            with T.Kernel(M, threads=threads) as row:
+                tx = T.get_thread_binding()
+                staged = T.alloc_shared((threads, chunk_len + pad), dtype)
+                totals = T.alloc_shared((threads,), "float32")
+                chunk = T.alloc_local((chunk_len,), "float32")
+                running = T.alloc_local((1,), "float32")
+                ahead = T.alloc_local((1,), "float32")
+                offset = T.alloc_local((1,), "float32")
+
+                for i, j in T.Parallel(threads, chunk_len):
+                    staged[i, j] = x[row, i * chunk_len + j]
+                T.sync_threads()
+
+                running[0] = T.cast(identity, "float32")
+                for j in T.serial(chunk_len):
+                    running[0] = combine(running[0], T.cast(staged[tx, j], "float32"))
+                    chunk[j] = running[0]
+                totals[tx] = running[0]
+                T.sync_threads()
+
+                for step in T.serial(n_steps):
+                    stride = T.shift_left(T.int32(1), step)
+                    ahead[0] = T.if_then_else(
+                        tx >= stride, totals[tx - stride], T.cast(identity, "float32")
+                    )
+                    T.sync_threads()
+                    totals[tx] = combine(totals[tx], ahead[0])
+                    T.sync_threads()
+
+                # T.max keeps the read in range for thread 0, whose branch discards it.
+                offset[0] = T.if_then_else(
+                    tx == 0, T.cast(identity, "float32"), totals[T.max(tx - 1, 0)]
+                )
+                for j in T.serial(chunk_len):
+                    staged[tx, j] = T.cast(combine(chunk[j], offset[0]), dtype)
+                T.sync_threads()
+                for i, j in T.Parallel(threads, chunk_len):
+                    y[row, i * chunk_len + j] = staged[i, j]
+
+        return main
+
+    return _func
 
 
 @functools.lru_cache(maxsize=32)
@@ -104,31 +192,20 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    # Pad shared memory by _SMEM_PAD columns to break bank-conflict
-                    # alignment.  For fp16/bf16 (2 bytes/elem), an unpadded row of
-                    # block_n=128 elements is 256 bytes = 64 4-byte bank-words.
-                    # 64 % 32 == 0 → every row starts at the same bank → 32-way
-                    # conflict.  With pad=8: stride = 136 elems = 68 bank-words;
-                    # 68 % 32 == 4 → successive rows start at different banks.
-                    shared_in = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
-                    shared_out = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
+                    shared_in = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
+                    shared_out = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
                     tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     out_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
 
-                    # Initialize accumulator
                     for i in T.Parallel(block_m):
                         acc[i] = T.float32(0)
 
-                    # Process N dimension in tiles
                     for tile_idx in T.Serial(n_tiles):
                         if _needs_mask:
-                            # Fast path when current tile is fully in-bounds
                             with T.If((tile_idx + 1) * block_n <= N):
                                 with T.Then():
-                                    # Element-wise load into padded shared_in with M bounds check
                                     for i, j in T.Parallel(block_m, block_n):
-                                        # TileLang requires T.If/T.Then as nested context managers
                                         with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                             with T.Then():
                                                 shared_in[i, j] = x[
@@ -137,7 +214,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
-                                    # Partially OOB tile: masked load directly to fragment
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.if_then_else(
                                             T.And(
@@ -151,9 +227,7 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                             T.cast(_identity, "float32"),
                                         )
                         else:
-                            # Element-wise load into padded shared_in with M bounds check
                             for i, j in T.Parallel(block_m, block_n):
-                                # TileLang requires T.If/T.Then as nested context managers
                                 with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                     with T.Then():
                                         shared_in[i, j] = x[
@@ -162,7 +236,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                             for i, j in T.Parallel(block_m, block_n):
                                 tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
-                        # Inclusive prefix sum within tile
                         for i in T.Parallel(block_m):
                             for j in T.Serial(block_n):
                                 acc[i] = acc[i] + tile_f32[i, j]
@@ -194,27 +267,21 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    # Pad shared memory by _SMEM_PAD columns to break bank-conflict
-                    # alignment (same reasoning as the sum path above).
-                    shared_in = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
-                    shared_out = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
+                    shared_in = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
+                    shared_out = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
                     tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     out_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
 
-                    # Initialize accumulator (1.0 for product)
                     for i in T.Parallel(block_m):
                         acc[i] = T.float32(1)
 
                     # Process N dimension in tiles
                     for tile_idx in T.Serial(n_tiles):
                         if _needs_mask:
-                            # Fast path when current tile is fully in-bounds
                             with T.If((tile_idx + 1) * block_n <= N):
                                 with T.Then():
-                                    # Element-wise load into padded shared_in with M bounds check
                                     for i, j in T.Parallel(block_m, block_n):
-                                        # TileLang requires T.If/T.Then as nested context managers
                                         with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                             with T.Then():
                                                 shared_in[i, j] = x[
@@ -223,7 +290,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
-                                    # Partially OOB tile: masked load directly to fragment
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.if_then_else(
                                             T.And(
@@ -237,9 +303,7 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                             T.cast(_identity, "float32"),
                                         )
                         else:
-                            # Element-wise load into padded shared_in with M bounds check
                             for i, j in T.Parallel(block_m, block_n):
-                                # TileLang requires T.If/T.Then as nested context managers
                                 with T.If(pid_m * block_m + i < M):  # noqa: SIM117
                                     with T.Then():
                                         shared_in[i, j] = x[
@@ -248,7 +312,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                             for i, j in T.Parallel(block_m, block_n):
                                 tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
-                        # Inclusive prefix product within tile
                         for i in T.Parallel(block_m):
                             for j in T.Serial(block_n):
                                 acc[i] = acc[i] * tile_f32[i, j]
@@ -323,12 +386,20 @@ class CumulativeKernel(Kernel):
         self.dtype = dtype
         self.scan_axis = scan_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        self._elem_bytes = torch_dtype_nbytes(dtype)
 
-        # Parallel scan only pays off for small-M, large-N; cumprod has no
-        # parallel implementation.
-        self.use_parallel = M < 128 and N > 8192 and op_kind == "sum"
+        # The row scan wherever it builds; the parallel scan for what it cannot serve.
+        can_row_scan = self.N_padded == N and row_scan_fits(
+            self.N_padded, self._elem_bytes, device_smem_budget(device_index)
+        )
+        can_parallel = M < 128 and N > 8192 and op_kind == "sum"
+        self._row_scan_threads = row_scan_threads(self.N_padded) if can_row_scan else 0
 
-        if self.use_parallel:
+        if can_row_scan:
+            self.strategy = "row_scan"
+            self.kernel = _row_scan_kernel(M, N, op_kind, self.dtype_str, self._row_scan_threads)
+        elif can_parallel:
+            self.strategy = "parallel_scan"
             self.kernel = None
             if tune:
                 warnings.warn(
@@ -339,6 +410,7 @@ class CumulativeKernel(Kernel):
                 )
                 tune = False
         else:
+            self.strategy = "tiled_scan"
             self.kernel = _cumulative_kernel(M, N, op_kind, self.dtype_str)
 
         self.init_config(config, tune)
@@ -346,16 +418,19 @@ class CumulativeKernel(Kernel):
     @property
     def default_config(self) -> dict:
         """Select the default config for the selected backend and shape."""
-        if self.use_parallel:
+        if self.strategy == "row_scan":
+            # The chunk length is a compile-time bound, so the thread count is baked in.
+            return {"threads": self._row_scan_threads}
+        if self.strategy == "parallel_scan":
             block_n = 256 if self.N > 16384 else 128
-            smem_per_row = (block_n + _SMEM_PAD) * 4  # fp32 intermediate
+            smem_per_row = (block_n + _SCAN_POLICY.smem_pad) * 4  # fp32 intermediate
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
             block_m = max(1, min(16, self.M, max_block_m))
             return {"block_m": block_m, "block_n": block_n, "threads": 256}
         else:
-            block_n = _DEFAULT_BLOCK_N
-            elem_size = torch.tensor([], dtype=self.dtype).element_size()
-            smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
+            block_n = _SCAN_POLICY.default_block_n
+            elem_size = torch_dtype_nbytes(self.dtype)
+            smem_per_row = 2 * (block_n + _SCAN_POLICY.smem_pad) * elem_size
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
 
             if self.M < 128:
@@ -370,14 +445,16 @@ class CumulativeKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        elem_size = torch.tensor([], dtype=self.dtype).element_size()
+        if self.strategy == "row_scan":
+            return [{"threads": self._row_scan_threads}]
+        elem_size = torch_dtype_nbytes(self.dtype)
         configs = []
         for block_n in [128, 256]:
             # block_n must evenly divide N_padded
             if self.N_padded % block_n != 0:
                 continue
             # Account for padding in shared memory budget calculation
-            smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
+            smem_per_row = 2 * (block_n + _SCAN_POLICY.smem_pad) * elem_size
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
             threads_list = [128, 256]
@@ -410,13 +487,14 @@ class CumulativeKernel(Kernel):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed
         here.
         """
+        if self.strategy == "row_scan":
+            return self.kernel()(x)
         block_m, block_n = self.config["block_m"], self.config["block_n"]
         threads = self.config["threads"]
-        if self.use_parallel:
+        if self.strategy == "parallel_scan":
             y = self._parallel_scan(x, block_m, block_n, threads)
         else:
-            program = _cumulative_kernel(self.M, self.N, self.op_kind, self.dtype_str)
-            y = program(block_m, block_n, threads)(x)
+            y = self.kernel(block_m, block_n, threads)(x)
         return y[:, : self.N] if y.shape[1] > self.N else y
 
     def _parallel_scan(
@@ -457,7 +535,7 @@ def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
             tile_sums: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
         ):
             with T.Kernel(T.ceildiv(M, block_m), n_tiles, threads=threads) as (pid_m, tile_idx):
-                tile_shared = T.alloc_shared((block_m, block_n + _SMEM_PAD), "float32")
+                tile_shared = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), "float32")
                 tile_frag = T.alloc_fragment((block_m, block_n), "float32")
 
                 for i, j in T.Parallel(block_m, block_n):

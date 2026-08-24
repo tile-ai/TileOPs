@@ -30,12 +30,13 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
         (in-place) to reduce register pressure and avoid a fourth data-typed
         fragment allocation.
     """
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 cond: T.Tensor((N,), "uint8"),
@@ -58,6 +59,8 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
 
         @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 cond: T.Tensor((N,), "uint8"),

@@ -106,6 +106,7 @@ class BenchmarkBase(Generic[W], ABC):
         *inputs: Any,
         record_as: Any = None,
         params: Optional[dict] = None,
+        count_copies: bool = False,
     ) -> dict[str, dict]:
         """Time several implementations forward then reversed, and record them.
 
@@ -115,6 +116,11 @@ class BenchmarkBase(Generic[W], ABC):
         ``no_grad``: a graph built inside the timed region is host work, and a
         backward reached through autograd runs where the timer cannot attribute
         it. A backward baseline is timed by applying its node directly.
+
+        ``count_copies`` puts device-to-device copies into every tag's reading, for a
+        case where an implementation computes part of the result with one. It belongs to
+        the case rather than the tag: reading one side with copies and the other without
+        compares two instruments.
         """
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
@@ -138,6 +144,7 @@ class BenchmarkBase(Generic[W], ABC):
                         repeat_ms=REPEAT_MS / passes,
                         max_iters=_MAX_ITERS // passes,
                         min_iters=max(1, _MIN_ITERS // passes),
+                        count_copies=count_copies,
                     )
                 )
             pass_meta = _capture_bench_meta()
@@ -172,6 +179,10 @@ class BenchmarkBase(Generic[W], ABC):
             "gap_ms": latency - busy,
             "n_samples": len(samples),
         }
+        copy_ms = statistics.median(s.uncounted_copy_ms for s in samples)
+        if copy_ms > 0:
+            # A row whose reading omits work says so in the row, next to the number.
+            result["uncounted_copy_ms"] = copy_ms
         counts = [s.n_kernels for s in samples]
         if all(c is not None for c in counts):
             # The largest count observed: a median would round a call that varies
