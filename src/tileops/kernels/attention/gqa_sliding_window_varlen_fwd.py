@@ -18,13 +18,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.online_softmax import (
+from .call_spec import uses_sliding_window
+from .online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-
-from .call_spec import uses_sliding_window
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = [
@@ -318,7 +317,9 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_varlen_wgmma_pipelined_func
 
 
-@torch.library.custom_op("top::gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel", mutates_args=())
+@torch.library.custom_op(
+    "tileops::gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel", mutates_args=()
+)
 def _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel(
     batch: int,
     heads: int,

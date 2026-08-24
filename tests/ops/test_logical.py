@@ -53,8 +53,7 @@ class LogicalAndFixture(FixtureBase):
 @LogicalAndFixture
 def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_and)
-    shape = (n_total,)
-    op = LogicalAndFwdOp(a_shape=shape, b_shape=shape)
+    op = LogicalAndFwdOp()
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -77,8 +76,7 @@ class LogicalOrFixture(FixtureBase):
 @LogicalOrFixture
 def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_or)
-    shape = (n_total,)
-    op = LogicalOrFwdOp(a_shape=shape, b_shape=shape)
+    op = LogicalOrFwdOp()
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -127,7 +125,7 @@ def test_logical_broadcast(
     dtype = torch.float16
     a = (torch.randn(*a_shape, dtype=dtype, device="cuda") > 0).to(dtype)
     b = (torch.randn(*b_shape, dtype=dtype, device="cuda") > 0).to(dtype)
-    op = op_cls(a_shape=a_shape, b_shape=b_shape)
+    op = op_cls()
     ref = ref_fn(a.bool(), b.bool())
     with torch.no_grad():
         out = op(a, b)
@@ -141,7 +139,7 @@ def test_logical_and_bool_broadcast() -> None:
     b_shape = (1, 1, 768)
     a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
     b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
-    op = LogicalAndFwdOp(a_shape=a_shape, b_shape=b_shape)
+    op = LogicalAndFwdOp()
     ref = torch.logical_and(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -179,7 +177,7 @@ class LogicalNotTest(LogicalNotWorkload, TestBase):
 @LogicalFixture
 def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalNotTest(n_total, dtype)
-    op = LogicalNotFwdOp(N_total=n_total)
+    op = LogicalNotFwdOp()
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
@@ -241,18 +239,13 @@ def test_logical_int_bool_matrix(
 ) -> None:
     """Each binary logical op matches torch on every int / bool dtype."""
     n = 4_096
-    shape = (n,)
     if dtype == torch.bool:
         a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
         b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
     else:
         a, b = _gen_int_logical_inputs(n, dtype)
-    op = op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
     _bool_compare(out, ref)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

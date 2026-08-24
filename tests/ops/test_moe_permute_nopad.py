@@ -204,7 +204,3 @@ def test_moe_permute_nopad_invalid_dtype_raises() -> None:
     op = MoePermuteNopadFwdOp(num_experts=4, num_experts_local=4)
     with pytest.raises(ValueError, match="Expected hidden_states.dtype"):
         op(hidden_states, topk_ids)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

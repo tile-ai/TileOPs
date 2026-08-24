@@ -228,7 +228,7 @@ def _ssd_state_passing_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("top::ssd_state_passing_fwd", mutates_args=())
+@torch.library.custom_op("tileops::ssd_state_passing_fwd", mutates_args=())
 def _ssd_state_passing_fwd_wrapped(
     batch: int,
     num_chunks: int,

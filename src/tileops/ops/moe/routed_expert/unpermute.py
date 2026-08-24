@@ -16,23 +16,11 @@ __all__ = ["MoeUnpermuteFwdOp"]
 class MoeUnpermuteFwdOp(Op):
     """Scatter padded expert outputs back to original token order with weighted reduction.
 
-    Args:
-        total_tokens: Number of input tokens T.
-        top_k: Number of experts selected per token K.
-        hidden_size: Hidden dimension H.
-        padded_batch_sum: Size of the padded mm2_pad buffer (first dim of mm2_pad).
-            Must be >= T*K. When used with MoePermuteOp, pass the padded_batch_sum
-            value returned by the kernel (T*K + E*block_m upper bound).
-            Defaults to total_tokens * top_k for standalone testing only — do NOT
-            use the default when mm2_pad comes from MoePermuteOp, as the padded
-            buffer will be larger and the kernel will index out of bounds.
-        kernel_map: Optional kernel override dict.
-        routed_scaling_factor: Scalar applied to the reduced output, folded into
-            the unpermute kernel. Defaults to 1.0 (no scaling).
-
     Example:
-        >>> op = MoeUnpermuteFwdOp(total_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
-        >>> output = op(mm2_pad, fwd_idx, topk_weights)
+        ```python linenums="1"
+        op = MoeUnpermuteFwdOp(total_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
+        output = op(mm2_pad, fwd_idx, topk_weights)
+        ```
     """
 
     #: Two operators, because ``mutates_args`` is fixed at registration while ``out``
@@ -40,8 +28,8 @@ class MoeUnpermuteFwdOp(Op):
     #: ``relu`` / ``relu_``: ``forward`` picks one, and a test asserts the graph holds
     #: nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = (
-        "top::moe_unpermute_fwd",
-        "top::moe_unpermute_fwd_inplace",
+        "tileops::moe_unpermute_fwd",
+        "tileops::moe_unpermute_fwd_inplace",
     )
 
     def __init__(
@@ -53,6 +41,22 @@ class MoeUnpermuteFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         routed_scaling_factor: float = 1.0,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            total_tokens: Number of input tokens T.
+            top_k: Number of experts selected per token K.
+            hidden_size: Hidden dimension H.
+            padded_batch_sum: Size of the padded mm2_pad buffer (first dim of mm2_pad).
+                Must be >= T*K. When used with MoePermuteOp, pass the padded_batch_sum
+                value returned by the kernel (T*K + E*block_m upper bound).
+                Defaults to total_tokens * top_k for standalone testing only — do NOT
+                use the default when mm2_pad comes from MoePermuteOp, as the padded
+                buffer will be larger and the kernel will index out of bounds.
+            kernel_map: Optional kernel override dict.
+            routed_scaling_factor: Scalar applied to the reduced output, folded into
+                the unpermute kernel. Defaults to 1.0 (no scaling).
+        """
         self.total_tokens = total_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
@@ -63,9 +67,10 @@ class MoeUnpermuteFwdOp(Op):
         self._routed_scaling_factor = routed_scaling_factor
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "unpermute_kernel",
+            inputs,
             key=dtype,
             build=lambda: self.kernel_map["unpermute_kernel"](
                 self.total_tokens,
@@ -130,10 +135,12 @@ class MoeUnpermuteFwdOp(Op):
         """
         self._validate_dtypes(mm2_pad, fwd_idx, topk_weights)
         self.dtype = mm2_pad.dtype
-        return self._get_kernel(mm2_pad.dtype)(mm2_pad, fwd_idx, topk_weights, out=out)
+        return self._get_kernel((mm2_pad, fwd_idx, topk_weights), mm2_pad.dtype)(
+            mm2_pad, fwd_idx, topk_weights, out=out
+        )
 
 
-@torch.library.custom_op("top::moe_unpermute_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_unpermute_fwd", mutates_args=())
 def _moe_unpermute_fwd(
     mm2_pad: torch.Tensor,
     fwd_idx: torch.Tensor,
@@ -158,7 +165,7 @@ def _moe_unpermute_fwd_fake(
     return mm2_pad.new_empty(shapes["output"])
 
 
-@torch.library.custom_op("top::moe_unpermute_fwd_inplace", mutates_args=("out",))
+@torch.library.custom_op("tileops::moe_unpermute_fwd_inplace", mutates_args=("out",))
 def _moe_unpermute_fwd_inplace(
     mm2_pad: torch.Tensor,
     fwd_idx: torch.Tensor,

@@ -245,6 +245,7 @@ def test_reduce_caller_tile_n_validated() -> None:
             N=n,
             op_kind="sum",
             dtype=dtype,
+            reduce_axes=(1,),
             tune=False,
             config={"block_m": block_m, "threads": 128, "tile_n": tile_n},
         )
@@ -282,7 +283,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     op = SumFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    kernel = op.built_kernels(op._kernel_key)[(m, n, dtype)]
+    (kernel,) = op.built_kernels(op._kernel_key).values()
     assert not kernel._needs_tiling
     assert {c["block_m"] for c in kernel.autotune_configs} == {1}
 
@@ -312,7 +313,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
         op = VarFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    kernel = op.built_kernels(op._kernel_key)[(m, n, dtype)]
+    (kernel,) = op.built_kernels(op._kernel_key).values()
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 
@@ -732,7 +733,3 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
     assert torch.allclose(mean_out, ref_mean, **tol), (
         f"var_mean spec mean err: {(mean_out - ref_mean).abs().max()}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

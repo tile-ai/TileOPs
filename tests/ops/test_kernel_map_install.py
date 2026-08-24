@@ -58,7 +58,7 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
     monkeypatch.setattr(torch.cuda, "get_device_name", unavailable)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     try:
-        mod.ReluFwdOp(N_total=8)
+        mod.ReluFwdOp()
         _decode_op()
     finally:
         forget_device_properties()
@@ -89,7 +89,7 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     )
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op._get_kernel(torch.float16)
+        op._get_kernel((), torch.float16)
 
 
 @pytest.mark.smoke
@@ -117,7 +117,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     op = AutoDiscoveredIncompatibleOp(batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op._get_kernel(torch.float16)
+        op._get_kernel((), torch.float16)
 
 
 @pytest.mark.smoke
@@ -130,12 +130,12 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
     """
     import tileops.ops.elementwise as mod
 
-    ((key, default_kernel_cls),) = mod.ReluFwdOp(N_total=8).default_kernel_map.items()
+    ((key, default_kernel_cls),) = mod.ReluFwdOp().default_kernel_map.items()
 
     class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = _make_incompatible_arch_list()
 
-    op = mod.ReluFwdOp(N_total=8, kernel_map={key: IncompatibleKernel})
+    op = mod.ReluFwdOp(kernel_map={key: IncompatibleKernel})
 
     with pytest.raises(ValueError, match="is built for architectures"):
         op(torch.randn(8, device="cuda", dtype=torch.float16))
@@ -156,22 +156,20 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     n_total = 128
     dtype = torch.float16
 
-    baseline = cls(N_total=n_total)
+    baseline = cls()
     ((key, default_kernel_cls),) = baseline.default_kernel_map.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
 
-    overridden = cls(
-        N_total=n_total,
-        kernel_map={key: MarkerKernel},
-    )
-    assert isinstance(overridden._entry(torch.float16).kernel, MarkerKernel)
+    overridden = cls(kernel_map={key: MarkerKernel})
 
     torch.manual_seed(0)
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     y_baseline = baseline(x.clone())
     y_overridden = overridden(x.clone())
+    ((built,),) = [tuple(overridden.built_kernels(key).values())]
+    assert isinstance(built, MarkerKernel), "the override is what got built"
     assert torch.equal(y_baseline, y_overridden), (
         "compatible kernel_map override must yield bit-identical forward output"
     )
@@ -190,19 +188,19 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    ((key, default_kernel_cls),) = cls(N_total=8).default_kernel_map.items()
+    ((key, default_kernel_cls),) = cls().default_kernel_map.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
 
-    op = cls(N_total=8, kernel_map={key: UnrestrictedKernel})
+    op = cls(kernel_map={key: UnrestrictedKernel})
     x = torch.randn(8, device="cuda", dtype=torch.float16)
 
     torch.testing.assert_close(op(x), torch.relu(x))
 
 
-# A slot entry is a bare kernel for some families and a record for others, so
-# an enumeration that does not descend into the record silently tunes nothing.
+# A slot holds one entry per specialization; an enumeration that misses one
+# silently tunes nothing.
 
 
 @pytest.mark.smoke
@@ -210,7 +208,7 @@ def test_autotune_reaches_elementwise_entries():
     """The elementwise slot is record-valued; every built kernel must be seen."""
     from tileops.ops.elementwise import AbsFwdOp
 
-    op = AbsFwdOp(N_total=256)
+    op = AbsFwdOp()
     for dtype in (torch.float16, torch.float32):
         op(torch.randn(256, device="cuda", dtype=dtype))
 
@@ -240,13 +238,13 @@ def test_native_bool_backend_is_constructed_with_bool():
         def forward(self, a, b):
             return a & b
 
-    op = BitwiseAndFwdOp((64,), (64,), kernel_map={"bitwise_and": NativeBoolAnd})
+    op = BitwiseAndFwdOp(kernel_map={"bitwise_and": NativeBoolAnd})
     x = torch.tensor([True, False] * 32, device="cuda")
 
     torch.testing.assert_close(op(x, ~x), x & ~x)
-    entry = op.built_kernels(op._op_name)[torch.bool]
-    assert isinstance(entry.kernel, NativeBoolAnd)
-    assert entry.kernel.ctor_dtype == torch.bool, "the op imposed a storage dtype"
+    ((built,),) = [tuple(op.built_kernels(op._op_name).values())]
+    assert isinstance(built, NativeBoolAnd)
+    assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
     assert sorted(op.kernel_map) == ["bitwise_and"], "a second slot survives"
 
 
@@ -282,11 +280,12 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     x = torch.arange(1, 65, device="cuda", dtype=torch.int32)
 
-    shipped = FloorFwdOp(N_total=64)
+    from tileops.ops.elementwise._base import _IntFallbackCall
+
+    shipped = FloorFwdOp()
     torch.testing.assert_close(shipped(x), x)
-    assert shipped.built_kernels(shipped._op_name)[torch.int32].kernel is None, (
-        "float-only kernel was used"
-    )
+    ((built,),) = [tuple(shipped.built_kernels(shipped._op_name).values())]
+    assert isinstance(built, _IntFallbackCall), "float-only kernel was used"
 
     class NativeIntFloor(FloorFwdKernel):
         SUPPORTED_DTYPES = (torch.int32, torch.float32)
@@ -297,11 +296,11 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
         def forward(self, x):
             return x.clone()
 
-    op = FloorFwdOp(N_total=64, kernel_map={"floor": NativeIntFloor})
+    op = FloorFwdOp(kernel_map={"floor": NativeIntFloor})
     torch.testing.assert_close(op(x), x)
-    entry = op.built_kernels(op._op_name)[torch.int32]
-    assert isinstance(entry.kernel, NativeIntFloor), "the override was bypassed"
-    assert entry.kernel.dtype == torch.int32
+    ((built,),) = [tuple(op.built_kernels(op._op_name).values())]
+    assert isinstance(built, NativeIntFloor), "the override was bypassed"
+    assert built.dtype == torch.int32
 
 
 class _ProbeKernel:
@@ -330,41 +329,38 @@ def _probe_backend(probe_dtype: torch.dtype):
     return ProbeBackend
 
 
-# One entry per distinct builder shape: (op class, ctor kwargs, slots, entry args).
+# One entry per distinct builder shape: (op class, manifest params, slots, build dims).
+# ``build dims`` is what ``_build(dtype, *dims)`` takes — what the in-tree kernel is
+# compiled for. Shapes are not construction arguments any more: they arrive with the call.
 _BUILDER_SHAPES = [
-    ("AbsFwdOp", {"N_total": 64}, ["abs"], ()),
-    ("ReciprocalFwdOp", {"N_total": 64}, ["reciprocal"], ()),
-    ("FloorFwdOp", {"N_total": 64}, ["floor"], ()),
-    ("EluFwdOp", {"N_total": 64, "alpha": 1.0}, ["elu"], ()),
-    ("AddFwdOp", {"a_shape": (64,), "b_shape": (64,)}, ["add"], ()),
-    ("EqFwdOp", {"a_shape": (64,), "b_shape": (64,)}, ["eq"], ()),
-    ("BitwiseAndFwdOp", {"a_shape": (64,), "b_shape": (64,)}, ["bitwise_and"], ()),
-    ("LogicalNotFwdOp", {"N_total": 64}, ["logical_not"], ()),
-    ("LerpTensorFwdOp", {"input": (64,), "end": (64,), "weight": (64,)}, ["lerp_tensor"], ()),
-    ("SiluAndMulFwdOp", {"M": 16, "N": 8}, ["silu_and_mul"], (16, 8)),
-    ("WhereFwdOp", {"condition": (64,), "input": (64,), "other": (64,)}, ["where"], ()),
-    ("PreluFwdOp", {"shape": (4, 8), "num_channels": 8}, ["prelu"], ()),
-    ("NanToNumFwdOp", {"N_total": 64}, ["nan_to_num"], ()),
-    ("ClampFwdOp", {"input": (64,), "min": (64,), "max": (64,)}, ["clamp_tensor"], ()),
-    ("LerpFwdOp", {"a_shape": (64,), "b_shape": (64,), "weight": 0.5}, ["lerp"], ()),
-    ("ClampScalarFwdOp", {"input": (64,), "min": 0.0}, ["clamp"], ()),
-    ("MaskedFillScalarFwdOp", {"input": (64,), "mask": (64,), "value": 1.0}, ["masked_fill"], ()),
-    (
-        "MaskedFillFwdOp",
-        {"input": (64,), "mask": (64,), "value": ()},
-        ["masked_fill_tensor_value"],
-        (),
-    ),
+    ("AbsFwdOp", {}, ["abs"], (64,)),
+    ("ReciprocalFwdOp", {}, ["reciprocal"], (64,)),
+    ("FloorFwdOp", {}, ["floor"], (64,)),
+    ("EluFwdOp", {"alpha": 1.0}, ["elu"], (64,)),
+    ("AddFwdOp", {}, ["add"], ((64,), (64,))),
+    ("EqFwdOp", {}, ["eq"], ((64,), (64,))),
+    ("BitwiseAndFwdOp", {}, ["bitwise_and"], ((64,), (64,))),
+    ("LogicalNotFwdOp", {}, ["logical_not"], (64,)),
+    ("LerpTensorFwdOp", {}, ["lerp_tensor"], (64,)),
+    ("SiluAndMulFwdOp", {}, ["silu_and_mul"], (16, 8)),
+    ("WhereFwdOp", {}, ["where"], (64,)),
+    ("PreluFwdOp", {}, ["prelu"], (32, 8, 1)),
+    ("NanToNumFwdOp", {}, ["nan_to_num"], (64,)),
+    ("ClampFwdOp", {}, ["clamp_tensor"], (64, True, True)),
+    ("LerpFwdOp", {"weight": 0.5}, ["lerp"], ((64,), (64,))),
+    ("ClampScalarFwdOp", {"min": 0.0}, ["clamp"], (64,)),
+    ("MaskedFillScalarFwdOp", {"value": 1.0}, ["masked_fill"], (64,)),
+    ("MaskedFillFwdOp", {}, ["masked_fill_tensor_value"], (64,)),
 ]
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("op_name", "kwargs", "slots", "entry_args"),
+    ("op_name", "kwargs", "slots", "build_dims"),
     _BUILDER_SHAPES,
     ids=[c[0] for c in _BUILDER_SHAPES],
 )
-def test_builder_constructs_what_the_backend_specialized(op_name, kwargs, slots, entry_args):
+def test_builder_constructs_what_the_backend_specialized(op_name, kwargs, slots, build_dims):
     """Whatever `specialize` returns is what gets built, and nothing else."""
     import tileops.ops.elementwise as ew
 
@@ -373,17 +369,16 @@ def test_builder_constructs_what_the_backend_specialized(op_name, kwargs, slots,
     op = getattr(ew, op_name)(kernel_map={slot: backend for slot in slots}, **kwargs)
 
     _ProbeKernel.instances = []
-    entry = op._build_entry(torch.float16, *entry_args)
+    built = op._build(torch.float16, *build_dims)
 
     assert len(_ProbeKernel.instances) == 1, (
         f"{op_name} built {len(_ProbeKernel.instances)} kernels; the backend's "
         "answer was ignored or something else was constructed too"
     )
-    assert entry.kernel is _ProbeKernel.instances[0]
-    assert entry.kernel.ctor_dtype == probe_dtype, (
-        f"{op_name} constructed with {entry.kernel.ctor_dtype}, not the dtype the backend asked for"
+    assert built is _ProbeKernel.instances[0]
+    assert built.ctor_dtype == probe_dtype, (
+        f"{op_name} constructed with {built.ctor_dtype}, not the dtype the backend asked for"
     )
-    assert entry.compute_dtype == probe_dtype
 
 
 @pytest.mark.smoke
@@ -407,9 +402,12 @@ def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
         **kwargs,
     )
 
+    assert _ProbeKernel.instances == [], "construction builds nothing"
+    built = op._build(op.dtype)
+
     assert len(_ProbeKernel.instances) == 1
-    assert op.kernel is _ProbeKernel.instances[0]
-    assert op.kernel.ctor_dtype == probe_dtype
+    assert built is _ProbeKernel.instances[0]
+    assert built.ctor_dtype == probe_dtype
 
     # Whatever storage the backend computed in, the op delivers what it declared.
     shipped = getattr(ew, op_name)(dtype=torch.float16, **kwargs)

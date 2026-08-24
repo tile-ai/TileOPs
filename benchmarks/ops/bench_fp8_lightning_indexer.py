@@ -2,11 +2,16 @@
 
 Workload shapes come from the ops manifest; roofline FLOP and byte counts
 come from the op's ``eval_roofline()`` via :class:`ManifestBenchmark`.
+
+The reference materializes the ``[batch, heads, seq_len, seq_len_kv]`` scores the op
+folds into its matmul epilogue, and peaks near 104 GB on these rows. A device that
+cannot hold that fails in the reference rather than in the op.
 """
 
 import pytest
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
@@ -30,29 +35,29 @@ _SHAPE_KEYS = (
 )
 
 
-def _indexer_params() -> list:
-    """Params from manifest workloads, deduped on shape.
+def _one_row_per_shape(workloads: list[dict]) -> list[dict]:
+    """The rows this bench measures: one per shape.
 
-    ``FP8LightningIndexerWorkload.gen_inputs`` emits bf16 and quantizes inside
-    the op, so workloads differing only in ``dtypes`` are one measurement.
+    ``FP8LightningIndexerWorkload.gen_inputs`` emits bf16 and the op quantizes
+    inside, so two rows differing only in ``dtypes`` are one measurement.
     """
-    seen, params = set(), []
-    for w in load_workloads(_FP8_LIGHTNING_INDEXER_OP):
-        args = tuple(w[k] for k in _SHAPE_KEYS)
-        if args in seen:
+    seen, rows = set(), []
+    for w in workloads:
+        shape = tuple(str(w[key]) for key in _SHAPE_KEYS)
+        if shape in seen:
             continue
-        seen.add(args)
-        params.append(
-            pytest.param(
-                *args, id=w["label"], marks=pytest.mark.smoke if not params else pytest.mark.full
-            )
-        )
-    return params
+        seen.add(shape)
+        rows.append(w)
+    return rows
 
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits",
-    _indexer_params(),
+    workload_params(
+        _one_row_per_shape(load_workloads(_FP8_LIGHTNING_INDEXER_OP)),
+        fields(*_SHAPE_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_fp8_lightning_indexer_bench(
     batch: int,
@@ -72,5 +77,12 @@ def test_fp8_lightning_indexer_bench(
     bm = ManifestBenchmark(_FP8_LIGHTNING_INDEXER_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

@@ -50,9 +50,12 @@ test-side refactors, and a tolerance or comparator change cannot move a
 baseline number. Sharing the reference costs none of that, and removes the
 second copy that used to drift.
 
-A baseline that is deliberately not the reference — a different layout, a
-faster idiom, an external library — overrides `ref_program` in the benchmark
-and says why.
+A baseline that is another idiom for the same computation overrides
+`ref_program` in the benchmark and says why.
+
+A baseline that is a different implementation is timed under its own tag next
+to the reference: the tag is what names it in the report, so it is checked
+against the reference before the case is timed.
 
 [`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
 checks the `tests/` import and a locally defined `gen_inputs`, both by literal
@@ -88,10 +91,6 @@ tensor, a matching pair — is reused across ops, names none of them, and so its
 consumers carry the reference instead. `TestBase` already declares
 `ref_program` abstract, so whichever class supplies it, a test without one
 cannot be instantiated.
-
-A benchmark whose baseline is deliberately not the reference — a different
-layout, a faster idiom, an external library — overrides `ref_program`. That is
-a benchmark decision and belongs in the benchmark.
 
 ```
 WorkloadBase (workloads/workload_base.py)  # gen_inputs(), and ref_program()

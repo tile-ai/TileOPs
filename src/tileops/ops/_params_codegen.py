@@ -17,7 +17,7 @@ ATTRIBUTE = "__manifest_param_names__"
 def maybe_install_param_names(cls: type) -> None:
     """Attach the op's manifest param names to *cls*.
 
-    Resolution mirrors :func:`tileops.ops._dtype_codegen.maybe_install_validator`: a
+    Resolution mirrors `tileops.ops._dtype_codegen.maybe_install_validator`: a
     class-attached ``__manifest_signature__`` first, then the manifest entry keyed by class
     name. A name in the class body wins.
 

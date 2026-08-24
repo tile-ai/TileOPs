@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
+
+from .online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
 __all__ = ["MHADecodePagedKernel"]
 
@@ -282,7 +283,6 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     ),
                 )
                 num_blockn_in_page = page_size // block_N
-                # loop_range = T.ceildiv(seqlen_kv_b, block_N)
                 loop_range = blocks_in_split
                 offset = 0 if sid == 0 else split_length_shared[sid - 1] // block_N
 
@@ -439,7 +439,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
 # Use distinct op names so paged and non-paged (mha_decode.py) do not overwrite
 # each other in torch.library; otherwise the first-registered impl "changes" the
 # registry and later parametrized tests can hit the wrong implementation.
-@torch.library.custom_op("top::mha_decode_paged_no_split_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_paged_no_split_op", mutates_args=())
 def _mha_decode_paged_no_split_op(
     batch: int,
     heads: int,
@@ -487,7 +487,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::mha_decode_paged_split_op", mutates_args=())
+@torch.library.custom_op("tileops::mha_decode_paged_split_op", mutates_args=())
 def _mha_decode_paged_split_op(
     batch: int,
     heads: int,

@@ -134,7 +134,7 @@ def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         batch, heads, heads_kv, seqlen_kv, dim, page_size
     )
-    kernel = op._get_kernel(torch.float16)
+    kernel = op._get_kernel((), torch.float16)
     assert page_size % kernel.config["block_N"] == 0
     assert {config["block_N"] for config in kernel.autotune_configs} == {64}
     test.check(op, q, k, v, real_seqlen_kv, block_table, compare=test._maxdiff_cosine_compare)
@@ -148,7 +148,7 @@ def test_gqa_decode_paged_rejects_unsupported_page_tile(page_size: int) -> None:
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(1, 16, 4, seqlen_kv, 128, page_size)
     # The page layout is rejected by the kernel, which is built on first use.
     with pytest.raises(ValueError, match="matches no supported block_N"):
-        op._get_kernel(torch.float16)
+        op._get_kernel((), torch.float16)
 
 
 @pytest.mark.smoke
@@ -216,7 +216,7 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
     if reverse_pages:
         block_table = block_table.flip(-1).contiguous()
 
-    kernel = op._get_kernel(torch.float16)
+    kernel = op._get_kernel((), torch.float16)
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
     assert kernel._select_tier(real_seqlen_kv_value) == (
         "ctx" if real_seqlen_kv_value >= 1024 else "no_split"
@@ -236,7 +236,7 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
 def test_gqa_decode_paged_bs1_dispatch() -> None:
     """Eligible Hopper requests select the paged TMA/WGMMA kernel."""
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(1, 32, 4, 8192, 128, 256)
-    kernel = op._get_kernel(torch.float16)
+    kernel = op._get_kernel((), torch.float16)
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
     assert kernel._select_tier(1024) == "ctx"
     assert kernel._select_tier(512) == "no_split"
@@ -269,8 +269,4 @@ def test_gqa_decode_paged_bs1_dispatch_fallbacks(
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         batch, 32, 4, seqlen_kv, dim, page_size, softcap=softcap
     )
-    assert op._get_kernel(dtype).__class__.__name__ == "GQADecodePagedKernel"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
+    assert op._get_kernel((), dtype).__class__.__name__ == "GQADecodePagedKernel"

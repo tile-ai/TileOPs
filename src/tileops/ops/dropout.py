@@ -36,12 +36,6 @@ class DropoutFwdOp(Op):
     Uses T.rng_init / T.rng_rand_float (backed by cuRAND Philox4_32_10
     by default) for per-thread random number generation.
 
-    Args:
-        p: Drop probability in [0, 1].
-        seed: Integer seed for RNG.
-        training: If False, dropout is disabled (identity pass-through).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
     """
 
     _op_name = "dropout"
@@ -55,6 +49,15 @@ class DropoutFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            p: Drop probability in [0, 1].
+            seed: Integer seed for RNG.
+            training: If False, dropout is disabled (identity pass-through).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
         if not (0.0 <= p <= 1.0):
             raise ValueError(f"Dropout probability must be in [0, 1], got {p}")
         self.N_total = None
@@ -85,13 +88,18 @@ class DropoutFwdOp(Op):
             )
         return self.N_total * self.dtype.itemsize * 2
 
-    def _get_kernel(self, x: torch.Tensor) -> Kernel:
+    def _get_kernel(self, x: torch.Tensor, rows: torch.Tensor) -> Kernel:
+        """Fetch the kernel for *x*, handing over *x* itself rather than *rows*.
+
+        *rows* is the flat view the kernel wants; *x* is what the signature declares.
+        """
         return self.get_or_build_kernel(
             self._op_name,
-            key=(x.numel(), x.dtype, x.device.index),
+            (x,),
+            key=(rows.numel(), rows.dtype, rows.device.index),
             build=lambda: self.kernel_map[self._op_name](
-                x.numel(),
-                x.dtype,
+                rows.numel(),
+                rows.dtype,
                 p=self.p,
                 seed=self.seed,
                 tune=self.tune,
@@ -107,11 +115,26 @@ class DropoutFwdOp(Op):
             return torch.zeros_like(x)
         orig_shape = x.shape
         x_flat = x.contiguous().reshape(-1)
-        self.kernel = self._get_kernel(x_flat)
+        self.kernel = self._get_kernel(x, x_flat)
         y_flat = self.kernel(x_flat)
         return y_flat.reshape(orig_shape)
 
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: masking writes one element per input element."""
+        return {"output": tuple(input_shape)}
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            input: Input tensor, dtype ``float16 | bfloat16 | float32``.
+
+        Returns:
+            ``output``, as the manifest declares.
+        """
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
@@ -129,7 +152,7 @@ class DropoutFwdOp(Op):
 # torch.compile registration
 
 
-@torch.library.custom_op("top::dropout", mutates_args=())
+@torch.library.custom_op("tileops::dropout", mutates_args=())
 def _wrapped_dropout(x: torch.Tensor, instance_key: str) -> torch.Tensor:
     instance = get_instance(instance_key)
     return instance._eager_forward(x)

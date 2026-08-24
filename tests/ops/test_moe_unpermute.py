@@ -204,7 +204,3 @@ def test_moe_unpermute_out_buffer_validation():
     mm2_ws.copy_(mm2_pad)
     got = op(mm2_ws, fwd_idx, topk_weights, out=out_ws)
     torch.testing.assert_close(got.float(), ref.float(), rtol=1e-2, atol=1e-2)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

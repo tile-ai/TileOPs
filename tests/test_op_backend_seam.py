@@ -10,7 +10,9 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
+from tileops.ops.pool import MaxPool2dFwdOp
 
 pytestmark = pytest.mark.smoke
 
@@ -59,7 +61,7 @@ def _stub_op(**kwargs):
 
     class StubOp(RMSNormFwdOp):
         def forward(self, x, weight):
-            return self.get_or_build_kernel("stub", key=x.dtype, build=lambda: None)
+            return self.get_or_build_kernel("stub", (), key=x.dtype, build=lambda: None)
 
     StubOp.__name__ = "StubOp"
     return StubOp(normalized_shape=NORMALIZED_SHAPE, **kwargs)
@@ -340,3 +342,330 @@ def test_a_settled_instance_is_bound_to_that_target_s_devices():
 
     with pytest.raises(ValueError, match="is a CUDA kernel"):
         op(*_inputs())  # same signature, CPU tensors
+
+
+# --------------------------------------------------------------------------------------
+# Two optional inputs at the seam: ClampFwdOp's min and max
+# --------------------------------------------------------------------------------------
+
+
+class _ClampRecorder:
+    """A target for ClampFwdOp; its kernel takes whatever the op hands over."""
+
+    def __init__(self):
+        self.calls = []
+        self.kernel_calls = 0
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(input, min=None, max=None):
+            assert input.is_contiguous()
+            self.kernel_calls += 1
+            return torch.full_like(input, 7)
+
+        return kernel
+
+
+def _clamp_inputs(rows=4, cols=8, dtype=DTYPE, device="cpu"):
+    make = lambda: torch.randn(rows, cols, dtype=dtype, device=device)  # noqa: E731
+    return make(), make(), make()
+
+
+def test_an_absent_optional_input_keeps_its_slot():
+    """The slot says which input is missing; how many slots there are cannot."""
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops.ops.elementwise import ClampFwdOp
+
+    input, lower, _ = _clamp_inputs()
+    ClampFwdOp()(input, lower, None)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(input), TensorSpec.of(lower), None)
+    assert params == {}, "ClampFwdOp declares no manifest params"
+
+
+def test_the_two_one_sided_clamps_are_two_kernels():
+    """Both hand over two tensors of one shape; only the slot tells them apart."""
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops.ops.elementwise import ClampFwdOp
+
+    op = ClampFwdOp()
+    input, lower, upper = _clamp_inputs()
+
+    op(input, lower, None)
+    op(input, None, upper)
+    op(input, lower, None)
+
+    assert len(recorder.calls) == 2, "a lower bound and an upper bound are not one kernel"
+    assert recorder.calls[0][0][1] is not None and recorder.calls[0][0][2] is None
+    assert recorder.calls[1][0][1] is None and recorder.calls[1][0][2] is not None
+
+
+def test_a_clamp_with_neither_bound_never_reaches_the_backend():
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops.ops.elementwise import ClampFwdOp
+
+    input, _, _ = _clamp_inputs()
+    with pytest.raises(ValueError, match="at least one of"):
+        ClampFwdOp()(input)
+    assert recorder.calls == [], "the op layer's checks run for every target"
+
+
+# --------------------------------------------------------------------------------------
+# An elementwise op whose shape is learned from the call
+# --------------------------------------------------------------------------------------
+
+
+class _ReluRecorder:
+    def __init__(self):
+        self.calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+        return lambda x: torch.full_like(x, 7)
+
+
+def test_an_elementwise_op_hands_over_the_manifest_shape():
+    """Not the flat view the in-tree kernel wants: that is the kernel's own business."""
+    recorder = _ReluRecorder()
+    _register(recorder, op="ReluFwdOp")
+    from tileops.ops.elementwise import ReluFwdOp
+
+    x = torch.randn(4, 8, 16, dtype=DTYPE)
+    out = ReluFwdOp()(x)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x),), "the shape the manifest declares, not (512,)"
+    assert params == {"inplace": False}
+    assert torch.equal(out, torch.full_like(x, 7))
+
+
+def test_an_elementwise_op_without_a_builder_for_this_target_raises():
+    recorder = _ReluRecorder()
+    _register(recorder, op="ReluFwdOp")
+    from tileops.ops.elementwise import SiluFwdOp
+
+    with pytest.raises(OpNotAvailableError, match="registers no kernel builder"):
+        SiluFwdOp()(torch.randn(4, 8, dtype=DTYPE))
+
+
+# --------------------------------------------------------------------------------------
+# An optional input at the seam: Conv2dFwdOp's bias
+# --------------------------------------------------------------------------------------
+
+
+class _ConvRecorder:
+    """A target for Conv2dFwdOp; its kernel takes whatever the op hands over."""
+
+    def __init__(self):
+        self.calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(x, weight, bias=None):
+            assert x.is_contiguous() and weight.is_contiguous()
+            return torch.zeros(x.shape[0], weight.shape[0], x.shape[2], x.shape[3], dtype=x.dtype)
+
+        return kernel
+
+
+def _conv_inputs(bias=False):
+    x = torch.randn(1, 8, 8, 8, dtype=DTYPE)
+    weight = torch.randn(4, 8, 3, 3, dtype=DTYPE)
+    return x, weight, (torch.randn(4, dtype=DTYPE) if bias else None)
+
+
+def test_a_missing_optional_input_keeps_its_place_in_the_hand_over():
+    """Presence is what the backend reads, and it reads it off the argument.
+
+    One argument per ``signature.inputs`` entry: a bias this call did not pass is ``None``
+    there. Dropping the argument would leave the count to say what is missing, which it
+    cannot do for an op with two optional inputs.
+    """
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    x, weight, _ = _conv_inputs()
+
+    Conv2dFwdOp(padding=1)(x, weight)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x), TensorSpec.of(weight), None), "signature.inputs order"
+    assert params == {"stride": (1, 1), "padding": 1, "dilation": (1, 1), "groups": 1}
+
+
+def test_a_bias_that_is_passed_reaches_the_backend_as_a_third_spec():
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    x, weight, bias = _conv_inputs(bias=True)
+
+    Conv2dFwdOp(padding=1)(x, weight, bias)
+
+    ((inputs, _),) = recorder.calls
+    assert inputs == (TensorSpec.of(x), TensorSpec.of(weight), TensorSpec.of(bias))
+
+
+def test_the_two_sides_of_an_optional_input_are_two_kernels():
+    """Bias presence changes what a kernel is built for, so it is part of the signature."""
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    op = Conv2dFwdOp(padding=1)
+    x, weight, bias = _conv_inputs(bias=True)
+
+    op(x, weight)
+    op(x, weight, bias)
+    op(x, weight)
+
+    assert len(recorder.calls) == 2
+
+
+def test_a_rejected_conv_call_never_reaches_the_backend():
+    recorder = _ConvRecorder()
+    _register(recorder, op="Conv2dFwdOp")
+    x, weight, _ = _conv_inputs()
+
+    with pytest.raises(ValueError, match="bias shape"):
+        Conv2dFwdOp(padding=1)(x, weight, torch.randn(999, dtype=DTYPE))
+    assert recorder.calls == [], "the op layer's checks run for every target"
+
+
+# --------------------------------------------------------------------------------------
+# An explicit target: MaxPool2dFwdOp
+# --------------------------------------------------------------------------------------
+
+
+class _PoolRecorder:
+    """A target for MaxPool2dFwdOp; its kernel takes the one input the op hands over."""
+
+    def __init__(self):
+        self.calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(x):
+            assert x.is_contiguous()
+            return torch.full((x.shape[0], x.shape[1], 4, 4), 7, dtype=x.dtype)
+
+        return kernel
+
+
+def test_an_explicit_target_serves_a_pool_op_no_detector_claims_the_device():
+    """``target=`` is the override, so it routes with nothing claiming the device."""
+    recorder = _PoolRecorder()
+    _register(recorder, op="MaxPool2dFwdOp", claims=False)
+    x = torch.randn(1, 4, 8, 8, dtype=DTYPE)
+
+    out = MaxPool2dFwdOp(kernel_size=2, target="acme")(x)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x),), "signature.inputs order"
+    assert params == {
+        "kernel_size": (2, 2),
+        "stride": (2, 2),
+        "padding": (0, 0),
+        "dilation": (1, 1),
+        "ceil_mode": False,
+    }
+    assert torch.equal(out, torch.full_like(out, 7)), "the target's kernel produced the result"
+
+
+# --------------------------------------------------------------------------------------
+# Five inputs, two of them written: BatchNormFwdOp at the seam
+# --------------------------------------------------------------------------------------
+
+
+def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
+    """Order is the only thing that tells a backend which tensor is which."""
+    received = []
+
+    def build_kernel(*inputs, **params):
+        def kernel(x, running_mean, running_var, weight, bias):
+            received.append((x, running_mean, running_var, weight, bias))
+            return torch.full_like(x, 7)
+
+        return kernel
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("BatchNormFwdOp", "acme", build_kernel)
+    from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
+    x = torch.randn(2, 4, 8, 8, dtype=DTYPE)
+    channels = [torch.randn(4, dtype=torch.float32) for _ in range(4)]
+    running_mean, running_var, weight, bias = channels
+
+    out = BatchNormFwdOp()(x, running_mean, running_var, weight, bias)
+
+    ((got_x, got_mean, got_var, got_weight, got_bias),) = received
+    assert got_x.shape == x.shape
+    for got, expected in (
+        (got_mean, running_mean),
+        (got_var, running_var),
+        (got_weight, weight),
+        (got_bias, bias),
+    ):
+        assert torch.equal(got, expected)
+    assert torch.equal(out, torch.full_like(x, 7))
+
+
+# --------------------------------------------------------------------------------------
+# A reduction op at the seam: the declared rank, and the axes as a param
+# --------------------------------------------------------------------------------------
+
+
+class _ReduceRecorder:
+    """A target for a reduction op, returning a result of the shape the op declares."""
+
+    def __init__(self, out_shape):
+        self.calls = []
+        self._out_shape = out_shape
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+        (spec,) = inputs
+
+        def kernel(x):
+            assert x.is_contiguous(), "the op normalizes contiguity before handing over"
+            return torch.full(self._out_shape, 7, dtype=spec.dtype, device=spec.device)
+
+        return kernel
+
+
+def test_a_reduction_op_hands_over_the_declared_rank():
+    """Not the ``(M, N)`` rows the in-tree kernel wants: that permute is the kernel's."""
+    recorder = _ReduceRecorder((4,))
+    _register(recorder, op="SumFwdOp")
+    from tileops.ops.reduction import SumFwdOp
+
+    x = torch.randn(4, 8, 16, dtype=DTYPE)
+    out = SumFwdOp(dim=[1, 2])(x)
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (TensorSpec.of(x),), "the rank the manifest declares, not (4, 128)"
+    assert params == {"dim": [1, 2], "keepdim": False}
+    assert torch.equal(out, torch.full((4,), 7, dtype=DTYPE))
+
+
+def test_a_non_contiguous_reduction_input_reaches_the_backend_contiguous():
+    recorder = _ReduceRecorder((4,))
+    _register(recorder, op="SumFwdOp")
+    from tileops.ops.reduction import SumFwdOp
+
+    SumFwdOp(dim=-1)(torch.randn(8, 4, dtype=DTYPE).t())
+
+    assert len(recorder.calls) == 1  # the assertion that matters is inside the kernel
+
+
+def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
+    recorder = _ReduceRecorder((4,))
+    _register(recorder, op="SumFwdOp")
+    from tileops.ops.reduction import SumFwdOp
+
+    with pytest.raises(IndexError):
+        SumFwdOp(dim=5)(torch.randn(4, 8, dtype=DTYPE))
+
+    assert recorder.calls == []

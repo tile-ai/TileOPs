@@ -29,25 +29,15 @@ class MoePermuteNopadFwdOp(Op):
     The output perm_h has exactly T*K rows with no inter-expert padding,
     enabling smaller intermediate tensors throughout the MoE pipeline.
 
-    Args:
-        num_experts: Total number of experts E in the routing table.
-        num_experts_local: Number of those experts this rank lays out. Equal to
-            ``num_experts`` outside expert parallelism.
-        total_tokens: Optional committed number of input tokens T. Preferred
-            API infers it from ``hidden_states.shape[0]``.
-        top_k: Optional committed number of experts selected per token K.
-            Preferred API infers it from ``topk_ids.shape[1]``.
-        hidden_size: Optional committed hidden dimension H. Preferred API
-            infers it from ``hidden_states.shape[1]``.
-        kernel_map: Optional kernel override dict.
-
     Example:
-        >>> op = MoePermuteNopadFwdOp(num_experts=8, num_experts_local=8)
-        >>> perm_h, offsets, sizes, expert_offset, fwd_idx = op(hidden_states, topk_ids)
+        ```python linenums="1"
+        op = MoePermuteNopadFwdOp(num_experts=8, num_experts_local=8)
+        perm_h, offsets, sizes, expert_offset, fwd_idx = op(hidden_states, topk_ids)
+        ```
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_permute_nopad_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_permute_nopad_fwd",)
 
     def __init__(
         self,
@@ -58,6 +48,20 @@ class MoePermuteNopadFwdOp(Op):
         hidden_size: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            num_experts: Total number of experts E in the routing table.
+            num_experts_local: Number of those experts this rank lays out. Equal to
+                ``num_experts`` outside expert parallelism.
+            total_tokens: Optional committed number of input tokens T. Preferred
+                API infers it from ``hidden_states.shape[0]``.
+            top_k: Optional committed number of experts selected per token K.
+                Preferred API infers it from ``topk_ids.shape[1]``.
+            hidden_size: Optional committed hidden dimension H. Preferred API
+                infers it from ``hidden_states.shape[1]``.
+            kernel_map: Optional kernel override dict.
+        """
         if not 0 < num_experts_local <= num_experts:
             raise ValueError(
                 f"num_experts_local must be in (0, {num_experts}], got {num_experts_local}"
@@ -312,7 +316,7 @@ class MoePermuteNopadFwdOp(Op):
         return kernel(hidden_states, topk_ids, expert_map)
 
 
-@torch.library.custom_op("top::moe_permute_nopad_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_permute_nopad_fwd", mutates_args=())
 def _moe_permute_nopad_fwd(
     hidden_states: torch.Tensor,
     topk_ids: torch.Tensor,

@@ -1,16 +1,16 @@
 import pytest
 import torch
 
-import tileops.ops.deltanet_recurrence as deltanet_ops
+import tileops.ops.linear_attention.deltanet_recurrence as deltanet_ops
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.deltanet_recurrence import (
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.ops import DeltaNetDecodeFwdOp
-from tileops.ops.deltanet_recurrence import DELTANET_DECODE_KEYS
+from tileops.ops.linear_attention.deltanet_recurrence import DELTANET_DECODE_KEYS
 from workloads.linear_attention import DeltaNetDecodeWorkload, deltanet_decode_torch
 
 
@@ -252,7 +252,7 @@ def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
     """Whatever selection picks is constructed with the op's autotune setting."""
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map(), tune=tune)
 
-    kernel = op._get_kernel(1, 32, 128, 128, torch.bfloat16, device_index=None)
+    kernel = op._get_kernel((), 1, 32, 128, 128, torch.bfloat16, device_index=None)
 
     assert kernel.kwargs["tune"] is tune
 
@@ -322,7 +322,3 @@ def test_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None:
                 "raw_maxrregcount": 146,
             },
         )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

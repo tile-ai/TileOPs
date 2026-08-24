@@ -2,12 +2,28 @@
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes and roofline formulas are loaded from the ops manifest (src/tileops/manifest/).
+
+Every row is timed against torch eager, the same reference through inductor, and
+flag_gems' Triton reduction where one exists. amin has none: flag_gems 5.0.2
+exposes amax but no amin, and ``min_dim`` also produces indices.
+
+The flag_gems callables cast nothing — like aten, its reductions accumulate in fp32
+and return the storage dtype — so each tag is one kernel.
 """
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_dims,
+    flaggems_op,
+    reference_tolerance,
+)
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -41,6 +57,17 @@ _VAR_OP = "VarFwdOp"
 _VAR_MEAN_OP = "VarMeanFwdOp"
 
 
+def _functors(op, baseline_fn, inputs, dtype: torch.dtype, flaggems_fn=None) -> dict:
+    """The op, flag_gems where it has a kernel, and torch eager and compiled."""
+    functors = {"tileops": op}
+    if flaggems_fn is not None:
+        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
+        functors[FLAGGEMS_TAG] = flaggems_fn
+    functors["torch"] = baseline_fn
+    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    return functors
+
+
 # Sum benchmarks
 
 
@@ -61,8 +88,18 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     def baseline_fn(x):
         return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
 
+    flaggems_sum = flaggems_op("sum_dim")
+
+    def flaggems_fn(x):
+        return flaggems_sum(x, flaggems_dims(dim), keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -89,8 +126,18 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     def baseline_fn(x):
         return x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
 
+    flaggems_mean = flaggems_op("mean_dim")
+
+    def flaggems_fn(x):
+        return flaggems_mean(x, flaggems_dims(dim), keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -117,8 +164,18 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     def baseline_fn(x):
         return x.amax(dim=dim, keepdim=keepdim)
 
+    flaggems_amax = flaggems_op("amax")
+
+    def flaggems_fn(x):
+        return flaggems_amax(x, flaggems_dims(dim), keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -146,7 +203,12 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.amin(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -167,8 +229,18 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     def baseline_fn(x):
         return x.float().prod(dim=-1).to(x.dtype)
 
+    flaggems_prod = flaggems_op("prod_dim")
+
+    def flaggems_fn(x):
+        return flaggems_prod(x, -1)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -195,8 +267,18 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     def baseline_fn(x):
         return x.float().std(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
+    flaggems_std = flaggems_op("std")
+
+    def flaggems_fn(x):
+        return flaggems_std(x, flaggems_dims(dim), correction=1, keepdim=keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -223,8 +305,18 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     def baseline_fn(x):
         return x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
+    flaggems_var = flaggems_op("var_dim")
+
+    def flaggems_fn(x):
+        return flaggems_var(x, flaggems_dims(dim), correction=1, keepdim=keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -253,8 +345,18 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
         m = x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
         return (v, m)
 
+    flaggems_var_mean = flaggems_op("var_mean")
+
+    def flaggems_fn(x):
+        return flaggems_var_mean(x, flaggems_dims(dim), correction=1, keepdim=keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

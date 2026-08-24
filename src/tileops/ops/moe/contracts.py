@@ -47,6 +47,7 @@ class ContiguousLayoutSpec:
     _kind: _LayoutKind = dataclasses.field(repr=False)
 
     def __init__(self, kind: _LayoutKind) -> None:
+        """Initialize one supported contiguous kind; callers should use a named preset."""
         if kind not in (
             _LayoutKind.TIGHT_PHYSICAL_PSUM,
             _LayoutKind.TIGHT_PER_ROW,

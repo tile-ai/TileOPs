@@ -8,8 +8,13 @@ FLOP/byte counts come from each op's ``eval_roofline()`` via
 One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
 ``load_workloads("<OpName>")`` call to its manifest entry. A row passes bias
 when it declares ``bias_shape``.
+
+Every row is timed against flag_gems' Triton convolutions, ``F.convNd`` eager
+(which is cuDNN, so cuDNN takes no tag of its own), and that reference through
+inductor.
 """
 
+import functools
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
@@ -17,12 +22,28 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_op,
+)
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 
 # Bench-local: autotuning is benchmark infrastructure, not a workload property.
 _TUNE = True
+
+# flag_gems' aten-level convolutions, by spatial rank.
+_FLAGGEMS_CONV = {1: "conv1d", 2: "conv2d", 3: "conv3d"}
+
+# Triton and cuDNN sum the same products in a different order, so agreement is
+# relative to the output scale: over the 13 manifest workloads on an H200, flag_gems
+# lands within 0.25 of cuDNN where |ref| reaches 564.
+_BASELINE_RTOL = 2e-2
+_BASELINE_ATOL = 2e-2
 
 
 class ConvWorkload:
@@ -55,54 +76,34 @@ class ConvCase:
         return asdict(self)
 
 
-def _mark(idx: int):
-    """First manifest workload of an op is the smoke case; the rest are full."""
-    return pytest.mark.smoke if idx == 0 else pytest.mark.full
-
-
-def _conv_params(workloads: list[dict], kernel_keys: tuple[str, ...]) -> list:
-    """Build one :class:`ConvCase` parameter per manifest workload row and dtype.
+def _conv_args(w: dict, dtype: torch.dtype, kernel_keys: tuple[str, ...]) -> tuple:
+    """One :class:`ConvCase` for this row and dtype.
 
     ``kernel_keys`` names the manifest spatial-extent keys in order, e.g.
-    ``("kD", "kH", "kW")`` for 3d. Workload entries omitting ``stride`` /
-    ``padding`` fall back to the manifest signature defaults; scalar entries
-    are broadcast across the spatial dims the way PyTorch broadcasts them.
+    ``("kD", "kH", "kW")`` for 3d. Rows omitting ``stride`` / ``padding`` fall
+    back to the manifest signature defaults; a scalar entry is broadcast across
+    the spatial dims the way PyTorch broadcasts it.
     """
     n_spatial = len(kernel_keys)
 
-    def _spatial(value) -> tuple[int, ...]:
+    def spatial(value) -> tuple[int, ...]:
         if isinstance(value, (list, tuple)):
             return tuple(value)
         return (value,) * n_spatial
 
-    params = []
-    for idx, w in enumerate(workloads):
-        input_shape = tuple(w["input_shape"])
-        kernel_size = tuple(w[key] for key in kernel_keys)
-        stride = _spatial(w.get("stride", 1))
-        padding = _spatial(w.get("padding", 0))
-        dilation = _spatial(w.get("dilation", 1))
-        groups = w.get("groups", 1)
-        with_bias = "bias_shape" in w
-        for dtype_name in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    ConvCase(
-                        input_shape,
-                        w["C_out"],
-                        kernel_size,
-                        stride,
-                        padding,
-                        dilation,
-                        groups,
-                        getattr(torch, dtype_name),
-                        with_bias,
-                    ),
-                    id=f"{w['label']}-{dtype_name}",
-                    marks=_mark(idx),
-                )
-            )
-    return params
+    return (
+        ConvCase(
+            tuple(w["input_shape"]),
+            w["C_out"],
+            tuple(w[key] for key in kernel_keys),
+            spatial(w.get("stride", 1)),
+            spatial(w.get("padding", 0)),
+            spatial(w.get("dilation", 1)),
+            w.get("groups", 1),
+            dtype,
+            "bias_shape" in w,
+        ),
+    )
 
 
 def _conv_inputs(
@@ -157,16 +158,48 @@ def _torch_conv_baseline(
     return baseline_fn
 
 
+def _flaggems_conv_baseline(
+    rank: int,
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
+    groups: int,
+) -> Callable:
+    """Return flag_gems' convolution of this rank, bound to these params.
+
+    Same parameter names as ``F.convNd``, but the spatial extents go in as lists.
+    """
+    conv_fn = flaggems_op(_FLAGGEMS_CONV[rank])
+
+    def baseline_fn(
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return conv_fn(
+            x,
+            weight,
+            bias,
+            list(stride),
+            list(padding),
+            list(dilation),
+            groups,
+        )
+
+    return baseline_fn
+
+
 def _run_conv(
     op,
     bm: ManifestBenchmark,
     torch_fn: Callable,
     case: ConvCase,
     *,
+    rank: int,
     with_bias: bool,
     static_weight: bool = False,
 ) -> None:
-    """Profile op and its torch baseline on the same inputs, recording both.
+    """Profile op against flag_gems and torch on the same inputs, recording all.
 
     One caller per manifest op, so each keeps a literal
     ``ManifestBenchmark(<op name>, ...)`` the manifest validator matches
@@ -187,11 +220,29 @@ def _run_conv(
         case.dilation,
         case.groups,
     )
+    flaggems = _flaggems_conv_baseline(
+        rank,
+        case.stride,
+        case.padding,
+        case.dilation,
+        case.groups,
+    )
+    assert_matches_reference(
+        flaggems,
+        baseline,
+        *inputs,
+        rtol=_BASELINE_RTOL,
+        atol=_BASELINE_ATOL,
+    )
     _profile_conv(
         op,
         bm,
         inputs,
-        baseline,
+        {
+            FLAGGEMS_TAG: flaggems,
+            "torch": baseline,
+            TORCH_COMPILE_TAG: compiled_reference(baseline),
+        },
         case.as_record(),
         static_weight=static_weight,
     )
@@ -201,12 +252,12 @@ def _profile_conv(
     op,
     bm: ManifestBenchmark,
     inputs: tuple[torch.Tensor, ...],
-    baseline_fn: Callable,
+    baselines: dict[str, Callable],
     params: dict,
     *,
     static_weight: bool = False,
 ) -> None:
-    """Profile op and the torch baseline on the same inputs and record both."""
+    """Profile op and every baseline on the same inputs and record them all."""
     if static_weight:
         x, weight, *maybe_bias = inputs
         bias = maybe_bias[0] if maybe_bias else None
@@ -216,18 +267,24 @@ def _profile_conv(
                 return op(x_i, weight)
             return op(x_i, weight, bias)
 
-        def baseline_with_static_weight(x_i):
-            return baseline_fn(x_i, weight, bias)
+        def bind_static_weight(fn: Callable) -> Callable:
+            def run(x_i):
+                return fn(x_i, weight, bias)
+
+            return run
 
         bm.compare(
-            {"tileops": op_with_static_weight, "torch": baseline_with_static_weight},
+            {
+                "tileops": op_with_static_weight,
+                **{tag: bind_static_weight(fn) for tag, fn in baselines.items()},
+            },
             x,
             record_as=op,
             params=params,
         )
         return
 
-    bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=params)
+    bm.compare({"tileops": op, **baselines}, *inputs, record_as=op, params=params)
 
 
 # Conv1d
@@ -238,7 +295,11 @@ _CONV1D_KERNEL_KEYS = ("kW",)
 
 @pytest.mark.parametrize(
     "case",
-    _conv_params(load_workloads(_CONV1D_OP), _CONV1D_KERNEL_KEYS),
+    workload_params(
+        load_workloads(_CONV1D_OP),
+        functools.partial(_conv_args, kernel_keys=_CONV1D_KERNEL_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_conv1d_bench(case: ConvCase) -> None:
     op = Conv1dFwdOp(
@@ -249,7 +310,7 @@ def test_conv1d_bench(case: ConvCase) -> None:
         tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV1D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv1d, case, with_bias=case.with_bias, static_weight=True)
+    _run_conv(op, bm, F.conv1d, case, rank=1, with_bias=case.with_bias, static_weight=True)
 
 
 # Conv2d
@@ -260,7 +321,11 @@ _CONV2D_KERNEL_KEYS = ("kH", "kW")
 
 @pytest.mark.parametrize(
     "case",
-    _conv_params(load_workloads(_CONV2D_OP), _CONV2D_KERNEL_KEYS),
+    workload_params(
+        load_workloads(_CONV2D_OP),
+        functools.partial(_conv_args, kernel_keys=_CONV2D_KERNEL_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_conv2d_bench(case: ConvCase) -> None:
     op = Conv2dFwdOp(
@@ -271,7 +336,7 @@ def test_conv2d_bench(case: ConvCase) -> None:
         tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV2D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv2d, case, with_bias=case.with_bias)
+    _run_conv(op, bm, F.conv2d, case, rank=2, with_bias=case.with_bias)
 
 
 # Conv3d
@@ -282,7 +347,11 @@ _CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
 
 @pytest.mark.parametrize(
     "case",
-    _conv_params(load_workloads(_CONV3D_OP), _CONV3D_KERNEL_KEYS),
+    workload_params(
+        load_workloads(_CONV3D_OP),
+        functools.partial(_conv_args, kernel_keys=_CONV3D_KERNEL_KEYS),
+        smoke_first=True,
+    ),
 )
 def test_conv3d_bench(case: ConvCase) -> None:
     op = Conv3dFwdOp(
@@ -293,4 +362,4 @@ def test_conv3d_bench(case: ConvCase) -> None:
         tune=_TUNE,
     )
     bm = ManifestBenchmark(_CONV3D_OP, op, ConvWorkload(case.input_shape, case.dtype))
-    _run_conv(op, bm, F.conv3d, case, with_bias=case.with_bias)
+    _run_conv(op, bm, F.conv3d, case, rank=3, with_bias=case.with_bias)

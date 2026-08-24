@@ -347,7 +347,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("top::engram_gate_conv_bwd", mutates_args=())
+@torch.library.custom_op("tileops::engram_gate_conv_bwd", mutates_args=())
 def _engram_gate_conv_bwd_wrapped(
     M: int,
     seq_len: int,
@@ -474,18 +474,18 @@ class EngramGateConvBwdKernel(Kernel):
         """Run the fused gate + conv backward pass.
 
         Args:
-            dY: Gradient of the output, shape ``(M, seq_len, d)``.
-            H: Hidden states of shape ``(M, seq_len, d)``.
-            k: Key projection of shape ``(M, seq_len, d)``.
-            v: Value projection of shape ``(M, seq_len, d)``.
-            rms_w_h: RMSNorm weight of shape ``(d,)`` for ``H`` and ``k``.
-            rms_w_v: RMSNorm weight of shape ``(d,)`` for the gated value.
-            conv_w: Depthwise conv weights of shape ``(4, d)``.
+            dY: Gradient of the output, shape $[M \\times seq\\_len \\times d]$.
+            H: Hidden states of shape $[M \\times seq\\_len \\times d]$.
+            k: Key projection of shape $[M \\times seq\\_len \\times d]$.
+            v: Value projection of shape $[M \\times seq\\_len \\times d]$.
+            rms_w_h: RMSNorm weight of shape $[d]$ for ``H`` and ``k``.
+            rms_w_v: RMSNorm weight of shape $[d]$ for the gated value.
+            conv_w: Depthwise conv weights of shape $[4 \\times d]$.
             vhat: Gated value saved by the forward pass, ``(M, seq_len, d)``.
             alpha: Scalar gate saved by the forward pass, ``(M, seq_len)``.
-            rrms_h: Reciprocal RMS of ``H``, shape ``(M, seq_len)``.
-            rrms_k: Reciprocal RMS of ``k``, shape ``(M, seq_len)``.
-            rrms_v: Reciprocal RMS of ``vhat``, shape ``(M, seq_len)``.
+            rrms_h: Reciprocal RMS of ``H``, shape $[M \\times seq\\_len]$.
+            rrms_k: Reciprocal RMS of ``k``, shape $[M \\times seq\\_len]$.
+            rrms_v: Reciprocal RMS of ``vhat``, shape $[M \\times seq\\_len]$.
 
         Returns:
             ``[dH, dk, dv, drms_w_h, drms_w_v, dconv_w]``, trimmed to ``d``.

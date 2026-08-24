@@ -24,12 +24,13 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
-    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
     BlockConfigPlanner,
+    RowTiledAutotuneMixin,
     align_up,
-    compute_tile_n,
     device_smem_budget,
+    restore_reduced,
+    rows_for_axes,
 )
 
 # These two kernels bake tile_n in at build time and default to the wider
@@ -118,7 +119,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
       Single pass: compute running max and rescaled running sum.
       Then: logsumexp = max + log(sum).
 
-    The input tensor has the raw shape ``(M, N)`` (no host-side padding).
+    The input tensor has the raw shape $[M \\times N]$ (no host-side padding).
     Boundary handling for the last tile is performed via masked loads.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -224,36 +225,12 @@ def _compute_padded_cols(N: int, tile_n: int) -> int:
     return num_tiles * tile_n
 
 
-# custom_op wrappers for torch.compile compatibility
-
-
-@torch.library.custom_op("top::logsumexp_fwd", mutates_args=())
-def _logsumexp_fwd_wrapped(
-    M: int,
-    N: int,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    tile_n: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _logsumexp_kernel(M, N, dtype_str, tile_n)(block_m, threads)(x)
-
-
-@_logsumexp_fwd_wrapped.register_fake
-def _(M, N, dtype_str, block_m, threads, tile_n, x):
-    return torch.empty((M,), dtype=x.dtype, device=x.device)
-
-
-# Kernel class
-
-
 def _elem_bytes(dtype: torch.dtype) -> int:
     """Return bytes per element for the given dtype."""
     return torch.tensor([], dtype=dtype).element_size()
 
 
-class LogSumExpKernel(Kernel):
+class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
     """LogSumExp forward kernel.
 
     Supports SM80+ architectures. Uses 256-element alignment for shared
@@ -266,11 +243,17 @@ class LogSumExpKernel(Kernel):
     via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
     needed.
 
+    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; moving
+    those axes to the end, flattening to rows and shaping the result back are this
+    kernel's business, so both sides of the op/backend boundary speak the declared shape.
+
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        M: Rows the reduction leaves.
+        N: Elements each row reduces.
         op_kind: Must be "logsumexp" (kept for API consistency with SoftmaxKernel).
         dtype: Data type (float32, float16, or bfloat16).
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
         device_index: CUDA device index for shared memory budget query.
@@ -286,17 +269,21 @@ class LogSumExpKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind != "logsumexp":
             raise ValueError(f"Unsupported op_kind '{op_kind}'. Expected 'logsumexp'.")
         self.M = M
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
@@ -352,16 +339,6 @@ class LogSumExpKernel(Kernel):
                 )
             self.config["tile_n"] = self._tile_n
 
-    def _tile_n_for_block_m(self, block_m: int) -> int:
-        """Return tile_n for a given block_m (0 means no tiling needed).
-
-        Derived at the granularity the *coarsest* candidate thread count
-        needs: tile_n is baked into the kernel at build time and then reused
-        across every ``threads`` value the autotuner tries, so one tile has to
-        satisfy all of them.
-        """
-        return self._planner.tile_n_for(block_m, max(AUTOTUNE_THREADS))
-
     @property
     def default_config(self) -> dict:
         """Select default block_m based on shared memory budget.
@@ -398,100 +375,6 @@ class LogSumExpKernel(Kernel):
                     best_tile_n = tn
 
         return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS, "tile_n": best_tile_n}
-
-    def _tile_n_candidates(self) -> list[int]:
-        """Return candidate tile_n values for autotune exploration.
-
-        Includes the heuristic tile_n (from block_m=1) plus alternative
-        tile_n values derived from ``_tile_n_for_block_m(2)`` and
-        ``_tile_n_for_block_m(4)``, with a half-step fallback aligned to
-        ``DEFAULT_ALIGNMENT`` when block_m exploration yields no
-        alternatives.  tile_n=0 means single-tile (no tiling).  All
-        candidates are de-duplicated and sorted descending for
-        deterministic ordering.
-
-        Each distinct tile_n value requires a full kernel recompilation,
-        which is expensive for large-N workloads (compilations can take
-        minutes each).  To keep autotuner wall time practical we cap
-        the total number of tile_n candidates at ``_MAX_TILE_N_CANDIDATES``
-        (currently 3).
-
-        - When the heuristic default tile_n is 0 (single-tile / small N),
-          return ``[0]`` -- the autotuner varies only block_m and threads.
-        - Otherwise collect distinct tile_n values from block_m=1..4 and
-          return up to ``_MAX_TILE_N_CANDIDATES`` candidates (always
-          including the heuristic default).
-        """
-        default_tn = self._tile_n_for_block_m(1)
-        if default_tn == 0:
-            return [0]
-
-        candidates: set[int] = {default_tn}
-        # Explore tile_n values implied by small block_m values.
-        # Higher block_m → smaller tile_n (more N-tiles but better row reuse).
-        for bm in (2, 4):
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            if tn > 0 and tn != default_tn:
-                candidates.add(tn)
-
-        # Also try half of the default tile_n (rounded to alignment) as a
-        # search point when block_m exploration didn't yield alternatives.
-        if len(candidates) < 2:
-            from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
-
-            half_tn = (default_tn // 2 // DEFAULT_ALIGNMENT) * DEFAULT_ALIGNMENT
-            if half_tn > 0 and half_tn != default_tn:
-                candidates.add(half_tn)
-
-        # Cap to avoid excessive compilation time.
-        sorted_candidates = sorted(candidates, reverse=True)
-        return sorted_candidates[: self._MAX_TILE_N_CANDIDATES]
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        """Generate autotune configs including tile_n candidates.
-
-        tile_n is baked into the kernel at build time, so the autotuner
-        rebuilds the kernel for each tile_n value.  Configs include
-        ``tile_n`` alongside ``block_m`` and ``threads``.
-        """
-        budget = self._smem_budget
-        smem_per_row = self.N_padded * self._elem_bytes
-        max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
-        threads_list = [128, 256]
-
-        configs = []
-        for tile_n in self._tile_n_candidates():
-            if tile_n == 0:
-                # Single-tile regime: explore multiple block_m values.
-                for bm in [1, 2, 4, 8, 16]:
-                    try:
-                        compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
-                    except ValueError:
-                        continue
-                    bm_tile_n = self._tile_n_for_block_m(bm)
-                    if bm_tile_n != 0:
-                        continue
-                    if bm > max_block_m_no_tile:
-                        continue
-                    for t in threads_list:
-                        if not self._planner.layout_ok(bm, self.N_padded, t):
-                            continue
-                        configs.append({"block_m": bm, "threads": t, "tile_n": 0})
-            else:
-                # Tiled regime: use block_m=1 with each tile_n candidate.
-                # Each distinct tile_n triggers a kernel recompilation, so
-                # we only vary threads within each tile_n regime.
-                for t in threads_list:
-                    configs.append({"block_m": 1, "threads": t, "tile_n": tile_n})
-
-        if not configs:
-            configs = [{"block_m": 1, "threads": 256, "tile_n": self._tile_n}]
-
-        return configs
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune across tile_n candidates by rebuilding the kernel per regime.
@@ -554,20 +437,25 @@ class LogSumExpKernel(Kernel):
                 )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the logsumexp kernel.
+        """Reduce *reduce_axes* of *x*.
 
-        Accepts an ``(M, N)`` tensor.  Boundary handling for non-aligned
-        ``N`` is performed inside the GPU kernel (masked loads + ``-inf``
-        fill), so no host-side ``F.pad`` is needed.
+        Args:
+            x: The tensor the op declares, contiguous, on a CUDA device. Boundary
+                handling for non-aligned ``N`` is performed inside the GPU kernel
+                (masked loads + ``-inf`` fill), so no host-side ``F.pad`` is needed.
+
+        Returns:
+            The reduced tensor.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
         """
-        tile_n = self._tile_n
+        self._require_cuda(x=x)
+        in_shape = tuple(x.shape)
+        y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
+        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
 
-        return _logsumexp_fwd_wrapped(
-            self.M,
-            self.N,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            tile_n,
-            x,
-        )
+    def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        program = _logsumexp_kernel(self.M, self.N, self.dtype_str, self._tile_n)
+        return program(self.config["block_m"], self.config["threads"])(x)

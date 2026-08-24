@@ -8,6 +8,7 @@ from tileops.ops.moe.abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
+from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
@@ -470,11 +471,10 @@ class TestFusedMoeActivationInjection:
     @pytest.mark.smoke
     def test_injection_with_conflicting_activation_raises(self):
         """experts= + activation= that disagree must raise ValueError."""
-        from tileops.ops.moe.fused_moe import FusedMoe
 
         experts = self._make_experts(activation="silu_and_mul")
         with pytest.raises(ValueError, match="activation conflicts"):
-            FusedMoe(
+            FusedMoeFwdOp(
                 num_tokens=128,
                 num_experts=4,
                 top_k=2,
@@ -487,10 +487,9 @@ class TestFusedMoeActivationInjection:
     @pytest.mark.smoke
     def test_injection_with_matching_activation_works(self):
         """experts= + activation= that match the injected experts is accepted."""
-        from tileops.ops.moe.fused_moe import FusedMoe
 
         experts = self._make_experts(activation="gelu_and_mul")
-        moe = FusedMoe(
+        moe = FusedMoeFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,
@@ -504,10 +503,9 @@ class TestFusedMoeActivationInjection:
     @pytest.mark.smoke
     def test_injection_without_activation_works(self):
         """experts= without activation= should succeed."""
-        from tileops.ops.moe.fused_moe import FusedMoe
 
         experts = self._make_experts()
-        moe = FusedMoe(
+        moe = FusedMoeFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,
@@ -519,10 +517,9 @@ class TestFusedMoeActivationInjection:
 
     @pytest.mark.smoke
     def test_default_path_activation_forwarded(self):
-        """FusedMoe(activation='gelu_and_mul') creates experts with gelu_and_mul."""
-        from tileops.ops.moe.fused_moe import FusedMoe
+        """FusedMoeFwdOp(activation='gelu_and_mul') creates experts with gelu_and_mul."""
 
-        moe = FusedMoe(
+        moe = FusedMoeFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,
@@ -542,7 +539,6 @@ class TestFusedMoeActivationInjection:
         silently accept a non-matching activation argument.
         """
         from tileops.ops.moe.abc import FusedMoEExpertsModular
-        from tileops.ops.moe.fused_moe import FusedMoe
 
         class ExpertsWithoutActivation(FusedMoEExpertsModular):
             """Stand-in for a third-party experts impl that forgot .activation."""
@@ -559,6 +555,15 @@ class TestFusedMoeActivationInjection:
 
             def output_shape(self, T_prime, H):
                 return (T_prime, H)
+
+            def _infer_output_shapes(self, *args, **kwargs):
+                raise NotImplementedError
+
+            def _validate_dtypes(self, *args, **kwargs):
+                raise NotImplementedError
+
+            def eval_roofline(self, *args, **kwargs):
+                raise NotImplementedError
 
             def forward(
                 self,
@@ -581,7 +586,7 @@ class TestFusedMoeActivationInjection:
                 return WeightedReduceNoOp()
 
         with pytest.raises(ValueError, match="missing the required `.activation`"):
-            FusedMoe(
+            FusedMoeFwdOp(
                 num_tokens=128,
                 num_experts=4,
                 top_k=2,

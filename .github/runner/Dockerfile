@@ -58,22 +58,35 @@ RUN uv pip install pytest pytest-xdist ruff pytest-timeout pytest-cov py-spy
 # CCCL, so every translation unit fails on `cuda/std/utility`. Only main takes the CUDA 13 path.
 # Only csrc/cutlass: --recursive also pulls AMD composable_kernel, unused at sm_90 and slow.
 ARG FLASH_ATTENTION_GIT_SHA=a369df707e1980fb328abcc1733e3457ec10155f
-RUN { mkdir -p /tmp/flash-attention \
+# Fatal, unlike the bench baselines below: eleven attention benchmarks name `fa3` and
+# lose the column without it. Imported here because a returned 0 has meant an installed
+# wrapper with no compiled extension behind it.
+RUN set -e; \
+    mkdir -p /tmp/flash-attention \
         && cd /tmp/flash-attention \
         && git init -q \
         && git remote add origin https://github.com/Dao-AILab/flash-attention.git \
         && git fetch --depth 1 origin "${FLASH_ATTENTION_GIT_SHA}" \
         && git checkout -q FETCH_HEAD \
-        && git submodule update --init --depth 1 csrc/cutlass \
-        && cd hopper && python setup.py install; }; \
-    status=$?; rm -rf /tmp/flash-attention; \
-    [ "$status" -eq 0 ] || echo "WARNING: FlashAttention-3 (hopper) build failed (non-fatal)"
+        && git submodule update --init --depth 1 csrc/cutlass; \
+    cd /tmp/flash-attention/hopper && python setup.py install; \
+    cd / && rm -rf /tmp/flash-attention; \
+    python -c "import flash_attn_interface as m; assert m.flash_attn_func is not None; print('FA3 OK')"
 
 # Own layer: no wheel for this torch/py, so it builds from source and changes to the bench loop
 # below must not recompile it.
 FROM post-fa3 AS fa2
-RUN uv pip install --no-build-isolation "flash-attn==2.8.3.post1" \
-    || echo "WARNING: flash-attn (FA2) install failed (non-fatal)"
+# Retried like DeepGEMM below: setup.py takes a prebuilt wheel from GitHub releases, and
+# a dropped download fails a step that would have worked. FLASH_ATTENTION_FORCE_BUILD
+# compiles instead -- slower, and the way out where that download keeps failing.
+ARG FLASH_ATTENTION_FORCE_BUILD=
+RUN for attempt in 1 2 3 4 5; do \
+        FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
+            uv pip install --no-build-isolation "flash-attn==2.8.3.post1" && break; \
+        echo "WARNING: flash-attn (FA2) install failed (attempt ${attempt}/5)"; \
+        [ "${attempt}" = 5 ] && exit 1; \
+        sleep "$((attempt * 10))"; \
+    done
 
 # This vllm and no other: its apache-tvm-ffi pin (0.1.11) is the one the tilelang commit needs.
 # Versions come from constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
@@ -84,6 +97,10 @@ RUN for pkg in \
         uv pip install --no-build-isolation "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
+# --no-deps, so not in the loop: flag_gems pins numpy==1.26.4 and this stack is on 2.2.6.
+RUN uv pip install sqlalchemy \
+    && uv pip install --no-deps flag_gems \
+    || echo "WARNING: bench baseline 'flag_gems' install failed (non-fatal)"
 # --no-deps so mamba_ssm cannot pull its own newer tilelang pin. The CUDA extension must still
 # build: importing the package loads selective_scan_cuda even for the Triton path the bench uses.
 RUN MAMBA_FORCE_BUILD=TRUE \
@@ -128,15 +145,23 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         mkdir -p /tmp/tilelang && cd /tmp/tilelang \
         && git init -q \
         && git remote add origin https://github.com/tile-ai/tilelang.git \
-        && git fetch --depth 1 origin "${TILELANG_GIT_SHA}" \
+        && for attempt in 1 2 3 4 5; do \
+            git -c http.version=HTTP/1.1 fetch --depth 1 origin "${TILELANG_GIT_SHA}" && break; \
+            echo "WARNING: tilelang fetch failed (attempt ${attempt}/5)"; \
+            [ "${attempt}" = 5 ] && exit 1; sleep "$((attempt * 10))"; \
+        done \
         && git checkout -q FETCH_HEAD \
-        && git submodule update --init --depth 1 --recursive \
-            3rdparty/composable_kernel 3rdparty/cutlass 3rdparty/tvm \
+        && for attempt in 1 2 3 4 5; do \
+            git -c http.version=HTTP/1.1 submodule update --init --depth 1 --recursive --jobs 1 \
+                3rdparty/composable_kernel 3rdparty/cutlass 3rdparty/tvm && break; \
+            echo "WARNING: tilelang submodule fetch failed (attempt ${attempt}/5)"; \
+            [ "${attempt}" = 5 ] && exit 1; sleep "$((attempt * 10))"; \
+        done \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
             python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
         && uv pip install --no-deps --reinstall /opt/tilelang-wheels/tilelang-*.whl \
-        && rm -rf /tmp/tilelang; \
+        && rm -rf /tmp/tilelang /opt/tilelang-wheels; \
     elif [ -n "${TILELANG_VERSION}" ]; then \
         uv pip install --no-deps --reinstall "tilelang==${TILELANG_VERSION}"; \
     else \
@@ -173,7 +198,8 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
     && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
-COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
+# Absolute and outside the home dir: exec form expands nothing, a relative path breaks any -w run.
+COPY .github/runner/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
 USER ci-runner
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

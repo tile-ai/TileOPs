@@ -1,8 +1,20 @@
+"""Benchmarks for GroupNormFwdOp, affine and not, against flag_gems and torch."""
+
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_group_norm,
+    reference_tolerance,
+)
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
@@ -10,26 +22,18 @@ from workloads.normalization import GroupNormWorkload
 _OP_NAME = "GroupNormFwdOp"
 
 
-def _build_params(workloads):
-    params = []
-    for w in workloads:
-        shape = w["x_shape"]
-        n, c, spatial = shape[0], shape[1], tuple(shape[2:])
-        num_groups = w.get("num_groups")
-        if num_groups is None:
-            raise KeyError("Workload manifest must contain 'num_groups'")
-        label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(
-                pytest.param(n, c, spatial, num_groups, dtype, False, id=f"{label}-{dtype_str}")
-            )
-    return params
+def _group_norm_args(w: dict, dtype: torch.dtype) -> tuple:
+    n, c, *spatial = w["x_shape"]
+    if "num_groups" not in w:
+        raise KeyError("Workload manifest must contain 'num_groups'")
+    return (n, c, tuple(spatial), w["num_groups"], dtype, False)
 
 
 _WORKLOADS = load_workloads(_OP_NAME)
-_AFFINE_PARAMS = _build_params([w for w in _WORKLOADS if "weight_shape" in w])
-_NO_AFFINE_PARAMS = _build_params([w for w in _WORKLOADS if "weight_shape" not in w])
+_AFFINE_PARAMS = workload_params([w for w in _WORKLOADS if "weight_shape" in w], _group_norm_args)
+_NO_AFFINE_PARAMS = workload_params(
+    [w for w in _WORKLOADS if "weight_shape" not in w], _group_norm_args
+)
 
 
 @pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune", _AFFINE_PARAMS)
@@ -46,8 +50,23 @@ def test_group_norm_bench(
     def baseline_fn(x, weight, bias):
         return F.group_norm(x, num_groups, weight=weight, bias=bias, eps=1e-5)
 
+    flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), num_groups, 1e-5)
+    assert_matches_reference(
+        flaggems_fn, baseline_fn, x, weight, bias, **reference_tolerance(dtype)
+    )
+
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, x, weight, bias, record_as=op, params=locals()
+        {
+            "tileops": op,
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        x,
+        weight,
+        bias,
+        record_as=op,
+        params=locals(),
     )
 
 
@@ -64,4 +83,17 @@ def test_group_norm_no_affine_bench(
     def baseline_no_affine(x):
         return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)
 
-    bm.compare({"tileops": op, "torch": baseline_no_affine}, x, record_as=op, params=locals())
+    flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), num_groups, 1e-5)
+    assert_matches_reference(flaggems_fn, baseline_no_affine, x, **reference_tolerance(dtype))
+
+    bm.compare(
+        {
+            "tileops": op,
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch": baseline_no_affine,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_no_affine),
+        },
+        x,
+        record_as=op,
+        params=locals(),
+    )

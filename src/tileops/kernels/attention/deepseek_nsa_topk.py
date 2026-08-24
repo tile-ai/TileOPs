@@ -6,7 +6,8 @@ import torch
 from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import LOG2E
+
+from .online_softmax import LOG2E
 
 
 @functools.lru_cache(maxsize=32)
@@ -224,7 +225,7 @@ def _nsa_topk_varlen_kernel(
     return _nsa_topk_varlen_func
 
 
-@torch.library.custom_op("top::nsa_topk_varlen_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::nsa_topk_varlen_wrapped_kernel", mutates_args=())
 def _nsa_topk_varlen_wrapped_kernel(
     seq_num: int,
     c_seq_len: int,

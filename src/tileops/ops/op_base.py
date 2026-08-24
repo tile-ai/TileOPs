@@ -50,36 +50,6 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
-def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
-    """The device of the first tensor a call carries, one level into sequences."""
-    for value in (*args, *kwargs.values()):
-        if isinstance(value, torch.Tensor):
-            return value.device
-        if isinstance(value, (tuple, list)):
-            for item in value:
-                if isinstance(item, torch.Tensor):
-                    return item.device
-    return None
-
-
-def _entry_kernels(entry: object) -> "list[Kernel]":
-    """Return the kernels one entry holds.
-
-    An entry is a kernel, a sequence of kernels built together, or a dataclass
-    carrying them alongside what else the specialization implies. An entry that
-    hides its kernels from this walk is invisible to ``autotune``.
-    """
-    if isinstance(entry, Kernel):
-        return [entry]
-    if isinstance(entry, (tuple, list)):
-        return [k for item in entry for k in _entry_kernels(item)]
-    if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
-        return [
-            k for f in dataclasses.fields(entry) for k in _entry_kernels(getattr(entry, f.name))
-        ]
-    return []
-
-
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -90,12 +60,14 @@ class Op(ABC):
     - Autotuning interface
 
     Examples:
-        >>> from tileops.ops import MultiHeadAttentionFwdOp
-        >>> op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
-        >>> Q, K, V = op.gen_inputs()
-        >>> output = op(Q, K, V)
-        >>> op.check()  # Verify correctness
-        >>> latency = op.profile()  # Benchmark performance
+        ```python linenums="1"
+        from tileops.ops import MultiHeadAttentionFwdOp
+        op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
+        Q, K, V = op.gen_inputs()
+        output = op(Q, K, V)
+        op.check()  # Verify correctness
+        latency = op.profile()  # Benchmark performance
+        ```
 
     Attributes:
         kernel: single kernel, for ops that hold one; ops that build per
@@ -163,41 +135,20 @@ class Op(ABC):
         maybe_install_eval_roofline(cls)
         maybe_install_param_names(cls)
 
-    # FIXME(staged-rollout): the three contract stubs below — _infer_output_shapes,
-    # _validate_dtypes and eval_roofline — raise NotImplementedError instead of
-    # being @abstractmethod.
-    #
-    # Broken invariant: L1 does not enforce that every concrete Op implements them.
-    # Why: marking them abstract today breaks every op under src/tileops/ops/ that has
-    #     not been migrated to docs/design/ops-design.md, and eval_roofline bodies
-    #     are emitted by scaffold-op codegen that has not run for most ops yet. The
-    #     trust model requires one migration PR per op.
-    # Cleanup: when all three are implemented across src/tileops/ops/, make all three
-    #     @abstractmethod and delete this marker.
-
     @property
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    # FIXME(staged-rollout): compile_op_names defaults to empty instead of being required.
-    #
-    # Broken invariant: an op that declares ``torch_compile_fullgraph`` is not forced to
-    #     say which operators are its own, so nothing checks that the node in the graph
-    #     belongs to the op rather than to a kernel.
-    # Why: most ops still register their custom op in src/tileops/kernels/, where there
-    #     is no op-level name to declare.
-    # Cleanup: once every op that declares ``torch_compile_fullgraph`` names its
-    #     operators, have ``register_compile_contract`` reject an empty tuple, and delete
-    #     this marker.
-
     #: Operators this op registers on the torch.compile boundary. Naming them is what lets
     #: a test assert the traced graph holds nothing else, which is what keeps the graph the
     #: same when another target serves the op. A tuple because a conditional in-place write
-    #: registers two; empty means no boundary yet. Registration happens once per class, so
-    #: this is class state.
+    #: registers two. Registration happens once per class, so this is class state; an op
+    #: that declares ``torch_compile_fullgraph`` names its operators, which
+    #: ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
+    @abstractmethod
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
 
@@ -206,12 +157,15 @@ class Op(ABC):
         ``_infer_output_shapes(self, x_shape, weight_shape)``). The uniform
         ``**shape_kwargs`` base signature exists only to make the L1 contract
         grepable and discoverable; see docs/design/ops-design.md §``_infer_output_shapes``.
+        Abstract: a concrete op supplies the body, and the validator's C6 check names
+        it when a class inherits this one instead.
         """
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "
             "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)"
         )
 
+    @abstractmethod
     def _validate_dtypes(self, *args: torch.Tensor) -> None:
         """Validate dtypes of input tensors passed to ``forward``.
 
@@ -224,6 +178,7 @@ class Op(ABC):
             "see docs/design/ops-design.md §`_validate_dtypes` (codegen)"
         )
 
+    @abstractmethod
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance.
 
@@ -358,7 +313,7 @@ class Op(ABC):
     def get_or_build_kernel(
         self,
         name: str,
-        inputs: Sequence[torch.Tensor] = (),
+        inputs: "Sequence[torch.Tensor | None]",
         *,
         key: Hashable = None,
         build: Optional[Callable[[], _Entry]] = None,
@@ -369,20 +324,24 @@ class Op(ABC):
 
         Args:
             name: Which of this op's kernels is being asked for.
-            inputs: The tensors this kernel will be handed, in ``signature.inputs`` order.
-                An external target needs them; omitting them leaves this op in-tree only.
+            inputs: The tensors this kernel will be handed, one slot per
+                ``signature.inputs`` entry, in that order. An ``optional: true`` input the
+                call did not pass occupies its slot as ``None`` — the same value ``forward``
+                was handed, so presence is a fact the builder reads off the slot rather than
+                off how many slots there are. An external target needs *inputs*; omitting
+                them leaves this op in-tree only.
             key: What the *in-tree* kernel specializes on, typically
                 ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
                 path keys on the input signature instead.
             build: How the *in-tree* kernel is constructed, called once per key. See
-                ``_entry_kernels`` for what it may return.
+                ``Op._entry_kernels`` for what it may return.
 
         Returns:
             The stored entry, identical across calls describing the same specialization.
 
         Raises:
             OpNotAvailableError: A target serves this op but the call site handed over no
-                *inputs*; or there is no in-tree implementation and no target.
+                tensor at all; or there is no in-tree implementation and no target.
         """
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo
@@ -402,14 +361,6 @@ class Op(ABC):
             # traced frame's attribute writes until after the graph has run, so a
             # ``forward`` behind the compile boundary arrives here still ``_UNRESOLVED``
             # and would take the in-tree path on the very call that chose a target.
-            #
-            # FIXME(staged-rollout): a call handing over no tensors probes no device.
-            #
-            # Broken invariant: a first compiled call takes the in-tree path when the
-            #     target would have come from device detection, where eager raises.
-            # Why: ``inputs`` is what carries a device down here, and most op classes
-            #     still call this without it.
-            # Cleanup: delete this marker once every op hands over ``inputs=``.
             self._resolve_builder(tuple(inputs), {})
 
         try:
@@ -428,17 +379,23 @@ class Op(ABC):
 
             # External: this layer cannot know what the target's kernel specializes on, so
             # it keys on every cheap fact it has: the dtype and shape of each input.
-            if not inputs:
+            specs = tuple(None if t is None else TensorSpec.of(t) for t in inputs)
+            present = tuple(spec for spec in specs if spec is not None)
+            if not present:
                 raise OpNotAvailableError(
                     f"target {self._settled_target!r} serves {type(self).__name__}, but its "
                     f"{name!r} call site does not hand over the tensors a builder is "
                     f"described with; that op is not wired to external targets yet"
                 )
-            specs = tuple(TensorSpec.of(t) for t in inputs)
             # The device is part of the key: a kernel built for one of a target's devices
             # may hold resources allocated on it. The op layer has already checked that
             # this call's tensors agree on a device, so the first one speaks for all.
-            signature = (specs[0].device,) + tuple((spec.dtype, spec.shape) for spec in specs)
+            # An absent optional input keeps its place as ``None``: drop it and a clamp
+            # with only a lower bound describes itself exactly like one with only an
+            # upper bound, so the second is served the first one's kernel.
+            signature = (present[0].device,) + tuple(
+                None if spec is None else (spec.dtype, spec.shape) for spec in specs
+            )
             if signature not in entries:
                 entries[signature] = self._build_external(builder, name, specs)
             return entries[signature]
@@ -453,9 +410,13 @@ class Op(ABC):
         self,
         builder: BuildKernel,
         name: str,
-        specs: tuple[TensorSpec, ...],
+        specs: "tuple[TensorSpec | None, ...]",
     ) -> object:
-        """Ask the target for a kernel and hold it to the one rule this boundary has."""
+        """Ask the target for a kernel and hold it to the one rule this boundary has.
+
+        *specs* carries one slot per ``signature.inputs`` entry; an absent optional input's
+        slot is ``None``.
+        """
         kernel = builder(*specs, **self._manifest_params())
         if not callable(kernel):
             raise OpNotAvailableError(
@@ -524,6 +485,38 @@ class Op(ABC):
                 seen.add(id(kernel))
                 yield kernel
 
+    @staticmethod
+    def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
+        """The device of the first tensor a call carries, one level into sequences."""
+        for value in (*args, *kwargs.values()):
+            if isinstance(value, torch.Tensor):
+                return value.device
+            if isinstance(value, (tuple, list)):
+                for item in value:
+                    if isinstance(item, torch.Tensor):
+                        return item.device
+        return None
+
+    @staticmethod
+    def _entry_kernels(entry: object) -> "list[Kernel]":
+        """Return the kernels one entry holds.
+
+        An entry is a kernel, a sequence of kernels built together, or a dataclass
+        carrying them alongside what else the specialization implies. An entry that
+        hides its kernels from this walk is invisible to ``autotune``.
+        """
+        if isinstance(entry, Kernel):
+            return [entry]
+        if isinstance(entry, (tuple, list)):
+            return [k for item in entry for k in Op._entry_kernels(item)]
+        if dataclasses.is_dataclass(entry) and not isinstance(entry, type):
+            return [
+                k
+                for f in dataclasses.fields(entry)
+                for k in Op._entry_kernels(getattr(entry, f.name))
+            ]
+        return []
+
     def _walk_ops(self) -> Iterator["Op"]:
         """Yield this op and the ops it runs kernels through, each one once."""
         seen: set[int] = set()
@@ -541,8 +534,8 @@ class Op(ABC):
         for op in self._walk_ops():
             for entries in (getattr(op, "_kernel_roles", None) or {}).values():
                 for entry in entries.values():
-                    yield from _entry_kernels(entry)
-            yield from _entry_kernels(getattr(op, "kernel", None))
+                    yield from self._entry_kernels(entry)
+            yield from self._entry_kernels(getattr(op, "kernel", None))
 
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
@@ -561,6 +554,7 @@ class Op(ABC):
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
+        """Run the op."""
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
@@ -568,7 +562,7 @@ class Op(ABC):
 
         Settles which set of kernels serves this instance, once, then delegates to
         ``forward`` — which is the same for every target. The only fork is inside
-        :meth:`get_or_build_kernel`, which settles it a second time when this settling
+        `get_or_build_kernel`, which settles it a second time when this settling
         could not reach it; see there.
 
         A call that fails settles nothing. Otherwise one invalid call would aim the instance
@@ -603,7 +597,7 @@ class Op(ABC):
         Raises:
             OpNotAvailableError: The selected target registers no builder for this op.
         """
-        device = _first_tensor_device(args, kwargs)
+        device = self._first_tensor_device(args, kwargs)
         target = select_target(self.target, device)
         if target is None:
             self._settled_target = None
@@ -662,4 +656,35 @@ class Op(ABC):
             for i, shape in enumerate(input_shapes)
             for axis, s in enumerate(shape)
             if (i, axis) not in self._static_axes
+        )
+
+
+class UnmanifestedOp(Op):
+    """An op the manifest does not name, and what that costs it.
+
+    The three contract methods are derived from a manifest entry — generated for
+    the dtype and roofline, hand-written for the shapes. An op with no entry has
+    nothing to derive them from: no target can be asked to serve it, no benchmark
+    can report a roofline for it, and no compiled caller can be told its output
+    shape. Inheriting this states that, and lists the ops it applies to: grep the
+    class name.
+
+    Every one of them is a gap to close by writing the entry, not by staying here.
+    """
+
+    def _infer_output_shapes(self, *shapes: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        raise NotImplementedError(
+            f"{type(self).__name__} has no manifest entry, so its output shapes are "
+            f"not declared anywhere"
+        )
+
+    def _validate_dtypes(self, *args: torch.Tensor) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} has no manifest entry, so its dtype contract is "
+            f"not declared anywhere"
+        )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError(
+            f"{type(self).__name__} has no manifest entry, so it has no roofline model"
         )

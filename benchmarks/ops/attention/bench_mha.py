@@ -2,8 +2,13 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, backward_of
-from benchmarks.ops.attention.manifest_params import manifest_params, mha_qkv_args
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    backward_of,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.workload_args import mha_qkv_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import (
@@ -110,7 +115,9 @@ def _torch_mha_bwd(test):
     return fn
 
 
-_MHA_FWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_FWD_OP), mha_qkv_args)
+_MHA_FWD_BENCH_PARAMS = workload_params(
+    load_workloads(_MHA_FWD_OP), then_dtype(mha_qkv_args, tune=True)
+)
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_FWD_BENCH_PARAMS)
@@ -138,7 +145,9 @@ def test_mha_fwd_bench(
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
-_MHA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_BWD_OP), mha_qkv_args)
+_MHA_BWD_BENCH_PARAMS = workload_params(
+    load_workloads(_MHA_BWD_OP), then_dtype(mha_qkv_args, tune=True)
+)
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)

@@ -20,7 +20,6 @@ from tileops.kernels.attention.gqa_decode_paged import (
     gqa_decode_paged_block_n,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import LOG2E
 
 from .call_spec import decode_bs1_region
 from .gqa_decode_bs1_common import (
@@ -30,6 +29,7 @@ from .gqa_decode_bs1_common import (
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
 )
+from .online_softmax import LOG2E
 
 __all__ = ["GQADecodePagedBs1Kernel"]
 
@@ -118,7 +118,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     return _func
 
 
-@torch.library.custom_op("top::gqa_decode_paged_bs1_ctx_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_paged_bs1_ctx_op", mutates_args=())
 def _gqa_decode_paged_bs1_ctx_op(
     batch: int,
     heads: int,

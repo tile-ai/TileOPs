@@ -226,77 +226,6 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
     return _func
 
 
-@torch.library.custom_op("top::ada_layer_norm_fwd", mutates_args=())
-def _ada_layer_norm_wrapped(
-    M: int,
-    N: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    use_cp_async: bool,
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    shift: torch.Tensor,
-) -> torch.Tensor:
-    dummy = torch.empty(1, dtype=x.dtype, device=x.device)
-    return _ada_layer_norm_kernel(
-        M,
-        N,
-        eps,
-        dtype_str,
-        has_gate=False,
-        use_cp_async=use_cp_async,
-    )(block_m, threads)(x, scale, shift, dummy)
-
-
-@_ada_layer_norm_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, use_cp_async, x, scale, shift):
-    return torch.empty((M, N), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::ada_layer_norm_zero_fwd", mutates_args=())
-def _ada_layer_norm_zero_wrapped(
-    M: int,
-    N: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    threads: int,
-    use_cp_async: bool,
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    shift: torch.Tensor,
-    gate: torch.Tensor,
-) -> torch.Tensor:
-    dummy = torch.empty(1, dtype=x.dtype, device=x.device)
-    return _ada_layer_norm_kernel(
-        M,
-        N,
-        eps,
-        dtype_str,
-        has_gate=True,
-        use_cp_async=use_cp_async,
-    )(block_m, threads)(x, scale, shift, gate, dummy)
-
-
-@_ada_layer_norm_zero_wrapped.register_fake
-def _(
-    M,
-    N,
-    eps,
-    dtype_str,
-    block_m,
-    threads,
-    use_cp_async,
-    x,
-    scale,
-    shift,
-    gate,
-):
-    return torch.empty((M, N), dtype=x.dtype, device=x.device)
-
-
 class AdaLayerNormKernel(Kernel):
     """Adaptive LayerNorm kernel.
 
@@ -304,7 +233,6 @@ class AdaLayerNormKernel(Kernel):
     Uses 256-element alignment (512 bytes for fp16/bf16) for shared memory copies.
 
     Args:
-        M: Number of rows (product of all dims except last).
         N: Hidden dimension (last dim).
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
@@ -317,7 +245,6 @@ class AdaLayerNormKernel(Kernel):
 
     def __init__(
         self,
-        M: int,
         N: int,
         eps: float,
         dtype: torch.dtype,
@@ -325,8 +252,12 @@ class AdaLayerNormKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
     ):
+        """Build for a hidden size, dtype and variant.
+
+        The program for a given row count is resolved in ``forward``, memoized by
+        ``_ada_layer_norm_kernel``.
+        """
         super().__init__()
-        self.M = M
         self.N = N
         self.eps = eps
         self.dtype = dtype
@@ -334,15 +265,8 @@ class AdaLayerNormKernel(Kernel):
         self.N_padded = align_up(N, ALIGNMENT)
         # Shape policy is benchmarked independently from block/thread tuning.
         self.use_cp_async = _should_use_cp_async(N, dtype, has_gate)
-        self.kernel = _ada_layer_norm_kernel(
-            self.M,
-            self.N,
-            self.eps,
-            self.dtype_str,
-            has_gate=self.has_gate,
-            use_cp_async=self.use_cp_async,
-        )
-        self.init_config(config, tune)
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
+        self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
@@ -360,32 +284,50 @@ class AdaLayerNormKernel(Kernel):
         shift: torch.Tensor,
         gate: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Normalize and modulate ``x`` over its trailing ``N`` elements.
+
+        Flattening to 2-D rows happens here.
+
+        Args:
+            x: Input whose trailing axis is ``N``, contiguous, on a CUDA device.
+            scale: Per-row scale shaped like *x*.
+            shift: Per-row shift shaped like *x*.
+            gate: Per-row gate shaped like *x*, required when ``has_gate``.
+
+        Returns:
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: An input is not on a CUDA device, or ``gate`` is missing while
+                ``has_gate``.
+        """
+        self._require_cuda(x=x, scale=scale, shift=shift, gate=gate)
+        if self.has_gate and gate is None:
+            raise ValueError("gate tensor is required when has_gate=True")
+
+        original_shape = x.shape
+        rows = x.reshape(-1, self.N)
+        scale = scale.reshape(-1, self.N)
+        shift = shift.reshape(-1, self.N)
+
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = _ada_layer_norm_kernel(
+            rows.shape[0],
+            self.N,
+            self.eps,
+            self.dtype_str,
+            has_gate=self.has_gate,
+            use_cp_async=self.use_cp_async,
+        )
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
+        # ``_dummy`` keeps the output at the index ``out_idx`` names; see the prim_func.
+        dummy = torch.empty(1, dtype=x.dtype, device=x.device)
+        program = self.kernel(self.config["block_m"], self.config["threads"])
         if self.has_gate:
-            if gate is None:
-                raise ValueError("gate tensor is required when has_gate=True")
-            return _ada_layer_norm_zero_wrapped(
-                self.M,
-                self.N,
-                self.eps,
-                self.dtype_str,
-                self.config["block_m"],
-                self.config["threads"],
-                self.use_cp_async,
-                x,
-                scale,
-                shift,
-                gate,
-            )
+            y = program(rows, scale, shift, gate.reshape(-1, self.N), dummy)
         else:
-            return _ada_layer_norm_wrapped(
-                self.M,
-                self.N,
-                self.eps,
-                self.dtype_str,
-                self.config["block_m"],
-                self.config["threads"],
-                self.use_cp_async,
-                x,
-                scale,
-                shift,
-            )
+            y = program(rows, scale, shift, dummy)
+        return y.reshape(original_shape)

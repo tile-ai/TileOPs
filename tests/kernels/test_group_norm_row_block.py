@@ -32,13 +32,12 @@ def test_affine_multi_row_block(n: int, c: int, spatial: tuple, g: int, block_m:
     """Per-channel affine stays correct when a row block runs past M."""
     dtype = torch.float16
     cpg = c // g
-    m, d = n * g, cpg * math.prod(spatial)
+    d = cpg * math.prod(spatial)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     weight = torch.randn(c, dtype=dtype, device="cuda")
     bias = torch.randn(c, dtype=dtype, device="cuda")
 
     kernel = GroupNormKernel(
-        m,
         d,
         1e-5,
         dtype,
@@ -46,7 +45,7 @@ def test_affine_multi_row_block(n: int, c: int, spatial: tuple, g: int, block_m:
         cpg,
         config={"block_m": block_m, "threads": 128},
     )
-    y = kernel(x.reshape(m, d), weight, bias).reshape(x.shape)
+    y = kernel(x, weight, bias)
 
     y_ref = F.group_norm(
         x.float(),
@@ -72,7 +71,6 @@ def test_no_affine_multi_row_block(m: int, d: int, block_m: int) -> None:
     x = torch.randn((m, d), dtype=dtype, device="cuda")
 
     kernel = GroupNormNoAffineKernel(
-        m,
         d,
         1e-5,
         dtype,

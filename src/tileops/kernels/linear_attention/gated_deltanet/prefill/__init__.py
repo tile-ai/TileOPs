@@ -1,0 +1,18 @@
+# Copyright (c) 2026 The Qwen team, Alibaba Group.
+# Licensed under the MIT License.
+# Adapted and modified for TileOps GatedDeltaNet prefill integration.
+
+from .gemm_lowering import install_gemm_v1
+
+install_gemm_v1()
+
+from .cp_fwd import correct_initial_states, get_warmup_chunks  # noqa: E402
+from .fused_fwd import fused_gdr_fwd  # noqa: E402
+from .prepare_h import fused_gdr_h  # noqa: E402
+
+__all__ = [
+    "correct_initial_states",
+    "fused_gdr_fwd",
+    "fused_gdr_h",
+    "get_warmup_chunks",
+]

@@ -181,7 +181,7 @@ def test_mha_fwd(
 @pytest.mark.smoke
 def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
     op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False)
-    assert op._get_kernel(torch.float16).__class__.__name__.startswith("GQA")
+    assert op._get_kernel((), torch.float16).__class__.__name__.startswith("GQA")
 
 
 @pytest.mark.smoke
@@ -231,7 +231,3 @@ def test_mha_bwd(
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

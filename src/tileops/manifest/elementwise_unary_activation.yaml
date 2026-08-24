@@ -15,11 +15,11 @@ ReluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -39,7 +39,7 @@ ReluFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       relu: ReluFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -58,15 +58,15 @@ GeluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      approximate: {type: str, default: "none"}
+      approximate: {type: str, default: "none", kw_only: true}
     shape_rules:
       - "approximate in ('none', 'tanh')"
       - "output.shape == input.shape"
 
   workloads:
     # Llama-3.1-8B FFN intermediate (hidden_dim=14336)
-    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
-    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
+    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-8b-ffn-prefill"}
+    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-8b-ffn-decode"}
 
   roofline:
     vars:
@@ -77,7 +77,7 @@ GeluFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       gelu: GeluFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -92,18 +92,18 @@ SiluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
   workloads:
     # Llama-3.1-8B SwiGLU FFN intermediate
-    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
-    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
+    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-8b-ffn-prefill"}
+    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-8b-ffn-decode"}
 
   roofline:
     vars:
@@ -114,7 +114,7 @@ SiluFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       silu: SiluFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -129,11 +129,11 @@ HardswishFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -151,7 +151,7 @@ HardswishFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       hardswish: HardswishFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -166,11 +166,11 @@ HardsigmoidFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -188,7 +188,7 @@ HardsigmoidFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       hardsigmoid: HardsigmoidFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -203,11 +203,11 @@ MishFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -225,7 +225,7 @@ MishFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       mish: MishFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -240,11 +240,11 @@ SeluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -262,7 +262,7 @@ SeluFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       selu: SeluFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -274,14 +274,15 @@ LeakyReluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      negative_slope: {type: float, default: 0.01}
-      inplace: {type: bool, default: false}
+      negative_slope: {type: float, default: 0.01, kw_only: true}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -299,7 +300,7 @@ LeakyReluFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       leaky_relu: LeakyReluFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -311,14 +312,15 @@ EluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      alpha: {type: float, default: 1.0}
-      inplace: {type: bool, default: false}
+      alpha: {type: float, default: 1.0, kw_only: true}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -336,7 +338,7 @@ EluFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       elu: EluFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -348,15 +350,16 @@ HardtanhFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      min_val: {type: float, default: -1.0}
-      max_val: {type: float, default: 1.0}
-      inplace: {type: bool, default: false}
+      min_val: {type: float, default: -1.0, kw_only: true}
+      max_val: {type: float, default: 1.0, kw_only: true}
+      inplace: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "min_val <= max_val"
       - "output.shape == input.shape"
@@ -376,7 +379,7 @@ HardtanhFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       hardtanh: HardtanhFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -388,14 +391,15 @@ SoftplusFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      beta: {type: float, default: 1.0}
-      threshold: {type: float, default: 20.0}
+      beta: {type: float, default: 1.0, kw_only: true}
+      threshold: {type: float, default: 20.0, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -413,7 +417,7 @@ SoftplusFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/activations.py
     kernel_map:
       softplus: SoftplusFwdKernel
     op: tileops/ops/elementwise/activations.py
@@ -460,7 +464,7 @@ ClampFwdOp:
     func: "tileops.perf.formulas.clamp_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/clamp.py
     kernel_map:
       clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise/clamp.py
@@ -483,8 +487,8 @@ ClampScalarFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      min: {type: "Number | None", default: null}
-      max: {type: "Number | None", default: null}
+      min: {type: "Number | None", default: null, kw_only: true}
+      max: {type: "Number | None", default: null, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -502,7 +506,7 @@ ClampScalarFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/clamp.py
     kernel_map:
       clamp: ClampFwdKernel
     op: tileops/ops/elementwise/clamp.py
@@ -515,15 +519,16 @@ NanToNumFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      nan: {type: float, default: 0.0}
-      posinf: {type: "float | None", default: null}
-      neginf: {type: "float | None", default: null}
+      nan: {type: float, default: 0.0, kw_only: true}
+      posinf: {type: "float | None", default: null, kw_only: true}
+      neginf: {type: "float | None", default: null, kw_only: true}
     shape_rules:
       - "output.shape == input.shape"
 
@@ -539,7 +544,7 @@ NanToNumFwdOp:
     bytes: "2 * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/nan_to_num.py
     kernel_map:
       nan_to_num: NanToNumFwdKernel
     op: tileops/ops/elementwise/nan_to_num.py

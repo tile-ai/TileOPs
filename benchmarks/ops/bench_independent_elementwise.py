@@ -2,6 +2,9 @@
 
 Profiles TileOPs vs PyTorch baselines using DNN-realistic 2-D shapes
 (tokens x hidden_dim) across all supported dtypes.
+
+Each row is timed against torch eager and the same reference through inductor,
+including the two generative ops (alibi, sinusoidal), which take no inputs.
 """
 
 from math import prod
@@ -11,21 +14,23 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    ManifestBenchmark,
+    fields,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AlibiFwdOp,
     ClampFwdOp,
     ClampScalarFwdOp,
     EluFwdOp,
-    HardtanhFwdOp,
     LeakyReluFwdOp,
     MaskedFillScalarFwdOp,
-    NanToNumFwdOp,
-    PreluFwdOp,
     SinusoidalFwdOp,
-    SoftplusFwdOp,
-    WhereFwdOp,
 )
 from workloads.elementwise import (
     Fp8MaskedFillBenchCase,
@@ -60,37 +65,25 @@ class UnaryBenchmark(BenchmarkBase[ShapedRandnWorkload]):
 _CLAMP_FWD_OP = "ClampFwdOp"
 
 
-def _workloads_to_clamp_params(workloads: list) -> list:
-    """Convert manifest workload dicts to clamp-bench pytest params.
+def _clamp_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(input_shape, min_shape, max_shape, dtype)``; a row passes a bound
+    exactly when it declares that bound's shape."""
+    return (
+        tuple(w["input_shape"]),
+        tuple(w["min_shape"]) if "min_shape" in w else None,
+        tuple(w["max_shape"]) if "max_shape" in w else None,
+        dtype,
+    )
 
-    A row passes a bound exactly when it declares that bound's shape (R18.1).
-    """
-    params = []
-    for idx, w in enumerate(workloads):
-        input_shape = tuple(w["input_shape"])
-        min_shape = tuple(w["min_shape"]) if "min_shape" in w else None
-        max_shape = tuple(w["max_shape"]) if "max_shape" in w else None
-        label = w.get("label", "x".join(str(s) for s in input_shape))
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            # Smoke = first workload + fp16; everything else is full-mode.
-            mark = pytest.mark.smoke if (idx == 0 and dtype is torch.float16) else pytest.mark.full
-            params.append(
-                pytest.param(
-                    input_shape,
-                    min_shape,
-                    max_shape,
-                    dtype,
-                    marks=mark,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+
+def _clamp_marks(w: dict, dtype: torch.dtype, index: int) -> tuple:
+    """The first row's fp16 case is the smoke case; every other case is full."""
+    return (pytest.mark.smoke if index == 0 and dtype is torch.float16 else pytest.mark.full,)
 
 
 @pytest.mark.parametrize(
     "input_shape, min_shape, max_shape, dtype",
-    _workloads_to_clamp_params(load_workloads(_CLAMP_FWD_OP)),
+    workload_params(load_workloads(_CLAMP_FWD_OP), _clamp_args, marks=_clamp_marks),
 )
 def test_clamp_tensor_bench(
     input_shape: tuple,
@@ -109,14 +102,18 @@ def test_clamp_tensor_bench(
     t_min = bounds.pop(0) if min_shape is not None else None
     t_max = bounds.pop(0) if max_shape is not None else None
 
-    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape)
+    op = ClampFwdOp()
     bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
 
     def baseline_fn(x, t_min, t_max):
         return torch.clamp(x, t_min, t_max)
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {
+            "tileops": op,
+            "torch": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         x,
         t_min,
         t_max,
@@ -131,22 +128,15 @@ _ALIBI_OP = "AlibiFwdOp"
 _SINUSOIDAL_OP = "SinusoidalFwdOp"
 
 
-def _generative_params(workloads: list, keys: tuple) -> list:
-    """Manifest workloads -> params; first workload smoke, rest full."""
-    params = []
-    for i, w in enumerate(workloads):
-        values = [w[k] for k in keys]
-        dtype = getattr(torch, w["dtypes"][0])
-        mark = pytest.mark.smoke if i == 0 else pytest.mark.full
-        params.append(pytest.param(*values, dtype, marks=mark, id=w.get("label", f"w{i}")))
-    return params
-
-
 class AlibiBenchFixture(FixtureBase):
     PARAMS = [
         (
             "seq_len, num_heads, dtype",
-            _generative_params(load_workloads(_ALIBI_OP), ("seq_len", "num_heads")),
+            workload_params(
+                load_workloads(_ALIBI_OP),
+                fields("seq_len", "num_heads", dtype_last=True),
+                smoke_first=True,
+            ),
         )
     ]
 
@@ -155,7 +145,11 @@ class SinusoidalBenchFixture(FixtureBase):
     PARAMS = [
         (
             "seq_len, d_model, dtype",
-            _generative_params(load_workloads(_SINUSOIDAL_OP), ("seq_len", "d_model")),
+            workload_params(
+                load_workloads(_SINUSOIDAL_OP),
+                fields("seq_len", "d_model", dtype_last=True),
+                smoke_first=True,
+            ),
         )
     ]
 
@@ -188,8 +182,15 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
     bm = ManifestBenchmark(_ALIBI_OP, op, workload)
 
+    def baseline_fn():
+        return _alibi_reference(seq_len, num_heads, dtype)
+
     bm.compare(
-        {"tileops": op, "torch-ref": lambda: _alibi_reference(seq_len, num_heads, dtype)},
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         record_as=op,
         params=locals(),
     )
@@ -201,8 +202,15 @@ def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> Non
     workload = _GenerativeWorkload((seq_len, d_model), dtype)
     bm = ManifestBenchmark(_SINUSOIDAL_OP, op, workload)
 
+    def baseline_fn():
+        return _sinusoidal_reference(seq_len, d_model, dtype)
+
     bm.compare(
-        {"tileops": op, "torch-ref": lambda: _sinusoidal_reference(seq_len, d_model, dtype)},
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
         record_as=op,
         params=locals(),
     )
@@ -271,17 +279,21 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
     bm = Fp8UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=shape, **extra_kwargs)
-    else:
-        op = op_cls(N_total=n_total, **extra_kwargs)
+    op = op_cls(**extra_kwargs)
 
     # Baseline: PyTorch fp16 compute then cast back to fp8
     def baseline(x):
         return baseline_fn(x.to(torch.float16)).to(dtype)
 
     bm.compare(
-        {"tileops": op, "torch-ref": baseline}, *inputs, record_as=f"{op_name}_fp8", params=locals()
+        {
+            "tileops": op,
+            "torch-ref": baseline,
+            TORCH_COMPILE_TAG: compiled_reference(baseline),
+        },
+        *inputs,
+        record_as=f"{op_name}_fp8",
+        params=locals(),
     )
 
 
@@ -346,9 +358,19 @@ def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> 
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0)
+        op = MaskedFillScalarFwdOp(value=-100.0)
 
         def baseline(x, mask):
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
-        bm.compare({"tileops": op, "torch-ref": baseline}, x, mask, record_as=op, params=locals())
+        bm.compare(
+            {
+                "tileops": op,
+                "torch-ref": baseline,
+                TORCH_COMPILE_TAG: compiled_reference(baseline),
+            },
+            x,
+            mask,
+            record_as=op,
+            params=locals(),
+        )

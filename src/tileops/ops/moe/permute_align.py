@@ -20,21 +20,15 @@ class MoePermuteAlignFwdOp(Op):
     grouped GEMM: sorted token indices, per-block expert ids, and the total
     padded token count.
 
-    Args:
-        total_tokens: Number of input tokens T.
-        top_k: Number of experts selected per token K.
-        num_experts: Number of experts.
-        block_size: GEMM tile size (M dimension); default 64.
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune the kernel.
-
     Example:
-        >>> op = MoePermuteAlignFwdOp(total_tokens=4, top_k=8, num_experts=8, block_size=16)
-        >>> sorted_ids, expert_ids, num_post_pad = op(topk_ids)
+        ```python linenums="1"
+        op = MoePermuteAlignFwdOp(total_tokens=4, top_k=8, num_experts=8, block_size=16)
+        sorted_ids, expert_ids, num_post_pad = op(topk_ids)
+        ```
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_permute_align_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_permute_align_fwd",)
 
     def __init__(
         self,
@@ -45,6 +39,16 @@ class MoePermuteAlignFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            total_tokens: Number of input tokens T.
+            top_k: Number of experts selected per token K.
+            num_experts: Number of experts.
+            block_size: GEMM tile size (M dimension); default 64.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune the kernel.
+        """
         self.total_tokens = total_tokens
         self.top_k = top_k
         self.num_experts = num_experts
@@ -112,7 +116,7 @@ class MoePermuteAlignFwdOp(Op):
         return self.kernel(topk_ids)
 
 
-@torch.library.custom_op("top::moe_permute_align_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_permute_align_fwd", mutates_args=())
 def _moe_permute_align_fwd(
     topk_ids: torch.Tensor,
     instance_key: str,

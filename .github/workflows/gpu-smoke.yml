@@ -49,13 +49,22 @@ jobs:
           required_checks=(pre-commit gitleaks actionlint)
           deadline=$((SECONDS + 900))
 
+          # Asked per check name, so the page is bounded by how often that one check
+          # ran on this SHA rather than by every check on it.
+          check_ever_succeeded() {
+            local name="$1" hits
+            hits=$(gh api \
+              "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?check_name=${name}&per_page=100" \
+              --jq '[.check_runs[] | select(.conclusion == "success")] | length')
+            [[ -n "$hits" && "$hits" -gt 0 ]]
+          }
+
           while true; do
-            checks_json=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs")
-            latest_checks=$(echo "$checks_json" | jq '
-              .check_runs
-              | group_by(.name)
-              | map(max_by(.id))
-            ')
+            # filter=latest returns one run per check name, so this is the exact
+            # newest state and its length is bounded by the number of check names.
+            latest_checks=$(gh api \
+              "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100" \
+              --jq '.check_runs')
 
             pending="false"
             failed=""
@@ -68,20 +77,31 @@ jobs:
                 map(select(.name == $name)) | first | .conclusion // ""
               ')
 
-              if [[ -z "$status" || "$status" != "completed" ]]; then
+              if [[ "$status" != "completed" ]]; then
                 pending="true"
                 continue
               fi
 
+              if [[ "$conclusion" == "success" ]]; then
+                continue
+              fi
+
+              # preflight skips these jobs once the SHA is validated, so a skip
+              # stands for an earlier success on this same tree and the skipped run
+              # is the newer of the two. With no such success the SHA has never been
+              # validated, so keep waiting and let the deadline fail closed. Every
+              # other conclusion is judged on the latest run alone: a check that is
+              # failing now is exactly what this gate must not spend GPU time on.
               if [[ "$conclusion" == "skipped" ]]; then
+                if check_ever_succeeded "$check_name"; then
+                  continue
+                fi
                 pending="true"
                 continue
               fi
 
-              if [[ "$conclusion" != "success" ]]; then
-                failed="$check_name"
-                break
-              fi
+              failed="$check_name"
+              break
             done
 
             title_status=$(echo "$latest_checks" | jq -r '
@@ -297,7 +317,7 @@ jobs:
             for path in "${changed_files[@]}"; do
               if [[ "$is_fork" == "true" ]]; then
                 case "$path" in
-                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|src/tileops/ops/*.py|tests/ops/test_*.py|*.md)
+                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|src/tileops/ops/*.py|tests/ops/test_*.py|tests/ops/*/test_*.py|*.md)
                     ;;
                   .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
                     allow_fast_path="false"
@@ -313,7 +333,7 @@ jobs:
               case "$path" in
                 .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml|*.md)
                   ;;
-                tests/ops/test_*.py)
+                tests/ops/test_*.py|tests/ops/*/test_*.py)
                   add_target "$path"
                   if [[ "$scope" == "skip" ]]; then
                     scope="targeted"

@@ -41,7 +41,3 @@ def test_fp8_quant_op(
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     op = FP8QuantFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -7,6 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
@@ -52,8 +53,9 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 B_shape = (batch_count, K, N)
                 B_shared_shape = (block_k, block_n)
 
-            # 1D grid with M-major ordering for A-tile reuse
-            _num_pid_m = math.ceil(batch_sum / block_m)
+            # Tiles enumerated per group; CTAs past the real count exit.
+            _tiling = GroupTiling(batch_count, block_m)
+            _num_pid_m = _tiling.tile_upper_bound(batch_sum)
             _num_pid_n = math.ceil(N / block_n)
 
             @T.prim_func
@@ -69,34 +71,22 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
+                    s_cum = T.alloc_shared([batch_count + 1], "int32")
+                    lo = T.alloc_local([1], "int32")
+                    hi = T.alloc_local([1], "int32")
+                    row = T.alloc_local([1], "int32")
                     cur_batch_idx = T.alloc_local([1], "int32")
 
-                    # M-major ordering: each M-tile processes all N-tiles
-                    bx = pid // _num_pid_n
-                    by = pid % _num_pid_n
-                    m_start = bx * block_m
-                    n_start = by * block_n
+                    _tiling.cumsum(batch_sizes, s_cum)
 
-                    # Guard: skip CTAs that fall beyond the actual padded data.
-                    # batch_padded_offsets[E-1] + batch_sizes[E-1] gives the true
-                    # end of the last expert's padded block.  When batch_sum is a
-                    # conservative upper bound (e.g. T*K + E*block_m in MoE), the
-                    # keeps extra CTAs off the K-loop, which for them reads all-zero
-                    # inputs, wasting SM cycles and B-tensor bandwidth.
-                    total_valid_rows = (
-                        batch_padded_offsets[batch_count - 1] + batch_sizes[batch_count - 1]
-                    )
-                    if m_start < total_valid_rows:
-                        cur_batch_idx[0] = 0
-                        for i in range(batch_count):
-                            batch_start = batch_offsets[i]
-                            batch_end = batch_start + batch_sizes[i]
-                            in_batch = (m_start >= batch_start) & (m_start < batch_end)
-                            cur_batch_idx[0] = T.if_then_else(in_batch, i, cur_batch_idx[0])
-                        batch_start = batch_offsets[cur_batch_idx[0]]
-                        batch_size = batch_sizes[cur_batch_idx[0]]
-                        batch_end = batch_start + batch_size
-                        actual_rows = T.min(block_m, batch_end - m_start)
+                    # M-major ordering: each M-tile processes all N-tiles
+                    m_tile = pid // _num_pid_n
+                    n_start = (pid % _num_pid_n) * block_n
+
+                    if m_tile < s_cum[batch_count]:
+                        _tiling.decode(m_tile, s_cum, lo, hi, cur_batch_idx, row)
+                        m_start = batch_offsets[cur_batch_idx[0]] + row[0]
+                        actual_rows = T.min(block_m, batch_sizes[cur_batch_idx[0]] - row[0])
                         actual_cols = T.min(block_n, N - n_start)
                         T.clear(C_local)
 
@@ -202,6 +192,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 
 class GroupedGemmKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
+    general: bool = True
 
     def __init__(
         self,
@@ -235,6 +226,53 @@ class GroupedGemmKernel(Kernel):
         )
 
         self.init_config(config, tune)
+
+    @property
+    def autotune_supply_prog(self):
+        """Supply autotuning the batch metadata a real call carries.
+
+        Both templates read a group's row count out of this metadata. Both offset
+        vectors take the tight prefix sum, which puts
+        ``batch_padded_offsets[-1] + batch_sizes[-1]`` at ``batch_sum`` and so
+        keeps every tile in the K-loop.
+        """
+        from tilelang.utils.device import get_current_device
+        from tilelang.utils.tensor import get_tensor_supply
+
+        default_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
+        batch_count = self.batch_count
+        base, extra = divmod(self.batch_sum, batch_count)
+
+        def supply_prog(params):
+            device = get_current_device()
+            sizes = torch.full((batch_count,), base, dtype=torch.int32, device=device)
+            sizes[:extra] += 1
+            offsets = torch.zeros(batch_count, dtype=torch.int32, device=device)
+            offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+
+            # Matched by position among themselves: the prim_func takes
+            # batch_sizes, then batch_offsets, then batch_padded_offsets.
+            is_metadata = [
+                str(p.dtype) == "int32" and list(p.shape) == [batch_count] for p in params
+            ]
+            if sum(is_metadata) != 3:
+                raise RuntimeError(
+                    f"autotuning {type(self).__name__} expects 3 int32 [{batch_count}] "
+                    f"parameters (batch_sizes, batch_offsets, batch_padded_offsets), "
+                    f"got {sum(is_metadata)}"
+                )
+
+            seen = 0
+            inputs = []
+            for param, metadata in zip(params, is_metadata, strict=True):
+                if metadata:
+                    inputs.append(sizes if seen == 0 else offsets)
+                    seen += 1
+                else:
+                    inputs.append(default_supply(param))
+            return inputs
+
+        return supply_prog
 
     @property
     def default_config(self) -> dict:

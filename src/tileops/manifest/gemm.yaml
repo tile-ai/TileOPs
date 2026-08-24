@@ -49,8 +49,8 @@ GemmFwdOp:
     func: "tileops.perf.formulas.gemm_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/gemm.py
-    op: tileops/ops/gemm.py
+    kernel: tileops/kernels/gemm/dense.py
+    op: tileops/ops/gemm/gemm.py
     test: tests/ops/test_gemm.py
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
@@ -100,8 +100,8 @@ GemmFp8FwdOp:
     func: "tileops.perf.formulas.gemm_fp8_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/gemm.py
-    op: tileops/ops/gemm.py
+    kernel: tileops/kernels/gemm/dense.py
+    op: tileops/ops/gemm/gemm.py
     test: tests/ops/test_gemm.py
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
@@ -145,8 +145,8 @@ GemmW4A16FwdOp:
     func: "tileops.perf.formulas.gemm_w4a16_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/gemm_w4a16.py
-    op: tileops/ops/gemm.py
+    kernel: tileops/kernels/gemm/w4a16.py
+    op: tileops/ops/gemm/gemm.py
     test: tests/ops/test_gemm.py
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
@@ -187,10 +187,10 @@ GroupedGemmFwdOp:
     - "not transpose_a or output.shape == (batch_sizes.shape[0], a.shape[1], b.shape[0 if transpose_b else 1])"
 
   workloads:
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096-fp16"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, dtypes: [bfloat16], label: "nt-batch16-m4096-n4096-k4096-bf16"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096-fp16"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096-fp16"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, dtypes: [bfloat16], label: "nt-batch16-m4096-n4096-k4096"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096"}
 
   roofline:
     func: "tileops.perf.formulas.grouped_gemm_roofline"
@@ -199,7 +199,8 @@ GroupedGemmFwdOp:
     kernel: tileops/kernels/grouped_gemm/grouped_gemm.py
     kernel_map:
       grouped_gemm_kernel: GroupedGemmKernel
-    op: tileops/ops/grouped_gemm.py
+      grouped_gemm_persistent_3wg_kernel: GroupedGemmPersistent3WGKernel
+    op: tileops/ops/gemm/grouped_gemm.py
     test: tests/ops/test_grouped_gemm.py
     bench: benchmarks/ops/bench_grouped_gemm.py
     bench_manifest_driven: true

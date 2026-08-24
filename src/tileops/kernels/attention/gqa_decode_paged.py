@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import (
+
+from .online_softmax import (
     LOG2E,
     make_apply_softcap,
     make_online_softmax,
@@ -397,7 +398,7 @@ def _gqa_decode_split_paged_kernel(
 # Custom ops (torch.compile compatible wrappers)
 
 
-@torch.library.custom_op("top::gqa_decode_paged_no_split_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_paged_no_split_op", mutates_args=())
 def _gqa_decode_paged_no_split_op(
     batch: int,
     heads: int,
@@ -447,7 +448,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::gqa_decode_paged_split_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_paged_split_op", mutates_args=())
 def _gqa_decode_paged_split_op(
     batch: int,
     heads: int,

@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import make_log2e_scale
+
+from .online_softmax import make_log2e_scale
 
 __all__ = [
     "GQASlidingWindowFwdWgmmaPipelinedKernel",
@@ -189,7 +190,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_wgmma_pipelined_func
 
 
-@torch.library.custom_op("top::gqa_sw_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gqa_sw_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
 def _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
     batch: int,
     heads: int,

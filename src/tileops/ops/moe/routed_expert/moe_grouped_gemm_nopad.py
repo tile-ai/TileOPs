@@ -10,6 +10,7 @@ from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 
 from ...compile_boundary import get_instance
 from ...op_base import Op
+from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGroupedGemmNopadFwdOp"]
 
@@ -17,7 +18,7 @@ __all__ = ["MoeGroupedGemmNopadFwdOp"]
 _GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
-class MoeGroupedGemmNopadFwdOp(Op):
+class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
     """NT grouped GEMM for MoE without block_m-aligned padding.
 
     Uses a GPU tile scheduler to map each CTA to its (expert, row_offset) in O(1),
@@ -26,22 +27,16 @@ class MoeGroupedGemmNopadFwdOp(Op):
     Accepts tight A[T*K, K] inputs (no padding between experts) from
     MoePermuteNoPadOp, producing tight C[T*K, N] outputs.
 
-    Args:
-        numel: T * top_k, total (token, expert) pairs = tight row count.
-        num_experts: Total number of experts E.
-        n: Output feature dimension N (e.g. 2*ffn_size or hidden_size).
-        k: Input feature dimension K (hidden_size or ffn_size).
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune.
-
     Example:
-        >>> op = MoeGroupedGemmNopadFwdOp(numel=16384, num_experts=256, n=4096, k=2048,
-        ...)
-        >>> C = op(A, B, true_sizes, true_offsets)  # [numel, N]
+        ```python linenums="1"
+        op = MoeGroupedGemmNopadFwdOp(numel=16384, num_experts=256, n=4096, k=2048,
+        )
+        C = op(A, B, true_sizes, true_offsets)  # [numel, N]
+        ```
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_grouped_gemm_nopad_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_grouped_gemm_nopad_fwd",)
 
     def __init__(
         self,
@@ -52,6 +47,16 @@ class MoeGroupedGemmNopadFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            numel: T * top_k, total (token, expert) pairs = tight row count.
+            num_experts: Total number of experts E.
+            n: Output feature dimension N (e.g. 2*ffn_size or hidden_size).
+            k: Input feature dimension K (hidden_size or ffn_size).
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune.
+        """
         self.numel = numel
         self.num_experts = num_experts
         self.n = n
@@ -120,30 +125,8 @@ class MoeGroupedGemmNopadFwdOp(Op):
         """
         return _moe_grouped_gemm_nopad_fwd(a, b, true_sizes, true_offsets, self._instance_key)
 
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        true_sizes: torch.Tensor,
-        true_offsets: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator.
 
-        Never traced: kernel construction enters a TileLang builder, which dynamo
-        cannot follow.
-        """
-        self._validate_dtypes(a, b, true_sizes, true_offsets)
-        for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
-            if t.device != a.device:
-                raise ValueError(f"{name} must be on {a.device}, got {t.device}")
-        self.dtype = a.dtype
-        # The op hands over what the manifest declares; how a kernel wants it laid
-        # out is its own business.
-        inputs = tuple(t.contiguous() for t in (a, b, true_sizes, true_offsets))
-        return self._get_kernel(inputs, a.dtype)(*inputs)
-
-
-@torch.library.custom_op("top::moe_grouped_gemm_nopad_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_grouped_gemm_nopad_fwd", mutates_args=())
 def _moe_grouped_gemm_nopad_fwd(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -166,7 +149,5 @@ def _moe_grouped_gemm_nopad_fwd_fake(
     shapes = op._infer_output_shapes(
         tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape), tuple(true_offsets.shape)
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(a)``.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return a.new_empty(shapes["c"])

@@ -11,14 +11,15 @@ One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.engram_decode import EngramDecodeFwdOp
+from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
+from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from workloads.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
@@ -31,9 +32,10 @@ _TUNE = True
 
 
 _ENGRAM_GATE_CONV_FWD_OP = "EngramGateConvFwdOp"
-_ENGRAM_GATE_CONV_FWD_PARAMS = workload_field_params(
+_ENGRAM_GATE_CONV_FWD_PARAMS = workload_params(
     load_workloads(_ENGRAM_GATE_CONV_FWD_OP),
-    ("M", "seq_len", "d", "dtype"),
+    fields("M", "seq_len", "d", "dtype"),
+    smoke_first=True,
 )
 
 
@@ -46,14 +48,22 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )
 
 
 _ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
-_ENGRAM_GATE_CONV_BWD_PARAMS = workload_field_params(
+_ENGRAM_GATE_CONV_BWD_PARAMS = workload_params(
     load_workloads(_ENGRAM_GATE_CONV_BWD_OP),
-    ("M", "seq_len", "d", "dtype"),
+    fields("M", "seq_len", "d", "dtype"),
+    smoke_first=True,
 )
 
 
@@ -69,13 +79,23 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     def ref_with_grad(*args):
         return test.ref_program(*args)
 
-    bm.compare({"tileops": op, "torch": ref_with_grad}, *inputs, record_as=op, params=locals())
+    bm.compare(
+        {
+            "tileops": op,
+            "torch": ref_with_grad,
+            TORCH_COMPILE_TAG: compiled_reference(ref_with_grad),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
+    )
 
 
 _ENGRAM_DECODE_OP = "EngramDecodeFwdOp"
-_ENGRAM_DECODE_PARAMS = workload_field_params(
+_ENGRAM_DECODE_PARAMS = workload_params(
     load_workloads(_ENGRAM_DECODE_OP),
-    ("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
+    fields("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
+    smoke_first=True,
 )
 
 
@@ -99,5 +119,12 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

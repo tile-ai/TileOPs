@@ -234,7 +234,7 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
     return _func
 
 
-@torch.library.custom_op("top::engram_decode", mutates_args=())
+@torch.library.custom_op("tileops::engram_decode", mutates_args=())
 def _engram_decode_wrapped(
     batch: int,
     d_mem: int,
@@ -380,19 +380,19 @@ class EngramDecodeKernel(Kernel):
         """Run one fused decode step.
 
         Args:
-            e_t: Gathered N-gram embedding, shape ``(B, d_mem)``.
-            h_t: Hidden state for the current token, shape ``(B, d)``.
-            conv_state: Conv history of shape ``(B, L, d)`` with
+            e_t: Gathered N-gram embedding, shape $[B \\times d\\_mem]$.
+            h_t: Hidden state for the current token, shape $[B \\times d]$.
+            conv_state: Conv history of shape $[B \\times L \\times d]$ with
                 ``L <= max_conv_len``; left-padded to the compiled capacity
                 here.
-            W_K: Key projection weight of shape ``(d_mem, d)``.
-            W_V: Value projection weight of shape ``(d_mem, d)``.
-            rms_w_h: RMSNorm weight of shape ``(d,)`` for ``h`` and ``k``.
-            rms_w_v: RMSNorm weight of shape ``(d,)`` for the gated value.
-            conv_w: Depthwise conv weights of shape ``(w, d)``.
+            W_K: Key projection weight of shape $[d\\_mem \\times d]$.
+            W_V: Value projection weight of shape $[d\\_mem \\times d]$.
+            rms_w_h: RMSNorm weight of shape $[d]$ for ``h`` and ``k``.
+            rms_w_v: RMSNorm weight of shape $[d]$ for the gated value.
+            conv_w: Depthwise conv weights of shape $[w \\times d]$.
 
         Returns:
-            ``[y_t, new_conv_state]`` of shapes ``(B, d)`` and
+            ``[y_t, new_conv_state]`` of shapes $[B \\times d]$ and
             ``(B, max_conv_len, d)``. The alignment padding the prim_func
             requires is applied and trimmed here.
         """

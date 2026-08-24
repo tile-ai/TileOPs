@@ -360,7 +360,3 @@ def test_var_mean_multidim_non_aligned(
     assert torch.allclose(mean_out, ref_mean, **tol), (
         f"var_mean multidim mean non-aligned max err: {(mean_out - ref_mean).abs().max()}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -8,10 +8,6 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-# pass_configs = {
-#     tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-# }
-
 __all__ = ["TopkSelectorKernel"]
 
 
@@ -78,8 +74,6 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                 l_end_idx = ends[bx, seq_row]
 
                 # stage 1: use 8bit to do quick topk
-                # T.fill(s_histogram, 0)
-                # T.fill(s_num_input[0], 0)
 
                 for j in T.serial(RADIX + 1):
                     s_histogram[j] = 0
@@ -137,7 +131,6 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                                 index[bx, seq_row, g, l_pos] = input_idx
 
                         elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
-                            # pos = s_num_input[0]
                             l_pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
                             if l_pos < SMEM_INPUT_SIZE:
                                 s_input_idx[0, l_pos] = input_idx
@@ -153,7 +146,6 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                     T.sync_threads()
                     for j in T.serial(RADIX + 1):
                         s_histogram[j] = 0
-                    # T.fill(s_histogram, 0)
                     if tx == 0:
                         s_num_input[r_idx ^ 1] = 0
                     T.sync_threads()
@@ -254,7 +246,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
     return topk_selector_fwd_func
 
 
-@torch.library.custom_op("top::topk_selector_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::topk_selector_wrapped_kernel", mutates_args=())
 def _topk_selector_wrapped_kernel(
     batch: int,
     seq_len: int,
@@ -282,7 +274,7 @@ def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) 
 
 
 class TopkSelectorKernel(Kernel):
-    """Per-row top-k index selection over an ``[B, S, S_kv, G]`` score tensor.
+    """Per-row top-k index selection over an $[B \\times S \\times S\\_kv \\times G]$ score tensor.
 
     Args:
         batch: Batch size.

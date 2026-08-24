@@ -14,6 +14,13 @@ class TopkSelectorFwdOp(Op):
     def __init__(
         self, topk: int, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            topk: Manifest ``params.topk``, ``int``.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
         self.batch = None
         self.seq_len = None
         self.seq_len_kv = None
@@ -32,6 +39,7 @@ class TopkSelectorFwdOp(Op):
 
     def _get_kernel(
         self,
+        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         seq_len: int,
         seq_len_kv: int,
@@ -42,6 +50,7 @@ class TopkSelectorFwdOp(Op):
         key = (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index, self.tune)
         return self.get_or_build_kernel(
             "topk_selector_kernel",
+            inputs,
             key=key,
             build=lambda: self.kernel_map["topk_selector_kernel"](
                 batch,
@@ -55,7 +64,27 @@ class TopkSelectorFwdOp(Op):
             ),
         )
 
+    def _infer_output_shapes(
+        self,
+        index_score_shape: tuple[int, ...],
+        starts_shape: tuple[int, ...],
+        ends_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: $[batch \\times seq\\_len \\times kv\\_group \\times topk]$."""
+        batch, seq_len, _, kv_group = index_score_shape
+        return {"indexes": (batch, seq_len, kv_group, self.topk)}
+
     def forward(self, index_score, starts, ends) -> torch.Tensor:
+        """Run the op on the inputs the manifest declares.
+
+        Args:
+            index_score: Input tensor, dtype ``float32``.
+            starts: Input tensor, dtype ``int32``.
+            ends: Input tensor, dtype ``int32``.
+
+        Returns:
+            ``indexes``, as the manifest declares.
+        """
         if not index_score.is_cuda:
             raise ValueError("TopkSelectorFwdOp expects CUDA inputs")
         if index_score.ndim != 4:
@@ -79,7 +108,13 @@ class TopkSelectorFwdOp(Op):
         self.kv_group = kv_group
         self.in_dtype = index_score.dtype
         self.kernel = self._get_kernel(
-            batch, seq_len, seq_len_kv, kv_group, index_score.dtype, index_score.device.index
+            (index_score, starts, ends),
+            batch,
+            seq_len,
+            seq_len_kv,
+            kv_group,
+            index_score.dtype,
+            index_score.device.index,
         )
 
         return self.kernel(index_score, starts, ends)

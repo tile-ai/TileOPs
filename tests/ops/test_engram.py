@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.engram_decode import EngramDecodeFwdOp
+from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
+from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from workloads.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
@@ -173,7 +173,3 @@ def test_engram_decode_multi_step():
 
         assert y_err < 0.1, f"Step {step}: y max_err={y_err:.6f}"
         assert s_err < 0.05, f"Step {step}: state max_err={s_err:.6f}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

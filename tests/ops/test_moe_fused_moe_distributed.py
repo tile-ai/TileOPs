@@ -21,7 +21,8 @@ import torch
 import torch.distributed as dist
 
 from tests.test_base import FixtureBase
-from tileops.ops.moe import FusedMoe, SharedFusedMoE
+from tileops.ops.moe import SharedFusedMoE
+from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 
 # Skip all tests in this module if not launched via torchrun or not enough GPUs
 pytestmark = [
@@ -147,7 +148,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
     expert_map[start_expert:end_expert] = torch.arange(E_local, dtype=torch.int32, device=dev)
 
     # TileOPs: local computation with expert_map
-    op_local = FusedMoe(
+    op_local = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E_global,
         top_k=K,
@@ -166,7 +167,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
 
     # Rank-0 computes full reference and compares
     if rank == 0:
-        op_full = FusedMoe(
+        op_full = FusedMoeFwdOp(
             num_tokens=T,
             num_experts=E_global,
             top_k=K,
@@ -344,7 +345,7 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     # ========== TileOPs: expert_map local filtering ==========
-    op_tileops = FusedMoe(
+    op_tileops = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E_global,
         top_k=K,
@@ -431,7 +432,7 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     # ========== TileOPs: expert_map local filtering ==========
-    op_tileops = FusedMoe(
+    op_tileops = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E_global,
         top_k=K,

@@ -1,21 +1,19 @@
-# Batched GEMM family.
+# Batched GEMM. A shard of the gemm family, kept in its own file because the
+# batched entries share a shape contract the dense ones do not.
 #
 # BmmFwdOp: strict 3D-3D batched matrix multiplication
 BmmFwdOp:
   ref_api: "torch.bmm"
-  family: bmm
+  family: gemm
   status: implemented
 
   signature:
     inputs:
-      a: {dtype: "float16 | bfloat16"}
-      b: {dtype: "same_as(a)"}
+      a: {dtype: "float16 | bfloat16", shape: "[B, M, K]"}
+      b: {dtype: "same_as(a)", shape: "[B, K, N]"}
     outputs:
-      d: {dtype: "same_as(a)"}
+      d: {dtype: "same_as(a)", shape: "[B, M, N]"}
     shape_rules:
-    # a: [B, M, K], b: [B, K, N] -> d: [B, M, N]. Batch dim and contraction
-    # dim must match; no broadcasting is performed (this is torch.bmm, not
-    # torch.matmul).
     - "a.shape[0] == b.shape[0]"
     - "a.shape[2] == b.shape[1]"
     - "a.shape[2] % 16 == 0"
@@ -37,8 +35,8 @@ BmmFwdOp:
     func: "tileops.perf.formulas.bmm_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/bmm.py
-    op: tileops/ops/bmm.py
+    kernel: tileops/kernels/gemm/bmm.py
+    op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
     bench_manifest_driven: true
@@ -50,7 +48,7 @@ BmmFwdOp:
 # mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
 BmmFp8KNFwdOp:
   ref_api: "none"
-  family: bmm
+  family: gemm
   status: implemented
 
   signature:
@@ -89,8 +87,8 @@ BmmFp8KNFwdOp:
     func: "tileops.perf.formulas.bmm_fp8_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/bmm.py
-    op: tileops/ops/bmm.py
+    kernel: tileops/kernels/gemm/bmm.py
+    op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
     bench_manifest_driven: true
@@ -101,7 +99,7 @@ BmmFp8NKFwdOp:
   # K innermost, the order the fp8-TN kernel reads, so b arrives without a
   # transpose. Same kernel as BmmFp8KNFwdOp; only b's memory order differs.
   ref_api: "none"
-  family: bmm
+  family: gemm
   status: implemented
 
   signature:
@@ -140,8 +138,8 @@ BmmFp8NKFwdOp:
     func: "tileops.perf.formulas.bmm_fp8_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/bmm.py
-    op: tileops/ops/bmm.py
+    kernel: tileops/kernels/gemm/bmm.py
+    op: tileops/ops/gemm/bmm.py
     test: tests/ops/test_bmm.py
     bench: benchmarks/ops/bench_bmm.py
     bench_manifest_driven: true

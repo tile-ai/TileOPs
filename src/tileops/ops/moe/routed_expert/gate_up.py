@@ -14,6 +14,7 @@ from tileops.kernels.moe import (
 
 from ...compile_boundary import get_instance
 from ...op_base import Op
+from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGateUpFwdOp"]
 
@@ -24,28 +25,21 @@ _GATE_UP_KEYS = ("moe_grouped_gemm_fused_act_kernel", "moe_grouped_gemm_act_kern
 _GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
-class MoeGateUpFwdOp(Op):
+class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
     """Gate/up GEMM and its gated activation.
 
     Takes the tight permuted rows and the stacked gate||up weights, and returns
     activated rows of width ``ffn``.
 
-    Args:
-        numel: T * top_k tight row count.
-        num_experts: Number of local experts E.
-        ffn: FFN width; ``b`` holds 2*ffn rows (gate||up).
-        k: Hidden size K.
-        activation: 'silu_and_mul' or 'gelu_and_mul'.
-        kernel_map: Optional kernel override dict.
-        tune: Whether to autotune.
-
     Example:
-        >>> op = MoeGateUpFwdOp(numel=4096, num_experts=128, ffn=2048, k=7168)
-        >>> act = op(a, b, true_sizes, true_offsets)  # [4096, 2048]
+        ```python linenums="1"
+        op = MoeGateUpFwdOp(numel=4096, num_experts=128, ffn=2048, k=7168)
+        act = op(a, b, true_sizes, true_offsets)  # [4096, 2048]
+        ```
     """
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::moe_gate_up_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_gate_up_fwd",)
 
     def __init__(
         self,
@@ -57,6 +51,17 @@ class MoeGateUpFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            numel: T * top_k tight row count.
+            num_experts: Number of local experts E.
+            ffn: FFN width; ``b`` holds 2*ffn rows (gate||up).
+            k: Hidden size K.
+            activation: 'silu_and_mul' or 'gelu_and_mul'.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune.
+        """
         self.numel = numel
         self.num_experts = num_experts
         self.ffn = ffn
@@ -140,30 +145,8 @@ class MoeGateUpFwdOp(Op):
         """
         return _moe_gate_up_fwd(a, b, true_sizes, true_offsets, self._instance_key)
 
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        true_sizes: torch.Tensor,
-        true_offsets: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator.
 
-        Never traced: kernel construction enters a TileLang builder, which dynamo
-        cannot follow.
-        """
-        self._validate_dtypes(a, b, true_sizes, true_offsets)
-        for name, t in (("b", b), ("true_sizes", true_sizes), ("true_offsets", true_offsets)):
-            if t.device != a.device:
-                raise ValueError(f"{name} must be on {a.device}, got {t.device}")
-        self.dtype = a.dtype
-        # The op hands over what the manifest declares; how a kernel wants it laid
-        # out is its own business.
-        inputs = tuple(t.contiguous() for t in (a, b, true_sizes, true_offsets))
-        return self._get_kernel(inputs, a.dtype)(*inputs)
-
-
-@torch.library.custom_op("top::moe_gate_up_fwd", mutates_args=())
+@torch.library.custom_op("tileops::moe_gate_up_fwd", mutates_args=())
 def _moe_gate_up_fwd(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -186,7 +169,5 @@ def _moe_gate_up_fwd_fake(
     shapes = op._infer_output_shapes(
         tuple(a.shape), tuple(b.shape), tuple(true_sizes.shape), tuple(true_offsets.shape)
     )
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(a)``.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return a.new_empty(shapes["c"])

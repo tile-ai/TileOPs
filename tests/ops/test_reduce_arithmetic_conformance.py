@@ -144,7 +144,3 @@ def test_arithmetic_reduce_unaligned_innermost(
         f"{op_cls.__name__} dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
     )
     torch.testing.assert_close(y, ref, **_tol(dtype))
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

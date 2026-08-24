@@ -13,10 +13,14 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import manifest_params
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
 from tileops.manifest import load_workloads
-from tileops.ops.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from workloads.mamba2_e2e import Mamba2FwdWorkload
 
 # Optional mamba_ssm Triton baseline
@@ -154,7 +158,7 @@ def _mamba2_args(workload: dict) -> tuple:
 @pytest.mark.parametrize(
     "batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dt_softplus,"
     " has_dt_bias, has_initial_states, dtype, tune",
-    manifest_params(load_workloads("Mamba2FwdOp"), _mamba2_args, tune=False),
+    workload_params(load_workloads("Mamba2FwdOp"), then_dtype(_mamba2_args, tune=False)),
 )
 def test_mamba2_fwd_bench(
     batch,
@@ -235,20 +239,12 @@ def test_mamba2_fwd_bench(
                 C,
             ),
         )
-    else:
 
-        def _torch_wrapper(x, dt, A, B, C):
-            return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus, initial_states)
+    def _torch_wrapper(x, dt, A, B, C):
+        return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus, initial_states)
 
-        functors["torch-ref"] = (
-            _torch_wrapper,
-            (
-                x,
-                dt,
-                A,
-                B,
-                C,
-            ),
-        )
+    reference_args = (x, dt, A, B, C)
+    functors["torch-ref"] = (_torch_wrapper, reference_args)
+    functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
 
     bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states, record_as=op, params=locals())

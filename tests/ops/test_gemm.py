@@ -481,7 +481,3 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     op = GemmFwdOp(trans_a=False, trans_b=False, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

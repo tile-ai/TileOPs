@@ -46,7 +46,13 @@ class _SpecOnlyStagedOp(Op):
         return {}
 
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
-        raise NotImplementedError("staged output shape depends on resolved layout metadata")
+        raise NotImplementedError("staged output shape depends on materialized layout metadata")
+
+    def _validate_dtypes(self, *args: torch.Tensor) -> None:
+        raise NotImplementedError("staged dtype validation requires family-specific call data")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError("staged roofline evaluation requires materialized runtime data")
 
 
 class MoePrePermuteFwdOp(_SpecOnlyStagedOp):
@@ -60,6 +66,7 @@ class MoePrePermuteFwdOp(_SpecOnlyStagedOp):
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        """Configure a pre-permute boundary for one layout and expert domain."""
         if num_experts <= 0:
             raise ValueError("num_experts must be positive")
         self.layout = layout
@@ -101,6 +108,7 @@ class MoePrePermuteFwdOp(_SpecOnlyStagedOp):
         topk_ids: torch.Tensor,
         out: torch.Tensor | None = None,
     ) -> PrePermuteOutput:
+        """Materialize token rows and return expert layout plus inverse state."""
         call = self.make_call(hidden_states, topk_ids)
         name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
         kernel = self.get_or_build_kernel(
@@ -122,6 +130,7 @@ class MoeGroupedGemmFwdOp(_SpecOnlyStagedOp):
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        """Configure the current BF16/NoScale M-grouped GEMM semantic."""
         compute = NoScaleComputeSpec() if compute is None else compute
         if not isinstance(compute, NoScaleComputeSpec):
             raise TypeError("the current public manifest supports only NoScaleComputeSpec")
@@ -185,6 +194,7 @@ class MoeGroupedGemmFwdOp(_SpecOnlyStagedOp):
         scales: object | None = None,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Run one grouped GEMM using the supplied materialized expert layout."""
         call = self.make_call(a, b, expert_layout, scales, out)
         name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
         kernel = self.get_or_build_kernel(
@@ -207,6 +217,7 @@ class MoeExpertMLPFwdOp(_SpecOnlyStagedOp):
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        """Configure two grouped GEMMs around the selected gated activation."""
         if activation != "silu_and_mul":
             raise ValueError("the staged Expert MLP currently supports only silu_and_mul")
         self.activation = activation
@@ -256,6 +267,7 @@ class MoeExpertMLPFwdOp(_SpecOnlyStagedOp):
         expert_layout: MaterializedExpertLayout,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Run gate/up GEMM, gated activation, and down GEMM on one layout."""
         self.make_calls(expert_input, w_gate_up, w_down, expert_layout, out)
         gate_up = self.gate_up(expert_input, w_gate_up, expert_layout)
         flat_gate_up = gate_up.reshape(-1, gate_up.shape[-1])
@@ -274,6 +286,7 @@ class MoePostPermuteFwdOp(_SpecOnlyStagedOp):
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        """Configure inverse permutation and the exactly-once routing epilogue."""
         epilogue = RoutingEpilogueSpec() if epilogue is None else epilogue
         if not isinstance(epilogue, RoutingEpilogueSpec):
             raise TypeError("epilogue must be RoutingEpilogueSpec")
@@ -347,6 +360,7 @@ class MoePostPermuteFwdOp(_SpecOnlyStagedOp):
         inverse_permute_context: InversePermuteContext,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Restore token order, apply routing weights, reduce top-k, and cast."""
         call = self.make_call(expert_output, inverse_permute_context, topk_weights, out)
         name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
         kernel = self.get_or_build_kernel(

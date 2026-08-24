@@ -51,6 +51,7 @@ flashinfer-python==0.6.16.post3
 frozenlist==1.8.0
 fsspec==2026.7.0
 googleapis-common-protos==1.75.1
+greenlet==3.5.5
 grpcio==1.83.0
 h11==0.16.0
 hf-xet==1.6.0
@@ -183,6 +184,7 @@ setuptools==80.10.2
 shellingham==1.5.4
 six==1.17.0
 sniffio==1.3.1
+sqlalchemy==2.0.52
 sse-starlette==3.4.8
 starlette==1.6.0
 supervisor==4.3.0

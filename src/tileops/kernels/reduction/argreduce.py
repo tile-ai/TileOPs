@@ -13,6 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.reduction._primitives import restore_reduced, rows_for_axes
 
 __all__ = ["ArgreduceKernel"]
 
@@ -532,51 +533,28 @@ def _argreduce_multicta_final_kernel(
     return _func
 
 
-@torch.library.custom_op("top::argreduce_fwd", mutates_args=())
-def _argreduce_fwd_wrapped(
-    M: int,
-    N: int,
-    op_kind: str,
-    dtype_str: str,
-    strategy: str,
-    inner_stride: int,
-    ctas_per_row: int,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    if strategy == "output":
-        return _argreduce_output_kernel(M, N, inner_stride, op_kind, dtype_str)(block_m, threads)(x)
-    if strategy == "cta":
-        return _argreduce_cta_kernel(M, N, op_kind, dtype_str)(threads)(x)
-    if strategy == "multi_cta":
-        partial_values, partial_indices = _argreduce_multicta_partial_kernel(
-            M, N, op_kind, dtype_str
-        )(threads, ctas_per_row)(x)
-        return _argreduce_multicta_final_kernel(M, N, op_kind, ctas_per_row)()(
-            partial_values, partial_indices
-        )
-    return _argreduce_warp_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
-
-
-@_argreduce_fwd_wrapped.register_fake
-def _(
-    M,
-    N,
-    op_kind,
-    dtype_str,
-    strategy,
-    inner_stride,
-    ctas_per_row,
-    block_m,
-    threads,
-    x,
-):
-    return torch.empty((M,), dtype=torch.int64, device=x.device)
-
-
 class ArgreduceKernel(Kernel):
-    """Adaptive streaming argmax/argmin over contiguous rows."""
+    """Adaptive streaming argmax/argmin over contiguous rows.
+
+    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it. Which of
+    the four layouts runs is decided here, from the row count, the axis length and the
+    axis's stride — so an op hands over the declared tensor and asks for nothing else.
+
+    Args:
+        M: Rows the reduction leaves.
+        N: Length of the axis it reduces.
+        op_kind: One of "argmax", "argmin".
+        dtype: Input data type.
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
+        inner_stride: Elements between two neighbours along the reduced axis. Greater than
+            one means the axis is not the contiguous one, which the strided layout reads
+            without transposing.
+        config: Optional kernel configuration dict.
+        tune: Whether to autotune (default False).
+        device_index: The device the input lives on. None of the four layouts plans against
+            shared memory, so this is here for the architecture check alone.
+    """
 
     supported_archs: list[int] = [80, 86, 89, 90, 100]
 
@@ -586,11 +564,14 @@ class ArgreduceKernel(Kernel):
         N: int,
         op_kind: str,
         dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
         inner_stride: int = 1,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: "int | None" = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if op_kind not in _ARGREDUCE_KINDS:
             raise ValueError(
                 f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_ARGREDUCE_KINDS)}."
@@ -605,6 +586,8 @@ class ArgreduceKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
         self.inner_stride = inner_stride
 
         if inner_stride > 1 and N <= _STRIDED_AXIS_MAX_N:
@@ -680,17 +663,46 @@ class ArgreduceKernel(Kernel):
         return ranked
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the index of the extremum along *reduce_axes* of *x*.
+
+        Args:
+            x: The tensor the op declares, contiguous, on a CUDA device.
+
+        Returns:
+            Int64 indices into the reduced axis.
+
+        Raises:
+            ValueError: *x* is not on a CUDA device.
+        """
+        self._require_cuda(x=x)
+        in_shape = tuple(x.shape)
         if self.M == 0:
-            return torch.empty((0,), dtype=torch.int64, device=x.device)
-        return _argreduce_fwd_wrapped(
-            self.M,
-            self.N,
-            self.op_kind,
-            self.dtype_str,
-            self.strategy,
-            self.inner_stride,
-            self.config.get("ctas_per_row", 1),
-            self.config.get("block_m", 1),
-            self.config["threads"],
-            x,
-        )
+            empty = torch.empty((0,), dtype=torch.int64, device=x.device)
+            return restore_reduced(empty, in_shape, self.reduce_axes, self.keepdim)
+        # The strided layout walks the original buffer, which is why it skips the
+        # transpose the other three need.
+        buffer = x.reshape(-1) if self.strategy == "output" else rows_for_axes(x, self.reduce_axes)
+        y = self._argreduce_rows(buffer)
+        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
+
+    def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the selected layout over an already-laid-out buffer."""
+        block_m = self.config.get("block_m", 1)
+        threads = self.config["threads"]
+        if self.strategy == "output":
+            program = _argreduce_output_kernel(
+                self.M, self.N, self.inner_stride, self.op_kind, self.dtype_str
+            )
+            return program(block_m, threads)(x)
+        if self.strategy == "cta":
+            return _argreduce_cta_kernel(self.M, self.N, self.op_kind, self.dtype_str)(threads)(x)
+        if self.strategy == "multi_cta":
+            ctas_per_row = self.config.get("ctas_per_row", 1)
+            partial = _argreduce_multicta_partial_kernel(
+                self.M, self.N, self.op_kind, self.dtype_str
+            )
+            partial_values, partial_indices = partial(threads, ctas_per_row)(x)
+            final = _argreduce_multicta_final_kernel(self.M, self.N, self.op_kind, ctas_per_row)
+            return final()(partial_values, partial_indices)
+        program = _argreduce_warp_kernel(self.M, self.N, self.op_kind, self.dtype_str)
+        return program(block_m, threads)(x)

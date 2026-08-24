@@ -277,6 +277,11 @@ def aggregate_bench_results(results: list[dict]) -> dict:
     return dict(ops)
 
 
+def count_bench_skips(results: list[dict]) -> int:
+    """Skipped cases, which are neither configs nor failures: without a count they vanish."""
+    return sum(1 for r in results if r["outcome"] == "skipped")
+
+
 def collect_bench_failures(results: list[dict]) -> list[dict]:
     """Collect failed benchmark results for reporting."""
     return [
@@ -358,7 +363,7 @@ def _history_deltas(bench_ops: dict, history_runs: list[dict]):
             if lat is None:
                 continue
             best = find_best_latency(history_runs, op, cfg["name"], key)
-            if best is None:
+            if not best:  # a zero is not something to measure against
                 continue
             yield (
                 {
@@ -384,51 +389,48 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
 
 
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance improvements vs 14-day best."""
+    """Detect performance improvements vs 14-day best, on the regression's absolute floor."""
     return [
         record
         for record, delta in _history_deltas(bench_ops, history_runs)
         if delta < -REGRESSION_THRESHOLD
+        and (record["best_ms"] - record["curr_ms"]) > REGRESSION_ABS_MIN
     ]
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
-    """Find ops where tileops is significantly slower than any baseline."""
+    """Find configs where tileops is slower than its strongest baseline: one alert each."""
     alerts = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            # Check legacy primary baseline
-            ratio = cfg.get("baseline_ratio")
-            if ratio is not None and ratio < BASELINE_RATIO_ALERT:
+            primary = cfg.get("baseline_tag", "baseline")
+            candidates = [
+                (
+                    cfg.get("baseline_ratio"),
+                    primary,
+                    cfg.get(f"baseline_{_CONCLUSION_KEY}", cfg.get("baseline_latency_ms")),
+                )
+            ]
+            candidates += [
+                (bl.get("ratio"), tag, bl.get(_CONCLUSION_KEY, bl.get("latency_ms")))
+                for tag, bl in cfg.get("baselines", {}).items()
+                if tag != primary
+            ]
+            timed = [c for c in candidates if c[0] is not None]
+            if not timed:
+                continue
+            ratio, tag, baseline_ms = min(timed, key=lambda c: c[0])
+            if ratio < BASELINE_RATIO_ALERT:
                 alerts.append(
                     {
                         "op": op,
                         "config": cfg["name"],
                         "tileops_ms": _conclusion_ms(cfg),
-                        "baseline_ms": cfg.get(
-                            f"baseline_{_CONCLUSION_KEY}", cfg.get("baseline_latency_ms")
-                        ),
+                        "baseline_ms": baseline_ms,
                         "ratio": ratio,
-                        "baseline_tag": cfg.get("baseline_tag", "baseline"),
+                        "baseline_tag": tag,
                     }
                 )
-            # Check additional baselines
-            for tag, bl in cfg.get("baselines", {}).items():
-                bl_ratio = bl.get("ratio")
-                if bl_ratio is not None and bl_ratio < BASELINE_RATIO_ALERT:
-                    # Skip if this is the same as the primary baseline
-                    if tag == cfg.get("baseline_tag"):
-                        continue
-                    alerts.append(
-                        {
-                            "op": op,
-                            "config": cfg["name"],
-                            "tileops_ms": _conclusion_ms(cfg),
-                            "baseline_ms": bl.get(_CONCLUSION_KEY, bl.get("latency_ms")),
-                            "ratio": bl_ratio,
-                            "baseline_tag": tag,
-                        }
-                    )
     return alerts
 
 
@@ -585,6 +587,7 @@ def generate_report(
     baseline_alerts: list[dict],
     coverage: list[dict] | None = None,
     coverage_prev: dict | None = None,
+    bench_skips: int = 0,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -608,6 +611,8 @@ def generate_report(
     # ── Summary ───────────────────────────────────────────────────────────
     corr_icon = _PASS if n_failures == 0 else f"{_FAIL} {n_failures} failed"
     bench_fail_icon = f"{_FAIL} {len(bench_failures)}" if bench_failures else f"{_PASS} None"
+    if bench_skips:
+        bench_fail_icon += f" &ensp;|&ensp; {_WARN} {bench_skips} skipped"
     reg_icon = f"{_PASS} None" if not regressions else f"{_WARN} {len(regressions)}"
     alert_icon = f"{_WARN} {len(baseline_alerts)}" if baseline_alerts else f"{_PASS} None"
 
@@ -745,7 +750,7 @@ def generate_report(
         lines.append(
             "> TileOPs is slower than baseline"
             f" (ratio < {BASELINE_RATIO_ALERT:.0%})."
-            " Ratio = baseline_latency / tileops_latency."
+            " Ratio = baseline device-busy / tileops device-busy."
         )
         lines.append("")
         lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |")
@@ -791,7 +796,7 @@ def generate_report(
             f" {n_bench_ops} ops)</strong></summary>"
         )
         lines.append("")
-        lines.append("| | Op | Config | Latency (ms) | TFLOPS | BW (TB/s) | Via | Ratio |")
+        lines.append("| | Op | Config | Device busy (ms) | TFLOPS | BW (TB/s) | Via | Ratio |")
         lines.append("|:-|:---|:-------|------------:|-------:|----------:|:----|------:|")
         for op in sorted(bench_ops):
             for cfg in bench_ops[op]["configs"]:
@@ -799,9 +804,9 @@ def generate_report(
                 tflops = cfg.get("tileops_tflops")
                 bw = cfg.get("tileops_bandwidth_tbs")
                 variant = cfg.get("tileops_variant")
-                lat_str = f"{lat:.4f}" if lat else "-"
-                tflops_str = f"{tflops:.2f}" if tflops else "-"
-                bw_str = f"{bw:.2f}" if bw else "-"
+                lat_str = f"{lat:.4f}" if lat is not None else "-"
+                tflops_str = f"{tflops:.2f}" if tflops is not None else "-"
+                bw_str = f"{bw:.2f}" if bw is not None else "-"
 
                 # Collect all baselines for this config into rows
                 bl_rows = []
@@ -824,12 +829,12 @@ def generate_report(
                 else:
                     via_parts = []
                     for btag, bratio in bl_rows:
-                        r_str = f"{bratio:.1%}" if bratio else "-"
+                        r_str = f"{bratio:.1%}" if bratio is not None else "-"
                         via_parts.append(f"{btag} {r_str}")
                     via_str = ", ".join(via_parts)
-                    # Use the best (highest) ratio for the emoji
-                    best_ratio = max((r for _, r in bl_rows if r), default=None)
-                    emoji = _ratio_emoji(best_ratio) if best_ratio else ""
+                    # Strongest baseline = fastest = lowest ratio.
+                    rows = [r for _, r in bl_rows if r is not None]
+                    emoji = _ratio_emoji(min(rows)) if rows else ""
                     lines.append(
                         f"| {emoji} | {op} | {cfg['name']} "
                         f"| {lat_str} | {tflops_str} | {bw_str} "
@@ -986,10 +991,12 @@ def main():
 
     bench_ops = None
     bench_failures = []
+    bench_skips = 0
     if args.bench_xml and Path(args.bench_xml).exists():
         bench_results = parse_bench_xml(args.bench_xml)
         bench_ops = aggregate_bench_results(bench_results)
         bench_failures = collect_bench_failures(bench_results)
+        bench_skips = count_bench_skips(bench_results)
 
     # Prune first: the carried-over artifact can hold entries older than the
     # window when a run gap exceeds the retention period, and the verdicts below
@@ -1015,6 +1022,7 @@ def main():
         baseline_alerts,
         coverage,
         coverage_prev,
+        bench_skips,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")

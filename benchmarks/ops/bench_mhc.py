@@ -8,10 +8,11 @@ manifest; roofline FLOP and byte counts come from each op's
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
@@ -27,9 +28,9 @@ _SINKHORN_EPS = 0.02
 
 
 _MHC_PRE_OP = "MHCPreFwdOp"
-_MHC_PRE_PARAMS = workload_field_params(
+_MHC_PRE_PARAMS = workload_params(
     load_workloads(_MHC_PRE_OP),
-    (
+    fields(
         "batch",
         "n_expand",
         "c_x",
@@ -39,6 +40,7 @@ _MHC_PRE_PARAMS = workload_field_params(
         "alpha_res",
         "sinkhorn_repeat",
     ),
+    smoke_first=True,
 )
 
 
@@ -66,14 +68,22 @@ def test_mhc_pre_bench(
     bm = ManifestBenchmark(_MHC_PRE_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )
 
 
 _MHC_POST_OP = "MHCPostFwdOp"
-_MHC_POST_PARAMS = workload_field_params(
+_MHC_POST_PARAMS = workload_params(
     load_workloads(_MHC_POST_OP),
-    ("batch", "n_expand", "c_x", "dtype"),
+    fields("batch", "n_expand", "c_x", "dtype"),
+    smoke_first=True,
 )
 
 
@@ -86,5 +96,12 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
     bm = ManifestBenchmark(_MHC_POST_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

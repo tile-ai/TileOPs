@@ -1,0 +1,525 @@
+"""
+Gated DeltaNet forward: (q, k, v, g, beta) -> output o.
+
+Pipeline (3 stages):
+  1. fused_prepare_compute_w_u: (k, v, g, beta) -> (Aw, Au, w, u)
+  2. h_recurrence:  (k, g, w, u, S_0) -> (S, v_new)   [sequential over chunks]
+  3. output_o:      (q, k, g, S, v_new) -> o            [parallel over chunks]
+
+Splitting kernel2 into h_recurrence + output_o increases SM utilisation:
+  - h_recurrence grid: (batch, head) — must be sequential (state dependency)
+  - output_o grid:     (num_chunks, batch, head) — fully parallel
+"""
+
+import functools
+from typing import Optional, Tuple
+
+import tilelang
+import tilelang.language as T
+import torch
+
+from tileops.kernels.kernel_base import Kernel
+
+from ..autotune import (
+    default_h_block_v,
+    delta_rule_fwd_autotune_configs,
+    tune_delta_rule_fwd,
+)
+from ..v_tile import resolve_block_v
+from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
+
+__all__ = ["GatedDeltaNetFwdKernel", "GatedDeltaNetFwdProductionKernel"]
+
+_LOG2E = 1.4426950408889634
+
+
+# Split kernel: h_recurrence  (sequential over chunks, state update only)
+
+
+@functools.lru_cache(maxsize=32)
+def _h_recurrence_tl(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str = "float32",
+    block_v: int = 0,
+):
+    """State recurrence: (k, g, w, u, S_0) -> (S, v_new).
+
+    Grid: (num_v_tiles, batch, head) — sequential over chunks, parallel over V tiles.
+    Outputs per-chunk boundary states S and intermediate v_new for output_o.
+
+    Args:
+        block_v: V-tile size. 0 means no tiling (block_v = dim_v).
+    """
+    accum_dtype = "float32"
+    block_C = chunk_size
+    num_chunks = seq_len // block_C
+    BV = resolve_block_v(dim_v, block_v)
+    num_v_tiles = dim_v // BV
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _func(num_stages, threads=128):
+        @T.prim_func
+        def h_recurrence_kernel(
+            k: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            g: T.Tensor([batch, head, seq_len], dtype),
+            w: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            u: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            S_0: T.Tensor([batch, head, dim_k, dim_v], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
+            v_new: T.Tensor([batch, head, seq_len, dim_v], dtype),
+        ):
+            with T.Kernel(num_v_tiles, batch, head, threads=threads) as (vid, bid, hid):
+                k_c = T.alloc_shared([block_C, dim_k], dtype)
+                g_c = T.alloc_shared([block_C], dtype)
+                w_c = T.alloc_shared([block_C, dim_k], dtype)
+                u_c = T.alloc_shared([block_C, BV], dtype)
+                h_c = T.alloc_shared([dim_k, BV], dtype)
+                v_new_c = T.alloc_shared([block_C, BV], dtype)
+
+                ws_frag = T.alloc_fragment([block_C, BV], accum_dtype)
+                h_next_frag = T.alloc_fragment([dim_k, BV], accum_dtype)
+
+                v_offset = vid * BV
+
+                # Initialise h tile from S_0
+                T.copy(S_0[bid, hid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
+                for i, j in T.Parallel(dim_k, BV):
+                    S[bid, hid, 0, i, v_offset + j] = h_c[i, j]
+
+                for t in T.Pipelined(num_chunks, num_stages=num_stages):
+                    T.copy(k[bid, hid, t * block_C : (t + 1) * block_C, :], k_c, disable_tma=True)
+                    T.copy(g[bid, hid, t * block_C : (t + 1) * block_C], g_c, disable_tma=True)
+                    T.copy(w[bid, hid, t * block_C : (t + 1) * block_C, :], w_c, disable_tma=True)
+                    T.copy(
+                        u[bid, hid, t * block_C : (t + 1) * block_C, v_offset : v_offset + BV],
+                        u_c,
+                        disable_tma=True,
+                    )
+
+                    # v_new_tile = u_tile - (w @ h_tile) * exp(g + g_last)
+                    T.clear(ws_frag)
+                    T.gemm(w_c, h_c, ws_frag)
+                    for i, j in T.Parallel(block_C, BV):
+                        v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                        )
+
+                    # Store v_new tile
+                    T.copy(
+                        v_new_c,
+                        v_new[bid, hid, t * block_C : (t + 1) * block_C, v_offset : v_offset + BV],
+                        disable_tma=True,
+                    )
+
+                    # h_tile_next = h_tile * exp(g_last) + k^T @ scaled_v_new_tile
+                    for n, j in T.Parallel(block_C, BV):
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
+                    for i, j in T.Parallel(dim_k, BV):
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
+                    T.gemm(
+                        k_c,
+                        v_new_c,
+                        h_next_frag,
+                        transpose_A=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+                    T.copy(h_next_frag, h_c)
+                    for i, j in T.Parallel(dim_k, BV):
+                        S[bid, hid, t + 1, i, v_offset + j] = h_c[i, j]
+
+        return h_recurrence_kernel
+
+    return _func
+
+
+# Split kernel: output_o  (fully parallel over chunks)
+
+
+@functools.lru_cache(maxsize=32)
+def _output_o_tl(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str = "float32",
+):
+    """Output projection: (q, k, g, S, v_new) -> o.
+
+    Grid: (num_chunks, batch, head) — fully parallel across chunks.
+    Each chunk reads h = S[t] (boundary state at start of chunk) and v_new[t].
+    """
+    accum_dtype = "float32"
+    block_C = chunk_size
+    num_chunks = seq_len // block_C
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _func(threads=128):
+        @T.prim_func
+        def output_o_kernel(
+            q: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            k: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            g: T.Tensor([batch, head, seq_len], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
+            v_new: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            o: T.Tensor([batch, head, seq_len, dim_v], dtype),
+        ):
+            with T.Kernel(num_chunks, batch, head, threads=threads) as (tid, bid, hid):
+                q_c = T.alloc_shared([block_C, dim_k], dtype)
+                k_c = T.alloc_shared([block_C, dim_k], dtype)
+                g_c = T.alloc_shared([block_C], dtype)
+                h_c = T.alloc_shared([dim_k, dim_v], dtype)
+                v_new_c = T.alloc_shared([block_C, dim_v], dtype)
+                attn = T.alloc_shared([block_C, block_C], dtype)
+
+                o_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
+                attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+
+                T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
+                T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True)
+                T.copy(g[bid, hid, tid * block_C : (tid + 1) * block_C], g_c, disable_tma=True)
+                T.copy(S[bid, hid, tid, :, :], h_c, disable_tma=True)
+                T.copy(
+                    v_new[bid, hid, tid * block_C : (tid + 1) * block_C, :],
+                    v_new_c,
+                    disable_tma=True,
+                )
+
+                # o = (q @ h) * exp(g)
+                T.clear(o_frag)
+                T.gemm(q_c, h_c, o_frag)
+                for i, j in T.Parallel(block_C, dim_v):
+                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * _LOG2E)
+
+                # attn = causal(q @ k^T) * Gamma
+                T.clear(attn_frag)
+                T.gemm(q_c, k_c, attn_frag, transpose_B=True)
+                for i, j in T.Parallel(block_C, block_C):
+                    attn[i, j] = T.if_then_else(
+                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E), T.float32(0.0)
+                    )
+
+                # o += attn @ v_new
+                T.gemm(attn, v_new_c, o_frag)
+                T.copy(
+                    o_frag, o[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
+                )
+
+        return output_o_kernel
+
+    return _func
+
+
+def _chunk_local_cumsum(g: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    """Compute chunk-local cumulative sum of g along the sequence dimension."""
+    B, H, S = g.shape
+    return g.reshape(B, H, S // chunk_size, chunk_size).cumsum(-1).reshape(B, H, S)
+
+
+@torch.library.custom_op("tileops::gated_deltanet_fwd_kernel", mutates_args=())
+def _gated_deltanet_fwd_wrapped_kernel(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str,
+    fused_num_stages: int,
+    fused_threads: int,
+    h_num_stages: int,
+    h_threads: int,
+    h_block_v: int,
+    o_threads: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    g_cum = _chunk_local_cumsum(g.float(), chunk_size).to(g.dtype)
+    fused_fn = fused_prepare_compute_w_u_tl(
+        batch,
+        head,
+        seq_len,
+        chunk_size,
+        dim_k,
+        dim_v,
+        dtype,
+    )(fused_num_stages, fused_threads)
+    h_fn = _h_recurrence_tl(
+        batch,
+        head,
+        seq_len,
+        chunk_size,
+        dim_k,
+        dim_v,
+        dtype,
+        block_v=h_block_v,
+    )(h_num_stages, h_threads)
+    o_fn = _output_o_tl(
+        batch,
+        head,
+        seq_len,
+        chunk_size,
+        dim_k,
+        dim_v,
+        dtype,
+    )(o_threads)
+    S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
+    Aw, Au, w, u = fused_fn(k, v, g_cum, beta)
+    S_buf, v_new = h_fn(k, g_cum, w, u, S_0)
+    o = o_fn(q, k, g_cum, S_buf, v_new)
+    return o, S_buf, Aw, Au
+
+
+@_gated_deltanet_fwd_wrapped_kernel.register_fake
+def _gated_deltanet_fwd_wrapped_kernel_fake(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str,
+    fused_num_stages: int,
+    fused_threads: int,
+    h_num_stages: int,
+    h_threads: int,
+    h_block_v: int,
+    o_threads: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    num_chunks = seq_len // chunk_size
+    o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
+    S = torch.empty(batch, head, num_chunks + 1, dim_k, dim_v, dtype=q.dtype, device=q.device)
+    Aw = torch.empty(batch, head, seq_len, chunk_size, dtype=q.dtype, device=q.device)
+    Au = torch.empty_like(Aw)
+    return o, S, Aw, Au
+
+
+class GatedDeltaNetFwdKernel(Kernel):
+    supported_archs: list[int] = [80, 89, 90]
+
+    def __init__(
+        self,
+        batch: int,
+        head: int,
+        seq_len: int,
+        chunk_size: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: str = "float32",
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ):
+        super().__init__()
+        self.batch = batch
+        self.head = head
+        self.seq_len = seq_len
+        self.chunk_size = chunk_size
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "fused_num_stages": 2,
+            "fused_threads": 256,
+            "h_num_stages": 2,
+            "h_threads": 256,
+            "h_block_v": default_h_block_v(self.dim_v, self.chunk_size),
+            "o_threads": 256,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return delta_rule_fwd_autotune_configs(self.dim_v)
+
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Tune the three sub-kernels independently and merge the winners."""
+        self.config = tune_delta_rule_fwd(
+            self,
+            fused_builder=fused_prepare_compute_w_u_tl,
+            h_builder=_h_recurrence_tl,
+            o_builder=_output_o_tl,
+            warmup=warmup,
+            rep=rep,
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return _gated_deltanet_fwd_wrapped_kernel(
+            self.batch,
+            self.head,
+            self.seq_len,
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            self.dtype_str,
+            self.config["fused_num_stages"],
+            self.config["fused_threads"],
+            self.config["h_num_stages"],
+            self.config["h_threads"],
+            self.config.get("h_block_v", 0),
+            self.config["o_threads"],
+            q,
+            k,
+            v,
+            g,
+            beta,
+        )
+
+
+@torch.library.custom_op("tileops::gated_deltanet_fwd_production_kernel", mutates_args=())
+def _gated_deltanet_fwd_production_wrapped_kernel(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    from .gated_deltanet_prefill import _gated_deltanet_production_bthd, _prefill_blocksolve_A_bthd
+
+    o, states, _final_state, g_cum = _gated_deltanet_production_bthd(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        chunk_size,
+        output_states=True,
+        min_partition_chunks=512,
+    )
+    assert states is not None
+
+    # The legacy forward ABI also needs the gated Aw/Au training artifacts.
+    Aw = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
+    Au = Aw.clone()
+    return o, states, Aw, Au
+
+
+@_gated_deltanet_fwd_production_wrapped_kernel.register_fake
+def _gated_deltanet_fwd_production_wrapped_kernel_fake(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    del k, v, g, beta
+    num_chunks = seq_len // chunk_size
+    o = torch.empty(batch, seq_len, head, dim_v, dtype=q.dtype, device=q.device)
+    states = torch.empty(
+        batch,
+        head,
+        num_chunks + 1,
+        dim_k,
+        dim_v,
+        dtype=q.dtype,
+        device=q.device,
+    )
+    Aw = torch.empty(batch, seq_len, head, chunk_size, dtype=q.dtype, device=q.device)
+    Au = torch.empty_like(Aw)
+    return o, states, Aw, Au
+
+
+class GatedDeltaNetFwdProductionKernel(Kernel):
+    """Hopper forward over batch-token-head-dim (BTHD) inputs.
+
+    Runs the partitioned production prefill pipeline.
+    """
+
+    supported_archs: list[int] = [90]
+
+    def __init__(
+        self,
+        batch: int,
+        head: int,
+        seq_len: int,
+        chunk_size: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: str = "float16",
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        if tune:
+            raise ValueError("GatedDeltaNetFwdProductionKernel does not support tuning")
+        self.batch = batch
+        self.head = head
+        self.seq_len = seq_len
+        self.chunk_size = chunk_size
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.config = config or {}
+
+    @property
+    def default_config(self) -> dict:
+        return {}
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return _gated_deltanet_fwd_production_wrapped_kernel(
+            self.batch,
+            self.head,
+            self.seq_len,
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            q,
+            k,
+            v,
+            g,
+            beta,
+        )

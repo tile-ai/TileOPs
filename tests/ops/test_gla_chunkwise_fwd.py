@@ -69,7 +69,6 @@ def test_gla_fwd(
     fwd_op = GLAFwdOp(
         chunk_size=BC,
         scale=scale,
-        output_final_state=False,
         tune=tune,
     )
     op_o, _ = fwd_op.forward(q, k, v, g)
@@ -89,7 +88,3 @@ def test_gla_fwd(
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

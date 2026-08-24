@@ -24,9 +24,11 @@ class TensorSpec(NamedTuple):
 #: cannot express a return value aliasing an input.
 KernelResult = Union[torch.Tensor, tuple[torch.Tensor, ...], None]
 
-#: Called ``build_kernel(*inputs, **params)``: a :class:`TensorSpec` per input in
-#: ``signature.inputs`` order, then ``signature.params`` by keyword. Both lists are per-op,
-#: which the type system cannot express, hence ``...``.
+#: Called ``build_kernel(*inputs, **params)``: a `TensorSpec` per input in
+#: ``signature.inputs`` order — ``None`` for an ``optional: true`` input the call did not
+#: pass, so presence is read off the slot rather than off how many slots there are — then
+#: ``signature.params`` by keyword. Both lists are per-op, which the type system cannot
+#: express, hence ``...``.
 BuildKernel = Callable[..., Callable[..., KernelResult]]
 
 #: "Is this the kind of device my kernels are written for" — ``False``, not an exception,

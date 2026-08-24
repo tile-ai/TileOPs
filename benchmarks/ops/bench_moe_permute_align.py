@@ -21,7 +21,7 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignWorkload
@@ -147,30 +147,12 @@ def _triton_permute_align(
 # Manifest-driven parametrize
 
 
-def _manifest_params():
-    """Convert manifest workloads to pytest params."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["total_tokens"],
-                    w["top_k"],
-                    w["num_experts"],
-                    w["block_size"],
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
-# Benchmark test
-
-
 @pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, block_size",
-    _manifest_params(),
+    workload_params(
+        load_workloads(_OP_NAME),
+        fields("total_tokens", "top_k", "num_experts", "block_size"),
+    ),
 )
 def test_permute_align_bench(
     total_tokens: int, top_k: int, num_experts: int, block_size: int

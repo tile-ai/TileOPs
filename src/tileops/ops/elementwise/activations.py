@@ -2,6 +2,7 @@
 
 from typing import Dict, Optional
 
+from tileops.backend import Target
 from tileops.kernels.elementwise import (
     EluFwdKernel,
     GeluAndMulFwdKernel,
@@ -46,11 +47,11 @@ class GeluFwdOp(_GeluApproximateBase):
     """Element-wise GELU honoring the manifest ``approximate`` contract.
 
     Args:
-        N_total: Number of elements (flattened input).
         approximate: Approximation mode. ``'none'`` (default) routes to
             the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
             ``GeluTanhFwdKernel`` (the fused tanh approximation
             ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``).
+        target: Which set of kernels serves this op.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
     """
@@ -61,9 +62,6 @@ class GeluFwdOp(_GeluApproximateBase):
     # gelu(x) = x * 0.5 * (1 + erf(x/sqrt(2))) =
     # div + erf(transcendental) + add + mul-by-half + mul = 5 per elem.
     FLOPS_PER_ELEM = 5
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -143,18 +141,7 @@ class SeluFwdOp(_ParamFreeActivationOp):
 
 
 class LeakyReluFwdOp(_ParametricActivationOp):
-    """Leaky ReLU: y = x if x > 0 else negative_slope * x.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        negative_slope: Slope for negative inputs (default 0.01).
-        inplace: When True, copy the result back into ``input`` and
-            return ``input`` (preserving tensor identity). The kernel
-            still computes into a fresh buffer; only the user-visible
-            tensor is mutated, mirroring ``torch.nn.functional.leaky_relu``.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
-    """
+    """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
     _op_name = "leaky_relu"
     _wrapped = None
@@ -166,17 +153,27 @@ class LeakyReluFwdOp(_ParametricActivationOp):
 
     def __init__(
         self,
-        N_total: int,
+        *,
         negative_slope: float = 0.01,
         inplace: bool = False,
-        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            negative_slope: Slope for negative inputs (default 0.01).
+            inplace: When True, copy the result back into ``input`` and
+                return ``input`` (preserving tensor identity). The kernel
+                still computes into a fresh buffer; only the user-visible
+                tensor is mutated, mirroring ``torch.nn.functional.leaky_relu``.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune the kernel.
+        """
         self.negative_slope = negative_slope
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self._finalize_init(N_total, inplace=inplace)
+        self.inplace = inplace
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
     @property
     def default_kernel_map(self):
@@ -184,16 +181,7 @@ class LeakyReluFwdOp(_ParametricActivationOp):
 
 
 class EluFwdOp(_ParametricActivationOp):
-    """ELU: y = x if x > 0 else alpha * (exp(x) - 1).
-
-    Args:
-        N_total: Total number of elements (flattened).
-        alpha: Scale for the negative part (default 1.0).
-        inplace: When True, copy the result back into ``input`` and
-            return ``input`` (preserving tensor identity).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
-    """
+    """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
     _op_name = "elu"
     _wrapped = None
@@ -205,17 +193,25 @@ class EluFwdOp(_ParametricActivationOp):
 
     def __init__(
         self,
-        N_total: int,
+        *,
         alpha: float = 1.0,
         inplace: bool = False,
-        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            alpha: Scale for the negative part (default 1.0).
+            inplace: When True, copy the result back into ``input`` and
+                return ``input`` (preserving tensor identity).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune the kernel.
+        """
         self.alpha = alpha
-        self.dispatch_kernel(kernel_map)
-        self.tune = tune
-        self._finalize_init(N_total, inplace=inplace)
+        self.inplace = inplace
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
     @property
     def default_kernel_map(self):
@@ -223,17 +219,7 @@ class EluFwdOp(_ParametricActivationOp):
 
 
 class HardtanhFwdOp(_ParametricActivationOp):
-    """Hardtanh: y = clamp(x, min_val, max_val).
-
-    Args:
-        N_total: Total number of elements (flattened).
-        min_val: Lower bound (default -1.0).
-        max_val: Upper bound (default 1.0).
-        inplace: When True, copy the result back into ``input`` and
-            return ``input`` (preserving tensor identity).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
-    """
+    """Hardtanh: y = clamp(x, min_val, max_val)."""
 
     _op_name = "hardtanh"
     _wrapped = None
@@ -245,19 +231,28 @@ class HardtanhFwdOp(_ParametricActivationOp):
 
     def __init__(
         self,
-        N_total: int,
+        *,
         min_val: float = -1.0,
         max_val: float = 1.0,
         inplace: bool = False,
-        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            min_val: Lower bound (default -1.0).
+            max_val: Upper bound (default 1.0).
+            inplace: When True, copy the result back into ``input`` and
+                return ``input`` (preserving tensor identity).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune the kernel.
+        """
         self.min_val = min_val
         self.max_val = max_val
-        self.dispatch_kernel(kernel_map)
-        self.tune = tune
-        self._finalize_init(N_total, inplace=inplace)
+        self.inplace = inplace
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
     @property
     def default_kernel_map(self):
@@ -265,15 +260,7 @@ class HardtanhFwdOp(_ParametricActivationOp):
 
 
 class SoftplusFwdOp(_ParametricActivationOp):
-    """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        beta: Scaling factor (default 1.0).
-        threshold: Linear regime threshold (default 20.0).
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
-    """
+    """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
     _op_name = "softplus"
     _wrapped = None
@@ -286,19 +273,26 @@ class SoftplusFwdOp(_ParametricActivationOp):
 
     def __init__(
         self,
-        N_total: int,
+        *,
         beta: float = 1.0,
         threshold: float = 20.0,
-        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            beta: Scaling factor (default 1.0).
+            threshold: Linear regime threshold (default 20.0).
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune the kernel.
+        """
         self.beta = beta
         self.threshold = threshold
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        # Softplus does not expose ``inplace`` to callers; default to False.
-        self._finalize_init(N_total, inplace=False)
+        # Softplus does not expose ``inplace`` to callers.
+        self.inplace = False
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
     @property
     def default_kernel_map(self):

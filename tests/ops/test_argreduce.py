@@ -696,7 +696,9 @@ def test_argreduce_tuning_space_matches_its_kernel(
     """
     from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
-    kernel = ArgreduceKernel(m, n, "argmax", torch.float16, inner_stride=inner_stride)
+    kernel = ArgreduceKernel(
+        m, n, "argmax", torch.float16, reduce_axes=(1,), inner_stride=inner_stride
+    )
     assert kernel.strategy == strategy
     accepted = set(kernel.kernel.signature.parameters)
     assert set(kernel.default_config) <= accepted
@@ -707,7 +709,3 @@ def test_argreduce_tuning_space_matches_its_kernel(
     assert kernel.default_config in kernel.autotune_configs, (
         "tuning cannot be worse than not tuning: the default must be a candidate"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -8,6 +8,7 @@ SoftmaxFwdOp:
   ref_api: "torch.nn.functional.softmax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -27,11 +28,11 @@ SoftmaxFwdOp:
   workloads:
     # Attention weight matrices (batch * heads, seq, seq)
   - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k"}
   - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits (batch, vocab_size)
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
+  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits"}
 
   roofline:
     vars:
@@ -56,6 +57,7 @@ LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -76,11 +78,11 @@ LogSoftmaxFwdOp:
   workloads:
     # Attention weight matrices
   - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k"}
   - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
+  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits"}
 
   roofline:
     vars:
@@ -108,10 +110,11 @@ LogSumExpFwdOp:
   ref_api: "torch.logsumexp"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(x)"}
     params:
@@ -121,9 +124,7 @@ LogSumExpFwdOp:
     - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, int) or len(dim) > 0"
     - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim})))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim})][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Attention weight matrices
@@ -161,6 +162,7 @@ SumFwdOp:
   ref_api: "torch.sum"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -177,9 +179,7 @@ SumFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -214,6 +214,7 @@ MeanFwdOp:
   ref_api: "torch.mean"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -230,9 +231,7 @@ MeanFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -263,6 +262,7 @@ AmaxFwdOp:
   ref_api: "torch.amax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -275,9 +275,7 @@ AmaxFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -308,6 +306,7 @@ AminFwdOp:
   ref_api: "torch.amin"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -320,9 +319,7 @@ AminFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -353,6 +350,7 @@ ProdFwdOp:
   ref_api: "torch.prod"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
   # NOTE: torch.prod has two overloads -- prod(input) for full reduction (no
   # dim arg) and prod(input, dim, keepdim=False) where dim is a required int.
   # Unlike torch.sum, torch.prod's dim overload rejects dim=None at runtime
@@ -374,9 +372,7 @@ ProdFwdOp:
       keepdim: {type: bool, default: false}
     shape_rules:
     - "-x.ndim <= dim < x.ndim"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - 1)"
-    - "not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
@@ -410,6 +406,7 @@ VarFwdOp:
   ref_api: "torch.var"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -423,9 +420,7 @@ VarFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state variance (Llama-3.1-8B)
@@ -456,6 +451,7 @@ StdFwdOp:
   ref_api: "torch.std"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -469,9 +465,7 @@ StdFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state std (Llama-3.1-8B)
@@ -502,6 +496,7 @@ VarMeanFwdOp:
   ref_api: "torch.var_mean"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -516,11 +511,8 @@ VarMeanFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "var.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(var.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(var.ndim))"
-    - "mean.ndim == var.ndim"
-    - "mean.shape == var.shape"
+    - "var.shape == reduced_shape(x.shape, dim, keepdim)"
+    - "mean.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state var+mean (Llama-3.1-8B)
@@ -555,6 +547,7 @@ ArgmaxFwdOp:
   ref_api: "torch.argmax"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -566,10 +559,7 @@ ArgmaxFwdOp:
       keepdim: {type: bool, default: false}
     shape_rules:
     - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
-    - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
-    - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-    - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # LM head argmax (batch, vocab_size) -- greedy decoding
@@ -602,6 +592,7 @@ ArgminFwdOp:
   ref_api: "torch.argmin"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -613,10 +604,7 @@ ArgminFwdOp:
       keepdim: {type: bool, default: false}
     shape_rules:
     - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
-    - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
-    - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-    - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # LM head argmin
@@ -650,6 +638,7 @@ AllFwdOp:
   ref_api: "torch.all"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -665,9 +654,7 @@ AllFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
 
   workloads:
     # Mask validation (batch, seq_len)
@@ -697,6 +684,7 @@ AnyFwdOp:
   ref_api: "torch.any"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -712,9 +700,7 @@ AnyFwdOp:
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
 
   workloads:
     # Mask validation (batch, seq_len)
@@ -744,6 +730,7 @@ CountNonzeroFwdOp:
   ref_api: "torch.count_nonzero"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -754,9 +741,8 @@ CountNonzeroFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
     shape_rules:
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "output.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-    - "output.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.shape == reduced_shape(x.shape, dim, False)"
 
   workloads:
     # Sparsity analysis (batch, hidden_dim)
@@ -791,6 +777,7 @@ L1NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -809,9 +796,7 @@ L1NormFwdOp:
     - "ord == 1"
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state L1 norm (Llama-3.1-8B)
@@ -842,6 +827,7 @@ L2NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -860,9 +846,7 @@ L2NormFwdOp:
     - "ord == 2"
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state L2 norm (Llama-3.1-8B)
@@ -893,6 +877,7 @@ InfNormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -911,9 +896,7 @@ InfNormFwdOp:
     - "ord == float('inf')"
     - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
     - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 
   workloads:
     # Hidden state inf norm (Llama-3.1-8B)

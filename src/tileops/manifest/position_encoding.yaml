@@ -23,9 +23,9 @@ RopeNeoxFwdOp:
     - "x.shape[-1] % 2 == 0"
 
   workloads:
-  - {seq_len: 2048, head_dim: 64, dtype: float16, layout: "1d", dtypes: [float16], label: "neox-1d-2k-d64-fp16"}
-  - {seq_len: 4096, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "neox-1d-4k-d128-bf16"}
-  - {batch: 2, seq_len: 2048, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "neox-2d-b2-s2k-h32-d128-fp16"}
+  - {seq_len: 2048, head_dim: 64, dtype: float16, layout: "1d", dtypes: [float16], label: "neox-1d-2k-d64"}
+  - {seq_len: 4096, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "neox-1d-4k-d128"}
+  - {batch: 2, seq_len: 2048, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "neox-2d-b2-s2k-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.rope_roofline"
@@ -58,8 +58,8 @@ RopeNonNeoxFwdOp:
     - "x.shape[-1] % 2 == 0"
 
   workloads:
-  - {seq_len: 2048, head_dim: 64, dtype: float16, layout: "1d", dtypes: [float16], label: "non-neox-1d-2k-d64-fp16"}
-  - {batch: 2, seq_len: 2048, num_heads: 32, head_dim: 128, dtype: bfloat16, layout: "2d", dtypes: [bfloat16], label: "non-neox-2d-b2-s2k-h32-d128-bf16"}
+  - {seq_len: 2048, head_dim: 64, dtype: float16, layout: "1d", dtypes: [float16], label: "non-neox-1d-2k-d64"}
+  - {batch: 2, seq_len: 2048, num_heads: 32, head_dim: 128, dtype: bfloat16, layout: "2d", dtypes: [bfloat16], label: "non-neox-2d-b2-s2k-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.rope_roofline"
@@ -96,8 +96,8 @@ RopeLlama31FwdOp:
     - "x.shape[-1] % 2 == 0"
 
   workloads:
-  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "llama31-1d-8k-d128-bf16"}
-  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "llama31-2d-b1-s8k-h32-d128-fp16"}
+  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "llama31-1d-8k-d128"}
+  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "llama31-2d-b1-s8k-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.rope_roofline"
@@ -135,8 +135,8 @@ RopeYarnFwdOp:
     - "x.shape[-1] % 2 == 0"
 
   workloads:
-  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "yarn-1d-8k-d128-bf16"}
-  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "yarn-2d-b1-s8k-h32-d128-fp16"}
+  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "yarn-1d-8k-d128"}
+  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "yarn-2d-b1-s8k-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.rope_roofline"
@@ -172,8 +172,8 @@ RopeLongRopeFwdOp:
     - "x.shape[-1] % 2 == 0"
 
   workloads:
-  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "longrope-1d-8k-d128-bf16"}
-  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "longrope-2d-b1-s8k-h32-d128-fp16"}
+  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "longrope-1d-8k-d128"}
+  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "longrope-2d-b1-s8k-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.rope_roofline"
@@ -205,12 +205,13 @@ RopeNeoxPositionIdsFwdOp:
     shape_rules:
     - "x.ndim == 3"
     - "position_ids.shape == (x.shape[0],)"
+    - "output.shape == x.shape"
     - "x.shape[-1] % 2 == 0"
     - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= x.shape[-1])"
 
   workloads:
-  - {num_tokens: 2048, num_heads: 32, head_dim: 128, max_position: 4096, dtype: float16, dtypes: [float16], label: "position-ids-s2k-h32-d128-fp16"}
-  - {num_tokens: 4096, num_heads: 32, head_dim: 128, max_position: 8192, dtype: bfloat16, dtypes: [bfloat16], label: "position-ids-s4k-h32-d128-bf16"}
+  - {num_tokens: 2048, num_heads: 32, head_dim: 128, max_position: 4096, dtype: float16, dtypes: [float16], label: "position-ids-s2k-h32-d128"}
+  - {num_tokens: 4096, num_heads: 32, head_dim: 128, max_position: 8192, dtype: bfloat16, dtypes: [bfloat16], label: "position-ids-s4k-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.rope_position_ids_roofline"

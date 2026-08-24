@@ -12,14 +12,13 @@ This document holds the contracts those rules emit against.
 
 Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
-| Variable                  | Family      | Purpose                                                                                                          |
-| ------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
-| `_kernel_key`             | reduction   | Kernel-map lookup key                                                                                            |
-| `_kernel_cls`             | reduction   | Kernel class reference                                                                                           |
-| `_op_kind`                | reduction   | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
-| `_kernel_handles_padding` | reduction   | `True` → kernel uses masked loads, skip host-side padding                                                        |
-| `_op_name`                | elementwise | `torch.library.custom_op` registration key                                                                       |
-| `kernel_cls`              | elementwise | Kernel class reference                                                                                           |
+| Variable      | Family      | Purpose                                                                                                          |
+| ------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `_kernel_key` | reduction   | Kernel-map lookup key                                                                                            |
+| `_kernel_cls` | reduction   | Kernel class reference                                                                                           |
+| `_op_kind`    | reduction   | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
+| `_op_name`    | elementwise | `torch.library.custom_op` registration key                                                                       |
+| `kernel_cls`  | elementwise | Kernel class reference                                                                                           |
 
 **The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
@@ -53,13 +52,14 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 
 Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles a dtype-specialized program, so `dtype` is a ctor argument here. The op supplies it from the tensors at `forward()`.
 
-| Attribute          | Type                    | Purpose                                        |
-| ------------------ | ----------------------- | ---------------------------------------------- |
-| `dtype`            | `Optional[torch.dtype]` | Element type this kernel is specialized for    |
-| `config`           | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.) |
-| `autotune_configs` | `Optional[list[dict]]`  | Search space for autotuning                    |
-| `supported_archs`  | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)     |
-| `kernel`           | `Callable`              | Compiled TileLang kernel function              |
+| Attribute                            | Type                    | Purpose                                                             |
+| ------------------------------------ | ----------------------- | ------------------------------------------------------------------- |
+| `dtype`                              | `Optional[torch.dtype]` | Element type this kernel is specialized for                         |
+| `config`                             | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.)                      |
+| `autotune_configs`                   | `Optional[list[dict]]`  | Search space for autotuning                                         |
+| `supported_archs`                    | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)                          |
+| `kernel`                             | `Callable`              | Compiled TileLang kernel function                                   |
+| `autotune_accepts_random_int_inputs` | `bool`                  | Whether autotuning may generate the integer tensor inputs at random |
 
 Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 
@@ -67,12 +67,11 @@ Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `auto
 
 Hooks family bases expose for op-specific semantics. The `scaffold-op` skill does NOT emit these.
 
-| Hook              | Family    | Default                     | Override example                                                   |
-| ----------------- | --------- | --------------------------- | ------------------------------------------------------------------ |
-| `_pad_value()`    | reduction | `0.0` (neutral for sum)     | `ArgmaxFwdOp._pad_value → -inf`                                    |
-| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int`              |
-| `_pre_kernel()`   | reduction | identity                    | `AllFwdOp._pre_kernel` converts unsupported storage dtypes to fp32 |
-| `_post_kernel()`  | reduction | identity                    | Convert kernel output dtype to the manifest-declared output dtype  |
+| Hook              | Family    | Default                     | Override example                                      |
+| ----------------- | --------- | --------------------------- | ----------------------------------------------------- |
+| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int` |
+
+A hook that compensates for what a kernel cannot do belongs to that kernel, not here: the op hands over the tensor its manifest declares.
 
 ### `_cache_key` override (L1-level, not family-specific)
 
@@ -116,9 +115,9 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 ### Calling conventions
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
-- **Op with dynamic dims:** `_infer_output_shapes` called in `forward()` once dynamic dims resolve.
-- **Kernel construction:** always in `forward()`, through `get_or_build_kernel` — see [Slot S16](#slot-s16).
-- **`_validate_dtypes`:** runs on every `forward()` call, and is the only place an op rejects a dtype.
+- **Op with dynamic dims:** `_infer_output_shapes` called once dynamic dims resolve, and by the fake while tracing.
+- **Kernel construction:** in `_eager_forward`, through `get_or_build_kernel` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](#slot-s16).
+- **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ### Inheritance in family-base hierarchies

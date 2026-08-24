@@ -58,6 +58,7 @@ class _ShapeProxy:
     __slots__ = ("shape", "ndim")
 
     def __init__(self, shape: tuple) -> None:
+        """Build the op. Shapes and dtype are taken from the first call."""
         self.shape = tuple(shape)
         self.ndim = len(self.shape)
 
@@ -76,9 +77,9 @@ def _resolve_tensor_binding(
     1. ``self.<name>`` exposes ``.shape`` (a real tensor or any object
        exposing ``.shape`` / ``.ndim``).
     2. ``self.<name>_shape`` is a shape tuple/list; wrapped in a
-       :class:`_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
+       `_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
 
-    Anything else raises :class:`ValueError`, naming the op and the input, so a
+    Anything else raises `ValueError`, naming the op and the input, so a
     missing binding is diagnosable rather than a vacuous ``'NoneType' object has
     no attribute 'shape'`` from inside the generated body.
 
@@ -225,6 +226,7 @@ class _VarsExprValidator(ast.NodeVisitor):
         input_names: set[str],
         optional_names: set[str] | None = None,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call."""
         self.op_name = op_name
         self.var_name = var_name
         # Cleared by ``visit_Compare`` when they carry a presence test.
@@ -424,7 +426,7 @@ def _validate_vars_expr(
     small comprehensions, calls to whitelisted helpers, and references
     to bound names (params, ``elem_bytes``, earlier vars, helpers).
     Tensor inputs may not appear as bare values, except an
-    ``optional: true`` input inside ``is None`` / ``is not None`` (R18.1);
+    ``optional: true`` input inside ``is None`` / ``is not None``;
     comprehension target
     names bind to a child scope reachable only inside the comprehension.
     Forbidden constructs raise ``ValueError`` so class construction

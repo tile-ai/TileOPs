@@ -275,7 +275,7 @@ class TestSchema:
             ),
             ("status non-string", lambda e: e.update(status=123), ["status", "string"]),
             (
-                "dtype_combos references unknown tensor (R4)",
+                "dtype_combos references unknown tensor",
                 lambda e: e["signature"].update(
                     dtype_combos=[{"x": "float16", "nonexistent": "bfloat16"}]
                 ),
@@ -297,7 +297,7 @@ class TestSchema:
                 ["parity_opt_out", "unknown entry keys"],
             ),
             (
-                "unrecognized layout value (R19)",
+                "unrecognized layout value",
                 lambda e: _set_input(e, {"dtype": "float16", "layout": "nchw"}),
                 ["layout", "nchw"],
             ),
@@ -338,7 +338,7 @@ class TestSchema:
 
     def test_valid_forms_pass(self, validator):
         """Case table: entry variations the schema explicitly permits."""
-        # Tensor with valid layout field (R19).
+        # Tensor with a valid layout field.
         entry = _make_entry(
             inputs={"x": {"dtype": "float16", "shape": "[N, H, W, C]", "layout": "channels_last"}},
         )
@@ -527,6 +527,43 @@ class TestWorkloadPolicy:
     def test_workload_defaulted_param_may_be_omitted(self, validator):
         """Params with a default are not required in workloads."""
         entry = _make_entry(params={"dim": {"type": "int", "default": -1}})
+        assert validator.check_l0("test_op", entry) == []
+
+    def test_label_repeating_its_own_dtype_fails(self, validator):
+        """A label may not spell a dtype the case id already appends."""
+        entry = _make_entry()
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["float16"], "label": "tokens-1k-fp16"},
+            {"x_shape": [8, 8192], "dtypes": ["bfloat16"], "label": "tokens-8k"},
+        ]
+        errors = validator.check_l0("test_op", entry)
+        assert any("workloads[0]" in e and "'fp16'" in e for e in errors), errors
+        assert not any("workloads[1]" in e for e in errors), errors
+
+    def test_label_dtype_check_covers_exact_and_short_spellings(self, validator):
+        """The long name and the short forms of one dtype are caught alike."""
+        fp8 = str(torch.float8_e4m3fn).rsplit(".", 1)[-1]
+        for label_suffix, dtype in (
+            (fp8, fp8),
+            ("e4m3", fp8),
+            ("f8", fp8),
+            ("bfloat16", "bfloat16"),
+        ):
+            entry = _make_entry()
+            entry["workloads"] = [
+                {"x_shape": [1, 4096], "dtypes": [dtype], "label": f"tokens-1k-{label_suffix}"},
+                {"x_shape": [8, 8192], "dtypes": [dtype], "label": "tokens-8k"},
+            ]
+            errors = validator.check_l0("test_op", entry)
+            assert any("workloads[0]" in e for e in errors), (label_suffix, errors)
+
+    def test_label_may_name_a_dtype_the_row_does_not_run(self, validator):
+        """``fp8`` in a bf16 row names the kernel path, not the case's dtype."""
+        entry = _make_entry()
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["bfloat16"], "label": "prefill-fp8-cache"},
+            {"x_shape": [8, 8192], "dtypes": ["bfloat16"], "label": "decode-fp8-cache"},
+        ]
         assert validator.check_l0("test_op", entry) == []
 
 
@@ -986,7 +1023,7 @@ class TestOptionalInputs:
         assert any("every workload row passes" in e for e in errors), errors
 
     def test_coverage_counts_per_input_not_per_combination(self, validator):
-        """Two optionals need 2 rows, not 4 (R18.2)."""
+        """Two optionals need 2 rows, not 4."""
         entry = self._entry()
         entry["signature"]["inputs"]["v"] = {
             "dtype": "same_as(x)",
@@ -1181,7 +1218,7 @@ class TestSignature:
                 },
             ),
             (
-                "static_dims key appears in __init__() (R20)",
+                "static_dims key appears in __init__()",
                 StaticDimInitOp,
                 {
                     "inputs": {"x": {"dtype": "float16"}},
@@ -1267,7 +1304,7 @@ class TestSignature:
                 ["eps"],
             ),
             (
-                "static_dims key missing from __init__ (R20)",
+                "static_dims key missing from __init__",
                 InitWithoutStaticDimOp,
                 {
                     "inputs": {"x": {"dtype": "float16"}},
@@ -1367,7 +1404,7 @@ class TestDtype:
     def test_resolver_semantics(self, validator):
         """``_resolve_tensor_dtype_options`` resolves forward same_as refs
         (R3 is an identity constraint, not an ordering rule) and expands
-        ``promote_int_to_float`` per R3a."""
+        ``promote_int_to_float``."""
         sig = _sig(
             {"x": "same_as(y)", "y": "float16 | bfloat16"},
             {"z": "same_as(y)"},
@@ -1389,7 +1426,7 @@ class TestDtype:
         assert resolved["output"] == ["float16", "bfloat16", "float32"]
 
     def test_promote_int_to_float_rejected_outside_outputs(self, validator):
-        """``promote_int_to_float`` is output-side only (R3a); unknown refs
+        """``promote_int_to_float`` is output-side only; unknown refs
         and malformed args are rejected wherever they appear."""
         cases = [
             # (description, sig, workloads, substrings expected in one error)
@@ -1720,6 +1757,14 @@ class TestInferShapeParity:
             def _infer_output_shapes(self, x_shape):
                 _ = self.some_attr
                 return {"y": tuple(x_shape)}
+
+            # Concrete like any op: the mock self is built with ``cls.__new__``,
+            # which an abstract class refuses.
+            def _validate_dtypes(self, *args):
+                return None
+
+            def eval_roofline(self):
+                return (0, 0)
 
         entry = {
             "signature": _sig(
@@ -3061,12 +3106,22 @@ class TestValidatorHelperResolution:
 
         from tileops.manifest import shape_rules
 
-        ctx = {"x": types.SimpleNamespace(ndim=4), "dim": 0}
-        for name in shape_rules.__all__:
-            ok, reason = validator._eval_shape_rule(f"{name}(x, dim)", ctx)
+        # One call per helper, since they do not all take the same arguments:
+        # the predicates read a tensor-like, ``reduced_shape`` reads a shape.
+        calls = {
+            "dim_range_validity": "dim_range_validity(x, dim)",
+            "dim_uniqueness": "dim_uniqueness(x, dim)",
+            "reduced_axes": "reduced_axes(x, dim)",
+            "reduced_shape": "reduced_shape(x.shape, dim, False)",
+        }
+        assert set(calls) == set(shape_rules.__all__), calls.keys() ^ set(shape_rules.__all__)
+
+        ctx = {"x": types.SimpleNamespace(ndim=4, shape=(2, 3, 4, 5)), "dim": 0}
+        for name, call in calls.items():
+            ok, reason = validator._eval_shape_rule(call, ctx)
             assert reason is None, (name, reason)
-            # Predicate helpers return bool; reduced_axes returns frozenset
-            # — both are truthy on the canonical (ndim=4, dim=0) input.
+            # Predicates return bool, the other two a frozenset / tuple — all
+            # truthy on the canonical (ndim=4, dim=0) input.
             assert ok is True, name
 
 
@@ -3278,14 +3333,16 @@ class TestDispatchKernelInvariant:
 
 
 class TestStubOverrideGates:
-    """C6 / C7: _validate_dtypes / eval_roofline must not be base stubs."""
+    """C6: the three manifest-driven methods are the concrete class's."""
 
     def test_base_stubs_detected(self, validator):
         cls = _strict_op("StubOp", init=lambda self: None)
-        errs = validator.check_c6_validate_dtypes_not_stub("StubOp", {}, cls)
-        assert any("is the Op base stub" in e for e in errs), errs
-        errs = validator.check_c7_eval_roofline_not_stub("StubOp", {}, cls)
-        assert any("is the Op base stub" in e for e in errs), errs
+        errs = validator.check_c6_contract_methods_implemented("StubOp", {}, cls)
+        assert [e.split(": ")[1].split(" is")[0] for e in errs] == [
+            "_infer_output_shapes",
+            "_validate_dtypes",
+            "eval_roofline",
+        ], errs
 
     def test_overrides_pass(self, validator):
         cls = _strict_op(
@@ -3293,23 +3350,9 @@ class TestStubOverrideGates:
             init=lambda self: None,
             _validate_dtypes=lambda self, *args: None,
             eval_roofline=lambda self: (0, 0),
+            _infer_output_shapes=lambda self, *shapes: {},
         )
-        assert (
-            validator.check_c6_validate_dtypes_not_stub(
-                "OverriddenOp",
-                {},
-                cls,
-            )
-            == []
-        )
-        assert (
-            validator.check_c7_eval_roofline_not_stub(
-                "OverriddenOp",
-                {},
-                cls,
-            )
-            == []
-        )
+        assert validator.check_c6_contract_methods_implemented("OverriddenOp", {}, cls) == []
 
 
 class TestStrictAdvisoryMode:
@@ -3435,3 +3478,60 @@ class TestCompileContractRegistry:
             f"evidence without declaration: {sorted(registered - declared)}; "
             f"declaration without evidence: {sorted(declared - registered)}"
         )
+
+
+class TestMutatedInputParity:
+    """C8: the operators' write arguments are the inputs the manifest marks mutated."""
+
+    @staticmethod
+    def _register(name, schema, mutates_args):
+        import torch
+
+        @torch.library.custom_op(f"c8test::{name}", mutates_args=mutates_args, schema=schema)
+        def _op(*args, **kwargs) -> None:
+            return None
+
+        return f"c8test::{name}"
+
+    def test_declaration_matches_writes(self, validator):
+        qualified = self._register(
+            "stats", "(Tensor x, Tensor(a!) m, str instance_key) -> ()", {"m"}
+        )
+        entry = {
+            "status": "implemented",
+            "signature": {"inputs": {"input": {}, "running_mean": {"mutated": True}}},
+        }
+        cls = _strict_op("StatsOp", compile_op_names=(qualified,))
+        assert validator.check_c8_mutated_inputs_parity("StatsOp", entry, cls) == []
+
+        entry["signature"]["inputs"]["running_mean"] = {}
+        errs = validator.check_c8_mutated_inputs_parity("StatsOp", entry, cls)
+        assert any("write ['running_mean']" in e for e in errs), errs
+
+    def test_write_past_declared_inputs_needs_an_output_buffer_param(self, validator):
+        qualified = self._register(
+            "buffer", "(Tensor x, Tensor(a!) out, str instance_key) -> ()", {"out"}
+        )
+        entry = {"status": "implemented", "signature": {"inputs": {"input": {}}}}
+        cls = _strict_op("BufferOp", compile_op_names=(qualified,))
+        errs = validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls)
+        assert any("past the 1 declared inputs" in e for e in errs), errs
+
+        entry["signature"]["params"] = {"other": {"type": "torch.Tensor | None"}}
+        assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) != []
+
+        entry["signature"]["params"] = {"out": {"type": "torch.Tensor | None"}}
+        assert validator.check_c8_mutated_inputs_parity("BufferOp", entry, cls) == []
+
+    def test_unverifiable_declaration_warns(self, validator):
+        entry = {
+            "status": "implemented",
+            "signature": {"inputs": {"state": {"mutated": True}}},
+        }
+        cls = _strict_op("UnmigratedOp")
+        warnings: list[str] = []
+        assert (
+            validator.check_c8_mutated_inputs_parity("UnmigratedOp", entry, cls, warnings=warnings)
+            == []
+        )
+        assert any("publishes no compile_op_names" in w for w in warnings), warnings

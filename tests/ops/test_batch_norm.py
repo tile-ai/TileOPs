@@ -174,5 +174,24 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
     assert y.shape == x.shape
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
+@pytest.mark.smoke
+def test_training_updates_a_non_contiguous_running_stat() -> None:
+    """Contiguity normalization must not swallow the write a mutated input promises."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for forward call")
+
+    N, C, H, W = 4, 8, 4, 4
+    op = BatchNormFwdOp(training=True)
+    x = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
+    weight = torch.ones(C, device="cuda", dtype=torch.float32)
+    bias = torch.zeros(C, device="cuda", dtype=torch.float32)
+    # Every other element of a wider buffer: a view the kernel cannot be handed as is.
+    rm = torch.zeros(2 * C, device="cuda", dtype=torch.float32)[::2]
+    rv = torch.ones(2 * C, device="cuda", dtype=torch.float32)[::2]
+    assert not rm.is_contiguous()
+
+    op(x, rm, rv, weight, bias)
+
+    expected_mean = op.momentum * x.float().transpose(0, 1).reshape(C, -1).mean(dim=1)
+    torch.testing.assert_close(rm, expected_mean, atol=1e-3, rtol=1e-3)
+    assert not torch.equal(rv, torch.ones_like(rv)), "running_var was not written either"

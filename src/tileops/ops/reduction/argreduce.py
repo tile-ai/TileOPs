@@ -1,85 +1,47 @@
 """Arg-reduction operators (argmax, argmin)."""
 
 from math import prod
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction.argreduce import _STRIDED_AXIS_MAX_N, ArgreduceKernel
+from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
+from ._boundary import register_reduction_op
 from .reduce import _ReduceOpBase
 
 __all__ = ["ArgmaxFwdOp", "ArgminFwdOp"]
 
 
 class _ArgreduceOpBase(_ReduceOpBase):
-    """Reduce a non-last axis in place rather than transposing to reach it.
+    """Tell the kernel the reduced axis's stride, and let it pick the layout.
 
-    The base transposes so the reduction axis is last, which copies the whole
-    tensor. When the input is contiguous the copy is avoidable: the output axis
-    is the contiguous one, so a kernel that assigns a thread per output element
-    and strides along the reduction axis reads the original buffer coalesced.
-    Only the preparation differs, so that is all this overrides.
+    Reducing a non-last axis can be done two ways: transpose so the axis is last, which
+    copies the whole tensor, or give a thread each output element and stride along the
+    axis, which reads the original buffer coalesced. Which one pays off follows from the
+    row count, the axis length and its stride — all three facts the kernel already holds,
+    so the choice is the kernel's (`tileops.kernels.reduction.argreduce.ArgreduceKernel`).
+    This op's part is the stride, which the shape and the reduced axis decide.
     """
 
-    def _get_or_create_strided_kernel(self, M: int, N: int, inner_stride: int, dtype):
-        return self.get_or_build_kernel(
-            self._kernel_key,
-            key=(M, N, dtype, inner_stride),
-            build=lambda: self.kernel_map[self._kernel_key](
-                M,
-                N,
-                self._op_kind,
-                dtype,
-                inner_stride=inner_stride,
-                tune=self.tune,
-                **self._build_kernel_kwargs(),
-            ),
-        )
+    def _build_kernel_kwargs(self, x: torch.Tensor, axes: "tuple[int, ...]") -> dict:
+        """Elements between two neighbours along the reduced axis, on top of the shared set.
 
-    def _prepare_input(
-        self,
-        x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Size, Union[int, list], object]:
-        # Binds self.dtype, which the strided path below never reaches.
-        self._validate_input_tensor(x)
-        if self.dim is None or not x.is_contiguous():
-            return super()._prepare_input(x)
-        if self.dim < -x.ndim or self.dim >= x.ndim:
-            return super()._prepare_input(x)  # the base raises with the right message
-        dim = self.dim % x.ndim
-        inner_stride = prod(x.shape[dim + 1 :])
-        if inner_stride == 1:
-            return super()._prepare_input(x)
-
-        N = x.shape[dim]
-        if N > _STRIDED_AXIS_MAX_N:
-            # A long axis is faster transposed and reduced in parallel than
-            # walked serially by one thread per output.
-            return super()._prepare_input(x)
-
-        M = prod(s for i, s in enumerate(x.shape) if i != dim)
-        self._last_roofline_mn = (M, N)
-        kernel = self._get_or_create_strided_kernel(M, N, inner_stride, x.dtype)
-        return x.reshape(-1), x.shape, dim, kernel
+        One for the last axis and for a full reduction, which is the flattened buffer.
+        """
+        return {
+            **super()._build_kernel_kwargs(x, axes),
+            "inner_stride": prod(x.shape[axes[-1] + 1 :]) if len(axes) == 1 else 1,
+        }
 
 
 class ArgmaxFwdOp(_ArgreduceOpBase):
     """Argmax reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
-    by ``(M, N)`` to avoid rebuilds.
+    Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.
 
-    Args:
-        dim: Reduction dimension. ``None`` (the default) matches
-            ``torch.argmax(x)`` semantics: the input is treated as a
-            contiguous flattened 1D buffer and the returned index is into
-            that flattened tensor.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "argmax"
@@ -91,12 +53,27 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
         dim: Optional[int] = None,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension. ``None`` (the default) matches
+                ``torch.argmax(x)`` semantics: the input is treated as a
+                contiguous flattened 1D buffer and the returned index is into
+                that flattened tensor.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         super().__init__(
             dim=dim,
             keepdim=keepdim,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -119,18 +96,8 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
 class ArgminFwdOp(_ArgreduceOpBase):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
-    by ``(M, N)`` to avoid rebuilds.
+    Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.
 
-    Args:
-        dim: Reduction dimension. ``None`` (the default) matches
-            ``torch.argmin(x)`` semantics: the input is treated as a
-            contiguous flattened 1D buffer and the returned index is into
-            that flattened tensor.
-        keepdim: Whether to retain the reduced dimension as size 1.
-        kernel_map: Optional custom kernel map.
-        tune: Whether to autotune the kernel.
     """
 
     _op_kind = "argmin"
@@ -142,12 +109,27 @@ class ArgminFwdOp(_ArgreduceOpBase):
         dim: Optional[int] = None,
         keepdim: bool = False,
         *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction dimension. ``None`` (the default) matches
+                ``torch.argmin(x)`` semantics: the input is treated as a
+                contiguous flattened 1D buffer and the returned index is into
+                that flattened tensor.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
         super().__init__(
             dim=dim,
             keepdim=keepdim,
+            target=target,
             kernel_map=kernel_map,
             tune=tune,
         )
@@ -165,3 +147,10 @@ class ArgminFwdOp(_ArgreduceOpBase):
             f"ArgminFwdOp only supports scalar dim (int) or None, "
             f"got {type(self.dim).__name__}: {self.dim!r}"
         )
+
+
+for _op_cls in (
+    ArgmaxFwdOp,
+    ArgminFwdOp,
+):
+    register_reduction_op(_op_cls)

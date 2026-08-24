@@ -76,7 +76,3 @@ def test_topk_selector_op(
     test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
     op = TopkSelectorFwdOp(topk=topk, tune=tune)
     test.check(op, *test.gen_inputs(), compare=_set_compare)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

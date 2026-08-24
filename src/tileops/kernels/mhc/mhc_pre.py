@@ -6,8 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.attention.online_softmax import LOG2E
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import LOG2E
 
 __all__ = ["MHCPreKernel"]
 
@@ -176,8 +176,6 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
                 for i, j in T.Parallel(n_expand, n_expand):
                     h_frag[i, j] = T.exp2((h_frag[i, j] - tmp1[i]) * LOG2E)
 
-                # for iter_sinkhorn in T.Pipelined(sinkhorn_repeat):
-
                 for _iter_sinkhorn in T.Serial(sinkhorn_repeat):
                     T.reduce_sum(h_frag, tmp1, dim=1)
                     for j, k in T.Parallel(n_expand, n_expand):
@@ -260,7 +258,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
     return _mhc_func
 
 
-@torch.library.custom_op("top::mhc_pre_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::mhc_pre_wrapped_kernel", mutates_args=())
 def _mhc_pre_wrapped_kernel(
     batch: int,
     n_expand: int,

@@ -259,7 +259,7 @@ def _ssd_chunk_state_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("top::ssd_chunk_state_fwd", mutates_args=())
+@torch.library.custom_op("tileops::ssd_chunk_state_fwd", mutates_args=())
 def _ssd_chunk_state_fwd_wrapped(
     batch: int,
     num_chunks: int,
@@ -356,6 +356,10 @@ class SSDChunkStateFwdKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    #: ``seq_idx`` masks contributions; the trip count comes from the chunk
+    #: length.
+    autotune_accepts_random_int_inputs: bool = True
 
     def __init__(
         self,

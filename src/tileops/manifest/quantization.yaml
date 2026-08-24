@@ -19,9 +19,9 @@ FP8QuantFwdOp:
     - "input_tensor.shape[3] > 0"
 
   workloads:
-  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, in_dtype: float16, dtypes: [float16], label: "kv-index-8k-d64-fp16"}
-  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, in_dtype: bfloat16, dtypes: [bfloat16], label: "kv-index-8k-d64-bf16"}
-  - {batch: 1, seq_len_kv: 4096, kv_group: 1, index_dim: 128, in_dtype: float32, dtypes: [float32], label: "kv-index-4k-d128-fp32"}
+  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, in_dtype: float16, dtypes: [float16], label: "kv-index-8k-d64"}
+  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, in_dtype: bfloat16, dtypes: [bfloat16], label: "kv-index-8k-d64"}
+  - {batch: 1, seq_len_kv: 4096, kv_group: 1, index_dim: 128, in_dtype: float32, dtypes: [float32], label: "kv-index-4k-d128"}
 
   roofline:
     func: "tileops.perf.formulas.fp8_quant_roofline"

@@ -7,14 +7,14 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import (
+
+from .call_spec import ATTENTION_DTYPES, WS_ARCH, square_ws_prefill_region
+from .online_softmax import (
     LOG2E,
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-
-from .call_spec import ATTENTION_DTYPES, WS_ARCH, square_ws_prefill_region
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = [

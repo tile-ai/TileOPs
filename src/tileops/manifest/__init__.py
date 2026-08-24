@@ -4,13 +4,13 @@ The manifest is split across one or more YAML files per op family in this
 package directory. Most families use a single file, but large families
 (e.g., ``elementwise``) are sharded across multiple files. At load time,
 all files are merged into a single ``ops`` dict; duplicate op names
-across files raise :class:`ValueError`.
+across files raise `ValueError`.
 
 Public entry points:
 
-- :func:`load_workloads` — return the workloads list for an op.
-- :func:`load_manifest` — return the full merged ``ops`` dict.
-- :func:`manifest_files` — list the YAML files contributing to the manifest.
+- `load_workloads` — return the workloads list for an op.
+- `load_manifest` — return the full merged ``ops`` dict.
+- `manifest_files` — list the YAML files contributing to the manifest.
 """
 
 from __future__ import annotations
@@ -81,9 +81,11 @@ def load_workloads(op_name: str) -> list[dict[str, Any]]:
     *op_name* must be the canonical PascalCase manifest key
     (e.g. ``RMSNormFwdOp``).
 
-    >>> workloads = load_workloads("RMSNormFwdOp")
-    >>> workloads[0]
-    {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-3.1-8b-prefill'}
+    ```python linenums="1"
+    workloads = load_workloads("RMSNormFwdOp")
+    workloads[0]
+    # {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-8b-prefill'}
+    ```
     """
     ops = load_manifest()
     if op_name not in ops:
@@ -99,7 +101,7 @@ WORKLOAD_RESERVED_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
 def single_input_workload_contract(
     signature: dict[str, Any],
 ) -> tuple[str, frozenset[str]] | None:
-    """Return ``(shape_key, allowed_workload_keys)`` for a signature with
+    """Return $[shape\_key \\times allowed\_workload\_keys]$ for a signature with
     exactly one tensor input; ``None`` for any other input arity.
 
     The shape key is ``{input}_shape``; allowed keys are the shape key,

@@ -11,7 +11,8 @@ Verifies:
 import pytest
 import torch
 
-from tileops.ops.moe import FusedMoe, SharedFusedMoE
+from tileops.ops.moe import SharedFusedMoE
+from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 
 
 @pytest.mark.smoke
@@ -62,7 +63,7 @@ def test_shared_fused_moe_basic():
     torch.testing.assert_close(shared_out, shared_ref, rtol=1e-2, atol=1e-2)
 
     # routed_out matches FusedMoe
-    op_routed = FusedMoe(
+    op_routed = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -145,7 +146,7 @@ def test_shared_fused_moe_tp():
         partial_sum_ref += act @ down_shard.float().T  # [T, H]
 
     # routed reference (not affected by TP)
-    op_routed = FusedMoe(
+    op_routed = FusedMoeFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,

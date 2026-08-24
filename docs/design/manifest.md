@@ -35,15 +35,15 @@ flowchart LR
 
 ## Rules
 
-**R1. Ordered dict.** `inputs`, `outputs`, `params` are keyed by name. Key order = function signature position. Reordering is a breaking change. Consumers MUST use an order-preserving parser (Python 3.7+ `yaml.safe_load` qualifies).
+**R1. Ordered dict.** `inputs`, `outputs`, `params` are keyed by name, and key order is signature position, so reordering is a breaking change and consumers read the file with an order-preserving parser.
 
 **R2. Full interface.** Params include all PyTorch-supported parameters, even if the kernel only supports the default.
 
-**R3. Param placement.** Default: `__init__` kwarg (architecture-decided, lifetime-fixed). Use `forward()` only when the reference API requires it or the value is per-batch; justify in the introducing issue. The manifest schema does not encode the distinction.
+**R3. Param placement.** Default: `__init__` kwarg — architecture-decided and lifetime-fixed. `forward()` only when the reference API puts it there or the value is per-batch. The schema does not encode the distinction.
 
-**R4. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R6, and must not be used for shape.
+**R4. `dtype` syntax.** `|` separates alternatives. `same_as(ref)` is a dtype-only identity: the tensor's dtype equals `ref`'s at runtime, it adds no axis to R6's product, and it never speaks about shape.
 
-**R5. `promote_int_to_float(ref)`.** Output-dtype construct for ops whose integral inputs PyTorch promotes to a floating result (e.g. `torch.reciprocal`). Resolves to `float32` when `ref`'s runtime dtype is integral (`uint8` / `int8` / `int16` / `int32` / `int64`); otherwise resolves to `same_as(ref)`. May appear inside `|` unions on the output side (e.g. `"promote_int_to_float(input) | float64"`). `ref` MUST name a `signature.inputs` tensor; references to outputs or to the tensor itself are rejected. The construct is allowed only inside `signature.outputs[*].dtype`; it MUST NOT appear on input tensors, in `signature.dtype_combos` rows, or in `workloads[*].dtypes` (those positions require concrete `torch.*` dtypes or `same_as(ref)`). The validator expands the resolved dtype set when checking parity with `_validate_dtypes` and `dtype_combos`.
+**R5. `promote_int_to_float(ref)`.** An output dtype that resolves to `float32` when `ref`'s runtime dtype is integral and to `same_as(ref)` otherwise, for ops PyTorch promotes (`torch.reciprocal`). `ref` names a `signature.inputs` tensor. Allowed only in `signature.outputs[*].dtype`, where it may appear inside a `|` union.
 
 Worked example — `torch.reciprocal` accepts integral inputs and returns `float32`, while floating inputs round-trip:
 
@@ -58,14 +58,9 @@ ReciprocalFwdOp:
       output: {dtype: "promote_int_to_float(input)"}
 ```
 
-The op-layer implementation must mirror this contract: integer inputs are cast to `float32` before the float kernel runs, and `output_dtype` is `float32` for those constructions.
+The op layer mirrors it: integral inputs are cast to `float32` before the float kernel runs, and `output_dtype` is `float32`. The validator expands the resolved set when it checks `_validate_dtypes` and `dtype_combos`.
 
-**R6. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
-
-- **Present:** exhaustive. Only listed combinations are valid.
-- **Absent:** all Cartesian-product combinations are assumed valid.
-
-Use when the supported set is a strict subset (e.g., mixed-precision GEMM). Omit when all combos are valid (e.g., all inputs `same_as(x)`).
+**R6. `dtype_combos`.** The exhaustive list of supported cross-tensor dtype combinations. Absent means every combination of the declared unions is valid; declare it only when the supported set is a strict subset.
 
 ```yaml
 dtype_combos:
@@ -88,7 +83,7 @@ dtype_combos:
 
 **R13. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
 
-**R14. Reduction `dim` semantics.** Expressed via `shape_rules` (range validity, normalize-then-check, uniqueness), reusing the existing vocabulary rather than a dedicated manifest field. Authoring boilerplate and per-op empty-sequence semantics: see [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+**R14. Reduction `dim` semantics.** Live in `shape_rules`, written with the helpers in [`shape_rules.py`](../../src/tileops/manifest/shape_rules.py) — `dim_range_validity`, `dim_uniqueness`, `reduced_axes`, `reduced_shape` — which the op layer calls too, so the two cannot disagree. What an empty `dim` sequence means is per-op and named in the call.
 
 **R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on the targeted entry.
 
@@ -96,15 +91,17 @@ dtype_combos:
 
 **R17. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
 
-**R18. Optional tensor inputs.** A tensor input the op *reads* may declare `optional: true`, under `signature.inputs` only; params express optionality with `default`. "Not passed" means bound to `None`, and whether it was passed is a fact kernel dispatch may read — the tensor's contents are not. A caller-supplied output buffer (`out=`) is not this: the op writes it and the return aliases it, so the mutating and functional forms are two operators. Authoring rules: [Optional Inputs](#optional-inputs).
+**R18. Optional tensor inputs.** A tensor input the op *reads* may declare `optional: true`, under `signature.inputs` only; params express optionality with `default`. Not passed means bound to `None`, and whether it was passed is a fact kernel dispatch may read — the tensor's contents are not. A caller-supplied output buffer (`out=`) is a param, not this. Authoring rules: [Optional Inputs](#optional-inputs).
 
 **R18.1. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch is two entries, because the caller cannot unpack a return whose shape it does not know.
 
-**R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order. One entry declares one memory order, and an op serving two is two entries: the order changes what an axis means, and `shape` can be true of only one of them. A param may size a dimension, not select which shape a tensor has.
+**R19. Tensor layout.** Default: contiguous row-major and no `layout` field. Otherwise `layout` names the order and `shape` names the axes in it. One entry, one memory order: an op serving two is two entries, since the order changes what an axis means. A param may size a dimension, never select which shape a tensor has.
 
 **R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
 
-**R21. Workload keys derive from the signature.** Single-tensor-input ops whose workloads carry a `*_shape` key: the shape key MUST be `{input}_shape`; every other key MUST be a `signature.params` name or reserved `dtypes` / `label`. Enforced by the validator and `workloads_to_params`. Multi-input aggregate keys (`kv_shape`) are family bench-file conventions, out of scope.
+**R21. Workload keys derive from the signature.** In a single-tensor-input op's workloads, the shape key MUST be `{input}_shape` and every other key MUST be a `signature.params` name or the reserved `dtypes` / `label`. Multi-input aggregate keys (`kv_shape`) are family bench conventions, out of scope.
+
+**R22. Mutated inputs.** A tensor input the op may write declares `mutated: true`. An operator lists its tensor arguments in `signature.inputs` order; the inputs its `mutates_args` names, across every operator the op registers, are exactly the ones marked. A mutated input stays an input: output arity does not change and the return does not alias it. If contiguity normalization had to copy one, the op writes the result back after the launch.
 
 ## `static_dims`
 
@@ -184,7 +181,7 @@ Three blocks in order:
 1. `dtype` — single parameter unless the op has explicit multi-dtype axes
 1. `params` — manifest key order
 
-All parameters are keyword-only (`*`-separated); callers always use kwargs.
+Parameters are positional-or-keyword in that order. A param the caller must name declares `kw_only: true`, and the validator holds `__init__` to it. `target`, `kernel_map` and `tune` are keyword-only in every op and are not manifest params.
 
 ### Empty `static_dims`
 
@@ -294,8 +291,9 @@ signature:
 | `constraints` | no       | Dimension restrictions (requires `shape`).                                                                                               |
 | `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
 | `optional`    | no       | `true` when the op may be called without this input (R18). Inputs only.                                                                  |
+| `mutated`     | no       | `true` when the op may write this input (R22). Inputs only.                                                                              |
 
-**Param fields:** `type`, plus optional `default`.
+**Param fields:** `type`, plus optional `default` and `kw_only`.
 A param that omits `default` MUST have no `__init__` default either: a
 constructor that accepts a placeholder and rejects it later states a contract
 the signature does not.
@@ -412,7 +410,7 @@ where a reader sees they come from one implementation.
 Shape keys use `<tensor_name>_shape`. Op-specific parameters can be added per entry.
 
 ```yaml
-- {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b"}
+- {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-8b"}
 ```
 
 `workloads` are for benchmark parametrization only, not unit-test coverage.
@@ -509,11 +507,10 @@ params:
 shape_rules:
   - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
   - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-  - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-  # per-axis output-shape rules follow the same normalize-then-check pattern
+  - "output.shape == reduced_shape(x.shape, dim, keepdim)"
 ```
 
-All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `output.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve the input shape and take no `keepdim`; count_nonzero has no `keepdim` either (R17). What an empty `dim` sequence means is per-op: see R14 and [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
 **Full entry — RMSNorm:**
 
@@ -539,8 +536,8 @@ RMSNormFwdOp:
       - "output.shape == x.shape"
 
   workloads:
-    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-8b-decode"}
 
   roofline:
     vars:
@@ -569,12 +566,12 @@ consumption.
 Each entry under `workloads:` is a mapping. `dtypes` and `label` are
 reserved. Key rules: R21.
 
-| Key             | Required | Meaning                                                                                                                                                                                |
-| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files. |
-| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                     |
-| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                                                                                                       |
-| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                         |
+| Key             | Required | Meaning                                                                                                                                                                                               |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files.                |
+| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                                    |
+| `label`         | no       | Human-readable id used in the pytest param id and report tables. MUST NOT name a dtype the row's `dtypes` already lists: the case id ends with the dtype it runs, so the label would render it twice. |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                                        |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 

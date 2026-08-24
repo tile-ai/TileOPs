@@ -33,29 +33,20 @@ __all__ = ["RMSNormFwdOp"]
 class RMSNormFwdOp(Op):
     """Standalone Root Mean Square (RMS) Norm operator.
 
-    Mirrors :func:`torch.nn.functional.rms_norm`. Computes::
+    Mirrors `torch.nn.functional.rms_norm`. Computes::
 
         y = x * rsqrt(mean(x ** 2, trailing_axes) + eps) * weight
 
     where the reduction runs over the trailing ``len(normalized_shape)``
     axes; ``normalized_shape`` is the only entry point (the manifest spec).
 
-    Args:
-        normalized_shape: Trailing-axis shape tuple over which the
-            reduction runs (manifest ``params.normalized_shape``).
-        eps: Epsilon for numerical stability (manifest ``params.eps``). ``None``
-            selects the same default the signature carries. Normalized here, so a
-            backend is handed the number rather than ``None``.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-            in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional kernel override dictionary.
-        tune: Whether to autotune (default ``False``).
-
     Example:
-        >>> op = RMSNormFwdOp(normalized_shape=(4096,))
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-        >>> w = torch.randn(4096, dtype=torch.float16, device="cuda")
-        >>> y = op(x, w)  # shape: (1024, 4096)
+        ```python linenums="1"
+        op = RMSNormFwdOp(normalized_shape=(4096,))
+        x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+        w = torch.randn(4096, dtype=torch.float16, device="cuda")
+        y = op(x, w)  # shape: (1024, 4096)
+        ```
     """
 
     #: Manifest ``params.eps.default``. The signature default and the ``None``
@@ -63,7 +54,7 @@ class RMSNormFwdOp(Op):
     DEFAULT_EPS = 1.0e-6
 
     #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("top::norm_rms_norm_fwd",)
+    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_rms_norm_fwd",)
 
     def __init__(
         self,
@@ -74,6 +65,19 @@ class RMSNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            normalized_shape: Trailing-axis shape tuple over which the
+                reduction runs (manifest ``params.normalized_shape``).
+            eps: Epsilon for numerical stability (manifest ``params.eps``). ``None``
+                selects the same default the signature carries. Normalized here, so a
+                backend is handed the number rather than ``None``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dictionary.
+            tune: Whether to autotune (default ``False``).
+        """
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
         # The manifest type is ``float | None``: an explicit None means the same default,
@@ -119,7 +123,7 @@ class RMSNormFwdOp(Op):
         Raises:
             ValueError: Dtypes or devices disagree, or shapes are incompatible with the
                 configured ``normalized_shape``. Raised from inside the operator, by
-                :meth:`_eager_forward`.
+                `_eager_forward`.
         """
         return _rms_norm_fwd(x, weight, self._instance_key)
 
@@ -145,8 +149,7 @@ class RMSNormFwdOp(Op):
         if tuple(weight.shape) != ns:
             raise ValueError(f"Expected weight shape {ns}, got {tuple(weight.shape)}")
 
-        # The op normalizes contiguity and hands over what the manifest declares; how a
-        # kernel wants that laid out is its own business.
+        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         weight = weight.contiguous()
         kernel = self.get_or_build_kernel(
@@ -171,7 +174,7 @@ class RMSNormFwdOp(Op):
 # src/tileops/ops/compile_boundary.py.
 
 
-@torch.library.custom_op("top::norm_rms_norm_fwd", mutates_args=())
+@torch.library.custom_op("tileops::norm_rms_norm_fwd", mutates_args=())
 def _rms_norm_fwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -188,7 +191,5 @@ def _rms_norm_fwd_fake(
 ) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
-    # ``new_empty``, not ``empty_like``: ``_eager_forward`` normalizes contiguity, so a
-    # non-contiguous public input's strides must not survive into the fake. Dtype is the
-    # manifest's ``same_as(x)``.
+    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
     return x.new_empty(shapes["output"])

@@ -78,7 +78,7 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = FusedAddLayerNormFwdOp(M=m, N=n)
+    op = FusedAddLayerNormFwdOp()
 
     # Reference on contiguous copies
     test = FusedAddLayerNormTest(m, n, dtype)
@@ -129,7 +129,3 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
         f"3D residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

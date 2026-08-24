@@ -12,19 +12,19 @@ AlibiFwdOp:
     outputs:
       output: {dtype: "float16 | bfloat16 | float32", shape: "[num_heads, seq_len, seq_len]"}
     params:
-      seq_len: {type: int}
-      num_heads: {type: int}
-      dtype: {type: torch.dtype}
+      seq_len: {type: int, kw_only: true}
+      num_heads: {type: int, kw_only: true}
+      dtype: {type: torch.dtype, kw_only: true}
     shape_rules:
       - "seq_len > 0"
       - "num_heads > 0"
 
   workloads:
     # Llama-style attention bias dimensions
-    - {seq_len: 2048, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-2k-fp16"}
-    - {seq_len: 2048, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-2k-bf16"}
-    - {seq_len: 4096, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-4k-fp16"}
-    - {seq_len: 4096, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-4k-bf16"}
+    - {seq_len: 2048, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-2k"}
+    - {seq_len: 2048, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-2k"}
+    - {seq_len: 4096, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-4k"}
+    - {seq_len: 4096, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-4k"}
 
   roofline:
     vars:
@@ -38,7 +38,7 @@ AlibiFwdOp:
     bytes: "H * S * S * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/alibi.py
     kernel_map:
       alibi: AlibiFwdKernel
     op: tileops/ops/elementwise/alibi.py
@@ -61,9 +61,9 @@ SinusoidalFwdOp:
     outputs:
       output: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, d_model]"}
     params:
-      seq_len: {type: int}
-      d_model: {type: int}
-      dtype: {type: torch.dtype}
+      seq_len: {type: int, kw_only: true}
+      d_model: {type: int, kw_only: true}
+      dtype: {type: torch.dtype, kw_only: true}
     shape_rules:
       - "seq_len > 0"
       - "d_model > 0"
@@ -71,10 +71,10 @@ SinusoidalFwdOp:
 
   workloads:
     # Transformer-style positional encodings
-    - {seq_len: 2048, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-2k-4k-fp16"}
-    - {seq_len: 2048, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-2k-4k-bf16"}
-    - {seq_len: 4096, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-4k-4k-fp16"}
-    - {seq_len: 4096, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-4k-4k-bf16"}
+    - {seq_len: 2048, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-2k-4k"}
+    - {seq_len: 2048, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-2k-4k"}
+    - {seq_len: 4096, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-4k-4k"}
+    - {seq_len: 4096, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-4k-4k"}
 
   roofline:
     vars:
@@ -86,7 +86,7 @@ SinusoidalFwdOp:
     bytes: "S * D * elem_bytes"
 
   source:
-    kernel: tileops/kernels/elementwise.py
+    kernel: tileops/kernels/elementwise/sinusoidal.py
     kernel_map:
       sinusoidal: SinusoidalFwdKernel
     op: tileops/ops/elementwise/sinusoidal.py

@@ -97,8 +97,11 @@ jobs:
           benchmark=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
+            # The Python helpers beside the YAML count too:
+            # `scripts/validate_manifest.py` imports `shape_rules` and
+            # `dtype_rules` at module scope, so either one decides what it accepts.
             case "$f" in
-              src/tileops/manifest/*.yaml|src/tileops/manifest/__init__.py|scripts/validate_manifest.py|"$WORKFLOW_PATH")
+              src/tileops/manifest/*|scripts/validate_manifest.py|tests/test_validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true
                 ;;
             esac
@@ -160,7 +163,7 @@ jobs:
           # skippable, but still require the core preflight checks to be
           # successful so `ready_for_review` re-runs them and unblocks
           # gpu-smoke.
-          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" --jq '
+          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100" --jq '
             [
               .check_runs
               | group_by(.name)
@@ -281,6 +284,21 @@ jobs:
 
       - name: Run actionlint
         run: actionlint -color
+
+      # These assert what the workflows select, which actionlint cannot see. They
+      # run here rather than under gpu-smoke because they need `jq` — the runner
+      # image has none, and the suite skipped its own regression there.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # --noconftest: tests/conftest.py imports torch, which this job has no
+      # other reason to install. Nothing in this file uses a fixture from it.
+      - name: Run workflow contract tests
+        run: |
+          pip install pytest pyyaml -c constraints.txt
+          python -m pytest -q --noconftest tests/test_reclaim_action.py
 
   compile-contract-gate:
     # Always-on by design: no detect-changes path condition, so manifest-only

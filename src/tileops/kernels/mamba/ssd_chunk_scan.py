@@ -473,7 +473,7 @@ def _ssd_chunk_scan_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("top::ssd_chunk_scan_fwd", mutates_args=())
+@torch.library.custom_op("tileops::ssd_chunk_scan_fwd", mutates_args=())
 def _ssd_chunk_scan_fwd_wrapped(
     batch: int,
     num_chunks: int,

@@ -6,7 +6,10 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import (
+
+from ._config import tile_stage_thread_configs
+from .call_spec import dense_prefill_region, fp8_dtype
+from .online_softmax import (
     LOG2E,
     make_apply_softcap,
     make_log2e_scale,
@@ -14,9 +17,6 @@ from tileops.kernels.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-
-from ._config import tile_stage_thread_configs
-from .call_spec import dense_prefill_region, fp8_dtype
 from .packed_prefill import PackedPrefillKernel
 from .paged_prefill import PagedPrefillKernel
 
@@ -194,7 +194,7 @@ def _gqa_fwd_wgmma_pipelined_kernel(
     return _gqa_fwd_wgmma_pipelined_func
 
 
-@torch.library.custom_op("top::gqa_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gqa_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
 def _gqa_fwd_wgmma_pipelined_wrapped_kernel(
     batch: int,
     heads: int,
@@ -468,7 +468,7 @@ def _gqa_prefill_fwd_kernel(
     return _gqa_prefill_fwd_func
 
 
-@torch.library.custom_op("top::gqa_prefill_fwd_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gqa_prefill_fwd_wrapped_kernel", mutates_args=())
 def _gqa_prefill_fwd_wrapped_kernel(
     batch: int,
     heads: int,
@@ -862,7 +862,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
 
 
 @torch.library.custom_op(
-    "top::gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel",
+    "tileops::gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel",
     mutates_args=("k_pages", "v_pages"),
 )
 def _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
@@ -1306,7 +1306,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
 
 
 @torch.library.custom_op(
-    "top::gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel",
+    "tileops::gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel",
     mutates_args=("k_pages", "v_pages"),
 )
 def _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
@@ -1918,7 +1918,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
 
 
 @torch.library.custom_op(
-    "top::gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel",
+    "tileops::gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel",
     mutates_args=(),
 )
 def _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(

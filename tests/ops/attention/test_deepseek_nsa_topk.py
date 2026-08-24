@@ -114,7 +114,3 @@ def test_nsa_topk_varlen_op(
         chunk_num=test.chunk_num,
     )
     test.check_topk(op, *inputs)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

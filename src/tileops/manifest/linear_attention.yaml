@@ -54,10 +54,10 @@ GatedDeltaNetPrefillBTHDFwdOp:
     func: "tileops.perf.formulas.gated_deltanet_prefill_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/gated_deltanet/gated_deltanet_prefill.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet/gated_deltanet_prefill.py
     kernel_map:
       GatedDeltaNetPrefillFwdKernel: GatedDeltaNetPrefillFwdKernel
-    op: tileops/ops/gated_deltanet.py
+    op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_prefill.py
     bench: benchmarks/ops/bench_gated_deltanet_prefill.py
     bench_manifest_driven: true
@@ -101,10 +101,10 @@ GatedDeltaNetPrefillBHTDFwdOp:
     func: "tileops.perf.formulas.gated_deltanet_prefill_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/gated_deltanet/gated_deltanet_prefill.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet/gated_deltanet_prefill.py
     kernel_map:
       GatedDeltaNetPrefillFwdKernel: GatedDeltaNetPrefillFwdKernel
-    op: tileops/ops/gated_deltanet.py
+    op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_prefill.py
     bench: benchmarks/ops/bench_gated_deltanet_prefill.py
     bench_manifest_driven: true
@@ -155,12 +155,12 @@ GatedDeltaNetDecodeFwdOp:
     func: "tileops.perf.formulas.gated_deltanet_decode_roofline"
 
   source:
-    kernel: tileops/kernels/gated_deltanet_recurrence.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet_recurrence.py
     kernel_map:
       GatedDeltaNetDecodeKernel: GatedDeltaNetDecodeKernel
       GatedDeltaNetDecodeFP32Kernel: GatedDeltaNetDecodeFP32Kernel
       GatedDeltaNetDecodeRawCudaFlaStyleKernel: GatedDeltaNetDecodeRawCudaFlaStyleKernel
-    op: tileops/ops/gated_deltanet.py
+    op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_recurrence.py
     bench: benchmarks/ops/bench_gated_deltanet_recurrence.py
     bench_manifest_driven: true
@@ -206,12 +206,12 @@ DeltaNetDecodeFwdOp:
     func: "tileops.perf.formulas.deltanet_decode_roofline"
 
   source:
-    kernel: tileops/kernels/deltanet_recurrence.py
+    kernel: tileops/kernels/linear_attention/deltanet_recurrence.py
     kernel_map:
       DeltaNetDecodeKernel: DeltaNetDecodeKernel
       DeltaNetDecodeFP32Kernel: DeltaNetDecodeFP32Kernel
       DeltaNetDecodeRawCudaFlaStyleKernel: DeltaNetDecodeRawCudaFlaStyleKernel
-    op: tileops/ops/deltanet_recurrence.py
+    op: tileops/ops/linear_attention/deltanet_recurrence.py
     test: tests/ops/test_deltanet_recurrence.py
     bench: benchmarks/ops/bench_deltanet_recurrence.py
     bench_manifest_driven: true
@@ -258,26 +258,21 @@ GLADecodeFwdOp:
     func: "tileops.perf.formulas.gla_decode_roofline"
 
   source:
-    kernel: tileops/kernels/gla_recurrence.py
+    kernel: tileops/kernels/linear_attention/gla_recurrence.py
     kernel_map:
       GLADecodeKernel: GLADecodeKernel
       GLADecodeFP32Kernel: GLADecodeFP32Kernel
-    op: tileops/ops/gated_linear_attn.py
+    op: tileops/ops/linear_attention/gla_recurrence.py
     test: tests/ops/test_gla_recurrence.py
     bench: benchmarks/ops/bench_gla_recurrence.py
     bench_manifest_driven: true
-
-# The remaining code-present chunkwise/training Linear Attention surfaces are
-# intentionally spec-only for this pass. They expose backward-only artifacts
-# (Aw/Au/w/u/h) or optional initial/final state choices that need a separate
-# release-facing wrapper before they should count as implemented manifest ops.
 
 GatedDeltaNetBHTDFwdOp:
   # Training forward in head-major (BHTD) order. GatedDeltaNetBwdOp reads the S
   # this returns, in this order; token-major callers want GatedDeltaNetBTHDFwdOp.
   ref_api: "none"
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
@@ -295,14 +290,20 @@ GatedDeltaNetBHTDFwdOp:
     shape_rules:
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
-  workloads: []
+  workloads:
+  - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], g_shape: [2, 4, 2048], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bhtd-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4, 4096, 64], k_shape: [2, 4, 4096, 64], v_shape: [2, 4, 4096, 64], g_shape: [2, 4, 4096], beta_shape: [2, 4, 4096], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bhtd-b2-s4k-h4-d64"}
+  - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], g_shape: [2, 4, 8192], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bhtd-b2-s8k-h4-d64"}
+  - {q_shape: [2, 4, 16384, 64], k_shape: [2, 4, 16384, 64], v_shape: [2, 4, 16384, 64], g_shape: [2, 4, 16384], beta_shape: [2, 4, 16384], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bhtd-b2-s16k-h4-d64"}
   roofline: {func: tileops.perf.formulas.gated_deltanet_fwd_roofline}
   source:
-    kernel: tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
-    op: tileops/ops/gated_deltanet.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet/gated_deltanet_fwd.py
+    kernel_map:
+      GatedDeltaNetFwdKernel: GatedDeltaNetFwdKernel
+    op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_fwd.py
     bench: benchmarks/ops/bench_gated_deltanet.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 GatedDeltaNetBTHDFwdOp:
   # The same operator in token-major (BTHD) order, which is what the FLA
@@ -339,10 +340,10 @@ GatedDeltaNetBTHDFwdOp:
   - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bthd-b1-s4k-h16-d128"}
   roofline: {func: tileops.perf.formulas.gated_deltanet_fwd_roofline}
   source:
-    kernel: tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet/gated_deltanet_fwd.py
     kernel_map:
       GatedDeltaNetFwdProductionKernel: GatedDeltaNetFwdProductionKernel
-    op: tileops/ops/gated_deltanet.py
+    op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_fwd.py
     bench: benchmarks/ops/bench_gated_deltanet.py
     bench_manifest_driven: true
@@ -350,7 +351,7 @@ GatedDeltaNetBTHDFwdOp:
 GatedDeltaNetBwdOp:
   ref_api: "none"
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       do: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DV]"}
@@ -371,19 +372,25 @@ GatedDeltaNetBwdOp:
     shape_rules:
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
-  workloads: []
-  roofline: {flops: "0", bytes: "0"}
+  workloads:
+  - {do_shape: [2, 4, 2048, 64], q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], g_shape: [2, 4, 2048], beta_shape: [2, 4, 2048], S_shape: [2, 4, 33, 64, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bwd-b2-s2k-h4-d64"}
+  - {do_shape: [2, 4, 4096, 64], q_shape: [2, 4, 4096, 64], k_shape: [2, 4, 4096, 64], v_shape: [2, 4, 4096, 64], g_shape: [2, 4, 4096], beta_shape: [2, 4, 4096], S_shape: [2, 4, 65, 64, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bwd-b2-s4k-h4-d64"}
+  - {do_shape: [2, 4, 8192, 64], q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], g_shape: [2, 4, 8192], beta_shape: [2, 4, 8192], S_shape: [2, 4, 129, 64, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bwd-b2-s8k-h4-d64"}
+  - {do_shape: [2, 4, 16384, 64], q_shape: [2, 4, 16384, 64], k_shape: [2, 4, 16384, 64], v_shape: [2, 4, 16384, 64], g_shape: [2, 4, 16384], beta_shape: [2, 4, 16384], S_shape: [2, 4, 257, 64, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-bwd-b2-s16k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.gated_deltanet_bwd_roofline}
   source:
-    kernel: tileops/kernels/gated_deltanet/gated_deltanet_bwd.py
-    op: tileops/ops/gated_deltanet.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet/gated_deltanet_bwd.py
+    kernel_map:
+      GatedDeltaNetBwdKernel: GatedDeltaNetBwdKernel
+    op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_chunkwise_bwd.py
     bench: benchmarks/ops/bench_gated_deltanet.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 DeltaNetFwdOp:
   ref_api: "none"
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
@@ -392,29 +399,37 @@ DeltaNetFwdOp:
       beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
     outputs:
       o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
-      S: {dtype: "same_as(do)", shape: "[B, H, NC + 1, DK, DV]"}
-      Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
-      Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
-      w: {dtype: "float32", shape: "[B, H, S, DK]"}
-      u: {dtype: "float32", shape: "[B, H, S, DV]"}
+      # The running state accumulates in fp32 whatever the inputs are; the chunk
+      # buffers the backward reads come back in the input dtype.
+      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
+      Au: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
+      w: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
+      u: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
     params:
       chunk_size: {type: int, default: 64}
     shape_rules:
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
-  workloads: []
-  roofline: {flops: "0", bytes: "0"}
+  workloads:
+  - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4, 4096, 64], k_shape: [2, 4, 4096, 64], v_shape: [2, 4, 4096, 64], beta_shape: [2, 4, 4096], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s4k-h4-d64"}
+  - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s8k-h4-d64"}
+  - {q_shape: [2, 4, 16384, 64], k_shape: [2, 4, 16384, 64], v_shape: [2, 4, 16384, 64], beta_shape: [2, 4, 16384], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s16k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.deltanet_fwd_roofline}
   source:
-    kernel: tileops/kernels/deltanet/deltanet_fwd.py
-    op: tileops/ops/deltanet.py
+    kernel: tileops/kernels/linear_attention/deltanet/deltanet_fwd.py
+    kernel_map:
+      DeltaNetFwdKernel: DeltaNetFwdKernel
+    op: tileops/ops/linear_attention/deltanet.py
     test: tests/ops/test_deltanet_fwd.py
     bench: benchmarks/ops/bench_deltanet.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 DeltaNetBwdOp:
   ref_api: "none"
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       do: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DV]"}
@@ -422,11 +437,12 @@ DeltaNetBwdOp:
       k: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
       v: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
       beta: {dtype: "same_as(do)", shape: "[B, H, S]"}
-      S: {dtype: "same_as(do)", shape: "[B, H, NC + 1, DK, DV]"}
-      Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
-      Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
-      w: {dtype: "float32", shape: "[B, H, S, DK]"}
-      u: {dtype: "float32", shape: "[B, H, S, DV]"}
+      # The forward accumulates the running state in fp32 whatever the inputs are.
+      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "same_as(do)", shape: "[B, H, S, chunk_size]"}
+      Au: {dtype: "same_as(do)", shape: "[B, H, S, chunk_size]"}
+      w: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      u: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
     outputs:
       dq: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
       dk: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
@@ -437,47 +453,62 @@ DeltaNetBwdOp:
     shape_rules:
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
-  workloads: []
-  roofline: {flops: "0", bytes: "0"}
+  workloads:
+  - {do_shape: [2, 4, 2048, 64], q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], S_shape: [2, 4, 33, 64, 64], Aw_shape: [2, 4, 2048, 64], Au_shape: [2, 4, 2048, 64], w_shape: [2, 4, 2048, 64], u_shape: [2, 4, 2048, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s2k-h4-d64"}
+  - {do_shape: [2, 4, 4096, 64], q_shape: [2, 4, 4096, 64], k_shape: [2, 4, 4096, 64], v_shape: [2, 4, 4096, 64], beta_shape: [2, 4, 4096], S_shape: [2, 4, 65, 64, 64], Aw_shape: [2, 4, 4096, 64], Au_shape: [2, 4, 4096, 64], w_shape: [2, 4, 4096, 64], u_shape: [2, 4, 4096, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s4k-h4-d64"}
+  - {do_shape: [2, 4, 8192, 64], q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], S_shape: [2, 4, 129, 64, 64], Aw_shape: [2, 4, 8192, 64], Au_shape: [2, 4, 8192, 64], w_shape: [2, 4, 8192, 64], u_shape: [2, 4, 8192, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s8k-h4-d64"}
+  - {do_shape: [2, 4, 16384, 64], q_shape: [2, 4, 16384, 64], k_shape: [2, 4, 16384, 64], v_shape: [2, 4, 16384, 64], beta_shape: [2, 4, 16384], S_shape: [2, 4, 257, 64, 64], Aw_shape: [2, 4, 16384, 64], Au_shape: [2, 4, 16384, 64], w_shape: [2, 4, 16384, 64], u_shape: [2, 4, 16384, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s16k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.deltanet_bwd_roofline}
   source:
-    kernel: tileops/kernels/deltanet/deltanet_bwd.py
-    op: tileops/ops/deltanet.py
+    kernel: tileops/kernels/linear_attention/deltanet/deltanet_bwd.py
+    kernel_map:
+      DeltaNetBwdKernel: DeltaNetBwdKernel
+    op: tileops/ops/linear_attention/deltanet.py
     test: tests/ops/test_deltanet_chunkwise_bwd.py
     bench: benchmarks/ops/bench_deltanet.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 GLAFwdOp:
   ref_api: "none"
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
       k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
       v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
       g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      # The state a caller may seed the recurrence with; not passing it starts
+      # from zeros. Same dtype as final_state, so one call's state feeds the next.
+      initial_state: {dtype: "float32", shape: "[B, H, DK, DV]", optional: true}
     outputs:
       o: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      final_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+      # The recurrence carries the state in fp32 whatever the inputs are.
+      final_state: {dtype: "float32", shape: "[B, H, DK, DV]"}
     params:
       chunk_size: {type: int, default: 64}
       scale: {type: float, default: -1.0}
-      output_final_state: {type: bool, default: false}
     shape_rules:
     - "S % chunk_size == 0"
-  workloads: []
-  roofline: {flops: "0", bytes: "0"}
+  workloads:
+  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s4k-h4-d64"}
+  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s8k-h4-d64"}
+  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s16k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
   source:
-    kernel: tileops/kernels/gla/gla_fwd.py
-    op: tileops/ops/gla.py
+    kernel: tileops/kernels/linear_attention/gla/gla_fwd.py
+    kernel_map:
+      GLAFwdKernel: GLAFwdKernel
+    op: tileops/ops/linear_attention/gla.py
     test: tests/ops/test_gla_chunkwise_fwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 GLABwdOp:
   ref_api: "none"
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
@@ -486,12 +517,13 @@ GLABwdOp:
       g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
       h: {dtype: "float32", shape: "[B, NC + 1, H, DK, DV]"}
       do: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      dht: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+      dht: {dtype: "float32", shape: "[B, H, DK, DV]"}
     outputs:
-      dq: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
-      dk: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
-      dv: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      dg: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      # The gradients come back in the accumulator dtype.
+      dq: {dtype: "float32", shape: "[B, S, H, DK]"}
+      dk: {dtype: "float32", shape: "[B, S, H, DK]"}
+      dv: {dtype: "float32", shape: "[B, S, H, DV]"}
+      dg: {dtype: "float32", shape: "[B, S, H, DK]"}
     params:
       chunk_size: {type: int, default: 64}
       scale: {type: float, default: -1.0}
@@ -499,11 +531,17 @@ GLABwdOp:
     shape_rules:
     - "S % chunk_size == 0"
     - "NC == S // chunk_size"
-  workloads: []
-  roofline: {flops: "0", bytes: "0"}
+  workloads:
+  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], h_shape: [2, 33, 4, 64, 64], do_shape: [2, 2048, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], h_shape: [2, 65, 4, 64, 64], do_shape: [2, 4096, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s4k-h4-d64"}
+  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], h_shape: [2, 129, 4, 64, 64], do_shape: [2, 8192, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s8k-h4-d64"}
+  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], h_shape: [2, 257, 4, 64, 64], do_shape: [2, 16384, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s16k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.gla_bwd_roofline}
   source:
-    kernel: tileops/kernels/gla/gla_bwd.py
-    op: tileops/ops/gla.py
+    kernel: tileops/kernels/linear_attention/gla/gla_bwd.py
+    kernel_map:
+      GLABwdKernel: GLABwdKernel
+    op: tileops/ops/linear_attention/gla.py
     test: tests/ops/test_gla_chunkwise_bwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

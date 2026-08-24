@@ -17,7 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LINT_SCRIPT = REPO_ROOT / "scripts" / "lint" / "shipped_refs_lint.py"
 
 # Concatenated so the literals never appear verbatim in this file.
-ISSUE_REF = "#" + "12345"  # 5 digits: not a CSS hex-color length
+ISSUE_REF = "#" + "12345"
+FOUR_DIGIT_REF = "#" + "1854"  # a PR-number length that is also a CSS hex length
 AC_LABEL = "AC" + "-3"
 ROUND_REVIEW = "round" + "-2 review"
 FOLLOW_UP = "Follow" + "-up: #" + "12345"
@@ -62,14 +63,20 @@ def test_clean_file_passes(tmp_path):
 def test_hex_color_literals_pass(tmp_path):
     content = (
         '_INK = "#191a16"\n'
-        '_BLUE = "#112233"\n'
         '_SHORT = "#fff"\n'
-        '_RGBA = "#1234"\n'
-        '_ALPHA = "#11223344"\n'
+        '_RGBA = "#123a"\n'
+        '_ALPHA = "#1122334a"\n'
         "css = 'color:#e8e1d1;background:#191a16'\n"
     )
     result = run_lint(tmp_path, content)
     assert result.returncode == 0, result.stdout
+
+
+def test_all_digit_token_in_prose_is_a_reference(tmp_path):
+    """A 4-digit token is this repo's PR-number shape, so length cannot exempt it."""
+    result = run_lint(tmp_path, f"# see {FOUR_DIGIT_REF}\n")
+    assert result.returncode == 1
+    assert FOUR_DIGIT_REF in result.stdout
 
 
 def test_multiple_files_reports_each(tmp_path):

@@ -245,7 +245,7 @@ def test_group_norm_no_affine_op(
 
 @pytest.mark.smoke
 def test_group_norm_forward_signature() -> None:
-    """One forward takes x plus the optional affine pair (R18)."""
+    """One forward takes x plus the optional affine pair."""
     import inspect
 
     sig = inspect.signature(GroupNormFwdOp.forward)
@@ -258,7 +258,7 @@ def test_group_norm_forward_signature() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("give", ["weight", "bias"])
 def test_group_norm_rejects_half_the_affine_switch(give: str) -> None:
-    """weight and bias are one switch; half of it is an error (R18.3)."""
+    """weight and bias are one switch; half of it is an error."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
@@ -305,7 +305,3 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), f"max err: {(y - y_ref).abs().max()}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -243,7 +243,3 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
         v = torch.randn(1, 64, 2, 64, dtype=torch.float16)
         with pytest.raises(ValueError, match="cuda"):
             float16_op.forward(q, k, v)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

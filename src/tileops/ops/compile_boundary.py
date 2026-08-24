@@ -7,7 +7,7 @@ The op passes its key instead, and the operator body trades the key back for the
         def forward(self, x):
             return _foo(x, self._instance_key)
 
-    @torch.library.custom_op("top::foo", mutates_args=())
+    @torch.library.custom_op("tileops::foo", mutates_args=())
     def _foo(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         return get_instance(instance_key)._eager_forward(x)
 
@@ -41,5 +41,5 @@ def register_instance(op: object) -> str:
 
 
 def get_instance(key: str) -> object:
-    """Resolve a key registered by :func:`register_instance`."""
+    """Resolve a key registered by `register_instance`."""
     return _OP_REGISTRY[key]

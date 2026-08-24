@@ -112,7 +112,3 @@ def test_moe_grouped_gemm_nopad_op(numel, num_experts, n, k, distribution, dtype
         atol=1e-2,
         rtol=1e-2,
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

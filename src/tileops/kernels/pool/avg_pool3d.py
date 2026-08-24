@@ -191,8 +191,7 @@ def _avg_pool3d_spatial_kernel(
     return _avg_pool3d_spatial_func
 
 
-@torch.library.custom_op("top::avg_pool3d_spatial_wrapped_kernel", mutates_args=())
-def _avg_pool3d_spatial_wrapped_kernel(
+def _launch_avg_pool3d_spatial(
     n: int,
     c_in: int,
     d_in: int,
@@ -231,36 +230,7 @@ def _avg_pool3d_spatial_wrapped_kernel(
     )(block_m, threads)(x)
 
 
-@_avg_pool3d_spatial_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (dtype, block_m, threads)
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, False)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, False)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, False)
-    return torch.empty((n, c_in, out_d, out_h, out_w), dtype=x.dtype, device=x.device)
-
-
-@torch.library.custom_op("top::avg_pool3d_wrapped_kernel", mutates_args=())
-def _avg_pool3d_wrapped_kernel(
+def _launch_avg_pool3d(
     n: int,
     c_in: int,
     d_in: int,
@@ -305,45 +275,6 @@ def _avg_pool3d_wrapped_kernel(
         divisor_override,
         dtype,
     )(block_m, threads)(x)
-
-
-@_avg_pool3d_wrapped_kernel.register_fake
-def _(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    ceil_mode: bool,
-    count_include_pad: bool,
-    use_divisor_override: bool,
-    divisor_override: int,
-    dtype: str,
-    block_m: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    _ = (
-        count_include_pad,
-        use_divisor_override,
-        divisor_override,
-        dtype,
-        block_m,
-        threads,
-    )
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode)
-    return torch.empty((n, c_in, out_d, out_h, out_w), dtype=x.dtype, device=x.device)
 
 
 class AvgPool3dSpatialKernel(Kernel):
@@ -425,7 +356,8 @@ class AvgPool3dSpatialKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _avg_pool3d_spatial_wrapped_kernel(
+        self._require_cuda(x=x)
+        return _launch_avg_pool3d_spatial(
             self.n,
             self.c_in,
             self.d_in,
@@ -535,7 +467,8 @@ class AvgPool3dKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _avg_pool3d_wrapped_kernel(
+        self._require_cuda(x=x)
+        return _launch_avg_pool3d(
             self.n,
             self.c_in,
             self.d_in,

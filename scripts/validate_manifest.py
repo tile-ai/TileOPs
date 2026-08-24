@@ -48,6 +48,7 @@ from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
     dim_uniqueness,
     reduced_axes,
+    reduced_shape,
 )
 
 PACKAGE_ROOT = "src"
@@ -112,17 +113,18 @@ _VALID_SIGNATURE_KEYS = {
 }
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
-# Valid tensor layout values (R19)
+# Valid tensor layout values: what a non-default ``layout`` field may say
 _VALID_LAYOUTS = {"channels_last"}
 
-# Single-axis reference: `<tensor>.shape[<int_literal_or_identifier>]` (R20)
+# Single-axis reference a ``static_dims`` entry takes:
+# `<tensor>.shape[<int_literal_or_identifier>]`
 _STATIC_DIM_EXPR_RE = re.compile(
     r"^([A-Za-z_][A-Za-z0-9_]*)\.shape\[(-?\d+|[A-Za-z_][A-Za-z0-9_]*)\]$"
 )
 
 
 def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
-    """Validate `signature.static_dims` per R20.
+    """Validate `signature.static_dims`: each entry maps an ``__init__`` keyword to one axis.
 
     - Must be a mapping of str → str.
     - Each value must be a single-axis reference: `<tensor>.shape[<axis>]`
@@ -154,7 +156,7 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
             errors.append(
                 f"[schema] {op_name}: static_dims.{dname} expression "
                 f"{expr!r} is not a single-axis reference of the form "
-                f"`<tensor>.shape[<const_or_param>]` (R20)"
+                f"`<tensor>.shape[<const_or_param>]`"
             )
             continue
         tensor_name, axis_ref = match.groups()
@@ -333,9 +335,10 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
-            # shape declares one shape (R8). Alternatives would leave every
+            # shape declares one shape. Alternatives would leave every
             # consumer — mock builder, roofline binding, fake — to pick one,
-            # so a tensor whose rank or axis order varies omits shape (R9).
+            # so a tensor whose rank or axis order varies omits shape and states its
+            # constraints in params and shape_rules instead.
             if isinstance(attrs.get("shape"), str) and "|" in attrs["shape"]:
                 err(
                     f"{direction}.{tname}.shape {attrs['shape']!r} lists alternatives; "
@@ -357,7 +360,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                                 f"'{ckey}' is not in shape dims "
                                 f"{sorted(dims)}"
                             )
-            # layout validation (R19)
+            # layout validation: only the declared memory orders are accepted
             if "layout" in attrs:
                 layout = attrs["layout"]
                 if not isinstance(layout, str):
@@ -369,7 +372,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                         f"(valid: {', '.join(sorted(_VALID_LAYOUTS))})"
                     )
 
-    # Params must be a mapping if present; each entry needs 'type' (R1).
+    # Params must be a mapping if present; each entry needs 'type'.
     if "params" in sig:
         params = sig["params"]
         if not isinstance(params, dict):
@@ -405,7 +408,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
             if isinstance(attrs, dict) and "shape" not in attrs:
                 err(f"output '{tname}' must declare 'shape' or the signature must have shape_rules")
 
-    # dtype_combos must be a list of dicts if present (R4).
+    # dtype_combos must be a list of dicts if present.
     if "dtype_combos" in sig:
         combos = sig["dtype_combos"]
         if not isinstance(combos, list):
@@ -444,10 +447,46 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
             f"keys are {sorted(_VALID_SIGNATURE_KEYS)}"
         )
 
-    # static_dims must be a mapping of str -> str expression (R20).
+    # static_dims must be a mapping of str -> str expression.
     if "static_dims" in sig:
         errors.extend(_check_static_dims(op_name, sig["static_dims"], sig))
     return errors
+
+
+def _dtype_label_tokens(dtype: str) -> set[str]:
+    """How a label could spell *dtype*: the name itself and its short forms.
+
+    Derived rather than tabulated, so a dtype the manifest gains later is covered
+    without editing this: ``bfloat16`` yields ``bf16`` / ``f16`` / ``bfloat16``,
+    and ``float8_e4m3fn`` also yields its sub-format ``e4m3fn`` and ``e4m3``.
+    """
+    tokens = {dtype}
+    m = re.fullmatch(r"(b?float)(\d+)(?:_(\w+))?", dtype)
+    if m:
+        kind, bits, sub = m.groups()
+        tokens |= {f"{'bf' if kind == 'bfloat' else 'fp'}{bits}", f"f{bits}", f"{kind}{bits}"}
+        if sub:
+            tokens |= {sub, sub.removesuffix("fn")}
+    m = re.fullmatch(r"(u?int)(\d+)", dtype)
+    if m:
+        tokens.add(f"{'u' if dtype.startswith('u') else ''}i{m.group(2)}")
+    return {tok for tok in tokens if tok}
+
+
+def _label_names_its_own_dtype(label: str, dtypes: list) -> str | None:
+    """The dtype token a label repeats from its own ``dtypes``, if any.
+
+    A case id ends with the dtype the case runs, so a label spelling one renders
+    it twice. Labels use the short spelling, the manifest the long one, and both
+    are checked.
+    """
+    for dtype in dtypes:
+        if not isinstance(dtype, str):
+            continue
+        for token in sorted(_dtype_label_tokens(dtype), key=len, reverse=True):
+            if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", label):
+                return token
+    return None
 
 
 def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
@@ -481,6 +520,15 @@ def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
         missing_params = required_params - set(w.keys())
         if missing_params:
             err(f"workloads[{i}] missing required param(s): {sorted(missing_params)}")
+        label = w.get("label")
+        dtypes = w.get("dtypes")
+        if isinstance(label, str) and isinstance(dtypes, list):
+            repeated = _label_names_its_own_dtype(label, dtypes)
+            if repeated is not None:
+                err(
+                    f"workloads[{i}] label {label!r} names {repeated!r}, a dtype the "
+                    f"row already lists in 'dtypes'; the case id appends it"
+                )
     if isinstance(entry.get("signature"), dict):
         errors.extend(_check_single_input_workload_keys(op_name, entry["signature"], workloads))
     return errors
@@ -738,6 +786,35 @@ def _check_optional_flag(op_name: str, sig: dict) -> list[str]:
     return errors
 
 
+def _check_mutated_flag(op_name: str, sig: dict) -> list[str]:
+    """``mutated`` is literal ``true``, and appears only on ``signature.inputs``."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    params = sig.get("params")
+    if isinstance(params, dict):
+        for pname, attrs in params.items():
+            if isinstance(attrs, dict) and "mutated" in attrs:
+                err(f"params.{pname} declares 'mutated'; only a tensor input is written")
+    for direction in ("inputs", "outputs"):
+        tensors = sig.get(direction)
+        if not isinstance(tensors, dict):
+            continue
+        for tname, attrs in tensors.items():
+            if not isinstance(attrs, dict) or "mutated" not in attrs:
+                continue
+            if direction != "inputs":
+                err(
+                    f"{direction}.{tname} declares 'mutated'; an output is returned, "
+                    f"not written in place"
+                )
+            elif attrs["mutated"] is not True:
+                err(
+                    f"inputs.{tname}.mutated must be literal true, got "
+                    f"{attrs['mutated']!r} (omit the key when not mutated)"
+                )
+    return errors
+
+
 def _guard_scopes(node: ast.AST, optional: Collection[str]) -> list[tuple[ast.AST, set[str]]]:
     """Operands of a top-level ``or``, each with the names guarded before it.
 
@@ -985,6 +1062,7 @@ def _check_optional_workload_coverage(
 def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     """All optional-input checks for one entry."""
     errors = _check_optional_flag(op_name, sig)
+    errors.extend(_check_mutated_flag(op_name, sig))
     errors.extend(_check_param_domain(op_name, sig))
     optional = _optional_input_names(sig)
     if not optional:
@@ -1127,7 +1205,8 @@ def check_l1_signature(
     The strict rule: every manifest-declared param must appear in the union
     of ``__init__()`` and ``forward()`` parameter names. Manifest inputs must
     appear in ``forward()`` in declaration order. Every ``static_dims`` key
-    must appear as an ``__init__()`` parameter (per R20).
+    must appear as an ``__init__()`` parameter: it is what the user commits to at
+    construction time.
 
     ``init_params=None`` is treated as empty (only forward is checked).
     """
@@ -1157,7 +1236,7 @@ def check_l1_signature(
         if pname not in code_params:
             err(f"manifest param {pname!r} not found in __init__() or forward() parameters")
 
-    # static_dims check (R20): every static_dims key must be an __init__ param
+    # every static_dims key must be an __init__ param
     if manifest_static_dims:
         if not isinstance(manifest_static_dims, dict):
             err("signature.static_dims is not a mapping")
@@ -1490,7 +1569,7 @@ def _check_dtype_combos_same_as_identity(
     dtype_combos: list,
     same_as_map: dict[str, str],
 ) -> list[str]:
-    """Enforce same_as identity in dtype_combos entries (R3).
+    """Enforce same_as identity in dtype_combos entries.
 
     Every tensor bound by same_as(ref) must have the exact same dtype as
     its reference tensor in every combo row.
@@ -1507,7 +1586,7 @@ def _check_dtype_combos_same_as_identity(
                 err(
                     f"dtype_combos[{i}] violates same_as identity "
                     f"constraint — {tensor} ({combo[tensor]}) must match "
-                    f"{ref} ({combo[ref]}) per R3"
+                    f"{ref} ({combo[ref]}), which same_as requires"
                 )
             elif t_in and not r_in:
                 err(
@@ -1522,7 +1601,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """Validate dtype strings are recognized torch types or same_as references.
 
     Checks both signature tensor dtypes and workload dtype entries.
-    Also enforces same_as identity constraint in dtype_combos (R3).
+    Also enforces the same_as identity constraint in dtype_combos.
     """
     errors: list[str] = []
     err = _emit_to(errors, "dtype", op_name)
@@ -1539,7 +1618,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     input_names = set(inputs.keys())
 
     # Signature tensor dtypes. ``promote_int_to_float`` is output-side
-    # only (R3a) — reject it on input tensors.
+    # only — reject it on input tensors.
     for tname, attrs in all_tensors.items():
         if not isinstance(attrs, dict):
             continue
@@ -1555,7 +1634,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
             if token_err:
                 errors.append(token_err)
 
-    # same_as identity constraint in dtype_combos (R3)
+    # same_as identity constraint in dtype_combos
     dtype_combos = sig.get("dtype_combos", [])
     if isinstance(dtype_combos, list) and dtype_combos:
         same_as_map = _build_same_as_map(all_tensors)
@@ -1922,7 +2001,7 @@ def _input_bound_symbols(sig: dict) -> set[str]:
 
 
 def _optional_inputs(sig: dict) -> set[str]:
-    """Input names declared ``optional: true`` (R18)."""
+    """Input names declared ``optional: true``."""
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict):
         return set()
@@ -2242,6 +2321,7 @@ _SHAPE_RULE_BUILTIN_PAIRS = [
     ("dim_range_validity", dim_range_validity),
     ("dim_uniqueness", dim_uniqueness),
     ("reduced_axes", reduced_axes),
+    ("reduced_shape", reduced_shape),
 ]
 _SHAPE_RULE_BUILTINS: dict = {}
 for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:
@@ -2394,7 +2474,7 @@ def check_l2_infer_parity(
     if infer_fn is None:
         return errors
 
-    # Presence of an optional input is the declared dispatch fact (R18), so the
+    # Whether an optional input was passed is a fact kernel dispatch may read, so the
     # probe runs once with every optional input supplied and once with none.
     optional = _optional_inputs(sig)
     variants: list[frozenset[str]] = [frozenset()]
@@ -2526,7 +2606,11 @@ def _probe_infer_parity(
     output_only_rebindings: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         for p in decl_parts:
-            if p not in input_bound:
+            # A param is bound by construction, so it is neither input-bound nor
+            # output-only: rebinding it from the inferred result would overwrite the
+            # value the op was built with, and treating it as an output symbol turns
+            # an input-only precondition into a parity error.
+            if p not in input_bound and p not in param_env:
                 output_only_symbols.add(p)
         if out_name not in result:
             continue
@@ -3406,7 +3490,7 @@ def _same_as_refs(sig: dict) -> dict[str, str]:
 
 
 def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
-    """Return True when *candidate* satisfies same_as identity (R3)."""
+    """Return True when *candidate* satisfies the same_as dtype identity."""
     inputs = sig.get("inputs") or {}
     if not isinstance(inputs, dict):
         return True
@@ -3857,40 +3941,107 @@ def check_c5_dispatch_kernel_invariant(
     return errors
 
 
-def check_c6_validate_dtypes_not_stub(
+def _tensor_param_names(entry: dict) -> set[str]:
+    """The entry's tensor-typed params, which is where a caller-supplied output buffer
+    is declared: the op writes it and the return aliases it, so it is not an input.
+    """
+    params = entry.get("signature", {}).get("params") or {}
+    return {
+        name
+        for name, attrs in params.items()
+        if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", "")).lower()
+    }
+
+
+def check_c8_mutated_inputs_parity(
+    op_name: str,
+    entry: dict,
+    cls: type | None,
+    *,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """R22: the operator's write arguments are exactly the manifest's mutated inputs.
+
+    An op that publishes no ``compile_op_names`` has registered no operator to compare
+    against; a mutation it declares is then unverified rather than wrong, so it warns.
+    """
+    errors: list[str] = []
+    if cls is None:
+        return errors
+    inputs = entry.get("signature", {}).get("inputs")
+    declared = {
+        name
+        for name, attrs in (inputs or {}).items()
+        if isinstance(attrs, dict) and attrs.get("mutated") is True
+    }
+    names = getattr(cls, "compile_op_names", ()) or ()
+    if not names:
+        if declared and warnings is not None:
+            warnings.append(
+                f"[mutation] {op_name}: declares mutated inputs {sorted(declared)} but "
+                f"publishes no compile_op_names, so mutates_args cannot be checked"
+            )
+        return errors
+
+    import torch
+
+    input_names = list(inputs or ())
+    written: set[str] = set()
+    for qualified in names:
+        namespace, _, opname = qualified.partition("::")
+        try:
+            overload = getattr(getattr(torch.ops, namespace), opname).default
+        except (AttributeError, RuntimeError) as exc:
+            errors.append(
+                f"[mutation] {op_name}: compile_op_names names {qualified!r}, which is not "
+                f"registered ({exc.__class__.__name__})"
+            )
+            continue
+        # The operator lists its tensor arguments in signature.inputs order, so a write at
+        # position i is a write to input i. A tensor argument past the declared inputs is a
+        # caller-supplied output buffer, which is declared as a param rather than an input
+        # and so is not part of the mutated-input set.
+        tensor_args = [
+            arg for arg in overload._schema.arguments if str(arg.type).startswith("Tensor")
+        ]
+        for position, arg in enumerate(tensor_args):
+            if arg.alias_info is None or not arg.alias_info.is_write:
+                continue
+            if position < len(input_names):
+                written.add(input_names[position])
+            elif arg.name not in _tensor_param_names(entry):
+                errors.append(
+                    f"[mutation] {op_name}: {qualified!r} writes argument {arg.name!r}, which "
+                    f"is past the {len(input_names)} declared inputs and names no declared "
+                    f"output buffer param"
+                )
+    if written != declared:
+        errors.append(
+            f"[mutation] {op_name}: its operators write {sorted(written) or 'no input'} but the "
+            f"manifest marks {sorted(declared) or 'nothing'} with mutated: true"
+        )
+    return errors
+
+
+def check_c6_contract_methods_implemented(
     op_name: str,
     entry: dict,
     cls: type | None,
 ) -> list[str]:
-    """C6: ``_validate_dtypes`` is not the base ``Op`` stub."""
+    """The three manifest-driven methods are the concrete class's, not ``Op``'s.
+
+    ``Op`` declares them abstract, so a class that skips one cannot be constructed;
+    this says which one is missing, before anything tries.
+    """
     if cls is None:
         return []
     from tileops.ops.op_base import Op as _OpBase
 
-    if cls._validate_dtypes is _OpBase._validate_dtypes:
-        return [
-            f"[stub] {op_name}: _validate_dtypes is the Op base stub "
-            f"(not implemented by the concrete class)"
-        ]
-    return []
-
-
-def check_c7_eval_roofline_not_stub(
-    op_name: str,
-    entry: dict,
-    cls: type | None,
-) -> list[str]:
-    """C7: ``eval_roofline`` is not the base ``Op`` stub."""
-    if cls is None:
-        return []
-    from tileops.ops.op_base import Op as _OpBase
-
-    if cls.eval_roofline is _OpBase.eval_roofline:
-        return [
-            f"[stub] {op_name}: eval_roofline is the Op base stub "
-            f"(not implemented by the concrete class)"
-        ]
-    return []
+    return [
+        f"[stub] {op_name}: {name} is the Op base stub (not implemented by the concrete class)"
+        for name in ("_infer_output_shapes", "_validate_dtypes", "eval_roofline")
+        if getattr(cls, name) is getattr(_OpBase, name)
+    ]
 
 
 # Triage aids only — routing is structural (the orchestrator extends
@@ -4099,10 +4250,15 @@ def validate_manifest(
                     warnings=all_warnings,
                 )
             )
-        if "dtype" in levels:
-            strict_errors.extend(check_c6_validate_dtypes_not_stub(op_name, entry, op_cls))
-        if "bench" in levels:
-            strict_errors.extend(check_c7_eval_roofline_not_stub(op_name, entry, op_cls))
+            strict_errors.extend(
+                check_c8_mutated_inputs_parity(
+                    op_name,
+                    entry,
+                    op_cls,
+                    warnings=all_warnings,
+                )
+            )
+            strict_errors.extend(check_c6_contract_methods_implemented(op_name, entry, op_cls))
 
         # bench: benchmark uses manifest workloads
         if "bench" in levels:

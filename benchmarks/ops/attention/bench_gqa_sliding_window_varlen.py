@@ -4,10 +4,13 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import (
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    then_dtype,
+    workload_params,
+)
+from benchmarks.ops.attention.workload_args import (
     gqa_sliding_window_varlen_args,
-    manifest_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
@@ -17,10 +20,12 @@ from workloads.attention.gqa import (
 
 _OP_NAME = "GroupedQueryAttentionSlidingWindowVarlenFwdOp"
 
-_GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = manifest_params(
+_GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = workload_params(
     load_workloads(_OP_NAME),
-    gqa_sliding_window_varlen_args,
-    tune=False,
+    then_dtype(
+        gqa_sliding_window_varlen_args,
+        tune=False,
+    ),
 )
 
 

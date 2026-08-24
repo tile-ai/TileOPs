@@ -8,10 +8,11 @@ byte counts come from the op's ``eval_roofline()`` via
 import pytest
 import torch
 
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
-    workload_field_params,
+    fields,
+    workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import FP8QuantFwdOp
@@ -23,9 +24,10 @@ _TUNE = True
 
 
 _FP8_QUANT_OP = "FP8QuantFwdOp"
-_FP8_QUANT_PARAMS = workload_field_params(
+_FP8_QUANT_PARAMS = workload_params(
     load_workloads(_FP8_QUANT_OP),
-    ("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
+    fields("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
+    smoke_first=True,
 )
 
 
@@ -40,5 +42,12 @@ def test_fp8_quant_bench(
     bm = ManifestBenchmark(_FP8_QUANT_OP, op, test)
 
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

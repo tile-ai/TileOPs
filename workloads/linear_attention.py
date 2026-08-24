@@ -273,7 +273,17 @@ class GatedDeltaNetDecodeWorkload(WorkloadBase):
 
 
 class GLAChunkwiseWorkload(WorkloadBase):
-    def __init__(self, batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype):
+    def __init__(
+        self,
+        batch,
+        seq_len,
+        heads,
+        dim_k,
+        dim_v,
+        chunk_size,
+        dtype,
+        has_initial_state: bool = False,
+    ):
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
@@ -281,6 +291,7 @@ class GLAChunkwiseWorkload(WorkloadBase):
         self.dim_v = dim_v
         self.chunk_size = chunk_size
         self.dtype = dtype
+        self.has_initial_state = has_initial_state
 
     def gen_inputs(self):
         B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
@@ -288,7 +299,14 @@ class GLAChunkwiseWorkload(WorkloadBase):
         k = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
         v = torch.randn(B, T, H, V, device="cuda", dtype=self.dtype) * 0.1
         g = -torch.rand(B, T, H, K, device="cuda", dtype=self.dtype)
-        return q, k, v, g
+        # Absent means None: the recurrence then starts from zeros. Present, it is
+        # fp32, the dtype the recurrence carries the state in.
+        initial_state = (
+            torch.randn(B, H, K, V, device="cuda", dtype=torch.float32) * 0.1
+            if self.has_initial_state
+            else None
+        )
+        return q, k, v, g, initial_state
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):

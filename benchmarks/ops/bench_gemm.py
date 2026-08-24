@@ -3,7 +3,15 @@ from typing import Any, Callable, Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.baselines import (
+    DEEPGEMM_TAG,
+    FLAGGEMS_TAG,
+    assert_matches_reference,
+    deepgemm_op,
+    flaggems_op,
+    reference_tolerance,
+)
+from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
@@ -12,13 +20,6 @@ _OP_NAME = "GemmFwdOp"
 _FP8_OP_NAME = "GemmFp8FwdOp"
 _W4A16_OP_NAME = "GemmW4A16FwdOp"
 _W4A16_GROUP_SIZE = 128
-
-_DTYPE_MAP = {
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-    "float8_e4m3fn": torch.float8_e4m3fn,
-    "float8_e5m2": torch.float8_e5m2,
-}
 
 
 class GemmBenchmarkWorkload(GemmWorkload):
@@ -87,6 +88,69 @@ def _flashinfer_fp8_blockscale_ref(
             f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
         )
     return fp8_blockscale_gemm_sm90(a, b, scale_a, scale_b, out_dtype=workload.out_dtype)
+
+
+def _deepgemm_bf16_nt(
+    workload: GemmBenchmarkWorkload, a: torch.Tensor, b: torch.Tensor
+) -> Optional[Callable[..., torch.Tensor]]:
+    """DeepGEMM's dense bf16 GEMM, or None for a row its kernel cannot take.
+
+    It reads both operands K-major and bf16 only, which is the N-T layout here.
+    """
+    if workload.trans_a or not workload.trans_b or a.dtype != torch.bfloat16:
+        return None
+
+    gemm = deepgemm_op("bf16_gemm_nt")
+    m, n = workload.m, workload.n
+
+    def run(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        out = torch.empty((m, n), dtype=a.dtype, device=a.device)
+        gemm(a, b, out)
+        return out
+
+    return run
+
+
+def _deepgemm_fp8_per_tensor(
+    workload: GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
+) -> Callable[..., torch.Tensor]:
+    """DeepGEMM's dense FP8 GEMM over a per-tensor scale.
+
+    It reads A's scale per token and B's scale per 128x128 block, so a per-tensor scale
+    expands into both without changing the arithmetic.
+
+    Raises:
+        ValueError: When the row falls outside that path.
+    """
+    gemm = deepgemm_op("fp8_gemm_nt")
+    align = deepgemm_op("get_mn_major_tma_aligned_tensor")
+
+    scale_a, scale_b = inputs[2], inputs[3]
+    if len(inputs) == 5:
+        raise ValueError("DeepGEMM FP8 GEMM baseline does not support bias.")
+    if scale_a.shape != (1, 1) or scale_b.shape != (1, 1):
+        raise ValueError(
+            "DeepGEMM FP8 GEMM baseline requires (1, 1) scales, "
+            f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
+        )
+    if workload.out_dtype != torch.bfloat16:
+        raise ValueError("DeepGEMM FP8 GEMM baseline requires bfloat16 output.")
+    if workload.n % 128 or workload.k % 128:
+        raise ValueError(
+            "DeepGEMM FP8 GEMM baseline requires n and k divisible by 128, "
+            f"got n={workload.n} k={workload.k}"
+        )
+
+    m, n, k = workload.m, workload.n, workload.k
+    aligned_scale_a = align(scale_a.expand(m, k // 128).contiguous())
+    block_scale_b = scale_b.expand(n // 128, k // 128).contiguous()
+
+    def run(a: torch.Tensor, b: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:
+        out = torch.empty((m, n), dtype=workload.out_dtype, device=a.device)
+        gemm((a, aligned_scale_a), (b, block_scale_b), out)
+        return out
+
+    return run
 
 
 def _prepare_flashinfer_fp8_per_tensor(
@@ -214,75 +278,39 @@ def _prepare_marlin_w4a16_baseline(
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
-def _manifest_params() -> list:
-    """Convert manifest workloads to pytest params (m, n, k, trans_a, trans_b, dtype)."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        trans_a = bool(w.get("trans_a", False))
-        trans_b = bool(w.get("trans_b", True))
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["m"],
-                    w["n"],
-                    w["k"],
-                    trans_a,
-                    trans_b,
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _gemm_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(m, n, k, trans_a, trans_b, dtype)``; the transposes default to N-T."""
+    return (
+        w["m"],
+        w["n"],
+        w["k"],
+        bool(w.get("trans_a", False)),
+        bool(w.get("trans_b", True)),
+        dtype,
+    )
 
 
-def _manifest_fp8_params() -> list:
-    params = []
-    for w in load_workloads(_FP8_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["m"],
-                    w["n"],
-                    w["k"],
-                    w["scale_mode"],
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _gemm_fp8_args(w: dict, dtype: torch.dtype) -> tuple:
+    """``(m, n, k, scale_mode, bias, dtype)``; ``bias_shape`` selects the bias epilogue."""
+    return (w["m"], w["n"], w["k"], w["scale_mode"], bool(w.get("bias_shape")), dtype)
 
 
-def _manifest_w4a16_params() -> list:
-    params = []
-    for w in load_workloads(_W4A16_OP_NAME):
-        label = w.get("label", "unlabeled")
-        group_size = int(w.get("group_size", 128))
-        for dtype_str in w["dtypes"]:
-            params.append(
-                pytest.param(
-                    w["m"],
-                    w["n"],
-                    w["k"],
-                    group_size,
-                    dtype_str,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
+def _gemm_w4a16_args(w: dict, dtype: torch.dtype) -> tuple:
+    return (w["m"], w["n"], w["k"], int(w.get("group_size", 128)), dtype)
 
 
-@pytest.mark.parametrize("m, n, k, trans_a, trans_b, dtype_str", _manifest_params())
+@pytest.mark.parametrize(
+    "m, n, k, trans_a, trans_b, dtype",
+    workload_params(load_workloads(_OP_NAME), _gemm_args),
+)
 def test_gemm_bench(
     m: int,
     n: int,
     k: int,
     trans_a: bool,
     trans_b: bool,
-    dtype_str: str,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     workload = GemmBenchmarkWorkload(m, n, k, dtype, trans_a, trans_b)
     a, b = workload.gen_inputs()
 
@@ -292,22 +320,39 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    bm.compare(
-        {"tileops": op, "torch-cublas": workload.torch_matmul}, a, b, record_as=op, params=locals()
-    )
+    # flag_gems' mm takes row-major operands; a transposed row is its own layout,
+    # which its kernel does not express, so those rows carry cuBLAS alone.
+    functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
+    deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
+    if deepgemm_fn is not None:
+        assert_matches_reference(
+            deepgemm_fn, workload.torch_matmul, a, b, **reference_tolerance(dtype)
+        )
+        functors[DEEPGEMM_TAG] = deepgemm_fn
+    if not trans_a and not trans_b:
+        flaggems_mm = flaggems_op("mm")
+        assert_matches_reference(
+            flaggems_mm, workload.torch_matmul, a, b, **reference_tolerance(dtype)
+        )
+        functors[FLAGGEMS_TAG] = flaggems_mm
+
+    bm.compare(functors, a, b, record_as=op, params=locals())
 
 
-@pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())
+@pytest.mark.parametrize(
+    "m, n, k, scale_mode, bias, dtype",
+    workload_params(load_workloads(_FP8_OP_NAME), _gemm_fp8_args),
+)
 def test_gemm_fp8_bench(
     m: int,
     n: int,
     k: int,
     scale_mode: str,
-    dtype_str: str,
+    bias: bool,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
-    workload = GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
+    workload = GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
     inputs = workload.gen_inputs()
 
     op = GemmFp8FwdOp(out_dtype=out_dtype)
@@ -319,6 +364,19 @@ def test_gemm_fp8_bench(
     functors = {"tileops": op, "torch-scaled-mm": workload.torch_scaled_matmul}
 
     if scale_mode == "per_tensor":
+        try:
+            deepgemm_fn = _deepgemm_fp8_per_tensor(workload, *inputs)
+        except ValueError as exc:
+            print(f"  [skip] {DEEPGEMM_TAG}: {exc}")
+        else:
+            assert_matches_reference(
+                deepgemm_fn,
+                workload.torch_scaled_matmul,
+                *inputs,
+                **reference_tolerance(out_dtype),
+            )
+            functors[DEEPGEMM_TAG] = (deepgemm_fn, inputs[:2])
+
         unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
         if unsupported_reason is not None:
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
@@ -352,15 +410,16 @@ def test_gemm_fp8_bench(
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
-@pytest.mark.parametrize("m, n, k, group_size, dtype_str", _manifest_w4a16_params())
+@pytest.mark.parametrize(
+    "m, n, k, group_size, dtype", workload_params(load_workloads(_W4A16_OP_NAME), _gemm_w4a16_args)
+)
 def test_gemm_w4a16_bench(
     m: int,
     n: int,
     k: int,
     group_size: int,
-    dtype_str: str,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = _DTYPE_MAP[dtype_str]
     workload = GemmW4A16BenchmarkWorkload(m, n, k, dtype, group_size=group_size)
     inputs = workload.gen_inputs()
 

@@ -18,7 +18,7 @@ class MoeGroupedGemmSeparateActKernel(Kernel):
     """Gate/up GEMM of width ``2 * ffn``, then the gated activation.
 
     Serves the same call as the fused-epilogue kernel and produces the same
-    ``[numel, ffn]`` output, in two launches with the wide intermediate in global
+    $[numel \\times ffn]$ output, in two launches with the wide intermediate in global
     memory. It is the general implementation of that role.
 
     ``gemm_cls`` is the grouped GEMM to compose with: the op that builds this holds

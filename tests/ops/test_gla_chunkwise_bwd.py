@@ -121,7 +121,6 @@ def test_gla_bwd(
     fwd_op = GLAFwdOp(
         chunk_size=BC,
         scale=scale,
-        output_final_state=False,
     )
     o_fwd, _ = fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32
@@ -149,7 +148,3 @@ def test_gla_bwd(
             cos = cosine_sim(fla_grads[name], op_grads[name])
             print(f"  TileOPs vs FLA {name}: cosine={cos:.6f}")
             assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

@@ -159,6 +159,7 @@ def _fp8_lightning_indexer_kernel(
     return _fp8_lightning_indexer_func
 
 
+@functools.lru_cache(maxsize=32)
 @tilelang.jit
 def clean_logits_(
     threads: int = 512,
@@ -196,7 +197,7 @@ def clean_logits_(
     return clean_logits_kernel
 
 
-@torch.library.custom_op("top::fp8_lightning_indexer_wrapped_kernel", mutates_args=("Logits",))
+@torch.library.custom_op("tileops::fp8_lightning_indexer_wrapped_kernel", mutates_args=("Logits",))
 def fp8_lightning_indexer_wrapped_kernel(
     batch: int,
     seq_len: int,

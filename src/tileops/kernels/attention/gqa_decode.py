@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.online_softmax import (
+
+from .online_softmax import (
     LOG2E,
     make_apply_softcap,
     make_online_softmax,
@@ -195,7 +196,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                # loop_range = T.ceildiv((seqlen_kv // num_split), valid_block_N)
                 loop_range = T.ceildiv(split_length_shared[sid], block_N)
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
@@ -309,7 +309,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
 # Custom ops (torch.compile compatible wrappers)
 
 
-@torch.library.custom_op("top::gqa_decode_no_split_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_no_split_op", mutates_args=())
 def _gqa_decode_no_split_op(
     batch: int,
     heads: int,
@@ -355,7 +355,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::gqa_decode_split_op", mutates_args=())
+@torch.library.custom_op("tileops::gqa_decode_split_op", mutates_args=())
 def _gqa_decode_split_op(
     batch: int,
     heads: int,

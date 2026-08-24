@@ -56,7 +56,7 @@ except ImportError:
             stacklevel=2,
         )
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
 from workloads.moe import MoeExpertsWorkload
@@ -73,33 +73,23 @@ _OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
 # Manifest-driven parametrize
 
 
-def _manifest_params():
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(
-                pytest.param(
-                    w["num_tokens"],
-                    w["num_experts"],
-                    w["num_experts_local"],
-                    w["top_k"],
-                    w["hidden_size"],
-                    w["ffn_size"],
-                    dtype,
-                    id=f"{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
 # Benchmark test
 
 
 @pytest.mark.parametrize(
     "num_tokens, num_experts, num_experts_local, top_k, hidden_size, ffn_size, dtype",
-    _manifest_params(),
+    workload_params(
+        load_workloads(_OP_NAME),
+        fields(
+            "num_tokens",
+            "num_experts",
+            "num_experts_local",
+            "top_k",
+            "hidden_size",
+            "ffn_size",
+            dtype_last=True,
+        ),
+    ),
 )
 def test_moe_experts_nopad_bench(
     num_tokens: int,
@@ -159,8 +149,13 @@ def test_moe_experts_nopad_bench(
     functors = {"tileops-nopad-3wg": _nopad_fn}
 
     if expert_map is not None:
-        # No vLLM column: its fused_experts takes the full weight table, so the
-        # two would not measure the same work.
+        # FIXME(staged-rollout): this row records no baseline.
+        #
+        # Broken invariant: every benchmark records >=1 non-tileops baseline.
+        # Why: under expert parallelism the weights are this rank's slice of the
+        #   expert table, and vLLM's fused_experts takes the full table, so the
+        #   column would time a different amount of work.
+        # Cleanup: a baseline that runs the experts this rank owns.
         bm.compare(
             functors,
             hidden,

@@ -429,7 +429,3 @@ def test_inf_norm_dim_none(
     tol = _tol(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

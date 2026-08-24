@@ -19,9 +19,12 @@ import torch
 # Modules whose import populates the registry. Add a module here when it
 # gains contract-backing compile tests.
 _EVIDENCE_MODULES = (
+    "tests.ops.test_convolution",
     "tests.ops.test_elementwise_compile",
     "tests.ops.test_moe_compile",
+    "tests.ops.test_norm_compile",
     "tests.ops.test_pool",
+    "tests.ops.test_reduction_compile",
     "tests.ops.test_rms_norm",
     "tests.test_compile",
 )
@@ -34,12 +37,20 @@ def register_compile_contract(op_cls: type) -> None:
 
     Call at module import, adjacent to the compile test that backs the
     promise. Side-effect only.
+
+    Raises:
+        AssertionError: The op names no operators, so nothing can be asserted about
+            the graph it traces to.
     """
+    assert op_cls.compile_op_names, (
+        f"{op_cls.__name__} names no operators in compile_op_names, so a traced graph "
+        f"cannot be checked against them"
+    )
     _registered.add(op_cls.__name__)
 
 
 def operator_overload(name: str):
-    """``"top::foo"`` as the overload object a graph node carries."""
+    """``"tileops::foo"`` as the overload object a graph node carries."""
     namespace, _, opname = name.partition("::")
     return getattr(getattr(torch.ops, namespace), opname).default
 

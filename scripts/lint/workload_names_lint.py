@@ -26,9 +26,6 @@ BENCH_DIR = REPO_ROOT / "benchmarks" / "ops"
 # Files written before the rule. Name their cases and delete the line.
 EXEMPT = {
     "benchmarks/ops/bench_binary_elementwise.py",
-    "benchmarks/ops/bench_deltanet.py",
-    "benchmarks/ops/bench_gated_deltanet.py",
-    "benchmarks/ops/bench_gla_chunkwise.py",
     "benchmarks/ops/bench_independent_elementwise.py",
     "benchmarks/ops/bench_moe_fused_topk.py",
     "benchmarks/ops/bench_moe_shared_fused_moe.py",

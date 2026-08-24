@@ -679,7 +679,3 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
     assert mem_bytes == 2 * M * N * elem_bytes, (
         f"LogSoftmax bytes {mem_bytes} != 2 * M * N * elem_bytes = {2 * M * N * elem_bytes}"
     )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

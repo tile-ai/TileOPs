@@ -5,13 +5,13 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
-from tileops.ops.cb_producer import CBProducerFwdOp
-from tileops.ops.da_cumsum import DaCumsumFwdOp
-from tileops.ops.mamba2_fwd import Mamba2FwdOp
-from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
-from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.ssd_decode import SSDDecodeFwdOp
-from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.ops.mamba.cb_producer import CBProducerFwdOp
+from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
+from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from tileops.perf import formulas
 from workloads.mamba import (
     DaCumsumFwdFixture,
@@ -449,10 +449,6 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
 
     atol = 1e-2 if dtype == torch.float16 else 2e-2
     allclose_compare(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
 
 
 # ----------------------------------------------------------------------

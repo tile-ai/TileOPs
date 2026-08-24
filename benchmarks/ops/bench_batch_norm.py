@@ -1,6 +1,9 @@
 """Benchmark for BatchNormFwdOp and BatchNormBwdOp.
 
-Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes.
+Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes. The
+forward row adds flag_gems' batch_norm and cuDNN through inductor. The backward row
+carries two torch tags: an autograd node driven on this thread, and aten's backward
+kernel by itself. The difference between them is the forward the autograd one rebuilds.
 """
 
 import math
@@ -8,7 +11,14 @@ import math
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, backward_of
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_op,
+)
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
@@ -54,6 +64,21 @@ def _torch_bn_fwd(x, weight, bias, running_mean, running_var):
     )
 
 
+def _flaggems_bn_fwd(running_mean: torch.Tensor, running_var: torch.Tensor):
+    """flag_gems' batch_norm on its own running statistics, output only.
+
+    Training mode updates them in place, and the cuDNN reference clones before it
+    does, so this gets copies rather than the tensors the other tags read.
+    """
+    fn = flaggems_op("batch_norm")
+    private_mean, private_var = running_mean.clone(), running_var.clone()
+
+    def baseline_fn(x, _running_mean, _running_var, weight, bias):
+        return fn(x.float(), weight, bias, private_mean, private_var, True, 0.1, 1e-5)[0]
+
+    return baseline_fn
+
+
 def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
     """PyTorch reference backward, driven on this thread. Recomputes the forward."""
     with torch.enable_grad():
@@ -66,39 +91,46 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
     return backward_of(y)(grad_out.float())
 
 
+def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
+    """aten's batch-norm backward, run by itself on the saved statistics.
+
+    The float32 casts are load-bearing rather than overhead: handed float16 this kernel
+    forms the channel gradients in float16 too, and the reduction over every spatial
+    element then lands far outside tolerance.
+    """
+    return torch.ops.aten.native_batch_norm_backward(
+        grad_out.float(),
+        x.float(),
+        weight.float(),
+        None,
+        None,
+        mean,
+        rstd,
+        True,
+        1e-5,
+        [True, True, True],
+    )
+
+
 # Manifest-driven params
 
 
-def _manifest_fwd_params():
-    params = []
-    for w in load_workloads(_FWD_OP_NAME):
-        shape = w["x_shape"]
-        N, C, spatial = shape[0], shape[1], tuple(shape[2:])
-        label = w.get("label", f"{N}x{C}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(
-                pytest.param(N, C, spatial, dtype, True, False, id=f"{label}-{dtype_str}")
-            )
-    return params
+def _fwd_args(w: dict, dtype: torch.dtype) -> tuple:
+    n, c, *spatial = w["x_shape"]
+    return (n, c, tuple(spatial), dtype, True, False)
 
 
-def _manifest_bwd_params():
-    params = []
-    for w in load_workloads(_BWD_OP_NAME):
-        shape = w["x_shape"]
-        N, C, spatial = shape[0], shape[1], tuple(shape[2:])
-        label = w.get("label", f"{N}x{C}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(N, C, spatial, dtype, id=f"{label}-{dtype_str}"))
-    return params
+def _bwd_args(w: dict, dtype: torch.dtype) -> tuple:
+    n, c, *spatial = w["x_shape"]
+    return (n, c, tuple(spatial), dtype)
 
 
 # Benchmark tests
 
 
-@pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _manifest_fwd_params())
+@pytest.mark.parametrize(
+    "N, C, spatial, dtype, training, tune", workload_params(load_workloads(_FWD_OP_NAME), _fwd_args)
+)
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype)
     # Manifest input order: (x, running_mean, running_var, weight, bias).
@@ -111,10 +143,19 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
+    def torch_fn(x, rm, rv, w, b):
+        return _torch_bn_fwd(x, w, b, rm, rv)
+
+    flaggems_fn = _flaggems_bn_fwd(running_mean, running_var)
+    # cuDNN and Triton both reduce over N*H*W in fp32; agreement is at fp32 strength.
+    assert_matches_reference(flaggems_fn, torch_fn, *inputs, rtol=1e-4, atol=1e-4)
+
     bm.compare(
         {
             "tileops": lambda *a: op(*a),
-            "torch-cudnn": lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv),
+            FLAGGEMS_TAG: flaggems_fn,
+            "torch-cudnn": torch_fn,
+            TORCH_COMPILE_TAG: compiled_reference(torch_fn),
         },
         *inputs,
         record_as=op,
@@ -122,7 +163,9 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     )
 
 
-@pytest.mark.parametrize("N, C, spatial, dtype", _manifest_bwd_params())
+@pytest.mark.parametrize(
+    "N, C, spatial, dtype", workload_params(load_workloads(_BWD_OP_NAME), _bwd_args)
+)
 def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     inputs = _make_bwd_inputs(N, C, spatial, dtype)
 
@@ -133,6 +176,16 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
+    # A reduction this long disagrees with the reference's order past float32's tolerance.
+    assert_matches_reference(_aten_bn_bwd, _torch_bn_bwd, *inputs, rtol=1e-3, atol=1e-3)
+
     bm.compare(
-        {"tileops": op, "torch-autograd": _torch_bn_bwd}, *inputs, record_as=op, params=locals()
+        {
+            "tileops": op,
+            "torch-autograd": _torch_bn_bwd,
+            "torch-native-batch-norm": _aten_bn_bwd,
+        },
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

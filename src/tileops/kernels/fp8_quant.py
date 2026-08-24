@@ -64,7 +64,7 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
     return _fp8_quant_fwd_func
 
 
-@torch.library.custom_op("top::fp8_quant_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::fp8_quant_wrapped_kernel", mutates_args=())
 def _fp8_quant_wrapped_kernel(
     batch: int,
     seq_len_kv: int,
@@ -90,7 +90,7 @@ def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, num_stages, block_m, *in
 
 
 class FP8QuantKernel(Kernel):
-    """Per-group fp8 quantization of a ``[B, S_kv, G, D]`` index tensor.
+    """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
     Args:
         batch: Batch size.

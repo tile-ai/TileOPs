@@ -2,12 +2,24 @@
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes and roofline formulas are loaded from the ops manifest (src/tileops/manifest/).
+
+Each order is timed against flag_gems' Triton ``vector_norm`` and against torch
+eager and inductor.
 """
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    flaggems_dims,
+    flaggems_op,
+    reference_tolerance,
+)
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 
@@ -16,6 +28,27 @@ from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 _L1_NORM_OP = "L1NormFwdOp"
 _L2_NORM_OP = "L2NormFwdOp"
 _INF_NORM_OP = "InfNormFwdOp"
+
+
+def _flaggems_vector_norm(ord_value, dim, keepdim: bool):
+    """flag_gems' ``vector_norm``, which accumulates in fp32 as the reference does."""
+    fn = flaggems_op("vector_norm")
+    dims = flaggems_dims(dim)
+
+    def baseline_fn(x):
+        return fn(x, ord_value, dims, keepdim)
+
+    return baseline_fn
+
+
+def _functors(op, baseline_fn, flaggems_fn, inputs, dtype: torch.dtype) -> dict:
+    assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
+    return {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
 
 # L1 Norm benchmarks
@@ -43,8 +76,15 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
             keepdim=keepdim,
         ).to(x.dtype)
 
+    flaggems_fn = _flaggems_vector_norm(1, dim, keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -76,8 +116,15 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
             keepdim=keepdim,
         ).to(x.dtype)
 
+    flaggems_fn = _flaggems_vector_norm(2, dim, keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -109,8 +156,15 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
             keepdim=keepdim,
         ).to(x.dtype)
 
+    flaggems_fn = _flaggems_vector_norm(float("inf"), dim, keepdim)
+
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

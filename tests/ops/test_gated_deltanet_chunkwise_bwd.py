@@ -2,7 +2,9 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase
-from tileops.kernels.gated_deltanet.gated_deltanet_bwd import GatedDeltaNetBwdKernel
+from tileops.kernels.linear_attention.gated_deltanet.gated_deltanet_bwd import (
+    GatedDeltaNetBwdKernel,
+)
 from tileops.ops import GatedDeltaNetBwdOp
 
 
@@ -263,7 +265,3 @@ def test_gated_deltanet_bwd_default_carry_dispatch(
     )
     assert kernel.default_config["recurrence_segmented_carry"] == expected_mode
     assert kernel.default_config["recurrence_block_v"] == expected_block_v
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

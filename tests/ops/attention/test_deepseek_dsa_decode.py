@@ -99,7 +99,3 @@ def test_sparse_mla_decode(
         tune=tune,
     )
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])

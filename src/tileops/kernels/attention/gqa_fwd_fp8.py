@@ -6,12 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.online_softmax import (
+from .call_spec import ATTENTION_DTYPES, uses_sliding_window
+from .online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_score_scale,
 )
-
-from .call_spec import ATTENTION_DTYPES, uses_sliding_window
 from .packed_prefill import PackedPrefillKernel
 
 __all__ = ["GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel"]
@@ -608,7 +607,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     return func
 
 
-@torch.library.custom_op("top::gqa_fwd_fp8_bn224_tma_v_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::gqa_fwd_fp8_bn224_tma_v_wrapped_kernel", mutates_args=())
 def _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
     batch: int,
     heads: int,
