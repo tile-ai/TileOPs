@@ -7,28 +7,20 @@ it under-uses split-K). Benchmarking only against the default therefore risks
 crediting a TileOPs kernel with a "win" that a cuBLASLt user with algorithm
 selection would not concede.
 
-This module provides that stronger baseline. It times cuBLASLt's heuristic picks
-for the shape (``cublasLtMatmulAlgoGetHeuristic``) against the plain
-``torch.matmul`` path and keeps the faster, so the result is never slower than
-the default. Selection happens once at construction; the returned callable runs a
-single op, so the harness times it under the **same CUPTI protocol** as every
-other entry — no cudaEvent or launch-overhead skew between baselines.
+This module provides that stronger baseline. It ranks cuBLASLt's heuristic picks
+for the shape (``cublasLtMatmulAlgoGetHeuristic``) against ``torch.matmul`` and
+keeps the fastest, through ``timing.bench_kernel`` -- the instrument that will
+report the row, so nothing can win selection on a timer the report does not use.
+Selection runs once at construction; the returned callable runs a single op.
 
 Measured on H200 over the 16 ``GemmFwdOp`` workload rows: the search is worth
-1.10x on ``wide-n-24576``, 1.07x on ``ds-v3-prefill-down`` and 1.03-1.05x on the
-low-``m`` decode rows; the rest read 1.000x, where selection defers to torch
-(median over all rows 1.000x). Those are the rows where cuBLAS's default
-heuristic is weakest, and they are also where this library's kernel is furthest
-behind — which is the whole reason the baseline has to be here. Enumerating every
-algorithm id crossed with its capability grid (256 further candidates) was
-measured too and never won a row the heuristic list had not already won, so this
-searches the heuristic list alone.
-
-A row can still read about a percent under ``torch-cublas``: selection ranks by a
-cudaEvent minimum while the report is a CUPTI median, and ``_TORCH_MARGIN`` bounds
-rather than erases that disagreement. The report judges each row by its strongest
-baseline, so ``torch-cublas`` still sets the bar wherever this entry lands under
-it.
+1.09x on ``wide-n-24576``, 1.06x on ``ds-v3-prefill-down`` and 1.03-1.04x on
+three low-``m`` rows, with no row below 0.996x. Those are the rows where cuBLAS's
+default heuristic is weakest, and where this library's kernel is furthest behind
+-- which is why the baseline has to be here. Enumerating every algorithm id
+crossed with its capability grid (256 further candidates) was measured too and
+never won a row the heuristic list had not already won, so this searches the
+heuristic list alone.
 
 ``ctypes`` because the algorithm API has no Python binding here -- not because
 the library is missing. ``libcublasLt`` comes in with torch (its ``nvidia-cublas``
@@ -47,11 +39,12 @@ other layouts return ``None``.
 
 import contextlib
 import ctypes
+import statistics
 from typing import Callable, Optional
 
 import torch
 
-from benchmarks.timing import _get_l2_flush_cache
+from benchmarks.timing import bench_kernel
 
 __all__ = ["CublasLtBestGemm", "make_cublaslt_best"]
 
@@ -66,12 +59,6 @@ _DESC_TRANSA = 3  # cublasLtMatmulDescAttributes_t
 _DESC_TRANSB = 4
 _PREF_MAX_WORKSPACE = 1  # cublasLtMatmulPreferenceAttributes_t (SEARCH_MODE=0)
 _STATUS_SUCCESS = 0
-# How far ahead the searched algorithm must be before it displaces torch. Ranking
-# here is a cudaEvent minimum; the row is reported from CUPTI medians, and the two
-# disagree by up to about a percent. Without the margin a candidate that wins by
-# that much noise reads *slower* than the default in the report -- a "best cuBLAS"
-# entry below the plain one, which is the one thing this baseline must never be.
-_TORCH_MARGIN = 1.02
 
 # cublasLtMatmulAlgoCapAttributes_t  /  ...ConfigAttributes_t  /  reduction schemes
 
@@ -335,59 +322,30 @@ class CublasLtBestGemm:
         )
 
     def _pick_best(self, algos) -> _MatmulAlgo:
-        """Select the fastest runnable candidate for the reported CUPTI timing.
+        """Return the fastest runnable candidate, or defer to ``torch.matmul``.
 
-        Ranking uses the **minimum** cudaEvent time over many L2-flushed
-        iterations, not the mean: the fastest observed run is the one least
-        perturbed by clock drift or a neighbour's preemption, so min is robust to
-        the transient slowdowns that made an earlier mean-based pass mis-rank
-        candidates (and even pick one slower than cuBLASLt's own top heuristic).
-        Since the heuristic list already contains that top pick, min-ranking
-        never selects a candidate slower than the default. The chosen algorithm's
-        latency is re-measured later by the shared CUPTI harness."""
+        Ranked through ``timing.bench_kernel`` -- the instrument that will report
+        the row -- so a candidate cannot win selection on a timer the report does
+        not use. ``torch.matmul`` is ranked as one of the candidates: a "best
+        cuBLAS" entry that reads slower than the plain one would be worse than no
+        entry at all.
+        """
         a = torch.randn(self.m, self.k, dtype=self.dtype, device="cuda")
         b = torch.randn(
             (self.n, self.k) if self.trans_b else (self.k, self.n), dtype=self.dtype, device="cuda"
         )
-        # The harness's own flush buffer, sized from the device's L2. A private
-        # 64 MB one left H200's 60 MB L2 partly warm, so selection ranked
-        # candidates under a cache state the reported timing never sees.
-        flush = _get_l2_flush_cache()
 
-        def min_ms(run, iters):
-            for _ in range(5):
-                flush.zero_()
-                run()
-            torch.cuda.synchronize()
-            best = float("inf")
-            for _ in range(iters):
-                flush.zero_()
-                ev0, ev1 = torch.cuda.Event(True), torch.cuda.Event(True)
-                ev0.record()
-                run()
-                ev1.record()
-                ev1.synchronize()
-                best = min(best, ev0.elapsed_time(ev1))
-            return best
-
-        def algo_ms(al, it):
-            return min_ms(lambda: self._matmul(a, b, al), it)
-
-        torch_run = (lambda: torch.matmul(a, b.T)) if self.trans_b else (lambda: torch.matmul(a, b))
+        def busy_ms(run) -> float:
+            return statistics.median(s.device_busy_ms for s in bench_kernel(run))
 
         runnable = [al for al in algos if self._matmul(a, b, al) == _STATUS_SUCCESS]
         torch.cuda.synchronize()
         if not runnable:
-            raise RuntimeError("no runnable cuBLASLt algorithm among candidates")
-        # First pass: cheap min-time screen over the whole pool to find finalists.
-        screened = sorted(runnable, key=lambda al: algo_ms(al, 12))[:6]
-        # Second pass: more iterations on the finalists to pick a stable winner.
-        best_algo = min(screened, key=lambda al: algo_ms(al, 80))
-        # A "best cuBLAS" baseline must never be slower than the default
-        # torch.matmul path (which may take a route our search misses), so
-        # include it as a candidate and defer to it unless the search is ahead by
-        # more than the two timers disagree (see ``_TORCH_MARGIN``).
-        self._use_torch = min_ms(torch_run, 80) < algo_ms(best_algo, 80) * _TORCH_MARGIN
+            raise RuntimeError("cuBLASLt returned no runnable algorithm")
+
+        best_algo = min(runnable, key=lambda al: busy_ms(lambda: self._matmul(a, b, al)))
+        torch_run = (lambda: torch.matmul(a, b.T)) if self.trans_b else (lambda: torch.matmul(a, b))
+        self._use_torch = busy_ms(torch_run) < busy_ms(lambda: self._matmul(a, b, best_algo))
         return best_algo
 
     def __del__(self) -> None:
