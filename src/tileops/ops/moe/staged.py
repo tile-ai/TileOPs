@@ -13,15 +13,13 @@ from tileops.utils import get_sm_version
 
 from ..elementwise import SiluAndMulFwdOp
 from .contracts import (
-    GroupedGemmComputeSpec,
     InversePermuteContext,
+    MaskedLayoutSpec,
     MaterializedExpertLayout,
     MGroupedLayoutSpec,
     NoScaleComputeSpec,
-    PostPermuteOutput,
     PrePermuteOutput,
     RoutingEpilogueSpec,
-    resolve_compute_family,
 )
 
 __all__ = [
@@ -57,11 +55,15 @@ class MoePrePermuteFwdOp(_SpecOnlyStagedOp):
     def __init__(
         self,
         layout: MGroupedLayoutSpec,
+        num_experts: int,
         *,
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        if num_experts <= 0:
+            raise ValueError("num_experts must be positive")
         self.layout = layout
+        self.num_experts = num_experts
         self.target = target
         self.dispatch_kernel(kernel_map)
 
@@ -74,6 +76,8 @@ class MoePrePermuteFwdOp(_SpecOnlyStagedOp):
             raise ValueError("hidden_states must have shape [tokens, hidden_size]")
         if topk_ids.ndim != 2 or topk_ids.shape[0] != hidden_states.shape[0]:
             raise ValueError("topk_ids must have shape [tokens, top_k]")
+        if topk_ids.shape[1] <= 0:
+            raise ValueError("top_k must be positive")
         if topk_ids.dtype is not torch.int32:
             raise TypeError("topk_ids must have dtype torch.int32")
         if not hidden_states.is_contiguous() or not topk_ids.is_contiguous():
@@ -81,10 +85,11 @@ class MoePrePermuteFwdOp(_SpecOnlyStagedOp):
         if hidden_states.dtype is not torch.bfloat16:
             raise TypeError("the current staged pre-permute contract accepts BF16 only")
         return PrePermuteCall(
-            arch=get_sm_version(),
+            arch=get_sm_version(device.index),
             layout=self.layout,
             device_type=hidden_states.device.type,
             input_dtype=hidden_states.dtype,
+            num_experts=self.num_experts,
             num_tokens=hidden_states.shape[0],
             hidden_size=hidden_states.shape[1],
             top_k=topk_ids.shape[1],
@@ -112,11 +117,12 @@ class MoeGroupedGemmFwdOp(_SpecOnlyStagedOp):
 
     def __init__(
         self,
-        compute: GroupedGemmComputeSpec,
+        compute: NoScaleComputeSpec | None = None,
         *,
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        compute = NoScaleComputeSpec() if compute is None else compute
         if not isinstance(compute, NoScaleComputeSpec):
             raise TypeError("the current public manifest supports only NoScaleComputeSpec")
         self.compute = compute
@@ -145,23 +151,22 @@ class MoeGroupedGemmFwdOp(_SpecOnlyStagedOp):
             raise ValueError("b must be contiguous")
         if a.shape[-1] != b.shape[-1]:
             raise ValueError("a and b must have the same reduction dimension")
-        compute_family = resolve_compute_family(
-            self.compute,
-            arch=expert_layout.resolved_layout.arch,
-            a_dtype=a.dtype,
-            b_dtype=b.dtype,
-            scales=scales,
-        )
+        arch = get_sm_version(device.index)
+        if scales is not None:
+            raise ValueError("NoScaleComputeSpec forbids scales")
+        if arch != 90 or a.dtype is not torch.bfloat16 or b.dtype is not torch.bfloat16:
+            raise ValueError("NoScale currently supports only SM90 BF16 operands")
         output_shape = (*a.shape[:-1], b.shape[1])
+        if out is not None and not out.is_contiguous():
+            raise ValueError("out must be contiguous")
         if out is not None and (
             tuple(out.shape) != output_shape or out.dtype != self.compute.output_dtype
         ):
             raise ValueError("out shape and dtype must match the resolved grouped-GEMM output")
         return MGroupedGemmCall(
-            arch=expert_layout.resolved_layout.arch,
-            compute=self.compute,
-            compute_family=compute_family,
-            layout=expert_layout.resolved_layout,
+            arch=arch,
+            layout_key=expert_layout.selection_key,
+            max_m=expert_layout.max_m,
             device_type=a.device.type,
             input_dtype=a.dtype,
             weight_dtype=b.dtype,
@@ -198,14 +203,14 @@ class MoeExpertMLPFwdOp(_SpecOnlyStagedOp):
         self,
         activation: str = "silu_and_mul",
         *,
-        compute: GroupedGemmComputeSpec | None = None,
+        compute: NoScaleComputeSpec | None = None,
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
         if activation != "silu_and_mul":
             raise ValueError("the staged Expert MLP currently supports only silu_and_mul")
         self.activation = activation
-        self.compute = compute or NoScaleComputeSpec()
+        self.compute = NoScaleComputeSpec() if compute is None else compute
         self.target = target
         self.dispatch_kernel(kernel_map)
         overrides = self.forwarded_overrides()
@@ -264,11 +269,14 @@ class MoePostPermuteFwdOp(_SpecOnlyStagedOp):
 
     def __init__(
         self,
-        epilogue: RoutingEpilogueSpec,
+        epilogue: RoutingEpilogueSpec | None = None,
         *,
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
+        epilogue = RoutingEpilogueSpec() if epilogue is None else epilogue
+        if not isinstance(epilogue, RoutingEpilogueSpec):
+            raise TypeError("epilogue must be RoutingEpilogueSpec")
         self.epilogue = epilogue
         self.target = target
         self.dispatch_kernel(kernel_map)
@@ -292,8 +300,16 @@ class MoePostPermuteFwdOp(_SpecOnlyStagedOp):
         if device.type != "cuda":
             raise ValueError("staged post-permute currently requires CUDA tensors")
         context = inverse_permute_context
+        if not expert_output.is_contiguous():
+            raise ValueError("expert_output must be contiguous")
         if expert_output.ndim not in (2, 3):
             raise ValueError("expert_output must be contiguous rank 2 or masked rank 3")
+        if isinstance(context.layout, MaskedLayoutSpec):
+            expected = (context.num_experts, context.layout.max_m)
+            if expert_output.ndim != 3 or tuple(expert_output.shape[:2]) != expected:
+                raise ValueError("masked expert_output leading dimensions do not match context")
+        elif expert_output.ndim != 2:
+            raise ValueError("contiguous expert_output must be rank 2")
         physical_rows = expert_output.numel() // expert_output.shape[-1]
         if physical_rows != context.materialized_rows:
             raise ValueError("expert_output row count does not match inverse context")
@@ -302,18 +318,23 @@ class MoePostPermuteFwdOp(_SpecOnlyStagedOp):
         if topk_weights.dtype is not torch.float32:
             raise TypeError("topk_weights must have dtype torch.float32")
         output_shape = (context.num_tokens, expert_output.shape[-1])
+        if out is not None and not out.is_contiguous():
+            raise ValueError("out must be contiguous")
         if out is not None and (
             tuple(out.shape) != output_shape or out.dtype != self.epilogue.output_dtype
         ):
             raise ValueError("out shape and dtype must match the routing epilogue output")
         return PostPermuteCall(
-            arch=context.resolved_layout.arch,
-            layout=context.resolved_layout,
+            arch=get_sm_version(device.index),
+            layout_key=context.selection_key,
+            max_m=context.layout.max_m,
             epilogue=self.epilogue,
             device_type=expert_output.device.type,
             input_dtype=expert_output.dtype,
             routing_weight_dtype=topk_weights.dtype,
             output_dtype=self.epilogue.output_dtype,
+            num_experts=context.num_experts,
+            materialized_rows=context.materialized_rows,
             num_tokens=context.num_tokens,
             hidden_size=expert_output.shape[-1],
             top_k=context.top_k,
@@ -325,7 +346,7 @@ class MoePostPermuteFwdOp(_SpecOnlyStagedOp):
         topk_weights: torch.Tensor,
         inverse_permute_context: InversePermuteContext,
         out: torch.Tensor | None = None,
-    ) -> PostPermuteOutput:
+    ) -> torch.Tensor:
         call = self.make_call(expert_output, inverse_permute_context, topk_weights, out)
         name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
         kernel = self.get_or_build_kernel(

@@ -10,152 +10,76 @@ from typing import TypeAlias
 import torch
 
 __all__ = [
-    "AlignmentPolicy",
-    "ComputeFamilyKey",
     "ContiguousLayoutSpec",
     "ExpertLayoutMetadata",
-    "Fp8OneDOneDComputeSpec",
-    "Fp8OneDTwoDComputeSpec",
-    "GroupedGemmComputeSpec",
     "InversePermuteContext",
     "MGroupedLayoutSpec",
     "MaskedLayoutSpec",
     "MaskedMetadata",
-    "MaterializationPolicy",
     "MaterializedExpertLayout",
-    "MetadataKind",
     "NoScaleComputeSpec",
-    "PaddingPolicy",
     "PerRowExpertMetadata",
     "PhysicalPsumMetadata",
-    "PostPermuteOutput",
     "PrePermuteOutput",
-    "ResolvedContiguousLayout",
-    "ResolvedMGroupedLayout",
-    "ResolvedMaskedLayout",
     "RoutingEpilogueSpec",
-    "ScaleLayout",
-    "TailReadPolicy",
-    "TileBoundaryPolicy",
-    "resolve_compute_family",
     "routing_epilogue_reference",
 ]
 
 
-class _StringEnum(str, enum.Enum):
-    """Python 3.10-compatible string enum."""
+class _LayoutKind(str, enum.Enum):
+    """Concrete layout specializations understood by kernel candidates."""
+
+    TIGHT_PHYSICAL_PSUM = "tight_physical_psum"
+    TIGHT_PER_ROW = "tight_per_row"
+    MASKED_PREDICATED = "masked_predicated"
 
 
-class MetadataKind(_StringEnum):
-    """Encoding used to associate materialized rows with experts."""
-
-    PHYSICAL_PSUM = "physical_psum"
-    PER_ROW_EXPERT_IDS = "per_row_expert_ids"
-    MASKED_M = "masked_m"
-
-
-class MaterializationPolicy(_StringEnum):
-    """How contiguous expert segments occupy physical rows."""
-
-    TIGHT = "tight"
-    ALIGNED = "aligned"
-
-
-class AlignmentPolicy(_StringEnum):
-    """Rule used to resolve contiguous segment alignment."""
-
-    NONE = "none"
-    SM90_128 = "sm90_128"
-    SM100_EXPECTED_M = "sm100_expected_m"
-
-
-class PaddingPolicy(_StringEnum):
-    """Whether materialization contains explicitly invalid rows."""
-
-    NONE = "none"
-    EXPLICIT_NEGATIVE_ONE = "explicit_negative_one"
-
-
-class TileBoundaryPolicy(_StringEnum):
-    """How a scheduler prevents a tile from crossing expert boundaries."""
-
-    BOUNDARY_AWARE = "boundary_aware"
-    ALIGNED = "aligned"
-
-
-class TailReadPolicy(_StringEnum):
-    """Whether masked expert tails may be read."""
-
-    PREDICATED = "predicated"
-    ZERO_FILLED = "zero_filled"
-
-
-class ComputeFamilyKey(_StringEnum):
-    """Validated architecture and compute/scale implementation family."""
-
-    SM90_BF16_NO_SCALE = "sm90_bf16_no_scale"
-    SM90_FP8_ONE_D_ONE_D = "sm90_fp8_one_d_one_d"
-    SM90_FP8_ONE_D_TWO_D = "sm90_fp8_one_d_two_d"
-
-
-class ScaleLayout(_StringEnum):
-    """Reserved scale tensor layout vocabulary for quantized compute specs."""
-
-    ONE_D = "one_d"
-    TWO_D = "two_d"
-
-
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, init=False)
 class ContiguousLayoutSpec:
-    """Requested contiguous M-grouped layout semantics."""
+    """Requested tight contiguous M-grouped layout semantics.
 
-    metadata_kind: MetadataKind
-    materialization: MaterializationPolicy = MaterializationPolicy.TIGHT
-    alignment_policy: AlignmentPolicy = AlignmentPolicy.NONE
-    padding_policy: PaddingPolicy = PaddingPolicy.NONE
-    tile_boundary_policy: TileBoundaryPolicy = TileBoundaryPolicy.BOUNDARY_AWARE
-    expected_m: int | None = None
+    Use a named constructor so callers select one supported semantic instead of
+    assembling alignment, padding, and tile-boundary policies independently.
+    Tight materialization always has alignment one, no padding rows, and
+    requires a boundary-aware consumer.
+    """
 
-    def __post_init__(self) -> None:
-        if self.metadata_kind is MetadataKind.MASKED_M:
-            raise ValueError("contiguous layout cannot use masked metadata")
-        if self.expected_m is not None and self.expected_m <= 0:
-            raise ValueError("expected_m must be positive when provided")
-        if self.materialization is MaterializationPolicy.TIGHT:
-            if self.alignment_policy is not AlignmentPolicy.NONE:
-                raise ValueError("tight materialization must use alignment policy 'none'")
-            if self.padding_policy is not PaddingPolicy.NONE:
-                raise ValueError("tight materialization has no padding rows")
-            if self.tile_boundary_policy is not TileBoundaryPolicy.BOUNDARY_AWARE:
-                raise ValueError("tight materialization requires boundary-aware tiles")
-        else:
-            if self.alignment_policy is AlignmentPolicy.NONE:
-                raise ValueError("aligned materialization requires an alignment policy")
-            if self.padding_policy is not PaddingPolicy.EXPLICIT_NEGATIVE_ONE:
-                raise ValueError("aligned materialization requires explicit padding")
-            if self.tile_boundary_policy is not TileBoundaryPolicy.ALIGNED:
-                raise ValueError("aligned materialization requires aligned tiles")
+    _kind: _LayoutKind = dataclasses.field(repr=False)
 
-    def resolve(self, *, arch: int) -> "ResolvedContiguousLayout":
-        """Resolve architecture-dependent alignment without runtime metadata."""
-        alignment = self._resolved_alignment(arch)
-        return ResolvedContiguousLayout(spec=self, arch=arch, resolved_alignment=alignment)
+    def __init__(self, kind: _LayoutKind) -> None:
+        if kind not in (
+            _LayoutKind.TIGHT_PHYSICAL_PSUM,
+            _LayoutKind.TIGHT_PER_ROW,
+        ):
+            raise ValueError(f"{kind!r} is not a contiguous layout kind")
+        object.__setattr__(self, "_kind", kind)
 
-    def _resolved_alignment(self, arch: int) -> int:
-        if self.materialization is MaterializationPolicy.TIGHT:
-            return 1
-        if self.alignment_policy is AlignmentPolicy.SM90_128:
-            if arch != 90:
-                raise ValueError("SM90 alignment policy requires architecture 90")
-            return 128
-        if arch != 100:
-            raise ValueError("SM100 expected-M alignment policy requires architecture 100")
-        if self.expected_m is None:
-            raise ValueError("SM100 expected-M alignment policy requires expected_m")
-        raise ValueError(
-            "SM100 alignment vocabulary is reserved, but no SM100 policy resolver "
-            "is registered in the current delivery"
-        )
+    @classmethod
+    def tight_physical_psum(cls) -> "ContiguousLayoutSpec":
+        """Use tight rows described by per-expert physical segment ends."""
+        return cls(_LayoutKind.TIGHT_PHYSICAL_PSUM)
+
+    @classmethod
+    def tight_per_row(cls) -> "ContiguousLayoutSpec":
+        """Use tight rows described by one expert ID per materialized row."""
+        return cls(_LayoutKind.TIGHT_PER_ROW)
+
+    @property
+    def selection_key(self) -> str:
+        """Return the concrete specialization key recorded in CallSpecs."""
+        return self._kind.value
+
+    @property
+    def max_m(self) -> None:
+        """Contiguous layouts have no fixed per-expert capacity."""
+        return None
+
+    def __repr__(self) -> str:
+        constructor = {
+            _LayoutKind.TIGHT_PHYSICAL_PSUM: "tight_physical_psum",
+            _LayoutKind.TIGHT_PER_ROW: "tight_per_row",
+        }[self._kind]
+        return f"ContiguousLayoutSpec.{constructor}()"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -163,54 +87,18 @@ class MaskedLayoutSpec:
     """Requested fixed-capacity masked M-grouped layout semantics."""
 
     max_m: int
-    tail_read_policy: TailReadPolicy = TailReadPolicy.PREDICATED
 
     def __post_init__(self) -> None:
         if self.max_m < 0:
             raise ValueError("max_m must be non-negative")
 
-    def resolve(self, *, arch: int) -> "ResolvedMaskedLayout":
-        """Bind the requested masked contract to an architecture."""
-        return ResolvedMaskedLayout(spec=self, arch=arch)
+    @property
+    def selection_key(self) -> str:
+        """Return the concrete specialization key recorded in CallSpecs."""
+        return _LayoutKind.MASKED_PREDICATED.value
 
 
 MGroupedLayoutSpec: TypeAlias = ContiguousLayoutSpec | MaskedLayoutSpec
-
-
-@dataclasses.dataclass(frozen=True)
-class ResolvedContiguousLayout:
-    """Resolved interpretation contract for contiguous materialization."""
-
-    spec: ContiguousLayoutSpec
-    arch: int
-    resolved_alignment: int
-
-    def __post_init__(self) -> None:
-        if self.arch <= 0:
-            raise ValueError("arch must be positive")
-        if self.resolved_alignment <= 0:
-            raise ValueError("resolved_alignment must be positive")
-        expected = self.spec._resolved_alignment(self.arch)
-        if self.resolved_alignment != expected:
-            raise ValueError(
-                f"resolved alignment {self.resolved_alignment} does not match "
-                f"policy value {expected}"
-            )
-
-
-@dataclasses.dataclass(frozen=True)
-class ResolvedMaskedLayout:
-    """Resolved interpretation contract for masked materialization."""
-
-    spec: MaskedLayoutSpec
-    arch: int
-
-    def __post_init__(self) -> None:
-        if self.arch <= 0:
-            raise ValueError("arch must be positive")
-
-
-ResolvedMGroupedLayout: TypeAlias = ResolvedContiguousLayout | ResolvedMaskedLayout
 
 
 def _validate_metadata_tensor(tensor: torch.Tensor, *, name: str, length: int) -> None:
@@ -224,7 +112,7 @@ def _validate_metadata_tensor(tensor: torch.Tensor, *, name: str, length: int) -
 
 @dataclasses.dataclass(frozen=True)
 class PhysicalPsumMetadata:
-    """Physical segment ends for each compute expert."""
+    """Physical segment ends for tightly materialized compute experts."""
 
     physical_ends: torch.Tensor
 
@@ -234,26 +122,18 @@ class PhysicalPsumMetadata:
         if self.physical_ends.device != device:
             raise ValueError("physical_ends must be on the activation device")
 
-    def device_value_guard(
-        self,
-        layout: ResolvedContiguousLayout,
-        *,
-        materialized_rows: int,
-    ) -> torch.Tensor:
-        """Return an asynchronous scalar guard for PSUM ordering and capacity."""
+    def device_value_guard(self, *, materialized_rows: int) -> torch.Tensor:
+        """Return an asynchronous guard for tight PSUM ordering and capacity."""
         ends = self.physical_ends
         if ends.numel() == 0:
             return torch.tensor(materialized_rows == 0, dtype=torch.bool, device=ends.device)
         starts = torch.cat((ends.new_zeros(1), ends[:-1]))
-        alignment = layout.resolved_alignment
-        starts = ((starts + alignment - 1) // alignment) * alignment
-        final_rows = ((ends[-1] + alignment - 1) // alignment) * alignment
-        return torch.all(ends >= starts) & (final_rows == materialized_rows)
+        return torch.all(ends >= starts) & (ends[-1] == materialized_rows)
 
 
 @dataclasses.dataclass(frozen=True)
 class PerRowExpertMetadata:
-    """Expert ID for every materialized contiguous row."""
+    """Expert ID for every tightly materialized contiguous row."""
 
     expert_ids: torch.Tensor
 
@@ -263,29 +143,14 @@ class PerRowExpertMetadata:
         if self.expert_ids.device != device:
             raise ValueError("expert_ids must be on the activation device")
 
-    def device_value_guard(
-        self, *, num_experts: int, layout: ResolvedContiguousLayout
-    ) -> torch.Tensor:
-        """Guard ID domain, ordered segments, gaps, and aligned starts."""
+    def device_value_guard(self, *, num_experts: int) -> torch.Tensor:
+        """Guard the expert-ID domain and ordered tight segments."""
         ids = self.expert_ids
-        allows_padding = layout.spec.padding_policy is PaddingPolicy.EXPLICIT_NEGATIVE_ONE
-        lower = -1 if allows_padding else 0
-        domain = torch.all((ids >= lower) & (ids < num_experts))
+        domain = torch.all((ids >= 0) & (ids < num_experts))
         if ids.numel() == 0:
             return domain
-
-        valid = ids >= 0
-        prior_max = torch.cummax(torch.where(valid, ids, ids.new_full((), -1)), dim=0).values
-        ordered = torch.all(torch.where(valid, ids >= prior_max, True))
-        previous_valid = torch.cat((valid.new_zeros(1), valid[:-1]))
-        previous_ids = torch.cat((ids.new_full((1,), -1), ids[:-1]))
-        starts = valid & (~previous_valid | (ids != previous_ids))
-        row_ids = torch.arange(ids.numel(), device=ids.device)
-        aligned_starts = torch.all(
-            torch.where(starts, row_ids % layout.resolved_alignment == 0, True)
-        )
-        resumed = starts & (ids <= torch.cat((ids.new_full((1,), -1), prior_max[:-1])))
-        return domain & ordered & aligned_starts & ~torch.any(resumed)
+        ordered = torch.all(ids[1:] >= ids[:-1])
+        return domain & ordered
 
 
 @dataclasses.dataclass(frozen=True)
@@ -301,7 +166,7 @@ class MaskedMetadata:
             raise ValueError("masked_m must be on the activation device")
 
     def device_value_guard(self, *, max_m: int) -> torch.Tensor:
-        """Return an asynchronous scalar guard for masked valid lengths."""
+        """Return an asynchronous guard for masked valid lengths."""
         return torch.all((self.masked_m >= 0) & (self.masked_m <= max_m))
 
 
@@ -310,25 +175,31 @@ ExpertLayoutMetadata: TypeAlias = PhysicalPsumMetadata | PerRowExpertMetadata | 
 
 @dataclasses.dataclass(frozen=True)
 class MaterializedExpertLayout:
-    """A resolved layout bound to exactly one compatible metadata encoding."""
+    """One materialization's layout semantic, metadata, and physical capacity."""
 
-    resolved_layout: ResolvedMGroupedLayout
+    layout: MGroupedLayoutSpec
     metadata: ExpertLayoutMetadata
     num_experts: int
     materialized_rows: int
-    materialization_token: object = dataclasses.field(
-        default_factory=object, repr=False, compare=False
+    _materialization_token: object = dataclasses.field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
     )
 
     def __post_init__(self) -> None:
         if self.num_experts < 0 or self.materialized_rows < 0:
             raise ValueError("num_experts and materialized_rows must be non-negative")
-        resolved = self.resolved_layout
-        metadata = self.metadata
-        if isinstance(resolved, ResolvedMaskedLayout):
-            if not isinstance(metadata, MaskedMetadata):
+        if isinstance(self.layout, MaskedLayoutSpec):
+            if not isinstance(self.metadata, MaskedMetadata):
                 raise TypeError("masked layout requires MaskedMetadata")
-            expected_rows = self.num_experts * resolved.spec.max_m
+            _validate_metadata_tensor(
+                self.metadata.masked_m,
+                name="masked_m",
+                length=self.num_experts,
+            )
+            expected_rows = self.num_experts * self.layout.max_m
             if self.materialized_rows != expected_rows:
                 raise ValueError(
                     f"masked materialization requires {expected_rows} rows, "
@@ -336,36 +207,106 @@ class MaterializedExpertLayout:
                 )
             return
         expected_type = {
-            MetadataKind.PHYSICAL_PSUM: PhysicalPsumMetadata,
-            MetadataKind.PER_ROW_EXPERT_IDS: PerRowExpertMetadata,
-        }[resolved.spec.metadata_kind]
-        if not isinstance(metadata, expected_type):
-            raise TypeError(
-                f"{resolved.spec.metadata_kind.value} layout requires {expected_type.__name__}"
+            _LayoutKind.TIGHT_PHYSICAL_PSUM: PhysicalPsumMetadata,
+            _LayoutKind.TIGHT_PER_ROW: PerRowExpertMetadata,
+        }[self.layout._kind]
+        if not isinstance(self.metadata, expected_type):
+            raise TypeError(f"{self.layout.selection_key} layout requires {expected_type.__name__}")
+        if isinstance(self.metadata, PhysicalPsumMetadata):
+            _validate_metadata_tensor(
+                self.metadata.physical_ends,
+                name="physical_ends",
+                length=self.num_experts,
             )
+        else:
+            _validate_metadata_tensor(
+                self.metadata.expert_ids,
+                name="expert_ids",
+                length=self.materialized_rows,
+            )
+
+    @classmethod
+    def from_physical_psum(
+        cls,
+        physical_ends: torch.Tensor,
+        *,
+        materialized_rows: int,
+        num_experts: int | None = None,
+    ) -> "MaterializedExpertLayout":
+        """Build a tight Physical-PSUM binding for external materialization."""
+        experts = physical_ends.numel() if num_experts is None else num_experts
+        return cls(
+            layout=ContiguousLayoutSpec.tight_physical_psum(),
+            metadata=PhysicalPsumMetadata(physical_ends),
+            num_experts=experts,
+            materialized_rows=materialized_rows,
+        )
+
+    @classmethod
+    def from_per_row_ids(
+        cls,
+        expert_ids: torch.Tensor,
+        *,
+        num_experts: int,
+    ) -> "MaterializedExpertLayout":
+        """Build a tight per-row-ID binding for external materialization."""
+        return cls(
+            layout=ContiguousLayoutSpec.tight_per_row(),
+            metadata=PerRowExpertMetadata(expert_ids),
+            num_experts=num_experts,
+            materialized_rows=expert_ids.numel(),
+        )
+
+    @classmethod
+    def from_masked_m(
+        cls,
+        masked_m: torch.Tensor,
+        *,
+        max_m: int,
+        num_experts: int | None = None,
+    ) -> "MaterializedExpertLayout":
+        """Build a predicated masked binding for external materialization."""
+        experts = masked_m.numel() if num_experts is None else num_experts
+        return cls(
+            layout=MaskedLayoutSpec(max_m=max_m),
+            metadata=MaskedMetadata(masked_m),
+            num_experts=experts,
+            materialized_rows=experts * max_m,
+        )
+
+    @property
+    def selection_key(self) -> str:
+        """Return the concrete specialization key recorded in CallSpecs."""
+        return self.layout.selection_key
+
+    @property
+    def max_m(self) -> int | None:
+        """Return masked capacity per expert, or ``None`` for contiguous layouts."""
+        return self.layout.max_m
 
     def validate_structure(self, expert_input: torch.Tensor) -> None:
         """Validate activation shape/device and its metadata binding."""
         if not expert_input.is_contiguous():
             raise ValueError("expert_input must be contiguous")
-        if expert_input.ndim not in (2, 3):
-            raise ValueError("expert_input must be rank 2 (contiguous) or rank 3 (masked)")
-        if isinstance(self.resolved_layout, ResolvedContiguousLayout):
+        if isinstance(self.layout, ContiguousLayoutSpec):
             if expert_input.ndim != 2 or expert_input.shape[0] != self.materialized_rows:
                 raise ValueError("contiguous expert_input row count does not match layout")
         else:
-            expected = (self.num_experts, self.resolved_layout.spec.max_m)
+            expected = (self.num_experts, self.layout.max_m)
             if expert_input.ndim != 3 or tuple(expert_input.shape[:2]) != expected:
                 raise ValueError("masked expert_input leading dimensions do not match layout")
-        metadata = self.metadata
-        if isinstance(metadata, PhysicalPsumMetadata):
-            metadata.validate_structure(num_experts=self.num_experts, device=expert_input.device)
-        elif isinstance(metadata, PerRowExpertMetadata):
-            metadata.validate_structure(
+        if isinstance(self.metadata, PhysicalPsumMetadata):
+            self.metadata.validate_structure(
+                num_experts=self.num_experts, device=expert_input.device
+            )
+        elif isinstance(self.metadata, PerRowExpertMetadata):
+            self.metadata.validate_structure(
                 materialized_rows=self.materialized_rows, device=expert_input.device
             )
         else:
-            metadata.validate_structure(num_experts=self.num_experts, device=expert_input.device)
+            self.metadata.validate_structure(
+                num_experts=self.num_experts, device=expert_input.device
+            )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -373,20 +314,64 @@ class InversePermuteContext:
     """Opaque invocation-bound state consumed only by post-permute."""
 
     inverse_indices: torch.Tensor
-    resolved_layout: ResolvedMGroupedLayout
-    materialization_token: object
+    layout: MGroupedLayoutSpec
+    num_experts: int
     num_tokens: int
     top_k: int
     materialized_rows: int
+    _materialization_token: object = dataclasses.field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        if self.num_tokens < 0 or self.top_k <= 0 or self.materialized_rows < 0:
+        if (
+            self.num_experts < 0
+            or self.num_tokens < 0
+            or self.top_k <= 0
+            or self.materialized_rows < 0
+        ):
             raise ValueError("invalid inverse-permute dimensions")
+        if isinstance(self.layout, MaskedLayoutSpec):
+            expected_rows = self.num_experts * self.layout.max_m
+            if self.materialized_rows != expected_rows:
+                raise ValueError(
+                    f"masked inverse context requires {expected_rows} rows, "
+                    f"got {self.materialized_rows}"
+                )
         _validate_metadata_tensor(
             self.inverse_indices,
             name="inverse_indices",
             length=self.num_tokens * self.top_k,
         )
+
+    @classmethod
+    def for_layout(
+        cls,
+        inverse_indices: torch.Tensor,
+        expert_layout: MaterializedExpertLayout,
+        *,
+        num_tokens: int,
+        top_k: int,
+    ) -> "InversePermuteContext":
+        """Bind inverse indices to one materialized expert layout."""
+        context = cls(
+            inverse_indices=inverse_indices,
+            layout=expert_layout.layout,
+            num_experts=expert_layout.num_experts,
+            num_tokens=num_tokens,
+            top_k=top_k,
+            materialized_rows=expert_layout.materialized_rows,
+        )
+        object.__setattr__(context, "_materialization_token", expert_layout._materialization_token)
+        return context
+
+    @property
+    def selection_key(self) -> str:
+        """Return the concrete specialization key recorded in CallSpecs."""
+        return self.layout.selection_key
 
     def device_value_guard(self) -> torch.Tensor:
         """Return an asynchronous guard for local rows and non-local sentinels."""
@@ -402,116 +387,52 @@ class PrePermuteOutput:
     expert_input: torch.Tensor
     expert_layout: MaterializedExpertLayout
     inverse_permute_context: InversePermuteContext
-    ready_event: torch.cuda.Event | None = None
 
     def __post_init__(self) -> None:
         self.expert_layout.validate_structure(self.expert_input)
         context = self.inverse_permute_context
-        if context.resolved_layout != self.expert_layout.resolved_layout:
-            raise ValueError("inverse context and expert layout resolve different contracts")
+        if context.layout != self.expert_layout.layout:
+            raise ValueError("inverse context and expert layout use different contracts")
         if context.materialized_rows != self.expert_layout.materialized_rows:
             raise ValueError("inverse context and expert layout have different row counts")
-        if context.materialization_token is not self.expert_layout.materialization_token:
+        if context.num_experts != self.expert_layout.num_experts:
+            raise ValueError("inverse context and expert layout have different expert counts")
+        if context._materialization_token is not self.expert_layout._materialization_token:
             raise ValueError("inverse context belongs to a different materialization")
         if context.inverse_indices.device != self.expert_input.device:
             raise ValueError("inverse context must be on the expert input device")
 
 
 @dataclasses.dataclass(frozen=True)
-class PostPermuteOutput:
-    """Token-order output and optional readiness event."""
-
-    output: torch.Tensor
-    ready_event: torch.cuda.Event | None = None
-
-
-@dataclasses.dataclass(frozen=True)
 class RoutingEpilogueSpec:
-    """Exactly-once local routing epilogue semantics."""
+    """Exactly-once local routing epilogue with fixed reduction/cast semantics."""
 
-    apply_routing_weight: bool = True
-    reduce_topk: bool = True
     routed_scaling_factor: float = 1.0
-    accumulation_dtype: torch.dtype = torch.float32
-    output_dtype: torch.dtype = torch.bfloat16
 
     def __post_init__(self) -> None:
-        if not self.apply_routing_weight or not self.reduce_topk:
-            raise ValueError("post-permute must apply routing weights and reduce top-k")
-        if self.accumulation_dtype is not torch.float32:
-            raise ValueError("routing reduction accumulation must be torch.float32")
         if not math.isfinite(self.routed_scaling_factor) or self.routed_scaling_factor <= 0:
             raise ValueError("routed_scaling_factor must be finite and positive")
 
+    @property
+    def accumulation_dtype(self) -> torch.dtype:
+        return torch.float32
 
-class GroupedGemmComputeSpec:
-    """Marker base for caller-declared grouped-GEMM compute semantics."""
-
-
-@dataclasses.dataclass(frozen=True)
-class NoScaleComputeSpec(GroupedGemmComputeSpec):
-    """No-scale grouped GEMM with explicit accumulation and output types."""
-
-    accumulation_dtype: torch.dtype = torch.float32
-    output_dtype: torch.dtype = torch.bfloat16
-
-    def __post_init__(self) -> None:
-        if self.accumulation_dtype is not torch.float32:
-            raise ValueError("NoScale accumulation currently requires torch.float32")
-        if self.output_dtype is not torch.bfloat16:
-            raise ValueError("NoScale output currently requires torch.bfloat16")
+    @property
+    def output_dtype(self) -> torch.dtype:
+        return torch.bfloat16
 
 
 @dataclasses.dataclass(frozen=True)
-class Fp8OneDOneDComputeSpec(GroupedGemmComputeSpec):
-    """Reserved FP8 contract with one-dimensional A and B scales."""
+class NoScaleComputeSpec:
+    """SM90 BF16 grouped GEMM with FP32 accumulation and BF16 output."""
 
-    accumulation_dtype: torch.dtype = torch.float32
-    output_dtype: torch.dtype = torch.bfloat16
-    a_scale_layout: ScaleLayout = ScaleLayout.ONE_D
-    b_scale_layout: ScaleLayout = ScaleLayout.ONE_D
+    @property
+    def accumulation_dtype(self) -> torch.dtype:
+        return torch.float32
 
-    def __post_init__(self) -> None:
-        if self.a_scale_layout is not ScaleLayout.ONE_D:
-            raise ValueError("Fp8OneDOneDComputeSpec requires one-dimensional A scales")
-        if self.b_scale_layout is not ScaleLayout.ONE_D:
-            raise ValueError("Fp8OneDOneDComputeSpec requires one-dimensional B scales")
-
-
-@dataclasses.dataclass(frozen=True)
-class Fp8OneDTwoDComputeSpec(GroupedGemmComputeSpec):
-    """Reserved FP8 contract with one-dimensional A and two-dimensional B scales."""
-
-    accumulation_dtype: torch.dtype = torch.float32
-    output_dtype: torch.dtype = torch.bfloat16
-    a_scale_layout: ScaleLayout = ScaleLayout.ONE_D
-    b_scale_layout: ScaleLayout = ScaleLayout.TWO_D
-
-    def __post_init__(self) -> None:
-        if self.a_scale_layout is not ScaleLayout.ONE_D:
-            raise ValueError("Fp8OneDTwoDComputeSpec requires one-dimensional A scales")
-        if self.b_scale_layout is not ScaleLayout.TWO_D:
-            raise ValueError("Fp8OneDTwoDComputeSpec requires two-dimensional B scales")
-
-
-def resolve_compute_family(
-    compute: GroupedGemmComputeSpec,
-    *,
-    arch: int,
-    a_dtype: torch.dtype,
-    b_dtype: torch.dtype,
-    scales: object | None,
-) -> ComputeFamilyKey:
-    """Validate operands and scales, returning one candidate-selection key."""
-    if isinstance(compute, NoScaleComputeSpec):
-        if scales is not None:
-            raise ValueError("NoScaleComputeSpec forbids scales")
-        if arch != 90 or a_dtype is not torch.bfloat16 or b_dtype is not torch.bfloat16:
-            raise ValueError("NoScale currently supports only SM90 BF16 operands")
-        return ComputeFamilyKey.SM90_BF16_NO_SCALE
-    if isinstance(compute, (Fp8OneDOneDComputeSpec, Fp8OneDTwoDComputeSpec)):
-        raise ValueError("FP8 compute specs are reserved and have no registered capability")
-    raise TypeError(f"unsupported grouped-GEMM compute spec {type(compute).__name__}")
+    @property
+    def output_dtype(self) -> torch.dtype:
+        return torch.bfloat16
 
 
 def routing_epilogue_reference(
@@ -522,6 +443,8 @@ def routing_epilogue_reference(
 ) -> torch.Tensor:
     """Apply inverse permutation and the routing epilogue in declared order."""
     context = inverse_permute_context
+    if not expert_output.is_contiguous():
+        raise ValueError("expert_output must be contiguous")
     if expert_output.ndim not in (2, 3):
         raise ValueError("expert_output must be contiguous rank 2 or masked rank 3")
     physical_rows = expert_output.numel() // expert_output.shape[-1]
@@ -538,9 +461,13 @@ def routing_epilogue_reference(
 
     flat_indices = context.inverse_indices.to(torch.int64)
     local = flat_indices >= 0
-    safe_indices = flat_indices.clamp_min(0)
     flat_output = expert_output.reshape(context.materialized_rows, expert_output.shape[-1])
-    gathered = flat_output.index_select(0, safe_indices)
+    if context.materialized_rows == 0:
+        gathered = expert_output.new_zeros(
+            (context.num_tokens * context.top_k, expert_output.shape[-1])
+        )
+    else:
+        gathered = flat_output.index_select(0, flat_indices.clamp_min(0))
     gathered = gathered.reshape(context.num_tokens, context.top_k, -1)
     local = local.reshape(context.num_tokens, context.top_k, 1)
     weighted = gathered.to(epilogue.accumulation_dtype) * topk_weights.unsqueeze(-1)

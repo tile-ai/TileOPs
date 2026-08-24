@@ -430,11 +430,13 @@ MoePrePermuteFwdOp:
       expert_input: {dtype: "same_as(hidden_states)"}
     params:
       layout: {type: MGroupedLayoutSpec}
+      num_experts: {type: int}
       out: {type: "tensor | None", default: null}
     shape_rules:
     - "hidden_states.ndim == 2"
     - "topk_ids.ndim == 2"
     - "topk_ids.shape[0] == hidden_states.shape[0]"
+    - "num_experts > 0"
   workloads: []
   roofline: {flops: "0", bytes: "hidden_states.numel() * elem_bytes + topk_ids.numel() * 4"}
   source:
@@ -454,7 +456,7 @@ MoeGroupedGemmFwdOp:
     outputs:
       output: {dtype: "bfloat16"}
     params:
-      compute: {type: GroupedGemmComputeSpec}
+      compute: {type: "NoScaleComputeSpec | None", default: null}
       expert_layout: {type: MaterializedExpertLayout}
       scales: {type: "object | None", default: null}
       out: {type: "tensor | None", default: null}
@@ -484,7 +486,7 @@ MoeExpertMLPFwdOp:
       output: {dtype: "same_as(expert_input)"}
     params:
       activation: {type: str, default: silu_and_mul}
-      compute: {type: "GroupedGemmComputeSpec | None", default: null}
+      compute: {type: "NoScaleComputeSpec | None", default: null}
       expert_layout: {type: MaterializedExpertLayout}
       out: {type: "tensor | None", default: null}
     shape_rules:
@@ -515,7 +517,7 @@ MoePostPermuteFwdOp:
     outputs:
       output: {dtype: "bfloat16"}
     params:
-      epilogue: {type: RoutingEpilogueSpec}
+      epilogue: {type: "RoutingEpilogueSpec | None", default: null}
       inverse_permute_context: {type: InversePermuteContext}
       out: {type: "tensor | None", default: null}
     shape_rules:

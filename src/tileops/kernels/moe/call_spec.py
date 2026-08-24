@@ -9,10 +9,7 @@ from tileops.kernels.call_spec import CallSpec
 
 if TYPE_CHECKING:
     from tileops.ops.moe.contracts import (
-        ComputeFamilyKey,
-        GroupedGemmComputeSpec,
         MGroupedLayoutSpec,
-        ResolvedMGroupedLayout,
         RoutingEpilogueSpec,
     )
 
@@ -26,6 +23,7 @@ class PrePermuteCall(CallSpec):
     layout: "MGroupedLayoutSpec | None" = None
     device_type: str = ""
     input_dtype: torch.dtype | None = None
+    num_experts: int = 0
     num_tokens: int = 0
     hidden_size: int = 0
     top_k: int = 0
@@ -36,9 +34,8 @@ class PrePermuteCall(CallSpec):
 class MGroupedGemmCall(CallSpec):
     """Complete selection facts for one typed M-grouped GEMM invocation."""
 
-    compute: "GroupedGemmComputeSpec | None" = None
-    compute_family: "ComputeFamilyKey | None" = None
-    layout: "ResolvedMGroupedLayout | None" = None
+    layout_key: str = ""
+    max_m: int | None = None
     device_type: str = ""
     input_dtype: torch.dtype | None = None
     weight_dtype: torch.dtype | None = None
@@ -53,12 +50,15 @@ class MGroupedGemmCall(CallSpec):
 class PostPermuteCall(CallSpec):
     """Complete selection facts for one post-permute invocation."""
 
-    layout: "ResolvedMGroupedLayout | None" = None
+    layout_key: str = ""
+    max_m: int | None = None
     epilogue: "RoutingEpilogueSpec | None" = None
     device_type: str = ""
     input_dtype: torch.dtype | None = None
     routing_weight_dtype: torch.dtype | None = None
     output_dtype: torch.dtype | None = None
+    num_experts: int = 0
+    materialized_rows: int = 0
     num_tokens: int = 0
     hidden_size: int = 0
     top_k: int = 0

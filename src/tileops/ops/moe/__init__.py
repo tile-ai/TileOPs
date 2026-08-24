@@ -1,7 +1,5 @@
 """MoE operator package."""
 
-from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
-
 from .abc import (
     FusedMoEExperts,
     FusedMoEExpertsModular,
@@ -11,31 +9,13 @@ from .abc import (
     WeightedReduceNoOp,
 )
 from .contracts import (
-    AlignmentPolicy,
-    ComputeFamilyKey,
     ContiguousLayoutSpec,
-    Fp8OneDOneDComputeSpec,
-    Fp8OneDTwoDComputeSpec,
     InversePermuteContext,
     MaskedLayoutSpec,
-    MaskedMetadata,
-    MaterializationPolicy,
     MaterializedExpertLayout,
-    MetadataKind,
     NoScaleComputeSpec,
-    PaddingPolicy,
-    PerRowExpertMetadata,
-    PhysicalPsumMetadata,
-    PostPermuteOutput,
     PrePermuteOutput,
-    ResolvedContiguousLayout,
-    ResolvedMaskedLayout,
     RoutingEpilogueSpec,
-    ScaleLayout,
-    TailReadPolicy,
-    TileBoundaryPolicy,
-    resolve_compute_family,
-    routing_epilogue_reference,
 )
 from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
@@ -57,11 +37,7 @@ from .staged import (
 )
 
 __all__ = [
-    "AlignmentPolicy",
-    "ComputeFamilyKey",
     "ContiguousLayoutSpec",
-    "Fp8OneDOneDComputeSpec",
-    "Fp8OneDTwoDComputeSpec",
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
@@ -70,12 +46,8 @@ __all__ = [
     "FusedMoeFwdOp",
     "FusedTopKOp",
     "InversePermuteContext",
-    "MGroupedGemmCall",
     "MaskedLayoutSpec",
-    "MaskedMetadata",
-    "MaterializationPolicy",
     "MaterializedExpertLayout",
-    "MetadataKind",
     "MoEPrepareAndFinalizeNoDPEP",
     "MoeExpertMLPFwdOp",
     "MoeGateUpFwdOp",
@@ -87,23 +59,10 @@ __all__ = [
     "MoePrePermuteFwdOp",
     "MoeUnpermuteFwdOp",
     "NoScaleComputeSpec",
-    "PaddingPolicy",
-    "PerRowExpertMetadata",
-    "PhysicalPsumMetadata",
-    "PostPermuteCall",
-    "PostPermuteOutput",
-    "PrePermuteCall",
     "PrePermuteOutput",
     "PrepareResult",
-    "ResolvedContiguousLayout",
-    "ResolvedMaskedLayout",
     "RoutingEpilogueSpec",
-    "ScaleLayout",
     "SharedFusedMoE",
-    "TailReadPolicy",
-    "TileBoundaryPolicy",
     "WeightedReduce",
     "WeightedReduceNoOp",
-    "resolve_compute_family",
-    "routing_epilogue_reference",
 ]
