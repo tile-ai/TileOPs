@@ -70,10 +70,11 @@ def _da_cumsum_fwd_placed_kernel(
     H = n_heads
     S = seq_len
     ROWS_PER_CTA = 2
-    BLOCK_H = 2
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
+        BLOCK_H = block_h
+
         @T.prim_func
         def da_cumsum_fwd_placed_main(
             dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
@@ -385,9 +386,11 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # The placed kernel owns two head rows per CTA. The body keeps this
-        # ownership compile-time fixed so TileLang can prove unique output writes.
-        return {"block_h": 2, "threads": min(2 * self.chunk_len, 1024)}
+        # Triton autotune selects one head for the small 780M shape and two for
+        # the larger rows. Match that measured choice while keeping the
+        # analysis-derived ownership kernel structural rather than config-only.
+        block_h = 1 if self.batch == 1 and self.n_heads == 48 else 2
+        return {"block_h": block_h, "threads": min(block_h * self.chunk_len, 1024)}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -426,8 +429,9 @@ class DaCumsumFwdKernel(Kernel):
         A = A.contiguous()
         if self.has_dt_bias and dt_bias is None:
             raise ValueError("dt_bias is required when has_dt_bias=True")
-        # Dummy zero bias keeps the kernel signature stable when has_dt_bias=False.
-        dt_bias = dt.new_zeros(self.n_heads) if dt_bias is None else dt_bias.contiguous()
+        # The no-bias specialization does not read dt_bias. Reuse A as the
+        # ABI placeholder instead of allocating/filling a dummy CUDA tensor.
+        dt_bias = A if dt_bias is None else dt_bias.contiguous()
 
         return _da_cumsum_fwd_wrapped(
             self.batch,
