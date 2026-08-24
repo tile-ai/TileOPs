@@ -14,6 +14,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
+    FRAGMENT_ELEMS_PER_THREAD,
     SHARED_MEMORY_BUDGET_BYTES,
     restore_reduced,
     rows_for_axes,
@@ -386,11 +387,15 @@ def _argreduce_output_kernel(
 def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build the block-per-row kernel used for long rows.
 
-    Where the row fits shared memory it is staged there first and the walk reads from
-    the staging buffer. The walk itself takes one element per thread, so reading it
-    from global costs a narrow access per element; one staging copy takes the same row
-    a vector at a time. Measured on 2048x4096 fp16, 2.07 TB/s against 1.94 for walking
-    global memory, with the read of the row alone bounded at 2.35.
+    A row the block can hold in registers is read once into a fragment, and the column
+    index each key belongs to is the loop variable over that fragment, so nothing has to
+    carry it. That reads the row a vector at a time and keeps it there: measured on H200
+    at 2048x4096 fp16, 2.21 TB/s against 2.07 for staging the row in shared memory and
+    2.02 for walking it in global, where reading the row alone is bounded at 2.35. The
+    gain widens with the row -- at 256x32768, 2.12 against 1.65.
+
+    A row too wide for that is walked instead, one element per thread per access, out of
+    shared memory where it fits there and out of global where it does not.
     """
     elem_bytes = torch.empty(0, dtype=getattr(torch, dtype)).element_size()
     stage = N * elem_bytes <= SHARED_MEMORY_BUDGET_BYTES
@@ -399,10 +404,11 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
     def _func(threads: int):
         num_warps = threads // _WARP_SIZE
         iterations = (N + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
+        held = threads * FRAGMENT_ELEMS_PER_THREAD >= N
         (
             set_identity,
             init_accumulators,
-            _,
+            update,
             advance,
             merge_accumulators,
             warp_reduce,
@@ -424,7 +430,8 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
                 tx = T.get_thread_binding()
                 warp_keys = T.alloc_shared((num_warps,), "int32")
                 warp_indices = T.alloc_shared((num_warps,), "int32")
-                staged = T.alloc_shared((N if stage else 1,), dtype)
+                staged = T.alloc_shared((N if stage and not held else 1,), dtype)
+                row_frag = T.alloc_fragment((1, N if held else 1), dtype)
                 keys = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 candidate = T.alloc_local((1,), "int32")
@@ -432,16 +439,26 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
                 best_index = T.alloc_local((1,), "int32")
                 init_accumulators(keys, indices)
 
-                if stage:
-                    T.copy(x[row, 0], staged)
-                    T.sync_threads()
+                if held:
+                    T.copy(x[row : row + 1, :], row_frag)
+                    # The fragment hands a thread its columns in no stated order, so
+                    # this is the merge that compares indices, not the walk's.
+                    for _, column in T.Parallel(1, N):
+                        candidate[0] = key_of(row_frag[0, column])
+                        update(keys, indices, 0, candidate[0], column)
+                else:
+                    if stage:
+                        T.copy(x[row, 0], staged)
+                        T.sync_threads()
 
-                for iteration in T.serial(iterations):
-                    for accumulator in T.serial(_NUM_ACCUMULATORS):
-                        index = iteration * threads * _NUM_ACCUMULATORS + accumulator * threads + tx
-                        if index < N:
-                            candidate[0] = key_of(staged[index] if stage else x[row, index])
-                            advance(keys, indices, accumulator, candidate[0], index)
+                    for iteration in T.serial(iterations):
+                        for accumulator in T.serial(_NUM_ACCUMULATORS):
+                            index = (
+                                iteration * threads * _NUM_ACCUMULATORS + accumulator * threads + tx
+                            )
+                            if index < N:
+                                candidate[0] = key_of(staged[index] if stage else x[row, index])
+                                advance(keys, indices, accumulator, candidate[0], index)
 
                 block_reduce(
                     keys,
@@ -692,7 +709,13 @@ class ArgreduceKernel(Kernel):
         lanes = _lanes_per_row(self.N)
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
         block_m = max(1, target_threads // lanes)
-        if self.strategy in {"cta", "multi_cta"}:
+        if self.strategy == "cta":
+            # Enough threads that the row fits in fragments, which is where the
+            # block-per-row kernel reads it a vector at a time.
+            wanted = -(-self.N // FRAGMENT_ELEMS_PER_THREAD)
+            threads = min(1024, max(256, 1 << max(0, wanted - 1).bit_length()))
+            block_m = 1
+        elif self.strategy == "multi_cta":
             block_m, threads = 1, 256
         elif self.strategy == "output":
             # Four outputs per thread: the span the staged read wants, and wide
@@ -717,7 +740,7 @@ class ArgreduceKernel(Kernel):
                 for c in _row_split_candidates(self.N)
             ]
         elif self.strategy == "cta":
-            candidates = [{"threads": t} for t in (128, 256, 512)]
+            candidates = [{"threads": t} for t in (128, 256, 512, 1024)]
         elif self.strategy == "output":
             candidates = [
                 {"block_m": threads * per_thread, "threads": threads}
