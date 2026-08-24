@@ -95,6 +95,20 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
     assert recorder.calls[1][1]["eps"] == 1e-5
 
 
+def test_a_callsite_can_resolve_external_builder_params():
+    recorder = _Recorder()
+    _register(recorder)
+    x, weight = _inputs()
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    resolved = {"normalized_shape": NORMALIZED_SHAPE, "eps": 2e-5}
+
+    kernel = op.get_or_build_kernel("rms_norm", (x, weight), params=resolved)
+    kernel(x, weight)
+
+    ((_, params),) = recorder.calls
+    assert params == resolved
+
+
 def test_the_op_layer_still_does_its_half():
     """A backend writes kernels, not ops: validation and normalization are not its job."""
     recorder = _Recorder()
