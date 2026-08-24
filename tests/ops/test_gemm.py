@@ -669,16 +669,16 @@ def test_small_batch_dispatch() -> None:
     op = GemmFwdOp(trans_a=False, trans_b=True)  # NT
     # m == 2, and n too narrow for the operand-swapped grid (2112 / 64 = 33
     # CTAs): the bandwidth kernel's remaining band.
-    assert op._get_kernel(2, 2112, 7168, torch.float16)[0] == "small_batch"
+    assert op._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "small_batch"
     # n wide enough for swap_ab (7168 / 64 = 112 CTAs): the generic kernel
     # streams the same weights on a wider grid and wins.
-    assert op._get_kernel(2, 7168, 2048, torch.float16)[0] == "gemm"
+    assert op._get_kernel((), 2, 7168, 2048, torch.float16)[0] == "gemm"
     # m == 3 is the first m the bandwidth body loses (its per-element CUDA-core
     # cost scales with m); m == 1 is the GEMV region below it.
-    assert op._get_kernel(3, 2112, 7168, torch.float16)[0] == "gemm"
-    assert op._get_kernel(1, 2112, 7168, torch.float16)[0] == "lhs_row"
+    assert op._get_kernel((), 3, 2112, 7168, torch.float16)[0] == "gemm"
+    assert op._get_kernel((), 1, 2112, 7168, torch.float16)[0] == "lhs_row"
     op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
-    assert op_nn._get_kernel(2, 2112, 7168, torch.float16)[0] == "gemm"
+    assert op_nn._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "gemm"
 
 
 @pytest.mark.smoke
@@ -721,7 +721,7 @@ def test_registered_wrapped_ops_keep_their_contracts() -> None:
     """
     from torch.library import opcheck
 
-    from tileops.kernels.gemm import _gemm_wrapped_kernel, _gemv_wrapped_kernel
+    from tileops.kernels.gemm.dense import _gemm_wrapped_kernel, _gemv_wrapped_kernel
     from tileops.utils import get_sm_version
 
     if get_sm_version() != 90:
@@ -738,7 +738,9 @@ def test_registered_wrapped_ops_keep_their_contracts() -> None:
         assert out.shape == (m, n)
         torch.testing.assert_close(out.float(), ref, atol=2e-2, rtol=2e-2)
         opcheck(
-            torch.ops.tileops.gemm_wrapped_kernel, args, test_utils=("test_schema", "test_faketensor")
+            torch.ops.tileops.gemm_wrapped_kernel,
+            args,
+            test_utils=("test_schema", "test_faketensor"),
         )
 
     vec_args = (n, k, "bfloat16", 1, 128, 4, a[0].contiguous(), b)
@@ -746,7 +748,9 @@ def test_registered_wrapped_ops_keep_their_contracts() -> None:
     assert out.shape == (n,)
     torch.testing.assert_close(out.float(), ref[0], atol=2e-2, rtol=2e-2)
     opcheck(
-        torch.ops.tileops.gemv_wrapped_kernel, vec_args, test_utils=("test_schema", "test_faketensor")
+        torch.ops.tileops.gemv_wrapped_kernel,
+        vec_args,
+        test_utils=("test_schema", "test_faketensor"),
     )
 
 
@@ -772,14 +776,14 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
 
     # k is innermost for both operands under NT, so 1001 is refused there...
     with pytest.raises(ValueError, match=r"multiple of 8 elements.*k=1001"):
-        nt._get_kernel(256, 512, 1001, fp)
+        nt._get_kernel((), 256, 512, 1001, fp)
     # ...while n = 511 is innermost only where b is not transposed.
     with pytest.raises(ValueError, match=r"multiple of 8 elements.*n=511"):
-        nn._get_kernel(256, 511, 1024, fp)
-    assert nt._get_kernel(256, 511, 1024, fp)[0] == "gemm"
+        nn._get_kernel((), 256, 511, 1024, fp)
+    assert nt._get_kernel((), 256, 511, 1024, fp)[0] == "gemm"
 
     # m == 1 stays served at any extent: the bandwidth body uses cp.async.
-    assert nt._get_kernel(1, 512, 1001, fp)[0] == "lhs_row"
+    assert nt._get_kernel((), 1, 512, 1001, fp)[0] == "lhs_row"
 
     # Constructing the kernel directly bypasses selection, so it refuses too.
     with pytest.raises(ValueError, match=r"cannot serve 256x512x1001"):
@@ -862,7 +866,7 @@ def test_structure_routing_matches_test_ids() -> None:
 
     for test_id, m, n, k, dtype, trans_b, want in expected:
         op = GemmFwdOp(trans_a=False, trans_b=trans_b)
-        mode, kernel = op._get_kernel(m, n, k, dtype)
+        mode, kernel = op._get_kernel((), m, n, k, dtype)
         assert mode == "gemm", f"{test_id}: expected the generic kernel, got {mode}"
         config = kernel.config
         got = next((f for f in flags if config.get(f)), None)
@@ -887,4 +891,3 @@ def test_gemm_kernel_tune_falls_back_to_default() -> None:
     with pytest.warns(UserWarning, match="does not define autotune_configs"):
         kernel = GemmKernel(4096, 4096, 7168, torch.float16, tune=True, trans_a=False, trans_b=True)
     assert kernel.config == kernel.default_config
-

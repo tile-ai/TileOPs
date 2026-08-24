@@ -5,14 +5,10 @@ from typing import Optional
 
 import torch
 
+from tileops.utils import get_sm_count
 
 from ..call_spec import CallSpec
-from .call_spec import CallSpec
-from .heuristics import TINY_M_BLOCK_N
-from .heuristics import TINY_M_BLOCK_N, swap_ab_stages
 from .heuristics import swap_ab_grid_underfills
-from .heuristics import swap_ab_stages
-from tileops.utils import get_sm_count
 
 __all__ = ["GemmCall", "gemv_region", "small_batch_region"]
 

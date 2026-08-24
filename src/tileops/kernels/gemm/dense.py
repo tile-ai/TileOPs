@@ -9,12 +9,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.trace import trace
 from tileops.utils import get_sm_count, str2dtype
 
-from .call_spec import gemv_region
 from .call_spec import gemv_region, small_batch_region
-from .heuristics import SWAP_AB_MPAD as _SWAP_AB_MPAD
 from .heuristics import SWAP_AB_MPAD, best_config, gemv_config, small_batch_config
-from .heuristics import best_config as _heuristic_best_config
-from .heuristics import gemv_config, small_batch_config
 
 # ── SMEM ring protocol, shared by every warp-specialized kernel below ──
 #
@@ -2464,12 +2460,12 @@ class SmallBatchGemmKernel(Kernel):
     the measured config band they pick. Its inner loop pays ``m`` FMAs and ``m``
     converts per weight element on CUDA cores, so the lead over the tensor-core
     ``GemmKernel`` shrinks as ``m`` grows — the measured crossover and the
-    dispatch band live in :func:`~tileops.kernels.gemm.call_spec.small_batch_region`.
+    dispatch band live in :func:`~tileops.kernels.gemm_call.small_batch_region`.
 
     Scope: SM90, NT only — ``B`` is ``[N,K]``, so K is contiguous and the
     reduction over it coalesces; no other layout has that property. The kernel
     is correct for any ``m``; the region it claims is ``m == 2`` on an n too
-    narrow to fill the device (:func:`~tileops.kernels.gemm.call_spec.small_batch_region`).
+    narrow to fill the device (:func:`~tileops.kernels.gemm_call.small_batch_region`).
 
     Args:
         m: Batch rows.
