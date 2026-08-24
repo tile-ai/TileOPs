@@ -22,12 +22,16 @@ every algorithm id crossed with its capability grid (256 further candidates) was
 measured too and added ~1%, inside those rows' own run-to-run spread, so this
 searches the heuristic list only.
 
-``ctypes`` because there is no Python cuBLASLt binding in this stack: torch
-exposes the backend choice (``torch.backends.cuda.preferred_blas_library``) but
-not algorithm enumeration, and the runner image ships no cuBLAS Python package.
-Reading the device pointers of the caller's torch tensors directly keeps the
-inputs byte-identical to the ``tileops`` and ``torch-cublas`` entries. Falls back
-to ``None`` when cuBLASLt is unavailable, so callers keep ``torch-cublas``.
+``ctypes`` because the algorithm API has no Python binding here -- not because
+the library is missing. ``libcublasLt`` comes in with torch (its ``nvidia-cublas``
+dependency) and is what the ``torch-cublas`` entry already runs on; what no
+installed package exposes is cuBLASLt's algorithm enumeration, torch offering
+only the backend choice (``torch.backends.cuda.preferred_blas_library``). So this
+opens the same library torch loaded, under the soname of the CUDA major that
+torch was built for, and reads the device pointers of the caller's tensors
+directly -- which keeps the inputs byte-identical to the ``tileops`` and
+``torch-cublas`` entries. Falls back to ``None`` when the library cannot be
+opened, so callers keep ``torch-cublas``.
 
 Only ``trans_a == False`` (the manifest GEMM layouts: NN and NT) is supported;
 other layouts return ``None``.
