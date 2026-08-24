@@ -13,8 +13,8 @@ eliminating host-side ``F.pad`` from the forward path.  When ``N`` is already a 
 of ``DEFAULT_ALIGNMENT``, the fast vectorized ``T.copy`` path is used.
 
 A row goes to a tiled variant when it exceeds any of the three capacities
-``BlockConfigPlanner`` tracks -- the vectorizer's column cap, shared memory, or the
-register file -- and the tiled variant iterates over N in chunks of ``tile_n`` columns.
+``BlockConfigPlanner`` tracks -- the tile column cap, shared memory, or the register
+file -- and the tiled variant iterates over N in chunks of ``tile_n`` columns.
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.

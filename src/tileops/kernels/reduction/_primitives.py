@@ -47,14 +47,14 @@ __all__ = [
 # shared memory instructions.  Sub-categories may override this default.
 DEFAULT_ALIGNMENT: int = 256
 
-# Maximum column count for a single fragment/shared-memory tile.
-# TileLang's vectorizer fails when the *column dimension* of a
-# fragment or shared buffer reaches 32768 (a LLVM scalable-vector
-# boundary).  Empirical testing on H200 (SM90) confirms that
-# 32512 columns compile and execute correctly, while 32768 triggers
-# the "scalable vector" error.  We use 32512 (= 32768 - 256) as the
-# safe upper bound.
-MAX_SINGLE_TILE_COLS: int = 32512
+# Widest single fragment/shared-memory tile the reduction kernels plan.
+# The two hard ceilings, shared memory and the register file, are checked
+# separately; this one bounds the tile at the widest width measured to help.
+# It has to be the power of two and not a value below it: a cap under a
+# power-of-two row width splits a row of exactly that width into two tiles, and
+# on H200 counting the nonzeros of 32 rows of 32768 fp16 reads 0.649 TB/s in one
+# tile against 0.493 in two.
+MAX_SINGLE_TILE_COLS: int = 32768
 
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
 # block_m that fits within a single thread block's shared memory allocation.
@@ -64,8 +64,11 @@ SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 # architectures the reduction kernels declare (SM80-SM90): 128 bits.
 VECTOR_ACCESS_BYTES: int = 16
 
-# Thread counts offered by the reduction autotune candidate lists.
-AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
+# Thread counts offered by the reduction autotune candidate lists. 512 belongs here for
+# the shapes whose row count alone cannot fill the device: softmax over four rows of
+# 102400 reads 0.116 TB/s over 512 threads against 0.105 over 256 on H200. Offering it
+# is safe because ``layout_ok`` now rejects the widths a wider block cannot divide.
+AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)
 
 # Thread count used when no candidate sweep runs. One count for both the tiled and the
 # untiled path, so the capacity questions -- does the row fit, and how wide a tile --
@@ -145,8 +148,8 @@ class BlockConfigPlanner:
     def needs_tiling(self) -> bool:
         """Whether one padded row exceeds what a single untiled pass can hold.
 
-        Three capacities, any one of which forces the tiled kernel: the vectorizer's
-        column cap, shared memory, and the register file. The register question is
+        Three capacities, any one of which forces the tiled kernel: the tile column
+        cap, shared memory, and the register file. The register question is
         asked of the narrowest untiled configuration, one row over
         ``DEFAULT_THREADS`` threads, since a larger ``block_m`` only adds to it.
         """
@@ -159,12 +162,12 @@ class BlockConfigPlanner:
     def _column_alignment(self, block_m: int, threads: int) -> int:
         """Column granularity a tile must respect for this pair.
 
-        ``block_m == 1`` needs only the ``T.copy`` alignment: one row cannot
-        have a row-to-row thread-map shift, and the coarser granularity would
-        only quantise the width away from an exact divisor of N_padded.
+        ``block_m == 1`` has no row-to-row thread-map shift to respect, so the
+        ``T.copy`` alignment would be enough for the copy itself -- but the fragment
+        still has to divide across the block, which is what ``layout_ok`` measures.
         """
         if block_m == 1:
-            return DEFAULT_ALIGNMENT
+            return max(DEFAULT_ALIGNMENT, threads)
         return reduce_column_alignment(self.elem_bytes, threads)
 
     def tile_n_for(self, block_m: int, threads: int) -> int:
@@ -192,7 +195,7 @@ class BlockConfigPlanner:
         # tiled kernel passes over each tile once and moves on, so a spilled tile costs
         # a spill it streams through where a narrower one costs another whole tile:
         # measured on H200, summing 2M bf16 elements is 18% slower at a tile of 8192
-        # than at the 32512 that spills.
+        # than at the MAX_SINGLE_TILE_COLS width that spills.
         col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         return compute_tile_n(
             block_m,
@@ -246,10 +249,13 @@ class BlockConfigPlanner:
         stays as the guard.  Everything it admits builds; some of what it
         rejects would now build too.
 
-        ``block_m == 1`` is unconstrained: a single row cannot shift.
+        ``block_m == 1`` has no row-to-row shift, but the columns still have to divide
+        across the block: layout inference finds no layout otherwise. Exact over 72 of
+        72 combinations of nine widths, four thread counts and fp16/fp32 -- a
+        ``(1, cols)`` fragment builds if and only if ``threads`` divides ``cols``.
         """
         if block_m == 1:
-            return True
+            return cols % threads == 0
         one_pass = reduce_column_alignment(self.elem_bytes, threads)
         return cols % one_pass == 0 or one_pass % cols == 0
 
@@ -269,6 +275,11 @@ class BlockConfigPlanner:
                 f"shared memory, over the {self.smem_budget} budget"
             )
         if not self.layout_ok(block_m, tile_n, threads):
+            if block_m == 1:
+                return (
+                    f"tile_n={tile_n} is not a multiple of threads={threads}, so a "
+                    f"(1, tile_n) fragment has no reducible layout"
+                )
             one_pass = reduce_column_alignment(self.elem_bytes, threads)
             return (
                 f"tile_n={tile_n} neither divides nor is a multiple of the "
@@ -884,7 +895,7 @@ class RowTiledAutotuneMixin:
         budget = self._smem_budget
         smem_per_row = self.N_padded * self._elem_bytes
         max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
-        threads_list = [128, 256]
+        threads_list = list(AUTOTUNE_THREADS)
 
         configs = []
         for tile_n in self._tile_n_candidates():

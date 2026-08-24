@@ -61,29 +61,43 @@ _DEFAULT_BLOCK_N: int = 128
 # so successive rows start in different banks → conflict free.
 _SMEM_PAD: int = 8
 
-# Elements one thread scans in the whole-row kernel, held in registers. Bandwidth
-# measured on H200 at 2048x4096 fp16: 2.79 TB/s at 16, 2.26 at 8, 1.40 at 4; at
-# 64x32768 bf16 the peak moves to 32, and both peaks land on this many threads.
-_ROW_SCAN_CHUNK: int = 16
+# Elements one thread scans in the whole-row kernel, held in registers. Wider chunks
+# mean fewer threads competing for the staging buffer, and the gain runs well past the
+# point where a thread's chunk stops fitting a register vector: bandwidth measured on
+# H200 at 2048x4096 fp16 is 3.44 TB/s at 64, 3.21 at 32, 3.02 at 16, 2.05 at 8. At 128
+# it falls back to 3.30, so the peak is here.
+_ROW_SCAN_CHUNK: int = 64
+
+# Columns of shared-memory padding per thread chunk. Each thread reads its own chunk
+# with a stride of one chunk, so an unpadded chunk of 16 fp16 columns puts every thread
+# of a warp on one of four banks -- an 8-way conflict on both the scan read and the
+# write-back. 16 bytes is the smallest padding that keeps each chunk aligned for a
+# vectorized staging access while breaking that stride: at 2048x4096 fp16 the padded
+# tile reads 3.44 TB/s against 2.10 unpadded.
+_ROW_SCAN_PAD_BYTES: int = 16
 
 # Thread-count envelope for the whole-row kernel: a warp scheduler's worth, up to the
 # CUDA block limit.
-_ROW_SCAN_MIN_THREADS: int = 128
+_ROW_SCAN_MIN_THREADS: int = 64
 _ROW_SCAN_MAX_THREADS: int = 1024
 
 
 def row_scan_threads(N_padded: int) -> int:
     """Threads the whole-row kernel gives a row of *N_padded*.
 
-    A power of two dividing *N_padded*, chosen so each thread's chunk sits near
-    ``_ROW_SCAN_CHUNK``.
+    The fewest threads that divide *N_padded* and keep each thread's chunk within
+    ``_ROW_SCAN_CHUNK``; where no thread count in the envelope does both, the one
+    leaving the smallest chunk, which :func:`row_scan_fits` then judges.
     """
-    target = max(1, N_padded // _ROW_SCAN_CHUNK)
-    threads = 1 << (target.bit_length() - 1)
-    threads = max(_ROW_SCAN_MIN_THREADS, min(_ROW_SCAN_MAX_THREADS, threads))
-    while threads > _ROW_SCAN_MIN_THREADS and N_padded % threads:
-        threads //= 2
-    return threads
+    threads = _ROW_SCAN_MIN_THREADS
+    widest = threads
+    while threads <= _ROW_SCAN_MAX_THREADS:
+        if N_padded % threads == 0:
+            widest = threads
+            if N_padded // threads <= _ROW_SCAN_CHUNK:
+                return threads
+        threads *= 2
+    return widest
 
 
 def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
@@ -96,7 +110,8 @@ def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
     if N_padded % threads:
         return False
     chunk = N_padded // threads
-    return N_padded * elem_bytes <= smem_budget and chunk <= 4 * _ROW_SCAN_CHUNK
+    staged = threads * (chunk + _ROW_SCAN_PAD_BYTES // elem_bytes) * elem_bytes
+    return staged <= smem_budget and chunk <= _ROW_SCAN_CHUNK
 
 
 @functools.lru_cache(maxsize=32)
@@ -105,15 +120,17 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
 
     Three phases, with no serial dependency between blocks:
 
-    1. One ``T.copy`` stages the row in shared memory at its own dtype -- that is where
-       the vectorized global access comes from -- and each thread scans its contiguous
-       chunk of it into registers, accumulating in fp32.
+    1. The row is staged in shared memory at its own dtype, one padded row of the tile
+       per thread chunk, and each thread scans its chunk into registers in fp32.
     2. The chunk totals are scanned in shared memory, doubling the stride each step.
     3. Each thread adds the prefix ahead of its chunk and writes the chunk back to the
-       staging buffer, which one ``T.copy`` returns to global memory.
+       staging tile, which returns it to global memory.
 
-    Staging at the input dtype halves the shared traffic against fp32, and the
-    write-back reuses the buffer because a scalar store per element does not vectorize.
+    Both transfers between global and the tile run over the row in column-major thread
+    order, so consecutive threads read consecutive columns and the access coalesces; the
+    tile's padding is what keeps a thread's own chunk off one bank. Staging at the input
+    dtype halves the shared traffic against fp32, and the write-back reuses the tile
+    because a scalar global store per element does not coalesce.
 
     Args:
         M: Rows to scan.
@@ -124,6 +141,7 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
         threads: Threads per row, from :func:`row_scan_threads`.
     """
     chunk_len = N // threads
+    pad = _ROW_SCAN_PAD_BYTES // torch.empty(0, dtype=getattr(torch, dtype)).element_size()
     # Stride-doubling steps to scan `threads` totals.
     n_steps = threads.bit_length() - 1
     identity = 0.0 if op_kind == "sum" else 1.0
@@ -138,19 +156,20 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
         ):
             with T.Kernel(M, threads=threads) as row:
                 tx = T.get_thread_binding()
-                staged = T.alloc_shared((N,), dtype)
+                staged = T.alloc_shared((threads, chunk_len + pad), dtype)
                 totals = T.alloc_shared((threads,), "float32")
                 chunk = T.alloc_local((chunk_len,), "float32")
                 running = T.alloc_local((1,), "float32")
                 ahead = T.alloc_local((1,), "float32")
                 offset = T.alloc_local((1,), "float32")
 
-                T.copy(x[row, 0], staged)
+                for i, j in T.Parallel(threads, chunk_len):
+                    staged[i, j] = x[row, i * chunk_len + j]
                 T.sync_threads()
 
                 running[0] = T.cast(identity, "float32")
                 for j in T.serial(chunk_len):
-                    running[0] = combine(running[0], T.cast(staged[tx * chunk_len + j], "float32"))
+                    running[0] = combine(running[0], T.cast(staged[tx, j], "float32"))
                     chunk[j] = running[0]
                 totals[tx] = running[0]
                 T.sync_threads()
@@ -169,9 +188,10 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
                     tx == 0, T.cast(identity, "float32"), totals[T.max(tx - 1, 0)]
                 )
                 for j in T.serial(chunk_len):
-                    staged[tx * chunk_len + j] = T.cast(combine(chunk[j], offset[0]), dtype)
+                    staged[tx, j] = T.cast(combine(chunk[j], offset[0]), dtype)
                 T.sync_threads()
-                T.copy(staged, y[row, 0])
+                for i, j in T.Parallel(threads, chunk_len):
+                    y[row, i * chunk_len + j] = staged[i, j]
 
         return main
 
