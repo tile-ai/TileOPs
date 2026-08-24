@@ -45,6 +45,7 @@ Only ``trans_a == False`` (the manifest GEMM layouts: NN and NT) is supported;
 other layouts return ``None``.
 """
 
+import contextlib
 import ctypes
 from typing import Callable, Optional
 
@@ -140,6 +141,13 @@ def _load() -> Optional[ctypes.CDLL]:
         ctypes.c_int64,
     ]
     _lib.cublasLtMatmulPreferenceCreate.argtypes = [ctypes.POINTER(p)]
+    for destroy in (
+        "cublasLtDestroy",
+        "cublasLtMatmulDescDestroy",
+        "cublasLtMatrixLayoutDestroy",
+        "cublasLtMatmulPreferenceDestroy",
+    ):
+        getattr(_lib, destroy).argtypes = [p]
     _lib.cublasLtMatmulPreferenceSetAttribute.argtypes = [p, i, p, sz]
     _lib.cublasLtMatmulAlgoGetHeuristic.argtypes = [
         p,
@@ -260,6 +268,7 @@ class CublasLtBestGemm:
         # Candidate pool: cuBLASLt's heuristic picks for this shape.
         pref = vp()
         _ck(lib.cublasLtMatmulPreferenceCreate(ctypes.byref(pref)), "PreferenceCreate")
+        self._pref = pref
         self._set_attr(pref, _PREF_MAX_WORKSPACE, ctypes.c_size_t(self._ws_bytes), pref=True)
         results = (_HeuristicResult * n_candidates)()
         returned = ctypes.c_int(0)
@@ -380,6 +389,30 @@ class CublasLtBestGemm:
         # more than the two timers disagree (see ``_TORCH_MARGIN``).
         self._use_torch = min_ms(torch_run, 80) < algo_ms(best_algo, 80) * _TORCH_MARGIN
         return best_algo
+
+    def __del__(self) -> None:
+        """Release the cuBLASLt objects this instance created.
+
+        One benchmark process builds one of these per workload row, so without
+        this the handles, the matmul descriptor and the three layouts accumulate
+        for the length of the run.
+        """
+        lib = getattr(self, "_lib", None)
+        if lib is None:
+            return
+        for handle, destroy in (
+            (getattr(self, "_La", None), "cublasLtMatrixLayoutDestroy"),
+            (getattr(self, "_Lb", None), "cublasLtMatrixLayoutDestroy"),
+            (getattr(self, "_Lc", None), "cublasLtMatrixLayoutDestroy"),
+            (getattr(self, "_desc", None), "cublasLtMatmulDescDestroy"),
+            (getattr(self, "_pref", None), "cublasLtMatmulPreferenceDestroy"),
+            (getattr(self, "_handle", None), "cublasLtDestroy"),
+        ):
+            if handle is not None:
+                # Teardown can run while the interpreter is tearing down too;
+                # a failure here has nobody left to report to.
+                with contextlib.suppress(Exception):
+                    getattr(lib, destroy)(handle)
 
     def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Dispatch to whichever won selection: the default torch.matmul path or
