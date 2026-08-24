@@ -70,11 +70,12 @@ def _da_cumsum_fwd_placed_kernel(
     H = n_heads
     S = seq_len
     ROWS_PER_CTA = 2
+    BLOCK_H = 2
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
         @T.prim_func
-        def main(
+        def da_cumsum_fwd_placed_main(
             dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
             A: T.Tensor((H,), accum_dtype),  # type: ignore
             dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
@@ -83,60 +84,62 @@ def _da_cumsum_fwd_placed_kernel(
         ):
             with T.Kernel(
                 T.ceildiv(B * C, ROWS_PER_CTA),
-                T.ceildiv(H, block_h),
+                T.ceildiv(H, BLOCK_H),
                 threads=threads,
             ) as (bc_tile, bh_tile):
-                dt_shared = T.alloc_shared((ROWS_PER_CTA * block_h, Q), accum_dtype)
-                dA_shared = T.alloc_shared((ROWS_PER_CTA * block_h, Q), accum_dtype)
+                dt_shared = T.alloc_shared((ROWS_PER_CTA * BLOCK_H, Q), accum_dtype)
+                dA_shared = T.alloc_shared((ROWS_PER_CTA * BLOCK_H, Q), accum_dtype)
 
-                # The row loop is serial at CTA scope so TileLang can prove
-                # that the two folded batch/chunk rows have disjoint outputs.
+                # The row/head ownership loops are serial at CTA scope so
+                # TileLang can prove that every output cell has one writer.
                 for row in T.Serial(ROWS_PER_CTA):
-                    for head, pos in T.Parallel(block_h, Q):
-                        bc = bc_tile * ROWS_PER_CTA + row
-                        bh = bh_tile * block_h + head
-                        valid = T.And(bc < B * C, bh < H)
-                        safe_bc = T.min(bc, B * C - 1)
-                        safe_b = safe_bc // C
-                        safe_c = safe_bc % C
-                        safe_h = T.min(bh, H - 1)
-                        seq = safe_c * Q + pos
-                        val = T.if_then_else(valid, dt[safe_b, seq, safe_h], T.float32(0.0))
+                    for head in T.Serial(BLOCK_H):
+                        for pos in T.Parallel(Q):
+                            bc = bc_tile * ROWS_PER_CTA + row
+                            bh = bh_tile * BLOCK_H + head
+                            valid = T.And(bc < B * C, bh < H)
+                            safe_bc = T.min(bc, B * C - 1)
+                            safe_b = safe_bc // C
+                            safe_c = safe_bc % C
+                            safe_h = T.min(bh, H - 1)
+                            seq = safe_c * Q + pos
+                            val = T.if_then_else(valid, dt[safe_b, seq, safe_h], T.float32(0.0))
 
-                        if has_dt_bias:
-                            val = val + T.if_then_else(
-                                bh < H, dt_bias[safe_h], T.float32(0.0)
+                            if has_dt_bias:
+                                val = val + T.if_then_else(
+                                    bh < H, dt_bias[safe_h], T.float32(0.0)
+                                )
+                            if dt_softplus:
+                                val = T.if_then_else(
+                                    val <= T.float32(20.0),
+                                    T.log(T.float32(1.0) + T.exp(val)),
+                                    val,
+                                )
+                            val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
+                            val = T.if_then_else(valid, val, T.float32(0.0))
+                            slot = row * BLOCK_H + head
+                            dt_shared[slot, pos] = val
+                            dA_shared[slot, pos] = val * T.if_then_else(
+                                bh < H, A[safe_h], T.float32(0.0)
                             )
-                        if dt_softplus:
-                            val = T.if_then_else(
-                                val <= T.float32(20.0),
-                                T.log(T.float32(1.0) + T.exp(val)),
-                                val,
-                            )
-                        val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
-                        val = T.if_then_else(valid, val, T.float32(0.0))
-                        slot = row * block_h + head
-                        dt_shared[slot, pos] = val
-                        dA_shared[slot, pos] = val * T.if_then_else(
-                            bh < H, A[safe_h], T.float32(0.0)
-                        )
 
                 T.sync_threads()
                 T.cumsum(dA_shared, dim=1)
                 T.sync_threads()
 
                 for row in T.Serial(ROWS_PER_CTA):
-                    for head, pos in T.Parallel(block_h, Q):
-                        bc = bc_tile * ROWS_PER_CTA + row
-                        bh = bh_tile * block_h + head
-                        with T.If(T.And(bc < B * C, bh < H)), T.Then():
-                            bb = bc // C
-                            cc = bc % C
-                            slot = row * block_h + head
-                            dt_out[bb, bh, cc, pos] = T.cast(dt_shared[slot, pos], dtype)
-                            dA_cumsum[bb, bh, cc, pos] = dA_shared[slot, pos]
+                    for head in T.Serial(BLOCK_H):
+                        for pos in T.Parallel(Q):
+                            bc = bc_tile * ROWS_PER_CTA + row
+                            bh = bh_tile * BLOCK_H + head
+                            with T.If(T.And(bc < B * C, bh < H)), T.Then():
+                                bb = bc // C
+                                cc = bc % C
+                                slot = row * BLOCK_H + head
+                                dt_out[bb, bh, cc, pos] = T.cast(dt_shared[slot, pos], dtype)
+                                dA_cumsum[bb, bh, cc, pos] = dA_shared[slot, pos]
 
-        return main
+        return da_cumsum_fwd_placed_main
 
     return kernel_func
 
@@ -176,7 +179,7 @@ def _da_cumsum_fwd_kernel(
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
         @T.prim_func
-        def main(
+        def da_cumsum_fwd_legacy_main(
             dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore  # raw dt input
             A: T.Tensor((H,), accum_dtype),  # type: ignore
             dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
@@ -246,7 +249,7 @@ def _da_cumsum_fwd_kernel(
                         dt_out[bb, bh_tile * block_h + i, bc, j] = T.cast(dt_shared[i, j], dtype)
                         dA_cumsum[bb, bh_tile * block_h + i, bc, j] = dA_shared[i, j]
 
-        return main
+        return da_cumsum_fwd_legacy_main
 
     return kernel_func
 
@@ -382,11 +385,9 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # block_h=4 processes 4 heads per block with threads=min(4*chunk_len, 1024).
-        # For chunk_len=256 this gives threads=1024, matching the warp occupancy of
-        # mamba_ssm's _chunk_cumsum_fwd_kernel (BLOCK_SIZE_H × BLOCK_SIZE_CHUNK).
-        # block_h must evenly divide n_heads; if not, padding rows are guard-checked.
-        return {"block_h": 4, "threads": min(4 * self.chunk_len, 1024)}
+        # The placed kernel owns two head rows per CTA. The body keeps this
+        # ownership compile-time fixed so TileLang can prove unique output writes.
+        return {"block_h": 2, "threads": min(2 * self.chunk_len, 1024)}
 
     @property
     def autotune_configs(self) -> list[dict]:
