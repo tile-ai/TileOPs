@@ -3,6 +3,7 @@ from .attention import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDecodeWithKVCacheFwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,

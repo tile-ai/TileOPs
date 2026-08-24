@@ -1,8 +1,10 @@
-from typing import Dict, Optional
+import math
+from typing import Dict, Optional, Protocol, cast
 
 import torch
 import torch.nn.functional as F
 
+from tileops.backend import Target
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
@@ -40,6 +42,7 @@ __all__ = [
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
+    "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
@@ -126,6 +129,236 @@ def _build_packed_prefill_kernel(
         accum_dtype=call.accum_dtype,
         tune=call.tune,
     )
+
+
+class _DenseFwdCallable(Protocol):
+    """Target-owned second dispatch layer for the Dense GQA boundary.
+
+    A target builder returns this callable for one input signature. Any finer
+    selection and caching of concrete kernels belongs here, not in the Op.
+    """
+
+    def __call__(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor],
+        k_scale: Optional[torch.Tensor],
+        v_scale: Optional[torch.Tensor],
+        rope_cos: Optional[torch.Tensor],
+        rope_sin: Optional[torch.Tensor],
+    ) -> torch.Tensor: ...
+
+
+class GroupedQueryAttentionDenseFwdOp(Op):
+    """Shape-agnostic dense BSHD GQA for prefill and contiguous decode.
+
+    The public ABI covers rectangular Q/KV lengths, causal/window/softcap modes,
+    FP16/BF16 and scaled FP8 inputs, and optional caller-owned RoPE tables.
+    This target-neutral layer caches a target-owned :class:`_DenseFwdCallable`
+    under the standard input-signature rules; concrete kernel dispatch remains
+    inside that callable. The in-tree callable is deferred to a follow-up.
+    """
+
+    def __init__(
+        self,
+        is_causal: bool = True,
+        sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        dtype: Optional[torch.dtype] = None,
+        pos_encoding_mode: str = "none",
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
+        *,
+        target: Target = None,
+    ) -> None:
+        """Configure the public Dense BSHD GQA interface."""
+        if pos_encoding_mode not in ("none", "rope"):
+            raise ValueError(f"pos_encoding_mode must be 'none' or 'rope', got {pos_encoding_mode}")
+        if rotary_dim is not None and pos_encoding_mode != "rope":
+            raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+        if sm_scale is not None and not math.isfinite(sm_scale):
+            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
+
+        self.is_causal = is_causal
+        self.sm_scale = sm_scale
+        self.softcap = _score_softcap(softcap)
+        if window_size_left < -1:
+            raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
+        if window_size_right < -1:
+            raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.pos_encoding_mode = pos_encoding_mode
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
+        if dtype is not None:
+            _validate_attention_dtype(dtype)
+        self.dtype = dtype
+        self.target = target
+        self.dispatch_kernel()
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {}
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        q_scale_shape: Optional[tuple[int, ...]] = None,
+        k_scale_shape: Optional[tuple[int, ...]] = None,
+        v_scale_shape: Optional[tuple[int, ...]] = None,
+        rope_cos_shape: Optional[tuple[int, ...]] = None,
+        rope_sin_shape: Optional[tuple[int, ...]] = None,
+    ) -> Dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> None:
+        allowed = {torch.float16, torch.bfloat16, fp8_dtype()}
+        if q.dtype not in allowed:
+            raise ValueError("q must have float16, bfloat16, or float8_e4m3fn dtype")
+        if k.dtype != q.dtype or v.dtype != q.dtype:
+            raise ValueError("q, k, and v must have the same dtype")
+        is_fp8 = q.dtype == fp8_dtype()
+        output_dtype = self.dtype or q.dtype
+        if is_fp8 and self.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("FP8 input requires dtype=torch.float16 or torch.bfloat16")
+        if not is_fp8 and output_dtype != q.dtype:
+            raise ValueError("16-bit output dtype must match q, k, and v")
+        for name, scale in zip(
+            ("q_scale", "k_scale", "v_scale"),
+            (q_scale, k_scale, v_scale),
+            strict=True,
+        ):
+            if scale is not None and scale.dtype != torch.float32:
+                raise ValueError(f"{name} must have float32 dtype")
+        for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if table is not None and table.dtype != output_dtype:
+                raise ValueError(f"{name} must have dtype {output_dtype}")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError("Dense GQA has no in-tree implementation yet")
+
+    def _get_callable(
+        self,
+        inputs: tuple[Optional[torch.Tensor], ...],
+    ) -> _DenseFwdCallable:
+        """Resolve layer one; the returned target callable is layer two."""
+        # BUILTIN follow-up: use this same seam with ``key=...`` and ``build=...``.
+        return cast(
+            _DenseFwdCallable,
+            self.get_or_build_kernel("gqa_dense", inputs),
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run Dense BSHD GQA through the selected callable."""
+        batch, seq_len_q, heads, dim = q.shape
+        batch_kv, seq_len_kv, heads_kv, dim_kv = k.shape
+
+        if k.shape != v.shape:
+            raise ValueError("k and v must have the same shape")
+        if batch_kv != batch or dim_kv != dim:
+            raise ValueError("q and k/v must have matching batch and head dimension")
+
+        _validate_positive(batch=batch, seq_len_q=seq_len_q, seq_len_kv=seq_len_kv)
+        _validate_gqa_dims(heads, heads_kv, dim)
+
+        if self.is_causal and seq_len_q > seq_len_kv:
+            raise ValueError("causal dense attention requires seq_len_q <= seq_len_kv")
+        if self.pos_encoding_mode == "rope" and seq_len_q > seq_len_kv:
+            raise ValueError("fused RoPE requires seq_len_q <= seq_len_kv")
+
+        resolved_sm_scale = _attention_scale(dim, self.sm_scale)
+        if not math.isfinite(resolved_sm_scale):
+            raise ValueError("sm_scale must be finite")
+        if self.pos_encoding_mode not in ("none", "rope"):
+            raise ValueError("pos_encoding_mode must be 'none' or 'rope'")
+        if self.rope_layout not in ("neox", "interleaved"):
+            raise ValueError("rope_layout must be 'neox' or 'interleaved'")
+        if self.pos_encoding_mode == "rope":
+            resolved_rotary_dim = _rope_rotary_dim(dim, self.rotary_dim)
+        else:
+            if self.rotary_dim is not None:
+                raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+            resolved_rotary_dim = None
+
+        self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
+
+        scales = (q_scale, k_scale, v_scale)
+        has_scales = tuple(scale is not None for scale in scales)
+        if any(has_scales) and not all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
+        is_fp8 = q.dtype == fp8_dtype()
+        if is_fp8 and not all(has_scales):
+            raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
+        if not is_fp8 and all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale are only valid for FP8 input")
+
+        for name, tensor in (("k", k), ("v", v)):
+            if tensor.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+        normalized_scales = []
+        for name, scale in zip(("q_scale", "k_scale", "v_scale"), scales, strict=True):
+            if scale is None:
+                continue
+            if scale.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+            if tuple(scale.shape) != (batch, heads_kv):
+                raise ValueError(f"{name} must have shape {(batch, heads_kv)}")
+            normalized_scales.append(scale.contiguous())
+        resolved_scales = tuple(normalized_scales) if normalized_scales else (None, None, None)
+
+        if (rope_cos is None) != (rope_sin is None):
+            raise ValueError("rope_cos and rope_sin must be supplied together")
+        if self.pos_encoding_mode != "rope":
+            if rope_cos is not None:
+                raise ValueError("RoPE tables require pos_encoding_mode='rope'")
+            resolved_rope = (None, None)
+        else:
+            if rope_cos is None or rope_sin is None:
+                raise ValueError("pos_encoding_mode='rope' requires rope_cos and rope_sin")
+            expected_columns = (resolved_rotary_dim or dim) // 2
+            for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+                if table.device != q.device:
+                    raise ValueError(f"{name} must be on the same device as q")
+                if table.ndim != 2:
+                    raise ValueError(f"{name} must be 2-dimensional")
+                if table.shape[0] < seq_len_kv or table.shape[1] != expected_columns:
+                    raise ValueError(
+                        f"{name} must have shape [max_position >= {seq_len_kv}, {expected_columns}]"
+                    )
+            if rope_cos.shape != rope_sin.shape:
+                raise ValueError("rope_cos and rope_sin must have the same shape")
+            resolved_rope = (rope_cos.contiguous(), rope_sin.contiguous())
+
+        inputs = (q.contiguous(), k.contiguous(), v.contiguous(), *resolved_scales, *resolved_rope)
+        callable_impl = self._get_callable(inputs)
+        return callable_impl(*inputs)
 
 
 class GroupedQueryAttentionFwdOp(Op):
