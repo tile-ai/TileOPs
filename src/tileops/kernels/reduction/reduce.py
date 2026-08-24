@@ -41,14 +41,6 @@ from tileops.kernels.reduction._primitives import (
 
 __all__ = ["ReduceKernel"]
 
-# Supported simple op kinds and their T.reduce_* mapping
-_SIMPLE_REDUCE_MAP = {
-    "sum": "reduce_sum",
-    "mean": "reduce_sum",
-    "amax": "reduce_max",
-    "amin": "reduce_min",
-}
-
 _WELFORD_KINDS = {"std", "var", "var_mean"}
 
 _WARP_LANES = 32
@@ -261,6 +253,14 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
 #: 2-byte dtype.
 _LEADING_COLS_PER_THREAD: int = 8
 
+#: Threads a leading-axis reduction runs. Its own, not the row path's: the column block
+#: is ``threads * _LEADING_COLS_PER_THREAD`` wide, so a wider block means fewer column
+#: blocks and more row splits to make up the grid, and more splits means more partials for
+#: the second pass to read. Bandwidth measured on H200 over
+#: {2048x4096 bf16, 4096x4096 fp16, 512x8192 fp16}: 1.47 / 2.20 / 1.36 TB/s at 64
+#: threads against 0.90 / 1.41 / 0.75 at 256.
+_LEADING_THREADS: int = 64
+
 #: Blocks the leading-axis reduction aims to launch.  A reduction down the leading axes
 #: has only as many output columns as the kept axes, which on its own leaves most of the
 #: device idle -- 2048x4096 fp16 gives four blocks -- so the reduced axis is split until
@@ -399,8 +399,8 @@ def _leading_reduce_kernel(
     return _func
 
 
-#: Columns one thread multiplies before the warp combines. Measured on H200 at
-#: 2048x4096 fp16: 8 peaks, 4 is within 2%, and 16 loses a third.
+#: Columns one thread multiplies before the warp combines. Bandwidth measured on H200 at
+#: 2048x4096 fp16: 2.18 TB/s at 8, 2.21 at 4, 1.57 at 16.
 _PROD_COLS_PER_THREAD: int = 8
 
 
@@ -412,11 +412,10 @@ def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
     combine those by shuffle, and the block combines the warp products in shared
     memory. Nothing of row width is held, so the row length does not bound the kernel.
 
-    Multiplying directly is both faster and closer than the log-sum-exp form it
-    replaces: measured on H200 at 2048x4096 fp16 it is 1.9x the bandwidth, and it
-    matches an fp32 ``torch.prod`` exactly where taking a log per element does not. A
-    zero, a sign, and an overflow to inf each come out of the arithmetic rather than
-    being reconstructed after it.
+    A zero, a sign and an overflow to inf each come out of the arithmetic rather than
+    being reconstructed after it, so the result matches an fp32 ``torch.prod`` exactly.
+    Taking a logarithm per element instead needs an epsilon to survive ``log(0)`` and
+    costs a transcendental: measured on H200 at 2048x4096 fp16, 2.18 TB/s against 1.17.
 
     Args:
         M: Rows to reduce.
@@ -1019,7 +1018,7 @@ class ReduceKernel(Kernel):
         """
         reduced, kept = leading_axis_split(tuple(x.shape), self.reduce_axes)
         flat = x.reshape(reduced, kept)
-        splits = leading_row_splits(reduced, kept, DEFAULT_THREADS)
+        splits = leading_row_splits(reduced, kept, _LEADING_THREADS)
         divisor = float(reduced) if self.op_kind == "mean" else 0.0
         if splits == 1:
             single = _leading_reduce_kernel(
@@ -1028,7 +1027,7 @@ class ReduceKernel(Kernel):
                 self.op_kind,
                 self.dtype_str,
                 self.dtype_str,
-                DEFAULT_THREADS,
+                _LEADING_THREADS,
                 1,
                 divisor,
             )
@@ -1039,7 +1038,7 @@ class ReduceKernel(Kernel):
             self.op_kind,
             self.dtype_str,
             "float32",
-            DEFAULT_THREADS,
+            _LEADING_THREADS,
             splits,
             0.0,
         )()(flat)
@@ -1051,7 +1050,7 @@ class ReduceKernel(Kernel):
             "sum" if self.op_kind == "mean" else self.op_kind,
             "float32",
             self.dtype_str,
-            DEFAULT_THREADS,
+            _LEADING_THREADS,
             1,
             divisor,
         )

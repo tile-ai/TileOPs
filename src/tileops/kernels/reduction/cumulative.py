@@ -61,9 +61,9 @@ _DEFAULT_BLOCK_N: int = 128
 # so successive rows start in different banks → conflict free.
 _SMEM_PAD: int = 8
 
-# Elements one thread scans in the whole-row kernel, held in registers. Measured on
-# H200 over {2048x4096 fp16, 64x32768 bf16}: 16 peaks, 8 and 32 are within 25%, 4 and
-# 128 lose half.
+# Elements one thread scans in the whole-row kernel, held in registers. Bandwidth
+# measured on H200 at 2048x4096 fp16: 2.79 TB/s at 16, 2.26 at 8, 1.40 at 4; at
+# 64x32768 bf16 the peak moves to 32, and both peaks land on this many threads.
 _ROW_SCAN_CHUNK: int = 16
 
 # Thread-count envelope for the whole-row kernel: a warp scheduler's worth, up to the
@@ -445,23 +445,13 @@ class CumulativeKernel(Kernel):
         # parallel implementation.
         self.use_parallel = M < 128 and N > 8192 and op_kind == "sum"
 
-        # Fastest of the three on the shapes it is given, for both kinds: it reads and
-        # writes the row once and carries nothing between blocks. Two shapes it does not
-        # get: a width the alignment would pad, which it cannot stage exactly, and the
-        # small-M large-N cumsum below.
-        #
-        # FIXME(staged-rollout): the three-kernel parallel scan keeps the shapes it
-        # already claimed, though this kernel measures faster on them.
-        #
-        # Broken invariant: the fastest buildable backend wins the shape.
-        # Why: test_cumsum_backend_dispatch pins four shapes to use_parallel, and that
-        #   file is outside the kernel layer this change is scoped to.
-        # Cleanup: drop the `not self.use_parallel` term once that test asserts the
-        #   backend each shape actually measures fastest on.
-        self.use_row_scan = (
-            not self.use_parallel
-            and self.N_padded == N
-            and row_scan_fits(self.N_padded, self._elem_bytes, device_smem_budget(device_index))
+        # Fastest of the three wherever it builds, for both kinds: it reads and writes
+        # the row once and carries nothing between blocks. Measured on H200 it leads the
+        # three-kernel parallel scan by 2.6x to 5.9x over M from 32 to 2048 and N from
+        # 4096 to 32768. What it does not take is a width the alignment would pad, since
+        # it stages the row exactly; that is what the parallel scan is left serving.
+        self.use_row_scan = self.N_padded == N and row_scan_fits(
+            self.N_padded, self._elem_bytes, device_smem_budget(device_index)
         )
         self._row_scan_threads = row_scan_threads(self.N_padded) if self.use_row_scan else 0
 

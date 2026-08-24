@@ -67,8 +67,12 @@ VECTOR_ACCESS_BYTES: int = 16
 # Thread counts offered by the reduction autotune candidate lists.
 AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
 
-# Thread count used when no candidate sweep runs.
-DEFAULT_THREADS: int = 128
+# Thread count used when no candidate sweep runs. One count for both the tiled and the
+# untiled path, so the capacity questions -- does the row fit, and how wide a tile --
+# are answered at the same block width. Measured on H200 over M from 4 to 2048 and N from
+# 8192 to 102400, 256 threads is never behind 128 on either path and up to 1.48x ahead
+# where the row count alone leaves the device short of blocks.
+DEFAULT_THREADS: int = 256
 
 # Tile elements one thread may hold across its live fragments before ptxas spills the
 # tile to local memory, after which every pass re-reads it through L2. A

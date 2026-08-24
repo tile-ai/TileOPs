@@ -35,10 +35,6 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-#: What a kernel whose ``op_func`` calls a transcendental declares, for the reason
-#: ``UnaryKernel.DEFAULT_STRATEGY`` gives.
-_TRANSCENDENTAL_STRATEGY = "explicit_parallel"
-
 __all__ = [
     "BinaryKernel",
     "FloatPredicateKernel",
@@ -766,13 +762,10 @@ class UnaryKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    #: Which strategy wins splits by how much work ``op_func`` does per element, so
-    #: each kernel declares it. Measured on H200 at 16M and 256M fp16 elements:
-    #: register_copy leads by 10-14% where the body is an instruction or two (round,
-    #: rsqrt, sign, relu) and trails by 20-22% where it is a transcendental (sigmoid,
-    #: silu, erf, gelu, mish), which has the arithmetic to hide behind the loads
-    #: explicit_parallel issues. register_copy is the default because the cheap bodies
-    #: are the majority; ``_TRANSCENDENTAL_STRATEGY`` names the other side.
+    #: The fragment strategy, which is what nearly every body wants. Measured on H200
+    #: at 16M and 256M fp16 elements over fourteen float unaries: nine tie between the
+    #: two, three read 4-12% faster here (gelu, selu, erf), and two read 13-20% faster
+    #: on the looping strategy, which they declare themselves.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None

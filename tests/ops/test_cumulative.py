@@ -295,18 +295,23 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "M, N, dtype, parallel",
+    "M, N, dtype, backend",
     [
-        (64, 16384, torch.float32, True),  # block_n=128
-        (64, 32768, torch.bfloat16, True),  # block_n=256
-        (32, 16384, torch.float16, True),  # fp16 intermediate
-        (64, 8200, torch.float32, True),  # N % block_n != 0: masked tail
-        (64, 8192, torch.bfloat16, False),  # N boundary
-        (128, 16384, torch.bfloat16, False),  # M boundary
+        (64, 16384, torch.float32, "row_scan"),
+        (64, 32768, torch.bfloat16, "row_scan"),
+        (32, 16384, torch.float16, "row_scan"),
+        (64, 8192, torch.bfloat16, "row_scan"),  # N boundary
+        (128, 16384, torch.bfloat16, "row_scan"),  # M boundary
+        (64, 8200, torch.float32, "parallel"),  # a padded width the row scan declines
+        (64, 8200, torch.bfloat16, "parallel"),  # same, at the other element width
     ],
 )
-def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, parallel: bool) -> None:
-    """Each shape takes the expected backend and matches torch.cumsum."""
+def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: str) -> None:
+    """Each shape takes the expected backend and matches torch.cumsum.
+
+    The row scan takes every width it can stage exactly, which is where it measures
+    fastest; the parallel scan is left the widths the alignment would pad.
+    """
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(M, N, dtype=dtype, device="cuda")
@@ -321,9 +326,47 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, parallel: b
     # The kernel the call built, not one refetched by a key: the key is a read-back of
     # the arguments and says nothing about which backend was chosen.
     (kernel,) = op.built_kernels("cumulative_fwd").values()
-    assert kernel.use_parallel == parallel, f"({M}, {N}): unexpected backend"
-    if parallel:
+    chosen = "row_scan" if kernel.use_row_scan else "parallel" if kernel.use_parallel else "tiled"
+    assert chosen == backend, f"({M}, {N}): took {chosen}"
+    if chosen == "parallel":
         assert kernel.config["block_n"] == (256 if N > 16384 else 128)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "name, marks",
+    [
+        ("nan", [(100, float("nan"))]),
+        ("pos_inf", [(100, float("inf"))]),
+        ("neg_inf", [(100, -float("inf"))]),
+        ("inf_then_neg_inf", [(100, float("inf")), (200, -float("inf"))]),
+        ("zero", [(100, 0.0)]),
+        ("negative_zero", [(100, -0.0)]),
+        ("negative", [(100, -2.0)]),
+    ],
+)
+def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> None:
+    """A scan carries non-finite values and signed zero the way torch does.
+
+    The whole-row backend combines per-thread chunk totals rather than accumulating left
+    to right, so what each of these does to a running value is worth pinning: a NaN or an
+    inf has to reach every later element, and a zero has to stop a product without
+    changing its sign handling.
+    """
+    from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
+
+    n = 4096
+    x = torch.ones(2, n, dtype=torch.float32, device="cuda")
+    for index, value in marks:
+        x[:, index] = value
+
+    for op, ref in ((CumsumFwdOp(dim=-1), torch.cumsum), (CumprodFwdOp(dim=-1), torch.cumprod)):
+        got = op(x)
+        want = ref(x, dim=-1)
+        assert torch.allclose(got, want, rtol=1e-5, atol=1e-5, equal_nan=True), (
+            f"{name}: first mismatch at "
+            f"{int((~torch.isclose(got, want, rtol=1e-5, atol=1e-5, equal_nan=True))[0].nonzero()[0])}"
+        )
 
 
 @pytest.mark.smoke

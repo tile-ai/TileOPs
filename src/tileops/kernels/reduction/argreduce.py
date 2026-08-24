@@ -40,8 +40,8 @@ _KEY_IDENTITY = -(2**31)
 #   M=256 cta   1.4x  multi 1.5x  multi 2.4x
 #   M=1024 cta  1.3x  cta   1.1x  cta   1.05x
 #
-#: Thresholds below are measured on H200, not derived; the grid behind each is
-#: in the commit that introduced it.
+#: Thresholds below are measured on H200, not derived; the grid above is what they were
+#: read off.
 #:
 #: A row shorter than this is a handful of passes; splitting cannot save more
 #: than the second pass costs.

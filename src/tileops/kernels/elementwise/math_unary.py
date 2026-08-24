@@ -4,7 +4,6 @@ import tilelang.language as T
 import torch
 
 from ._base import (
-    _TRANSCENDENTAL_STRATEGY,
     FloatUnaryKernel,
 )
 
@@ -32,8 +31,6 @@ __all__ = [
 class ExpFwdKernel(FloatUnaryKernel):
     """Element-wise exp(x)."""
 
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
-
     @staticmethod
     def op_func(x):
         return T.exp(T.cast(x, "float32"))
@@ -41,8 +38,6 @@ class ExpFwdKernel(FloatUnaryKernel):
 
 class LogFwdKernel(FloatUnaryKernel):
     """Element-wise log(x)."""
-
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
 
     @staticmethod
     def op_func(x):
@@ -126,8 +121,6 @@ class SignFwdKernel(FloatUnaryKernel):
 class SinFwdKernel(FloatUnaryKernel):
     """Element-wise sin(x)."""
 
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
-
     @staticmethod
     def op_func(x):
         return T.sin(T.cast(x, "float32"))
@@ -135,8 +128,6 @@ class SinFwdKernel(FloatUnaryKernel):
 
 class CosFwdKernel(FloatUnaryKernel):
     """Element-wise cos(x)."""
-
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
 
     @staticmethod
     def op_func(x):
@@ -199,8 +190,6 @@ class ErfFwdKernel(FloatUnaryKernel):
     intrinsic ``herf`` is not a valid CUDA built-in.
     """
 
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
-
     @staticmethod
     def op_func(x):
         return T.erf(T.cast(x, "float32"))
@@ -213,8 +202,6 @@ class Log1pFwdKernel(FloatUnaryKernel):
     by the TileLang compiler.
     """
 
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
-
     @staticmethod
     def op_func(x):
         return T.log(T.cast(1.0, "float32") + x)
@@ -222,8 +209,6 @@ class Log1pFwdKernel(FloatUnaryKernel):
 
 class Expm1FwdKernel(FloatUnaryKernel):
     """Element-wise exp(x) - 1."""
-
-    DEFAULT_STRATEGY = _TRANSCENDENTAL_STRATEGY
 
     @staticmethod
     def op_func(x):
