@@ -317,6 +317,7 @@ class Op(ABC):
         *,
         key: Hashable = None,
         build: Optional[Callable[[], _Entry]] = None,
+        params: Optional[Mapping[str, object]] = None,
     ) -> _Entry:
         """Return the kernel for this call, building it once on a miss.
 
@@ -335,6 +336,9 @@ class Op(ABC):
                 path keys on the input signature instead.
             build: How the *in-tree* kernel is constructed, called once per key. See
                 ``Op._entry_kernels`` for what it may return.
+            params: Manifest parameters resolved for this input signature. The in-tree
+                path ignores them; an external builder receives these values instead of
+                the constructor attributes returned by ``_manifest_params()``.
 
         Returns:
             The stored entry, identical across calls describing the same specialization.
@@ -397,7 +401,7 @@ class Op(ABC):
                 None if spec is None else (spec.dtype, spec.shape) for spec in specs
             )
             if signature not in entries:
-                entries[signature] = self._build_external(builder, name, specs)
+                entries[signature] = self._build_external(builder, name, specs, params=params)
             return entries[signature]
         except Exception:
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when
@@ -411,13 +415,16 @@ class Op(ABC):
         builder: BuildKernel,
         name: str,
         specs: "tuple[TensorSpec | None, ...]",
+        *,
+        params: Optional[Mapping[str, object]] = None,
     ) -> object:
         """Ask the target for a kernel and hold it to the one rule this boundary has.
 
         *specs* carries one slot per ``signature.inputs`` entry; an absent optional input's
         slot is ``None``.
         """
-        kernel = builder(*specs, **self._manifest_params())
+        manifest_params = dict(params) if params is not None else self._manifest_params()
+        kernel = builder(*specs, **manifest_params)
         if not callable(kernel):
             raise OpNotAvailableError(
                 f"target {self._settled_target!r} built {kernel!r} for "
