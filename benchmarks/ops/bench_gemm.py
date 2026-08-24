@@ -321,16 +321,9 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    # Stronger baseline: cuBLASLt's fastest algorithm found by heuristic search
-    # (falling back to the plain torch.matmul path when that is faster).
-    # torch.matmul alone uses cuBLAS's default top-1 heuristic, measurably
-    # slower than searchable algorithms on some shapes (small-M, tall-skinny,
-    # awkward-N) — comparing against it can credit a kernel with a win a
-    # cuBLASLt user would not concede. It goes in the same plan as the others
-    # so every entry is timed in one forward-then-reversed pass: profiling it
-    # separately would time it in whatever thermal state the algorithm search
-    # left, against entries measured before that search ran. Absent from the
-    # plan when cuBLASLt cannot be loaded, leaving the torch-cublas baseline.
+    # torch.matmul takes cuBLAS's top-1 heuristic; searching cuBLASLt's algorithms
+    # beats it on the shapes where that heuristic is weakest, so timing against
+    # torch alone would credit a win a cuBLASLt user would not concede.
     functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
     best_fn = make_cublaslt_best(m, n, k, dtype, trans_a, trans_b)
     if best_fn is not None:
