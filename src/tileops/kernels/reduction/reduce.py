@@ -1,26 +1,7 @@
-"""Reduce kernels (sum, mean, amin, amax, prod, std, var, var_mean) using TileLang.
-
-Four kernel families, by what the reduction's shape allows:
-  - _simple_reduce_kernel: row-wise single pass for sum/mean/amin/amax.
-  - _welford_reduce_kernel: row-wise two-pass Welford for std/var/var_mean.
-  - _leading_reduce_kernel: sum/mean/amin/amax down the leading axes, reading the
-    tensor in the layout it already has instead of permuting the reduced axes last.
-  - _prod_reduce_kernel: one block per row, multiplying in fp32.
-
-The row-wise families accept raw ``(M, N)`` tensors.  Boundary handling for non-aligned
-N is performed inside the kernel via masked loads with identity-element fills,
-eliminating host-side ``F.pad`` from the forward path.  When ``N`` is already a multiple
-of ``DEFAULT_ALIGNMENT``, the fast vectorized ``T.copy`` path is used.
-
-A row goes to a tiled variant when it exceeds any of the three capacities
-``BlockConfigPlanner`` tracks -- the tile column cap, shared memory, or the register
-file -- and the tiled variant iterates over N in chunks of ``tile_n`` columns.
-
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions.
-"""
+"""Reduce kernels (sum, mean, amin, amax, prod, std, var, var_mean)."""
 
 import functools
+from dataclasses import dataclass
 from typing import Optional
 
 import tilelang
@@ -50,15 +31,33 @@ _WARP_LANES = 32
 # Stride-halving shuffle steps that reduce one warp.
 _WARP_STAGES = 5
 
-# Tile-width fragments each kind keeps alive, which is what decides whether its tile
-# fits in registers.  sum/mean/amax/amin hold the fp32 working copy alone; Welford holds
-# it beside the squared deviation.  Kinds absent here take the 1 the planner defaults to,
-# and prod holds none -- it has its own kernel.
 _FRAG_SLOTS = {
     "std": 2,
     "var": 2,
     "var_mean": 2,
 }
+
+
+@dataclass(frozen=True)
+class LeadingAxisReducePolicy:
+    """Launch heuristics for reductions down contiguous leading axes."""
+
+    cols_per_thread: int = 8
+
+    threads: int = 64
+
+    target_blocks: int = 512
+
+
+@dataclass(frozen=True)
+class ProductReducePolicy:
+    """Launch heuristics for product reductions."""
+
+    cols_per_thread: int = 8
+
+
+_LEADING_POLICY = LeadingAxisReducePolicy()
+_PROD_POLICY = ProductReducePolicy()
 
 
 # Simple reduce kernel
@@ -250,23 +249,6 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
     return _func
 
 
-#: Output columns one thread accumulates in the leading-axis kernel.  Each is an fp32
-#: register held for the whole walk, and 8 covers a 128-bit access per thread for a
-#: 2-byte dtype.
-_LEADING_COLS_PER_THREAD: int = 8
-
-#: Threads a leading-axis reduction runs. Its own, not the row path's.
-_LEADING_THREADS: int = 64
-
-#: Blocks the leading-axis reduction aims to launch.  A reduction down the leading axes
-#: has only as many output columns as the kept axes, which on its own leaves most of the
-#: device idle -- 2048x4096 fp16 gives four blocks -- so the reduced axis is split until
-#: there are about this many.  Comfortably above the 132 SMs of an H200 so the tail
-#: block is not the whole tail.
-_LEADING_TARGET_BLOCKS: int = 512
-
-#: Kinds the leading-axis kernel implements.  prod carries a second accumulator for the
-#: sign, and Welford's kinds two passes; neither is expressible as one running value.
 _LEADING_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
 
 
@@ -294,9 +276,9 @@ def reduces_leading_axes(ndim: int, axes: "tuple[int, ...]") -> bool:
 
 def leading_row_splits(reduced: int, kept: int, threads: int) -> int:
     """How many ways to split the reduced axis so the grid fills the device."""
-    block_b = threads * _LEADING_COLS_PER_THREAD
+    block_b = threads * _LEADING_POLICY.cols_per_thread
     column_blocks = ceildiv_int(kept, block_b)
-    return max(1, min(reduced, ceildiv_int(_LEADING_TARGET_BLOCKS, column_blocks)))
+    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
 
 
 def _make_leading_reduce_ops(op_kind: str, divisor: float, out_dtype: str):
@@ -368,7 +350,7 @@ def _leading_reduce_kernel(
             none. Mean's divisor is the row count of the whole reduction, which a
             second pass over partials can no longer see.
     """
-    block_b = threads * _LEADING_COLS_PER_THREAD
+    block_b = threads * _LEADING_POLICY.cols_per_thread
     rows_per_split = ceildiv_int(A, splits)
     exact = B % block_b == 0
     init_acc, combine, finish = _make_leading_reduce_ops(op_kind, divisor, out_dtype)
@@ -415,36 +397,10 @@ def _leading_reduce_kernel(
     return _func
 
 
-#: Columns one thread multiplies before the warp combines.
-_PROD_COLS_PER_THREAD: int = 8
-
-
 @functools.lru_cache(maxsize=32)
 def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
-    """Build a product reduce: one block per row, multiplying in fp32.
-
-    Each thread multiplies a contiguous run of the row into one register, the warps
-    combine those by shuffle, and the block combines the warp products in shared
-    memory. Only one tile of the row is held, so the row length does not bound the kernel.
-
-    The tile is staged in shared memory rather than read from global by the multiply
-    loop, which reads the run a thread owns and so takes one element per thread per
-    access. Staging runs over the tile in thread order instead, which coalesces, and
-    leaves each thread multiplying the same columns in the same order: 2.34 TB/s against
-    2.15 at 2048x4096 bf16, where reading the row alone is bounded at 2.35.
-
-    A zero, a sign and an overflow to inf each come out of the arithmetic rather than
-    being reconstructed after it, so the result matches an fp32 ``torch.prod`` exactly.
-    Taking a logarithm per element instead needs an epsilon to survive ``log(0)`` and
-    costs a transcendental: measured on H200 at 2048x4096 fp16, 2.18 TB/s against 1.17.
-
-    Args:
-        M: Rows to reduce.
-        N: Elements each row reduces.
-        dtype: TileLang dtype string.
-        threads: Threads per row.
-    """
-    chunk = threads * _PROD_COLS_PER_THREAD
+    """Build a product reduce: one block per row, multiplying in fp32."""
+    chunk = threads * _PROD_POLICY.cols_per_thread
     tiles = ceildiv_int(N, chunk)
     exact = tiles * chunk == N
     num_warps = threads // _WARP_LANES
@@ -464,17 +420,15 @@ def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
 
                 running[0] = T.cast(1.0, "float32")
                 for t in T.serial(tiles):
-                    # A column past N leaves its slot unwritten, and the multiply below
-                    # substitutes the identity for exactly those columns.
                     for i in T.Parallel(chunk):
                         staged[i] = x[row, t * chunk + i]
                     T.sync_threads()
-                    for c in T.serial(_PROD_COLS_PER_THREAD):
-                        held = staged[tx * _PROD_COLS_PER_THREAD + c]
+                    for c in T.serial(_PROD_POLICY.cols_per_thread):
+                        held = staged[tx * _PROD_POLICY.cols_per_thread + c]
                         if exact:
                             running[0] = running[0] * T.cast(held, "float32")
                         else:
-                            col = (t * threads + tx) * _PROD_COLS_PER_THREAD + c
+                            col = (t * threads + tx) * _PROD_POLICY.cols_per_thread + c
                             running[0] = running[0] * T.if_then_else(
                                 col < N, T.cast(held, "float32"), T.cast(1.0, "float32")
                             )
@@ -1054,7 +1008,7 @@ class ReduceKernel(Kernel):
         """
         reduced, kept = leading_axis_split(tuple(x.shape), self.reduce_axes)
         flat = x.reshape(reduced, kept)
-        splits = leading_row_splits(reduced, kept, _LEADING_THREADS)
+        splits = leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
         divisor = float(reduced) if self.op_kind == "mean" else 0.0
         if splits == 1:
             single = _leading_reduce_kernel(
@@ -1063,7 +1017,7 @@ class ReduceKernel(Kernel):
                 self.op_kind,
                 self.dtype_str,
                 self.dtype_str,
-                _LEADING_THREADS,
+                _LEADING_POLICY.threads,
                 1,
                 divisor,
             )
@@ -1074,7 +1028,7 @@ class ReduceKernel(Kernel):
             self.op_kind,
             self.dtype_str,
             "float32",
-            _LEADING_THREADS,
+            _LEADING_POLICY.threads,
             splits,
             0.0,
         )()(flat)
@@ -1086,7 +1040,7 @@ class ReduceKernel(Kernel):
             "sum" if self.op_kind == "mean" else self.op_kind,
             "float32",
             self.dtype_str,
-            _LEADING_THREADS,
+            _LEADING_POLICY.threads,
             1,
             divisor,
         )

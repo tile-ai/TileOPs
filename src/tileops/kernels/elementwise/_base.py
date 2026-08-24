@@ -1,31 +1,7 @@
-"""Elementwise kernel templates and strategy factories.
-
-Template base classes, one per input shape:
-- UnaryKernel: 1-input → 1-output (relu, sigmoid, abs, ...)
-- BinaryKernel: 2-input → 1-output with N-dim broadcast (add, mul, ...)
-- FusedGatedKernel: fused gate+activation (silu_and_mul, gelu_and_mul, ...)
-- ParametricUnaryKernel: 1-input plus values baked in at build time, and the
-  multi-input kernels built on it (where, clamp, masked_fill, prelu, lerp)
-
-An op hands over the shapes its manifest entry declares; flattening, broadcasting and
-restoring the output shape are each kernel's ``forward``. No kernel here uses shared
-memory: Global → Register → Compute → Register → Global.
-
-Three strategies pick the loop body at build time:
-- direct: 1 element per thread
-- explicit_parallel: N elements per thread via T.Parallel(threads, npt)
-- register_copy: fragment load → compute → fragment store
-
-Boundary checks are TileLang's, via LegalizeSafeMemoryAccess.
-
-fp8 (e4m3fn, e5m2) accumulates in fp16 — direct fp8 arithmetic loses too much
-precision for sigmoid/exp and friends. Defaults: num_per_thread=16 (128-bit
-alignment) and explicit_parallel (register_copy is unreliable for fp8). Saturation
-follows from the format: e4m3fn has no Inf, so a saturating ``T.Cast`` clamping to
-±448.0 is what it can represent; e5m2 does have Inf, so the PrimFunc emits fp16 and
-``forward`` casts to e5m2 without saturating, which keeps Inf and NaN."""
+"""Elementwise kernel base classes."""
 
 import math
+import warnings
 
 import tilelang.language as T
 import torch
@@ -51,15 +27,17 @@ from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES, _is_fp8
 from ._dtype import _FP8_DTYPES as _FP8_DTYPES
 from ._dtype import _clamp_to_dtype_range as _clamp_to_dtype_range
 from ._dtype import _fp8_accum_dtype_str as _fp8_accum_dtype_str
-from ._launch import _DEFAULT_THREADS, _LAUNCH_POLICY
-from ._output import (
-    ElementwiseOutputPlan,
+from ._policy import (
+    _DEFAULT_THREADS,
     _get_fp8_output_dtypes,
     _store_binary_bool_as_int8,
     _store_unary_bool_as_int8,
     _wrap_fp8_accumulation,
+    choose_binary_strategy,
+    choose_unary_strategy,
+    default_launch_config,
+    elementwise_output_plan,
 )
-from ._strategy import BinaryStrategyPolicy, UnaryStrategyPolicy
 
 __all__ = [
     "BinaryKernel",
@@ -74,11 +52,61 @@ __all__ = [
 
 
 def _log_for_output_precision(value, wide):
-    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep.
-
-    A narrow result cannot keep the precision difference, so it takes the fast log.
-    """
+    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep."""
     return T.log(wide) if value.dtype == "float32" else T.__log(wide)
+
+
+def _validate_supported_dtype(kernel, dtype):
+    if kernel.SUPPORTED_DTYPES is None or dtype in kernel.SUPPORTED_DTYPES:
+        return
+    supported = ", ".join(str(dt) for dt in kernel.SUPPORTED_DTYPES)
+    raise ValueError(f"{kernel.__class__.__name__} only supports dtypes [{supported}], got {dtype}")
+
+
+def _elementwise_autotune_configs(dtype) -> list[dict]:
+    npts = [16, 32] if _is_fp8(dtype) else [2, 4, 8]
+    return [{"threads": t, "num_per_thread": n} for t in [128, 256, 512] for n in npts]
+
+
+def _autotune_or_default(kernel, warmup: int, rep: int, accepted_errors: tuple[str, ...]) -> None:
+    try:
+        Kernel.autotune(kernel, warmup=warmup, rep=rep)
+    except (AssertionError, Exception) as exc:
+        message = str(exc)
+        lower = message.lower()
+        if any(term in message or term in lower for term in accepted_errors):
+            warnings.warn(
+                f"{kernel.__class__.__name__} autotuning failed "
+                f"({message}); falling back to default_config.",
+                stacklevel=2,
+            )
+            kernel.config = dict(kernel.default_config)
+        else:
+            raise
+
+
+def _init_strategy_config(kernel, config=None, tune=False):
+    Kernel.init_config(kernel, config, tune)
+    kernel.config["strategy"] = kernel.strategy
+    cfg = kernel.config
+    if kernel.strategy == "direct":
+        kernel._compiled_fn = kernel.kernel(cfg["threads"])
+    else:
+        kernel._compiled_fn = kernel.kernel(cfg["threads"], cfg["num_per_thread"])
+
+
+def _init_parametric_config(kernel, config=None, tune=False):
+    Kernel.init_config(kernel, config, tune)
+    cfg = kernel.config
+    kernel._compiled_fn = kernel.kernel(cfg["threads"], cfg["num_per_thread"])
+
+
+def _postprocess_elementwise_result(kernel, result):
+    if getattr(kernel, "_bool_via_int8", False):
+        result = result.view(torch.bool)
+    if kernel._fp8_output_dtype is not None:
+        result = result.to(kernel._fp8_output_dtype)
+    return result
 
 
 class UnaryKernel(Kernel):
@@ -97,14 +125,12 @@ class UnaryKernel(Kernel):
             within the resolved strategy).
     """
 
-    #: Elementwise work is sized by the tensor shape: an integer operand is
-    #: data, and a ``uint8`` ``cond``/``mask`` only selects a result.
+    #: Integer tensors are data; uint8 cond/mask tensors only select results.
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    #: The fragment strategy. Measured on H200 at 16M and 256M fp16 over fourteen float
-    #: unaries, no body reads faster on the looping one.
+    #: Fragment copy is the measured default for float unaries.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
@@ -116,22 +142,23 @@ class UnaryKernel(Kernel):
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
-        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
+        _validate_supported_dtype(self, dtype)
         self.N_total = N_total
         self.dtype = dtype
         requested = (config or {}).get("strategy")
-        self.strategy = UnaryStrategyPolicy(self.STRATEGIES, self.DEFAULT_STRATEGY).choose(
+        self.strategy = choose_unary_strategy(
             requested=requested,
+            strategies=self.STRATEGIES,
+            default_strategy=self.DEFAULT_STRATEGY,
             input_dtype=dtype,
             declared_output_dtype=self.OUTPUT_DTYPE,
         )
-        # A bool result goes through int8 wherever a fragment carries it: the store is
-        # then an ordinary byte store, so nothing caps ``num_per_thread``.
-        self.output_plan = ElementwiseOutputPlan.for_unary(dtype, self.OUTPUT_DTYPE, self.strategy)
+        self.output_plan = elementwise_output_plan(
+            dtype,
+            self.OUTPUT_DTYPE,
+            strategy=self.strategy,
+            bool_storage=True,
+        )
         self.output_dtype = self.output_plan.logical_dtype
         self._fp8_output_dtype = self.output_plan.post_cast_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
@@ -139,12 +166,6 @@ class UnaryKernel(Kernel):
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
-        """Return op_func wrapped for the output the kernel declares.
-
-        A bool result is wrapped to land as ``_BOOL_STORAGE_DTYPE``; otherwise fp8
-        accumulation is the only wrapping, via ``_wrap_fp8_accumulation``. When
-        ``OUTPUT_DTYPE`` is set the kernel already outputs a non-fp8 type.
-        """
         if self._bool_via_int8:
             return _store_unary_bool_as_int8(self.op_func)
         if self.OUTPUT_DTYPE is not None:
@@ -189,79 +210,28 @@ class UnaryKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return _LAUNCH_POLICY.default_config(
+        return default_launch_config(
             strategy=self.strategy,
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
             n_total=self.N_total,
             stores_bool=not self._bool_via_int8,
-        ).as_dict()
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
-
-        Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound unary elementwise kernels. "strategy" is a
-        build-time config key (it selects the kernel body, not a JIT
-        parameter), so it is excluded from the sweep.
-        """
-        if _is_fp8(self.dtype):
-            # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
-            threads_opts = [128, 256, 512]
-            npt_opts = [16, 32]
-        else:
-            # fp16 / bf16 / fp32
-            threads_opts = [128, 256, 512]
-            npt_opts = [2, 4, 8]
-        return [{"threads": t, "num_per_thread": n} for t in threads_opts for n in npt_opts]
+        return _elementwise_autotune_configs(self.dtype)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle serialization failures in the TileLang autotuner.
-
-        UnaryKernel JIT functions capture op_func closures that the autotuner
-        subprocess cannot serialize.  Catch the error and fall back to the
-        default config so that ``tune=True`` never crashes.
-        """
-        import warnings
-
-        try:
-            super().autotune(warmup=warmup, rep=rep)
-        except (AssertionError, Exception) as exc:
-            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
-                warnings.warn(
-                    f"{self.__class__.__name__} autotuning failed "
-                    f"(op_func is not serializable); falling back to "
-                    f"default_config.",
-                    stacklevel=2,
-                )
-                self.config = dict(self.default_config)
-            else:
-                raise
+        _autotune_or_default(self, warmup, rep, ("not serializable", "pickle"))
 
     def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        # Record the resolved strategy so ``self.config`` is the single source of
-        # truth for it, whether the request was coerced, downgraded or autotuned.
-        self.config["strategy"] = self.strategy
-        # Pre-compile and cache the kernel function for the chosen config
-        # to avoid JIT lookup overhead on every forward() call.
-        cfg = self.config
-        if self.strategy == "direct":
-            self._compiled_fn = self.kernel(cfg["threads"])
-        else:
-            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        _init_strategy_config(self, config, tune)
 
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(_flat(x))
-        if self._bool_via_int8:
-            # 0 and 1 in int8 are bool's own byte patterns, so this copies nothing.
-            result = result.view(torch.bool)
-        if self._fp8_output_dtype is not None:
-            result = result.to(self._fp8_output_dtype)
-        return result.reshape(x.shape)
+        return _postprocess_elementwise_result(self, result).reshape(x.shape)
 
 
 class BinaryKernel(Kernel):
@@ -287,8 +257,7 @@ class BinaryKernel(Kernel):
         N_total: Total output elements.
     """
 
-    #: Elementwise work is sized by the tensor shape: an integer operand is
-    #: data, and a ``uint8`` ``cond``/``mask`` only selects a result.
+    #: Integer tensors are data; uint8 cond/mask tensors only select results.
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -304,22 +273,14 @@ class BinaryKernel(Kernel):
 
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
         super().__init__()
-        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
+        _validate_supported_dtype(self, dtype)
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
-        # Index representation is the kernel's own choice: collapse the
-        # broadcast into the fewest dims the divmod chain has to walk.
         out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
             self.a_shape,
             self.b_shape,
         )
         self.out_shape = out_shape
-        # What a caller gets back. ``out_shape`` is the coalesced index space, which
-        # normalizes a 0-dim operand to one axis; two 0-dim operands broadcast to ``()``.
         self.result_shape = tuple(torch.broadcast_shapes(self.a_shape, self.b_shape))
         self.N_total = math.prod(out_shape)
         self.a_numel = math.prod(self.a_shape)
@@ -334,14 +295,20 @@ class BinaryKernel(Kernel):
             b_strides,
         )
         requested = (config or {}).get("strategy")
-        self.strategy = BinaryStrategyPolicy(self.STRATEGIES, self.DEFAULT_STRATEGY).choose(
+        self.strategy = choose_binary_strategy(
             requested=requested,
+            strategies=self.STRATEGIES,
+            default_strategy=self.DEFAULT_STRATEGY,
             input_dtype=dtype,
             declared_output_dtype=self.OUTPUT_DTYPE,
             same_shape=self._same_shape,
         )
-        # As in UnaryKernel: a bool result rides in an int8 fragment where there is one.
-        self.output_plan = ElementwiseOutputPlan.for_binary(dtype, self.OUTPUT_DTYPE, self.strategy)
+        self.output_plan = elementwise_output_plan(
+            dtype,
+            self.OUTPUT_DTYPE,
+            strategy=self.strategy,
+            bool_storage=True,
+        )
         self.output_dtype = self.output_plan.logical_dtype
         self._fp8_output_dtype = self.output_plan.post_cast_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
@@ -349,12 +316,6 @@ class BinaryKernel(Kernel):
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
-        """Return op_func wrapped for the output the kernel declares.
-
-        A bool result is wrapped to land as ``_BOOL_STORAGE_DTYPE``; otherwise fp8
-        accumulation is the only wrapping, via ``_wrap_fp8_accumulation`` (arity=2). When
-        ``OUTPUT_DTYPE`` is set the kernel already outputs a non-fp8 type.
-        """
         if self._bool_via_int8:
             return _store_binary_bool_as_int8(self.op_func)
         if self.OUTPUT_DTYPE is not None:
@@ -410,79 +371,33 @@ class BinaryKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return _LAUNCH_POLICY.default_config(
+        return default_launch_config(
             strategy=self.strategy,
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
             n_total=self.N_total,
             stores_bool=not self._bool_via_int8,
-        ).as_dict()
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
-
-        Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound binary elementwise kernels.
-        """
-        if _is_fp8(self.dtype):
-            # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
-            threads_opts = [128, 256, 512]
-            npt_opts = [16, 32]
-        else:
-            # fp16 / bf16 / fp32
-            threads_opts = [128, 256, 512]
-            npt_opts = [2, 4, 8]
-        return [{"threads": t, "num_per_thread": n} for t in threads_opts for n in npt_opts]
+        return _elementwise_autotune_configs(self.dtype)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle known TileLang autotuner fallback failures.
-
-        BinaryKernel JIT functions capture op_func closures that the autotuner
-        subprocess cannot serialize.  Newer TileLang binders can also reject
-        the autotune wrapper signature.  Catch these errors and fall back to
-        the default config so that ``tune=True`` never crashes.
-        """
-        import warnings
-
-        try:
-            super().autotune(warmup=warmup, rep=rep)
-        except (AssertionError, Exception) as exc:
-            message = str(exc)
-            if (
-                "not serializable" in message
-                or "pickle" in message.lower()
-                or "missing a required argument" in message
-            ):
-                warnings.warn(  # noqa: B028
-                    f"{self.__class__.__name__} autotuning failed "
-                    f"({message}); falling back to default_config."
-                )
-                self.config = dict(self.default_config)
-            else:
-                raise
+        _autotune_or_default(
+            self,
+            warmup,
+            rep,
+            ("not serializable", "pickle", "missing a required argument"),
+        )
 
     def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        self.config["strategy"] = self.strategy
-        # Pre-compile and cache the kernel function for the chosen config
-        # to avoid JIT lookup overhead on every forward() call.
-        cfg = self.config
-        if self.strategy == "direct":
-            self._compiled_fn = self.kernel(cfg["threads"])
-        else:
-            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        _init_strategy_config(self, config, tune)
 
     def forward(self, a, b):
         self._require_cuda(a=a, b=b)
         result = self._compiled_fn(_flat(a), _flat(b))
-        if self._bool_via_int8:
-            # 0 and 1 in int8 are bool's own byte patterns, so this copies nothing.
-            result = result.view(torch.bool)
-        if self._fp8_output_dtype is not None:
-            result = result.to(self._fp8_output_dtype)
-        return result.reshape(self.result_shape)
+        return _postprocess_elementwise_result(self, result).reshape(self.result_shape)
 
 
 class FusedGatedKernel(Kernel):
@@ -504,16 +419,11 @@ class FusedGatedKernel(Kernel):
             within the resolved strategy).
     """
 
-    #: Elementwise work is sized by the tensor shape: an integer operand is
-    #: data, and a ``uint8`` ``cond``/``mask`` only selects a result.
+    #: Integer tensors are data; uint8 cond/mask tensors only select results.
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]
-    # Benchmark (H200, 4096x4096 fp16): explicit_parallel ~2x faster than direct
-    #   silu_and_mul:       3.04 TB/s explicit vs 1.50 TB/s direct
-    #   gelu_and_mul:       2.72 TB/s explicit vs 1.47 TB/s direct
-    #   gelu_tanh_and_mul:  3.38 TB/s explicit vs 1.51 TB/s direct
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
@@ -524,11 +434,7 @@ class FusedGatedKernel(Kernel):
 
     def __init__(self, M, N, dtype, config=None, tune=False):
         super().__init__()
-        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
+        _validate_supported_dtype(self, dtype)
         self.M = M
         self.N = N
         self.dtype = dtype
@@ -537,7 +443,7 @@ class FusedGatedKernel(Kernel):
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
             )
-        self.output_plan = ElementwiseOutputPlan.for_fused_gated(dtype)
+        self.output_plan = elementwise_output_plan(dtype)
         self.output_dtype = self.output_plan.logical_dtype
         self._fp8_output_dtype = self.output_plan.post_cast_dtype
         self._kernel_output_dtype = (
@@ -547,11 +453,6 @@ class FusedGatedKernel(Kernel):
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
-        """Return compound op ``(gate, value) -> activation(gate) * value``.
-
-        Delegates to the shared ``_wrap_fp8_accumulation`` helper (arity=2)
-        so that fp8 cast-in / cast-out logic is centralised.
-        """
         act = self.activation_func
 
         def fused_op(gate, value):
@@ -587,86 +488,38 @@ class FusedGatedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
-            return _LAUNCH_POLICY.default_config(
+            return default_launch_config(
                 strategy=self.strategy,
                 input_dtype=self.dtype,
                 output_dtype=self.output_dtype,
                 n_total=self.M * self.N,
-            ).as_dict()
+            )
         if self.strategy == "explicit_parallel":
-            # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
-            # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128, and
-            # measured on H200 over 4096x4096 and 2048x14336 fp32 the two thread counts
-            # tie, so it keeps the wider block.
             if self.dtype in (torch.float16, torch.bfloat16):
                 return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
             if self.dtype == torch.float32:
                 return {"strategy": self.strategy, "threads": 256, "num_per_thread": 4}
-        return _LAUNCH_POLICY.default_config(
+        return default_launch_config(
             strategy=self.strategy,
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
             n_total=self.M * self.N,
-        ).as_dict()
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
-
-        Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound fused gated elementwise kernels.
-        """
-        if _is_fp8(self.dtype):
-            # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
-            threads_opts = [128, 256, 512]
-            npt_opts = [16, 32]
-        else:
-            # fp16 / bf16 / fp32
-            threads_opts = [128, 256, 512]
-            npt_opts = [2, 4, 8]
-        return [{"threads": t, "num_per_thread": n} for t in threads_opts for n in npt_opts]
+        return _elementwise_autotune_configs(self.dtype)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle serialization failures in the TileLang autotuner.
-
-        FusedGatedKernel JIT functions capture activation_func closures that
-        the autotuner subprocess cannot serialize.  Catch the error and fall
-        back to the default config so that ``tune=True`` never crashes.
-        """
-        import warnings
-
-        try:
-            super().autotune(warmup=warmup, rep=rep)
-        except (AssertionError, Exception) as exc:
-            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
-                warnings.warn(
-                    f"{self.__class__.__name__} autotuning failed "
-                    f"(activation_func is not serializable); falling back to "
-                    f"default_config.",
-                    stacklevel=2,
-                )
-                self.config = dict(self.default_config)
-            else:
-                raise
+        _autotune_or_default(self, warmup, rep, ("not serializable", "pickle"))
 
     def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        self.config["strategy"] = self.strategy
-        # Pre-compile and cache the kernel function for the chosen config
-        # to avoid JIT lookup overhead on every forward() call.
-        cfg = self.config
-        if self.strategy == "direct":
-            self._compiled_fn = self.kernel(cfg["threads"])
-        else:
-            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        _init_strategy_config(self, config, tune)
 
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(x)
-        if self._fp8_output_dtype is not None:
-            result = result.to(self._fp8_output_dtype)
-        return result
+        return _postprocess_elementwise_result(self, result)
 
 
 class FloatUnaryKernel(UnaryKernel):
@@ -676,22 +529,14 @@ class FloatUnaryKernel(UnaryKernel):
 
 
 class FloatPredicateKernel(FloatUnaryKernel):
-    """Unary kernel base for float predicates with bool output.
-
-    Takes the fragment strategy, which is what lets the bool result ride in an int8
-    fragment instead of being stored as bool.
-    """
+    """Unary kernel base for float predicates with bool output."""
 
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = torch.bool
 
 
 class LogicalUnaryKernel(UnaryKernel):
-    """Unary kernel base for logical predicates with bool output.
-
-    As ``FloatPredicateKernel``: the fragment strategy carries the result as int8. A
-    dtype the vectorized load cannot lower is still forced to the scalar path.
-    """
+    """Unary kernel base for logical predicates with bool output."""
 
     DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
@@ -699,11 +544,7 @@ class LogicalUnaryKernel(UnaryKernel):
 
 
 class _Uint8StorageUnaryKernel(UnaryKernel):
-    """Unary kernel that computes on uint8 but accepts and returns bool.
-
-    Reinterpreting bool storage as uint8 is this backend's requirement, not part
-    of the op's semantics, so the reinterpretation happens here.
-    """
+    """Unary kernel that computes on uint8 but accepts and returns bool."""
 
     DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = (torch.uint8,)
@@ -721,13 +562,7 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
 
 
 class _Uint8StorageBinaryKernel(BinaryKernel):
-    """Binary kernel that computes on uint8 but accepts and returns bool.
-
-    Reinterpreting bool storage as uint8 is this backend's requirement, not part
-    of the op's semantics, so the reinterpretation happens here. Callers pass
-    bool tensors and get a bool result; a caller that already holds uint8 is
-    passed through unchanged.
-    """
+    """Binary kernel that computes on uint8 but accepts and returns bool."""
 
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = (torch.uint8,)
@@ -860,21 +695,14 @@ class ParametricUnaryKernel(Kernel):
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
+        _validate_supported_dtype(self, dtype)
         self.N_total = N_total
         self.dtype = dtype
-        # fp8 output handling
         if self._skip_fp8_output:
             self._fp8_output_dtype = None
         else:
             self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        # Post-fp8 parameter processing (e.g. clamping scalars to output dtype range)
         self._post_init_params()
-        # Build the kernel via the subclass-provided builder
         cfg = self.default_config
         builder_kwargs = {
             "is_fp8": _is_fp8(dtype),
@@ -907,11 +735,7 @@ class ParametricUnaryKernel(Kernel):
         return ()
 
     def _post_init_params(self):
-        """Hook called after fp8 output dtypes are set, before kernel build.
-
-        Override to clamp scalar parameters to the output dtype range (e.g.
-        MaskedFill, NanToNum).
-        """
+        """Hook called after fp8 output dtypes are set, before kernel build."""
 
     @property
     def default_config(self):
@@ -924,14 +748,9 @@ class ParametricUnaryKernel(Kernel):
         return {"threads": self._DEFAULT_THREADS, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        _init_parametric_config(self, config, tune)
 
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(_flat(x))
-        if self._fp8_output_dtype is not None:
-            result = result.to(self._fp8_output_dtype)
-        return result.reshape(x.shape)
+        return _postprocess_elementwise_result(self, result).reshape(x.shape)
