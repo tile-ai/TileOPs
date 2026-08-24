@@ -10,6 +10,8 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool import MaxPool2dFwdOp
@@ -18,6 +20,14 @@ pytestmark = pytest.mark.smoke
 
 DTYPE = torch.float16
 NORMALIZED_SHAPE = (256,)
+
+
+def test_attention_call_non_cuda_device_never_falls_back_to_current_cuda():
+    """Kernel-side platform discovery follows the manifest input device exactly."""
+    call = AttentionCall.from_device(torch.device("cpu"), dtype=torch.float16)
+
+    assert call.arch == 0
+    assert call.h200 is False
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +81,189 @@ def _inputs(rows=4, shape=NORMALIZED_SHAPE, dtype=DTYPE, device="cpu"):
     x = torch.randn(rows, *shape, dtype=dtype, device=device)
     weight = torch.randn(*shape, dtype=dtype, device=device)
     return x, weight
+
+
+def test_dense_gqa_target_preserves_omitted_optional_inputs():
+    builds = []
+    runs = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(*inputs):
+            assert all(tensor is None or tensor.is_contiguous() for tensor in inputs)
+            runs.append(inputs)
+            return torch.empty_like(inputs[0], dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
+    op = GroupedQueryAttentionDenseFwdOp(
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.randn(2, 3, 4, 16, dtype=torch.float16)[..., ::2]
+    k = torch.randn(2, 3, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    assert not q.is_contiguous(), "the test must exercise boundary normalization"
+
+    output = op(q, k, v)
+    op(-q, k + 1, v - 1)
+
+    assert output.shape == q.shape
+    assert len(builds) == 1, "one input signature builds one external callable"
+    specs, params = builds[0]
+    assert specs == tuple(None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0])
+    assert params == {
+        "is_causal": True,
+        "sm_scale": 8**-0.5,
+        "softcap": 0.0,
+        "window_size_left": -1,
+        "window_size_right": -1,
+        "dtype": torch.float16,
+        "pos_encoding_mode": "none",
+        "rotary_dim": None,
+        "rope_layout": "neox",
+    }
+    assert tuple(params) == op.__manifest_param_names__
+    assert len(runs[0]) == 8
+    assert runs[0][3:] == (None, None, None, None, None)
+    assert len(runs) == 2, "one callable serves different contents of one signature"
+    assert not torch.equal(runs[0][0], runs[1][0])
+    assert runs[0][0].shape == q.shape, "external Dense ABI stays BSHD"
+
+
+def test_dense_gqa_target_gets_rope_configuration_and_caller_owned_tables():
+    builds = []
+    runs = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(*inputs):
+            runs.append(inputs)
+            return torch.empty_like(inputs[0])
+
+        return kernel
+
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
+    op = GroupedQueryAttentionDenseFwdOp(
+        pos_encoding_mode="rope",
+        rotary_dim=4,
+        rope_layout="interleaved",
+        target="gqa_fake",
+    )
+    q = torch.randn(1, 3, 4, 8, dtype=torch.float16)
+    k = torch.randn(1, 3, 2, 8, dtype=torch.float16)
+    v = torch.randn_like(k)
+    rope_cos = torch.randn(3, 2, dtype=torch.float16)
+    rope_sin = torch.randn_like(rope_cos)
+
+    output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
+
+    assert output.shape == q.shape
+    assert len(builds) == 1
+    specs, params = builds[0]
+    assert len(specs) == len(runs[0]) == 8
+    assert specs[3:6] == (None, None, None)
+    assert runs[0][3:6] == (None, None, None)
+    assert specs[6:] == (TensorSpec.of(rope_cos), TensorSpec.of(rope_sin))
+    assert params["pos_encoding_mode"] == "rope"
+    assert params["rotary_dim"] == 4
+    assert params["rope_layout"] == "interleaved"
+    assert params["sm_scale"] == 8**-0.5
+    assert params["dtype"] == torch.float16
+    assert specs[0].dtype == torch.float16
+
+
+def test_dense_gqa_external_builder_gets_defaults_resolved_per_signature():
+    params_seen = []
+
+    def build_kernel(*specs, **params):
+        params_seen.append(params)
+
+        def kernel(*inputs):
+            q = inputs[0]
+            return torch.empty_like(q, dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_detector("gqa_fake", lambda device: device.type == "cpu")
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
+    op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=False,
+        pos_encoding_mode="rope",
+        target="gqa_fake",
+    )
+
+    for dim in (8, 16):
+        q = torch.randn(1, 3, 4, dim, dtype=torch.float16)
+        k = torch.randn(1, 3, 2, dim, dtype=torch.float16)
+        table = torch.randn(3, dim // 2, dtype=torch.float16)
+        op(q, k, torch.randn_like(k), rope_cos=table, rope_sin=table)
+
+    assert [params["sm_scale"] for params in params_seen] == [8**-0.5, 16**-0.5]
+    assert [params["rotary_dim"] for params in params_seen] == [8, 16]
+    assert [params["dtype"] for params in params_seen] == [torch.float16, torch.float16]
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
+def test_dense_gqa_target_preserves_present_optional_inputs():
+    builds = []
+    runs = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+
+        def kernel(*inputs):
+            runs.append(inputs)
+            return torch.empty_like(inputs[0], dtype=params["dtype"])
+
+        return kernel
+
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
+    op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=False,
+        dtype=torch.float16,
+        target="gqa_fake",
+    )
+    q = torch.empty((1, 3, 8, 128), dtype=torch.float8_e4m3fn)
+    k = torch.empty((1, 3, 2, 128), dtype=torch.float8_e4m3fn)
+    v = torch.empty_like(k)
+    scales = torch.ones((1, 2), dtype=torch.float32)
+
+    output = op(q, k, v, scales, scales, scales)
+
+    assert output.dtype == torch.float16
+    assert len(builds) == 1
+    specs, _ = builds[0]
+    assert len(specs) == len(runs[0]) == 8
+    assert all(spec is not None for spec in specs[:6])
+    assert specs[6:] == (None, None)
+    assert runs[0][6:] == (None, None)
+    assert specs == tuple(None if tensor is None else TensorSpec.of(tensor) for tensor in runs[0])
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
+def test_dense_gqa_rejects_fp8_without_output_dtype_before_external_builder():
+    builds = []
+
+    def build_kernel(*specs, **params):
+        builds.append((specs, params))
+        raise AssertionError("an invalid public call must not reach the target")
+
+    registry.register_kernel_builder("GroupedQueryAttentionDenseFwdOp", "gqa_fake", build_kernel)
+    op = GroupedQueryAttentionDenseFwdOp(
+        target="gqa_fake",
+    )
+    q = torch.empty((1, 3, 8, 128), dtype=torch.float8_e4m3fn)
+    k = torch.empty((1, 3, 2, 128), dtype=torch.float8_e4m3fn)
+    v = torch.empty_like(k)
+
+    with pytest.raises(ValueError, match="dtype must select a float16 or bfloat16"):
+        op(q, k, v)
+
+    assert builds == []
 
 
 # --------------------------------------------------------------------------------------

@@ -27,7 +27,7 @@ from .call_spec import (
     causal_ws_prefill_region,
     square_ws_prefill_region,
 )
-from .packed_prefill import PackedPrefillKernel
+from .prefill import DensePrefillKernel
 
 __all__ = ["GQAPrefillFwdWsPersistentCausalKernel"]
 
@@ -433,13 +433,14 @@ def _gqa_prefill_fwd_fa3_kernel(
     return main
 
 
-class GQAPrefillFwdWsPersistentCausalKernel(PackedPrefillKernel):
+class GQAPrefillFwdWsPersistentCausalKernel(DensePrefillKernel):
     """Faithful FlashInfer FA3 GQA-prefill kernel (causal, dim==128, sm90).
 
     Warp-specialized 2-warpgroup ping-pong port matching FlashInfer's
     ``single_prefill_sm90``. Selected by the prefill op on Hopper for the
-    fp16/bf16 causal dim-128 path; other cases fall back to ``GQAPrefillFwdKernel``. Causal
-    uses bottom-right alignment (``co = seq_len_kv - seq_len_q``).
+    fp16/bf16 causal dim-128 path; other cases fall back to
+    ``GQAPrefillDenseFwdKernel``. Causal uses bottom-right alignment
+    (``co = seq_len_kv - seq_len_q``).
 
     Note: like FlashInfer's forward inference kernel, this emits output only. A
     backward pass that needs log-sum-exp must compute it separately.
@@ -485,11 +486,10 @@ class GQAPrefillFwdWsPersistentCausalKernel(PackedPrefillKernel):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
-        return self.kernel(q_bshd, k_bshd, v_bshd).reshape(q.shape)
+        return self.kernel(q, k, v)

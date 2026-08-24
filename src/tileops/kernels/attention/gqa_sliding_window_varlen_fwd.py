@@ -24,7 +24,7 @@ from .online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from .packed_prefill import PackedPrefillKernel
+from .prefill import PackedPrefillKernel
 
 __all__ = [
     "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
