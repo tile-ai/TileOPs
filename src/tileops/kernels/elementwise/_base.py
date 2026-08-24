@@ -28,6 +28,7 @@ follows from the format: e4m3fn has no Inf, so a saturating ``T.Cast`` clamping 
 import functools
 import math
 import warnings
+from dataclasses import dataclass
 
 import tilelang
 import tilelang.language as T
@@ -45,10 +46,6 @@ __all__ = [
     "UnaryKernel",
     "coalesce_broadcast_dims",
 ]
-
-#: Threads per block for memory-bound elementwise kernels.
-_DEFAULT_THREADS: int = 128
-
 
 _BITWISE_DTYPES = (
     torch.bool,
@@ -96,17 +93,6 @@ def _torch_dtype_nbytes(dtype: torch.dtype) -> int:
     return torch.empty(0, dtype=dtype).element_size()
 
 
-#: Bytes one thread reads by default: one 128-bit access.
-_BYTES_PER_THREAD: int = 16
-
-#: Floor on elements per thread, so a wide dtype keeps a loop to vectorize.
-_MIN_NUM_PER_THREAD: int = 4
-
-#: Ceiling on elements per thread for a bool result stored as bool. TileLang plans a
-#: ``boolx8`` for a vectorized bool value and the CUDA codegen has no type for it. Only
-#: the paths that cannot route through ``_BOOL_STORAGE_DTYPE`` pay this.
-_BOOL_OUTPUT_MAX_NUM_PER_THREAD: int = 4
-
 #: What a bool result is written through where the kernel can choose. int8 is the same
 #: width as bool and 0/1 are the same two byte patterns, so the bool view copies nothing.
 _BOOL_STORAGE_DTYPE: str = "int8"
@@ -138,76 +124,309 @@ def _store_binary_bool_as_int8(op_func):
     return wrapped
 
 
-#: Threads a block may hold, the CUDA limit.
-_MAX_THREADS: int = 1024
+@dataclass(frozen=True)
+class ElementwiseLaunchConfig:
+    """Concrete launch knobs for one elementwise specialization."""
 
-#: Blocks a launch aims for before trading elements per thread for more blocks.
-_TARGET_BLOCKS: int = 256
+    strategy: str
+    threads: int
+    num_per_thread: int
 
-
-def _base_num_per_thread(dtype: torch.dtype) -> int:
-    """Return the dtype-width default before output and shape adjustments."""
-    elem_bytes = _torch_dtype_nbytes(dtype)
-    return max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
-
-
-def _adjust_for_bool_output(
-    threads: int,
-    npt: int,
-    output_dtype: torch.dtype | None,
-    stores_bool: bool,
-) -> tuple[int, int, bool]:
-    """Apply the vectorized-bool store cap when the result is really stored as bool."""
-    if output_dtype != torch.bool or not stores_bool:
-        return threads, npt, False
-    capped = min(npt, _BOOL_OUTPUT_MAX_NUM_PER_THREAD)
-    return min(_MAX_THREADS, threads * npt // capped), capped, True
+    def as_dict(self) -> dict:
+        """Return the config shape expected by ``Kernel.init_config``."""
+        return {
+            "strategy": self.strategy,
+            "threads": self.threads,
+            "num_per_thread": self.num_per_thread,
+        }
 
 
-def _adjust_for_narrow_output(
-    npt: int,
-    dtype: torch.dtype,
-    output_dtype: torch.dtype | None,
-) -> int:
-    """Give a narrower output two input-width accesses per thread."""
-    elem_bytes = _torch_dtype_nbytes(dtype)
-    stored_bytes = _torch_dtype_nbytes(output_dtype or dtype)
-    return npt * 2 if stored_bytes < elem_bytes else npt
+@dataclass(frozen=True)
+class ElementwiseLaunchPolicy:
+    """Heuristics that turn element dtype and shape into launch knobs."""
 
+    default_threads: int = 128
+    bytes_per_thread: int = 16
+    min_num_per_thread: int = 4
+    bool_output_max_num_per_thread: int = 4
+    max_threads: int = 1024
+    target_blocks: int = 256
+    fp8_num_per_thread: int = 16
 
-def _shrink_npt_for_small_tensor(
-    strategy: str,
-    n_total: int | None,
-    threads: int,
-    npt: int,
-) -> int:
-    """Trade per-thread width for more blocks on small non-direct launches."""
-    if n_total is None or strategy == "direct":
+    def default_config(
+        self,
+        *,
+        strategy: str,
+        input_dtype: torch.dtype,
+        output_dtype: torch.dtype,
+        n_total: int | None,
+        stores_bool: bool = True,
+    ) -> ElementwiseLaunchConfig:
+        """Return the default launch config for this specialization.
+
+        The rule order is significant: fp8 keeps its historical 128-bit default;
+        otherwise start from input width, cap real bool stores, widen for narrow
+        non-bool outputs, then shrink small non-direct launches.
+        """
+        if _is_fp8(input_dtype):
+            return ElementwiseLaunchConfig(
+                strategy=strategy,
+                threads=self.default_threads,
+                num_per_thread=self.fp8_num_per_thread,
+            )
+        threads = self.default_threads
+        npt = self._base_num_per_thread(input_dtype)
+        threads, npt, handled_bool = self._adjust_for_bool_output(
+            threads,
+            npt,
+            output_dtype,
+            stores_bool,
+        )
+        if not handled_bool:
+            npt = self._adjust_for_narrow_output(npt, input_dtype, output_dtype)
+        npt = self._shrink_npt_for_small_tensor(strategy, n_total, threads, npt)
+        return ElementwiseLaunchConfig(strategy=strategy, threads=threads, num_per_thread=npt)
+
+    def _base_num_per_thread(self, dtype: torch.dtype) -> int:
+        elem_bytes = _torch_dtype_nbytes(dtype)
+        return max(self.min_num_per_thread, self.bytes_per_thread // elem_bytes)
+
+    def _adjust_for_bool_output(
+        self,
+        threads: int,
+        npt: int,
+        output_dtype: torch.dtype,
+        stores_bool: bool,
+    ) -> tuple[int, int, bool]:
+        if output_dtype != torch.bool or not stores_bool:
+            return threads, npt, False
+        capped = min(npt, self.bool_output_max_num_per_thread)
+        return min(self.max_threads, threads * npt // capped), capped, True
+
+    def _adjust_for_narrow_output(
+        self,
+        npt: int,
+        input_dtype: torch.dtype,
+        output_dtype: torch.dtype,
+    ) -> int:
+        elem_bytes = _torch_dtype_nbytes(input_dtype)
+        stored_bytes = _torch_dtype_nbytes(output_dtype)
+        return npt * 2 if stored_bytes < elem_bytes else npt
+
+    def _shrink_npt_for_small_tensor(
+        self,
+        strategy: str,
+        n_total: int | None,
+        threads: int,
+        npt: int,
+    ) -> int:
+        if n_total is None or strategy == "direct":
+            return npt
+        while npt > self.min_num_per_thread and n_total < threads * npt * self.target_blocks:
+            npt //= 2
         return npt
-    while npt > _MIN_NUM_PER_THREAD and n_total < threads * npt * _TARGET_BLOCKS:
-        npt //= 2
-    return npt
 
 
-def _launch_shape(
-    strategy: str,
-    dtype: torch.dtype,
-    output_dtype=None,
-    n_total=None,
-    stores_bool: bool = True,
-) -> tuple[int, int]:
-    """Return the ``(threads, num_per_thread)`` one launch runs with.
+_LAUNCH_POLICY = ElementwiseLaunchPolicy()
+_DEFAULT_THREADS: int = _LAUNCH_POLICY.default_threads
 
-    The rule order is significant: start from the input width, cap real bool stores,
-    widen for narrow non-bool outputs, then shrink small non-direct launches.
-    """
-    threads = _DEFAULT_THREADS
-    npt = _base_num_per_thread(dtype)
-    threads, npt, handled_bool = _adjust_for_bool_output(threads, npt, output_dtype, stores_bool)
-    if not handled_bool:
-        npt = _adjust_for_narrow_output(npt, dtype, output_dtype)
-    npt = _shrink_npt_for_small_tensor(strategy, n_total, threads, npt)
-    return threads, npt
+
+@dataclass(frozen=True)
+class ElementwiseOutputPlan:
+    """Storage decisions for one elementwise kernel specialization."""
+
+    logical_dtype: torch.dtype
+    kernel_output_dtype: str | None
+    post_cast_dtype: torch.dtype | None = None
+    bool_via_int8: bool = False
+
+    @classmethod
+    def for_unary(
+        cls,
+        input_dtype: torch.dtype,
+        declared_output_dtype: torch.dtype | None,
+        strategy: str,
+    ) -> "ElementwiseOutputPlan":
+        logical_dtype, post_cast_dtype = _logical_output_dtype(input_dtype, declared_output_dtype)
+        bool_via_int8 = declared_output_dtype == torch.bool and strategy == "register_copy"
+        return cls._from_parts(logical_dtype, post_cast_dtype, bool_via_int8)
+
+    @classmethod
+    def for_binary(
+        cls,
+        input_dtype: torch.dtype,
+        declared_output_dtype: torch.dtype | None,
+        strategy: str,
+    ) -> "ElementwiseOutputPlan":
+        logical_dtype, post_cast_dtype = _logical_output_dtype(input_dtype, declared_output_dtype)
+        bool_via_int8 = declared_output_dtype == torch.bool and strategy == "register_copy"
+        return cls._from_parts(logical_dtype, post_cast_dtype, bool_via_int8)
+
+    @classmethod
+    def for_fused_gated(cls, input_dtype: torch.dtype) -> "ElementwiseOutputPlan":
+        logical_dtype, post_cast_dtype = _logical_output_dtype(input_dtype, None)
+        return cls._from_parts(logical_dtype, post_cast_dtype, bool_via_int8=False)
+
+    @classmethod
+    def _from_parts(
+        cls,
+        logical_dtype: torch.dtype,
+        post_cast_dtype: torch.dtype | None,
+        bool_via_int8: bool,
+    ) -> "ElementwiseOutputPlan":
+        if bool_via_int8:
+            kernel_output_dtype = _BOOL_STORAGE_DTYPE
+        elif post_cast_dtype is not None:
+            kernel_output_dtype = _fp8_accum_dtype_str()
+        else:
+            kernel_output_dtype = Kernel.dtype_to_str(logical_dtype)
+        return cls(
+            logical_dtype=logical_dtype,
+            kernel_output_dtype=kernel_output_dtype,
+            post_cast_dtype=post_cast_dtype,
+            bool_via_int8=bool_via_int8,
+        )
+
+
+def _logical_output_dtype(
+    input_dtype: torch.dtype,
+    declared_output_dtype: torch.dtype | None,
+) -> tuple[torch.dtype, torch.dtype | None]:
+    """Return the logical output dtype and optional post-cast dtype."""
+    if (
+        declared_output_dtype is None
+        and _is_fp8(input_dtype)
+        and _fp8_needs_nonsaturating_cast(input_dtype)
+    ):
+        return torch.float16, input_dtype
+    return declared_output_dtype or input_dtype, None
+
+
+def _bool_output_needs_scalar(
+    input_dtype: torch.dtype,
+    declared_output_dtype: torch.dtype | None,
+) -> bool:
+    """Whether TileLang cannot lower this bool-output vectorized path."""
+    return declared_output_dtype == torch.bool and input_dtype in (
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+    )
+
+
+@dataclass(frozen=True)
+class UnaryStrategyPolicy:
+    """Strategy selection rules for one-input elementwise kernels."""
+
+    strategies: list[str]
+    default_strategy: str
+
+    def choose(
+        self,
+        *,
+        requested: str | None,
+        input_dtype: torch.dtype,
+        declared_output_dtype: torch.dtype | None,
+    ) -> str:
+        self._validate_requested(requested)
+        if input_dtype == torch.bool:
+            self._warn_direct_override(
+                requested,
+                "UnaryKernel: dtype=torch.bool requires strategy="
+                "'direct' (TileLang cannot lower vectorised boolx<N> "
+                "loads); overriding requested strategy={requested!r}.",
+            )
+            return "direct"
+        if _bool_output_needs_scalar(input_dtype, declared_output_dtype):
+            self._warn_direct_override(
+                requested,
+                "UnaryKernel: dtype={dtype} with torch.bool output "
+                "requires strategy='direct' (TileLang cannot lower "
+                "vectorised boolx<N> stores for sub-32-bit integer "
+                "inputs); overriding requested strategy={requested!r}.",
+                dtype=input_dtype,
+            )
+            return "direct"
+        if requested is None and _is_fp8(input_dtype):
+            return "explicit_parallel"
+        return requested or self.default_strategy
+
+    def _validate_requested(self, requested: str | None) -> None:
+        if requested is not None and requested not in self.strategies:
+            raise ValueError(f"Unknown strategy '{requested}', expected one of {self.strategies}")
+
+    @staticmethod
+    def _warn_direct_override(
+        requested: str | None,
+        template: str,
+        **kwargs,
+    ) -> None:
+        if requested is None or requested == "direct":
+            return
+        warnings.warn(
+            template.format(requested=requested, **kwargs),
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+@dataclass(frozen=True)
+class BinaryStrategyPolicy:
+    """Strategy selection rules for broadcast-capable binary elementwise kernels."""
+
+    strategies: list[str]
+    default_strategy: str
+
+    def choose(
+        self,
+        *,
+        requested: str | None,
+        input_dtype: torch.dtype,
+        declared_output_dtype: torch.dtype | None,
+        same_shape: bool,
+    ) -> str:
+        self._validate_requested(requested)
+        if input_dtype == torch.bool:
+            self._warn_direct_override(
+                requested,
+                "BinaryKernel: dtype=torch.bool requires strategy="
+                "'direct' (TileLang cannot lower vectorised boolx<N> "
+                "loads); overriding requested strategy={requested!r}.",
+            )
+            return "direct"
+        if _bool_output_needs_scalar(input_dtype, declared_output_dtype):
+            self._warn_direct_override(
+                requested,
+                "BinaryKernel: dtype={dtype} with torch.bool output "
+                "requires strategy='direct' (TileLang cannot lower "
+                "vectorised boolx<N> stores for sub-32-bit integer "
+                "inputs); overriding requested strategy={requested!r}.",
+                dtype=input_dtype,
+            )
+            return "direct"
+        if requested is not None:
+            if requested == "register_copy" and not same_shape:
+                return "explicit_parallel"
+            return requested
+        return "register_copy" if same_shape else self.default_strategy
+
+    def _validate_requested(self, requested: str | None) -> None:
+        if requested is not None and requested not in self.strategies:
+            raise ValueError(f"Unknown strategy '{requested}', expected one of {self.strategies}")
+
+    @staticmethod
+    def _warn_direct_override(
+        requested: str | None,
+        template: str,
+        **kwargs,
+    ) -> None:
+        if requested is None or requested == "direct":
+            return
+        warnings.warn(
+            template.format(requested=requested, **kwargs),
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _log_for_output_precision(value, wide):
@@ -816,61 +1035,18 @@ class UnaryKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
-        # Which fp8 dtype needs a post-cast, and why: module docstring.
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = self.OUTPUT_DTYPE or dtype
-        # Validate a config-requested strategy up front so typos raise the
-        # same ValueError regardless of dtype (the bool coercion below would
-        # otherwise silently accept an unknown strategy for bool inputs).
         requested = (config or {}).get("strategy")
-        if requested is not None and requested not in self.STRATEGIES:
-            raise ValueError(f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}")
-        # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads, which
-        # the CUDA codegen cannot lower. Keep bool inputs on the scalar path.
-        bool_output = torch.bool == self.OUTPUT_DTYPE
-        bool_output_needs_scalar = bool_output and dtype in (
-            torch.uint8,
-            torch.int8,
-            torch.int16,
+        self.strategy = UnaryStrategyPolicy(self.STRATEGIES, self.DEFAULT_STRATEGY).choose(
+            requested=requested,
+            input_dtype=dtype,
+            declared_output_dtype=self.OUTPUT_DTYPE,
         )
-        if dtype == torch.bool:
-            if requested is not None and requested != "direct":
-                warnings.warn(
-                    f"UnaryKernel: dtype=torch.bool requires strategy="
-                    f"'direct' (TileLang cannot lower vectorised boolx<N> "
-                    f"loads); overriding requested strategy={requested!r}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            self.strategy = "direct"
-        elif bool_output_needs_scalar:
-            if requested is not None and requested != "direct":
-                warnings.warn(
-                    f"UnaryKernel: dtype={dtype} with torch.bool output "
-                    f"requires strategy='direct' (TileLang cannot lower "
-                    f"vectorised boolx<N> stores for sub-32-bit integer "
-                    f"inputs); overriding requested strategy={requested!r}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            self.strategy = "direct"
-        # fp8: register_copy may not reliably handle 8-bit fragments;
-        # default to explicit_parallel for fp8 dtypes
-        elif requested is None and _is_fp8(dtype):
-            self.strategy = "explicit_parallel"
-        else:
-            self.strategy = requested or self.DEFAULT_STRATEGY
-        if self.strategy not in self.STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-            )
         # A bool result goes through int8 wherever a fragment carries it: the store is
         # then an ordinary byte store, so nothing caps ``num_per_thread``.
-        self._bool_via_int8 = bool_output and self.strategy == "register_copy"
+        self.output_plan = ElementwiseOutputPlan.for_unary(dtype, self.OUTPUT_DTYPE, self.strategy)
+        self.output_dtype = self.output_plan.logical_dtype
+        self._fp8_output_dtype = self.output_plan.post_cast_dtype
+        self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -921,19 +1097,17 @@ class UnaryKernel(Kernel):
 
     @property
     def output_dtype_str(self) -> str:
-        if self._bool_via_int8:
-            return _BOOL_STORAGE_DTYPE
-        return self.dtype_to_str(self.output_dtype)
+        return self.output_plan.kernel_output_dtype
 
     @property
     def default_config(self) -> dict:
-        if _is_fp8(self.dtype):
-            # fp8: 1 byte per element, 16 elements = 128-bit alignment
-            return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
-        threads, npt = _launch_shape(
-            self.strategy, self.dtype, self.output_dtype, self.N_total, not self._bool_via_int8
-        )
-        return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
+        return _LAUNCH_POLICY.default_config(
+            strategy=self.strategy,
+            input_dtype=self.dtype,
+            output_dtype=self.output_dtype,
+            n_total=self.N_total,
+            stores_bool=not self._bool_via_int8,
+        ).as_dict()
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1063,12 +1237,6 @@ class BinaryKernel(Kernel):
         self.a_numel = math.prod(self.a_shape)
         self.b_numel = math.prod(self.b_shape)
         self.dtype = dtype
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
@@ -1077,64 +1245,18 @@ class BinaryKernel(Kernel):
             a_strides,
             b_strides,
         )
-        # Validate a config-requested strategy up front so typos raise the
-        # same ValueError regardless of dtype (the bool override below
-        # otherwise silently accepts an unknown strategy for bool inputs).
         requested = (config or {}).get("strategy")
-        if requested is not None and requested not in self.STRATEGIES:
-            raise ValueError(f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}")
-        # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads /
-        # stores, which the CUDA codegen cannot lower. Force the scalar
-        # ``direct`` strategy for bool inputs regardless of caller request.
-        bool_input = dtype == torch.bool
-        bool_output = torch.bool == self.OUTPUT_DTYPE
-        bool_output_needs_scalar = bool_output and dtype in (
-            torch.uint8,
-            torch.int8,
-            torch.int16,
+        self.strategy = BinaryStrategyPolicy(self.STRATEGIES, self.DEFAULT_STRATEGY).choose(
+            requested=requested,
+            input_dtype=dtype,
+            declared_output_dtype=self.OUTPUT_DTYPE,
+            same_shape=self._same_shape,
         )
-        if bool_input:
-            if requested is not None and requested != "direct":
-                warnings.warn(
-                    f"BinaryKernel: dtype=torch.bool requires strategy="
-                    f"'direct' (TileLang cannot lower vectorised boolx<N> "
-                    f"loads); overriding requested strategy={requested!r}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            self.strategy = "direct"
-        elif bool_output_needs_scalar:
-            if requested is not None and requested != "direct":
-                warnings.warn(
-                    f"BinaryKernel: dtype={dtype} with torch.bool output "
-                    f"requires strategy='direct' (TileLang cannot lower "
-                    f"vectorised boolx<N> stores for sub-32-bit integer "
-                    f"inputs); overriding requested strategy={requested!r}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            self.strategy = "direct"
-        elif requested is not None:
-            # register_copy requires same-shape contiguous inputs (no
-            # broadcast); silently downgrade to explicit_parallel when
-            # the caller requests register_copy on broadcast shapes.
-            if requested == "register_copy" and not self._same_shape:
-                self.strategy = "explicit_parallel"
-            else:
-                self.strategy = requested
-        elif self._same_shape:
-            # register_copy gives vectorized 128-bit loads, ~2-3x faster
-            # for complex op_funcs that block TVM's auto-vectorizer, and it is where a
-            # bool result can be carried as int8 rather than stored as bool.
-            self.strategy = "register_copy"
-        else:
-            self.strategy = self.DEFAULT_STRATEGY
-        if self.strategy not in self.STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-            )
         # As in UnaryKernel: a bool result rides in an int8 fragment where there is one.
-        self._bool_via_int8 = bool_output and self.strategy == "register_copy"
+        self.output_plan = ElementwiseOutputPlan.for_binary(dtype, self.OUTPUT_DTYPE, self.strategy)
+        self.output_dtype = self.output_plan.logical_dtype
+        self._fp8_output_dtype = self.output_plan.post_cast_dtype
+        self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -1154,14 +1276,11 @@ class BinaryKernel(Kernel):
     def _build_kernel(self, strategy):
         cfg = self.default_config
         effective_op = self._get_effective_op_func()
-        # For e5m2: kernel output is fp16 (non-saturating path)
         kernel_output_dtype = (
-            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+            self.output_plan.kernel_output_dtype
+            if self.OUTPUT_DTYPE is not None or self._bool_via_int8 or self._fp8_output_dtype
+            else None
         )
-        if self._bool_via_int8:
-            kernel_output_dtype = _BOOL_STORAGE_DTYPE
-        if self._fp8_output_dtype is not None:
-            kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
             return _make_binary_direct(
                 self.N_total,
@@ -1203,12 +1322,13 @@ class BinaryKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        if _is_fp8(self.dtype):
-            return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
-        threads, npt = _launch_shape(
-            self.strategy, self.dtype, self.output_dtype, self.N_total, not self._bool_via_int8
-        )
-        return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
+        return _LAUNCH_POLICY.default_config(
+            strategy=self.strategy,
+            input_dtype=self.dtype,
+            output_dtype=self.output_dtype,
+            n_total=self.N_total,
+            stores_bool=not self._bool_via_int8,
+        ).as_dict()
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1324,19 +1444,17 @@ class FusedGatedKernel(Kernel):
         self.M = M
         self.N = N
         self.dtype = dtype
-        self._fp8_output_dtype = None
-        self._kernel_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._kernel_output_dtype = _fp8_accum_dtype_str()
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
         self.strategy = (config or {}).get("strategy") or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
             )
+        self.output_plan = ElementwiseOutputPlan.for_fused_gated(dtype)
+        self.output_dtype = self.output_plan.logical_dtype
+        self._fp8_output_dtype = self.output_plan.post_cast_dtype
+        self._kernel_output_dtype = (
+            self.output_plan.kernel_output_dtype if self.output_plan.post_cast_dtype else None
+        )
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -1381,7 +1499,12 @@ class FusedGatedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
-            return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
+            return _LAUNCH_POLICY.default_config(
+                strategy=self.strategy,
+                input_dtype=self.dtype,
+                output_dtype=self.output_dtype,
+                n_total=self.M * self.N,
+            ).as_dict()
         if self.strategy == "explicit_parallel":
             # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
             # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128, and
@@ -1391,8 +1514,12 @@ class FusedGatedKernel(Kernel):
                 return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
             if self.dtype == torch.float32:
                 return {"strategy": self.strategy, "threads": 256, "num_per_thread": 4}
-        threads, npt = _launch_shape(self.strategy, self.dtype, self.output_dtype, self.M * self.N)
-        return {"strategy": self.strategy, "threads": threads, "num_per_thread": npt}
+        return _LAUNCH_POLICY.default_config(
+            strategy=self.strategy,
+            input_dtype=self.dtype,
+            output_dtype=self.output_dtype,
+            n_total=self.M * self.N,
+        ).as_dict()
 
     @property
     def autotune_configs(self) -> list[dict]:
