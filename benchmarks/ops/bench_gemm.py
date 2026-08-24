@@ -327,6 +327,7 @@ def test_gemm_bench(
     functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
     best_fn = make_cublaslt_best(m, n, k, dtype, trans_a, trans_b)
     if best_fn is not None:
+        assert_matches_reference(best_fn, workload.torch_matmul, a, b, **reference_tolerance(dtype))
         functors["cublaslt-best"] = best_fn
 
     deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
