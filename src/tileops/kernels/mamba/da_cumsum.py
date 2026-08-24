@@ -45,6 +45,103 @@ __all__ = ["DaCumsumFwdKernel"]
 
 
 @functools.lru_cache(maxsize=32)
+def _da_cumsum_fwd_placed_kernel(
+    batch: int,
+    num_chunks: int,
+    chunk_len: int,
+    n_heads: int,
+    seq_len: int,
+    dtype: str,
+    dt_softplus: bool = False,
+    has_dt_bias: bool = False,
+    dt_min: float = 0.0,
+    dt_max: float = float("inf"),
+) -> Callable:
+    """Build the placed HIR realization: two batch/chunk rows per CTA.
+
+    The authored placed HIR folds ``(batch, num_chunks)`` into one work axis.
+    This kernel keeps that ownership through the launch and reuses the bias/A
+    vectors across both rows before the per-row chunk scans.
+    """
+    accum_dtype = "float"
+    B = batch
+    C = num_chunks
+    Q = chunk_len
+    H = n_heads
+    S = seq_len
+    ROWS_PER_CTA = 2
+
+    @tilelang.jit(out_idx=[-2, -1])
+    def kernel_func(block_h: int, threads: int):
+        @T.prim_func
+        def main(
+            dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
+            A: T.Tensor((H,), accum_dtype),  # type: ignore
+            dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
+            dt_out: T.Tensor((B, H, C, Q), dtype),  # type: ignore
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(B * C, ROWS_PER_CTA),
+                T.ceildiv(H, block_h),
+                threads=threads,
+            ) as (bc_tile, bh_tile):
+                dt_shared = T.alloc_shared((ROWS_PER_CTA * block_h, Q), accum_dtype)
+                dA_shared = T.alloc_shared((ROWS_PER_CTA * block_h, Q), accum_dtype)
+
+                # The row loop is serial at CTA scope so TileLang can prove
+                # that the two folded batch/chunk rows have disjoint outputs.
+                for row in T.Serial(ROWS_PER_CTA):
+                    for head, pos in T.Parallel(block_h, Q):
+                        bc = bc_tile * ROWS_PER_CTA + row
+                        bh = bh_tile * block_h + head
+                        valid = T.And(bc < B * C, bh < H)
+                        safe_bc = T.min(bc, B * C - 1)
+                        safe_b = safe_bc // C
+                        safe_c = safe_bc % C
+                        safe_h = T.min(bh, H - 1)
+                        seq = safe_c * Q + pos
+                        val = T.if_then_else(valid, dt[safe_b, seq, safe_h], T.float32(0.0))
+
+                        if has_dt_bias:
+                            val = val + T.if_then_else(
+                                bh < H, dt_bias[safe_h], T.float32(0.0)
+                            )
+                        if dt_softplus:
+                            val = T.if_then_else(
+                                val <= T.float32(20.0),
+                                T.log(T.float32(1.0) + T.exp(val)),
+                                val,
+                            )
+                        val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
+                        val = T.if_then_else(valid, val, T.float32(0.0))
+                        slot = row * block_h + head
+                        dt_shared[slot, pos] = val
+                        dA_shared[slot, pos] = val * T.if_then_else(
+                            bh < H, A[safe_h], T.float32(0.0)
+                        )
+
+                T.sync_threads()
+                T.cumsum(dA_shared, dim=1)
+                T.sync_threads()
+
+                for row in T.Serial(ROWS_PER_CTA):
+                    for head, pos in T.Parallel(block_h, Q):
+                        bc = bc_tile * ROWS_PER_CTA + row
+                        bh = bh_tile * block_h + head
+                        with T.If(T.And(bc < B * C, bh < H)), T.Then():
+                            bb = bc // C
+                            cc = bc % C
+                            slot = row * block_h + head
+                            dt_out[bb, bh, cc, pos] = T.cast(dt_shared[slot, pos], dtype)
+                            dA_cumsum[bb, bh, cc, pos] = dA_shared[slot, pos]
+
+        return main
+
+    return kernel_func
+
+
+@functools.lru_cache(maxsize=32)
 def _da_cumsum_fwd_kernel(
     batch: int,
     num_chunks: int,
@@ -172,7 +269,7 @@ def _da_cumsum_fwd_wrapped(
     A: torch.Tensor,
     dt_bias: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _da_cumsum_fwd_kernel(
+    return _da_cumsum_fwd_placed_kernel(
         batch,
         num_chunks,
         chunk_len,
@@ -269,7 +366,7 @@ class DaCumsumFwdKernel(Kernel):
         self.dt_min = dt_min
         self.dt_max = dt_max
         self.dtype = dtype
-        self.kernel = _da_cumsum_fwd_kernel(
+        self.kernel = _da_cumsum_fwd_placed_kernel(
             batch,
             num_chunks,
             chunk_len,
