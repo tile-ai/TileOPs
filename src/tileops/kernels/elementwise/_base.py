@@ -160,11 +160,18 @@ def _launch_shape(
     """Return the ``(threads, num_per_thread)`` one launch runs with.
 
     A thread reads ``_BYTES_PER_THREAD`` whatever the element width; measured on H200,
-    both looping strategies peak at the same bytes per thread. Two things move it:
+    both looping strategies peak at the same bytes per thread. Three things move it:
 
     - A bool result actually stored as bool takes ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``
       elements per thread, and the block widens to keep covering as many elements as it
       would have. A result routed through ``_BOOL_STORAGE_DTYPE`` has no such limit.
+    - A result narrower than the input gets two input accesses per thread instead of
+      one, because the store moves too few bytes to be worth an instruction of its own
+      at the narrower share. Measured on H200 over ``isnan``, ``isinf``, ``isfinite``
+      and ``logical_not``: fp32 to a byte reads 3.63 TB/s over eight elements per thread
+      against 3.34 over four, and fp16 to a byte reads 4.33 over sixteen against 4.21
+      over eight. The comparison and logical binaries, whose thread also holds a second
+      input, are flat across the same range and neither gain nor lose.
     - A tensor too small to reach ``_TARGET_BLOCKS`` narrows the thread's share instead,
       which is the trade the block count is worth having. It stops at
       ``_MIN_NUM_PER_THREAD``: measured on H200 at 30720 fp16 elements, 1, 2 and 4
@@ -173,10 +180,13 @@ def _launch_shape(
     elem_bytes = torch.tensor([], dtype=dtype).element_size()
     npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
     threads = _DEFAULT_THREADS
+    stored_bytes = torch.tensor([], dtype=output_dtype or dtype).element_size()
     if output_dtype == torch.bool and stores_bool:
         capped = min(npt, _BOOL_OUTPUT_MAX_NUM_PER_THREAD)
         threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
+    elif stored_bytes < elem_bytes:
+        npt *= 2
     # ``direct`` takes one element per thread, so it has no share to trade for blocks.
     if n_total is not None and strategy != "direct":
         while npt > _MIN_NUM_PER_THREAD and n_total < threads * npt * _TARGET_BLOCKS:
