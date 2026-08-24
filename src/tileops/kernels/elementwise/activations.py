@@ -11,7 +11,7 @@ from ._base import (
     FusedGatedKernel,
     ParametricUnaryKernel,
     _fp8_accum_dtype_str,
-    log_for,
+    _log_for_output_precision,
 )
 
 __all__ = [
@@ -84,11 +84,7 @@ class SiluFwdKernel(FloatUnaryKernel):
     def op_func(x):
         """x / (1 + exp(-x)), in fp32.
 
-        The definition ran the exponential in the storage dtype and formed the sigmoid
-        before multiplying it back. In fp32 with x folded into the numerator, 256M fp16
-        reads 4.05 TB/s against 3.54 and bf16 4.04 against 3.74, and the largest error
-        against an fp32 reference halves. The narrow body was also why this kernel used
-        to name a loop strategy; the two tie to within 0.2% without it.
+        Running the exponential in fp32 improves both speed and fp32-reference error.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
@@ -102,10 +98,7 @@ class SigmoidFwdKernel(FloatUnaryKernel):
     def op_func(x):
         """1 / (1 + exp(-x)), in fp32.
 
-        ``T.sigmoid`` on the storage dtype runs the exponential there: 3.86 TB/s against
-        4.00 at 256M fp16 and 3.68 against 3.97 at bf16, with the largest error against
-        an fp32 reference falling by more than half. As with SiLU, that body was why this
-        kernel used to name a loop strategy.
+        Running the exponential in fp32 improves both speed and fp32-reference error.
         """
         one = T.cast(1.0, "float32")
         return one / (one + T.exp(-T.cast(x, "float32")))
@@ -150,10 +143,9 @@ class MishFwdKernel(FloatUnaryKernel):
         """One transcendental where the definition spells out three.
 
         With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
-        3.36 TB/s against 1.85 at 26.2M fp16 on H200, and it keeps the small values
-        ``log(1 + e)`` rounds away, where the definition's largest relative error over
-        [-40, 40] in fp32 is 1.0 against this form's 3.3e-07. Past ``_MISH_SATURATION``
-        the ratio is 1 to every bit fp32 carries, which is also what keeps ``e^2`` finite.
+        this avoids extra transcendentals and keeps the small values ``log(1 + e)``
+        rounds away. Past ``_MISH_SATURATION`` the ratio is 1 to every bit fp32 carries,
+        which is also what keeps ``e^2`` finite.
         """
         two = T.cast(2.0, "float32")
         wide = T.cast(x, "float32")
@@ -422,7 +414,7 @@ def _make_softplus_kernel(
                             t = T.cast(threshold, "float32")
                             one = T.cast(1.0, "float32")
                             scaled = v32 * b
-                            sp = log_for(val, one + T.exp(scaled)) / b
+                            sp = _log_for_output_precision(val, one + T.exp(scaled)) / b
                             y[idx] = T.if_then_else(
                                 scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
                             )
@@ -447,7 +439,7 @@ def _make_softplus_kernel(
                         t = T.cast(threshold, "float32")
                         one = T.cast(1.0, "float32")
                         scaled = v32 * b
-                        sp = log_for(val, one + T.exp(scaled)) / b
+                        sp = _log_for_output_precision(val, one + T.exp(scaled)) / b
                         y_reg[i * npt_arg + j] = T.if_then_else(
                             scaled > t,
                             val,

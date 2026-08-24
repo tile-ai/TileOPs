@@ -30,6 +30,7 @@ __all__ = [
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
     "align_up",
+    "ceildiv_int",
     "compute_tile_n",
     "device_smem_budget",
     "make_cumulative_scan",
@@ -40,6 +41,7 @@ __all__ = [
     "restore_reduced",
     "restore_same_shape",
     "rows_for_axes",
+    "torch_dtype_nbytes",
     "tune_by_forward",
 ]
 
@@ -48,10 +50,7 @@ __all__ = [
 DEFAULT_ALIGNMENT: int = 256
 
 # Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
-# and the register file are checked separately. A cap below a power-of-two row width
-# splits a row of exactly that width in two, which is what fixes it here rather than
-# lower: on H200, counting the nonzeros of 32 rows of 32768 fp16 reads 0.649 TB/s in
-# one tile against 0.493 in two.
+# and the register file are checked separately.
 MAX_SINGLE_TILE_COLS: int = 32768
 
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
@@ -62,23 +61,28 @@ SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 # architectures the reduction kernels declare (SM80-SM90): 128 bits.
 VECTOR_ACCESS_BYTES: int = 16
 
-# Thread counts offered by the reduction autotune candidate lists. 512 belongs here for
-# the shapes whose row count alone cannot fill the device: softmax over four rows of
-# 102400 reads 0.116 TB/s over 512 threads against 0.105 over 256 on H200. Offering it
-# is safe because ``layout_ok`` now rejects the widths a wider block cannot divide.
+# Thread counts offered by the reduction autotune candidate lists.
 AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)
 
-# Thread count used when no candidate sweep runs. One count for both the tiled and the
-# untiled path, so the capacity questions -- does the row fit, and how wide a tile --
-# are answered at the same block width. Measured on H200 over M from 4 to 2048 and N from
-# 8192 to 102400, 256 threads is never behind 128 on either path and up to 1.48x ahead
-# where the row count alone leaves the device short of blocks.
+# Thread count used when no candidate sweep runs.
 DEFAULT_THREADS: int = 256
 
 # Tile elements one thread may hold across its live fragments before ptxas spills the
 # tile to local memory, after which every pass re-reads it through L2. A
 # ``(block_m, cols)`` fragment gives a thread ``block_m * cols / threads`` of them.
 FRAGMENT_ELEMS_PER_THREAD: int = 64
+
+
+def ceildiv_int(x: int, y: int) -> int:
+    """Return ``ceil(x / y)`` for positive integer dimensions."""
+    return -(-x // y)
+
+
+def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
+    """Return element size for a torch dtype object or dtype-name string."""
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype)
+    return torch.empty(0, dtype=dtype).element_size()
 
 
 def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
@@ -136,7 +140,7 @@ class BlockConfigPlanner:
 
     def frag_elems(self, block_m: int, cols: int, threads: int) -> int:
         """Tile elements one thread holds across every live fragment."""
-        return -(-block_m * cols // threads) * self.frag_slots
+        return ceildiv_int(block_m * cols, threads) * self.frag_slots
 
     def frag_fits(self, block_m: int, cols: int, threads: int) -> bool:
         """Whether a ``(block_m, cols)`` tile stays in registers for this pair."""
@@ -313,10 +317,7 @@ class BlockConfigPlanner:
                 DEFAULT_THREADS,
                 budget=SHARED_MEMORY_BUDGET_BYTES,
             )
-            # The fewest rows a block can take, not the most it can hold. Measured on
-            # H200 at 2048x4096 fp16 over sum, amax, l2 and var, bandwidth falls
-            # monotonically with block_m -- 2.34 TB/s at one row against 2.06 at eight
-            # for sum -- because a row per block is what keeps blocks resident.
+            # The fewest rows a block can take, not the most it can hold.
             return {
                 "block_m": block_ms[0] if block_ms else 1,
                 "threads": DEFAULT_THREADS,

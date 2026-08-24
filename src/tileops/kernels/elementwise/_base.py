@@ -44,11 +44,9 @@ __all__ = [
     "ParametricUnaryKernel",
     "UnaryKernel",
     "coalesce_broadcast_dims",
-    "log_for",
 ]
 
-#: Threads per block. Measured on H200 over {sigmoid, silu, isnan, bitwise_not}: 128
-#: beats 256 and 512 on every one.
+#: Threads per block for memory-bound elementwise kernels.
 _DEFAULT_THREADS: int = 128
 
 
@@ -93,10 +91,12 @@ def _is_fp8(dtype: torch.dtype) -> bool:
     return dtype in _FP8_DTYPES
 
 
-#: Bytes one thread reads, which sets the default ``num_per_thread`` for an element
-#: width: one 128-bit access. Measured on H200 over {sigmoid, silu, isnan, round, rsqrt,
-#: bitwise_not}, 8 bytes or fewer loses a third of the bandwidth, and 32 is within a few
-#: percent at 256M elements but 15% behind at 16M.
+def _torch_dtype_nbytes(dtype: torch.dtype) -> int:
+    """Return the byte width of a torch dtype."""
+    return torch.empty(0, dtype=dtype).element_size()
+
+
+#: Bytes one thread reads by default: one 128-bit access.
 _BYTES_PER_THREAD: int = 16
 
 #: Floor on elements per thread, so a wide dtype keeps a loop to vectorize.
@@ -108,35 +108,32 @@ _MIN_NUM_PER_THREAD: int = 4
 _BOOL_OUTPUT_MAX_NUM_PER_THREAD: int = 4
 
 #: What a bool result is written through where the kernel can choose. int8 is the same
-#: width as bool and 0/1 are the same two byte patterns, so nothing is copied to hand the
-#: tensor back as bool -- and no bool value exists for TileLang to widen into a ``boolx8``.
-#: Measured on H200 at 16M fp16: logical_not reads 3.50 TB/s this way against 2.88 storing
-#: bool, isnan 3.50 against 2.76.
+#: width as bool and 0/1 are the same two byte patterns, so the bool view copies nothing.
 _BOOL_STORAGE_DTYPE: str = "int8"
 
 
-def _stored_as_bool_storage(op_func, arity: int):
-    """Wrap *op_func* so its bool result lands as ``_BOOL_STORAGE_DTYPE``.
+def _store_unary_bool_as_int8(op_func):
+    """Wrap a unary predicate so its bool result lands as ``_BOOL_STORAGE_DTYPE``."""
 
-    The predicate is consumed by ``T.if_then_else`` rather than assigned, which is what
-    keeps a vectorized bool from being formed in the first place.
-    """
-    if arity == 1:
+    def wrapped(x):
+        return T.if_then_else(
+            op_func(x),
+            T.cast(1, _BOOL_STORAGE_DTYPE),
+            T.cast(0, _BOOL_STORAGE_DTYPE),
+        )
 
-        def wrapped(x):
-            return T.if_then_else(
-                op_func(x),
-                T.cast(1, _BOOL_STORAGE_DTYPE),
-                T.cast(0, _BOOL_STORAGE_DTYPE),
-            )
-    else:
+    return wrapped
 
-        def wrapped(a, b):
-            return T.if_then_else(
-                op_func(a, b),
-                T.cast(1, _BOOL_STORAGE_DTYPE),
-                T.cast(0, _BOOL_STORAGE_DTYPE),
-            )
+
+def _store_binary_bool_as_int8(op_func):
+    """Wrap a binary predicate so its bool result lands as ``_BOOL_STORAGE_DTYPE``."""
+
+    def wrapped(a, b):
+        return T.if_then_else(
+            op_func(a, b),
+            T.cast(1, _BOOL_STORAGE_DTYPE),
+            T.cast(0, _BOOL_STORAGE_DTYPE),
+        )
 
     return wrapped
 
@@ -144,11 +141,52 @@ def _stored_as_bool_storage(op_func, arity: int):
 #: Threads a block may hold, the CUDA limit.
 _MAX_THREADS: int = 1024
 
-#: Blocks a launch aims for before it trades elements per thread away for more of them.
-#: Above this, bandwidth is flat; below it the tensor is latency-bound and the blocks
-#: are worth more than the wider access. Measured on H200 at 30720 fp16 elements: 240
-#: blocks read 0.083 TB/s where 15 read 0.052.
+#: Blocks a launch aims for before trading elements per thread for more blocks.
 _TARGET_BLOCKS: int = 256
+
+
+def _base_num_per_thread(dtype: torch.dtype) -> int:
+    """Return the dtype-width default before output and shape adjustments."""
+    elem_bytes = _torch_dtype_nbytes(dtype)
+    return max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
+
+
+def _adjust_for_bool_output(
+    threads: int,
+    npt: int,
+    output_dtype: torch.dtype | None,
+    stores_bool: bool,
+) -> tuple[int, int, bool]:
+    """Apply the vectorized-bool store cap when the result is really stored as bool."""
+    if output_dtype != torch.bool or not stores_bool:
+        return threads, npt, False
+    capped = min(npt, _BOOL_OUTPUT_MAX_NUM_PER_THREAD)
+    return min(_MAX_THREADS, threads * npt // capped), capped, True
+
+
+def _adjust_for_narrow_output(
+    npt: int,
+    dtype: torch.dtype,
+    output_dtype: torch.dtype | None,
+) -> int:
+    """Give a narrower output two input-width accesses per thread."""
+    elem_bytes = _torch_dtype_nbytes(dtype)
+    stored_bytes = _torch_dtype_nbytes(output_dtype or dtype)
+    return npt * 2 if stored_bytes < elem_bytes else npt
+
+
+def _shrink_npt_for_small_tensor(
+    strategy: str,
+    n_total: int | None,
+    threads: int,
+    npt: int,
+) -> int:
+    """Trade per-thread width for more blocks on small non-direct launches."""
+    if n_total is None or strategy == "direct":
+        return npt
+    while npt > _MIN_NUM_PER_THREAD and n_total < threads * npt * _TARGET_BLOCKS:
+        npt //= 2
+    return npt
 
 
 def _launch_shape(
@@ -160,53 +198,22 @@ def _launch_shape(
 ) -> tuple[int, int]:
     """Return the ``(threads, num_per_thread)`` one launch runs with.
 
-    A thread reads ``_BYTES_PER_THREAD`` whatever the element width; measured on H200,
-    both looping strategies peak at the same bytes per thread. Three things move it:
-
-    - A bool result actually stored as bool takes ``_BOOL_OUTPUT_MAX_NUM_PER_THREAD``
-      elements per thread, and the block widens to keep covering as many elements as it
-      would have. A result routed through ``_BOOL_STORAGE_DTYPE`` has no such limit.
-    - A result narrower than the input gets two input accesses per thread instead of
-      one, because the store moves too few bytes to be worth an instruction of its own
-      at the narrower share. Measured on H200 over ``isnan``, ``isinf``, ``isfinite``
-      and ``logical_not``: fp32 to a byte reads 3.63 TB/s over eight elements per thread
-      against 3.34 over four, and fp16 to a byte reads 4.33 over sixteen against 4.21
-      over eight. The comparison and logical binaries, whose thread also holds a second
-      input, are flat across the same range and neither gain nor lose.
-    - A tensor too small to reach ``_TARGET_BLOCKS`` narrows the thread's share instead,
-      which is the trade the block count is worth having. It stops at
-      ``_MIN_NUM_PER_THREAD``: measured on H200 at 30720 fp16 elements, 1, 2 and 4
-      elements per thread all read 0.083 TB/s, so there is nothing below it to win.
+    The rule order is significant: start from the input width, cap real bool stores,
+    widen for narrow non-bool outputs, then shrink small non-direct launches.
     """
-    elem_bytes = torch.tensor([], dtype=dtype).element_size()
-    npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
     threads = _DEFAULT_THREADS
-    stored_bytes = torch.tensor([], dtype=output_dtype or dtype).element_size()
-    if output_dtype == torch.bool and stores_bool:
-        capped = min(npt, _BOOL_OUTPUT_MAX_NUM_PER_THREAD)
-        threads = min(_MAX_THREADS, threads * npt // capped)
-        npt = capped
-    elif stored_bytes < elem_bytes:
-        npt *= 2
-    # ``direct`` takes one element per thread, so it has no share to trade for blocks.
-    if n_total is not None and strategy != "direct":
-        while npt > _MIN_NUM_PER_THREAD and n_total < threads * npt * _TARGET_BLOCKS:
-            npt //= 2
+    npt = _base_num_per_thread(dtype)
+    threads, npt, handled_bool = _adjust_for_bool_output(threads, npt, output_dtype, stores_bool)
+    if not handled_bool:
+        npt = _adjust_for_narrow_output(npt, dtype, output_dtype)
+    npt = _shrink_npt_for_small_tensor(strategy, n_total, threads, npt)
     return threads, npt
 
 
-def log_for(value, wide):
+def _log_for_output_precision(value, wide):
     """Return ``log(wide)`` computed to the precision *value*'s dtype can keep.
 
-    ``__logf`` carries about 21 bits against ``logf``'s 24, and reads 4.30 TB/s against
-    3.25 over 256M elements on H200. A narrower store cannot hold the difference: of the
-    31743 finite positive fp16 values the two disagree on 6, by one ulp each at a
-    rounding boundary where neither is closer, and over 4M bf16 values they are bit for
-    bit the same. An fp32 result can hold it, so fp32 keeps the precise call.
-
-    Args:
-        value: The element as stored, read for its dtype only.
-        wide: The fp32 argument to take the logarithm of.
+    A narrow result cannot keep the precision difference, so it takes the fast log.
     """
     return T.log(wide) if value.dtype == "float32" else T.__log(wide)
 
@@ -875,7 +882,7 @@ class UnaryKernel(Kernel):
         ``OUTPUT_DTYPE`` is set the kernel already outputs a non-fp8 type.
         """
         if self._bool_via_int8:
-            return _stored_as_bool_storage(self.op_func, arity=1)
+            return _store_unary_bool_as_int8(self.op_func)
         if self.OUTPUT_DTYPE is not None:
             return self.op_func
         return _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=1)
@@ -1139,7 +1146,7 @@ class BinaryKernel(Kernel):
         ``OUTPUT_DTYPE`` is set the kernel already outputs a non-fp8 type.
         """
         if self._bool_via_int8:
-            return _stored_as_bool_storage(self.op_func, arity=2)
+            return _store_binary_bool_as_int8(self.op_func)
         if self.OUTPUT_DTYPE is not None:
             return self.op_func
         return _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=2)

@@ -45,6 +45,7 @@ from tileops.kernels.reduction._primitives import (
     device_smem_budget,
     restore_same_shape,
     rows_for_axes,
+    torch_dtype_nbytes,
 )
 
 __all__ = ["CumulativeKernel"]
@@ -61,16 +62,10 @@ _DEFAULT_BLOCK_N: int = 128
 # so successive rows start in different banks → conflict free.
 _SMEM_PAD: int = 8
 
-# Elements one thread scans in the whole-row kernel, held in registers. Measured on H200
-# at 2048x4096 fp16: 3.44 TB/s at 64, 3.30 at 128, 3.21 at 32, 3.02 at 16, 2.05 at 8.
+# Elements one thread scans in the whole-row kernel, held in registers.
 _ROW_SCAN_CHUNK: int = 64
 
-# Columns of shared-memory padding per thread chunk. Each thread reads its own chunk
-# with a stride of one chunk, so an unpadded chunk of 16 fp16 columns puts every thread
-# of a warp on one of four banks -- an 8-way conflict on both the scan read and the
-# write-back. 16 bytes is the smallest padding that keeps each chunk aligned for a
-# vectorized staging access while breaking that stride: at 2048x4096 fp16 the padded
-# tile reads 3.44 TB/s against 2.10 unpadded.
+# Columns of shared-memory padding per thread chunk.
 _ROW_SCAN_PAD_BYTES: int = 16
 
 # Thread-count envelope for the whole-row kernel: a warp scheduler's worth, up to the
@@ -138,7 +133,7 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
         threads: Threads per row, from :func:`row_scan_threads`.
     """
     chunk_len = N // threads
-    pad = _ROW_SCAN_PAD_BYTES // torch.empty(0, dtype=getattr(torch, dtype)).element_size()
+    pad = _ROW_SCAN_PAD_BYTES // torch_dtype_nbytes(dtype)
     # Stride-doubling steps to scan `threads` totals.
     n_steps = threads.bit_length() - 1
     identity = 0.0 if op_kind == "sum" else 1.0
@@ -456,25 +451,21 @@ class CumulativeKernel(Kernel):
         self.dtype = dtype
         self.scan_axis = scan_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
+        self._elem_bytes = torch_dtype_nbytes(dtype)
 
-        # Parallel scan only pays off for small-M, large-N; cumprod has no
-        # parallel implementation.
-        self.use_parallel = M < 128 and N > 8192 and op_kind == "sum"
-
-        # Fastest of the three wherever it builds, for both kinds: it reads and writes
-        # the row once and carries nothing between blocks. Measured on H200 it leads the
-        # three-kernel parallel scan by 2.6x to 5.9x over M from 32 to 2048 and N from
-        # 4096 to 32768. What it does not take is a width the alignment would pad, since
-        # it stages the row exactly; that is what the parallel scan is left serving.
-        self.use_row_scan = self.N_padded == N and row_scan_fits(
+        # The row scan is preferred wherever it builds. The parallel scan remains for
+        # small-M, large-N cumsum shapes that row_scan cannot serve.
+        can_row_scan = self.N_padded == N and row_scan_fits(
             self.N_padded, self._elem_bytes, device_smem_budget(device_index)
         )
-        self._row_scan_threads = row_scan_threads(self.N_padded) if self.use_row_scan else 0
+        can_parallel = M < 128 and N > 8192 and op_kind == "sum"
+        self._row_scan_threads = row_scan_threads(self.N_padded) if can_row_scan else 0
 
-        if self.use_row_scan:
+        if can_row_scan:
+            self.strategy = "row_scan"
             self.kernel = _row_scan_kernel(M, N, op_kind, self.dtype_str, self._row_scan_threads)
-        elif self.use_parallel:
+        elif can_parallel:
+            self.strategy = "parallel_scan"
             self.kernel = None
             if tune:
                 warnings.warn(
@@ -485,6 +476,7 @@ class CumulativeKernel(Kernel):
                 )
                 tune = False
         else:
+            self.strategy = "tiled_scan"
             self.kernel = _cumulative_kernel(M, N, op_kind, self.dtype_str)
 
         self.init_config(config, tune)
@@ -492,11 +484,11 @@ class CumulativeKernel(Kernel):
     @property
     def default_config(self) -> dict:
         """Select the default config for the selected backend and shape."""
-        if self.use_row_scan:
+        if self.strategy == "row_scan":
             # The chunk length each thread scans is a compile-time loop bound, so the
             # thread count is baked in and nothing is left to pick at call time.
             return {"threads": self._row_scan_threads}
-        if self.use_parallel:
+        if self.strategy == "parallel_scan":
             block_n = 256 if self.N > 16384 else 128
             smem_per_row = (block_n + _SMEM_PAD) * 4  # fp32 intermediate
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
@@ -504,7 +496,7 @@ class CumulativeKernel(Kernel):
             return {"block_m": block_m, "block_n": block_n, "threads": 256}
         else:
             block_n = _DEFAULT_BLOCK_N
-            elem_size = torch.tensor([], dtype=self.dtype).element_size()
+            elem_size = torch_dtype_nbytes(self.dtype)
             smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
 
@@ -520,9 +512,9 @@ class CumulativeKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self.use_row_scan:
+        if self.strategy == "row_scan":
             return [{"threads": self._row_scan_threads}]
-        elem_size = torch.tensor([], dtype=self.dtype).element_size()
+        elem_size = torch_dtype_nbytes(self.dtype)
         configs = []
         for block_n in [128, 256]:
             # block_n must evenly divide N_padded
@@ -562,18 +554,14 @@ class CumulativeKernel(Kernel):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed
         here.
         """
-        if self.use_row_scan:
-            program = _row_scan_kernel(
-                self.M, self.N, self.op_kind, self.dtype_str, self._row_scan_threads
-            )
-            return program()(x)
+        if self.strategy == "row_scan":
+            return self.kernel()(x)
         block_m, block_n = self.config["block_m"], self.config["block_n"]
         threads = self.config["threads"]
-        if self.use_parallel:
+        if self.strategy == "parallel_scan":
             y = self._parallel_scan(x, block_m, block_n, threads)
         else:
-            program = _cumulative_kernel(self.M, self.N, self.op_kind, self.dtype_str)
-            y = program(block_m, block_n, threads)(x)
+            y = self.kernel(block_m, block_n, threads)(x)
         return y[:, : self.N] if y.shape[1] > self.N else y
 
     def _parallel_scan(

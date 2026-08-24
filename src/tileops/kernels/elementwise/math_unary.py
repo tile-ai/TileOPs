@@ -5,7 +5,7 @@ import torch
 
 from ._base import (
     FloatUnaryKernel,
-    log_for,
+    _log_for_output_precision,
 )
 
 __all__ = [
@@ -42,7 +42,7 @@ class LogFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return log_for(x, T.cast(x, "float32"))
+        return _log_for_output_precision(x, T.cast(x, "float32"))
 
 
 class SqrtFwdKernel(FloatUnaryKernel):
@@ -209,7 +209,7 @@ class Log1pFwdKernel(FloatUnaryKernel):
         wide = T.cast(x, "float32")
         if x.dtype == "float32":
             return T.log1p(wide)
-        return log_for(x, T.cast(1.0, "float32") + wide)
+        return _log_for_output_precision(x, T.cast(1.0, "float32") + wide)
 
 
 class Expm1FwdKernel(FloatUnaryKernel):
