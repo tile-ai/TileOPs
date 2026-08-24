@@ -198,13 +198,11 @@ def _launch_shape(
 def log_for(value, wide):
     """Return ``log(wide)`` computed to the precision *value*'s dtype can keep.
 
-    ``__logf`` carries about 21 bits of the result against ``logf``'s 24, and reads
-    4.30 TB/s against 3.25 over 256M elements on H200. A result stored narrower than
-    fp32 cannot hold the difference: over all 31743 finite positive fp16 values the two
-    agree on every one but 6, and those differ by a single fp16 ulp at a rounding
-    boundary where neither is the closer answer; over 4M bf16 values they are bit for
-    bit the same. An fp32 result can hold it -- half of 4M values differ -- so fp32
-    keeps the precise call.
+    ``__logf`` carries about 21 bits against ``logf``'s 24, and reads 4.30 TB/s against
+    3.25 over 256M elements on H200. A narrower store cannot hold the difference: of the
+    31743 finite positive fp16 values the two disagree on 6, by one ulp each at a
+    rounding boundary where neither is closer, and over 4M bf16 values they are bit for
+    bit the same. An fp32 result can hold it, so fp32 keeps the precise call.
 
     Args:
         value: The element as stored, read for its dtype only.
@@ -791,10 +789,8 @@ class UnaryKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    #: The fragment strategy, which is what nearly every body wants. Measured on H200
-    #: at 16M and 256M fp16 elements over fourteen float unaries: nine tie between the
-    #: two, three read 4-12% faster here (gelu, selu, erf), and two read 13-20% faster
-    #: on the looping strategy, which they declare themselves.
+    #: The fragment strategy. Measured on H200 at 16M and 256M fp16 over fourteen float
+    #: unaries, no body reads faster on the looping one.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None

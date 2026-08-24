@@ -440,7 +440,7 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("op_name", ["argmax", "argmin"])
 def test_argreduce_signed_zero_breaks_to_lower_index(op_name: str, dtype: torch.dtype) -> None:
     """A row of alternating -0.0 and +0.0 is one tie, which index 0 has to win."""

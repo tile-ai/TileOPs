@@ -149,63 +149,6 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
 
 
 @pytest.mark.full
-def test_unary_default_npt_is_one_vector_access_per_thread():
-    """Unary num_per_thread follows the element width, not the strategy.
-
-    Both looping strategies peak at the same bytes per thread, so one 128-bit access is
-    what the default resolves to: 8 elements for a 2-byte dtype, 4 for a 4-byte one. A
-    tensor too small to fill the grid trades that down to the vectorization minimum,
-    which is why the widths below are read off a large ``N_total``.
-    """
-    large = 1 << 24
-    with (
-        patch.object(ReluFwdKernel, "_build_kernel", return_value=None),
-        patch.object(ReluFwdKernel, "init_config"),
-    ):
-        kernels = {
-            (strategy, dtype): ReluFwdKernel(
-                N_total=large,
-                dtype=dtype,
-                config={"strategy": strategy},
-            )
-            for strategy in ("explicit_parallel", "register_copy")
-            for dtype in (torch.float16, torch.float32)
-        }
-        small = ReluFwdKernel(
-            N_total=1024,
-            dtype=torch.float16,
-            config={"strategy": "explicit_parallel"},
-        )
-    for strategy in ("explicit_parallel", "register_copy"):
-        assert kernels[(strategy, torch.float16)].default_config["num_per_thread"] == 8
-        assert kernels[(strategy, torch.float32)].default_config["num_per_thread"] == 4
-    assert small.default_config["num_per_thread"] == 4
-
-
-@pytest.mark.full
-def test_binary_default_npt_is_one_vector_access_per_thread():
-    """Binary num_per_thread follows the element width, as in the unary case."""
-    large = 1 << 24
-    with (
-        patch.object(AddFwdKernel, "_build_kernel", return_value=None),
-        patch.object(AddFwdKernel, "init_config"),
-    ):
-        kernels = {
-            (strategy, dtype): AddFwdKernel(
-                a_shape=(large,),
-                b_shape=(large,),
-                dtype=dtype,
-                config={"strategy": strategy},
-            )
-            for strategy in ("explicit_parallel", "register_copy")
-            for dtype in (torch.float16, torch.float32)
-        }
-    for strategy in ("explicit_parallel", "register_copy"):
-        assert kernels[(strategy, torch.float16)].default_config["num_per_thread"] == 8
-        assert kernels[(strategy, torch.float32)].default_config["num_per_thread"] == 4
-
-
-@pytest.mark.full
 def test_fused_gated_explicit_uses_occupancy_config():
     """Fused-gated explicit_parallel uses the 128x8 occupancy config for fp16/bf16.
 

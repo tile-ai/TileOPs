@@ -84,13 +84,11 @@ class SiluFwdKernel(FloatUnaryKernel):
     def op_func(x):
         """x / (1 + exp(-x)), in fp32.
 
-        Two things the definition spelled out cost more than they carry: the exponential
-        ran in the storage dtype, and the sigmoid was formed before being multiplied
-        back. In fp32 with x folded into the numerator, 256M fp16 reads 4.05 TB/s
-        against 3.54 and bf16 4.04 against 3.74, and the largest error against an fp32
-        reference halves. It is also what leaves this kernel on the family's loop
-        strategy: the storage-dtype body was the reason it used to want the other one,
-        and the two now tie to within 0.2%.
+        The definition ran the exponential in the storage dtype and formed the sigmoid
+        before multiplying it back. In fp32 with x folded into the numerator, 256M fp16
+        reads 4.05 TB/s against 3.54 and bf16 4.04 against 3.74, and the largest error
+        against an fp32 reference halves. The narrow body was also why this kernel used
+        to name a loop strategy; the two tie to within 0.2% without it.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
@@ -104,11 +102,10 @@ class SigmoidFwdKernel(FloatUnaryKernel):
     def op_func(x):
         """1 / (1 + exp(-x)), in fp32.
 
-        ``T.sigmoid`` on the storage dtype runs the exponential there: at 256M fp16 that
-        read 3.86 TB/s against 4.00 written out in fp32, and at bf16 3.68 against 3.97,
-        with the largest error against an fp32 reference falling by more than half. As
-        with SiLU, the storage-dtype body was the reason this kernel used to pin the
-        loop strategy, and the two now tie.
+        ``T.sigmoid`` on the storage dtype runs the exponential there: 3.86 TB/s against
+        4.00 at 256M fp16 and 3.68 against 3.97 at bf16, with the largest error against
+        an fp32 reference falling by more than half. As with SiLU, that body was why this
+        kernel used to name a loop strategy.
         """
         one = T.cast(1.0, "float32")
         return one / (one + T.exp(-T.cast(x, "float32")))
@@ -150,16 +147,13 @@ class MishFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        """Mish with one transcendental where the definition spells out three.
+        """One transcendental where the definition spells out three.
 
-        With ``e = exp(x)``, ``tanh(log(1 + e))`` is ``(e^2 + 2e) / (e^2 + 2e + 2)``:
-        the identity is exact, and written this way it keeps the small values that
-        ``log(1 + e)`` rounds to zero once ``e`` falls under the epsilon of 1 -- over
-        [-40, 40] in fp32 the largest relative error is 3.3e-07 against the definition's
-        1.0. Measured on H200 at 26.2M fp16, 3.36 TB/s against 1.85.
-
-        Above ``_MISH_SATURATION`` the ratio is 1 to every bit fp32 carries, and taking
-        that branch is also what keeps ``e^2`` from overflowing.
+        With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
+        3.36 TB/s against 1.85 at 26.2M fp16 on H200, and it keeps the small values
+        ``log(1 + e)`` rounds away, where the definition's largest relative error over
+        [-40, 40] in fp32 is 1.0 against this form's 3.3e-07. Past ``_MISH_SATURATION``
+        the ratio is 1 to every bit fp32 carries, which is also what keeps ``e^2`` finite.
         """
         two = T.cast(2.0, "float32")
         wide = T.cast(x, "float32")

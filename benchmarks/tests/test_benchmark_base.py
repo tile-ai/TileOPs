@@ -222,28 +222,12 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_a_copy_is_read_only_where_the_case_asks_for_copies():
+def test_a_copy_counts_only_where_the_case_asks_for_copies():
     """A device-to-device copy is device work, and out of the reading unless asked for.
 
-    ``Tensor.clone`` is the whole of it: no kernel, one copy. A case that does not ask
-    for copies has nothing left to attribute, which is the same refusal as a call that
-    never reached the device.
+    Where it is left out the reading says how much it left out, and a call that only
+    copied has nothing left to attribute at all.
     """
-    x = torch.empty(8 * 1024 * 1024, device="cuda", dtype=torch.float16)
-
-    with pytest.raises(RuntimeError, match="launched no kernel"):
-        bench_kernel(x.clone)
-
-    samples = bench_kernel(x.clone, count_copies=True)
-    assert all(s.n_kernels == 1 for s in samples)
-    assert all(s.device_busy_ms > 0 for s in samples)
-    assert all(s.uncounted_copy_ms == 0 for s in samples)
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_a_copy_left_out_of_the_reading_is_reported_beside_it():
-    """A call that both launches and copies reads without the copy, and says how much."""
     x = torch.empty(8 * 1024 * 1024, device="cuda", dtype=torch.float16)
 
     def clone_then_scale():
@@ -251,15 +235,16 @@ def test_a_copy_left_out_of_the_reading_is_reported_beside_it():
         y.mul_(2)
         return y
 
-    samples = bench_kernel(clone_then_scale)
-    assert all(s.n_kernels == 1 for s in samples)
-    assert all(s.uncounted_copy_ms > 0 for s in samples)
+    with pytest.raises(RuntimeError, match="launched no kernel"):
+        bench_kernel(x.clone)
+
+    left_out = bench_kernel(clone_then_scale)
+    assert all(s.n_kernels == 1 and s.uncounted_copy_ms > 0 for s in left_out)
 
     counted = bench_kernel(clone_then_scale, count_copies=True)
-    assert all(s.n_kernels == 2 for s in counted)
-    assert all(s.uncounted_copy_ms == 0 for s in counted)
+    assert all(s.n_kernels == 2 and s.uncounted_copy_ms == 0 for s in counted)
     assert statistics.median(s.device_busy_ms for s in counted) > statistics.median(
-        s.device_busy_ms for s in samples
+        s.device_busy_ms for s in left_out
     )
 
 

@@ -390,15 +390,13 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
     A row the block can hold in registers is read once into a fragment, and the column
     index each key belongs to is the loop variable over that fragment, so nothing has to
     carry it. That reads the row a vector at a time and keeps it there: measured on H200
-    at 2048x4096 fp16, 2.21 TB/s against 2.07 for staging the row in shared memory and
-    2.02 for walking it in global, where reading the row alone is bounded at 2.35. The
-    gain widens with the row -- at 256x32768, 2.12 against 1.65.
+    at 2048x4096 fp16, 2.21 TB/s against 2.02 for walking it in global, where reading the
+    row alone is bounded at 2.35. The gain widens with the row -- at 256x32768, 2.12
+    against 1.65.
 
-    A row too wide for that is walked instead, one element per thread per access, out of
-    shared memory where it fits there and out of global where it does not.
+    A row too wide for that is walked in global instead, one element per thread per
+    access.
     """
-    elem_bytes = torch.empty(0, dtype=getattr(torch, dtype)).element_size()
-    stage = N * elem_bytes <= SHARED_MEMORY_BUDGET_BYTES
 
     @tilelang.jit(out_idx=[1])
     def _func(threads: int):
@@ -430,8 +428,9 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
                 tx = T.get_thread_binding()
                 warp_keys = T.alloc_shared((num_warps,), "int32")
                 warp_indices = T.alloc_shared((num_warps,), "int32")
-                staged = T.alloc_shared((N if stage and not held else 1,), dtype)
                 row_frag = T.alloc_fragment((1, N if held else 1), dtype)
+                # Four slots either way, so the block reduction below is the same one the
+                # walk uses; the fragment path fills only the first.
                 keys = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 candidate = T.alloc_local((1,), "int32")
@@ -447,17 +446,13 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
                         candidate[0] = key_of(row_frag[0, column])
                         update(keys, indices, 0, candidate[0], column)
                 else:
-                    if stage:
-                        T.copy(x[row, 0], staged)
-                        T.sync_threads()
-
                     for iteration in T.serial(iterations):
                         for accumulator in T.serial(_NUM_ACCUMULATORS):
                             index = (
                                 iteration * threads * _NUM_ACCUMULATORS + accumulator * threads + tx
                             )
                             if index < N:
-                                candidate[0] = key_of(staged[index] if stage else x[row, index])
+                                candidate[0] = key_of(x[row, index])
                                 advance(keys, indices, accumulator, candidate[0], index)
 
                 block_reduce(

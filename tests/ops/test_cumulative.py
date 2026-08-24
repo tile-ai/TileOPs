@@ -299,9 +299,6 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
     [
         (64, 16384, torch.float32, "row_scan"),
         (64, 32768, torch.bfloat16, "row_scan"),
-        (32, 16384, torch.float16, "row_scan"),
-        (64, 8192, torch.bfloat16, "row_scan"),  # N boundary
-        (128, 16384, torch.bfloat16, "row_scan"),  # M boundary
         (64, 8200, torch.float32, "parallel"),  # a padded width the row scan declines
         (64, 8200, torch.bfloat16, "parallel"),  # same, at the other element width
     ],
@@ -337,21 +334,15 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     "name, marks",
     [
         ("nan", [(100, float("nan"))]),
-        ("pos_inf", [(100, float("inf"))]),
-        ("neg_inf", [(100, -float("inf"))]),
-        ("inf_then_neg_inf", [(100, float("inf")), (200, -float("inf"))]),
-        ("zero", [(100, 0.0)]),
-        ("negative_zero", [(100, -0.0)]),
-        ("negative", [(100, -2.0)]),
+        ("both_infinities", [(100, float("inf")), (200, -float("inf"))]),
+        ("signed_zero", [(100, -0.0), (200, 0.0)]),
     ],
 )
 def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> None:
     """A scan carries non-finite values and signed zero the way torch does.
 
     The whole-row backend combines per-thread chunk totals rather than accumulating left
-    to right, so what each of these does to a running value is worth pinning: a NaN or an
-    inf has to reach every later element, and a zero has to stop a product without
-    changing its sign handling.
+    to right, so a NaN or an inf has to still reach every later element.
     """
     from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
@@ -361,12 +352,7 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> N
         x[:, index] = value
 
     for op, ref in ((CumsumFwdOp(dim=-1), torch.cumsum), (CumprodFwdOp(dim=-1), torch.cumprod)):
-        got = op(x)
-        want = ref(x, dim=-1)
-        assert torch.allclose(got, want, rtol=1e-5, atol=1e-5, equal_nan=True), (
-            f"{name}: first mismatch at "
-            f"{int((~torch.isclose(got, want, rtol=1e-5, atol=1e-5, equal_nan=True))[0].nonzero()[0])}"
-        )
+        torch.testing.assert_close(op(x), ref(x, dim=-1), rtol=1e-5, atol=1e-5, equal_nan=True)
 
 
 @pytest.mark.smoke

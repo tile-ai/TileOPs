@@ -274,12 +274,8 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     threads * 128-bit / elem_bytes, so ``layout_ok`` excludes every block_m
     above 1 and the candidate list must not offer them.  With the serial row
     loop such a fragment would in fact build; the envelope stays because it
-    also covers the residue that does not.
-
-    The width also has to stay inside the register budget, or the row takes the tiled
-    kernel and there is no untiled candidate list to check: 7936 columns over
-    DEFAULT_THREADS is 62 fp32 registers per thread, just under
-    FRAGMENT_ELEMS_PER_THREAD.
+    also covers the residue that does not.  The width also has to stay inside the
+    register budget, or the row is tiled and there is no untiled candidate list.
     """
     from tileops.ops.reduction.reduce import SumFwdOp
 
