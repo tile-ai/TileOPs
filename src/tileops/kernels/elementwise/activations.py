@@ -11,6 +11,7 @@ from ._base import (
     FusedGatedKernel,
     ParametricUnaryKernel,
     _fp8_accum_dtype_str,
+    log_for,
 )
 
 __all__ = [
@@ -427,7 +428,7 @@ def _make_softplus_kernel(
                             t = T.cast(threshold, "float32")
                             one = T.cast(1.0, "float32")
                             scaled = v32 * b
-                            sp = T.log(one + T.exp(scaled)) / b
+                            sp = log_for(val, one + T.exp(scaled)) / b
                             y[idx] = T.if_then_else(
                                 scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
                             )
@@ -452,7 +453,7 @@ def _make_softplus_kernel(
                         t = T.cast(threshold, "float32")
                         one = T.cast(1.0, "float32")
                         scaled = v32 * b
-                        sp = T.log(one + T.exp(scaled)) / b
+                        sp = log_for(val, one + T.exp(scaled)) / b
                         y_reg[i * npt_arg + j] = T.if_then_else(
                             scaled > t,
                             val,

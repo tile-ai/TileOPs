@@ -5,6 +5,7 @@ import torch
 
 from ._base import (
     FloatUnaryKernel,
+    log_for,
 )
 
 __all__ = [
@@ -41,7 +42,7 @@ class LogFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.log(T.cast(x, "float32"))
+        return log_for(x, T.cast(x, "float32"))
 
 
 class SqrtFwdKernel(FloatUnaryKernel):
@@ -198,13 +199,17 @@ class ErfFwdKernel(FloatUnaryKernel):
 class Log1pFwdKernel(FloatUnaryKernel):
     """Element-wise log(1 + x).
 
-    Uses composite ``log(1 + x)`` because ``T.log1p`` is not lowered
-    by the TileLang compiler.
+    fp32 takes ``T.log1p``, which keeps the small values ``log(1 + x)`` rounds away
+    once x falls under the epsilon of 1. A narrower result cannot hold them either way,
+    so it takes the composite over the faster logarithm.
     """
 
     @staticmethod
     def op_func(x):
-        return T.log(T.cast(1.0, "float32") + x)
+        wide = T.cast(x, "float32")
+        if x.dtype == "float32":
+            return T.log1p(wide)
+        return log_for(x, T.cast(1.0, "float32") + wide)
 
 
 class Expm1FwdKernel(FloatUnaryKernel):

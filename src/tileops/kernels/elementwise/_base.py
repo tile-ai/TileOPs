@@ -44,6 +44,7 @@ __all__ = [
     "ParametricUnaryKernel",
     "UnaryKernel",
     "coalesce_broadcast_dims",
+    "log_for",
 ]
 
 #: Threads per block. Measured on H200 over {sigmoid, silu, isnan, bitwise_not}: 128
@@ -192,6 +193,24 @@ def _launch_shape(
         while npt > _MIN_NUM_PER_THREAD and n_total < threads * npt * _TARGET_BLOCKS:
             npt //= 2
     return threads, npt
+
+
+def log_for(value, wide):
+    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep.
+
+    ``__logf`` carries about 21 bits of the result against ``logf``'s 24, and reads
+    4.30 TB/s against 3.25 over 256M elements on H200. A result stored narrower than
+    fp32 cannot hold the difference: over all 31743 finite positive fp16 values the two
+    agree on every one but 6, and those differ by a single fp16 ulp at a rounding
+    boundary where neither is the closer answer; over 4M bf16 values they are bit for
+    bit the same. An fp32 result can hold it -- half of 4M values differ -- so fp32
+    keeps the precise call.
+
+    Args:
+        value: The element as stored, read for its dtype only.
+        wide: The fp32 argument to take the logarithm of.
+    """
+    return T.log(wide) if value.dtype == "float32" else T.__log(wide)
 
 
 def _fp8_needs_nonsaturating_cast(dtype: torch.dtype) -> bool:
