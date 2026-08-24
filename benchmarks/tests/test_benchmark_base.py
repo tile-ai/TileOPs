@@ -182,7 +182,7 @@ def test_a_phase_that_lost_records_is_measured_again(monkeypatch):
     requested_bytes = []
     monkeypatch.setattr(_bench_meta, "attribution_retries", None, raising=False)
 
-    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
+    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
         requested_bytes.append(buffer_bytes)
         return traces.pop(0)
 
@@ -199,7 +199,7 @@ def test_a_call_that_launched_nothing_does_not_spend_the_retries(monkeypatch):
     """Nothing discarded means re-measuring cannot help, so it fails on sight."""
     attempts = []
 
-    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
+    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
         attempts.append(buffer_bytes)
         return Trace([], {}, 0)
 
@@ -217,6 +217,23 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
     with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
         bench_kernel(lambda: sum(range(64)))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_a_copy_is_read_only_where_the_case_asks_for_copies():
+    """A device-to-device copy is device work, and out of the reading unless asked for.
+
+    ``Tensor.clone`` is the whole of it: no kernel, one copy.
+    """
+    x = torch.empty(8 * 1024 * 1024, device="cuda", dtype=torch.float16)
+
+    with pytest.raises(RuntimeError, match="launched no kernel"):
+        bench_kernel(x.clone)
+
+    samples = bench_kernel(x.clone, count_copies=True)
+    assert all(s.n_kernels == 1 for s in samples)
+    assert all(s.device_busy_ms > 0 for s in samples)
 
 
 @pytest.mark.smoke

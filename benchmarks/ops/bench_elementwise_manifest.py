@@ -438,6 +438,9 @@ def test_masked_fill_tensor_manifest_bench(
     def baseline_fn(a, m, v):
         return a.masked_fill(m, v)
 
+    # Out-of-place masked_fill is a clone and then an in-place fill, and the clone is a
+    # device-to-device copy rather than a kernel. Counting copies is what puts the whole
+    # of it in the reading.
     bm.compare(
         {
             "tileops": op,
@@ -449,6 +452,7 @@ def test_masked_fill_tensor_manifest_bench(
         value,
         record_as=op,
         params=locals(),
+        count_copies=True,
     )
 
 
@@ -468,6 +472,7 @@ def test_masked_fill_scalar_manifest_bench(
     def baseline_fn(a, m):
         return a.masked_fill(m, -100.0)
 
+    # See the tensor-value case above: the baseline's clone is a copy, not a kernel.
     bm.compare(
         {
             "tileops": op,
@@ -478,6 +483,7 @@ def test_masked_fill_scalar_manifest_bench(
         mask,
         record_as=op,
         params=locals(),
+        count_copies=True,
     )
 
 

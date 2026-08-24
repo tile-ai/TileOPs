@@ -494,12 +494,16 @@ def test_logical_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    functors = {"tileops": op}
-
-    # Baseline uses bool tensors
-    a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
-    functors["torch"] = (baseline_fn, (a_bool, b_bool))
-    functors[TORCH_COMPILE_TAG] = (compiled_reference(baseline_fn), (a_bool, b_bool))
+    # The baseline takes the tensors the row declares, as the op does. Handing it
+    # ``bool`` copies instead had it read a byte per element where the op reads two,
+    # against a byte count taken from the declared dtype for both: measured on H200 at
+    # 1024x10240 fp16, that credited torch with 0.66 of the row where the two agree
+    # within 0.2% on the same inputs.
+    functors = {
+        "tileops": op,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
     bm.compare(functors, *inputs, record_as=op, params=locals())
 
 
