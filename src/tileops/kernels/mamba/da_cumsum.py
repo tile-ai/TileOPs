@@ -285,11 +285,10 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # block_h=4 processes 4 heads per block with threads=min(4*chunk_len, 1024).
-        # For chunk_len=256 this gives threads=1024, matching the warp occupancy of
-        # mamba_ssm's _chunk_cumsum_fwd_kernel (BLOCK_SIZE_H × BLOCK_SIZE_CHUNK).
-        # block_h must evenly divide n_heads; if not, padding rows are guard-checked.
-        return {"block_h": 4, "threads": min(4 * self.chunk_len, 1024)}
+        # block_h=2 keeps one cumsum tile within 512 threads on chunk_len=256.
+        # The HIR schedule exposes the scan's serial dependency; this tile leaves
+        # more resident CTAs for the short-row primary workloads.
+        return {"block_h": 2, "threads": min(2 * self.chunk_len, 1024)}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -328,8 +327,10 @@ class DaCumsumFwdKernel(Kernel):
         A = A.contiguous()
         if self.has_dt_bias and dt_bias is None:
             raise ValueError("dt_bias is required when has_dt_bias=True")
-        # Dummy zero bias keeps the kernel signature stable when has_dt_bias=False.
-        dt_bias = dt.new_zeros(self.n_heads) if dt_bias is None else dt_bias.contiguous()
+        # The HIR has one stable three-input entry. For the compile-time no-bias
+        # specialization the kernel never reads this slot, so reuse A instead of
+        # launching a zero-fill just to satisfy the wrapper ABI.
+        dt_bias = A if dt_bias is None else dt_bias.contiguous()
 
         return _da_cumsum_fwd_wrapped(
             self.batch,
