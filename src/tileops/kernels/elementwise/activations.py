@@ -79,27 +79,38 @@ class GeluTanhFwdKernel(FloatUnaryKernel):
 class SiluFwdKernel(FloatUnaryKernel):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
-    # The one body measured faster on the looping strategy than on the fragment one:
-    # 3.52 against 3.05 TB/s at 256M fp16 on H200. Every other float unary here ties or
-    # prefers the fragment path, so this is stated per kernel rather than by category.
-    DEFAULT_STRATEGY = "explicit_parallel"
-
     @staticmethod
     def op_func(x):
-        return x * T.sigmoid(x)
+        """x / (1 + exp(-x)), in fp32.
+
+        Two things the definition spelled out cost more than they carry: the exponential
+        ran in the storage dtype, and the sigmoid was formed before being multiplied
+        back. In fp32 with x folded into the numerator, 256M fp16 reads 4.05 TB/s
+        against 3.54 and bf16 4.04 against 3.74, and the largest error against an fp32
+        reference halves. It is also what leaves this kernel on the family's loop
+        strategy: the storage-dtype body was the reason it used to want the other one,
+        and the two now tie to within 0.2%.
+        """
+        one = T.cast(1.0, "float32")
+        wide = T.cast(x, "float32")
+        return wide / (one + T.exp(-wide))
 
 
 class SigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise sigmoid(x)."""
 
-    # The one body measured faster on the looping strategy than on the fragment one:
-    # 3.52 against 3.05 TB/s at 256M fp16 on H200. Every other float unary here ties or
-    # prefers the fragment path, so this is stated per kernel rather than by category.
-    DEFAULT_STRATEGY = "explicit_parallel"
-
     @staticmethod
     def op_func(x):
-        return T.sigmoid(x)
+        """1 / (1 + exp(-x)), in fp32.
+
+        ``T.sigmoid`` on the storage dtype runs the exponential there: at 256M fp16 that
+        read 3.86 TB/s against 4.00 written out in fp32, and at bf16 3.68 against 3.97,
+        with the largest error against an fp32 reference falling by more than half. As
+        with SiLU, the storage-dtype body was the reason this kernel used to pin the
+        loop strategy, and the two now tie.
+        """
+        one = T.cast(1.0, "float32")
+        return one / (one + T.exp(-T.cast(x, "float32")))
 
 
 class TanhFwdKernel(FloatUnaryKernel):
