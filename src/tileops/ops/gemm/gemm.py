@@ -109,11 +109,10 @@ class GemmFwdOp(Op):
     ) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
 
-        ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path (the two
-        differ in which operand is the vector, so ``forward`` reshapes
-        accordingly), ``"small_batch"`` for the low-``m`` NT bandwidth kernel,
-        else ``"gemm"`` — ``GemmKernel`` (SM90), covering all four
-        ``(trans_a, trans_b)`` layouts.
+        ``mode`` is ``GemmCall.gemv_mode`` for the GEMV fast path (which operand
+        is the vector decides how ``forward`` reshapes it), ``"small_batch"`` for
+        the low-``m`` NT bandwidth kernel, else ``"gemm"`` — ``GemmKernel``
+        (SM90), covering all four ``(trans_a, trans_b)`` layouts.
 
         Which one serves the call is stated by the candidates themselves
         (``call_spec.gemv_region`` / ``small_batch_region``, read through
@@ -123,16 +122,14 @@ class GemmFwdOp(Op):
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
         key = self.select_kernel_key(GEMM_KEYS, call)
         if key == "gemv_kernel":
-            # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
-            mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
             gemv_cls = self.kernel_map["gemv_kernel"]
             kernel = self.get_or_build_kernel(
                 "gemv_kernel",
                 inputs,
-                key=(mode, m, n, k, dtype),
-                build=lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
+                key=(call.gemv_mode, m, n, k, dtype),
+                build=lambda: gemv_cls(call.gemv_n, k, dtype, tune=self.tune),
             )
-            return mode, kernel
+            return call.gemv_mode, kernel
 
         if key == "small_batch_kernel":
             sb_cls = self.kernel_map["small_batch_kernel"]

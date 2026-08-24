@@ -24,17 +24,33 @@ class GemmCall(CallSpec):
     trans_a: bool = False
     trans_b: bool = False
 
+    @property
+    def gemv_mode(self) -> Optional[str]:
+        """Which operand is the vector: ``"lhs_row"``, ``"rhs_col"``, or neither.
+
+        ``a`` is a single row with ``b`` transposed, or ``b`` is a single column
+        with neither transposed; the other two layouts have no GEMV form here.
+        Two readers need this one fact -- ``gemv_region`` to claim the call, and
+        the op to reshape the operand the kernel takes flat -- so the call states
+        it rather than each deriving it from the flags.
+        """
+        if self.trans_a:
+            return None
+        if self.m == 1 and self.trans_b:
+            return "lhs_row"
+        if self.n == 1 and not self.trans_b:
+            return "rhs_col"
+        return None
+
+    @property
+    def gemv_n(self) -> int:
+        """Output elements the GEMV kernel produces, its ``n``."""
+        return self.n if self.gemv_mode == "lhs_row" else self.m
+
 
 def gemv_region(call: GemmCall) -> bool:
-    """Whether the call is a matrix-vector product the GEMV kernel is written for.
-
-    Either operand may be the vector: ``a`` is a single row with ``b``
-    transposed, or ``b`` is a single column with neither transposed. The other
-    two layouts have no GEMV form here.
-    """
-    lhs_row = call.m == 1 and not call.trans_a and call.trans_b
-    rhs_col = call.n == 1 and not call.trans_a and not call.trans_b
-    return lhs_row or rhs_col
+    """Whether the call is a matrix-vector product the GEMV kernel is written for."""
+    return call.gemv_mode is not None
 
 
 def small_batch_region(call: GemmCall) -> bool:
