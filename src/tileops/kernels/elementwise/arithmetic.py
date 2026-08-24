@@ -334,10 +334,11 @@ def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=
     """
     del is_fp8  # fp8 is not in the manifest contract for this op
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(
             a: T.Tensor((N,), dtype),

@@ -166,13 +166,14 @@ def _make_leaky_relu_kernel(
     is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
         accum = _fp8_accum_dtype_str()
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -191,6 +192,8 @@ def _make_leaky_relu_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -228,12 +231,13 @@ class LeakyReluFwdKernel(ParametricUnaryKernel):
 def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -256,6 +260,8 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=2
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -301,12 +307,13 @@ def _make_hardtanh_kernel(
 ):
     """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -324,6 +331,8 @@ def _make_hardtanh_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -365,12 +374,13 @@ def _make_softplus_kernel(
 ):
     """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -393,6 +403,8 @@ def _make_softplus_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:

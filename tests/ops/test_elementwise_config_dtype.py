@@ -25,6 +25,30 @@ from tileops.kernels.elementwise import (
     SiluAndMulFwdKernel,
 )
 
+# Regression: a parametric kernel's block extent has to follow the config it is given
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("threads", "npt"),
+    [(128, 4), (256, 4), (512, 8), (1024, 8)],
+)
+def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -> None:
+    """Every element is written whatever ``threads * npt`` the config asks for.
+
+    The builder is handed the default config and the JIT the actual one, so a block
+    extent taken from the builder's arguments leaves part of each block untouched.
+    """
+    n = 4096 * 7 + 13
+    x = torch.randn(n, device="cuda", dtype=torch.float16)
+    kernel = LeakyReluFwdKernel(
+        n, torch.float16, 0.01, config={"threads": threads, "num_per_thread": npt}
+    )
+    torch.testing.assert_close(
+        kernel.forward(x), torch.nn.functional.leaky_relu(x, 0.01), rtol=1e-3, atol=1e-3
+    )
+
+
 # Fix 1: npt 3-way check in default_config
 
 

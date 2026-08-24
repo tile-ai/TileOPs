@@ -28,11 +28,12 @@ def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     Total elements: num_heads * seq_len * seq_len.
     """
     N_total = num_heads * seq_len * seq_len
-    block_size = threads * npt
     S2 = seq_len * seq_len
 
     @tilelang.jit(out_idx=[0])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(out: T.Tensor((N_total,), dtype)):
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:

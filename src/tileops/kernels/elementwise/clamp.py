@@ -37,12 +37,13 @@ def _make_clamp_kernel(
     casts back to preserve precision.
     """
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -63,6 +64,8 @@ def _make_clamp_kernel(
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
@@ -137,13 +140,14 @@ def _make_clamp_tensor_kernel(
             "_make_clamp_tensor_kernel requires has_min or has_max to be True",
         )
     out_dtype = output_dtype or dtype
-    block_size = threads * npt
 
     if is_fp8:
         if has_min and has_max:
 
             @tilelang.jit(out_idx=[3])
             def kernel(threads_arg, npt_arg):
+                block_size = threads_arg * npt_arg
+
                 @T.prim_func
                 def main(
                     x: T.Tensor((N,), dtype),
@@ -174,6 +178,8 @@ def _make_clamp_tensor_kernel(
 
             @tilelang.jit(out_idx=[2])
             def kernel(threads_arg, npt_arg):
+                block_size = threads_arg * npt_arg
+
                 @T.prim_func
                 def main(
                     x: T.Tensor((N,), dtype),
@@ -200,6 +206,8 @@ def _make_clamp_tensor_kernel(
         # has_max only
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -228,6 +236,8 @@ def _make_clamp_tensor_kernel(
 
         @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -264,6 +274,8 @@ def _make_clamp_tensor_kernel(
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -294,6 +306,8 @@ def _make_clamp_tensor_kernel(
     # has_max only
     @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),
