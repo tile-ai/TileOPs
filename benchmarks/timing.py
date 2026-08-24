@@ -226,11 +226,8 @@ def _phase_session(buffer_bytes: int = _BUFFER_BYTES):
     if _COLLECTOR_ACTIVE:
         raise RuntimeError("CUPTI collector is already active")
     cupti = _load_cupti()
-    # Kernels, device-to-device copies, the calls that carry their correlation ids, and
-    # the records mapping those ids to the pushed iteration index. Copies are collected
-    # always and counted only where the case asks: whether a copy is the arithmetic or
-    # incidental staging is the case's to say, and a copy nobody claimed is reported
-    # rather than dropped.
+    # Copies are always collected and counted only where the case asks, since only the
+    # case knows whether a copy is the arithmetic.
     kinds = [
         cupti.ActivityKind.CONCURRENT_KERNEL,
         cupti.ActivityKind.EXTERNAL_CORRELATION,
@@ -419,8 +416,7 @@ def _attributed_samples(
                 continue
             uncounted[iteration] = _kernel_busy_us(copies) * 1e-3
             kept = [k for k in group if not k.get("is_copy")]
-            # An iteration that only copied has nothing left to time, which is the
-            # same as one that never reached the device.
+            # An iteration that only copied has nothing left to time.
             if kept:
                 claimed[iteration] = kept
             else:

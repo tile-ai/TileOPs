@@ -39,14 +39,9 @@ _VECTOR_NORM_KINDS = {"l1", "l2", "inf"}
 # Vector norm kernel
 
 
-# Dtype of the fragment each kind reduces.
-#
-# ``inf`` reduces IEEE bit patterns as int32 rather than floats. ``T.abs`` clears the
-# sign bit, non-negative float patterns sort in the same order as the floats they
-# encode, and every NaN pattern is above +inf's -- so one integer max yields both the
-# norm and the NaN a row containing one has to report. The alternatives both cost more:
-# TileLang's ``nan_propagate`` does not carry NaN through this reduction, and having the
-# op layer find NaN rows means two more passes over the input plus a device sync.
+# Dtype of the fragment each kind reduces. ``inf`` reduces IEEE bit patterns as int32:
+# ``T.abs`` clears the sign bit, non-negative patterns sort like their floats, and every
+# NaN pattern outranks +inf's, so one integer max yields the norm and reports NaN.
 _WORK_DTYPE = {"l1": "float32", "l2": "float32", "inf": "int32"}
 
 
@@ -98,9 +93,7 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                 acc = T.alloc_fragment((block_m,), work_dtype)
                 out_local = T.alloc_fragment((block_m,), dtype)
 
-                # Loaded straight into the working fragment: no staging buffer stands
-                # between global memory and the reduction, and no kind holds a second
-                # fragment of row width.
+                # Loaded straight into the working fragment, with no staging buffer.
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
                         if _needs_pad:
@@ -152,8 +145,7 @@ def _vector_norm_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: 
                 tile_acc = T.alloc_fragment((block_m,), work_dtype)
                 out_local = T.alloc_fragment((block_m,), dtype)
 
-                # Zero is the identity for every kind here: the sums start empty, and
-                # for inf it is the bit pattern of +0.0, which no |x| falls below.
+                # Zero is every kind's identity; for inf it is +0.0's bit pattern.
                 T.fill(acc, 0)
 
                 for t in T.Serial(num_tiles):

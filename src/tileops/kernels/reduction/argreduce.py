@@ -31,8 +31,7 @@ _NUM_ACCUMULATORS = 4
 #: Magnitude bits of a float32 pattern -- everything but the sign; see _ordering_key.
 _KEY_MAGNITUDE = 0x7FFFFFFF
 
-#: The key every NaN takes: int32's largest, so no number can outrank one -- +inf keys
-#: to 0x7F800000. Two NaNs then tie and the lower index wins, as PyTorch has it.
+#: The key every NaN takes: int32's largest, so no number outranks one and two NaNs tie.
 _KEY_NAN = 0x7FFFFFFF
 
 #: Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
@@ -155,11 +154,9 @@ def _make_pair_ops(op_kind: str, n: int):
 
     @T.macro
     def advance(keys, indices, slot, candidate_key, candidate_index):
-        """Merge a candidate the walk reached after everything already in the slot.
+        """Merge a candidate reached after everything in the slot: one key comparison.
 
-        Every streaming loop hands a slot ascending indices, so an equal key belongs
-        to a later element and cannot displace what is there: one key comparison
-        settles it, where an unordered merge also has to compare the indices.
+        A streaming loop hands a slot ascending indices, so an equal key cannot win.
         """
         if candidate_key > keys[slot]:
             keys[slot] = candidate_key
@@ -312,9 +309,7 @@ def _argreduce_output_kernel(
         key_of = _ordering_key(op_kind)
         per_thread = max(1, block_m // threads)
         span = per_thread * threads
-        # Staging asks that every span be one contiguous run and leave no masked
-        # tail, since either would stop the copy from vectorizing, and that the
-        # tile fit the budget every device grants.
+        # Staging needs one contiguous run, no masked tail, and a tile within budget.
         stage = (
             span == block_m
             and M % span == 0
@@ -407,8 +402,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
                 warp_keys = T.alloc_shared((num_warps,), "int32")
                 warp_indices = T.alloc_shared((num_warps,), "int32")
                 row_frag = T.alloc_fragment((1, N if held else 1), dtype)
-                # Four slots either way, so the block reduction below is the same one the
-                # walk uses; the fragment path fills only the first.
+                # Four slots either way, so both paths share the block reduction below.
                 keys = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 indices = T.alloc_local((_NUM_ACCUMULATORS,), "int32")
                 candidate = T.alloc_local((1,), "int32")
@@ -418,8 +412,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
 
                 if held:
                     T.copy(x[row : row + 1, :], row_frag)
-                    # The fragment hands a thread its columns in no stated order, so
-                    # this is the merge that compares indices, not the walk's.
+                    # The fragment order is unstated, so this merge compares indices.
                     for _, column in T.Parallel(1, N):
                         candidate[0] = key_of(row_frag[0, column])
                         ops.update(keys, indices, 0, candidate[0], column)
@@ -671,16 +664,14 @@ class ArgreduceKernel(Kernel):
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
         block_m = max(1, target_threads // lanes)
         if self.strategy == "cta":
-            # Enough threads that the row fits in fragments, which is where the
-            # block-per-row kernel reads it a vector at a time.
+            # Enough threads that the row fits in fragments.
             wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
             threads = min(1024, max(256, 1 << max(0, wanted - 1).bit_length()))
             block_m = 1
         elif self.strategy == "multi_cta":
             block_m, threads = 1, 256
         elif self.strategy == "output":
-            # Four outputs per thread: the span the staged read wants, and wide
-            # enough that the walk has four independent chains to interleave.
+            # Four outputs per thread: the span the staged read wants.
             block_m, threads = 512, 128
         else:
             threads = block_m * lanes

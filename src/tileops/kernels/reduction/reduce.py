@@ -897,9 +897,7 @@ class ReduceKernel(Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._is_welford = op_kind in _WELFORD_KINDS
         self._is_prod = op_kind == "prod"
-        # Whether the leading-axis kernel could serve this reduction. The axes are known
-        # now; whether they are a proper prefix depends on the input's rank, so forward
-        # settles it.
+        # Whether the axes are a proper prefix needs the rank, so forward settles it.
         self._leading_axis_kind = op_kind in _LEADING_AXIS_KINDS and self.reduce_axes == tuple(
             range(len(self.reduce_axes))
         )
@@ -1032,8 +1030,7 @@ class ReduceKernel(Kernel):
             splits,
             0.0,
         )()(flat)
-        # Partials are summed whatever the kind was averaging, and the divisor is the
-        # whole reduction's row count rather than this pass's.
+        # Partials are summed even for mean, whose divisor is the whole row count.
         finish = _leading_reduce_kernel(
             splits,
             kept,

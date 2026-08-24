@@ -438,9 +438,8 @@ def test_masked_fill_tensor_manifest_bench(
     def baseline_fn(a, m, v):
         return a.masked_fill(m, v)
 
-    # Out-of-place masked_fill is a clone and then an in-place fill, and the clone is a
-    # device-to-device copy rather than a kernel. Counting copies is what puts the whole
-    # of it in the reading.
+    # The baseline is a clone plus an in-place fill, and the clone is a copy, not a
+    # kernel; counting copies is what puts all of it in the reading.
     bm.compare(
         {
             "tileops": op,

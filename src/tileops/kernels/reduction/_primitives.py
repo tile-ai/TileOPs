@@ -67,9 +67,7 @@ AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)
 # Thread count used when no candidate sweep runs.
 DEFAULT_THREADS: int = 256
 
-# Tile elements one thread may hold across its live fragments before ptxas spills the
-# tile to local memory, after which every pass re-reads it through L2. A
-# ``(block_m, cols)`` fragment gives a thread ``block_m * cols / threads`` of them.
+# Tile elements one thread may hold across its live fragments before ptxas spills.
 FRAGMENT_ELEMS_PER_THREAD: int = 64
 
 
@@ -193,11 +191,7 @@ class BlockConfigPlanner:
             if single == self.N_padded:
                 return 0
 
-        # The register budget bounds the untiled probe above, not the tile width. A
-        # tiled kernel passes over each tile once and moves on, so a spilled tile costs
-        # a spill it streams through where a narrower one costs another whole tile:
-        # measured on H200, summing 2M bf16 elements is 18% slower at a tile of 8192
-        # than at the MAX_SINGLE_TILE_COLS width that spills.
+        # The register budget bounds the untiled probe above, not the tile width.
         col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         return compute_tile_n(
             block_m,
@@ -901,9 +895,7 @@ class RowTiledAutotuneMixin:
             if tile_n == 0:
                 # Single-tile regime: explore multiple block_m values.
                 for bm in [1, 2, 4, 8, 16]:
-                    # Ask the planner both questions at once -- can this row count
-                    # build a tile, and is it the whole row. A separate shared-memory
-                    # probe answers neither and lets the register budget raise here.
+                    # Can this row count build a tile, and is that tile the whole row.
                     try:
                         bm_tile_n = self._tile_n_for_block_m(bm)
                     except ValueError:

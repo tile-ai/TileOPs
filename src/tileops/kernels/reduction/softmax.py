@@ -85,9 +85,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 
                 if _stages_row:
                     if _needs_pad:
-                        # Kernel-side boundary handling: element-wise load with
-                        # T.if_then_else masking for padding columns and row-tail
-                        # safety (M % block_m != 0).
+                        # Element-wise load, masked for padding columns and the row tail.
                         for i in T.serial(block_m):
                             for j in T.Parallel(N_padded):
                                 staged[i, j] = T.if_then_else(
@@ -131,8 +129,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
                 else:
                     for i in T.Parallel(block_m):
                         row_scale[i] = T.log(row_sum[i])
-                    # (x - max) - log(sum) avoids log(0) on the padding columns; x comes
-                    # back from shared memory because the exponentials overwrote it.
+                    # (x - max) - log(sum) avoids log(0) on padding; x comes back from shared.
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
                             x_f32[i, j] = (

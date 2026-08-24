@@ -36,11 +36,8 @@ __all__ = ["LogicalReduceKernel", "storage_dtype_for", "to_logical_storage"]
 
 _LOGICAL_REDUCE_KINDS = {"any", "all", "count_nonzero"}
 
-# Dtypes the prim_func cannot take as a storage dtype, mapped to one it can.
-#
-# bool is one byte wide and its values are the byte patterns 0 and 1, so int8
-# reinterprets it for free. Widening to float32 instead would read and write four times
-# the bytes, across two kernels the reduction does not need.
+# Dtypes the prim_func cannot take, mapped to one it can. bool is one byte holding 0
+# or 1, so int8 reinterprets it free.
 _FLOAT32_STORAGE_DTYPE = torch.float32
 _INT8_STORAGE_DTYPE = torch.int8
 _BYTE_REINTERPRETED_DTYPES = frozenset({torch.bool})
@@ -126,9 +123,7 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
                     (block_m,), "int8" if op_kind != "count_nonzero" else "int64"
                 )
 
-                # Truthiness is decided at the load: keeping the value in a second
-                # fragment would double a tile's registers to carry a number no
-                # reduction below reads.
+                # Truthiness is decided at the load, so a tile costs one fragment.
                 if _needs_pad:
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
@@ -219,8 +214,7 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
 
                 for t in T.Serial(num_tiles):
                     # Truthiness is decided at the load, so a tile costs one fragment.
-                    # A fully in-bounds tile arrives by T.copy; only a tile that can run
-                    # past N or past the row tail is read element by element.
+                    # In-bounds tiles arrive by T.copy.
                     if needs_mask:
                         with T.If(t < num_tiles - 1):
                             with T.Then():
@@ -344,8 +338,7 @@ class LogicalReduceKernel(Kernel):
         self.dtype = dtype
         self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
-        # TileLang cannot store bool, integer or complex; each maps to a storage
-        # dtype it declares, bool to the same-width int8.
+        # TileLang stores neither bool nor integer, so each maps to a declared dtype.
         self._kernel_dtype = storage_dtype_for(dtype)
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
@@ -390,8 +383,7 @@ class LogicalReduceKernel(Kernel):
         if self._kernel_dtype.is_floating_point:
             x = torch.randn(self.M, self.N, dtype=self._kernel_dtype, device=device)
         else:
-            # The int8 storage a bool input is reinterpreted into has no normal
-            # distribution; the sweep only needs a mix of zero and non-zero.
+            # int8 storage has no normal distribution; a mix of zero and non-zero will do.
             x = torch.randint(0, 2, (self.M, self.N), dtype=self._kernel_dtype, device=device)
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
@@ -432,6 +424,5 @@ class LogicalReduceKernel(Kernel):
         counted = program(self.config["block_m"], self.config["threads"])(x)
         if self.op_kind == "count_nonzero":
             return counted.to(torch.int64)
-        # The prim_func writes 0 or 1 into int8, which is bool's own representation,
-        # so the declared dtype is a reinterpretation rather than a second kernel.
+        # 0 or 1 in int8 is bool's own representation, so this is a reinterpretation.
         return counted.view(torch.bool)

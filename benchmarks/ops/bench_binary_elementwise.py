@@ -494,11 +494,8 @@ def test_logical_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    # The baseline takes the tensors the row declares, as the op does. Handing it
-    # ``bool`` copies instead had it read a byte per element where the op reads two,
-    # against a byte count taken from the declared dtype for both: measured on H200 at
-    # 1024x10240 fp16, that credited torch with 0.66 of the row where the two agree
-    # within 0.2% on the same inputs.
+    # The baseline takes the tensors the row declares, as the op does: ``bool`` copies
+    # read one byte per element against the op's two, both credited with two.
     functors = {
         "tileops": op,
         "torch": baseline_fn,

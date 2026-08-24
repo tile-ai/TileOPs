@@ -388,8 +388,7 @@ class CumulativeKernel(Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch_dtype_nbytes(dtype)
 
-        # The row scan is preferred wherever it builds. The parallel scan remains for
-        # small-M, large-N cumsum shapes that row_scan cannot serve.
+        # The row scan wherever it builds; the parallel scan for what it cannot serve.
         can_row_scan = self.N_padded == N and row_scan_fits(
             self.N_padded, self._elem_bytes, device_smem_budget(device_index)
         )
@@ -420,8 +419,7 @@ class CumulativeKernel(Kernel):
     def default_config(self) -> dict:
         """Select the default config for the selected backend and shape."""
         if self.strategy == "row_scan":
-            # The chunk length each thread scans is a compile-time loop bound, so the
-            # thread count is baked in and nothing is left to pick at call time.
+            # The chunk length is a compile-time bound, so the thread count is baked in.
             return {"threads": self._row_scan_threads}
         if self.strategy == "parallel_scan":
             block_n = 256 if self.N > 16384 else 128
