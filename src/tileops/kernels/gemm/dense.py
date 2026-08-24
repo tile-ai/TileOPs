@@ -208,6 +208,10 @@ def _gemm_fp8_kernel(
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 if block_scaled:
                     partial = T.alloc_fragment((block_m, block_n), accum_dtype)
+                    # Reuse each row/column scale across the complete output tile instead
+                    # of reloading it for every scaled partial element.
+                    scale_a_local = T.alloc_fragment((block_m,), accum_dtype)
+                    scale_b_local = T.alloc_fragment((block_n,), accum_dtype)
 
                 T.annotate_layout(
                     {
@@ -236,6 +240,18 @@ def _gemm_fp8_kernel(
                         )
                     if block_scaled:
                         scale_idx = kk * block_k // 128
+                        for i in T.Parallel(block_m):
+                            scale_a_local[i] = T.if_then_else(
+                                m_start + i < m,
+                                scale_a[m_start + i, scale_idx],
+                                0.0,
+                            )
+                        for j in T.Parallel(block_n):
+                            scale_b_local[j] = T.if_then_else(
+                                n_start + j < n,
+                                scale_b[n_start + j, scale_idx],
+                                0.0,
+                            )
                         T.clear(partial)
                         T.gemm(
                             a_shared,
@@ -246,11 +262,7 @@ def _gemm_fp8_kernel(
                         )
                         for i, j in T.Parallel(block_m, block_n):
                             if m_start + i < m and n_start + j < n:
-                                c_local[i, j] += (
-                                    partial[i, j]
-                                    * scale_a[m_start + i, scale_idx]
-                                    * scale_b[n_start + j, scale_idx]
-                                )
+                                c_local[i, j] += partial[i, j] * scale_a_local[i] * scale_b_local[j]
                     else:
                         T.gemm(
                             a_shared,
@@ -287,6 +299,10 @@ def _gemm_fp8_kernel(
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 if block_scaled:
                     partial = T.alloc_fragment((block_m, block_n), accum_dtype)
+                    # Reuse each row/column scale across the complete output tile instead
+                    # of reloading it for every scaled partial element.
+                    scale_a_local = T.alloc_fragment((block_m,), accum_dtype)
+                    scale_b_local = T.alloc_fragment((block_n,), accum_dtype)
 
                 T.annotate_layout(
                     {
@@ -315,6 +331,18 @@ def _gemm_fp8_kernel(
                         )
                     if block_scaled:
                         scale_idx = kk * block_k // 128
+                        for i in T.Parallel(block_m):
+                            scale_a_local[i] = T.if_then_else(
+                                m_start + i < m,
+                                scale_a[m_start + i, scale_idx],
+                                0.0,
+                            )
+                        for j in T.Parallel(block_n):
+                            scale_b_local[j] = T.if_then_else(
+                                n_start + j < n,
+                                scale_b[n_start + j, scale_idx],
+                                0.0,
+                            )
                         T.clear(partial)
                         T.gemm(
                             a_shared,
@@ -325,11 +353,7 @@ def _gemm_fp8_kernel(
                         )
                         for i, j in T.Parallel(block_m, block_n):
                             if m_start + i < m and n_start + j < n:
-                                c_local[i, j] += (
-                                    partial[i, j]
-                                    * scale_a[m_start + i, scale_idx]
-                                    * scale_b[n_start + j, scale_idx]
-                                )
+                                c_local[i, j] += partial[i, j] * scale_a_local[i] * scale_b_local[j]
                     else:
                         T.gemm(
                             a_shared,
