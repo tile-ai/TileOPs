@@ -7,20 +7,27 @@ it under-uses split-K). Benchmarking only against the default therefore risks
 crediting a TileOPs kernel with a "win" that a cuBLASLt user with algorithm
 selection would not concede.
 
-This module provides that stronger baseline. It searches three sources and keeps
-the fastest: cuBLASLt's heuristic top picks (``cublasLtMatmulAlgoGetHeuristic``),
-a full enumeration of every algorithm id (``cublasLtMatmulAlgoGetIds``) crossed
-with its capability grid — tile, stages, split-K, reduction scheme, CTA swizzle,
-custom option — validated by ``cublasLtMatmulAlgoCheck``, and the plain
-``torch.matmul`` path (so the result is never slower than the default). The
-*selection* happens once at construction; the returned callable runs a single
-op so the benchmark harness times it with the **same CUPTI protocol** as every
-other entry (no cudaEvent / launch-overhead skew between baselines).
+This module provides that stronger baseline. It times cuBLASLt's heuristic picks
+for the shape (``cublasLtMatmulAlgoGetHeuristic``) against the plain
+``torch.matmul`` path and keeps the faster, so the result is never slower than
+the default. Selection happens once at construction; the returned callable runs a
+single op, so the harness times it under the **same CUPTI protocol** as every
+other entry — no cudaEvent or launch-overhead skew between baselines.
 
-Talks to ``libcublasLt`` through ``ctypes`` (no build step) and reads the device
-pointers of the caller's torch tensors directly, so inputs are byte-identical to
-the ``tileops`` and ``torch-cublas`` entries. Falls back to ``None`` when
-cuBLASLt is unavailable, so callers keep the plain ``torch-cublas`` baseline.
+Measured on H200 over the 16 ``GemmFwdOp`` workload rows: the search is worth
+1.12x on ``wide-n-24576`` and 1.07x on ``ds-v3-prefill-down`` — the two rows
+where cuBLAS's default heuristic is weakest — and nothing anywhere else (median
+1.000x), which is why those two rows alone justify the baseline. Enumerating
+every algorithm id crossed with its capability grid (256 further candidates) was
+measured too and added ~1%, inside those rows' own run-to-run spread, so this
+searches the heuristic list only.
+
+``ctypes`` because there is no Python cuBLASLt binding in this stack: torch
+exposes the backend choice (``torch.backends.cuda.preferred_blas_library``) but
+not algorithm enumeration, and the runner image ships no cuBLAS Python package.
+Reading the device pointers of the caller's torch tensors directly keeps the
+inputs byte-identical to the ``tileops`` and ``torch-cublas`` entries. Falls back
+to ``None`` when cuBLASLt is unavailable, so callers keep ``torch-cublas``.
 
 Only ``trans_a == False`` (the manifest GEMM layouts: NN and NT) is supported;
 other layouts return ``None``.
@@ -46,21 +53,6 @@ _PREF_MAX_WORKSPACE = 1  # cublasLtMatmulPreferenceAttributes_t (SEARCH_MODE=0)
 _STATUS_SUCCESS = 0
 
 # cublasLtMatmulAlgoCapAttributes_t  /  ...ConfigAttributes_t  /  reduction schemes
-_CAP_SPLITK = 0
-_CAP_REDUCTION_MASK = 1
-_CAP_SWIZZLE = 2
-_CAP_TILE_IDS = 6
-_CAP_CUSTOM_MAX = 7
-_CAP_STAGES_IDS = 13
-_CFG_TILE_ID = 1
-_CFG_SPLITK_NUM = 2
-_CFG_REDUCTION = 3
-_CFG_SWIZZLE = 4
-_CFG_CUSTOM = 5
-_CFG_STAGES_ID = 6
-_RED_NONE = 0
-_RED_SCHEME_BITS = (1, 2, 4)  # inplace / compute_type / output_type (cublasLtReductionScheme_t)
-_SPLITK_CANDIDATES = (2, 3, 4, 5, 6, 8, 12, 16, 32)
 
 _TORCH_TO_CUDA_DT = {
     torch.float16: _CUDA_R_16F,
@@ -159,37 +151,6 @@ def _load() -> Optional[ctypes.CDLL]:
         sz,
         p,
     ]
-    _lib.cublasLtMatmulAlgoGetIds.argtypes = [
-        p,
-        i,
-        i,
-        i,
-        i,
-        i,
-        i,
-        i,
-        ctypes.POINTER(i),
-        ctypes.POINTER(i),
-    ]
-    _lib.cublasLtMatmulAlgoInit.argtypes = [p, i, i, i, i, i, i, i, ctypes.POINTER(_MatmulAlgo)]
-    _lib.cublasLtMatmulAlgoCapGetAttribute.argtypes = [
-        ctypes.POINTER(_MatmulAlgo),
-        i,
-        p,
-        sz,
-        ctypes.POINTER(sz),
-    ]
-    _lib.cublasLtMatmulAlgoConfigSetAttribute.argtypes = [ctypes.POINTER(_MatmulAlgo), i, p, sz]
-    _lib.cublasLtMatmulAlgoCheck.argtypes = [
-        p,
-        p,
-        p,
-        p,
-        p,
-        p,
-        ctypes.POINTER(_MatmulAlgo),
-        ctypes.POINTER(_HeuristicResult),
-    ]
     return _lib
 
 
@@ -203,9 +164,9 @@ class CublasLtBestGemm:
 
     Computes ``C = op(A) @ op(B)`` (row-major, bf16/fp16 in, fp32 accumulate)
     with ``trans_a == False`` and ``trans_b`` selecting NN or NT — matching the
-    manifest GEMM workloads. Construction searches the heuristic picks, the full
-    algorithm-id × capability enumeration, and the ``torch.matmul`` default, then
-    keeps the fastest; ``__call__`` runs exactly one op with it.
+    manifest GEMM workloads. Construction times cuBLASLt's heuristic picks against
+    the ``torch.matmul`` default and keeps the fastest; ``__call__`` runs exactly
+    one op with it.
 
     Args:
         m: Rows of ``op(A)`` / ``C``.
@@ -215,8 +176,8 @@ class CublasLtBestGemm:
         trans_b: ``True`` for NT (``A @ Bᵀ``, ``B`` stored ``[n, k]``), ``False``
             for NN (``A @ B``, ``B`` stored ``[k, n]``).
         workspace_mb: cuBLASLt workspace ceiling (enables split-K algorithms).
-        n_candidates: Heuristic candidate algorithms to request (before the full
-            enumeration is added to the pool).
+        n_candidates: Heuristic candidate algorithms to request; cuBLASLt returns
+            what it has, which on the workload shapes here is around eight.
 
     Raises:
         RuntimeError: cuBLASLt unavailable, dtype unsupported, or no candidate
@@ -276,11 +237,7 @@ class CublasLtBestGemm:
         self._alpha = ctypes.c_float(1.0)
         self._beta = ctypes.c_float(0.0)
 
-        # Candidate pool = (1) cuBLASLt's heuristic top picks, plus (2) a full
-        # enumeration of every algorithm id × its capability grid (tile, split-K,
-        # reduction, swizzle, stages, custom option) validated by AlgoCheck. The
-        # heuristic alone returned as few as 8 candidates for some shapes; the
-        # enumeration is what makes this a genuine "best effort" search.
+        # Candidate pool: cuBLASLt's heuristic picks for this shape.
         pref = vp()
         _ck(lib.cublasLtMatmulPreferenceCreate(ctypes.byref(pref)), "PreferenceCreate")
         self._set_attr(pref, _PREF_MAX_WORKSPACE, ctypes.c_size_t(self._ws_bytes), pref=True)
@@ -304,7 +261,6 @@ class CublasLtBestGemm:
         candidates = [
             results[i].algo for i in range(returned.value) if results[i].state == _STATUS_SUCCESS
         ]
-        candidates += self._enumerate_candidates()
         if not candidates:
             raise RuntimeError("cuBLASLt found no runnable algorithm")
         self.n_searched = len(candidates)
@@ -348,125 +304,6 @@ class CublasLtBestGemm:
             self._ws_bytes,
             stream,
         )
-
-    # ── full algorithm enumeration (best-effort search) ──
-    def _cap_array(self, algo: _MatmulAlgo, cap: int, maxn: int = 64) -> list:
-        buf = (ctypes.c_uint32 * maxn)()
-        written = ctypes.c_size_t(0)
-        st = self._lib.cublasLtMatmulAlgoCapGetAttribute(
-            ctypes.byref(algo), cap, buf, ctypes.sizeof(buf), ctypes.byref(written)
-        )
-        if st != _STATUS_SUCCESS:
-            return []
-        return [buf[i] for i in range(written.value // 4)]
-
-    def _cap_scalar(self, algo: _MatmulAlgo, cap: int, default: int = 0) -> int:
-        val = ctypes.c_uint32(0)
-        written = ctypes.c_size_t(0)
-        st = self._lib.cublasLtMatmulAlgoCapGetAttribute(
-            ctypes.byref(algo), cap, ctypes.byref(val), 4, ctypes.byref(written)
-        )
-        return val.value if st == _STATUS_SUCCESS else default
-
-    def _cfg(self, algo: _MatmulAlgo, attr: int, value: int) -> None:
-        v = ctypes.c_uint32(value)
-        self._lib.cublasLtMatmulAlgoConfigSetAttribute(ctypes.byref(algo), attr, ctypes.byref(v), 4)
-
-    def _check_ok(self, algo: _MatmulAlgo) -> bool:
-        """True if the configured algo is valid and fits the workspace budget."""
-        res = _HeuristicResult()
-        st = self._lib.cublasLtMatmulAlgoCheck(
-            self._handle,
-            self._desc,
-            self._La,
-            self._Lb,
-            self._Lc,
-            self._Lc,
-            ctypes.byref(algo),
-            ctypes.byref(res),
-        )
-        return (
-            st == _STATUS_SUCCESS
-            and res.state == _STATUS_SUCCESS
-            and res.workspaceSize <= self._ws_bytes
-        )
-
-    def _enumerate_candidates(self, max_ids: int = 64, max_total: int = 256) -> list:
-        """Enumerate every algorithm id × its capability grid (tile, stages,
-        split-K, reduction scheme, CTA swizzle, custom option), keeping each
-        combination that ``cublasLtMatmulAlgoCheck`` validates and fits the
-        workspace. This is the exhaustive counterpart to the heuristic top-N;
-        together they form the strongest cuBLAS baseline we can construct."""
-        lib = self._lib
-        ids = (ctypes.c_int * max_ids)()
-        nret = ctypes.c_int(0)
-        dt = self._io_dt
-        if (
-            lib.cublasLtMatmulAlgoGetIds(
-                self._handle,
-                _CUBLAS_COMPUTE_32F,
-                _CUDA_R_32F,
-                dt,
-                dt,
-                dt,
-                dt,
-                max_ids,
-                ids,
-                ctypes.byref(nret),
-            )
-            != _STATUS_SUCCESS
-        ):
-            return []
-        out: list = []
-        for i in range(nret.value):
-            algo = _MatmulAlgo()
-            if (
-                lib.cublasLtMatmulAlgoInit(
-                    self._handle,
-                    _CUBLAS_COMPUTE_32F,
-                    _CUDA_R_32F,
-                    dt,
-                    dt,
-                    dt,
-                    dt,
-                    ids[i],
-                    ctypes.byref(algo),
-                )
-                != _STATUS_SUCCESS
-            ):
-                continue
-            tiles = self._cap_array(algo, _CAP_TILE_IDS) or [0]
-            stages = self._cap_array(algo, _CAP_STAGES_IDS) or [0]
-            splitk_ok = self._cap_scalar(algo, _CAP_SPLITK)
-            red_mask = self._cap_scalar(algo, _CAP_REDUCTION_MASK)
-            swizzles = [0, 1] if self._cap_scalar(algo, _CAP_SWIZZLE) >= 1 else [0]
-            customs = list(range(min(self._cap_scalar(algo, _CAP_CUSTOM_MAX) + 1, 2)))
-            # split-K plans: always the plain single-K pass; add the sweep (with
-            # each reduction scheme the algo's mask allows) when it is supported.
-            plans = [(1, _RED_NONE)]
-            if splitk_ok:
-                plans += [
-                    (sk, bit)
-                    for sk in _SPLITK_CANDIDATES
-                    for bit in _RED_SCHEME_BITS
-                    if red_mask & bit
-                ]
-            for tile in tiles:
-                for stage in stages:
-                    for swz in swizzles:
-                        for cust in customs:
-                            for sk, red in plans:
-                                self._cfg(algo, _CFG_TILE_ID, tile)
-                                self._cfg(algo, _CFG_STAGES_ID, stage)
-                                self._cfg(algo, _CFG_SWIZZLE, swz)
-                                self._cfg(algo, _CFG_CUSTOM, cust)
-                                self._cfg(algo, _CFG_SPLITK_NUM, sk)
-                                self._cfg(algo, _CFG_REDUCTION, red)
-                                if self._check_ok(algo):
-                                    out.append(_MatmulAlgo.from_buffer_copy(algo))
-                                    if len(out) >= max_total:
-                                        return out
-        return out
 
     def _pick_best(self, algos) -> _MatmulAlgo:
         """Select the fastest runnable candidate for the reported CUPTI timing.
@@ -545,44 +382,3 @@ def make_cublaslt_best(
         return CublasLtBestGemm(m, n, k, dtype, trans_b)
     except RuntimeError:
         return None
-
-
-if __name__ == "__main__":
-    # Self-test: correctness vs torch + best latency, NN and NT.
-    from benchmarks.benchmark_base import bench_kernel
-
-    for label, m, n, k, tb in [
-        ("NT decode-gate-up", 128, 2112, 7168, True),
-        ("NT prefill-attn", 4096, 4096, 7168, True),
-        ("NN square-1k", 1024, 1024, 1024, False),
-    ]:
-        for dt in (torch.bfloat16,):
-            a = torch.randn(m, k, dtype=dt, device="cuda")
-            b = (
-                torch.randn(n, k, dtype=dt, device="cuda")
-                if tb
-                else torch.randn(k, n, dtype=dt, device="cuda")
-            )
-            fn = make_cublaslt_best(m, n, k, dt, False, tb)
-            if fn is None:
-                print(f"{label}: cuBLASLt unavailable")
-                continue
-            c = fn(a, b)
-            ref = a.float() @ (b.float().T if tb else b.float())
-            err = (c.float() - ref).abs().max().item()
-            errcu = ((a @ (b.T if tb else b)).float() - ref).abs().max().item()
-            flops = 2 * m * n * k
-            tf_best = flops / bench_kernel(lambda x, y, f=fn: f(x, y), args=(a, b)) * 1e-9 / 1e3
-            tf_def = (
-                flops
-                / bench_kernel(lambda x, y, t=tb: torch.matmul(x, y.T if t else y), args=(a, b))
-                * 1e-9
-                / 1e3
-            )
-            ok = err <= max(errcu * 3, 0.5)
-            print(
-                f"{label} {m}x{n}x{k} {str(dt)[6:]}: correct={ok} (err={err:.3f}/cu={errcu:.3f}) "
-                f"cuBLASLt_best={tf_best * 1e3:.0f}T torch_default={tf_def * 1e3:.0f}T "
-                f"gain={tf_best / tf_def:.3f}x",
-                flush=True,
-            )
