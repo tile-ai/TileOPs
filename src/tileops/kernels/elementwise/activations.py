@@ -43,11 +43,6 @@ class ReluFwdKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-#: Where Mish's tanh factor reaches 1 in fp32, so the result is x from here up. Also
-#: below where ``exp(x) ** 2`` overflows fp32, which the branch is what avoids.
-_MISH_SATURATION: float = 20.0
-
-
 class GeluFwdKernel(FloatUnaryKernel):
     """Element-wise GELU using the standard erf formulation."""
 
@@ -138,13 +133,17 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
 class MishFwdKernel(FloatUnaryKernel):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
+    #: Where Mish's tanh factor reaches 1 in fp32, so the result is x from here up.
+    #: Also below where ``exp(x) ** 2`` overflows fp32, which the branch avoids.
+    _SATURATION: float = 20.0
+
     @staticmethod
     def op_func(x):
         """One transcendental where the definition spells out three.
 
         With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
         this avoids extra transcendentals and keeps the small values ``log(1 + e)``
-        rounds away. Past ``_MISH_SATURATION`` the ratio is 1 to every bit fp32 carries,
+        rounds away. Past ``_SATURATION`` the ratio is 1 to every bit fp32 carries,
         which is also what keeps ``e^2`` finite.
         """
         two = T.cast(2.0, "float32")
@@ -152,7 +151,7 @@ class MishFwdKernel(FloatUnaryKernel):
         e = T.exp(wide)
         saturated = e * e + two * e
         return T.if_then_else(
-            wide > T.cast(_MISH_SATURATION, "float32"),
+            wide > T.cast(MishFwdKernel._SATURATION, "float32"),
             wide,
             wide * saturated / (saturated + two),
         )
