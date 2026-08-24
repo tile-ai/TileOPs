@@ -15,12 +15,20 @@ single op, so the harness times it under the **same CUPTI protocol** as every
 other entry — no cudaEvent or launch-overhead skew between baselines.
 
 Measured on H200 over the 16 ``GemmFwdOp`` workload rows: the search is worth
-1.12x on ``wide-n-24576`` and 1.07x on ``ds-v3-prefill-down`` — the two rows
-where cuBLAS's default heuristic is weakest — and nothing anywhere else (median
-1.000x), which is why those two rows alone justify the baseline. Enumerating
-every algorithm id crossed with its capability grid (256 further candidates) was
-measured too and added ~1%, inside those rows' own run-to-run spread, so this
-searches the heuristic list only.
+1.10x on ``wide-n-24576``, 1.07x on ``ds-v3-prefill-down`` and 1.03-1.05x on the
+low-``m`` decode rows; the rest read 1.000x, where selection defers to torch
+(median over all rows 1.000x). Those are the rows where cuBLAS's default
+heuristic is weakest, and they are also where this library's kernel is furthest
+behind — which is the whole reason the baseline has to be here. Enumerating every
+algorithm id crossed with its capability grid (256 further candidates) was
+measured too and never won a row the heuristic list had not already won, so this
+searches the heuristic list alone.
+
+A row can still read about a percent under ``torch-cublas``: selection ranks by a
+cudaEvent minimum while the report is a CUPTI median, and ``_TORCH_MARGIN`` bounds
+rather than erases that disagreement. The report judges each row by its strongest
+baseline, so ``torch-cublas`` still sets the bar wherever this entry lands under
+it.
 
 ``ctypes`` because the algorithm API has no Python binding here -- not because
 the library is missing. ``libcublasLt`` comes in with torch (its ``nvidia-cublas``
@@ -42,6 +50,8 @@ from typing import Callable, Optional
 
 import torch
 
+from benchmarks.timing import _get_l2_flush_cache
+
 __all__ = ["CublasLtBestGemm", "make_cublaslt_best"]
 
 # ── cuBLAS / CUDA enum constants (library_types.h, cublas_api.h, cublasLt.h) ──
@@ -55,6 +65,12 @@ _DESC_TRANSA = 3  # cublasLtMatmulDescAttributes_t
 _DESC_TRANSB = 4
 _PREF_MAX_WORKSPACE = 1  # cublasLtMatmulPreferenceAttributes_t (SEARCH_MODE=0)
 _STATUS_SUCCESS = 0
+# How far ahead the searched algorithm must be before it displaces torch. Ranking
+# here is a cudaEvent minimum; the row is reported from CUPTI medians, and the two
+# disagree by up to about a percent. Without the margin a candidate that wins by
+# that much noise reads *slower* than the default in the report -- a "best cuBLAS"
+# entry below the plain one, which is the one thing this baseline must never be.
+_TORCH_MARGIN = 1.02
 
 # cublasLtMatmulAlgoCapAttributes_t  /  ...ConfigAttributes_t  /  reduction schemes
 
@@ -324,7 +340,10 @@ class CublasLtBestGemm:
         b = torch.randn(
             (self.n, self.k) if self.trans_b else (self.k, self.n), dtype=self.dtype, device="cuda"
         )
-        flush = torch.empty(64 * 1024 * 1024 // 4, dtype=torch.int, device="cuda")
+        # The harness's own flush buffer, sized from the device's L2. A private
+        # 64 MB one left H200's 60 MB L2 partly warm, so selection ranked
+        # candidates under a cache state the reported timing never sees.
+        flush = _get_l2_flush_cache()
 
         def min_ms(run, iters):
             for _ in range(5):
@@ -357,8 +376,9 @@ class CublasLtBestGemm:
         best_algo = min(screened, key=lambda al: algo_ms(al, 80))
         # A "best cuBLAS" baseline must never be slower than the default
         # torch.matmul path (which may take a route our search misses), so
-        # include it as a candidate and defer to it when it wins.
-        self._use_torch = min_ms(torch_run, 80) < algo_ms(best_algo, 80)
+        # include it as a candidate and defer to it unless the search is ahead by
+        # more than the two timers disagree (see ``_TORCH_MARGIN``).
+        self._use_torch = min_ms(torch_run, 80) < algo_ms(best_algo, 80) * _TORCH_MARGIN
         return best_algo
 
     def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
