@@ -380,9 +380,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
     ) -> torch.Tensor:
         """Validate, normalize, resolve one concrete implementation, and run it."""
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
-        inputs = self._canonicalize_inputs(
-            q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin
-        )
+        inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)
         return kernel(*inputs)
 
