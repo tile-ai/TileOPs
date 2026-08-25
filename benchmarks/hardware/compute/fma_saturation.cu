@@ -1,29 +1,13 @@
 // CUDA-Core Saturation Benchmark
-// Measures peak fp32 FMA throughput on the CUDA cores, plus a MUFU
-// (special-function unit) reference measurement.
+// Peak fp32 FMA throughput on the CUDA cores, plus a MUFU (special-function
+// unit) reference rate.
 //
-// The kernels hold every operand in registers and touch memory only once, at
-// the end.  What they measure is therefore the issue rate of the arithmetic
-// pipelines themselves — the ceiling a roofline puts on the compute axis [1].
-//
-// Two knobs decide whether that ceiling is reached:
-//
-//   * ILP — how many independent dependency chains each thread carries.  One
-//     chain per thread is latency-bound (an FMA cannot issue until the previous
-//     one retires), so the sweep starts at 1 and grows until the rate flattens.
-//   * Occupancy — the grid is sized to fill every SM to its 2048-thread limit.
-//
-// The measured peak lands below the datasheet number because a kernel that
-// issues an FMA every cycle draws enough power to pull the SM clock below its
-// boost ceiling.  That gap is exactly what the calibration factor records; the
-// summary prints the implied clock so the cause is visible rather than inferred.
-//
-// References:
-//   [1] Williams, S., Waterman, A. & Patterson, D., 2009. "Roofline: An
-//       Insightful Visual Performance Model for Multicore Architectures."
-//       Communications of the ACM, 52(4), pp.65-76.
-//   [2] NVIDIA CUDA C Programming Guide, "Arithmetic Instructions" —
-//       native throughput per SM per clock by compute capability.
+// Every operand stays in registers and memory is touched once at the end, so
+// the kernels measure the issue rate of the arithmetic pipelines — the compute
+// axis of the roofline (Williams et al., CACM 52(4), 2009).  ILP (independent
+// chains per thread) is swept because one chain is latency-bound and where the
+// rate saturates moves with the architecture; the grid fills every SM to its
+// 2048-thread limit.
 //
 // Compile: nvcc -O3 -arch=sm_90 -Wno-deprecated-gpu-targets -o fma_saturation fma_saturation.cu
 // Usage: ./fma_saturation [iters] [theo_peak_tflops]  (defaults: 20000, 67.0)
@@ -50,26 +34,16 @@
 // Kernels
 // ============================================================
 
-// rsqrt.approx.ftz.f32 issues on the MUFU, the same unit as ex2/lg2/rcp.  It is
-// used here instead of __expf, which carries a multiply by log2(e) that would
-// show up in the measured rate — and instead of rcp, which cannot be chained:
-// 1/(1/x) = x makes the chain periodic and the compiler collapses the loop to a
-// single iteration.  rsqrt has no such identity; the chain converges towards
-// 1.0 and stays there.
+// rsqrt.approx.ftz.f32 issues on the MUFU (same unit as ex2/lg2/rcp).  Not
+// __expf — its multiply by log2(e) would show in the rate — and not rcp, whose
+// chain is periodic (1/(1/x) = x) and gets folded to one iteration.
 //
-// Both qualifiers here are load-bearing, and both were caught by reading SASS
-// rather than by reasoning:
-//
-//   * .ftz — without it ptxas must handle denormal inputs and expands the single
-//     MUFU into a guarded sequence, measured on sm_90 at 2 FSEL + 2 FMUL +
-//     2 FSETP per MUFU.RCP.  That turns a MUFU benchmark into a mostly-ALU one.
-//   * volatile — a plain asm() is a pure expression and may be hoisted out of
-//     the loop wholesale, leaving the kernel to time at launch overhead.
-//
-// SASS is necessary but not sufficient here: `cuobjdump -sass` on k_rsqrt_fp32<8>
-// must show a run of MUFU.RSQ with no FSEL/FMUL between them, AND the measured
-// time must scale linearly when `iters` is multiplied by ten.  A collapsed loop
-// can still leave a plausible-looking loop body in the disassembly.
+// Both qualifiers are load-bearing: without .ftz ptxas guards denormals
+// (2 FSEL + 2 FMUL + 2 FSETP per MUFU on sm_90) and the benchmark turns
+// mostly-ALU; without volatile the asm() may be hoisted out of the loop.
+// Verify both ways: `cuobjdump -sass` must show bare MUFU.RSQ in the loop,
+// and the time must scale linearly with `iters` — a collapsed loop can still
+// disassemble into a plausible-looking body.
 __device__ __forceinline__ float rsqrt_approx(float x) {
     float r;
     asm volatile("rsqrt.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
@@ -97,11 +71,9 @@ __global__ void k_fma_fp32(float* __restrict__ sink, int iters) {
 #pragma unroll
     for (int i = 0; i < ILP; ++i) s += acc[i];
 
-    // Unconditional store, one per thread, outside the loop.  A predicated store
-    // the compiler "cannot prove" is dead would leave the measurement resting on
-    // an optimizer accident; this leaves nothing to prove.  The cost is one STG
-    // per thread against tens of thousands of FMAs — under 0.1% of the timed
-    // region, and every config pays it identically.
+    // Unconditional store: nothing for the optimizer to prove dead.  One STG
+    // per thread against tens of thousands of FMAs, paid identically by every
+    // config.
     sink[blockIdx.x * blockDim.x + threadIdx.x] = s;
 }
 
@@ -112,12 +84,9 @@ __global__ void k_rsqrt_fp32(float* __restrict__ sink, int iters) {
 #pragma unroll
     for (int i = 0; i < ILP; ++i) acc[i] = 1.5f + 1e-3f * (float)(threadIdx.x + i);
 
-    // Unlike the FMA kernel, whose outer loop the compiler unrolls ~30x, this one
-    // stays rolled: `asm volatile` blocks the duplication, and `#pragma unroll`
-    // is ignored here.  It does not bias the measurement.  Saturating the MUFU
-    // needs one warp-wide instruction every 2 clocks (32 lanes / 16 per clock),
-    // against 4 issue slots per SM per clock, so the loop counter's IADD3/ISETP/
-    // BRA fit in the slack — and with 64 warps resident they overlap anyway.
+    // `asm volatile` keeps this outer loop rolled (the FMA one unrolls ~30x).
+    // No bias: saturating the MUFU takes one warp instruction per 2 clocks
+    // against 4 issue slots, so the loop bookkeeping fits in the slack.
     for (int it = 0; it < iters; ++it) {
 #pragma unroll
         for (int i = 0; i < ILP; ++i) acc[i] = rsqrt_approx(acc[i]);
@@ -149,9 +118,8 @@ BenchResult run_bench(std::function<void()> launch, double ops_per_launch,
     std::vector<float> latencies;
 
     for (int run = 0; run < 5; run++) {
-        // Warmup doubles as the clock-settling window: a saturating FMA loop
-        // drops the SM clock within the first few milliseconds, and measuring
-        // before it settles reports a rate no sustained kernel can hold.
+        // Warmup doubles as the clock-settling window: a saturating load drops
+        // the SM clock within the first few milliseconds.
         for (int i = 0; i < warmup; i++) launch();
         CHECK_CUDA(cudaDeviceSynchronize());
 
@@ -208,9 +176,8 @@ struct Grid {
     float* sink;
 };
 
-// A __global__ function cannot be launched through a function pointer, so the
-// ILP parameter is threaded through the host helper as a template argument
-// rather than passed as a value.
+// A __global__ function cannot be launched through a function pointer, so ILP
+// is a template argument.
 template <int ILP>
 double sweep_fma(const Grid& g, double theo_peak_tflops) {
     double fmas = g.threads * (double)ILP * (double)g.iters;
@@ -223,8 +190,7 @@ double sweep_fma(const Grid& g, double theo_peak_tflops) {
            ILP, g.block, r.best_ms, r.median_ms, r.worst_ms, r.stddev_pct,
            best_tflops, median_tflops, worst_tflops,
            median_tflops / theo_peak_tflops * 100.0);
-    // The median, not the best: one lucky run out of five is not a rate the
-    // hardware sustains, and calibration is a sustained-rate question.
+    // Median, not best: one lucky run out of five is not a sustained rate.
     return median_tflops;
 }
 
@@ -271,8 +237,7 @@ int main(int argc, char* argv[]) {
     printf("Each config: 5 runs x 50 reps, warmup 20; calibration uses the median\n");
     printf("iters=%d  theo_peak_tflops=%.1f\n\n", iters, theo_peak_tflops);
 
-    // One slot per thread: the kernels store their accumulator unconditionally,
-    // so the sink has to be wide enough for all of them.
+    // One slot per thread: every thread stores its accumulator.
     float* d_sink;
     const size_t sink_bytes = (size_t)nblocks * block * sizeof(float);
     CHECK_CUDA(cudaMalloc(&d_sink, sink_bytes));
@@ -307,9 +272,8 @@ int main(int argc, char* argv[]) {
     // ============================================================
     // Derived quantities
     // ============================================================
-    // An FMA-saturated SM issues FMA_LANES_PER_SM results per clock, so the
-    // measured rate divided by that product is the clock the GPU actually held
-    // — the difference from the boost ceiling above is the power cap at work.
+    // measured rate / (lanes * SMs) = the clock the GPU actually held; the gap
+    // to the boost ceiling is the power cap at work.
     double fma_per_s = peak_fma_tflops * 1e12 / 2.0;
     double implied_ghz = fma_per_s / ((double)FMA_LANES_PER_SM * sm_count) / 1e9;
     double mufu_ratio = (peak_mufu_gops > 0) ? fma_per_s / (peak_mufu_gops * 1e9) : 0.0;

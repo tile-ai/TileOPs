@@ -15,13 +15,9 @@ hbm:
 cuda_core:
   fp32:
     theoretical: 67.0e12     # FLOPS, spec sheet (non-tensor FMA, 2 FLOP per FMA, 1.98 GHz boost)
-    # FMA saturation, from benchmarks/hardware/compute/fma_throughput.py.
-    # Taken with clocks locked (nvidia-smi -lgc 1830,1980); the board holds
-    # 1830 MHz under a saturating FMA load and does not reach the 1.98 GHz the
-    # datasheet figure assumes, at 339 W against a 700 W cap.  The factor splits
-    # into 0.9261 lane utilisation x 0.9242 clock, and only the first is a
-    # property of the silicon: lane utilisation measured 0.926 / 0.924 / 0.926
-    # across 1500 MHz unlocked, 1830 MHz unlocked, and 1830 MHz locked.
+    # From benchmarks/hardware/compute/fma_throughput.py, clocks locked
+    # (-lgc 1830,1980; the board holds 1830 MHz under saturating FMA).
+    # Splits into 0.9261 lane utilisation x 0.9242 clock headroom.
     calibration: 0.8548
 
 tensor_core:

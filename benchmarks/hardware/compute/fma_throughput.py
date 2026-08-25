@@ -1,18 +1,8 @@
 """CUDA-Core FMA Throughput Benchmark — Python wrapper for fma_saturation.cu.
 
-Compiles and runs the CUDA microbenchmark, parses output, and prints the
-calibration factor for src/tileops/perf/profiles/.
-
-Calibration is derived from the fp32 FMA kernel: ILP independent FMA chains per
-thread, every operand in registers, memory touched once at the end.  What it
-measures is the issue rate of the CUDA cores — the compute axis of the roofline:
-
-    Williams, S., Waterman, A. & Patterson, D., 2009. "Roofline: An Insightful
-    Visual Performance Model for Multicore Architectures." CACM 52(4).
-
-This is the CUDA-core counterpart of memory/hbm_bandwidth.py.  The two together
-fix both axes, and their ratio is the arithmetic intensity at which a kernel
-stops being memory-bound.
+Compiles and runs the CUDA microbenchmark, parses its output, and prints the
+calibration factor for src/tileops/perf/profiles/.  The CUDA-core counterpart
+of memory/hbm_bandwidth.py: the two together fix both roofline axes.
 
 Usage:
     python benchmarks/hardware/compute/fma_throughput.py [--profile h200] [--iters 20000]
@@ -30,8 +20,7 @@ from tileops.perf import load_profile
 
 _CU_SRC = Path(__file__).parent / "fma_saturation.cu"
 
-# How much the SM clock may wander across a run before the result stops being a
-# locked-clock measurement.  One boost bin on sm_90 is 15 MHz.
+# One boost bin on sm_90; more clock movement than this is not a locked-clock run.
 _CLOCK_STEADY_MHZ = 15.0
 
 # fp32 FMA lanes per SM per clock on compute capability 9.0, from the CUDA C
@@ -59,11 +48,8 @@ def _compile(cu_path, binary_path, arch="sm_90"):
 class _ClockSampler(threading.Thread):
     """Sample SM clock, power and temperature while the benchmark runs.
 
-    Without locked clocks a calibration number is only meaningful alongside the
-    clocks it was taken at: a saturating FMA loop pulls the SM clock well below
-    the boost ceiling, and how far it falls depends on the power cap, the
-    ambient temperature, and whoever else is using the board.  Recording the
-    distribution turns an unreproducible number into a conditional one.
+    A calibration is only meaningful alongside the clocks it was taken at;
+    recording them turns an unreproducible number into a conditional one.
     """
 
     def __init__(self, gpu_index, interval_ms=200):
@@ -143,10 +129,8 @@ _COL_ILP, _COL_STDDEV, _COL_MEDIAN_RATE = 1, 6, 8
 def _parse_peak(lines, op):
     """Return (median_rate, ilp, stddev_pct) for the best config of one op.
 
-    Selection is on the *median* of five runs, not the best of them: one lucky
-    run is not a rate the hardware sustains.  The sweep over ILP is still a
-    maximum — low ILP is latency-bound, and where the rate saturates moves with
-    the architecture — but each candidate is judged by its median.
+    Best config across the ILP sweep, but each config judged by its median of
+    five runs — one lucky run is not a sustained rate.
     """
     best = (0.0, None, None)
     for line in lines:
@@ -261,10 +245,8 @@ def main():
         print(f"MUFU (rsqrt.approx.ftz):   {mufu_peak:.2f} Gop/s (ILP={mufu_ilp})", end="")
         print(f"  [{mufu_ratio:.1f} FMA per MUFU result]" if mufu_ratio else "")
 
-    # Telemetry, and the gate that depends on it.  An unlocked clock does not
-    # invalidate the measurement, but it does make it conditional — so the
-    # calibration line is withheld until the caller either locks the clock or
-    # says, on the record, that they accept an unlocked one.
+    # An unlocked clock makes the calibration conditional, so the update line is
+    # withheld until the caller locks the clock or passes --allow-unlocked-clocks.
     clocks_steady = False
     if telemetry is None:
         print("\nSM clock:                  not sampled (nvidia-smi unavailable)")
@@ -277,16 +259,9 @@ def main():
         print(f"Peak power, temperature:   {watts:.0f} W, {temp:.0f} C")
         clocks_steady = (sm_max - sm_min) <= _CLOCK_STEADY_MHZ
 
-        # With the clock actually measured, the peak stops being one number and
-        # splits into two independent factors.  Conflating them is how a site's
-        # clock policy ends up recorded as if it were a property of the GPU:
-        #
-        #   ceiling at this clock = 2 * lanes * SMs * clock   (what is reachable here)
-        #   lane utilisation      = measured / that ceiling   (what the kernel achieves)
-        #   clock headroom        = this clock / max clock    (what the site gave up)
-        #
-        # calibration = lane utilisation * clock headroom, and only the first is
-        # a property of the hardware plus the kernel.
+        # calibration = lane utilisation * clock headroom:
+        #   lane utilisation = measured / (2 * lanes * SMs * clock)  — hardware + kernel
+        #   clock headroom   = held clock / max clock                — the site's policy
         sm_count, max_ghz = _parse_device(lines)
         if sm_count and sm_med > 0:
             ceiling = 2.0 * _FMA_LANES_PER_SM * sm_count * (sm_med * 1e6) / 1e12
