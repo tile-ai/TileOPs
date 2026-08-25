@@ -4,6 +4,7 @@ import pytest
 
 import tileops.kernels.kernel_base as kernel_base
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.reduction._primitives import BlockConfigPlanner, RowTiledAutotuneMixin
 
 pytestmark = pytest.mark.smoke
 
@@ -170,3 +171,33 @@ def test_autotune_accepts_random_integer_inputs_when_declared(monkeypatch):
     kernel.autotune()
 
     assert kernel.config == _TunedKernel.config
+
+
+# tile_n search space for the row-tiled reduction kernels
+
+
+class _RowTiled(RowTiledAutotuneMixin):
+    """The mixin's declared inputs, without building a kernel to get them."""
+
+    _MAX_TILE_N_CANDIDATES = 3
+
+    def __init__(self, n_padded: int, elem_bytes: int, smem_budget: int) -> None:
+        self.N_padded = n_padded
+        self._elem_bytes = elem_bytes
+        self._smem_budget = smem_budget
+        self._planner = BlockConfigPlanner(n_padded, elem_bytes, smem_budget)
+
+
+def test_row_that_fits_untiled_at_every_thread_count_offers_no_tile():
+    """A cheap fragment does not pay for the extra compilation."""
+    assert _RowTiled(4096, 2, 227 * 1024)._tile_n_candidates() == [0]
+
+
+def test_row_that_fits_untiled_only_at_the_most_threads_offers_tiles():
+    """tile_n is baked in and reused across every thread count the sweep tries.
+
+    A 32768-column bf16 row holds 64 elements per thread at 512 threads and 256 at
+    128, so admitting it untiled leaves the sweep free to run it over budget with no
+    tiled candidate to fall to.
+    """
+    assert _RowTiled(32768, 2, 227 * 1024)._tile_n_candidates() == [0, 32768, 16384]

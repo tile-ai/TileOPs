@@ -190,7 +190,15 @@ class BlockConfigPlanner:
             )
             if single == self.N_padded:
                 return 0
+        return self.tiled_tile_n(block_m, threads)
 
+    def tiled_tile_n(self, block_m: int, threads: int) -> int:
+        """Return the widest tile this pair can build, untiled fit or not.
+
+        Raises:
+            ValueError: If no tile of the required column granularity fits in
+                shared memory for this pair.
+        """
         # The register budget bounds the untiled probe above, not the tile width.
         col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         return compute_tile_n(
@@ -828,6 +836,27 @@ class RowTiledAutotuneMixin:
         """
         return self._planner.tile_n_for(block_m, max(AUTOTUNE_THREADS))
 
+    def _untiled_tile_alternative(self) -> list[int]:
+        """Return the tiles to time beside an untiled row, widest first.
+
+        tile_n is baked in at build time and reused across every ``threads`` the
+        sweep tries, and the register budget binds at the fewest of them, where each
+        thread holds the most of the row. A row admitted untiled at the most threads
+        can still be run at the fewest, over that budget; offering it a tile leaves
+        the choice to measurement. Empty when the row fits untiled at every candidate
+        thread count, which is where the fragment is cheap enough not to ask.
+        """
+        if self._planner.frag_fits(1, self.N_padded, min(AUTOTUNE_THREADS)):
+            return []
+        try:
+            widest = self._planner.tiled_tile_n(1, max(AUTOTUNE_THREADS))
+        except ValueError:
+            return []
+        if widest <= 0:
+            return []
+        half = widest // 2 // DEFAULT_ALIGNMENT * DEFAULT_ALIGNMENT
+        return [widest] if half in (0, widest) else [widest, half]
+
     def _tile_n_candidates(self) -> list[int]:
         """Return candidate tile_n values for autotune exploration.
 
@@ -853,7 +882,7 @@ class RowTiledAutotuneMixin:
         """
         default_tn = self._tile_n_for_block_m(1)
         if default_tn == 0:
-            return [0]
+            return [0, *self._untiled_tile_alternative()]
 
         candidates: set[int] = {default_tn}
         # Explore tile_n values implied by small block_m values.
