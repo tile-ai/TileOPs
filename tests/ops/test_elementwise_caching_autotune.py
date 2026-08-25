@@ -5,7 +5,7 @@ Validates:
   after init_config (no per-forward recompilation).
 - autotune_configs is defined for UnaryKernel and FusedGatedKernel with >= 3 configs.
 - Custom kernels (LeakyRelu, Elu, etc.) also cache compiled functions.
-- Serialization-fallback autotune works for UnaryKernel and FusedGatedKernel.
+- tune=True reaches the autotuner for UnaryKernel and FusedGatedKernel.
 """
 
 import pytest
@@ -201,6 +201,24 @@ class TestAutotuneConfigs:
         for c in configs:
             assert "threads" in c
             assert "num_per_thread" in c
+
+    @pytest.mark.full
+    def test_fused_gated_tune_true_reaches_the_autotuner(self):
+        """tune=True picks a config out of the search space, and does not fall back.
+
+        TileLang reads a builder's free variables into its autotune cache key and
+        takes only scalars there, so an op body reached through the closure used to
+        end every elementwise tuning run in a warning and the default config.
+        """
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            k = SiluAndMulFwdKernel(1024, 4096, torch.float16, tune=True)
+        assert not [w for w in caught if "falling back" in str(w.message)], (
+            f"fell back instead of tuning: {[str(w.message) for w in caught]}"
+        )
+        assert k.config["threads"] in {c["threads"] for c in k.autotune_configs}
 
     @pytest.mark.full
     def test_binary_autotune_configs_still_works(self):

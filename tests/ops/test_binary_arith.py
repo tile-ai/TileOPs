@@ -870,15 +870,16 @@ def test_register_copy_downgrades_on_broadcast() -> None:
         torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-# tune=True regression test (must not crash)
+# tune=True reaches the autotuner
 
 
 @pytest.mark.smoke
-def test_binary_tune_true_does_not_crash() -> None:
-    """tune=True must not crash even though op_func closures are not serializable.
+def test_binary_tune_true_reaches_the_autotuner() -> None:
+    """tune=True picks a config out of the search space, and does not fall back.
 
-    The autotuner should fall back to default_config with a warning instead of
-    raising an AssertionError about non-serializable cell contents.
+    TileLang reads a builder's free variables into its autotune cache key and takes
+    only scalars there, so an op body reached through the closure used to end every
+    elementwise tuning run in a warning and the default config.
     """
     import warnings
 
@@ -887,22 +888,16 @@ def test_binary_tune_true_does_not_crash() -> None:
 
     for op_cls in (AddFwdOp, MaximumFwdOp, MinimumFwdOp):
         op = op_cls(tune=True)
-        # The kernel — and so the autotuner — runs on first use, not at
-        # construction, so the warning is caught around the entry build.
+        # The kernel — and so the autotuner — runs on first use, not at construction.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            op._build(dtype, shape, shape)
-        # Should have produced a warning about serialization fallback
-        fallback_warnings = [
-            w
-            for w in caught
-            if "not serializable" in str(w.message) or "falling back" in str(w.message)
-        ]
-        assert len(fallback_warnings) >= 1, (
-            f"{op_cls.__name__} with tune=True did not emit fallback warning; "
-            f"caught: {[str(w.message) for w in caught]}"
+            kernel = op._build(dtype, shape, shape)
+        assert not [w for w in caught if "falling back" in str(w.message)], (
+            f"{op_cls.__name__} fell back instead of tuning: {[str(w.message) for w in caught]}"
         )
-        # Must still produce correct results
+        swept = {c["threads"] for c in kernel.autotune_configs}
+        assert kernel.config["threads"] in swept
+
         a = torch.randn(*shape, device="cuda", dtype=dtype)
         b = torch.randn(*shape, device="cuda", dtype=dtype)
         with torch.no_grad():

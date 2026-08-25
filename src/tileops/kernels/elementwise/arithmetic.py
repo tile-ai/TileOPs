@@ -21,6 +21,7 @@ from ._base import (
     _make_binary_register_copy,
     _wrap_fp8_accumulation,
 )
+from ._op_registry import BroadcastPlan, register_broadcast_plan, register_op_func
 
 __all__ = [
     "AddFwdKernel",
@@ -185,11 +186,17 @@ class LerpFwdKernel(BinaryKernel):
             return a + T.cast(w, a.dtype) * (b - a)
 
         # Wrap with fp8 accumulation via shared helper
-        effective_op = _wrap_fp8_accumulation(
-            lerp_func,
-            self.dtype,
-            self.dtype_str,
-            arity=2,
+        effective_op = register_op_func(
+            f"{self._op_func_name()}|weight={w!r}",
+            _wrap_fp8_accumulation(
+                lerp_func,
+                self.dtype,
+                self.dtype_str,
+                arity=2,
+            ),
+        )
+        plan = register_broadcast_plan(
+            BroadcastPlan(self.coalesced_shape, self.a_strides, self.b_strides)
         )
 
         # For e5m2: kernel output is fp16 (non-saturating path)
@@ -205,9 +212,7 @@ class LerpFwdKernel(BinaryKernel):
                 self.N_total,
                 self.dtype_str,
                 effective_op,
-                self.coalesced_shape,
-                self.a_strides,
-                self.b_strides,
+                plan,
                 self.a_numel,
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
@@ -218,9 +223,7 @@ class LerpFwdKernel(BinaryKernel):
                 self.N_total,
                 self.dtype_str,
                 effective_op,
-                self.coalesced_shape,
-                self.a_strides,
-                self.b_strides,
+                plan,
                 self.a_numel,
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
