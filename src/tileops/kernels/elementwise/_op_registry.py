@@ -1,11 +1,7 @@
 """Names for the non-scalar values an elementwise kernel body reads.
 
-TileLang's autotuner reads every free variable of a ``@tilelang.jit`` builder into
-its cache key, and accepts only ``int``/``float``/``str``/``bool``/``None`` there. A
-builder closing over an op body or a stride tuple fails that check, which turns
-``tune=True`` into a silent fall back to the default config. Those values live here
-instead, and the builder closes over the name, which is also what tells one tuned
-kernel from another in the cache.
+A ``@tilelang.jit`` builder may close over scalars only, so an op body or a stride
+tuple lives here and the builder closes over its name.
 """
 
 from dataclasses import dataclass
@@ -35,10 +31,9 @@ class BroadcastPlan:
 def register_op_func(name: str, op_func: Callable) -> str:
     """Bind *op_func* to *name* and return the name.
 
-    The name must spell out everything the body depends on -- the kernel class, the
-    dtypes, the strategy, any baked-in constant. It reaches the autotuner as part of
-    the cache key, so two different bodies under one name would read as one kernel
-    that has already been tuned.
+    The name must spell out everything the body depends on -- class, dtypes, strategy,
+    any baked-in constant -- because it is the autotuner's cache key: two bodies under
+    one name would read as one kernel that has already been tuned.
     """
     _OP_FUNCS[name] = op_func
     return name

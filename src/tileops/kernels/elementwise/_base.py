@@ -70,7 +70,7 @@ def _validate_supported_dtype(kernel, dtype):
 _AUTOTUNE_THREADS = [128, 256, 512]
 
 
-def _elementwise_autotune_configs(dtype, strategy=None, num_per_thread=None) -> list[dict]:
+def _elementwise_autotune_configs(dtype, strategy=None) -> list[dict]:
     """Launch configs to time for one kernel.
 
     A ``direct`` body takes ``threads`` alone, so that is the whole search space
@@ -227,9 +227,7 @@ class UnaryKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return _elementwise_autotune_configs(
-            self.dtype, self.strategy, self.default_config["num_per_thread"]
-        )
+        return _elementwise_autotune_configs(self.dtype, self.strategy)
 
     def init_config(self, config=None, tune=False):
         _init_strategy_config(self, config, tune)
@@ -331,9 +329,9 @@ class BinaryKernel(Kernel):
         return name, _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=2)
 
     def _op_func_name(self) -> str:
-        """Name every input that changes the op body: see ``register_op_func``."""
+        cls = type(self)
         out = self.output_plan.kernel_output_dtype
-        return f"{type(self).__qualname__}|{self.dtype_str}|{out}|{self.strategy}"
+        return f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{out}|{self.strategy}"
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
@@ -393,9 +391,7 @@ class BinaryKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return _elementwise_autotune_configs(
-            self.dtype, self.strategy, self.default_config["num_per_thread"]
-        )
+        return _elementwise_autotune_configs(self.dtype, self.strategy)
 
     def init_config(self, config=None, tune=False):
         _init_strategy_config(self, config, tune)
@@ -465,7 +461,8 @@ class FusedGatedKernel(Kernel):
         def fused_op(gate, value):
             return act(gate) * value
 
-        name = f"{type(self).__qualname__}|{self.dtype_str}|{self.strategy}"
+        cls = type(self)
+        name = f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{self.strategy}"
         return name, _wrap_fp8_accumulation(fused_op, self.dtype, self.dtype_str, arity=2)
 
     def _build_kernel(self, strategy):
@@ -516,9 +513,7 @@ class FusedGatedKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return _elementwise_autotune_configs(
-            self.dtype, self.strategy, self.default_config["num_per_thread"]
-        )
+        return _elementwise_autotune_configs(self.dtype, self.strategy)
 
     def init_config(self, config=None, tune=False):
         _init_strategy_config(self, config, tune)

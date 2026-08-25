@@ -185,7 +185,6 @@ class LerpFwdKernel(BinaryKernel):
         def lerp_func(a, b):
             return a + T.cast(w, a.dtype) * (b - a)
 
-        # Wrap with fp8 accumulation via shared helper
         effective_op = register_op_func(
             f"{self._op_func_name()}|weight={w!r}",
             _wrap_fp8_accumulation(

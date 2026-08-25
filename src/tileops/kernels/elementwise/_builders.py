@@ -10,10 +10,9 @@ from ._op_registry import broadcast_plan_for, op_func_for
 
 
 def _broadcast_index_terms(plan_name):
-    """Index terms one broadcast body reads, resolved inside the ``@tilelang.jit`` builder.
+    """Return ``(ndim, divisors, a_strides, b_strides)`` for one broadcast plan.
 
-    The terms are lists and tuples, which the autotuner refuses in a builder's closure,
-    so they are derived here from the plan's name rather than captured around it.
+    Called inside a builder, where these lists and tuples may not be closed over.
     """
     plan = broadcast_plan_for(plan_name)
     ndim = len(plan.coalesced_shape)

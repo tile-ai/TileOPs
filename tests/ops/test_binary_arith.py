@@ -875,12 +875,7 @@ def test_register_copy_downgrades_on_broadcast() -> None:
 
 @pytest.mark.smoke
 def test_binary_tune_true_reaches_the_autotuner() -> None:
-    """tune=True picks a config out of the search space, and does not fall back.
-
-    TileLang reads a builder's free variables into its autotune cache key and takes
-    only scalars there, so an op body reached through the closure used to end every
-    elementwise tuning run in a warning and the default config.
-    """
+    """tune=True picks a config out of the search space, and does not fall back."""
     import warnings
 
     shape = (4096,)

@@ -204,12 +204,7 @@ class TestAutotuneConfigs:
 
     @pytest.mark.full
     def test_fused_gated_tune_true_reaches_the_autotuner(self):
-        """tune=True picks a config out of the search space, and does not fall back.
-
-        TileLang reads a builder's free variables into its autotune cache key and
-        takes only scalars there, so an op body reached through the closure used to
-        end every elementwise tuning run in a warning and the default config.
-        """
+        """tune=True picks a config out of the search space, and does not fall back."""
         import warnings
 
         with warnings.catch_warnings(record=True) as caught:
