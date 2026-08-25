@@ -343,7 +343,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             raise ValueError("rope_cos and rope_sin must have the same shape")
 
     @staticmethod
-    def _resolve_optional_inputs(
+    def _canonicalize_inputs(
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -353,7 +353,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         rope_cos: Optional[torch.Tensor],
         rope_sin: Optional[torch.Tensor],
     ) -> tuple[Optional[torch.Tensor], ...]:
-        """Preserve the manifest's eight positional input slots."""
+        """Return contiguous tensors in manifest order, preserving None slots."""
         return tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
@@ -380,7 +380,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
     ) -> torch.Tensor:
         """Validate, normalize, resolve one concrete implementation, and run it."""
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
-        inputs = self._resolve_optional_inputs(
+        inputs = self._canonicalize_inputs(
             q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin
         )
         kernel = self._get_kernel(inputs)
