@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -6,8 +6,10 @@ import torch.nn.functional as F
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
+    GQADecodeBs1Kernel,
+    GQADecodeKernel,
     GQAFwdWsPersistentCausalKernel,
-    GQAPrefillFwdKernel,
+    GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
@@ -17,7 +19,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
 from ..op_base import Op
-from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionDenseFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 
 __all__ = [
@@ -35,8 +37,7 @@ class MultiHeadAttentionFwdOp(Op):
     maintained forward path through the GQA prefill dispatcher.
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::mha_fwd",)
+    compile_op_names: ClassVar[tuple[str, ...]] = ("tileops::mha_fwd",)
 
     def __init__(
         self,
@@ -48,13 +49,7 @@ class MultiHeadAttentionFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure dense MHA forward through the GQA delegate."""
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -62,12 +57,7 @@ class MultiHeadAttentionFwdOp(Op):
         self.is_causal = is_causal
 
         self.dispatch_kernel(kernel_map)
-        self._gqa_op = GroupedQueryAttentionFwdOp(
-            batch=batch,
-            heads=heads,
-            heads_kv=heads,
-            seq_len=seq_len,
-            dim=dim,
+        self._gqa_op = GroupedQueryAttentionDenseFwdOp(
             is_causal=is_causal,
             kernel_map=self.forwarded_overrides(),
             tune=tune,
@@ -76,15 +66,14 @@ class MultiHeadAttentionFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
+            "gqa_prefill_dense_fwd_kernel": GQAPrefillDenseFwdKernel,
             "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
+            "gqa_decode_kernel": GQADecodeKernel,
+            "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
         }
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self._gqa_op._get_kernel(inputs, dtype)
-
-    def kernel_delegates(self) -> tuple[GroupedQueryAttentionFwdOp, ...]:
+    def kernel_delegates(self) -> tuple[GroupedQueryAttentionDenseFwdOp, ...]:
         """Every kernel this op runs is built by the GQA prefill dispatcher."""
         return (self._gqa_op,)
 
@@ -130,13 +119,7 @@ class MultiHeadAttentionBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure dense MHA backward."""
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -190,7 +173,7 @@ class MultiHeadAttentionBwdOp(Op):
         do_shape: tuple[int, ...],
         lse_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: each gradient has the shape of what it is for."""
+        """Manifest shape rules for Q, K and V gradients."""
         return {"dq": tuple(q_shape), "dk": tuple(k_shape), "dv": tuple(v_shape)}
 
     def forward(
@@ -202,19 +185,7 @@ class MultiHeadAttentionBwdOp(Op):
         do: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            o: Input tensor, dtype ``same_as(q)``.
-            do: Input tensor, dtype ``same_as(q)``.
-            lse: Input tensor, dtype ``float32``.
-
-        Returns:
-            ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H, D)``; ``dv.shape == (B, S, H, D)``.
-        """
+        """Return gradients for Q, K and V."""
         return self._gqa_op(q, k, v, o, do, lse)
 
 
@@ -231,12 +202,7 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure contiguous MHA decode."""
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -246,7 +212,7 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: tuple[Optional[torch.Tensor], ...], dtype: torch.dtype) -> Kernel:
         return self.get_or_build_kernel(
             "mha_decode_kernel",
             inputs,
@@ -273,20 +239,11 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
         k_shape: tuple[int, ...],
         v_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        """Manifest shape rule: output follows Q."""
         return {"o": tuple(q_shape)}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
-        """
+        """Run contiguous MHA decode."""
         real_seqlen_kv = k.shape[1]
         if real_seqlen_kv < self.seqlen_kv:
             k = F.pad(
@@ -300,7 +257,7 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
 
 
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
-    """Paged MHA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times seqlen\\_q \\times heads \\times dim]$ (BSHD);
+    """Paged MHA decode with dynamic KV cache. Layout: Q [batch, seqlen_q, heads, dim] (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
@@ -316,14 +273,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            page_size: Manifest ``params.page_size``, ``int``.
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``False``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure paged-KV MHA decode."""
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -334,7 +284,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: tuple[Optional[torch.Tensor], ...], dtype: torch.dtype) -> Kernel:
         call = self._attention_call(dtype)
         key = self.select_kernel_key(MHA_PAGED_DECODE_KEYS, call)
 
@@ -389,7 +339,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         real_seqlen_kv_shape: tuple[int, ...],
         block_table_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        """Manifest shape rule: output follows Q."""
         return {"o": tuple(q_shape)}
 
     def forward(
@@ -400,22 +350,10 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            real_seqlen_kv: Input tensor, dtype ``int32``.
-            block_table: Input tensor, dtype ``int32``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
-        """
+        """Run paged MHA decode."""
         self.dtype = q.dtype
-        return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
-            q, k, v, real_seqlen_kv, block_table
-        )
+        inputs = (q, k, v, real_seqlen_kv, block_table)
+        return self._get_kernel(inputs, q.dtype)(*inputs)
 
 
 # torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)

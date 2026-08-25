@@ -1,8 +1,12 @@
-from typing import Dict, Optional
+import math
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
+from threading import RLock
+from typing import Callable, ClassVar, Dict, Optional
 
 import torch
-import torch.nn.functional as F
 
+from tileops.backend import Target
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
@@ -12,7 +16,7 @@ from tileops.kernels.attention import (
     GQADecodePagedKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdWsPersistentCausalKernel,
-    GQAPrefillFwdKernel,
+    GQAPrefillDenseFwdKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
@@ -23,11 +27,12 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op, UnmanifestedOp
 from ..rope import base_freqs
 from .selection import (
-    DECODE_KEYS,
-    DENSE_PREFILL_KEYS,
+    DENSE_FWD_DECODE_KEYS,
+    DENSE_FWD_PREFILL_KEYS,
     PACKED_PREFILL_KEYS,
     PAGED_DECODE_KEYS,
     PAGED_PREFILL_KEYS,
@@ -39,14 +44,16 @@ from .selection import (
 __all__ = [
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
-    "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
-    "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]
+
+_ROPE_LAYOUTS = frozenset(("neox", "interleaved"))
+_POS_ENCODING_MODES = frozenset(("none", "rope"))
+_DENSE_KERNEL_CACHE_SIZE = 16
 
 
 def _validate_attention_dtype(dtype: torch.dtype) -> None:
@@ -78,8 +85,20 @@ def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
     _validate_positive(dim=dim)
 
 
+def _validate_same_device(reference: torch.Tensor, **tensors: torch.Tensor) -> None:
+    """Enforce the target-neutral one-device contract for manifest inputs."""
+    for name, tensor in tensors.items():
+        if tensor.device != reference.device:
+            raise ValueError(
+                f"{name} must be on the same device as q ({reference.device}), got {tensor.device}"
+            )
+
+
 def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
-    return dim**-0.5 if sm_scale is None else sm_scale
+    scale = dim**-0.5 if sm_scale is None else sm_scale
+    if not math.isfinite(scale):
+        raise ValueError("sm_scale must be finite")
+    return scale
 
 
 def _score_softcap(softcap: Optional[float]) -> float:
@@ -100,12 +119,98 @@ def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     return rotary_dim
 
 
-def _build_packed_prefill_kernel(
+def _validate_rope_config(
+    dim: int,
+    pos_encoding_mode: str,
+    rotary_dim: Optional[int],
+    rope_layout: str,
+    rope_base: float,
+) -> Optional[int]:
+    """Validate static RoPE semantics shared by every prefill topology."""
+    if pos_encoding_mode not in _POS_ENCODING_MODES:
+        raise ValueError(
+            "pos_encoding_mode must be one of "
+            f"{sorted(_POS_ENCODING_MODES)}, got {pos_encoding_mode!r}"
+        )
+    if rope_layout not in _ROPE_LAYOUTS:
+        raise ValueError(f"rope_layout must be one of {sorted(_ROPE_LAYOUTS)}, got {rope_layout!r}")
+    if not math.isfinite(rope_base) or rope_base <= 0:
+        raise ValueError("rope_base must be finite and positive")
+    if pos_encoding_mode == "rope":
+        return _rope_rotary_dim(dim, rotary_dim)
+    if rotary_dim is not None:
+        raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+    return None
+
+
+def _prepare_group_scales(
+    reference: torch.Tensor,
+    batch: int,
+    heads_kv: int,
+    q_scale: Optional[torch.Tensor],
+    k_scale: Optional[torch.Tensor],
+    v_scale: Optional[torch.Tensor],
+) -> tuple[torch.Tensor, ...]:
+    """Validate supplied scales while preserving optional-input presence."""
+    scales = (q_scale, k_scale, v_scale)
+    if any(scale is None for scale in scales):
+        if any(scale is not None for scale in scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
+        return ()
+
+    expected_shape = (batch, heads_kv)
+    resolved = []
+    for name, scale in zip(("q_scale", "k_scale", "v_scale"), scales, strict=True):
+        assert scale is not None
+        if scale.device != reference.device:
+            raise ValueError(f"{name} must be on {reference.device}, got {scale.device}")
+        if scale.dtype != torch.float32:
+            raise ValueError(f"{name} must have dtype torch.float32")
+        if tuple(scale.shape) != expected_shape:
+            raise ValueError(f"{name} must have shape {expected_shape}")
+        resolved.append(scale.contiguous())
+    return tuple(resolved)
+
+
+def _prepare_rope_tables(
+    reference: torch.Tensor,
+    *,
+    enabled: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+) -> tuple[torch.Tensor, ...]:
+    """Validate caller-owned RoPE tables while preserving optional presence."""
+    if (rope_cos is None) != (rope_sin is None):
+        raise ValueError("rope_cos and rope_sin must be supplied together")
+    if not enabled:
+        if rope_cos is not None:
+            raise ValueError("RoPE tables require pos_encoding_mode='rope'")
+        return ()
+    if rope_cos is None or rope_sin is None:
+        raise ValueError("pos_encoding_mode='rope' requires rope_cos and rope_sin")
+    expected_columns = rotary_dim // 2
+    for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+        if table.device != reference.device:
+            raise ValueError(f"{name} must be on {reference.device}, got {table.device}")
+        if table.ndim != 2:
+            raise ValueError(f"{name} must be 2-dimensional")
+        if table.shape[0] < max_position or table.shape[1] != expected_columns:
+            raise ValueError(
+                f"{name} must have shape [max_position >= {max_position}, {expected_columns}]"
+            )
+    if rope_cos.shape != rope_sin.shape:
+        raise ValueError("rope_cos and rope_sin must have the same shape")
+    return rope_cos.contiguous(), rope_sin.contiguous()
+
+
+def _build_prefill_kernel(
     kernel_map: Dict[str, Kernel],
     key: str,
     call: AttentionCall,
 ) -> Kernel:
-    """Construct the packed-prefill implementation *key* names.
+    """Construct the prefill implementation *key* names.
 
     Every implementation of the slot takes the same constructor, so one step
     builds any of them and no caller carries a per-implementation argument list.
@@ -123,146 +228,578 @@ def _build_packed_prefill_kernel(
         softcap=call.softcap,
         window_size_left=call.window_size_left,
         window_size_right=call.window_size_right,
+        fuse_rope=call.fuse_rope,
+        max_position=call.max_position,
+        rotary_dim=call.rotary_dim,
+        rope_layout=call.rope_layout,
         accum_dtype=call.accum_dtype,
         tune=call.tune,
     )
 
 
-class GroupedQueryAttentionFwdOp(Op):
-    """Compatibility square GQA forward wrapper. Public layout: BSHD."""
+@dataclass(frozen=True)
+class _DenseCompileInfo:
+    """Immutable facts shared by every specialization owned by one callable."""
+
+    arch: int
+    h200: bool
+    input_dtype: torch.dtype
+    output_dtype: torch.dtype
+    is_causal: bool
+    sm_scale: Optional[float]
+    softcap: float
+    window_size_left: int
+    window_size_right: int
+    fuse_rope: bool
+    rotary_dim: Optional[int]
+    rope_layout: str
+
+    def for_tensors(self, q: torch.Tensor, k: torch.Tensor, *, tune: bool) -> AttentionCall:
+        """Resolve dynamic shape facts into the existing attention call contract."""
+        batch, seq_len_q, heads, dim = q.shape
+        _, seq_len_kv, heads_kv, _ = k.shape
+        resolved_rotary_dim = _validate_rope_config(
+            dim,
+            "rope" if self.fuse_rope else "none",
+            self.rotary_dim,
+            self.rope_layout,
+            10000.0,
+        )
+        return AttentionCall(
+            arch=self.arch,
+            h200=self.h200,
+            dtype=self.output_dtype,
+            prefill_topology="dense",
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            dim=dim,
+            max_seqlen_q=seq_len_q,
+            max_seqlen_kv=seq_len_kv,
+            is_causal=self.is_causal,
+            sm_scale=_attention_scale(dim, self.sm_scale),
+            softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            is_fp8=self.input_dtype == fp8_dtype(),
+            is_uniform=True,
+            fuse_rope=self.fuse_rope,
+            max_position=seq_len_kv if self.fuse_rope else None,
+            rotary_dim=resolved_rotary_dim,
+            rope_layout=self.rope_layout,
+            tune=tune,
+        )
+
+
+@dataclass(frozen=True)
+class _DenseKernelEntry:
+    """One selected implementation plus the runtime ABI its role requires."""
+
+    kernel: Kernel
+    is_decode: bool
+
+
+@dataclass
+class _DenseBuiltin:
+    """Builtin callable that dispatches each Dense shape to one native kernel."""
+
+    kernel_map: Dict[str, Kernel]
+    select_kernel_key: Callable[[tuple[str, ...], object], str]
+    compile_info: _DenseCompileInfo
+    tune_enabled: Callable[[], bool]
+    _kernel_cache: OrderedDict[AttentionCall, _DenseKernelEntry] = field(
+        default_factory=OrderedDict, repr=False
+    )
+    # Kept as a list so Op._entry_kernels() can enumerate and autotune the
+    # concrete kernels owned by this callable. The OrderedDict above is the
+    # lookup/index; both containers are updated together under _cache_lock.
+    _retained_kernels: list[Kernel] = field(default_factory=list, repr=False)
+    _cache_lock: RLock = field(default_factory=RLock, repr=False)
+
+    def _selection_facts(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
+        return self.compile_info.for_tensors(q, k, tune=self.tune_enabled())
+
+    @staticmethod
+    def _uses_decode_kernel(call: AttentionCall) -> bool:
+        """Whether the contiguous single-query decode family exactly serves the call."""
+        return (
+            call.max_seqlen_q == 1
+            and not call.is_fp8
+            and not call.fuse_rope
+            and call.window_size_left == -1
+            and call.window_size_right == -1
+        )
+
+    def _kernel_for(self, call: AttentionCall) -> _DenseKernelEntry:
+        # Tuning is lifecycle state, not part of the specialization identity.
+        # op.autotune() tunes retained kernels and flips tune_enabled() for
+        # specializations constructed after that point.
+        signature = replace(call, tune=False)
+        cached = self._kernel_cache.get(signature)
+        if cached is not None:
+            return cached
+        with self._cache_lock:
+            # Miss-only serialization keeps construction unique without putting
+            # a lock on the CUDA-graph capture/replay hit path.
+            cached = self._kernel_cache.get(signature)
+            if cached is not None:
+                return cached
+
+            is_decode = self._uses_decode_kernel(call)
+            if is_decode:
+                key = self.select_kernel_key(DENSE_FWD_DECODE_KEYS, call)
+                kernel = self.kernel_map[key](
+                    call.batch,
+                    call.heads,
+                    call.heads_kv,
+                    call.max_seqlen_kv,
+                    call.dim,
+                    call.dtype,
+                    sm_scale=call.sm_scale,
+                    softcap=call.softcap,
+                    tune=call.tune,
+                )
+            else:
+                key = self.select_kernel_key(DENSE_FWD_PREFILL_KEYS, call)
+                kernel = _build_prefill_kernel(self.kernel_map, key, call)
+            entry = _DenseKernelEntry(kernel=kernel, is_decode=is_decode)
+            self._kernel_cache[signature] = entry
+            self._retained_kernels.append(kernel)
+            if len(self._kernel_cache) > _DENSE_KERNEL_CACHE_SIZE:
+                _, evicted = self._kernel_cache.popitem(last=False)
+                self._retained_kernels = [
+                    retained
+                    for retained in self._retained_kernels
+                    if retained is not evicted.kernel
+                ]
+            return entry
+
+    def __call__(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        scales = (q_scale, k_scale, v_scale)
+        if self.compile_info.input_dtype == fp8_dtype():
+            if any(scale is None for scale in scales):
+                raise ValueError("FP8 Dense callable requires all three scales")
+            kernel_scales = tuple(scale for scale in scales if scale is not None)
+        else:
+            if any(scale is not None for scale in scales):
+                raise ValueError("16-bit Dense callable does not accept scales")
+            kernel_scales = ()
+        if self.compile_info.fuse_rope:
+            if rope_cos is None or rope_sin is None:
+                raise ValueError("fused RoPE Dense callable requires both tables")
+        elif rope_cos is not None or rope_sin is not None:
+            raise ValueError("non-RoPE Dense callable does not accept RoPE tables")
+        call = self._selection_facts(q, k)
+        entry = self._kernel_for(call)
+        if entry.is_decode:
+            return entry.kernel(q.squeeze(1), k, v, call.max_seqlen_kv).unsqueeze(1)
+        if rope_cos is None:
+            # The Dense ABI is uniform across specializations. Non-RoPE kernels
+            # compile the table reads away. A 2-D one-element view satisfies the
+            # ABI without allocating or retaining an internal RoPE tensor. The
+            # native-FP8 kernel declares this unused operand as FP8 in that mode.
+            rope_cos = rope_sin = q.reshape(-1)[:1].reshape(1, 1)
+        return entry.kernel(
+            q,
+            k,
+            v,
+            *kernel_scales,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
+        )
+
+
+class GroupedQueryAttentionDenseFwdOp(Op):
+    """Shape-agnostic BSHD GQA over a contiguous dense KV tensor.
+
+    ``S_q == 1`` dispatches to the contiguous decode family when its feature
+    set applies; longer queries and feature-rich single-query calls use the
+    dense prefill family. The public BSHD ABI is identical in both cases.
+
+    ``dtype=None`` has the complete public meaning "follow ``q.dtype``" for
+    float16/bfloat16 calls; it is not a deferred backend choice.  A backend
+    derives that result type from the first :class:`TensorSpec` it receives.
+    FP8 input has no such unique result type, so those calls must select an
+    explicit float16 or bfloat16 ``dtype`` at construction.
+    """
+
+    compile_op_names: ClassVar[tuple[str, ...]] = ("tileops::gqa_dense_fwd",)
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len: int,
-        dim: int,
         is_causal: bool = True,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        pos_encoding_mode: str = "none",
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
+        target: Target = None,
     ) -> None:
-        # Nothing downstream validates these: this op builds its kernel itself,
-        # so a zero heads_kv would surface as ZeroDivisionError inside a region.
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Configure dense BSHD GQA prefill and contiguous decode."""
+        if pos_encoding_mode not in ("none", "rope"):
+            raise ValueError(f"pos_encoding_mode must be 'none' or 'rope', got {pos_encoding_mode}")
 
-        Args:
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        _validate_gqa_dims(heads, heads_kv, dim)
-        _validate_positive(batch=batch, seq_len=seq_len)
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len = seq_len
-        self.dim = dim
+        if rotary_dim is not None and pos_encoding_mode != "rope":
+            raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+
+        if sm_scale is not None and not math.isfinite(sm_scale):
+            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
+
         self.is_causal = is_causal
-        self.sm_scale = _attention_scale(dim, sm_scale)
+        self.sm_scale = sm_scale
         self.softcap = _score_softcap(softcap)
+
+        if window_size_left < -1:
+            raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
+        if window_size_right < -1:
+            raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+
+        self.pos_encoding_mode = pos_encoding_mode
+        self.fuse_rope = pos_encoding_mode == "rope"
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
+
+        if dtype is not None:
+            _validate_attention_dtype(dtype)
+        self.dtype = dtype
+        self.output_dtype = dtype
+
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # Packed ranges for a batch of equal-length requests, per device. Not a
-        # kernel cache: the dense implementations take the same packed call as
-        # every other, and a fixed-shape request supplies its ranges.
-        self._cu_seqlens: Dict[torch.device, torch.Tensor] = {}
+
+        # Reporting state is deliberately separate from kernel dispatch. It is
+        # populated only after a successful call because eval_roofline() has no
+        # input arguments in the current Op protocol.
+        self._roofline_state: Optional[dict[str, object]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
+            "gqa_prefill_fp8_tensor_core_fwd_kernel": GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
+            "gqa_prefill_dense_sliding_fwd_kernel": GQASlidingWindowFwdWgmmaPipelinedKernel,
+            "gqa_prefill_dense_fwd_kernel": GQAPrefillDenseFwdKernel,
             "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
+            "gqa_decode_kernel": GQADecodeKernel,
+            "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
         }
 
-    def attention_call(self, dtype: torch.dtype) -> AttentionCall:
-        """State what one fixed-shape call is: a uniform dense packed request."""
-        return AttentionCall(
-            dtype=dtype,
-            batch=self.batch,
-            heads=self.heads,
-            heads_kv=self.heads_kv,
-            dim=self.dim,
-            max_seqlen_q=self.seq_len,
-            max_seqlen_kv=self.seq_len,
-            is_causal=self.is_causal,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
-            backend="dense",
-            is_fp8=False,
-            is_uniform=True,
-            tune=self.tune,
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Validate the manifest dtype union before target dispatch."""
+        fp8 = fp8_dtype()
+        allowed_inputs = {torch.float16, torch.bfloat16}
+        if fp8 is not None:
+            allowed_inputs.add(fp8)
+        if q.dtype not in allowed_inputs:
+            raise ValueError(f"q.dtype must be float16, bfloat16, or float8_e4m3fn, got {q.dtype}")
+        if k.dtype != q.dtype or v.dtype != q.dtype:
+            raise ValueError("q/k/v must have the same dtype")
+
+        is_fp8 = fp8 is not None and q.dtype == fp8
+        if is_fp8:
+            # A real instance owns ``output_dtype``. The CPU manifest parity
+            # probe deliberately bypasses ``__init__`` and therefore validates
+            # only the input side of each listed dtype combo here.
+            output_dtype = getattr(self, "output_dtype", None)
+            if hasattr(self, "output_dtype") and output_dtype not in (
+                torch.float16,
+                torch.bfloat16,
+            ):
+                raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
+        else:
+            output_dtype = getattr(self, "output_dtype", None)
+            if output_dtype is not None and output_dtype != q.dtype:
+                raise ValueError("16-bit Dense output dtype must match q/k/v dtype")
+            output_dtype = output_dtype or q.dtype
+
+        scales = (q_scale, k_scale, v_scale)
+        for name, scale in zip(("q_scale", "k_scale", "v_scale"), scales, strict=True):
+            if scale is not None and scale.dtype != torch.float32:
+                raise ValueError(f"{name} must be float32")
+
+        for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if table is not None and output_dtype is not None and table.dtype != output_dtype:
+                raise ValueError(f"{name} must have dtype {output_dtype}")
+
+    def _build_builtin(
+        self,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> _DenseBuiltin:
+        """Build one shape-agnostic callable for this builtin target and dtype."""
+        if dtype != fp8_dtype():
+            _validate_attention_dtype(dtype)
+        output_dtype = self.output_dtype or dtype
+        if output_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
+        target_facts = AttentionCall.from_device(device)
+        return _DenseBuiltin(
+            kernel_map=self.kernel_map,
+            select_kernel_key=self.select_kernel_key,
+            compile_info=_DenseCompileInfo(
+                arch=target_facts.arch,
+                h200=target_facts.h200,
+                input_dtype=dtype,
+                output_dtype=output_dtype,
+                is_causal=self.is_causal,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                window_size_left=self.window_size_left,
+                window_size_right=self.window_size_right,
+                fuse_rope=self.fuse_rope,
+                rotary_dim=self.rotary_dim,
+                rope_layout=self.rope_layout,
+            ),
+            tune_enabled=lambda: self.tune,
         )
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        """The dense prefill implementation this wrapper's calls land on."""
-        _validate_attention_dtype(dtype)
-        call = self.attention_call(dtype)
-        key = self.select_kernel_key(DENSE_PREFILL_KEYS, call)
-
-        def build() -> Kernel:
-            return _build_packed_prefill_kernel(self.kernel_map, key, call)
-
-        return self.get_or_build_kernel(key, inputs, key=dtype, build=build)
-
-    def _uniform_cu_seqlens(self, device: torch.device) -> torch.Tensor:
-        cu_seqlens = self._cu_seqlens.get(device)
-        if cu_seqlens is None:
-            cu_seqlens = (
-                torch.arange(self.batch + 1, device=device, dtype=torch.int32) * self.seq_len
-            )
-            self._cu_seqlens[device] = cu_seqlens
-        return cu_seqlens
+    def _get_entry(
+        self,
+        inputs: tuple[Optional[torch.Tensor], ...],
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> _DenseBuiltin:
+        dim = inputs[0].shape[-1]
+        manifest_params = self._manifest_params()
+        manifest_params.update(
+            sm_scale=_attention_scale(dim, self.sm_scale),
+            dtype=self.output_dtype or dtype,
+            rotary_dim=(
+                _validate_rope_config(
+                    dim,
+                    self.pos_encoding_mode,
+                    self.rotary_dim,
+                    self.rope_layout,
+                    10000.0,
+                )
+                if self.fuse_rope
+                else None
+            ),
+        )
+        return self.get_or_build_kernel(
+            "gqa_dense",
+            inputs,
+            key=(device, dtype, self.output_dtype),
+            build=lambda: self._build_builtin(dtype, device),
+            params=manifest_params,
+        )
 
     def _infer_output_shapes(
         self,
         q_shape: tuple[int, ...],
         k_shape: tuple[int, ...],
         v_shape: tuple[int, ...],
+        q_scale_shape: Optional[tuple[int, ...]] = None,
+        k_scale_shape: Optional[tuple[int, ...]] = None,
+        v_scale_shape: Optional[tuple[int, ...]] = None,
+        rope_cos_shape: Optional[tuple[int, ...]] = None,
+        rope_sin_shape: Optional[tuple[int, ...]] = None,
     ) -> Dict[str, tuple[int, ...]]:
         return {"o": tuple(q_shape)}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Run square GQA forward."""
-        expected_q = (self.batch, self.seq_len, self.heads, self.dim)
-        expected_kv = (self.batch, self.seq_len, self.heads_kv, self.dim)
-        if tuple(q.shape) != expected_q:
-            raise ValueError(f"q must have shape {expected_q}, got {tuple(q.shape)}")
-        if tuple(k.shape) != expected_kv:
-            raise ValueError(f"k must have shape {expected_kv}, got {tuple(k.shape)}")
-        if tuple(v.shape) != expected_kv:
-            raise ValueError(f"v must have shape {expected_kv}, got {tuple(v.shape)}")
-        self._validate_dtypes(q, k, v)
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run shape-agnostic dense GQA behind the target-independent graph node."""
+        return _gqa_dense_fwd(
+            q,
+            k,
+            v,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+            self._instance_key,
+        )
 
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run dense GQA with shape inference and phase-independent dispatch."""
+        B, S_q, H, D = q.shape
+        B_k, S_kv, H_kv, D_k = k.shape
+
+        if k.shape != v.shape:
+            raise ValueError(f"k and v must have the same shape, got k={k.shape}, v={v.shape}")
+        if B_k != B or D_k != D:
+            raise ValueError(
+                f"q and k must have matching batch and dim, got q=({B}, {S_q}, {H}, {D}), k=({B_k}, {S_kv}, {H_kv}, {D_k})"
+            )
+
+        _validate_positive(batch=B, seq_len_q=S_q, seq_len_kv=S_kv)
+
+        _validate_gqa_dims(H, H_kv, D)
+
+        if self.is_causal and S_q > S_kv:
+            raise ValueError(
+                f"causal dense attention requires seq_len <= seq_len_kv, got {S_q} > {S_kv}"
+            )
+
+        if self.fuse_rope and S_q > S_kv:
+            raise ValueError(
+                f"fused RoPE uses bottom-right Q positions and requires seq_len <= seq_len_kv, got {S_q} > {S_kv}"
+            )
+
+        _attention_scale(D, self.sm_scale)
+        resolved_rotary_dim = _validate_rope_config(
+            D, self.pos_encoding_mode, self.rotary_dim, self.rope_layout, 10000.0
+        )
+
+        self._validate_dtypes(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
+
+        has_scales = tuple(scale is not None for scale in (q_scale, k_scale, v_scale))
+        if any(has_scales) and not all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
+        is_fp8 = q.dtype == fp8_dtype()
+        if is_fp8 and not all(has_scales):
+            raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
+        if not is_fp8 and all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale are only valid for FP8 input")
+
+        _validate_same_device(q, k=k, v=v)
+        scales = _prepare_group_scales(q, B, H_kv, q_scale, k_scale, v_scale)
+        rope_tables = _prepare_rope_tables(
+            q,
+            enabled=self.fuse_rope,
+            max_position=S_kv,
+            rotary_dim=resolved_rotary_dim or D,
+            rope_cos=rope_cos,
+            rope_sin=rope_sin,
+        )
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        self.dtype = q.dtype
+        normalized_scales = scales if scales else (None, None, None)
+        normalized_rope = rope_tables if rope_tables else (None, None)
+        inputs = (q, k, v, *normalized_scales, *normalized_rope)
+        entry = self._get_entry(inputs, q.dtype, q.device)
+        output = entry(*inputs)
+        self._roofline_state = {
+            "q_shape": tuple(q.shape),
+            "kv_shape": tuple(k.shape),
+            "input_dtype": q.dtype,
+            "output_dtype": self.output_dtype or q.dtype,
+            "is_causal": self.is_causal,
+            "window_size_left": self.window_size_left,
+            "window_size_right": self.window_size_right,
+            "fuse_rope": self.fuse_rope,
+            "rotary_dim": self.rotary_dim or D,
+            "max_position": S_kv if self.fuse_rope else None,
+        }
+        return output
 
-        # A fixed-shape request is a uniform packed one; packing is a view, so
-        # the wrapper reaches the packed prefill call rather than handing BSHD
-        # tensors to a kernel whose signature is packed.
-        cu_seqlens = self._uniform_cu_seqlens(q.device)
-        output = self._get_kernel((q, k, v), q.dtype)(
-            q.view(-1, self.heads, self.dim),
-            k.view(-1, self.heads_kv, self.dim),
-            v.view(-1, self.heads_kv, self.dim),
-            cu_seqlens,
-            cu_seqlens,
-        )
-        return output.view(q.shape)
+    def eval_roofline(self) -> tuple[int, int]:
+        if self._roofline_state is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
+            )
+        from tileops.perf.formulas import gqa_fwd_roofline
+
+        return gqa_fwd_roofline(**self._roofline_state)
+
+
+@torch.library.custom_op("tileops::gqa_dense_fwd", mutates_args=())
+def _gqa_dense_fwd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    q_scale: Optional[torch.Tensor],
+    k_scale: Optional[torch.Tensor],
+    v_scale: Optional[torch.Tensor],
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    """Opaque Op-owned compile boundary; implementation dispatch stays untraced."""
+    return get_instance(instance_key)._eager_forward(
+        q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin
+    )
+
+
+@_gqa_dense_fwd.register_fake
+def _gqa_dense_fwd_fake(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    q_scale: Optional[torch.Tensor],
+    k_scale: Optional[torch.Tensor],
+    v_scale: Optional[torch.Tensor],
+    rope_cos: Optional[torch.Tensor],
+    rope_sin: Optional[torch.Tensor],
+    instance_key: str,
+) -> torch.Tensor:
+    """Manifest-derived output metadata for the target-independent graph node."""
+    op = get_instance(instance_key)
+    output_dtype = op.output_dtype
+    if output_dtype is None:
+        if fp8_dtype() is not None and q.dtype == fp8_dtype():
+            raise ValueError("dtype must select a float16 or bfloat16 output for FP8 input")
+        output_dtype = q.dtype
+    shapes = op._infer_output_shapes(
+        tuple(q.shape),
+        tuple(k.shape),
+        tuple(v.shape),
+        None if q_scale is None else tuple(q_scale.shape),
+        None if k_scale is None else tuple(k_scale.shape),
+        None if v_scale is None else tuple(v_scale.shape),
+        None if rope_cos is None else tuple(rope_cos.shape),
+        None if rope_sin is None else tuple(rope_sin.shape),
+    )
+    return q.new_empty(shapes["o"], dtype=output_dtype)
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):
-    """Canonical packed GQA prefill. Layout: THD.
+    """Deprecated packed GQA prefill compatibility surface. Layout: THD.
 
-    Dense and square prefill are represented with uniform ``cu_seqlens``. Ragged
-    prefill uses the same fixed public tensor list. Scale tensors are required
-    for manifest stability; non-FP8 kernels ignore them.
-
+    Both uniform and ragged inputs execute a packed Varlen kernel. Fixed-shape
+    BSHD, fixed sliding-window, and native-FP8 calls belong to
+    :class:`GroupedQueryAttentionDenseFwdOp`. This compatibility Op is
+    removed when its remaining public ABI moves to the canonical Varlen Op.
     """
 
     def __init__(
@@ -280,18 +817,10 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         window_size_left: int = -1,
         window_size_right: int = -1,
         backend: str = "auto",
-        validate_uniform_cu_seqlens: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            dtype: Element type of ``o``. The inputs do not determine it: identical
-                float8_e4m3fn q/k/v admit either a float16 or a bfloat16 output, so
-                the caller chooses here. For float16 / bfloat16 inputs it must equal
-                their element type.
-        """
+        """Configure the deprecated packed-THD prefill compatibility surface."""
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         if is_causal and max_seqlen_q > max_seqlen_kv:
@@ -308,8 +837,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             raise ValueError(
                 "backend must be one of 'auto', 'dense', 'varlen', 'fp8', or 'sliding_window'"
             )
-        if backend == "auto" and not validate_uniform_cu_seqlens:
-            raise ValueError("backend='auto' requires validate_uniform_cu_seqlens=True.")
         _validate_attention_dtype(dtype)
 
         self.batch = batch
@@ -325,30 +852,23 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.backend = backend
-        self.validate_uniform_cu_seqlens = validate_uniform_cu_seqlens
         self.tune = tune
         self._roofline_kwargs = None
-        self._uniform_cu_cache: dict[tuple[int, torch.device, torch.dtype], torch.Tensor] = {}
 
         self.dispatch_kernel(kernel_map)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
-            "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
-            "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
             "gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel,
             "gqa_sliding_window_varlen_fwd_kernel": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
-            "gqa_prefill_fp8_tensor_core_fwd_kernel": GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
         }
 
-    def attention_call(self, *, is_fp8: bool, is_uniform: bool) -> AttentionCall:
+    def attention_call(self, *, is_fp8: bool) -> AttentionCall:
         """State what one prefill call is, for selection to filter candidates against.
 
         Args:
             is_fp8: Whether the inputs carry ``torch.float8_e4m3fn`` elements.
-            is_uniform: Whether both ``cu_seqlens`` describe equal-length requests.
         """
         return AttentionCall(
             dtype=self.dtype,
@@ -365,19 +885,21 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             window_size_right=self.window_size_right,
             backend=self.backend,
             is_fp8=is_fp8,
-            is_uniform=is_uniform,
+            is_uniform=False,
             tune=self.tune,
         )
 
     def _kernel_for(
-        self, inputs: "tuple[torch.Tensor | None, ...]", key: str, call: AttentionCall
+        self, inputs: tuple[Optional[torch.Tensor], ...], key: str, call: AttentionCall
     ) -> Kernel:
         """The implementation *key* names, built once for this element type."""
 
-        def build() -> Kernel:
-            return _build_packed_prefill_kernel(self.kernel_map, key, call)
-
-        return self.get_or_build_kernel(key, inputs, key=call.dtype, build=build)
+        return self.get_or_build_kernel(
+            key,
+            inputs,
+            key=call.dtype,
+            build=lambda: _build_prefill_kernel(self.kernel_map, key, call),
+        )
 
     def _infer_output_shapes(
         self,
@@ -406,8 +928,10 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         fp8_dtype = getattr(torch, "float8_e4m3fn", None)
         is_fp8 = fp8_dtype is not None and q.dtype == fp8_dtype
         if is_fp8:
-            if k.dtype != fp8_dtype or v.dtype != fp8_dtype:
-                raise ValueError("FP8 prefill requires q/k/v to all be torch.float8_e4m3fn.")
+            raise ValueError(
+                "Packed FP8 prefill moved to GroupedQueryAttentionDenseFwdOp; "
+                "Varlen FP8 support is not implemented yet."
+            )
         else:
             if q.dtype != self.dtype or k.dtype != self.dtype or v.dtype != self.dtype:
                 raise ValueError(f"q/k/v dtype must match op dtype {self.dtype}.")
@@ -475,24 +999,6 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
                     f"{name} must have shape {expected_scale_shape}, got {tuple(tensor.shape)}"
                 )
 
-    def _uniform_cu_seqlens(self, cu_seqlens: torch.Tensor, seq_len: int) -> bool:
-        cache_key = (seq_len, cu_seqlens.device, cu_seqlens.dtype)
-        expected = self._uniform_cu_cache.get(cache_key)
-        if expected is None:
-            expected = (
-                torch.arange(
-                    self.batch + 1,
-                    device=cu_seqlens.device,
-                    dtype=cu_seqlens.dtype,
-                )
-                * seq_len
-            )
-            self._uniform_cu_cache[cache_key] = expected
-        return bool(torch.equal(cu_seqlens, expected))
-
-    def _is_fp8_tensor(self, tensor: torch.Tensor) -> bool:
-        return fp8_dtype() is not None and tensor.dtype == fp8_dtype()
-
     def _record_roofline(
         self,
         q: torch.Tensor,
@@ -523,40 +1029,18 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         k_scale: torch.Tensor,
         v_scale: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16 | float8_e4m3fn``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            cu_seqlens_q: Input tensor, dtype ``int32``.
-            cu_seqlens_kv: Input tensor, dtype ``int32``.
-            q_scale: Input tensor, dtype ``float32``.
-            k_scale: Input tensor, dtype ``float32``.
-            v_scale: Input tensor, dtype ``float32``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (total_q, H, D)``.
-        """
+        """Run packed prefill with cumulative Q/KV sequence boundaries."""
         self._validate_dtypes(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
         self._validate_common_shapes(
             q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
         )
-        if self.backend == "auto" or (
-            self.backend in ("dense", "fp8") and self.validate_uniform_cu_seqlens
-        ):
-            q_uniform = self._uniform_cu_seqlens(cu_seqlens_q, self.max_seqlen_q)
-            kv_uniform = self._uniform_cu_seqlens(cu_seqlens_kv, self.max_seqlen_kv)
-            is_uniform = q_uniform and kv_uniform
-        else:
-            is_uniform = True
-
-        call = self.attention_call(is_fp8=self._is_fp8_tensor(q), is_uniform=is_uniform)
+        call = self.attention_call(is_fp8=False)
         check_packed_prefill_request(call)
         key = self.select_kernel_key(PACKED_PREFILL_KEYS, call)
-        output = self._kernel_for(
-            (q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale), key, call
-        )(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
+        inputs = (q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
+        output = self._kernel_for(inputs, key, call)(
+            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale
+        )
         self._record_roofline(q, k, cu_seqlens_q, cu_seqlens_kv)
         return output
 
@@ -601,12 +1085,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure variable-length packed GQA prefill."""
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         self.batch = batch
@@ -624,7 +1103,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: tuple[Optional[torch.Tensor], ...], dtype: torch.dtype) -> Kernel:
         _validate_attention_dtype(dtype)
 
         def build() -> Kernel:
@@ -763,11 +1242,11 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on ``q``, ``k``, ``v``, ``cu_seqlens_q`` and ``cu_seqlens_kv``."""
+        """Run packed GQA using the supplied cumulative sequence lengths."""
         self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
         self.dtype = q.dtype
-        tensors = (q, k, v, cu_seqlens_q, cu_seqlens_kv)
-        output = self._get_kernel(tensors, q.dtype)(*tensors)
+        inputs = (q, k, v, cu_seqlens_q, cu_seqlens_kv)
+        output = self._get_kernel(inputs, q.dtype)(*inputs)
         self._roofline_kwargs = {
             "q_shape": tuple(q.shape),
             "k_shape": tuple(k.shape),
@@ -821,22 +1300,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            max_pages_per_req: Manifest ``params.max_pages_per_req``, ``int``.
-            page_size: Manifest ``params.page_size``, ``int``.
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            cache_dtype: Manifest ``params.cache_dtype``, ``dtype | None``, default ``None``.
-            sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``.
-            softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-            fuse_rope: Manifest ``params.fuse_rope``, ``bool``, default ``False``.
-            rope_base: Manifest ``params.rope_base``, ``float``, default ``10000.0``.
-            max_position: Manifest ``params.max_position``, ``int | None``, default ``None``.
-            rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
-        """
+        """Configure paged-KV GQA prefill and its cache/position policies."""
         _validate_gqa_dims(heads, heads_kv, dim)
         if fuse_rope:
             rotary_dim = _rope_rotary_dim(dim, rotary_dim)
@@ -909,7 +1373,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         )
 
     def _get_kernel(
-        self, inputs: "tuple[torch.Tensor | None, ...]", key: str, call: AttentionCall
+        self, inputs: tuple[Optional[torch.Tensor], ...], key: str, call: AttentionCall
     ) -> Kernel:
         """The implementation *key* names, built once per element type.
 
@@ -1125,7 +1589,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         cache_seqlens_shape: tuple[int, ...],
         block_table_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        """Manifest shape rule: output follows Q."""
         return {"o": tuple(q_shape)}
 
     def forward(
@@ -1142,23 +1606,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         block_table: torch.Tensor,
         max_seqlen_q: int,
     ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k_new: Input tensor, dtype ``same_as(q)``.
-            v_new: Input tensor, dtype ``same_as(q)``.
-            k_pages: Input tensor, dtype ``float16 | bfloat16 | float8_e4m3fn``.
-            v_pages: Input tensor, dtype ``same_as(k_pages)``.
-            k_scale: Input tensor, dtype ``float32``.
-            v_scale: Input tensor, dtype ``float32``.
-            cu_seqlens_q: Input tensor, dtype ``int32``.
-            cache_seqlens: Input tensor, dtype ``int32``.
-            block_table: Input tensor, dtype ``int32``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (total_q, H, D)``.
-        """
+        """Run paged prefill and update the paged KV cache in place."""
         self._validate_forward_inputs(
             q,
             k_new,
@@ -1176,22 +1624,19 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         call = self.attention_call(q.dtype)
         key = self.select_kernel_key(PAGED_PREFILL_KEYS, call)
         cos_table, sin_table = self._rope_tables(q.device, q.dtype)
-        return self._get_kernel(
-            (
-                q,
-                k_new,
-                v_new,
-                k_pages,
-                v_pages,
-                k_scale,
-                v_scale,
-                cu_seqlens_q,
-                cache_seqlens,
-                block_table,
-            ),
-            key,
-            call,
-        )(
+        inputs = (
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        )
+        return self._get_kernel(inputs, key, call)(
             q,
             k_new,
             v_new,
@@ -1236,13 +1681,7 @@ class GroupedQueryAttentionBwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure dense GQA backward."""
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1254,7 +1693,7 @@ class GroupedQueryAttentionBwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernels(
-        self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype
+        self, inputs: tuple[Optional[torch.Tensor], ...], dtype: torch.dtype
     ) -> tuple[Kernel, Kernel]:
         """Return (preprocess, backward) kernels for *dtype*, building once each."""
 
@@ -1303,7 +1742,7 @@ class GroupedQueryAttentionBwdOp(Op):
         do_shape: tuple[int, ...],
         lse_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: each gradient has the shape of what it is for."""
+        """Manifest shape rules for Q, K and V gradients."""
         return {"dq": tuple(q_shape), "dk": tuple(k_shape), "dv": tuple(v_shape)}
 
     def forward(
@@ -1315,19 +1754,7 @@ class GroupedQueryAttentionBwdOp(Op):
         do: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            o: Input tensor, dtype ``same_as(q)``.
-            do: Input tensor, dtype ``same_as(q)``.
-            lse: Input tensor, dtype ``float32``.
-
-        Returns:
-            ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H_kv, D)``; ``dv.shape == (B, S, H_kv, D)``.
-        """
+        """Return gradients for Q, K and V."""
         do = do.contiguous()
         self._validate_dtypes(q, k, v, o, do, lse)
         self.dtype = q.dtype
@@ -1342,121 +1769,8 @@ class GroupedQueryAttentionBwdOp(Op):
         return dq, dk, dv
 
 
-class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
-    """Layout: BSHD"""
-
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seqlen_kv: int,
-        dim: int,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        _validate_gqa_dims(heads, heads_kv, dim)
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seqlen_kv = seqlen_kv
-        self.dim = dim
-
-        self.sm_scale = _attention_scale(dim, sm_scale)
-        self.softcap = _score_softcap(softcap)
-
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        _validate_attention_dtype(dtype)
-        call = self.attention_call(dtype)
-        key = self.select_kernel_key(DECODE_KEYS, call)
-
-        def build() -> Kernel:
-            return self.kernel_map[key](
-                call.batch,
-                call.heads,
-                call.heads_kv,
-                call.seqlen_kv,
-                call.dim,
-                call.dtype,
-                sm_scale=call.sm_scale,
-                softcap=call.softcap,
-                tune=call.tune,
-            )
-
-        return self.get_or_build_kernel(key, inputs, key=dtype, build=build)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gqa_decode_kernel": GQADecodeKernel,
-            "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
-        }
-
-    def attention_call(self, dtype: torch.dtype) -> AttentionCall:
-        """State what one decode call is, for selection to filter candidates against.
-
-        The element type arrives with the inputs, so it is a property of the call
-        rather than of the op: one instance serves every dtype it is handed.
-        """
-        return AttentionCall(
-            dtype=dtype,
-            batch=self.batch,
-            heads=self.heads,
-            heads_kv=self.heads_kv,
-            seqlen_kv=self.seqlen_kv,
-            dim=self.dim,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
-            tune=self.tune,
-        )
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
-        return {"o": tuple(q_shape)}
-
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
-        """
-        real_seqlen_kv = k.shape[1]
-        if real_seqlen_kv < self.seqlen_kv:
-            k = F.pad(
-                k, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode="constant", value=0
-            )
-            v = F.pad(
-                v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode="constant", value=0
-            )
-
-        self._validate_dtypes(q, k, v)
-        self.dtype = q.dtype
-        return self._get_kernel((q, k, v), q.dtype)(q, k, v, real_seqlen_kv)
-
-
 class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
-    """Paged GQA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times heads \\times dim]$ (BHD);
+    """Paged GQA decode with dynamic KV cache. Layout: Q [batch, heads, dim] (BHD);
     K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
@@ -1473,15 +1787,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            page_size: Manifest ``params.page_size``, ``int``.
-            sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``.
-            softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
+        """Configure paged-KV GQA decode."""
         _validate_gqa_dims(heads, heads_kv, dim)
         self.batch = batch
         self.heads = heads
@@ -1496,7 +1802,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
+    def _get_kernel(self, inputs: tuple[Optional[torch.Tensor], ...], dtype: torch.dtype) -> Kernel:
         _validate_attention_dtype(dtype)
         call = self.attention_call(dtype)
         key = self.select_kernel_key(PAGED_DECODE_KEYS, call)
@@ -1547,7 +1853,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         real_seqlen_kv_shape: tuple[int, ...],
         block_table_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        """Manifest shape rule: output follows Q."""
         return {"o": tuple(q_shape)}
 
     def forward(
@@ -1558,198 +1864,10 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            real_seqlen_kv: Input tensor, dtype ``int32``.
-            block_table: Input tensor, dtype ``int32``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
-        """
+        """Run paged decode using per-request lengths and a block table."""
         self.dtype = q.dtype
-        return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
-            q, k, v, real_seqlen_kv, block_table
-        )
-
-
-class GroupedQueryAttentionSlidingWindowFwdOp(Op):
-    """Fixed-length GQA forward with sliding window attention.
-
-    Token at q_pos attends to k_pos when ALL applicable conditions hold:
-      - k_pos <= q_pos                          (is_causal=True)
-      - k_pos >= q_pos - window_size_left       (window_size_left >= 0)
-      - k_pos <= q_pos + window_size_right      (window_size_right >= 0)
-
-    Use window_size_left=-1 / window_size_right=-1 for no restriction.
-
-    """
-
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len: int,
-        dim: int,
-        is_causal: bool = True,
-        window_size_left: int = -1,
-        window_size_right: int = -1,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            batch: Batch size.
-            heads: Number of query heads.
-            heads_kv: Number of KV heads (must divide heads evenly).
-            seq_len: Sequence length (same for Q, K, V).
-            dim: Head dimension.
-            is_causal: Whether to apply causal masking.
-            window_size_left: Left window size (-1 = unlimited).
-            window_size_right: Right window size (-1 = unlimited).
-            kernel_map: Optional override for hardware-specific kernel dispatch.
-            tune: Whether to run autotuning on kernel instantiation.
-        """
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        if window_size_left != -1 and window_size_left < 0:
-            raise ValueError(
-                f"window_size_left must be -1 (unlimited) or >= 0, got {window_size_left}"
-            )
-        if window_size_right != -1 and window_size_right < 0:
-            raise ValueError(
-                f"window_size_right must be -1 (unlimited) or >= 0, got {window_size_right}"
-            )
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len = seq_len
-        self.dim = dim
-        self.is_causal = is_causal
-        self.window_size_left = window_size_left
-        self.window_size_right = window_size_right
-
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        def build() -> Kernel:
-            return self.kernel_map["gqa_sliding_window_fwd_kernel"](
-                batch=self.batch,
-                heads=self.heads,
-                heads_kv=self.heads_kv,
-                seq_len=self.seq_len,
-                dim=self.dim,
-                is_causal=self.is_causal,
-                window_size_left=self.window_size_left,
-                window_size_right=self.window_size_right,
-                dtype=dtype,
-                tune=self.tune,
-            )
-
-        return self.get_or_build_kernel(
-            "gqa_sliding_window_fwd_kernel", inputs, key=dtype, build=build
-        )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel = GQASlidingWindowFwdWgmmaPipelinedKernel
-        return {"gqa_sliding_window_fwd_kernel": kernel}
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
-        return {"o": tuple(q_shape)}
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run fixed-length GQA sliding window forward.
-
-        Args:
-            q: Query tensor, shape $[batch \\times seq\\_len \\times heads \\times dim]$.
-            k: Key tensor, shape $[batch \\times seq\\_len \\times heads\\_kv \\times dim]$.
-            v: Value tensor, shape $[batch \\times seq\\_len \\times heads\\_kv \\times dim]$.
-
-        Returns:
-            Output tensor, shape $[batch \\times seq\\_len \\times heads \\times dim]$.
-        """
-        for t, name in [(q, "q"), (k, "k"), (v, "v")]:
-            if t.device.type != "cuda":
-                raise ValueError(f"{name} must be on a cuda device, got {t.device}")
-            if t.dtype != q.dtype:
-                raise ValueError(f"{name} dtype {t.dtype} does not match q dtype {q.dtype}")
-        if not q.is_contiguous():
-            q = q.contiguous()
-        if not k.is_contiguous():
-            k = k.contiguous()
-        if not v.is_contiguous():
-            v = v.contiguous()
-
-        if q.shape != (self.batch, self.seq_len, self.heads, self.dim):
-            raise ValueError(
-                f"q shape {q.shape} does not match expected "
-                f"({self.batch}, {self.seq_len}, {self.heads}, {self.dim})"
-            )
-        if k.shape != (self.batch, self.seq_len, self.heads_kv, self.dim):
-            raise ValueError(
-                f"k shape {k.shape} does not match expected "
-                f"({self.batch}, {self.seq_len}, {self.heads_kv}, {self.dim})"
-            )
-        if v.shape != (self.batch, self.seq_len, self.heads_kv, self.dim):
-            raise ValueError(
-                f"v shape {v.shape} does not match expected "
-                f"({self.batch}, {self.seq_len}, {self.heads_kv}, {self.dim})"
-            )
-
-        self.dtype = q.dtype
-        return self._get_kernel((q, k, v), q.dtype).forward(q, k, v)
-
-    @property
-    def total_flops(self) -> int:
-        """Approximate FLOPs for QK^T and PV GEMMs."""
-        S = self.seq_len
-        wl = self.window_size_left
-        wr = self.window_size_right
-        total_attended = 0
-        for q in range(S):
-            hi = q if self.is_causal else (min(S - 1, q + wr) if wr >= 0 else S - 1)
-            lo = max(0, q - wl) if wl >= 0 else 0
-            total_attended += hi - lo + 1
-        return 4 * self.batch * self.heads * total_attended * self.dim
-
-    @property
-    def total_memory(self) -> int:
-        """Approximate bytes accessed: read Q/K/V, write O.
-
-        Available after the first ``forward()``, which binds the element type
-        from its input; there is no element type before that.
-        """
-        if self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.total_memory requires a prior forward() "
-                "call to bind the element type"
-            )
-        return (
-            2
-            * self.batch
-            * self.seq_len
-            * (self.heads + self.heads_kv)
-            * self.dim
-            * self.dtype.itemsize
-        )
+        inputs = (q, k, v, real_seqlen_kv, block_table)
+        return self._get_kernel(inputs, q.dtype)(*inputs)
 
 
 class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
@@ -1780,20 +1898,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            batch: Number of sequences in the batch.
-            heads: Number of query heads.
-            heads_kv: Number of KV heads (must divide heads evenly).
-            dim: Head dimension.
-            is_causal: Whether to apply causal masking.
-            window_size_left: Left window size (-1 = unlimited).
-            window_size_right: Right window size (-1 = unlimited).
-            accum_dtype: Accumulator data type for intermediate computations.
-            kernel_map: Optional override for hardware-specific kernel dispatch.
-            tune: Whether to run autotuning on kernel instantiation.
-        """
+        """Configure variable-length sliding-window GQA prefill."""
         if heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
         if window_size_left != -1 and window_size_left < 0:
@@ -1817,7 +1922,10 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(
-        self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype, max_seqlen_q: int
+        self,
+        inputs: tuple[Optional[torch.Tensor], ...],
+        dtype: torch.dtype,
+        max_seqlen_q: int,
     ) -> Kernel:
         def build() -> Kernel:
             return self.kernel_map["gqa_sliding_window_varlen_fwd_kernel"](
@@ -1838,7 +1946,10 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         # The launch bound is a constructor fact for this slot, so the
         # specialization carries it alongside the element type.
         return self.get_or_build_kernel(
-            "gqa_sliding_window_varlen_fwd_kernel", inputs, key=(dtype, max_seqlen_q), build=build
+            "gqa_sliding_window_varlen_fwd_kernel",
+            inputs,
+            key=(dtype, max_seqlen_q),
+            build=build,
         )
 
     @property
@@ -1854,7 +1965,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         cu_seqlens_q_shape: tuple[int, ...],
         cu_seqlens_k_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
+        """Manifest shape rule: output follows Q."""
         return {"o": tuple(q_shape)}
 
     def forward(
@@ -1869,15 +1980,15 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         """Run variable-length GQA sliding window forward.
 
         Args:
-            q: Query tensor, shape $[total\\_q \\times heads \\times dim]$.
-            k: Key tensor, shape $[total\\_k \\times heads\\_kv \\times dim]$.
-            v: Value tensor, shape $[total\\_k \\times heads\\_kv \\times dim]$.
-            cu_seqlens_q: Cumulative Q lengths, shape $[batch+1]$, dtype int32.
-            cu_seqlens_k: Cumulative K lengths, shape $[batch+1]$, dtype int32.
+            q: Query tensor, shape [total_q, heads, dim].
+            k: Key tensor, shape [total_k, heads_kv, dim].
+            v: Value tensor, shape [total_k, heads_kv, dim].
+            cu_seqlens_q: Cumulative Q lengths, shape [batch+1], dtype int32.
+            cu_seqlens_k: Cumulative K lengths, shape [batch+1], dtype int32.
             max_seqlen_q: Maximum Q sequence length across the batch.
 
         Returns:
-            Output tensor, shape $[total\\_q \\times heads \\times dim]$.
+            Output tensor, shape [total_q, heads, dim].
         """
         for t, name in [(q, "q"), (k, "k"), (v, "v")]:
             if t.device.type != "cuda":
@@ -1940,9 +2051,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
             )
 
         self.dtype = q.dtype
-        return self._get_kernel(
-            (q, k, v, cu_seqlens_q, cu_seqlens_k), q.dtype, max_seqlen_q
-        ).forward(q, k, v, cu_seqlens_q, cu_seqlens_k)
+        inputs = (q, k, v, cu_seqlens_q, cu_seqlens_k)
+        return self._get_kernel(inputs, q.dtype, max_seqlen_q).forward(*inputs)
 
     @property
     def total_flops(self) -> int:

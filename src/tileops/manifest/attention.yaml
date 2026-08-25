@@ -32,16 +32,19 @@ MultiHeadAttentionFwdOp:
     # Llama-3.1-70B (H=64, D=128)
     - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-short"}
     - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-long"}
+    - {q_shape: [4, 1, 32, 128], kv_shape: [4, 1, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-decode"}
 
   roofline:
     func: "tileops.perf.formulas.mha_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel: tileops/kernels/attention/gqa_dense_prefill.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_dense_fwd_kernel: GQAPrefillDenseFwdKernel
       gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
       gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
+      gqa_decode_kernel: GQADecodeKernel
+      gqa_decode_bs1_kernel: GQADecodeBs1Kernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py
@@ -98,25 +101,59 @@ MultiHeadAttentionBwdOp:
     bench: benchmarks/ops/attention/bench_mha.py
     bench_manifest_driven: true
 
-GroupedQueryAttentionFwdOp:
+GroupedQueryAttentionDenseFwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
-      q: {dtype: "float16 | bfloat16"}
+      q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
       k: {dtype: "same_as(q)"}
       v: {dtype: "same_as(q)"}
+      q_scale: {dtype: "float32", optional: true}
+      k_scale: {dtype: "float32", optional: true}
+      v_scale: {dtype: "float32", optional: true}
+      rope_cos: {dtype: "same_as(o)", optional: true}
+      rope_sin: {dtype: "same_as(o)", optional: true}
     outputs:
-      o: {dtype: "same_as(q)"}
+      o: {dtype: "float16 | bfloat16"}
     params:
       is_causal: {type: bool, default: true}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
+      window_size_left: {type: int, default: -1}
+      window_size_right: {type: int, default: -1}
+      dtype: {type: "torch.dtype | None", default: null}
+      pos_encoding_mode: {type: str, default: none}
+      rotary_dim: {type: "int | None", default: null}
+      rope_layout: {type: str, default: neox}
+    dtype_combos:
+      - {q: float16, k: float16, v: float16, o: float16}
+      - {q: bfloat16, k: bfloat16, v: bfloat16, o: bfloat16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, o: float16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, o: bfloat16}
     shape_rules:
-      - "q.shape == (B, S, H, D)"
-      - "k.shape == (B, S, H_kv, D)"
-      - "v.shape == (B, S, H_kv, D)"
-      - "o.shape == (B, S, H, D)"
+      - "q.shape == (B, S_q, H, D)"
+      - "k.shape == (B, S_kv, H_kv, D)"
+      - "v.shape == (B, S_kv, H_kv, D)"
+      - "(q_scale is None) == (k_scale is None)"
+      - "(q_scale is None) == (v_scale is None)"
+      - "q_scale is None or q_scale.shape == (B, H_kv)"
+      - "k_scale is None or k_scale.shape == (B, H_kv)"
+      - "v_scale is None or v_scale.shape == (B, H_kv)"
+      - "(rope_cos is None) == (rope_sin is None)"
+      - "(pos_encoding_mode == 'rope') == (rope_cos is not None)"
+      - "rope_cos is None or rope_cos.ndim == 2"
+      - "rope_cos is None or rope_sin is None or rope_sin.shape == rope_cos.shape"
+      - "rope_cos is None or rope_cos.shape[0] >= S_kv"
+      - "rope_cos is None or rope_cos.shape[1] == (rotary_dim if rotary_dim is not None else D) // 2"
+      - "pos_encoding_mode == 'none' or pos_encoding_mode == 'rope'"
+      - "pos_encoding_mode == 'rope' or rotary_dim is None"
+      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
+      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
+      - "o.shape == (B, S_q, H, D)"
       - "H % H_kv == 0"
 
   workloads:
@@ -124,22 +161,62 @@ GroupedQueryAttentionFwdOp:
     - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-short"}
     - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-long"}
     # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-short"}
-    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-long"}
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long"}
+    # Dense sliding-window coverage is part of this Op rather than a separate
+    # public dispatch surface.
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short-w256"}
+    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long-w1024"}
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short-w256"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long-w1024"}
+    - {q_shape: [1, 512, 32, 128], kv_shape: [1, 512, 8, 128], is_causal: false, window_size_left: 256, window_size_right: 64, sm_scale: 0.125, softcap: 50.0, dtypes: [float16], label: "dense-bidirectional-window-softcap50"}
+    - {q_shape: [2, 512, 32, 128], kv_shape: [2, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
+    - {q_shape: [1, 512, 64, 128], kv_shape: [1, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
+    # Caller-owned fused-RoPE coverage. Correctness and compile
+    # coverage live in tests/ops/attention/test_gqa.py and tests/test_compile.py;
+    # a full-envelope third-party performance baseline is not wired yet.
+    - {q_shape: [1, 257, 8, 64], kv_shape: [1, 321, 2, 64], rope_cos_shape: [321, 32], rope_sin_shape: [321, 32], is_causal: true, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, dtypes: [float16], bench_skip_reason: "Dense fused-RoPE full-envelope baseline is not implemented", label: "dense-fused-rope-interleaved-tail"}
+    # Native FP8 Tensor Core specializations; dtype selects the output type.
+    - {q_shape: [1, 896, 32, 128], kv_shape: [1, 896, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], input_dtype: float8_e4m3fn, label: "llama-3.1-8b-prefill-fp8tc-bn224-s896"}
+    - {q_shape: [1, 1792, 32, 128], kv_shape: [1, 1792, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: false, dtypes: [float16], input_dtype: float8_e4m3fn, label: "llama-3.1-8b-prefill-fp8tc-bn224-s1792"}
+    - {q_shape: [1, 3584, 64, 128], kv_shape: [1, 3584, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], input_dtype: float8_e4m3fn, label: "llama-3.1-70b-prefill-fp8tc-bn224-s3584"}
+    - {q_shape: [1, 7168, 64, 128], kv_shape: [1, 7168, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], input_dtype: float8_e4m3fn, label: "llama-3.1-70b-prefill-fp8tc-bn224-s7168"}
+    # General native-FP8 schedule: rectangular/tail lengths plus causal,
+    # sliding-window, custom-scale, and softcap semantics in one representative case.
+    - {q_shape: [1, 513, 32, 128], kv_shape: [1, 769, 8, 128], q_scale_shape: [1, 8], k_scale_shape: [1, 8], v_scale_shape: [1, 8], is_causal: true, window_size_left: 256, sm_scale: 0.11, softcap: 2.0, dtypes: [float16], input_dtype: float8_e4m3fn, label: "llama-3.1-8b-prefill-fp8tc-general-causal-w256-softcap2-tail"}
+    # Dense decode is the S_q=1 region of the same BSHD public ABI.
+    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-8b-decode-4k"}
+    - {q_shape: [8, 1, 32, 128], kv_shape: [8, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-8b-decode-32k"}
+    - {q_shape: [16, 1, 64, 128], kv_shape: [16, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-decode-4k"}
+    - {q_shape: [4, 1, 64, 128], kv_shape: [4, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-decode-32k"}
+    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 8, 128], softcap: 50.0, dtypes: [float16], label: "llama-3.1-8b-decode-4k-softcap50"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 1024, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-1k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 4096, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-4k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 8192, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-8k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 16384, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-16k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 32768, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-32k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 65536, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-64k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 131072, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-128k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 262144, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-decode-bs1-256k"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel: tileops/kernels/attention/gqa_dense_prefill.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
+      gqa_prefill_dense_sliding_fwd_kernel: GQASlidingWindowFwdWgmmaPipelinedKernel
+      gqa_prefill_dense_fwd_kernel: GQAPrefillDenseFwdKernel
       gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
       gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
+      gqa_decode_kernel: GQADecodeKernel
+      gqa_decode_bs1_kernel: GQADecodeBs1Kernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
     bench_manifest_driven: true
+
 
 GroupedQueryAttentionPrefillFwdOp:
   ref_api: "none"
@@ -148,7 +225,7 @@ GroupedQueryAttentionPrefillFwdOp:
 
   signature:
     inputs:
-      q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
+      q: {dtype: "float16 | bfloat16"}
       k: {dtype: "same_as(q)"}
       v: {dtype: "same_as(q)"}
       cu_seqlens_q: {dtype: "int32"}
@@ -167,16 +244,12 @@ GroupedQueryAttentionPrefillFwdOp:
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
       backend: {type: str, default: "auto"}
-      validate_uniform_cu_seqlens: {type: bool, default: true}
-      # Element type of `o`. The float16 / bfloat16 rows of dtype_combos pin it
-      # to q.dtype; the float8_e4m3fn rows admit either float16 or bfloat16, so
-      # an fp8 caller selects between them here.
+      # Temporary packed-compatibility output dtype. This surface moves to the
+      # canonical Varlen Op in #1917.
       dtype: {type: torch.dtype, default: float16}
     dtype_combos:
       - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
       - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
     shape_rules:
       - "q.shape == (total_q, H, D)"
       - "k.shape == (total_kv, H_kv, D)"
@@ -191,30 +264,21 @@ GroupedQueryAttentionPrefillFwdOp:
 
   workloads:
     # Llama-3.1-8B (H=32, H_kv=8, D=128)
-    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "dense", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-8b-prefill-dense"}
-    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "dense", validate_uniform_cu_seqlens: false, sm_scale: 0.125, dtypes: [float16], label: "llama-8b-prefill-dense-sm-scale-0.125"}
-    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "dense", validate_uniform_cu_seqlens: false, softcap: 50.0, dtypes: [float16], label: "llama-8b-prefill-dense-softcap50"}
-    - {total_q: 1024, total_kv: 8192, batch: 2, q_lens: [512, 512], kv_lens: [4096, 4096], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, backend: "dense", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-8b-prefill-dense-q-lt-kv"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "varlen", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-packed-varlen"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "varlen", sm_scale: 0.125, dtypes: [float16], label: "llama-3.1-8b-prefill-packed-varlen-sm-scale-0.125"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "varlen", softcap: 50.0, dtypes: [float16], label: "llama-3.1-8b-prefill-packed-varlen-softcap50"}
+    - {total_q: 1024, total_kv: 8192, batch: 2, q_lens: [512, 512], kv_lens: [4096, 4096], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, backend: "varlen", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-packed-varlen-q-lt-kv"}
     # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {total_q: 512, total_kv: 4096, batch: 1, q_lens: [512], kv_lens: [4096], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, backend: "dense", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-70b-prefill-dense-q-lt-kv"}
-    # FP8 Tensor Core prefill through the canonical packed prefill surface.
-    - {total_q: 896, total_kv: 896, batch: 1, q_lens: [896], kv_lens: [896], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 896, max_seqlen_kv: 896, is_causal: false, backend: "fp8", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-8b-prefill-fp8tc-bn224-s896"}
-    - {total_q: 1792, total_kv: 1792, batch: 1, q_lens: [1792], kv_lens: [1792], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 1792, max_seqlen_kv: 1792, is_causal: false, backend: "fp8", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-8b-prefill-fp8tc-bn224-s1792"}
-    - {total_q: 3584, total_kv: 3584, batch: 1, q_lens: [3584], kv_lens: [3584], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 3584, max_seqlen_kv: 3584, is_causal: false, backend: "fp8", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-70b-prefill-fp8tc-bn224-s3584"}
-    - {total_q: 7168, total_kv: 7168, batch: 1, q_lens: [7168], kv_lens: [7168], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 7168, max_seqlen_kv: 7168, is_causal: false, backend: "fp8", validate_uniform_cu_seqlens: false, dtypes: [float16, bfloat16], label: "llama-70b-prefill-fp8tc-bn224-s7168"}
+    - {total_q: 512, total_kv: 4096, batch: 1, q_lens: [512], kv_lens: [4096], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, backend: "varlen", dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-packed-varlen-q-lt-kv"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel: tileops/kernels/attention/gqa_prefill_varlen_fwd.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
-      gqa_prefill_causal_fwd_kernel: GQAPrefillFwdWsPersistentCausalKernel
-      gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
       gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
       gqa_sliding_window_varlen_fwd_kernel: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-      gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -356,7 +420,7 @@ GroupedQueryAttentionBwdOp:
     bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
-# attention — decode (single-query against KV cache)
+# attention -decode (single-query against KV cache)
 # ---------------------------------------------------------------------------
 
 MultiHeadAttentionDecodeWithKVCacheFwdOp:
@@ -442,59 +506,6 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     bench: benchmarks/ops/attention/bench_mha_decode_paged.py
     bench_manifest_driven: true
 
-GroupedQueryAttentionDecodeWithKVCacheFwdOp:
-  ref_api: "none"
-  family: attention
-  status: implemented
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    params: {}
-    shape_rules:
-      - "q.shape == (B, H, D)"
-      - "k.shape == (B, N_kv, H_kv, D)"
-      - "v.shape == (B, N_kv, H_kv, D)"
-      - "o.shape == (B, H, D)"
-      - "H % H_kv == 0"
-
-  workloads:
-    # Llama-3.1-8B (H=32, H_kv=8, D=128), short KV
-    - {q_shape: [32, 32, 128], kv_shape: [32, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-8b-4k"}
-    # Llama-3.1-8B, long KV
-    - {q_shape: [8, 32, 128], kv_shape: [8, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-8b-32k"}
-    # Llama-3.1-70B (H=64, H_kv=8, D=128), short KV
-    - {q_shape: [16, 64, 128], kv_shape: [16, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-70b-4k"}
-    # Llama-3.1-70B, long KV
-    - {q_shape: [4, 64, 128], kv_shape: [4, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-70b-32k"}
-    - {q_shape: [32, 32, 128], kv_shape: [32, 4096, 8, 128], softcap: 50.0, dtypes: [float16], label: "llama-8b-4k-softcap50"}
-    # Qwen3-30B-A3B (H=32, H_kv=4, D=128), batch=1 single-request decode, KV 1K..256K
-    - {q_shape: [1, 32, 128], kv_shape: [1, 1024, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-1k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 4096, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-4k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 8192, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-8k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 16384, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-16k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 32768, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-32k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 65536, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-64k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 131072, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-128k"}
-    - {q_shape: [1, 32, 128], kv_shape: [1, 262144, 4, 128], dtypes: [float16], label: "qwen3-30b-a3b-bs1-256k"}
-
-  roofline:
-    func: "tileops.perf.formulas.gqa_decode_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_decode.py
-    kernel_map:
-      gqa_decode_kernel: GQADecodeKernel
-      gqa_decode_bs1_kernel: GQADecodeBs1Kernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_decode.py
-    bench: benchmarks/ops/attention/bench_gqa_decode.py
-    bench_manifest_driven: true
-
 GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
@@ -549,51 +560,8 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
-# attention — sliding window
+# attention -sliding window
 # ---------------------------------------------------------------------------
-
-GroupedQueryAttentionSlidingWindowFwdOp:
-  ref_api: "none"
-  family: attention
-  status: implemented
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    params:
-      is_causal: {type: bool, default: true}
-      window_size_left: {type: int, default: -1}
-      window_size_right: {type: int, default: -1}
-    shape_rules:
-      - "q.shape == (B, S, H, D)"
-      - "k.shape == (B, S, H_kv, D)"
-      - "v.shape == (B, S, H_kv, D)"
-      - "o.shape == (B, S, H, D)"
-      - "H % H_kv == 0"
-
-  workloads:
-    # Llama-3.1-8B (H=32, H_kv=8, D=128), short seq
-    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-8b-short-w256"}
-    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-8b-long-w1024"}
-    # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-70b-short-w256"}
-    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-70b-long-w1024"}
-
-  roofline:
-    func: "tileops.perf.formulas.gqa_sliding_window_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
-    kernel_map:
-      gqa_sliding_window_fwd_kernel: GQASlidingWindowFwdWgmmaPipelinedKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_sliding_window.py
-    bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
-    bench_manifest_driven: true
 
 GroupedQueryAttentionSlidingWindowVarlenFwdOp:
   ref_api: "none"
@@ -644,7 +612,7 @@ GroupedQueryAttentionSlidingWindowVarlenFwdOp:
     bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
-# attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
+# attention -Multi-Head Latent Attention / DeepSeek Sparse Attention decode
 # ---------------------------------------------------------------------------
 
 MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:

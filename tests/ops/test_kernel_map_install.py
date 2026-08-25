@@ -28,11 +28,15 @@ def _make_incompatible_arch_list() -> list[int]:
 
 
 def _decode_op(**kwargs: object):
-    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+    from tileops.ops import GroupedQueryAttentionDenseFwdOp
 
-    defaults = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
-    defaults.update(kwargs)
-    return GroupedQueryAttentionDecodeWithKVCacheFwdOp(**defaults)
+    return GroupedQueryAttentionDenseFwdOp(**kwargs)
+
+
+def _decode_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    q = torch.randn(1, 1, 32, 128, device="cuda", dtype=torch.float16)
+    k = torch.randn(1, 8192, 4, 128, device="cuda", dtype=torch.float16)
+    return q, k, torch.randn_like(k)
 
 
 @pytest.mark.smoke
@@ -88,15 +92,15 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="the kernel supplied for"):
-        op._get_kernel((), torch.float16)
+    with pytest.raises(ValueError, match="no implementation serves"):
+        op(*_decode_inputs())
 
 
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     """The auto-discovery path is refused at the same point, the same way."""
     from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
-    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+    from tileops.ops import GroupedQueryAttentionDenseFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
@@ -106,7 +110,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     class IncompatibleGeneral(GQADecodeKernel):
         supported_archs = incompatible_archs
 
-    class AutoDiscoveredIncompatibleOp(GroupedQueryAttentionDecodeWithKVCacheFwdOp):
+    class AutoDiscoveredIncompatibleOp(GroupedQueryAttentionDenseFwdOp):
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
             return {
@@ -114,10 +118,10 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
                 "gqa_decode_kernel": IncompatibleGeneral,
             }
 
-    op = AutoDiscoveredIncompatibleOp(batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
+    op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op._get_kernel((), torch.float16)
+        op(*_decode_inputs())
 
 
 @pytest.mark.smoke
