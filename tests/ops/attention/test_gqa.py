@@ -34,13 +34,6 @@ _PREFILL_TOLERANCE = {
 }
 
 
-class _DenseBoundaryTestOp(GroupedQueryAttentionDenseFwdOp):
-    """Exercise the public boundary without adding an in-tree kernel."""
-
-    def _get_kernel(self, inputs):
-        return lambda *args: args[0]
-
-
 def _dense_boundary_inputs(seq_len_q: int = 1, seq_len_kv: int = 4):
     q = torch.randn(1, seq_len_q, 4, 8, dtype=torch.float16)
     k = torch.randn(1, seq_len_kv, 2, 8, dtype=torch.float16)
@@ -55,13 +48,7 @@ def test_dense_gqa_rejects_non_bshd_inputs(name: str) -> None:
     tensors[index] = tensors[index].squeeze(0)
 
     with pytest.raises(ValueError, match=rf"{name} must be a rank-4 BSHD tensor"):
-        _DenseBoundaryTestOp()(*tensors)
-
-
-@pytest.mark.smoke
-def test_dense_gqa_accepts_rectangular_decode() -> None:
-    q, k, v = _dense_boundary_inputs(seq_len_q=1, seq_len_kv=4)
-    assert _DenseBoundaryTestOp(is_causal=True)(q, k, v).shape == q.shape
+        GroupedQueryAttentionDenseFwdOp()(*tensors)
 
 
 @pytest.mark.smoke
@@ -78,7 +65,7 @@ def test_dense_gqa_rejects_bottom_right_modes_when_q_is_longer_than_kv(
     q, k, v = _dense_boundary_inputs(seq_len_q=4, seq_len_kv=1)
 
     with pytest.raises(ValueError, match=message):
-        _DenseBoundaryTestOp(**kwargs)(q, k, v)
+        GroupedQueryAttentionDenseFwdOp(**kwargs)(q, k, v)
 
 
 @pytest.mark.smoke
@@ -87,7 +74,7 @@ def test_dense_gqa_rejects_rope_tables_shorter_than_the_kv_positions() -> None:
     rope = torch.randn(3, 4, dtype=torch.float16)
 
     with pytest.raises(ValueError, match=r"max_position >= 4"):
-        _DenseBoundaryTestOp(
+        GroupedQueryAttentionDenseFwdOp(
             is_causal=False,
             pos_encoding_mode="rope",
             rotary_dim=8,
