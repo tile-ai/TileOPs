@@ -20,14 +20,10 @@ cuda_core:
     # Splits into 0.9261 lane utilisation x 0.9242 clock headroom.
     calibration: 0.8548
 
-# From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak, best of
-# n=4096/8192/16384 square). Two regimes per dtype:
-#   calibration       — sustained: the GEMMs hold the 700 W cap and the SM
-#                       clock sits near 1.2-1.4 GHz; locking cannot pin it.
-#                       This is what load_profile() turns into `effective`.
-#   calibration_burst — first 200 ms from a cooled-down clock, before the cap
-#                       engages; what a short kernel between memory-bound
-#                       phases can reach.
+# From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak).
+# calibration is sustained — the GEMMs hold the 700 W cap at ~1.2-1.4 GHz —
+# and feeds `effective`; calibration_burst is the pre-cap rate a short
+# kernel between memory-bound phases can reach.
 tensor_core:
   fp16:
     theoretical: 989.5e12    # FLOPS, spec sheet (dense)
