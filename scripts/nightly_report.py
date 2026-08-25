@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -34,6 +35,8 @@ _PERF_KEYS = (
     "tileops_gap_ms",
     "tileops_n_kernels",
     "tileops_tflops",
+    "tileops_flops",
+    "tileops_bytes",
     "tileops_bandwidth_tbs",
     "tileops_variant",
     "tileops_timing",
@@ -336,18 +339,59 @@ def _conclusion_ms(cfg: dict) -> float | None:
     return _conclusion(cfg)[0]
 
 
+#: Absorbs the rounding a count recovered from ``tflops`` carries.
+_DERIVED_COUNT_RTOL = 1e-3
+
+
+class _WorkCounts(NamedTuple):
+    flops: float | None
+    nbytes: float | None
+    #: False when ``flops`` was recovered from ``tflops`` rather than recorded.
+    flops_recorded: bool
+
+
+def _work_counts(reading: dict, ms: float | None) -> _WorkCounts:
+    """Return the FLOP and byte counts of the work a reading timed."""
+    nbytes, flops, tflops = reading.get("bytes"), reading.get("flops"), reading.get("tflops")
+    if flops is None and tflops is not None and ms is not None:
+        return _WorkCounts(tflops * ms * 1e9, nbytes, False)
+    return _WorkCounts(flops, nbytes, True)
+
+
+def _same_count(current: float | None, historical: float | None, rtol: float) -> bool:
+    """Whether two counts are the same work, taking an unknown count as a match."""
+    if current is None or historical is None:
+        return True
+    if current <= 0 or historical <= 0:
+        return current == historical
+    return abs(current - historical) / max(current, historical) <= rtol
+
+
+def _same_workload(current: _WorkCounts, historical: _WorkCounts) -> bool:
+    """Whether two readings timed the same workload."""
+    rtol = 0.0 if current.flops_recorded and historical.flops_recorded else _DERIVED_COUNT_RTOL
+    return _same_count(current.flops, historical.flops, rtol) and _same_count(
+        current.nbytes, historical.nbytes, 0.0
+    )
+
+
 def find_best_latency(
     runs: list[dict],
     op: str,
     config_name: str,
     key: str = _CONCLUSION_KEY,
+    work: _WorkCounts | None = None,
 ) -> float | None:
     """Find the best (lowest) tileops reading for an op+config across history."""
     best = None
     for run in runs:
         tileops_data = run.get("ops", {}).get(op, {}).get(config_name, {}).get("tileops", {})
         lat = tileops_data.get(key)
-        if lat is not None and (best is None or lat < best):
+        if lat is None:
+            continue
+        if work is not None and not _same_workload(work, _work_counts(tileops_data, lat)):
+            continue
+        if best is None or lat < best:
             best = lat
     return best
 
@@ -362,7 +406,11 @@ def _history_deltas(bench_ops: dict, history_runs: list[dict]):
             lat, key = _conclusion(cfg)
             if lat is None:
                 continue
-            best = find_best_latency(history_runs, op, cfg["name"], key)
+            work = _work_counts(
+                {k.removeprefix("tileops_"): v for k, v in cfg.items()},
+                lat,
+            )
+            best = find_best_latency(history_runs, op, cfg["name"], key, work)
             if not best:  # a zero is not something to measure against
                 continue
             yield (
@@ -460,9 +508,10 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
                 for key, value in (("latency_ms", lat), (_CONCLUSION_KEY, busy)):
                     if value is not None:
                         entry["tileops"][key] = value
-                tflops = cfg.get("tileops_tflops")
-                if tflops is not None:
-                    entry["tileops"]["tflops"] = tflops
+                for name in ("tflops", "flops", "bytes"):
+                    value = cfg.get(f"tileops_{name}")
+                    if value is not None:
+                        entry["tileops"][name] = value
             bl_lat = cfg.get("baseline_latency_ms")
             bl_busy = cfg.get(f"baseline_{_CONCLUSION_KEY}")
             if bl_lat is not None or bl_busy is not None:
