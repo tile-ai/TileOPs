@@ -8,6 +8,15 @@ from .abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
+from .contracts import (
+    ContiguousLayoutSpec,
+    InversePermuteContext,
+    MaskedLayoutSpec,
+    MaterializedExpertLayout,
+    NoScaleComputeSpec,
+    PrePermuteOutput,
+    RoutingEpilogueSpec,
+)
 from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
@@ -20,8 +29,15 @@ from .routed_expert import (
     MoeUnpermuteFwdOp,
 )
 from .shared_fused_moe import SharedFusedMoE
+from .staged import (
+    MoeExpertMLPFwdOp,
+    MoeGroupedGemmFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+)
 
 __all__ = [
+    "ContiguousLayoutSpec",
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
@@ -29,13 +45,23 @@ __all__ = [
     "FusedMoe",
     "FusedMoeFwdOp",
     "FusedTopKOp",
+    "InversePermuteContext",
+    "MaskedLayoutSpec",
+    "MaterializedExpertLayout",
     "MoEPrepareAndFinalizeNoDPEP",
+    "MoeExpertMLPFwdOp",
     "MoeGateUpFwdOp",
+    "MoeGroupedGemmFwdOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
     "MoePermuteNopadFwdOp",
+    "MoePostPermuteFwdOp",
+    "MoePrePermuteFwdOp",
     "MoeUnpermuteFwdOp",
+    "NoScaleComputeSpec",
+    "PrePermuteOutput",
     "PrepareResult",
+    "RoutingEpilogueSpec",
     "SharedFusedMoE",
     "WeightedReduce",
     "WeightedReduceNoOp",

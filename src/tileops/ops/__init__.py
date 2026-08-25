@@ -61,7 +61,13 @@ from .mamba import (
     SSDDecodeFwdOp,
     SSDStatePassingFwdOp,
 )
-from .moe import MoePermuteAlignFwdOp
+from .moe import (
+    MoeExpertMLPFwdOp,
+    MoeGroupedGemmFwdOp,
+    MoePermuteAlignFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+)
 from .norm import (
     AdaLayerNormFwdOp,
     AdaLayerNormZeroFwdOp,
@@ -202,6 +208,10 @@ __all__ = [
     "NSATopkVarlenOp",
     "Op",
     "MoePermuteAlignFwdOp",
+    "MoeExpertMLPFwdOp",
+    "MoeGroupedGemmFwdOp",
+    "MoePostPermuteFwdOp",
+    "MoePrePermuteFwdOp",
     "RMSNormFwdOp",
     "Mamba2FwdOp",
     "SSDChunkScanFwdOp",
