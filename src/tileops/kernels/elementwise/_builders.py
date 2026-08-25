@@ -5,8 +5,8 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._broadcast import _compute_broadcast_offsets, _is_contiguous_same_shape
-from ._op_registry import broadcast_plan_for, op_func_for
+from ._broadcast import _compute_broadcast_offsets, _is_contiguous_same_shape, broadcast_plan_for
+from ._op_body import op_func_for
 
 
 def _broadcast_index_terms(plan_name):

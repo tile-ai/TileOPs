@@ -1,18 +1,14 @@
 """Elementwise kernels, one module per category.
 
 Each module is named after the ``ops/elementwise`` module holding the ops it serves.
-The templates every kernel here is built from are in ``_base``, which is the only
-module the others import from.
+The templates every kernel here is built from are in ``_base``; the dtype helpers
+they share are in ``_dtype``.
 """
 
 import torch
 
-from ._base import (
-    BinaryKernel,
-    FusedGatedKernel,
-    UnaryKernel,
-    coalesce_broadcast_dims,
-)
+from ._base import BinaryKernel, FusedGatedKernel, UnaryKernel
+from ._broadcast import coalesce_broadcast_dims
 from .activations import (
     EluFwdKernel,
     GeluAndMulFwdKernel,

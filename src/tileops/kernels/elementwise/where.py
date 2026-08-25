@@ -8,9 +8,8 @@ import torch
 
 from ._base import (
     ParametricUnaryKernel,
-    _broadcast_target,
-    _expand_flat,
 )
+from ._broadcast import _broadcast_target, _expand_flat
 
 __all__ = [
     "WhereFwdKernel",

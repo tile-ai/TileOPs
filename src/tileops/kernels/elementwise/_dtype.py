@@ -2,7 +2,17 @@
 
 import math
 
+import tilelang.language as T
 import torch
+
+#: Bool has no vectorised CUDA type, so a bool result is stored one byte per element.
+BOOL_STORAGE_DTYPE = "int8"
+
+
+def log_for_output_precision(value, wide):
+    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep."""
+    return T.log(wide) if value.dtype == "float32" else T.__log(wide)
+
 
 _BITWISE_DTYPES = (
     torch.bool,

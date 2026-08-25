@@ -8,8 +8,8 @@ import tilelang.language as T
 from ._base import (
     ParametricUnaryKernel,
     _flat,
-    _fp8_accum_dtype_str,
 )
+from ._dtype import _fp8_accum_dtype_str
 
 __all__ = [
     "PreluFwdKernel",

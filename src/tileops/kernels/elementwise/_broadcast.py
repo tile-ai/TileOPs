@@ -1,4 +1,6 @@
-"""Broadcast shape lowering helpers for elementwise kernels."""
+"""Broadcast shape lowering for elementwise kernels: the plan, its name, and its offsets."""
+
+from dataclasses import dataclass
 
 import torch
 
@@ -84,3 +86,27 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
         and all(s == 1 for s in a_strides)
         and all(s == 1 for s in b_strides)
     )
+
+
+@dataclass(frozen=True)
+class BroadcastPlan:
+    """The coalesced shape and per-operand strides a binary kernel indexes with."""
+
+    coalesced_shape: tuple[int, ...]
+    a_strides: tuple[int, ...]
+    b_strides: tuple[int, ...]
+
+
+_BROADCAST_PLANS: dict[str, "BroadcastPlan"] = {}
+
+
+def register_broadcast_plan(plan: BroadcastPlan) -> str:
+    """Bind *plan* to a name derived from its own contents, and return that name."""
+    name = f"{plan.coalesced_shape}|{plan.a_strides}|{plan.b_strides}"
+    _BROADCAST_PLANS[name] = plan
+    return name
+
+
+def broadcast_plan_for(name: str) -> BroadcastPlan:
+    """The plan registered under *name*."""
+    return _BROADCAST_PLANS[name]

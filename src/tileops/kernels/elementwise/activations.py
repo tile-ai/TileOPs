@@ -10,9 +10,8 @@ from ._base import (
     FloatUnaryKernel,
     FusedGatedKernel,
     ParametricUnaryKernel,
-    _fp8_accum_dtype_str,
-    _log_for_output_precision,
 )
+from ._dtype import _fp8_accum_dtype_str, log_for_output_precision
 
 __all__ = [
     "EluFwdKernel",
@@ -412,7 +411,7 @@ def _make_softplus_kernel(
                             t = T.cast(threshold, "float32")
                             one = T.cast(1.0, "float32")
                             scaled = v32 * b
-                            sp = _log_for_output_precision(val, one + T.exp(scaled)) / b
+                            sp = log_for_output_precision(val, one + T.exp(scaled)) / b
                             y[idx] = T.if_then_else(
                                 scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
                             )
@@ -437,7 +436,7 @@ def _make_softplus_kernel(
                         t = T.cast(threshold, "float32")
                         one = T.cast(1.0, "float32")
                         scaled = v32 * b
-                        sp = _log_for_output_precision(val, one + T.exp(scaled)) / b
+                        sp = log_for_output_precision(val, one + T.exp(scaled)) / b
                         y_reg[i * npt_arg + j] = T.if_then_else(
                             scaled > t,
                             val,

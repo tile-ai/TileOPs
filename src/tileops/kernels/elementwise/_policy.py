@@ -1,20 +1,21 @@
-"""Elementwise launch, output, and strategy helpers."""
+"""What an elementwise kernel is built with: its launch config, output dtype and strategy."""
 
 import warnings
 from dataclasses import dataclass
 
-import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 
 from ._dtype import (
+    BOOL_STORAGE_DTYPE,
     _fp8_accum_dtype_str,
     _fp8_needs_nonsaturating_cast,
     _is_fp8,
     _torch_dtype_nbytes,
 )
 
+_AUTOTUNE_THREADS = (128, 256, 512)
 _DEFAULT_THREADS = 128
 _DIRECT_THREADS = 256
 _BYTES_PER_THREAD = 16
@@ -23,7 +24,6 @@ _BOOL_OUTPUT_MAX_NPT = 4
 _MAX_THREADS = 1024
 _TARGET_BLOCKS = 256
 _FP8_NPT = 16
-_BOOL_STORAGE_DTYPE = "int8"
 
 
 def default_launch_config(
@@ -63,33 +63,14 @@ def default_launch_config(
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
 
 
-def _store_bool_as_int8(op_func, arity: int):
-    if arity == 1:
-
-        def wrapped(x):
-            return T.if_then_else(
-                op_func(x),
-                T.cast(1, _BOOL_STORAGE_DTYPE),
-                T.cast(0, _BOOL_STORAGE_DTYPE),
-            )
-    else:
-
-        def wrapped(a, b):
-            return T.if_then_else(
-                op_func(a, b),
-                T.cast(1, _BOOL_STORAGE_DTYPE),
-                T.cast(0, _BOOL_STORAGE_DTYPE),
-            )
-
-    return wrapped
-
-
-def _store_unary_bool_as_int8(op_func):
-    return _store_bool_as_int8(op_func, arity=1)
-
-
-def _store_binary_bool_as_int8(op_func):
-    return _store_bool_as_int8(op_func, arity=2)
+def elementwise_autotune_configs(dtype: torch.dtype, strategy: str | None = None) -> list[dict]:
+    """Return the launch configs to time for one elementwise specialization."""
+    # A direct body takes no num_per_thread: the key would name no parameter to bind,
+    # and the sweep would time one kernel three times over.
+    if strategy == "direct":
+        return [{"threads": t} for t in _AUTOTUNE_THREADS]
+    npts = (16, 32) if _is_fp8(dtype) else (2, 4, 8)
+    return [{"threads": t, "num_per_thread": n} for t in _AUTOTUNE_THREADS for n in npts]
 
 
 @dataclass(frozen=True)
@@ -120,7 +101,7 @@ def elementwise_output_plan(
         bool_storage and declared_output_dtype == torch.bool and strategy == "register_copy"
     )
     if bool_via_int8:
-        kernel_output_dtype = _BOOL_STORAGE_DTYPE
+        kernel_output_dtype = BOOL_STORAGE_DTYPE
     elif post_cast_dtype is not None:
         kernel_output_dtype = _fp8_accum_dtype_str()
     else:
@@ -144,32 +125,6 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
     if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
         return dtype, torch.float16
     return None, dtype
-
-
-def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
-    if not _is_fp8(dtype):
-        return base_op
-
-    accum = _fp8_accum_dtype_str()
-    if _fp8_needs_nonsaturating_cast(dtype):
-        if arity == 1:
-
-            def fp8_accum_op(x):
-                return base_op(T.cast(x, accum))
-        else:
-
-            def fp8_accum_op(a, b):
-                return base_op(T.cast(a, accum), T.cast(b, accum))
-    elif arity == 1:
-
-        def fp8_accum_op(x):
-            return T.Cast(dtype_str, base_op(T.cast(x, accum)))
-    else:
-
-        def fp8_accum_op(a, b):
-            return T.Cast(dtype_str, base_op(T.cast(a, accum), T.cast(b, accum)))
-
-    return fp8_accum_op
 
 
 def _validate_strategy(requested: str | None, strategies: list[str]) -> None:
