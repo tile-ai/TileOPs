@@ -37,10 +37,7 @@ _PREFILL_TOLERANCE = {
 class _DenseBoundaryTestOp(GroupedQueryAttentionDenseFwdOp):
     """Exercise the public boundary without adding an in-tree kernel."""
 
-    resolved_inputs: tuple[Optional[torch.Tensor], ...]
-
     def _get_kernel(self, inputs):
-        self.resolved_inputs = inputs
         return lambda *args: args[0]
 
 
@@ -62,13 +59,9 @@ def test_dense_gqa_rejects_non_bshd_inputs(name: str) -> None:
 
 
 @pytest.mark.smoke
-def test_dense_gqa_accepts_rectangular_decode_and_keeps_optional_slots() -> None:
+def test_dense_gqa_accepts_rectangular_decode() -> None:
     q, k, v = _dense_boundary_inputs(seq_len_q=1, seq_len_kv=4)
-    op = _DenseBoundaryTestOp(is_causal=True)
-
-    assert op(q, k, v).shape == q.shape
-    assert len(op.resolved_inputs) == 8
-    assert op.resolved_inputs[3:] == (None, None, None, None, None)
+    assert _DenseBoundaryTestOp(is_causal=True)(q, k, v).shape == q.shape
 
 
 @pytest.mark.smoke

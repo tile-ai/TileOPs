@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool import MaxPool2dFwdOp
@@ -47,6 +48,21 @@ class _Recorder:
         def kernel(x, weight):
             assert x.is_contiguous() and weight.is_contiguous()
             return torch.full_like(x, 7) if result is None else result
+
+        return kernel
+
+
+class _DenseRecorder:
+    def __init__(self):
+        self.calls = []
+        self.kernel_calls = []
+
+    def build_kernel(self, *inputs, **params):
+        self.calls.append((inputs, params))
+
+        def kernel(*runtime_inputs):
+            self.kernel_calls.append(runtime_inputs)
+            return runtime_inputs[0]
 
         return kernel
 
@@ -107,6 +123,43 @@ def test_a_callsite_can_resolve_external_builder_params():
 
     ((_, params),) = recorder.calls
     assert params == resolved
+
+
+def test_dense_gqa_hands_one_resolved_signature_to_one_cached_target_kernel():
+    recorder = _DenseRecorder()
+    _register(recorder, op="GroupedQueryAttentionDenseFwdOp")
+    q = torch.randn(1, 1, 4, 8, dtype=DTYPE)
+    k = torch.randn(1, 4, 2, 8, dtype=DTYPE)
+    v = torch.randn_like(k)
+    op = GroupedQueryAttentionDenseFwdOp()
+
+    op(q, k, v)
+    op(q.clone(), k.clone(), v.clone())
+
+    ((inputs, params),) = recorder.calls
+    assert inputs == (
+        TensorSpec.of(q),
+        TensorSpec.of(k),
+        TensorSpec.of(v),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    assert params.pop("sm_scale") == pytest.approx(8**-0.5)
+    assert params == {
+        "is_causal": True,
+        "softcap": 0.0,
+        "window_size_left": -1,
+        "window_size_right": -1,
+        "dtype": DTYPE,
+        "pos_encoding_mode": "none",
+        "rotary_dim": None,
+        "rope_layout": "neox",
+    }
+    assert len(recorder.kernel_calls) == 2
+    assert recorder.kernel_calls[0][3:] == (None, None, None, None, None)
 
 
 def test_the_op_layer_still_does_its_half():

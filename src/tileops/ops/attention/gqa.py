@@ -196,9 +196,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         self.is_causal = is_causal
         self.sm_scale = sm_scale
-        # This default is shape-independent, so targets receive one normalized
-        # convention. ``sm_scale`` stays None so each implementation resolves
-        # its shape-dependent default from the call's D.
+        # Normalize the shape-independent default now. ``sm_scale`` is resolved
+        # from the current call's D when this Op asks for an implementation.
         self.softcap = _score_softcap(softcap)
         if window_size_left < -1:
             raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
@@ -364,9 +363,20 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Resolve the implementation stored in the Op's single cache layer."""
+        q = inputs[0]
+        assert q is not None
+        dim = q.shape[-1]
+        params = self._manifest_params()
+        params.update(
+            sm_scale=_attention_scale(dim, self.sm_scale),
+            dtype=self.dtype or q.dtype,
+            rotary_dim=(
+                _rope_rotary_dim(dim, self.rotary_dim) if self.pos_encoding_mode == "rope" else None
+            ),
+        )
         # BUILTIN follow-up: pass a shape/dtype ``key`` and a ``build`` closure
         # that selects and constructs one concrete kernel on a cache miss.
-        return self.get_or_build_kernel("gqa_dense", inputs)
+        return self.get_or_build_kernel("gqa_dense", inputs, params=params)
 
     def forward(
         self,
