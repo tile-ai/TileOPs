@@ -56,14 +56,15 @@ def _coerce_numeric_strings(obj, key=None):
 
 
 def _inject_effective(profile):
-    """Compute effective = theoretical * calibration for hbm and tensor_core."""
+    """Compute effective = theoretical * calibration for hbm and the compute sections."""
     hbm = profile.get("hbm")
     if hbm and "effective" not in hbm:
         hbm["effective"] = hbm["theoretical"] * hbm["calibration"]
 
-    for section in profile.get("tensor_core", {}).values():
-        if isinstance(section, dict) and "effective" not in section:
-            section["effective"] = section["theoretical"] * section["calibration"]
+    for group in ("tensor_core", "cuda_core"):
+        for section in profile.get(group, {}).values():
+            if isinstance(section, dict) and "effective" not in section:
+                section["effective"] = section["theoretical"] * section["calibration"]
 
 
 def load_profile(gpu_name: str) -> dict:
