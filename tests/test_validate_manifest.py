@@ -2874,10 +2874,11 @@ class TestResolveOpClass:
 
     def test_single_class_file_rejects_mismatched_name(self, validator):
         """Single-class files reject mismatched manifest keys — no bypass."""
-        result = validator._resolve_op_class(
-            "tileops/ops/reduction/softmax.py",
-            "SoftmaxBwdOp",
-        )
+        with pytest.warns(UserWarning, match="No class named 'SoftmaxBwdOp'"):
+            result = validator._resolve_op_class(
+                "tileops/ops/reduction/softmax.py",
+                "SoftmaxBwdOp",
+            )
         assert result.cls is None
         assert result.warning is not None
 

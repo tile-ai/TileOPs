@@ -101,7 +101,7 @@ WORKLOAD_RESERVED_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
 def single_input_workload_contract(
     signature: dict[str, Any],
 ) -> tuple[str, frozenset[str]] | None:
-    """Return $[shape\_key \\times allowed\_workload\_keys]$ for a signature with
+    r"""Return $[shape\_key \times allowed\_workload\_keys]$ for a signature with
     exactly one tensor input; ``None`` for any other input arity.
 
     The shape key is ``{input}_shape``; allowed keys are the shape key,

@@ -1,77 +1,30 @@
 # Hardware Microbenchmarks
 
-GPU hardware characterization benchmarks that produce calibration factors for `src/tileops/perf/profiles/`.
+Measure the calibration factors recorded in `src/tileops/perf/profiles/` (`effective = theoretical × calibration`).
 
-## Prerequisites
-
-- NVIDIA GPU with CUDA toolkit (`nvcc` in PATH)
-- TileOPs installed (`pip install -e .` from project root)
-- Root/sudo access for clock locking (recommended)
-
-## HBM Bandwidth
-
-Measures peak HBM bandwidth using vectorized CUDA kernels (float4 load/store) with cudaEvent timing. The calibration factor is derived from the **STREAM Triad** kernel (`a[i] = b[i] + s*c[i]`, 2 reads + 1 write), the industry-standard pattern for roofline bandwidth calibration.
-
-Triad's 2:1 read:write ratio is closer to real compute kernels than pure copy (1:1), which suffers worst-case HBM bus turnaround overhead. Copy, read-only, and write-only results are included as reference measurements.
-
-### Lock GPU clocks (recommended)
-
-GPU boost clocks fluctuate during benchmarks. Lock memory and SM clocks to their maximum for stable, reproducible results:
+## Run
 
 ```bash
-# Lock clocks (requires root/sudo)
-sudo nvidia-smi -lgc $(nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader,nounits)
-sudo nvidia-smi -lmc $(nvidia-smi --query-gpu=clocks.max.mem --format=csv,noheader,nounits)
+# Lock the SM clock (pass a range — a lone off-bin value is silently ignored):
+sudo nvidia-smi -i <gpu> -lgc <idle_clock>,$(nvidia-smi -i <gpu> --query-gpu=clocks.max.sm --format=csv,noheader,nounits)
+
+python benchmarks/hardware/memory/hbm_bandwidth.py --profile <gpu> --arch <sm_XX>
+python benchmarks/hardware/compute/fma_throughput.py --profile <gpu> --arch <sm_XX>
+CUDA_VISIBLE_DEVICES=<n> python benchmarks/hardware/compute/gemm_throughput.py --profile <gpu>
+
+# Unlock — the setting is global to the GPU and outlives the process:
+sudo nvidia-smi -i <gpu> -rgc
 ```
 
-After benchmarking, reset to default:
+Each script ends with the `*.calibration` lines to copy into `<gpu>.yaml`; for a new GPU, create the yaml with datasheet numbers first. `--help` lists the remaining flags. Memory clocks need no locking: HBM parts hold max, and 595.x drivers reject `-lmc`.
 
-```bash
-sudo nvidia-smi -rgc
-sudo nvidia-smi -rmc
-```
+## Method
 
-### Run
+| Benchmark         | Calibrates                         | Kernel                                                   | Selection                                    |
+| ----------------- | ---------------------------------- | -------------------------------------------------------- | -------------------------------------------- |
+| `hbm_bandwidth`   | `hbm`                              | STREAM Triad `a = b + s*c`, `float4`                     | best block size (128/256/512), 200 iters × 5 |
+| `fma_throughput`  | `cuda_core.fp32`                   | register-only FMA chains on the CUDA cores               | best ILP (1..16), median of 5 runs each      |
+| `gemm_throughput` | `tensor_core.{fp16,bf16,tf32,fp8}` | cuBLAS GEMM (`torch.matmul`; `torch._scaled_mm` for fp8) | best n (4096/8192/16384), median of 5 × ~4 s |
 
-Run from project root:
-
-```bash
-python benchmarks/hardware/memory/hbm_bandwidth.py --profile h200 --arch sm_90
-```
-
-Options:
-
-| Flag        | Default | Description                                                                 |
-| ----------- | ------- | --------------------------------------------------------------------------- |
-| `--profile` | `h200`  | GPU profile name (reads theoretical peak from `src/tileops/perf/profiles/`) |
-| `--arch`    | `sm_90` | CUDA compute capability for nvcc                                            |
-| `--size-mb` | `2048`  | Working set size in MB                                                      |
-
-### Output
-
-```
-Measured peak (triad vec4): 4070.44 GB/s
-Theoretical:               4800.0 GB/s
-Calibration:               0.8480
-
-Update src/tileops/perf/profiles/h200.yaml:
-  hbm.calibration: 0.8480
-```
-
-### Methodology
-
-- **Calibration kernel:** STREAM Triad `a[i] = b[i] + s*c[i]` (2 reads + 1 write, `float4` vectorized)
-- **Reference kernels:** Copy (1:1 read:write), Read-only, Write-only
-- **Timing:** `cudaEvent` (GPU-side, no host overhead)
-- **Warmup:** 100 iterations per config (ensures boost clocks stabilize)
-- **Measurement:** 200 iterations × 5 runs, report best and median
-- **Working set:** 2 GB default (>> L2 cache, ensures HBM is measured)
-- **Calibration source:** best Triad bandwidth across block size sweep (128/256/512)
-
-## Adding a new GPU profile
-
-1. Create `src/tileops/perf/profiles/<gpu>.yaml` with theoretical specs from the datasheet
-1. Lock GPU clocks (see above)
-1. Run `python benchmarks/hardware/memory/hbm_bandwidth.py --profile <gpu> --arch <sm_XX>`
-1. Update `<gpu>.yaml` with the measured calibration factor
-1. Reset GPU clocks
+- `fma_throughput` withholds the calibration when the SM clock moved more than one boost bin (`--allow-unlocked-clocks` overrides). After editing the kernel, confirm `cuobjdump -sass` shows only the instruction under test and that runtime scales linearly with `--iters`.
+- `gemm_throughput` is power-cap limited — the cap, not the lock, sets the clock. It warms up to a steady clock, then records `calibration` (sustained; what `effective` is computed from) and `calibration_burst` (first ~200 ms of load after 5 s idle, before the cap engages). A tf32 rate at or below the non-tensor fp32 ceiling aborts the run: TF32 never engaged.

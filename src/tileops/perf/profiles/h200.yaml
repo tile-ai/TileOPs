@@ -2,7 +2,7 @@
 # Source: NVIDIA H200 datasheet (dense, no sparsity)
 # Calibration: benchmarks/hardware/ microbenchmarks
 #
-# Only store theoretical + calibration here.
+# Only store measured values here (theoretical, calibration, calibration_burst).
 # effective = theoretical × calibration is computed by load_profile().
 
 gpu: NVIDIA H200
@@ -12,16 +12,33 @@ hbm:
   theoretical: 4800e9        # bytes/s, spec sheet
   calibration: 0.848         # STREAM Triad, from benchmarks/hardware/memory/hbm_bandwidth.py
 
+cuda_core:
+  fp32:
+    theoretical: 67.0e12     # FLOPS, spec sheet (non-tensor FMA, 2 FLOP per FMA, 1.98 GHz boost)
+    # From benchmarks/hardware/compute/fma_throughput.py, clocks locked
+    # (-lgc 1830,1980; the board holds 1830 MHz under saturating FMA).
+    # Splits into 0.9261 lane utilisation x 0.9242 clock headroom.
+    calibration: 0.8548
+
+# From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak); each
+# value is the median across repeated runs on one board (run band <= 1.5%).
+# calibration is sustained — the GEMMs hold the 700 W cap at ~1.2-1.4 GHz —
+# and feeds `effective`; calibration_burst is the pre-cap rate a short
+# kernel between memory-bound phases can reach.
 tensor_core:
   fp16:
     theoretical: 989.5e12    # FLOPS, spec sheet (dense)
-    calibration: 0.75        # from benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak)
+    calibration: 0.6684
+    calibration_burst: 0.7370
   bf16:
     theoretical: 989.5e12
-    calibration: 0.75
+    calibration: 0.7077
+    calibration_burst: 0.7680
   tf32:
     theoretical: 494.7e12
-    calibration: 0.75        # placeholder — not yet measured
+    calibration: 0.7249
+    calibration_burst: 0.7899
   fp8:
     theoretical: 1979.0e12
-    calibration: 0.75        # placeholder — not yet measured
+    calibration: 0.6303
+    calibration_burst: 0.6977
