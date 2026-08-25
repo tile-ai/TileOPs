@@ -217,12 +217,17 @@ int main(int argc, char* argv[]) {
     double theo_peak_tflops = 67.0;
     if (argc >= 2) iters = atoi(argv[1]);
     if (argc >= 3) theo_peak_tflops = atof(argv[2]);
+    if (iters <= 0 || theo_peak_tflops <= 0) {
+        fprintf(stderr, "usage: %s [iters > 0] [theo_peak_tflops > 0]\n", argv[0]);
+        return 1;
+    }
 
     cudaDeviceProp prop;
     CHECK_CUDA(cudaGetDeviceProperties(&prop, 0));
     const int sm_count = prop.multiProcessorCount;
     const int block = 256;
-    const int nblocks = sm_count * (2048 / block);   // fill every SM to its thread limit
+    // Fill every SM to its thread limit (2048 on sm_90).
+    const int nblocks = sm_count * (prop.maxThreadsPerMultiProcessor / block);
     const double threads = (double)nblocks * block;
 
     // cudaDeviceProp::clockRate was removed in CUDA 13; the attribute query is
@@ -232,8 +237,8 @@ int main(int argc, char* argv[]) {
 
     printf("GPU: %s | SMs: %d | max SM clock: %.2f GHz\n",
            prop.name, sm_count, clock_khz / 1e6);
-    printf("Grid: %d blocks x %d threads = %.0f threads (2048 per SM)\n",
-           nblocks, block, threads);
+    printf("Grid: %d blocks x %d threads = %.0f threads (%d per SM)\n",
+           nblocks, block, threads, prop.maxThreadsPerMultiProcessor);
     printf("Each config: 5 runs x 50 reps, warmup 20; calibration uses the median\n");
     printf("iters=%d  theo_peak_tflops=%.1f\n\n", iters, theo_peak_tflops);
 

@@ -219,8 +219,20 @@ def main():
         if section is None:
             continue
         theo_tflops = section["theoretical"] / 1e12
+
+        # Probe once: fp8 in particular needs hardware and torch support the
+        # profile alone cannot promise.
+        try:
+            probe, _ = _make_gemm(dtype_name, 256, device)
+            probe()
+            torch.cuda.synchronize()
+            del probe
+        except (RuntimeError, NotImplementedError, AttributeError) as exc:
+            print(f"{dtype_name}: skipped, not supported here ({exc})", flush=True)
+            continue
+
         best = (0.0, None, None)  # (median_tflops, n, spread)
-        configs = []  # (n, launch, flops, ms_per_launch, med, spread)
+        configs = []  # (n, flops, ms_per_launch, med, spread, settled)
         sampler = _ClockSampler(gpu_index) if gpu_index is not None else None
         if sampler:
             sampler.start()
@@ -229,9 +241,11 @@ def main():
                 launch, flops = _make_gemm(dtype_name, n, device)
                 settled = _settle(launch, sampler)
                 med, spread, ms_per_launch = _time_gemm(launch, flops)
-                configs.append((n, launch, flops, ms_per_launch, med, spread, settled))
+                configs.append((n, flops, ms_per_launch, med, spread, settled))
                 if med > best[0]:
                     best = (med, n, spread)
+                del launch
+                torch.cuda.empty_cache()
         finally:
             # Stop before the bursts: their idle gaps would drag the dtype's
             # clock summary below what the sustained measurement ran at.
@@ -240,8 +254,12 @@ def main():
                 sampler.join(timeout=5)
 
         best_burst = 0.0
-        for n, launch, flops, ms_per_launch, med, spread, settled in configs:
+        for n, flops, ms_per_launch, med, spread, settled in configs:
+            # Rebuilt per size so only one size's tensors are alive at a time.
+            launch, _ = _make_gemm(dtype_name, n, device)
             burst = _burst_gemm(launch, flops, ms_per_launch)
+            del launch
+            torch.cuda.empty_cache()
             best_burst = max(best_burst, burst)
             settled_s = f"{settled:.0f}" if settled is not None else "-"
             print(
@@ -249,14 +267,20 @@ def main():
                 f"{med / theo_tflops * 100:.1f}",
                 flush=True,
             )
-        del configs
-        torch.cuda.empty_cache()
         results[dtype_name] = (
             best,
             best_burst,
             theo_tflops,
             sampler.summary() if sampler else None,
         )
+
+    if not results:
+        print(
+            f"Profile '{args.profile}' tensor_core section has none of the dtypes"
+            " this benchmark measures (fp16/bf16/tf32/fp8).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # A tf32 rate at or below the non-tensor fp32 ceiling means TF32 never
     # engaged and the row is IEEE fp32 GEMM against a TF32 theoretical.

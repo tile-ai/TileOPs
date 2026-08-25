@@ -91,6 +91,11 @@ class _ClockSampler(threading.Thread):
         proc = getattr(self, "_proc", None)
         if proc is not None:
             proc.terminate()
+            try:
+                proc.wait(timeout=5)  # reap; terminate alone leaves a zombie
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
     def summary(self):
         """Return (sm_min, sm_median, sm_max, watts_max, temp_max) or None."""
@@ -288,6 +293,10 @@ def main():
             print("         conditional on the clocks recorded above, not on locked ones.")
         print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  cuda_core.fp32.calibration: {calibration:.4f}")
+    elif telemetry is None:
+        print("\nNot emitting a calibration factor: the SM clock could not be sampled,")
+        print("so a locked clock cannot be verified. Pass --allow-unlocked-clocks to")
+        print("accept a calibration taken at unknown clocks.")
     else:
         print(
             f"\nNot emitting a calibration factor: the SM clock varied by"
