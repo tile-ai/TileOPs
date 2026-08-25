@@ -59,7 +59,6 @@ class ProductReducePolicy:
 
     # Rows below this leave the grid too small to hide the vectorized path's
     # per-thread latency; the shared staging keeps more loads in flight there.
-    # Measured on H200 at (64, 32768) bf16: staged 0.96 TB/s, vectorized 0.85.
     min_rows_for_vectorized: int = 256
 
 
@@ -92,8 +91,8 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
     (kernel-side boundary handling).  When ``N`` is already aligned, the
     fast ``T.copy`` path is used.
 
-    ``out_dtype`` overrides the output element type; an edge-axes reduction
-    writes fp32 partials so nothing narrows before its second pass.
+    ``out_dtype`` overrides the output element type, for a caller that keeps
+    fp32 partials across a second pass.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
@@ -290,11 +289,8 @@ def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
 
     Returns ``(0, 0)`` unless *axes* is a non-empty prefix plus a non-empty
-    suffix with at least one kept axis in between. Such a reduction runs as two
-    passes in the tensor's own layout — trailing axes as contiguous rows, then
-    the leading axes down the columns of the partials — where a single pass
-    would first permute the reduced axes together, reading and writing the
-    whole tensor before reducing anything.
+    suffix with at least one kept axis in between — the layout
+    ``ReduceKernel._reduce_edge_axes`` handles without permuting the tensor.
     """
     k = 0
     while k < len(axes) and axes[k] == k:
@@ -338,11 +334,11 @@ def _make_leading_reduce_ops(op_kind: str, divisor: float, out_dtype: str):
             acc[slot] = acc[slot] + value
 
     @T.macro
-    def finish(done, slot, accumulated):
+    def finish(out_local, slot, accumulated):
         if divisor:
-            done[slot] = T.cast(accumulated / divisor, out_dtype)
+            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
         else:
-            done[slot] = T.cast(accumulated, out_dtype)
+            out_local[slot] = T.cast(accumulated, out_dtype)
 
     return init, combine, finish
 
@@ -496,18 +492,13 @@ def _reduce_down_rows(
 def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
     """Build a product reduce: one block per row, multiplying in fp32.
 
-    With enough rows to fill the device, each thread owns ``cols_per_thread``
-    consecutive elements per tile and reads them with one vectorized access, so
-    a warp's loads stay contiguous and every fetched sector is used in full. At
-    this small per-thread width the vectorized blocked read beats a
-    shared-memory staging pass, which costs a sync each way and reads back at a
-    bank-conflicting stride.
-
-    Below ``min_rows_for_vectorized`` rows, or when the tile does not divide the
-    row, the row is staged through shared memory instead and consumed from
-    there. The staging also sidesteps a compiler limit: a ``T.vectorized`` loop
-    and a guarded tail load in one body trip PointerValueTypeRewrite
-    ("Can't fetch the lanes of a scalable vector").
+    With enough rows to fill the device, each thread reads its
+    ``cols_per_thread`` consecutive elements per tile with vectorized accesses
+    straight into registers. Below ``min_rows_for_vectorized`` rows, or when
+    the tile does not divide the row, the row is staged through shared memory
+    instead. The two bodies cannot be merged: TileLang rejects a
+    ``T.vectorized`` loop and a guarded tail load of the same buffer in one
+    kernel.
     """
     chunk = threads * _PROD_POLICY.cols_per_thread
     vectorized = N % chunk == 0 and _PROD_POLICY.min_rows_for_vectorized <= M
@@ -533,9 +524,8 @@ def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
                 warp_prod = T.alloc_shared((num_warps,), "float32")
                 held = T.alloc_local((_PROD_POLICY.cols_per_thread,), dtype)
                 staged = T.alloc_shared((1 if vectorized else chunk,), dtype)
-                # One chain per slot: a single running product serializes every
-                # multiply behind the previous one, which is what binds a
-                # low-block-count launch, not bandwidth.
+                # One independent fp32 chain per slot; a single running product
+                # would serialize every multiply behind the previous one.
                 slots = T.alloc_local((_PROD_POLICY.cols_per_thread,), "float32")
 
                 for c in T.serial(_PROD_POLICY.cols_per_thread):
@@ -1043,8 +1033,6 @@ class ReduceKernel(Kernel):
         # Axes hugging both edges also run in the tensor's own layout; the rank
         # check again waits for forward.
         self._edge_axis_kind = op_kind in _LEADING_AXIS_KINDS
-        # Planner per edge-axes shape; the kernels themselves are lru-cached.
-        self._edge_stages: dict[tuple, BlockConfigPlanner] = {}
         self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
@@ -1150,10 +1138,10 @@ class ReduceKernel(Kernel):
 
         Two passes in the tensor's own layout: the trailing axes reduce as
         contiguous rows into fp32 partials, then the leading axes reduce down
-        the columns of those partials. The partials are ``lead * kept`` values
-        against the ``lead * kept * trail`` the first pass reads, so the second
-        pass costs about nothing — where the permute a single pass needs reads
-        and writes the whole tensor before reducing anything.
+        the columns of those partials. The permute a single pass needs would
+        read and write the whole tensor before reducing anything; the partials
+        here are ``lead * kept`` values against the ``lead * kept * trail`` the
+        first pass reads.
 
         Everything between the loads and the one cast at the end stays fp32,
         like the single-pass kernels. ``mean`` runs the first pass as ``sum``
@@ -1164,15 +1152,11 @@ class ReduceKernel(Kernel):
         kept = prod(shape[k : x.ndim - j])
         trail = prod(shape[x.ndim - j :])
         inner_kind = "sum" if self.op_kind == "mean" else self.op_kind
-        key = (lead, kept, trail)
-        if key not in self._edge_stages:
-            planner = BlockConfigPlanner(
-                align_up(trail, DEFAULT_ALIGNMENT),
-                self._elem_bytes,
-                self._smem_budget,
-            )
-            self._edge_stages[key] = planner
-        planner = self._edge_stages[key]
+        planner = BlockConfigPlanner(
+            align_up(trail, DEFAULT_ALIGNMENT),
+            self._elem_bytes,
+            self._smem_budget,
+        )
         cfg = planner.default_config()
         if planner.needs_tiling:
             rows_stage = _simple_reduce_kernel_tiled(
