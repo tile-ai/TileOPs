@@ -15,7 +15,7 @@ _PROFILES_DIR = Path(__file__).parent / "profiles"
 
 # Keys whose values are numeric but arrive as strings from PyYAML
 # (scientific notation like 4800e9 is not YAML-native float syntax).
-_NUMERIC_KEYS = frozenset({"theoretical", "calibration", "effective"})
+_NUMERIC_KEYS = frozenset({"theoretical", "calibration", "calibration_burst", "effective"})
 
 
 def get_profile_path(gpu_name: str) -> Path:

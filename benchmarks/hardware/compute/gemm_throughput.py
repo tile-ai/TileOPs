@@ -1,13 +1,14 @@
 """Tensor-core GEMM throughput via cuBLAS — calibrates tensor_core.* in profiles.
 
 Times torch.matmul (cuBLAS) for fp16/bf16/tf32 and torch._scaled_mm (cuBLASLt)
-for fp8, sweeping square sizes, and prints one calibration factor per dtype for
-src/tileops/perf/profiles/.  The tensor-core counterpart of fma_throughput.py.
+for fp8, sweeping square sizes, and prints two factors per dtype for
+src/tileops/perf/profiles/: `calibration` (sustained) and `calibration_burst`.
+The tensor-core counterpart of fma_throughput.py.
 
 Unlike the FMA benchmark, clock locking cannot hold here: a saturating GEMM
 drives an H200 into its power cap, so the SM clock is set by the cap, not the
-lock.  Each dtype therefore gets its own telemetry window and its calibration
-is reported next to the clocks it was taken at.
+lock.  Each dtype gets its own telemetry window, and the sustained factor is
+reported next to the clocks it was taken at; burst is the pre-cap rate.
 
 Usage:
     python benchmarks/hardware/compute/gemm_throughput.py [--profile h200]
@@ -17,6 +18,7 @@ import argparse
 import statistics
 import subprocess
 import sys
+import time
 
 import torch
 from fma_throughput import _ClockSampler
@@ -31,6 +33,15 @@ _RUNS = 5
 # Long enough to average over several power-cap clock oscillations; short runs
 # sample one slice of the cycle and spread by >10% run to run.
 _TARGET_RUN_MS = 4000.0
+
+# Burst: rate over the first short slice of load after _COOLDOWN_S of idle,
+# before the power cap engages.  Reps are sized from the sustained per-launch
+# time, so at burst clocks the timed slice is somewhat shorter than the
+# nominal window.  The idle is under the board's clock policy as-is; no
+# power or temperature floor is verified.
+_BURST_WINDOW_MS = 200.0
+_BURST_ATTEMPTS = 3
+_COOLDOWN_S = 5.0
 
 # Warmup ends when two consecutive windows agree on the SM clock to within one
 # sm_90 boost bin (15 MHz) — a fixed duration only rides the power-cap ramp.
@@ -140,7 +151,30 @@ def _time_gemm(launch, flops):
 
     tflops = sorted(flops / (ms * 1e-3) / 1e12 for ms in ms_per_launch)
     spread = (tflops[-1] - tflops[0]) / tflops[len(tflops) // 2] * 100.0
-    return tflops[len(tflops) // 2], spread
+    return tflops[len(tflops) // 2], spread, statistics.median(ms_per_launch)
+
+
+def _burst_gemm(launch, flops, ms_per_launch):
+    """Median burst TFLOP/s: a short window timed from a cooled-down clock.
+
+    Sustained rates sit at the power-cap clock; a kernel that starts with power
+    headroom (after idle, or between memory-bound phases) runs at boost clocks
+    until the cap engages.  Each attempt drains the queue, idles the board, and
+    times only the first _BURST_WINDOW_MS of load.
+    """
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    reps = max(1, int(_BURST_WINDOW_MS / max(ms_per_launch, 1e-3)))
+    rates = []
+    for _ in range(_BURST_ATTEMPTS):
+        torch.cuda.synchronize()
+        time.sleep(_COOLDOWN_S)
+        start.record()
+        for _ in range(reps):
+            launch()
+        end.record()
+        end.synchronize()
+        rates.append(flops * reps / (start.elapsed_time(end) * 1e-3) / 1e12)
+    return statistics.median(rates)
 
 
 def _enable_tf32():
@@ -177,7 +211,7 @@ def main():
     )
     print(f"torch {torch.__version__}, CUDA {torch.version.cuda}")
     print(f"Each config: settle to steady clock, then {_RUNS} runs; calibration uses the median\n")
-    print("dtype,n,median_tflops,spread_pct,settled_mhz,pct_of_theo")
+    print("dtype,n,median_tflops,spread_pct,burst_tflops,settled_mhz,pct_of_theo")
 
     results = {}
     for dtype_name in ("fp16", "bf16", "tf32", "fp8"):
@@ -186,6 +220,7 @@ def main():
             continue
         theo_tflops = section["theoretical"] / 1e12
         best = (0.0, None, None)  # (median_tflops, n, spread)
+        configs = []  # (n, launch, flops, ms_per_launch, med, spread)
         sampler = _ClockSampler(gpu_index) if gpu_index is not None else None
         if sampler:
             sampler.start()
@@ -193,22 +228,35 @@ def main():
             for n in _SIZES:
                 launch, flops = _make_gemm(dtype_name, n, device)
                 settled = _settle(launch, sampler)
-                med, spread = _time_gemm(launch, flops)
-                settled_s = f"{settled:.0f}" if settled is not None else "-"
-                print(
-                    f"{dtype_name},{n},{med:.1f},{spread:.2f},{settled_s},"
-                    f"{med / theo_tflops * 100:.1f}",
-                    flush=True,
-                )
+                med, spread, ms_per_launch = _time_gemm(launch, flops)
+                configs.append((n, launch, flops, ms_per_launch, med, spread, settled))
                 if med > best[0]:
                     best = (med, n, spread)
-                del launch
-                torch.cuda.empty_cache()
         finally:
+            # Stop before the bursts: their idle gaps would drag the dtype's
+            # clock summary below what the sustained measurement ran at.
             if sampler:
                 sampler.stop()
                 sampler.join(timeout=5)
-        results[dtype_name] = (best, theo_tflops, sampler.summary() if sampler else None)
+
+        best_burst = 0.0
+        for n, launch, flops, ms_per_launch, med, spread, settled in configs:
+            burst = _burst_gemm(launch, flops, ms_per_launch)
+            best_burst = max(best_burst, burst)
+            settled_s = f"{settled:.0f}" if settled is not None else "-"
+            print(
+                f"{dtype_name},{n},{med:.1f},{spread:.2f},{burst:.1f},{settled_s},"
+                f"{med / theo_tflops * 100:.1f}",
+                flush=True,
+            )
+        del configs
+        torch.cuda.empty_cache()
+        results[dtype_name] = (
+            best,
+            best_burst,
+            theo_tflops,
+            sampler.summary() if sampler else None,
+        )
 
     # A tf32 rate at or below the non-tensor fp32 ceiling means TF32 never
     # engaged and the row is IEEE fp32 GEMM against a TF32 theoretical.
@@ -222,20 +270,21 @@ def main():
         sys.exit(1)
 
     print(f"\n{'=' * 60}")
-    for dtype_name, ((med, n, spread), theo, telemetry) in results.items():
+    for dtype_name, ((med, n, spread), burst, _theo, telemetry) in results.items():
         clocks = ""
         if telemetry:
             sm_min, sm_med, sm_max, watts, _ = telemetry
             clocks = f"  clock {sm_min:.0f}/{sm_med:.0f}/{sm_max:.0f} MHz, {watts:.0f} W peak"
         print(
-            f"{dtype_name}: {med:8.1f} TFLOP/s at n={n} (spread {spread:.2f}%)"
-            f"  calibration {med / theo:.4f}{clocks}"
+            f"{dtype_name}: {med:8.1f} TFLOP/s sustained at n={n} (spread {spread:.2f}%),"
+            f" {burst:8.1f} burst{clocks}"
         )
 
     print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
-    for dtype_name, ((med, _, _), theo, _) in results.items():
+    for dtype_name, ((med, _, _), burst, theo, _) in results.items():
         print(f"  tensor_core.{dtype_name}.calibration: {med / theo:.4f}")
-    print("These rates are power-cap limited; record the clocks above with the numbers.")
+        print(f"  tensor_core.{dtype_name}.calibration_burst: {burst / theo:.4f}")
+    print("Sustained rates are power-cap limited; record the clocks above with the numbers.")
     print(f"{'=' * 60}")
 
 

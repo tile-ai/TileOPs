@@ -76,7 +76,9 @@ CUDA_VISIBLE_DEVICES=<gpu> python benchmarks/hardware/compute/gemm_throughput.py
 
 Method: per config, warm up until the SM clock holds steady across two consecutive 2 s windows, then take the median of 5 timed runs of ~4 s each — long runs average over the power-cap clock oscillation, which puts run-to-run spread below 1%. The telemetry GPU is resolved from the device UUID, so `CUDA_VISIBLE_DEVICES` is honored.
 
-Clock locking does not apply here: a saturating GEMM drives the board into its power cap and the cap, not the lock, sets the clock. Calibrations are therefore power-cap-limited sustained rates; the output prints the per-dtype clock range to record next to the numbers. A tf32 result at or below the non-tensor fp32 ceiling aborts the run — it means TF32 never engaged.
+Clock locking does not apply here: a saturating GEMM drives the board into its power cap and the cap, not the lock, sets the clock. `calibration` is therefore the power-cap-limited sustained rate; the output prints the per-dtype clock range to record next to the numbers. A tf32 result at or below the non-tensor fp32 ceiling aborts the run — it means TF32 never engaged.
+
+Each config also reports a **burst** rate — the first ~200 ms of load after 5 s of idle, before the cap engages — recorded as `calibration_burst`. Sustained bounds long GEMM-dense phases (prefill); burst is what a short kernel between memory-bound phases can reach. `load_profile()` computes `effective` from the sustained factor only.
 
 ## Adding a new GPU profile
 

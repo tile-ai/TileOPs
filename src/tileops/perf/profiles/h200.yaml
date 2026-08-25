@@ -2,7 +2,7 @@
 # Source: NVIDIA H200 datasheet (dense, no sparsity)
 # Calibration: benchmarks/hardware/ microbenchmarks
 #
-# Only store theoretical + calibration here.
+# Only store measured values here (theoretical, calibration, calibration_burst).
 # effective = theoretical × calibration is computed by load_profile().
 
 gpu: NVIDIA H200
@@ -21,18 +21,27 @@ cuda_core:
     calibration: 0.8548
 
 # From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak, best of
-# n=4096/8192/16384 square). Power-cap limited: the GEMMs hold the 700 W cap
-# and the SM clock sits near 1.2-1.4 GHz, so locking cannot pin the clock here.
+# n=4096/8192/16384 square). Two regimes per dtype:
+#   calibration       — sustained: the GEMMs hold the 700 W cap and the SM
+#                       clock sits near 1.2-1.4 GHz; locking cannot pin it.
+#                       This is what load_profile() turns into `effective`.
+#   calibration_burst — first 200 ms from a cooled-down clock, before the cap
+#                       engages; what a short kernel between memory-bound
+#                       phases can reach.
 tensor_core:
   fp16:
     theoretical: 989.5e12    # FLOPS, spec sheet (dense)
-    calibration: 0.6742
+    calibration: 0.6677
+    calibration_burst: 0.7379
   bf16:
     theoretical: 989.5e12
-    calibration: 0.6996
+    calibration: 0.7078
+    calibration_burst: 0.7663
   tf32:
     theoretical: 494.7e12
-    calibration: 0.7293
+    calibration: 0.7242
+    calibration_burst: 0.7873
   fp8:
     theoretical: 1979.0e12
-    calibration: 0.6295
+    calibration: 0.6302
+    calibration_burst: 0.6962
