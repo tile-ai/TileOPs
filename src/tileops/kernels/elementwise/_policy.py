@@ -16,6 +16,7 @@ from ._dtype import (
 )
 
 _DEFAULT_THREADS = 128
+_DIRECT_THREADS = 256
 _BYTES_PER_THREAD = 16
 _MIN_NUM_PER_THREAD = 4
 _BOOL_OUTPUT_MAX_NPT = 4
@@ -34,16 +35,21 @@ def default_launch_config(
     stores_bool: bool = True,
 ) -> dict:
     """Return the default launch config for one elementwise specialization."""
+    # A direct block covers ``threads`` elements where a vectorized one covers
+    # ``threads * num_per_thread``: the elements per block, not the thread count,
+    # are what has to stay wide enough to keep the memory pipe busy.
+    threads = _DIRECT_THREADS if strategy == "direct" else _DEFAULT_THREADS
     if _is_fp8(input_dtype):
-        return {"strategy": strategy, "threads": _DEFAULT_THREADS, "num_per_thread": _FP8_NPT}
+        return {"strategy": strategy, "threads": threads, "num_per_thread": _FP8_NPT}
 
-    threads = _DEFAULT_THREADS
     elem_bytes = _torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
 
     if output_dtype == torch.bool and stores_bool:
         capped = min(npt, _BOOL_OUTPUT_MAX_NPT)
-        threads, npt = min(_MAX_THREADS, threads * npt // capped), capped
+        if strategy != "direct":  # a direct block spans `threads` whatever npt says
+            threads = min(_MAX_THREADS, threads * npt // capped)
+        npt = capped
     elif _torch_dtype_nbytes(output_dtype) < elem_bytes:
         npt *= 2
 
