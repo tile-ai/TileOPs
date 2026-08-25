@@ -134,6 +134,10 @@ GroupedQueryAttentionDenseFwdOp:
       - "q.shape == (B, S_q, H, D)"
       - "k.shape == (B, S_kv, H_kv, D)"
       - "v.shape == (B, S_kv, H_kv, D)"
+      # Rectangular calls use bottom-right alignment: query i is at
+      # absolute position i + S_kv - S_q.
+      - "not is_causal or S_q <= S_kv"
+      - "pos_encoding_mode != 'rope' or S_q <= S_kv"
       - "(q_scale is None) == (k_scale is None)"
       - "(q_scale is None) == (v_scale is None)"
       - "q_scale is None or q_scale.shape == (B, H_kv)"

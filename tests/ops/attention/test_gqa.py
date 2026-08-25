@@ -14,6 +14,7 @@ from tileops.kernels.attention import (
 )
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
@@ -31,6 +32,73 @@ _PREFILL_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
     torch.bfloat16: (8e-2, 1e-2),
 }
+
+
+class _DenseBoundaryTestOp(GroupedQueryAttentionDenseFwdOp):
+    """Exercise the public boundary without adding an in-tree kernel."""
+
+    resolved_inputs: tuple[Optional[torch.Tensor], ...]
+
+    def _get_kernel(self, inputs):
+        self.resolved_inputs = inputs
+        return lambda *args: args[0]
+
+
+def _dense_boundary_inputs(seq_len_q: int = 1, seq_len_kv: int = 4):
+    q = torch.randn(1, seq_len_q, 4, 8, dtype=torch.float16)
+    k = torch.randn(1, seq_len_kv, 2, 8, dtype=torch.float16)
+    return q, k, torch.randn_like(k)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("name", ["q", "k", "v"])
+def test_dense_gqa_rejects_non_bshd_inputs(name: str) -> None:
+    tensors = list(_dense_boundary_inputs())
+    index = ("q", "k", "v").index(name)
+    tensors[index] = tensors[index].squeeze(0)
+
+    with pytest.raises(ValueError, match=rf"{name} must be a rank-4 BSHD tensor"):
+        _DenseBoundaryTestOp()(*tensors)
+
+
+@pytest.mark.smoke
+def test_dense_gqa_accepts_rectangular_decode_and_keeps_optional_slots() -> None:
+    q, k, v = _dense_boundary_inputs(seq_len_q=1, seq_len_kv=4)
+    op = _DenseBoundaryTestOp(is_causal=True)
+
+    assert op(q, k, v).shape == q.shape
+    assert len(op.resolved_inputs) == 8
+    assert op.resolved_inputs[3:] == (None, None, None, None, None)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"is_causal": True}, "causal dense attention"),
+        ({"is_causal": False, "pos_encoding_mode": "rope"}, "fused RoPE"),
+    ],
+)
+def test_dense_gqa_rejects_bottom_right_modes_when_q_is_longer_than_kv(
+    kwargs: dict[str, object], message: str
+) -> None:
+    q, k, v = _dense_boundary_inputs(seq_len_q=4, seq_len_kv=1)
+
+    with pytest.raises(ValueError, match=message):
+        _DenseBoundaryTestOp(**kwargs)(q, k, v)
+
+
+@pytest.mark.smoke
+def test_dense_gqa_rejects_rope_tables_shorter_than_the_kv_positions() -> None:
+    q, k, v = _dense_boundary_inputs(seq_len_q=1, seq_len_kv=4)
+    rope = torch.randn(3, 4, dtype=torch.float16)
+
+    with pytest.raises(ValueError, match=r"max_position >= 4"):
+        _DenseBoundaryTestOp(
+            is_causal=False,
+            pos_encoding_mode="rope",
+            rotary_dim=8,
+        )(q, k, v, rope_cos=rope, rope_sin=rope)
 
 
 def _selected_prefill_kernel_cls(op: GroupedQueryAttentionPrefillFwdOp) -> type:
