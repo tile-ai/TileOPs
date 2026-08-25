@@ -7,19 +7,19 @@ import tilelang.language as T
 import torch
 
 from ._base import (
-    _BINARY_FULL_DTYPES,
-    _BINARY_NO_BOOL_DTYPES,
     _FLOAT_DTYPES,
     BinaryKernel,
     ParametricUnaryKernel,
     _AlphaScaledBinaryKernel,
-    _broadcast_target,
-    _expand_flat,
-    _fp8_accum_dtype_str,
     _make_binary_direct,
     _make_binary_explicit,
     _make_binary_register_copy,
+)
+from ._broadcast import BroadcastPlan, _broadcast_target, _expand_flat, register_broadcast_plan
+from ._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES, _fp8_accum_dtype_str
+from ._op_body import (
     _wrap_fp8_accumulation,
+    register_op_func,
 )
 
 __all__ = [
@@ -184,12 +184,17 @@ class LerpFwdKernel(BinaryKernel):
         def lerp_func(a, b):
             return a + T.cast(w, a.dtype) * (b - a)
 
-        # Wrap with fp8 accumulation via shared helper
-        effective_op = _wrap_fp8_accumulation(
-            lerp_func,
-            self.dtype,
-            self.dtype_str,
-            arity=2,
+        effective_op = register_op_func(
+            f"{self._op_func_name()}|weight={w!r}",
+            _wrap_fp8_accumulation(
+                lerp_func,
+                self.dtype,
+                self.dtype_str,
+                arity=2,
+            ),
+        )
+        plan = register_broadcast_plan(
+            BroadcastPlan(self.coalesced_shape, self.a_strides, self.b_strides)
         )
 
         # For e5m2: kernel output is fp16 (non-saturating path)
@@ -205,9 +210,7 @@ class LerpFwdKernel(BinaryKernel):
                 self.N_total,
                 self.dtype_str,
                 effective_op,
-                self.coalesced_shape,
-                self.a_strides,
-                self.b_strides,
+                plan,
                 self.a_numel,
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
@@ -218,9 +221,7 @@ class LerpFwdKernel(BinaryKernel):
                 self.N_total,
                 self.dtype_str,
                 effective_op,
-                self.coalesced_shape,
-                self.a_strides,
-                self.b_strides,
+                plan,
                 self.a_numel,
                 self.b_numel,
                 output_dtype=kernel_output_dtype,

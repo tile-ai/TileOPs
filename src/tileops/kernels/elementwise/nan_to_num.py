@@ -7,8 +7,8 @@ import tilelang.language as T
 
 from ._base import (
     ParametricUnaryKernel,
-    _clamp_to_dtype_range,
 )
+from ._dtype import _clamp_to_dtype_range
 
 __all__ = [
     "NanToNumFwdKernel",

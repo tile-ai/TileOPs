@@ -155,7 +155,8 @@ def test_fused_gated_explicit_uses_occupancy_config():
     threads=128, npt=8 keeps block_N = 1024 (same tiling as the old 256x4) while
     raising occupancy/ILP at large M. fp32 falls back to 256/4: npt=4 already
     saturates the 128-bit load width, so 128/8 would only add register pressure.
-    The direct strategy keeps the dtype-driven npt.
+    The direct strategy keeps the dtype-driven npt, and 256 threads: one element
+    per thread makes the thread count the whole block, so 128 would halve it.
     """
     with (
         patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
@@ -186,6 +187,7 @@ def test_fused_gated_explicit_uses_occupancy_config():
             config={"strategy": "explicit_parallel"},
         )
     assert direct.default_config["num_per_thread"] == 8
+    assert direct.default_config["threads"] == 256
     assert explicit_fp16.default_config == {
         "strategy": "explicit_parallel",
         "threads": 128,

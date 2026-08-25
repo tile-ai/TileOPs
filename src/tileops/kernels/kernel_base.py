@@ -298,6 +298,22 @@ class Kernel(ABC):
             f"change what the candidates measure."
         )
 
+    def _param_name_aliases(self, jit_kernel: Callable) -> Dict[str, str]:
+        """Map config key -> the builder parameter that carries it, for this builder.
+
+        TileLang binds a candidate config by parameter name and refuses a key naming
+        no parameter, so a builder taking ``threads_arg`` never sees ``threads``.
+        """
+        signature = getattr(jit_kernel, "signature", None)
+        parameters = getattr(signature, "parameters", None)
+        if not parameters:
+            return {}
+        return {
+            key: name
+            for name, key in self._AUTOTUNE_PARAM_ALIASES.items()
+            if name in parameters and key not in parameters
+        }
+
     def tune_jit_kernel(
         self,
         jit_kernel: Callable,
@@ -334,6 +350,9 @@ class Kernel(ABC):
         # from the cache key; without this, the seed values read as "already
         # tuned" and the benchmarking sweep is skipped (returning config=None).
         seeds = self._autotune_initial_kwargs(jit_kernel, seed_config)
+        rename = self._param_name_aliases(jit_kernel)
+        if rename:
+            configs = [{rename.get(k, k): v for k, v in cfg.items()} for cfg in configs]
         autotune_kwargs: Dict[str, Any] = dict(configs=configs, warmup=warmup, rep=rep)
         if seeds:
             autotune_kwargs["do_not_specialize"] = list(seeds)
@@ -361,5 +380,8 @@ class Kernel(ABC):
             self.kernel, self.autotune_configs, warmup=warmup, rep=rep
         )
 
-        self.config = tuned_kernel.config
+        self.config = {
+            self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
+            for key, value in tuned_kernel.config.items()
+        }
         print(f"Best config: {self.config}")

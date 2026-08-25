@@ -5,16 +5,32 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._broadcast import _compute_broadcast_offsets, _is_contiguous_same_shape
+from ._broadcast import _compute_broadcast_offsets, _is_contiguous_same_shape, broadcast_plan_for
+from ._op_body import op_func_for
+
+
+def _broadcast_index_terms(plan_name):
+    """Return ``(ndim, divisors, a_strides, b_strides)`` for one broadcast plan.
+
+    Called inside a builder, where these lists and tuples may not be closed over.
+    """
+    plan = broadcast_plan_for(plan_name)
+    ndim = len(plan.coalesced_shape)
+    divisors = [1] * ndim
+    for i in range(ndim - 2, -1, -1):
+        divisors[i] = divisors[i + 1] * plan.coalesced_shape[i + 1]
+    return ndim, divisors, plan.a_strides, plan.b_strides
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
+def _make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
+        op_func = op_func_for(op_name)
+
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, threads_arg), threads=threads_arg) as bx:
@@ -28,12 +44,13 @@ def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
+def _make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
+        op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
 
         @T.prim_func
@@ -49,12 +66,13 @@ def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
+def _make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
+        op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
 
         @T.prim_func
@@ -76,7 +94,7 @@ def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_p
 def _make_binary_register_copy(
     N_total,
     dtype,
-    op_func,
+    op_name,
     output_dtype=None,
     threads=256,
     num_per_thread=8,
@@ -86,6 +104,7 @@ def _make_binary_register_copy(
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
+        op_func = op_func_for(op_name)
         block_size = threads * num_per_thread
 
         @T.prim_func
@@ -114,10 +133,8 @@ def _make_binary_register_copy(
 def _make_binary_direct(
     N_total,
     dtype,
-    op_func,
-    coalesced_shape,
-    a_strides,
-    b_strides,
+    op_name,
+    plan_name,
     a_numel,
     b_numel,
     output_dtype=None,
@@ -125,11 +142,14 @@ def _make_binary_direct(
 ):
     """Binary direct: 1 element per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
+    plan = broadcast_plan_for(plan_name)
 
-    if _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+    if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads):
+            op_func = op_func_for(op_name)
+
             @T.prim_func
             def main(
                 a: T.Tensor((N_total,), dtype),
@@ -145,13 +165,11 @@ def _make_binary_direct(
 
         return kernel
 
-    ndim = len(coalesced_shape)
-    divisors = [1] * ndim
-    for i in range(ndim - 2, -1, -1):
-        divisors[i] = divisors[i + 1] * coalesced_shape[i + 1]
-
     @tilelang.jit(out_idx=[2])
     def kernel(threads):
+        op_func = op_func_for(op_name)
+        ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
+
         @T.prim_func
         def main(
             a: T.Tensor((a_numel,), dtype),
@@ -179,10 +197,8 @@ def _make_binary_direct(
 def _make_binary_explicit(
     N_total,
     dtype,
-    op_func,
-    coalesced_shape,
-    a_strides,
-    b_strides,
+    op_name,
+    plan_name,
     a_numel,
     b_numel,
     output_dtype=None,
@@ -191,11 +207,13 @@ def _make_binary_explicit(
 ):
     """Binary explicit_parallel: N elements per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
+    plan = broadcast_plan_for(plan_name)
 
-    if _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+    if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads, num_per_thread):
+            op_func = op_func_for(op_name)
             block_size = threads * num_per_thread
 
             @T.prim_func
@@ -213,13 +231,10 @@ def _make_binary_explicit(
 
         return kernel
 
-    ndim = len(coalesced_shape)
-    divisors = [1] * ndim
-    for i in range(ndim - 2, -1, -1):
-        divisors[i] = divisors[i + 1] * coalesced_shape[i + 1]
-
     @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
+        op_func = op_func_for(op_name)
+        ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
         block_size = threads * num_per_thread
 
         @T.prim_func
@@ -246,12 +261,14 @@ def _make_binary_explicit(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=None):
+def _make_fused_gated_direct(M, N, dtype, op_name, threads=256, output_dtype=None):
     """FusedGated direct: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
+        op_func = op_func_for(op_name)
+
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
             with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
@@ -268,13 +285,14 @@ def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=Non
 
 @functools.lru_cache(maxsize=32)
 def _make_fused_gated_explicit(
-    M, N, dtype, op_func, threads=256, num_per_thread=8, output_dtype=None
+    M, N, dtype, op_name, threads=256, num_per_thread=8, output_dtype=None
 ):
     """FusedGated explicit_parallel: N elements per thread."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
+        op_func = op_func_for(op_name)
         block_N = threads_arg * npt_arg
 
         @T.prim_func

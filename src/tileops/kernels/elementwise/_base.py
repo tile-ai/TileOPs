@@ -1,16 +1,19 @@
 """Elementwise kernel base classes."""
 
 import math
-import warnings
 
 import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-from ._broadcast import _broadcast_target as _broadcast_target
-from ._broadcast import _expand_flat as _expand_flat
-from ._broadcast import _flat, _is_contiguous_same_shape, coalesce_broadcast_dims
+from ._broadcast import (
+    BroadcastPlan,
+    _flat,
+    _is_contiguous_same_shape,
+    coalesce_broadcast_dims,
+    register_broadcast_plan,
+)
 from ._builders import (
     _make_binary_direct,
     _make_binary_explicit,
@@ -21,21 +24,20 @@ from ._builders import (
     _make_unary_explicit,
     _make_unary_regcopy,
 )
-from ._dtype import _BINARY_FULL_DTYPES as _BINARY_FULL_DTYPES
-from ._dtype import _BINARY_NO_BOOL_DTYPES as _BINARY_NO_BOOL_DTYPES
 from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES, _is_fp8
-from ._dtype import _FP8_DTYPES as _FP8_DTYPES
-from ._dtype import _clamp_to_dtype_range as _clamp_to_dtype_range
-from ._dtype import _fp8_accum_dtype_str as _fp8_accum_dtype_str
-from ._policy import (
-    _DEFAULT_THREADS,
-    _get_fp8_output_dtypes,
+from ._op_body import (
     _store_binary_bool_as_int8,
     _store_unary_bool_as_int8,
     _wrap_fp8_accumulation,
+    register_op_func,
+)
+from ._policy import (
+    _DEFAULT_THREADS,
+    _get_fp8_output_dtypes,
     choose_binary_strategy,
     choose_unary_strategy,
     default_launch_config,
+    elementwise_autotune_configs,
     elementwise_output_plan,
 )
 
@@ -47,69 +49,63 @@ __all__ = [
     "LogicalUnaryKernel",
     "ParametricUnaryKernel",
     "UnaryKernel",
-    "coalesce_broadcast_dims",
 ]
 
 
-def _log_for_output_precision(value, wide):
-    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep."""
-    return T.log(wide) if value.dtype == "float32" else T.__log(wide)
+class _ElementwiseKernel(Kernel):
+    """What every elementwise family shares: which dtypes it takes, and what it returns."""
+
+    #: Input dtypes admitted; ``None`` admits every dtype the builder handles.
+    SUPPORTED_DTYPES = None
+    #: Whether bool results are stored through an int8 buffer.
+    _bool_via_int8: bool = False
+    #: Dtype the result is cast back to when the kernel writes a wider one.
+    _fp8_output_dtype = None
+
+    def _validate_supported_dtype(self, dtype) -> None:
+        if self.SUPPORTED_DTYPES is None or dtype in self.SUPPORTED_DTYPES:
+            return
+        supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+        raise ValueError(f"{type(self).__name__} only supports dtypes [{supported}], got {dtype}")
+
+    def _restore_output_dtype(self, result):
+        if self._bool_via_int8:
+            result = result.view(torch.bool)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
 
 
-def _validate_supported_dtype(kernel, dtype):
-    if kernel.SUPPORTED_DTYPES is None or dtype in kernel.SUPPORTED_DTYPES:
-        return
-    supported = ", ".join(str(dt) for dt in kernel.SUPPORTED_DTYPES)
-    raise ValueError(f"{kernel.__class__.__name__} only supports dtypes [{supported}], got {dtype}")
+class _StrategyKernel(_ElementwiseKernel):
+    """An elementwise family whose kernel body is picked by a named strategy."""
 
+    @property
+    def default_config(self) -> dict:
+        return default_launch_config(
+            strategy=self.strategy,
+            input_dtype=self.dtype,
+            output_dtype=self.output_dtype,
+            n_total=self.N_total,
+            stores_bool=not self._bool_via_int8,
+        )
 
-def _elementwise_autotune_configs(dtype) -> list[dict]:
-    npts = [16, 32] if _is_fp8(dtype) else [2, 4, 8]
-    return [{"threads": t, "num_per_thread": n} for t in [128, 256, 512] for n in npts]
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return elementwise_autotune_configs(self.dtype, self.strategy)
 
-
-def _autotune_or_default(kernel, warmup: int, rep: int, accepted_errors: tuple[str, ...]) -> None:
-    try:
-        Kernel.autotune(kernel, warmup=warmup, rep=rep)
-    except (AssertionError, Exception) as exc:
-        message = str(exc)
-        lower = message.lower()
-        if any(term in message or term in lower for term in accepted_errors):
-            warnings.warn(
-                f"{kernel.__class__.__name__} autotuning failed "
-                f"({message}); falling back to default_config.",
-                stacklevel=2,
-            )
-            kernel.config = dict(kernel.default_config)
+    def init_config(self, config=None, tune=False) -> None:
+        Kernel.init_config(self, config, tune)
+        # Tuning returns only the axes it swept; the rest keeps its default.
+        self.config = {**self.default_config, **self.config}
+        self.config["strategy"] = self.strategy
+        cfg = self.config
+        if self.strategy == "direct":
+            self._compiled_fn = self.kernel(cfg["threads"])
         else:
-            raise
+            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
 
-def _init_strategy_config(kernel, config=None, tune=False):
-    Kernel.init_config(kernel, config, tune)
-    kernel.config["strategy"] = kernel.strategy
-    cfg = kernel.config
-    if kernel.strategy == "direct":
-        kernel._compiled_fn = kernel.kernel(cfg["threads"])
-    else:
-        kernel._compiled_fn = kernel.kernel(cfg["threads"], cfg["num_per_thread"])
-
-
-def _init_parametric_config(kernel, config=None, tune=False):
-    Kernel.init_config(kernel, config, tune)
-    cfg = kernel.config
-    kernel._compiled_fn = kernel.kernel(cfg["threads"], cfg["num_per_thread"])
-
-
-def _postprocess_elementwise_result(kernel, result):
-    if getattr(kernel, "_bool_via_int8", False):
-        result = result.view(torch.bool)
-    if kernel._fp8_output_dtype is not None:
-        result = result.to(kernel._fp8_output_dtype)
-    return result
-
-
-class UnaryKernel(Kernel):
+class UnaryKernel(_StrategyKernel):
     """Template base class for unary elementwise kernels.
 
     Subclass must override ``op_func`` with a static method implementing
@@ -142,7 +138,7 @@ class UnaryKernel(Kernel):
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
-        _validate_supported_dtype(self, dtype)
+        self._validate_supported_dtype(dtype)
         self.N_total = N_total
         self.dtype = dtype
         requested = (config or {}).get("strategy")
@@ -166,15 +162,21 @@ class UnaryKernel(Kernel):
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
+        """The op body this kernel builds with, and the name that identifies it."""
+        name = self._op_func_name()
         if self._bool_via_int8:
-            return _store_unary_bool_as_int8(self.op_func)
+            return name, _store_unary_bool_as_int8(self.op_func)
         if self.OUTPUT_DTYPE is not None:
-            return self.op_func
-        return _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=1)
+            return name, self.op_func
+        return name, _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=1)
+
+    def _op_func_name(self) -> str:
+        """Name every input that changes the op body: see ``register_op_func``."""
+        return f"{type(self).__qualname__}|{self.dtype_str}|{self.output_dtype_str}|{self.strategy}"
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
-        effective_op = self._get_effective_op_func()
+        effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "direct":
             return _make_unary_direct(
                 self.N_total,
@@ -208,33 +210,13 @@ class UnaryKernel(Kernel):
     def output_dtype_str(self) -> str:
         return self.output_plan.kernel_output_dtype
 
-    @property
-    def default_config(self) -> dict:
-        return default_launch_config(
-            strategy=self.strategy,
-            input_dtype=self.dtype,
-            output_dtype=self.output_dtype,
-            n_total=self.N_total,
-            stores_bool=not self._bool_via_int8,
-        )
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return _elementwise_autotune_configs(self.dtype)
-
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        _autotune_or_default(self, warmup, rep, ("not serializable", "pickle"))
-
-    def init_config(self, config=None, tune=False):
-        _init_strategy_config(self, config, tune)
-
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(_flat(x))
-        return _postprocess_elementwise_result(self, result).reshape(x.shape)
+        return self._restore_output_dtype(result).reshape(x.shape)
 
 
-class BinaryKernel(Kernel):
+class BinaryKernel(_StrategyKernel):
     """Template base class for binary elementwise kernels with N-dim broadcast.
 
     Subclass must override ``op_func`` with a static method implementing
@@ -273,7 +255,7 @@ class BinaryKernel(Kernel):
 
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
         super().__init__()
-        _validate_supported_dtype(self, dtype)
+        self._validate_supported_dtype(dtype)
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
         out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
@@ -316,15 +298,25 @@ class BinaryKernel(Kernel):
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
+        """The op body this kernel builds with, and the name that identifies it."""
+        name = self._op_func_name()
         if self._bool_via_int8:
-            return _store_binary_bool_as_int8(self.op_func)
+            return name, _store_binary_bool_as_int8(self.op_func)
         if self.OUTPUT_DTYPE is not None:
-            return self.op_func
-        return _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=2)
+            return name, self.op_func
+        return name, _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=2)
+
+    def _op_func_name(self) -> str:
+        cls = type(self)
+        out = self.output_plan.kernel_output_dtype
+        return f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{out}|{self.strategy}"
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
-        effective_op = self._get_effective_op_func()
+        effective_op = register_op_func(*self._get_effective_op_func())
+        plan = register_broadcast_plan(
+            BroadcastPlan(self.coalesced_shape, self.a_strides, self.b_strides)
+        )
         kernel_output_dtype = (
             self.output_plan.kernel_output_dtype
             if self.OUTPUT_DTYPE is not None or self._bool_via_int8 or self._fp8_output_dtype
@@ -335,9 +327,7 @@ class BinaryKernel(Kernel):
                 self.N_total,
                 self.dtype_str,
                 effective_op,
-                self.coalesced_shape,
-                self.a_strides,
-                self.b_strides,
+                plan,
                 self.a_numel,
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
@@ -348,9 +338,7 @@ class BinaryKernel(Kernel):
                 self.N_total,
                 self.dtype_str,
                 effective_op,
-                self.coalesced_shape,
-                self.a_strides,
-                self.b_strides,
+                plan,
                 self.a_numel,
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
@@ -369,38 +357,13 @@ class BinaryKernel(Kernel):
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 
-    @property
-    def default_config(self) -> dict:
-        return default_launch_config(
-            strategy=self.strategy,
-            input_dtype=self.dtype,
-            output_dtype=self.output_dtype,
-            n_total=self.N_total,
-            stores_bool=not self._bool_via_int8,
-        )
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return _elementwise_autotune_configs(self.dtype)
-
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        _autotune_or_default(
-            self,
-            warmup,
-            rep,
-            ("not serializable", "pickle", "missing a required argument"),
-        )
-
-    def init_config(self, config=None, tune=False):
-        _init_strategy_config(self, config, tune)
-
     def forward(self, a, b):
         self._require_cuda(a=a, b=b)
         result = self._compiled_fn(_flat(a), _flat(b))
-        return _postprocess_elementwise_result(self, result).reshape(self.result_shape)
+        return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
-class FusedGatedKernel(Kernel):
+class FusedGatedKernel(_StrategyKernel):
     """Template base class for fused gated elementwise kernels.
 
     Input layout: x has shape (M, 2*N) where x[:, :N] is the gate
@@ -434,7 +397,7 @@ class FusedGatedKernel(Kernel):
 
     def __init__(self, M, N, dtype, config=None, tune=False):
         super().__init__()
-        _validate_supported_dtype(self, dtype)
+        self._validate_supported_dtype(dtype)
         self.M = M
         self.N = N
         self.dtype = dtype
@@ -453,16 +416,19 @@ class FusedGatedKernel(Kernel):
         self.init_config(config, tune)
 
     def _get_effective_op_func(self):
+        """The op body this kernel builds with, and the name that identifies it."""
         act = self.activation_func
 
         def fused_op(gate, value):
             return act(gate) * value
 
-        return _wrap_fp8_accumulation(fused_op, self.dtype, self.dtype_str, arity=2)
+        cls = type(self)
+        name = f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{self.strategy}"
+        return name, _wrap_fp8_accumulation(fused_op, self.dtype, self.dtype_str, arity=2)
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
-        effective_op = self._get_effective_op_func()
+        effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "direct":
             return _make_fused_gated_direct(
                 self.M,
@@ -487,13 +453,6 @@ class FusedGatedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        if _is_fp8(self.dtype):
-            return default_launch_config(
-                strategy=self.strategy,
-                input_dtype=self.dtype,
-                output_dtype=self.output_dtype,
-                n_total=self.M * self.N,
-            )
         if self.strategy == "explicit_parallel":
             if self.dtype in (torch.float16, torch.bfloat16):
                 return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
@@ -506,20 +465,10 @@ class FusedGatedKernel(Kernel):
             n_total=self.M * self.N,
         )
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return _elementwise_autotune_configs(self.dtype)
-
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        _autotune_or_default(self, warmup, rep, ("not serializable", "pickle"))
-
-    def init_config(self, config=None, tune=False):
-        _init_strategy_config(self, config, tune)
-
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(x)
-        return _postprocess_elementwise_result(self, result)
+        return self._restore_output_dtype(result)
 
 
 class FloatUnaryKernel(UnaryKernel):
@@ -661,12 +610,13 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
     def _get_effective_op_func(self):
         """Inject the alpha-baked op_func into the parent build pipeline."""
         op_func = self._alpha_op_func()
+        name = f"{self._op_func_name()}|alpha={self._alpha!r}"
         if self.OUTPUT_DTYPE is not None:
-            return op_func
-        return _wrap_fp8_accumulation(op_func, self.dtype, self.dtype_str, arity=2)
+            return name, op_func
+        return name, _wrap_fp8_accumulation(op_func, self.dtype, self.dtype_str, arity=2)
 
 
-class ParametricUnaryKernel(Kernel):
+class ParametricUnaryKernel(_ElementwiseKernel):
     """Shared base for independent parametric elementwise kernels.
 
     Subclasses must define:
@@ -695,7 +645,7 @@ class ParametricUnaryKernel(Kernel):
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
-        _validate_supported_dtype(self, dtype)
+        self._validate_supported_dtype(dtype)
         self.N_total = N_total
         self.dtype = dtype
         if self._skip_fp8_output:
@@ -747,10 +697,16 @@ class ParametricUnaryKernel(Kernel):
             npt = self._NPT_NON_FP32
         return {"threads": self._DEFAULT_THREADS, "num_per_thread": npt}
 
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return elementwise_autotune_configs(self.dtype)
+
     def init_config(self, config=None, tune=False):
-        _init_parametric_config(self, config, tune)
+        Kernel.init_config(self, config, tune)
+        cfg = self.config
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
         self._require_cuda(x=x)
         result = self._compiled_fn(_flat(x))
-        return _postprocess_elementwise_result(self, result).reshape(x.shape)
+        return self._restore_output_dtype(result).reshape(x.shape)

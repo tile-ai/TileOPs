@@ -76,7 +76,7 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
     import pkgutil
 
     import tileops.kernels.elementwise as ew
-    from tileops.kernels.elementwise._base import _FP8_DTYPES
+    from tileops.kernels.elementwise._dtype import _FP8_DTYPES
     from tileops.kernels.kernel_base import Kernel
 
     fp8_dtypes = set(_FP8_DTYPES)

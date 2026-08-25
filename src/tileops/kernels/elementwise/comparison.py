@@ -4,11 +4,11 @@ import tilelang.language as T
 import torch
 
 from ._base import (
-    _BINARY_FULL_DTYPES,
     BinaryKernel,
     FloatPredicateKernel,
     _Uint8StorageBinaryKernel,
 )
+from ._dtype import _BINARY_FULL_DTYPES
 
 __all__ = [
     "EqBoolStorageFwdKernel",

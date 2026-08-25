@@ -26,4 +26,8 @@
 
 - Dynamo-traced `forward` MUST NOT construct a `Kernel` or enter a TileLang builder; call-time kernel resolution goes through the compile dispatch boundary. See [ops-design.md](../../docs/design/ops-design.md#compile-dispatch-boundary).
 
+- A `@tilelang.jit` builder MUST close over scalars only; an op body or a stride tuple goes in a registry, and the builder closes over its name. **Why:** TileLang reads every free variable into the autotune cache key, asserts on anything but `int` / `float` / `str` / `bool` / `None`, and tells two tuned kernels apart by that name.
+
+- A candidate config key MUST name a parameter of the builder being tuned; a parameter spelled `<key>_arg` MUST have `<key>` in `_AUTOTUNE_PARAM_ALIASES`. **Why:** TileLang binds candidates by parameter name and raises on a key that names none.
+
 - A kernel whose integer tensor inputs decide how much work it runs supplies them through `autotune_supply_prog`; one whose integer inputs are data or masks sets `autotune_accepts_random_int_inputs = True` with the reason. `tune_jit_kernel` refuses the unanswered case. **Why:** TileLang generates an unsupplied integer tensor from `randint(-2, 3)`, so every candidate times a collapsed kernel.
