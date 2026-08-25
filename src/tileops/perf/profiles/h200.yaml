@@ -20,16 +20,19 @@ cuda_core:
     # Splits into 0.9261 lane utilisation x 0.9242 clock headroom.
     calibration: 0.8548
 
+# From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak, best of
+# n=4096/8192/16384 square). Power-cap limited: the GEMMs hold the 700 W cap
+# and the SM clock sits near 1.2-1.4 GHz, so locking cannot pin the clock here.
 tensor_core:
   fp16:
     theoretical: 989.5e12    # FLOPS, spec sheet (dense)
-    calibration: 0.75        # from benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak)
+    calibration: 0.6742
   bf16:
     theoretical: 989.5e12
-    calibration: 0.75
+    calibration: 0.6996
   tf32:
     theoretical: 494.7e12
-    calibration: 0.75        # placeholder — not yet measured
+    calibration: 0.7293
   fp8:
     theoretical: 1979.0e12
-    calibration: 0.75        # placeholder — not yet measured
+    calibration: 0.6295

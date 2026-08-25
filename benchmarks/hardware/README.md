@@ -62,6 +62,22 @@ Method: ILP independent FMA chains per thread, swept 1/2/4/8/16; each config jud
 
 When modifying the kernel, verify it two ways: `cuobjdump -sass` must show a loop body of nothing but the instruction under test, and the runtime must scale linearly with `--iters` (a collapsed loop can still disassemble into a plausible-looking body).
 
+## Tensor-core GEMM Throughput
+
+Sustained cuBLAS GEMM rate per tensor-core dtype (fp16/bf16/tf32/fp8), calibrating `tensor_core.*` in the profile. Runs `torch.matmul` (`torch._scaled_mm` for fp8) over square sizes 4096/8192/16384.
+
+```bash
+CUDA_VISIBLE_DEVICES=<gpu> python benchmarks/hardware/compute/gemm_throughput.py --profile h200
+```
+
+| Flag        | Default | Description                                          |
+| ----------- | ------- | ---------------------------------------------------- |
+| `--profile` | `h200`  | GPU profile name (reads `tensor_core.*.theoretical`) |
+
+Method: per config, warm up until the SM clock holds steady across two consecutive 2 s windows, then take the median of 5 timed runs of ~4 s each — long runs average over the power-cap clock oscillation, which puts run-to-run spread below 1%. The telemetry GPU is resolved from the device UUID, so `CUDA_VISIBLE_DEVICES` is honored.
+
+Clock locking does not apply here: a saturating GEMM drives the board into its power cap and the cap, not the lock, sets the clock. Calibrations are therefore power-cap-limited sustained rates; the output prints the per-dtype clock range to record next to the numbers. A tf32 result at or below the non-tensor fp32 ceiling aborts the run — it means TF32 never engaged.
+
 ## Adding a new GPU profile
 
 1. Create `src/tileops/perf/profiles/<gpu>.yaml` with theoretical specs from the datasheet
