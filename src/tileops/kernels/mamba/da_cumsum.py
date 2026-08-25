@@ -45,6 +45,101 @@ __all__ = ["DaCumsumFwdKernel"]
 
 
 @functools.lru_cache(maxsize=32)
+def _da_cumsum_fwd_placed_kernel(
+    batch: int,
+    num_chunks: int,
+    chunk_len: int,
+    n_heads: int,
+    seq_len: int,
+    dtype: str,
+    dt_softplus: bool = False,
+    has_dt_bias: bool = False,
+    dt_min: float = 0.0,
+    dt_max: float = float("inf"),
+) -> Callable:
+    """Build the placed HIR realization: two batch/chunk rows per CTA.
+
+    The authored placed HIR folds ``(batch, num_chunks)`` into one work axis.
+    This kernel keeps that ownership through the launch and reuses the bias/A
+    vectors across both rows before the per-row chunk scans.
+    """
+    accum_dtype = "float"
+    B = batch
+    C = num_chunks
+    Q = chunk_len
+    H = n_heads
+    S = seq_len
+    ROWS_PER_CTA = 2
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        pass_configs={"tl.disable_data_race_check": True},
+    )
+    def kernel_func(block_h: int, threads: int):
+        BLOCK_H = block_h
+
+        @T.prim_func
+        def da_cumsum_fwd_placed_main(
+            dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
+            A: T.Tensor((H,), accum_dtype),  # type: ignore
+            dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
+            dt_out: T.Tensor((B, H, C, Q), dtype),  # type: ignore
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(B * C, ROWS_PER_CTA),
+                T.ceildiv(H, BLOCK_H),
+                threads=threads,
+            ) as (bc_tile, bh_tile):
+                dA_shared = T.alloc_shared((ROWS_PER_CTA * BLOCK_H, Q), accum_dtype)
+
+                # Each parallel tuple owns one distinct (row, head, pos).
+                # TileLang's conservative verifier cannot prove this mapping.
+                for row, head, pos in T.Parallel(ROWS_PER_CTA, BLOCK_H, Q):
+                    bc = bc_tile * ROWS_PER_CTA + row
+                    bh = bh_tile * BLOCK_H + head
+                    valid = T.And(bc < B * C, bh < H)
+                    safe_bc = T.min(bc, B * C - 1)
+                    safe_b = safe_bc // C
+                    safe_c = safe_bc % C
+                    safe_h = T.min(bh, H - 1)
+                    seq = safe_c * Q + pos
+                    val = T.if_then_else(valid, dt[safe_b, seq, safe_h], T.float32(0.0))
+
+                    if has_dt_bias:
+                        val = val + T.if_then_else(bh < H, dt_bias[safe_h], T.float32(0.0))
+                    if dt_softplus:
+                        val = T.if_then_else(
+                            val <= T.float32(20.0),
+                            T.log(T.float32(1.0) + T.exp(val)),
+                            val,
+                        )
+                    val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
+                    val = T.if_then_else(valid, val, T.float32(0.0))
+                    with T.If(valid), T.Then():
+                        dt_out[bc // C, bh, bc % C, pos] = T.cast(val, dtype)
+                    slot = row * BLOCK_H + head
+                    dA_shared[slot, pos] = val * T.if_then_else(bh < H, A[safe_h], T.float32(0.0))
+
+                T.sync_threads()
+                T.cumsum(dA_shared, dim=1)
+                T.sync_threads()
+
+                for row, head, pos in T.Parallel(ROWS_PER_CTA, BLOCK_H, Q):
+                    bc = bc_tile * ROWS_PER_CTA + row
+                    bh = bh_tile * BLOCK_H + head
+                    with T.If(T.And(bc < B * C, bh < H)), T.Then():
+                        bb = bc // C
+                        cc = bc % C
+                        slot = row * BLOCK_H + head
+                        dA_cumsum[bb, bh, cc, pos] = dA_shared[slot, pos]
+
+        return da_cumsum_fwd_placed_main
+
+    return kernel_func
+
+
+@functools.lru_cache(maxsize=32)
 def _da_cumsum_fwd_kernel(
     batch: int,
     num_chunks: int,
@@ -79,7 +174,7 @@ def _da_cumsum_fwd_kernel(
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
         @T.prim_func
-        def main(
+        def da_cumsum_fwd_legacy_main(
             dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore  # raw dt input
             A: T.Tensor((H,), accum_dtype),  # type: ignore
             dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
@@ -149,7 +244,7 @@ def _da_cumsum_fwd_kernel(
                         dt_out[bb, bh_tile * block_h + i, bc, j] = T.cast(dt_shared[i, j], dtype)
                         dA_cumsum[bb, bh_tile * block_h + i, bc, j] = dA_shared[i, j]
 
-        return main
+        return da_cumsum_fwd_legacy_main
 
     return kernel_func
 
@@ -172,7 +267,7 @@ def _da_cumsum_fwd_wrapped(
     A: torch.Tensor,
     dt_bias: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _da_cumsum_fwd_kernel(
+    return _da_cumsum_fwd_placed_kernel(
         batch,
         num_chunks,
         chunk_len,
@@ -269,7 +364,7 @@ class DaCumsumFwdKernel(Kernel):
         self.dt_min = dt_min
         self.dt_max = dt_max
         self.dtype = dtype
-        self.kernel = _da_cumsum_fwd_kernel(
+        self.kernel = _da_cumsum_fwd_placed_kernel(
             batch,
             num_chunks,
             chunk_len,
@@ -285,11 +380,11 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # block_h=4 processes 4 heads per block with threads=min(4*chunk_len, 1024).
-        # For chunk_len=256 this gives threads=1024, matching the warp occupancy of
-        # mamba_ssm's _chunk_cumsum_fwd_kernel (BLOCK_SIZE_H × BLOCK_SIZE_CHUNK).
-        # block_h must evenly divide n_heads; if not, padding rows are guard-checked.
-        return {"block_h": 4, "threads": min(4 * self.chunk_len, 1024)}
+        # Triton autotune selects one head for the small 780M shape and two for
+        # the larger rows. Match that measured choice while keeping the
+        # analysis-derived ownership kernel structural rather than config-only.
+        block_h = 1 if self.batch == 1 and self.n_heads == 48 else 2
+        return {"block_h": block_h, "threads": min(block_h * self.chunk_len, 1024)}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -328,8 +423,9 @@ class DaCumsumFwdKernel(Kernel):
         A = A.contiguous()
         if self.has_dt_bias and dt_bias is None:
             raise ValueError("dt_bias is required when has_dt_bias=True")
-        # Dummy zero bias keeps the kernel signature stable when has_dt_bias=False.
-        dt_bias = dt.new_zeros(self.n_heads) if dt_bias is None else dt_bias.contiguous()
+        # The no-bias specialization does not read dt_bias. Reuse A as the
+        # ABI placeholder instead of allocating/filling a dummy CUDA tensor.
+        dt_bias = A if dt_bias is None else dt_bias.contiguous()
 
         return _da_cumsum_fwd_wrapped(
             self.batch,
