@@ -363,20 +363,9 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Resolve the implementation stored in the Op's single cache layer."""
-        q = inputs[0]
-        assert q is not None
-        dim = q.shape[-1]
-        params = self._manifest_params()
-        params.update(
-            sm_scale=_attention_scale(dim, self.sm_scale),
-            dtype=self.dtype or q.dtype,
-            rotary_dim=(
-                _rope_rotary_dim(dim, self.rotary_dim) if self.pos_encoding_mode == "rope" else None
-            ),
-        )
         # BUILTIN follow-up: pass a shape/dtype ``key`` and a ``build`` closure
         # that selects and constructs one concrete kernel on a cache miss.
-        return self.get_or_build_kernel("gqa_dense", inputs, params=params)
+        return self.get_or_build_kernel("gqa_dense", inputs)
 
     def forward(
         self,
