@@ -23,6 +23,7 @@ class FFTFixture(FixtureBase):
                 pytest.param(512, torch.complex64, False, (16,), marks=pytest.mark.full),
                 pytest.param(1024, torch.complex64, False, (), marks=pytest.mark.full),
                 pytest.param(1024, torch.complex64, False, (2, 4), marks=pytest.mark.full),
+                pytest.param(4096, torch.complex64, False, (), marks=pytest.mark.full),
                 pytest.param(128, torch.complex128, False, (4,), marks=pytest.mark.full),
             ],
         ),

@@ -1,3 +1,9 @@
+"""Kernel-level coverage for FFT's interleaved output layout.
+
+The public Op converts the internal ``(batch, n, 2)`` buffer to a complex
+view, so its layout requires direct kernel coverage.
+"""
+
 import pytest
 import torch
 

@@ -29,8 +29,10 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
       Each block reads input elements at their bit-reversed positions directly
       into shared memory, eliminating the separate bit-reversal kernel.  It
       then performs all log2(min(n, 2*threads)) butterfly stages entirely in
-      SMEM using on-the-fly trig.  Result: one global-memory read + one write
-      for the entire SMEM phase, regardless of how many stages it covers.
+      SMEM.  Complex128 uses the pre-computed twiddle LUT; complex64 retains
+      inline trig because its FP32 trig is cheaper than the extra LUT loads.
+      Result: one global-memory read + one write for the entire SMEM phase,
+      regardless of how many stages it covers.
 
     Phase 2 — LUT stages (remaining stages, one kernel each):
       For stages where butterfly strides exceed the SMEM chunk size, each
@@ -117,6 +119,8 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
         def fused_bitrev_smem_stages(
             x_real: T.Tensor((B, n), real_dtype),
             x_imag: T.Tensor((B, n), real_dtype),
+            lut_real: T.Tensor((lut_size,), real_dtype),
+            lut_imag: T.Tensor((lut_size,), real_dtype),
             y_real: T.Tensor((B, n), real_dtype),
             y_imag: T.Tensor((B, n), real_dtype),
             y_pair: T.Tensor((B, n, 2), real_dtype),
@@ -166,6 +170,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
                 for s in range(smem_stages):
                     m_s = 1 << (s + 1)  # compile-time constant
                     half_m_s = 1 << s  # compile-time constant
+                    lut_base_s = half_m_s - 1
 
                     for i in T.Parallel(threads):
                         if i < smem_per_block // 2:
@@ -174,9 +179,16 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
                             j_idx = group * m_s + k
                             l_idx = j_idx + half_m_s
 
-                            angle = -2.0 * _PI * T.cast(k, "float64") / T.cast(m_s, "float64")
-                            tw_r = T.cos(T.cast(angle, accum_dtype))
-                            tw_i = T.sin(T.cast(angle, accum_dtype))
+                            if dtype == "complex128":
+                                # Reuse the pre-built LUT instead of evaluating
+                                # expensive FP64 cos/sin. Its stage layout is
+                                # LUT[half_m - 1 + k] = exp(-2pi*i*k/m).
+                                tw_r = T.cast(lut_real[lut_base_s + k], accum_dtype)
+                                tw_i = T.cast(lut_imag[lut_base_s + k], accum_dtype)
+                            else:
+                                angle = -2.0 * _PI * T.cast(k, "float64") / T.cast(m_s, "float64")
+                                tw_r = T.cos(T.cast(angle, accum_dtype))
+                                tw_i = T.sin(T.cast(angle, accum_dtype))
 
                             u_r = T.cast(smem_r[j_idx], accum_dtype)
                             u_i = T.cast(smem_i[j_idx], accum_dtype)
@@ -563,7 +575,15 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
         ) -> None:
             # Fused bit-reversal + SMEM butterfly stages: single kernel launch,
             # one global-memory read of x, one write of y for all SMEM stages.
-            fused_bitrev_smem_stages(x_real, x_imag, y_real, y_imag, y_pair)
+            fused_bitrev_smem_stages(
+                x_real,
+                x_imag,
+                lut_real,
+                lut_imag,
+                y_real,
+                y_imag,
+                y_pair,
+            )
 
             # LUT stages: use radix-8 (fused triples) where possible,
             # then radix-4 or radix-2 for the remainder.
@@ -651,9 +671,10 @@ class FFTC2CKernel(Kernel):
 
     2. Pre-computed twiddle LUT: the remaining large-stride stages look up
        twiddle factors from a GPU-resident LUT (built by FFTC2CFwdOp at
-       construction time), eliminating repeated sin/cos evaluation.
+       construction time), and complex128 SMEM stages use the same LUT to
+       avoid expensive FP64 sin/cos evaluation.
 
-    Together these match cuFFT-level performance on modern NVIDIA GPUs.
+    Together these reduce global memory traffic and runtime trigonometric work.
 
     Args:
         x_real:    Real part of input, shape (n,), float32 or float64.
