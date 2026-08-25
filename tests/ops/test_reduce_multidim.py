@@ -112,6 +112,21 @@ def test_mean_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
+@pytest.mark.smoke
+def test_mean_edge_axes_fp16_keeps_fp32_intermediates() -> None:
+    """A mean over edge axes must not narrow its partial sums to the storage dtype.
+
+    fp16 rows of 100.0 sum to 409600 per row — past fp16's max — so any pass
+    that casts an undivided sum back to fp16 answers inf instead of 100.
+    """
+    from tileops.ops.reduction.reduce import MeanFwdOp
+
+    x = torch.full((4, 8, 1024), 100.0, dtype=torch.float16, device="cuda")
+    y = MeanFwdOp(dim=[0, 2])(x)
+    assert torch.isfinite(y).all(), "edge-axes mean overflowed an intermediate"
+    assert torch.allclose(y, torch.full_like(y, 100.0))
+
+
 @MultiDimFixture
 def test_amax_multidim(
     shape: tuple,

@@ -2,6 +2,7 @@
 
 import functools
 from dataclasses import dataclass
+from math import prod
 from typing import Optional
 
 import tilelang
@@ -12,6 +13,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
+    VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     align_up,
     ceildiv_int,
@@ -55,6 +57,10 @@ class ProductReducePolicy:
 
     cols_per_thread: int = 8
 
+    # Rows below this leave the grid too small to hide the vectorized path's
+    # per-thread latency; the shared staging keeps more loads in flight there.
+    min_rows_for_vectorized: int = 256
+
 
 _LEADING_POLICY = LeadingAxisReducePolicy()
 _PROD_POLICY = ProductReducePolicy()
@@ -76,7 +82,7 @@ def _pad_value_for_op(op_kind: str) -> float:
 
 
 @functools.lru_cache(maxsize=32)
-def _simple_reduce_kernel(M, N, op_kind, dtype):
+def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
     """Build a simple reduce kernel for sum/mean/amax/amin.
 
     Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
@@ -84,23 +90,27 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
     loads that substitute the identity element for out-of-bounds columns
     (kernel-side boundary handling).  When ``N`` is already aligned, the
     fast ``T.copy`` path is used.
+
+    ``out_dtype`` overrides the output element type, for a caller that keeps
+    fp32 partials across a second pass.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
     _pad_val = _pad_value_for_op(op_kind)
+    out_dtype = out_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), dtype],
+            out: T.Tensor[(M,), out_dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
                 x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment((block_m,), dtype)
+                out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 if _needs_pad:
                     # Kernel-side boundary handling: element-wise load
@@ -142,7 +152,7 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
 
                 # Cast back to output dtype
                 for i in T.Parallel(block_m):
-                    out_local[i] = T.cast(acc[i], dtype)
+                    out_local[i] = T.cast(acc[i], out_dtype)
 
                 # Write output
                 T.copy(out_local, out[pid_m * block_m])
@@ -153,7 +163,7 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
 
 
 @functools.lru_cache(maxsize=32)
-def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
+def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
     """Tiled simple reduce for N_padded > MAX_SINGLE_TILE_COLS.
 
     Iterates over N in chunks of ``tile_n`` columns, accumulating
@@ -165,20 +175,21 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
     total_cols = num_tiles * tile_n
     _needs_mask = total_cols > N
     _pad_val = _pad_value_for_op(op_kind)
+    out_dtype = out_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), dtype],
+            out: T.Tensor[(M,), out_dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, tile_n), dtype)
                 tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
                 tile_acc = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment((block_m,), dtype)
+                out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 # Initialize accumulator
                 if op_kind in ("sum", "mean"):
@@ -237,10 +248,10 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
                 # Finalize
                 if op_kind == "mean":
                     for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(acc[i] / float(N), dtype)
+                        out_local[i] = T.cast(acc[i] / float(N), out_dtype)
                 else:
                     for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(acc[i], dtype)
+                        out_local[i] = T.cast(acc[i], out_dtype)
 
                 T.copy(out_local, out[pid_m * block_m])
 
@@ -272,6 +283,26 @@ def leading_axis_split(shape: "tuple[int, ...]", axes: "tuple[int, ...]") -> "tu
 def reduces_leading_axes(ndim: int, axes: "tuple[int, ...]") -> bool:
     """Whether *axes* is a non-empty proper prefix of the axes of an *ndim* tensor."""
     return 0 < len(axes) < ndim and tuple(axes) == tuple(range(len(axes)))
+
+
+def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
+    """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
+
+    Returns ``(0, 0)`` unless *axes* is a non-empty prefix plus a non-empty
+    suffix with at least one kept axis in between — the layout
+    ``ReduceKernel._reduce_edge_axes`` handles without permuting the tensor.
+    """
+    k = 0
+    while k < len(axes) and axes[k] == k:
+        k += 1
+    j = len(axes) - k
+    if k == 0 or j == 0:
+        return (0, 0)
+    if tuple(axes[k:]) != tuple(range(ndim - j, ndim)):
+        return (0, 0)
+    if k + j >= ndim:
+        return (0, 0)
+    return (k, j)
 
 
 def leading_row_splits(reduced: int, kept: int, threads: int) -> int:
@@ -397,13 +428,88 @@ def _leading_reduce_kernel(
     return _func
 
 
+def _reduce_down_rows(
+    flat: torch.Tensor,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    divisor: float,
+) -> torch.Tensor:
+    """Reduce an ``(A, B)`` buffer down its rows, writing one *out_dtype* row.
+
+    Splitting the reduced axis is what fills the grid, and each slice leaves an
+    fp32 partial row; a second call over those rows finishes the op. The partials
+    are a few thousand values against the millions the first pass reads, so the
+    second call costs about nothing.
+    """
+    reduced, kept = flat.shape
+    # An input smaller than one grid's worth of work cannot amortize the
+    # extra pass a split costs; reduce it in a single call.
+    grid_work = (
+        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
+    )
+    if reduced * kept <= grid_work:
+        splits = 1
+    else:
+        splits = leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
+    if splits == 1:
+        single = _leading_reduce_kernel(
+            reduced,
+            kept,
+            op_kind,
+            in_dtype,
+            out_dtype,
+            _LEADING_POLICY.threads,
+            1,
+            divisor,
+        )
+        return single()(flat)
+    partials = _leading_reduce_kernel(
+        reduced,
+        kept,
+        op_kind,
+        in_dtype,
+        "float32",
+        _LEADING_POLICY.threads,
+        splits,
+        0.0,
+    )()(flat)
+    # Partials are summed even for mean, whose divisor is the whole row count.
+    finish = _leading_reduce_kernel(
+        splits,
+        kept,
+        "sum" if op_kind == "mean" else op_kind,
+        "float32",
+        out_dtype,
+        _LEADING_POLICY.threads,
+        1,
+        divisor,
+    )
+    return finish()(partials.reshape(splits, kept))
+
+
 @functools.lru_cache(maxsize=32)
 def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
-    """Build a product reduce: one block per row, multiplying in fp32."""
+    """Build a product reduce: one block per row, multiplying in fp32.
+
+    With enough rows to fill the device, each thread reads its
+    ``cols_per_thread`` consecutive elements per tile with vectorized accesses
+    straight into registers. Below ``min_rows_for_vectorized`` rows, or when
+    the tile does not divide the row, the row is staged through shared memory
+    instead. The two bodies cannot be merged: TileLang rejects a
+    ``T.vectorized`` loop and a guarded tail load of the same buffer in one
+    kernel.
+    """
     chunk = threads * _PROD_POLICY.cols_per_thread
+    vectorized = N % chunk == 0 and _PROD_POLICY.min_rows_for_vectorized <= M
+    full_tiles = N // chunk if vectorized else 0
     tiles = ceildiv_int(N, chunk)
     exact = tiles * chunk == N
     num_warps = threads // _WARP_LANES
+    # One vector access is at most 16 bytes; wider per-thread spans split into
+    # several back-to-back vector loads.
+    vec_elems = min(_PROD_POLICY.cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
+    vec_groups = _PROD_POLICY.cols_per_thread // vec_elems
 
     @tilelang.jit(out_idx=[1])
     def _func():
@@ -416,23 +522,46 @@ def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
                 tx = T.get_thread_binding()
                 running = T.alloc_local((1,), "float32")
                 warp_prod = T.alloc_shared((num_warps,), "float32")
-                staged = T.alloc_shared((chunk,), dtype)
+                held = T.alloc_local((_PROD_POLICY.cols_per_thread,), dtype)
+                staged = T.alloc_shared((1 if vectorized else chunk,), dtype)
+                # One independent fp32 chain per slot; a single running product
+                # would serialize every multiply behind the previous one.
+                slots = T.alloc_local((_PROD_POLICY.cols_per_thread,), "float32")
 
-                running[0] = T.cast(1.0, "float32")
-                for t in T.serial(tiles):
-                    for i in T.Parallel(chunk):
-                        staged[i] = x[row, t * chunk + i]
-                    T.sync_threads()
-                    for c in T.serial(_PROD_POLICY.cols_per_thread):
-                        held = staged[tx * _PROD_POLICY.cols_per_thread + c]
-                        if exact:
-                            running[0] = running[0] * T.cast(held, "float32")
-                        else:
-                            col = (t * threads + tx) * _PROD_POLICY.cols_per_thread + c
-                            running[0] = running[0] * T.if_then_else(
-                                col < N, T.cast(held, "float32"), T.cast(1.0, "float32")
-                            )
-                    T.sync_threads()
+                for c in T.serial(_PROD_POLICY.cols_per_thread):
+                    slots[c] = T.cast(1.0, "float32")
+                if vectorized:
+                    for t in T.serial(full_tiles):
+                        for g in T.serial(vec_groups):
+                            for c in T.vectorized(vec_elems):
+                                held[g * vec_elems + c] = x[
+                                    row,
+                                    t * chunk
+                                    + tx * _PROD_POLICY.cols_per_thread
+                                    + g * vec_elems
+                                    + c,
+                                ]
+                        for c in T.serial(_PROD_POLICY.cols_per_thread):
+                            slots[c] = slots[c] * T.cast(held[c], "float32")
+                else:
+                    for t in T.serial(tiles):
+                        for i in T.Parallel(chunk):
+                            staged[i] = x[row, t * chunk + i]
+                        T.sync_threads()
+                        for c in T.serial(_PROD_POLICY.cols_per_thread):
+                            kept = staged[tx * _PROD_POLICY.cols_per_thread + c]
+                            if exact:
+                                slots[c] = slots[c] * T.cast(kept, "float32")
+                            else:
+                                col = (t * threads + tx) * _PROD_POLICY.cols_per_thread + c
+                                slots[c] = slots[c] * T.if_then_else(
+                                    col < N, T.cast(kept, "float32"), T.cast(1.0, "float32")
+                                )
+                        T.sync_threads()
+
+                running[0] = slots[0]
+                for c in T.serial(1, _PROD_POLICY.cols_per_thread):
+                    running[0] = running[0] * slots[c]
 
                 for stage in T.serial(_WARP_STAGES):
                     running[0] = running[0] * T.shfl_xor(
@@ -901,6 +1030,9 @@ class ReduceKernel(Kernel):
         self._leading_axis_kind = op_kind in _LEADING_AXIS_KINDS and self.reduce_axes == tuple(
             range(len(self.reduce_axes))
         )
+        # Axes hugging both edges also run in the tensor's own layout; the rank
+        # check again waits for forward.
+        self._edge_axis_kind = op_kind in _LEADING_AXIS_KINDS
         self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
@@ -986,6 +1118,11 @@ class ReduceKernel(Kernel):
         if self._leading_axis_kind and reduces_leading_axes(x.ndim, self.reduce_axes):
             columns = self._reduce_leading_axes(x)
             return restore_reduced(columns, in_shape, self.reduce_axes, self.keepdim)
+        if self._edge_axis_kind:
+            k, j = edge_axis_split(x.ndim, self.reduce_axes)
+            if k:
+                y = self._reduce_edge_axes(x, k, j)
+                return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
         rows = rows_for_axes(x, self.reduce_axes)
         result = self._reduce_rows(rows)
         if self.op_kind == "var_mean":
@@ -996,52 +1133,70 @@ class ReduceKernel(Kernel):
             )
         return restore_reduced(result, in_shape, self.reduce_axes, self.keepdim)
 
-    def _reduce_leading_axes(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce the leading axes of *x* down to one value per kept column.
+    def _reduce_edge_axes(self, x: torch.Tensor, k: int, j: int) -> torch.Tensor:
+        """Reduce a prefix and a suffix of the axes without permuting the tensor.
 
-        Splitting the reduced axis is what fills the grid, and each slice leaves an
-        fp32 partial row; a second call over those rows finishes the op. The partials
-        are a few thousand values against the millions the first pass reads, so the
-        second call costs about nothing.
+        Two passes in the tensor's own layout: the trailing axes reduce as
+        contiguous rows into fp32 partials, then the leading axes reduce down
+        the columns of those partials. The permute a single pass needs would
+        read and write the whole tensor before reducing anything; the partials
+        here are ``lead * kept`` values against the ``lead * kept * trail`` the
+        first pass reads.
+
+        Everything between the loads and the one cast at the end stays fp32,
+        like the single-pass kernels. ``mean`` runs the first pass as ``sum``
+        and divides in the second by the full reduced count.
         """
-        reduced, kept = leading_axis_split(tuple(x.shape), self.reduce_axes)
-        flat = x.reshape(reduced, kept)
-        splits = leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
-        divisor = float(reduced) if self.op_kind == "mean" else 0.0
-        if splits == 1:
-            single = _leading_reduce_kernel(
-                reduced,
-                kept,
-                self.op_kind,
+        shape = tuple(x.shape)
+        lead = prod(shape[:k])
+        kept = prod(shape[k : x.ndim - j])
+        trail = prod(shape[x.ndim - j :])
+        inner_kind = "sum" if self.op_kind == "mean" else self.op_kind
+        planner = BlockConfigPlanner(
+            align_up(trail, DEFAULT_ALIGNMENT),
+            self._elem_bytes,
+            self._smem_budget,
+        )
+        cfg = planner.default_config()
+        if planner.needs_tiling:
+            rows_stage = _simple_reduce_kernel_tiled(
+                lead * kept,
+                trail,
+                inner_kind,
                 self.dtype_str,
-                self.dtype_str,
-                _LEADING_POLICY.threads,
-                1,
-                divisor,
+                cfg["tile_n"],
+                "float32",
             )
-            return single()(flat)
-        partials = _leading_reduce_kernel(
-            reduced,
-            kept,
+        else:
+            rows_stage = _simple_reduce_kernel(
+                lead * kept,
+                trail,
+                inner_kind,
+                self.dtype_str,
+                "float32",
+            )
+        partials = rows_stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
+        divisor = float(lead * trail) if self.op_kind == "mean" else 0.0
+        y = _reduce_down_rows(
+            partials.reshape(lead, kept),
             self.op_kind,
-            self.dtype_str,
             "float32",
-            _LEADING_POLICY.threads,
-            splits,
-            0.0,
-        )()(flat)
-        # Partials are summed even for mean, whose divisor is the whole row count.
-        finish = _leading_reduce_kernel(
-            splits,
-            kept,
-            "sum" if self.op_kind == "mean" else self.op_kind,
             "float32",
-            self.dtype_str,
-            _LEADING_POLICY.threads,
-            1,
             divisor,
         )
-        return finish()(partials.reshape(splits, kept))
+        return y.to(x.dtype)
+
+    def _reduce_leading_axes(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce the leading axes of *x* down to one value per kept column."""
+        reduced, kept = leading_axis_split(tuple(x.shape), self.reduce_axes)
+        divisor = float(reduced) if self.op_kind == "mean" else 0.0
+        return _reduce_down_rows(
+            x.reshape(reduced, kept),
+            self.op_kind,
+            self.dtype_str,
+            self.dtype_str,
+            divisor,
+        )
 
     def _reduce_rows(self, x: torch.Tensor) -> object:
         """Reduce the trailing axis of an ``(M, N)`` buffer."""
