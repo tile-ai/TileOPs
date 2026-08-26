@@ -697,7 +697,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         from tilelang.autotuner import autotune as tl_autotune
 
         # The split-row pair bypasses the tuned kernel; measuring candidates
-        # for a path forward will not take is waste, so the default config
+        # for a path forward will not take is wasted work, so the default config
         # (whose threads the split kernels share) stands.
         default = self.default_config
         if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
@@ -787,7 +787,9 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         """
         seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
         if seg_n:
-            threads = self.config.get("threads", _DEFAULT_TUNE_THREADS)
+            # The split pair stands on the default width: split_seg_n's
+            # fragment cap assumes it, and autotune never sweeps this path.
+            threads = _DEFAULT_TUNE_THREADS
             seg_max, seg_sum = softmax_split_partials_kernel(
                 self.M, self.N, seg_n, self.dtype_str, threads
             )()(x)
