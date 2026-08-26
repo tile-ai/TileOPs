@@ -65,11 +65,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import WARP_LANES
 
 __all__ = ["FusedTopKKernel"]
 
 _SCORING_FUNCS = ("softmax", "sigmoid")
-_WARP_SIZE = 32
 
 
 @functools.lru_cache(maxsize=64)
@@ -101,7 +101,7 @@ def _fused_topk_kernel(
 
     @tilelang.jit(out_idx=[])
     def _func(TOKENS_PER_BLOCK):
-        WARP_SIZE = _WARP_SIZE
+        WARP_SIZE = WARP_LANES
         # Each lane handles ceil(E / 32) experts stored in local registers.
         ELEMS_PER_THREAD = -(-num_experts // WARP_SIZE)  # ceildiv(E, 32)
         LOG_WARP = int(math.log2(WARP_SIZE))  # = 5 for WARP_SIZE=32

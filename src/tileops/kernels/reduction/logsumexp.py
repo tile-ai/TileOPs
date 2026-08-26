@@ -26,6 +26,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
@@ -45,14 +46,11 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
     split_target_blocks,
 )
+from tileops.utils import WARP_LANES
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
-
-_WARP_LANES = 32
-
-_LOG2E = 1.4426950408889634
 
 
 @dataclass(frozen=True)
@@ -128,7 +126,7 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
             seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
             y: T.Tensor[(M,), dtype],
         ):
-            with T.Kernel(M, threads=_WARP_LANES) as pid_m:
+            with T.Kernel(M, threads=WARP_LANES) as pid_m:
                 tx = T.get_thread_binding()
                 row_max = T.alloc_local((1,), "float32")
                 row_sum = T.alloc_local((1,), "float32")
@@ -326,10 +324,10 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     if N % chunk:
         raise ValueError(f"streaming kernel needs N % {chunk} == 0, got N={N}")
     num_chunks = N // chunk
-    num_warps = threads // _WARP_LANES
+    num_warps = threads // WARP_LANES
     vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
     vec_groups = cols_per_thread // vec_elems
-    warp_stages = _WARP_LANES.bit_length() - 1
+    warp_stages = WARP_LANES.bit_length() - 1
     floor = _STREAM_POLICY.max_floor
     ceil = _STREAM_POLICY.max_ceil
 
@@ -342,8 +340,8 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
             m_new[0] = T.max(dst_m[0], src_m)
             m_safe[0] = T.min(m_new[0], ceil)
             dst_s[0] = dst_s[0] * T.exp2(
-                (T.min(dst_m[0], ceil) - m_safe[0]) * _LOG2E
-            ) + src_s * T.exp2((T.min(src_m, ceil) - m_safe[0]) * _LOG2E)
+                (T.min(dst_m[0], ceil) - m_safe[0]) * LOG2E
+            ) + src_s * T.exp2((T.min(src_m, ceil) - m_safe[0]) * LOG2E)
             dst_m[0] = m_new[0]
 
         @T.prim_func
@@ -383,11 +381,11 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
                     m_new[0] = m_run[0]
                     for c in T.serial(cols_per_thread):
                         m_new[0] = T.max(m_new[0], held_f[c])
-                    scale[0] = T.exp2((m_safe[0] - T.min(m_new[0], ceil)) * _LOG2E)
+                    scale[0] = T.exp2((m_safe[0] - T.min(m_new[0], ceil)) * LOG2E)
                     m_run[0] = m_new[0]
                     m_safe[0] = T.min(m_new[0], ceil)
                     for c in T.serial(cols_per_thread):
-                        slots[c] = slots[c] * scale[0] + T.exp2((held_f[c] - m_safe[0]) * _LOG2E)
+                        slots[c] = slots[c] * scale[0] + T.exp2((held_f[c] - m_safe[0]) * LOG2E)
 
                 s_run[0] = slots[0]
                 for c in T.serial(1, cols_per_thread):
@@ -396,15 +394,15 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
                 for stage in T.serial(warp_stages):
                     # Bound locals: a bare expression is substituted per mention.
                     other_m[0] = T.shfl_xor(
-                        m_run[0], T.int32(_WARP_LANES // 2) >> stage, width=_WARP_LANES
+                        m_run[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
                     )
                     other_s[0] = T.shfl_xor(
-                        s_run[0], T.int32(_WARP_LANES // 2) >> stage, width=_WARP_LANES
+                        s_run[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
                     )
                     merge_pair(m_run, s_run, other_m[0], other_s[0], m_new, m_safe)
-                if tx % _WARP_LANES == 0:
-                    warp_m[tx // _WARP_LANES] = m_run[0]
-                    warp_s[tx // _WARP_LANES] = s_run[0]
+                if tx % WARP_LANES == 0:
+                    warp_m[tx // WARP_LANES] = m_run[0]
+                    warp_s[tx // WARP_LANES] = s_run[0]
                 T.sync_threads()
                 if tx == 0:
                     for w in T.serial(1, num_warps):

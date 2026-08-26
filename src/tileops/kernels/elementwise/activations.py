@@ -5,6 +5,8 @@ import functools
 import tilelang
 import tilelang.language as T
 
+from tileops.kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
+
 from ._base import (
     _FLOAT_DTYPES,
     FloatUnaryKernel,
@@ -47,7 +49,7 @@ class GeluFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        inv_sqrt_2 = T.cast(0.7071067811865476, "float32")
+        inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
         return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
@@ -62,8 +64,8 @@ class GeluTanhFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")
-        coeff = T.cast(0.044715, "float32")
+        sqrt_2_over_pi = T.cast(SQRT_2_OVER_PI, "float32")
+        coeff = T.cast(GELU_TANH_COEFF, "float32")
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
         x_f32 = T.cast(x, "float32")
@@ -475,7 +477,7 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
         # exp2 form (fp32): exp2 lowers to one MUFU.EX2 vs expf's multi-op sequence.
         g = T.Cast("float32", x)
         one = T.cast(1.0, "float32")
-        log2e = T.cast(1.4426950408889634, "float32")
+        log2e = T.cast(LOG2E, "float32")
         return g / (one + T.exp2(-g * log2e))
 
 
@@ -490,7 +492,7 @@ class GeluAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        inv_sqrt2 = T.cast(0.7071067811865476, "float32")  # 1/sqrt(2)
+        inv_sqrt2 = T.cast(INV_SQRT2, "float32")  # 1/sqrt(2)
         half = T.cast(0.5, x.dtype)
         one = T.cast(1.0, x.dtype)
         x_f32 = T.Cast("float32", x)
@@ -508,8 +510,8 @@ class GeluTanhAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")  # sqrt(2/pi)
-        coeff = T.cast(0.044715, "float32")  # GELU tanh approx coefficient
+        sqrt_2_over_pi = T.cast(SQRT_2_OVER_PI, "float32")  # sqrt(2/pi)
+        coeff = T.cast(GELU_TANH_COEFF, "float32")  # GELU tanh approx coefficient
         half = T.cast(0.5, x.dtype)
         one = T.cast(1.0, x.dtype)
         x_f32 = T.Cast("float32", x)

@@ -16,6 +16,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import INV_SQRT2
 from tileops.kernels.grouped_gemm import rows_per_group_regime
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Kernel
@@ -58,10 +59,7 @@ def _fused_act_expr(name):
     if name == "gelu_and_mul":
         # exact erf GELU: 0.5*g*(1+erf(g/sqrt(2)))
         return lambda gate, up: (
-            T.float32(0.5)
-            * gate
-            * (T.float32(1.0) + T.erf(gate * T.float32(0.7071067811865476)))
-            * up
+            T.float32(0.5) * gate * (T.float32(1.0) + T.erf(gate * T.float32(INV_SQRT2))) * up
         )
     raise ValueError(f"unsupported activation {name!r}")
 

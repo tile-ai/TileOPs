@@ -32,6 +32,7 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 from .call_spec import paged_decode_ws_region
@@ -39,7 +40,6 @@ from .call_spec import paged_decode_ws_region
 __all__ = ["MHADecodePagedWsKernel"]
 
 #: log2(e): the softmax runs on exp2, which is one instruction.
-LOG2E = 1.44269504
 
 WARP = 32
 #: Warps in the consumer group. One warp group of each role, 256 threads: two

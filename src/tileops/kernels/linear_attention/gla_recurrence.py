@@ -21,11 +21,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
-_LOG2E = 1.4426950408889634
 _DEFAULT_K_TILE = 16
 
 
@@ -99,7 +99,7 @@ def _gla_decode_tl(
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
                     for kk in T.Serial(k_tile):
                         gk_val = gk_shared[kt * k_tile + kk]
-                        alpha_i = T.exp2(gk_val * _LOG2E)
+                        alpha_i = T.exp2(gk_val * LOG2E)
                         q_gated = q_shared[kt * k_tile + kk] * alpha_i
                         for j in T.Parallel(dim_v):
                             sq_frag[j] = sq_frag[j] + q_gated * T.cast(h_tile_o[kk, j], accum_dtype)
@@ -124,7 +124,7 @@ def _gla_decode_tl(
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
-                            T.exp2(gk_shared[kt * k_tile + kk] * _LOG2E)
+                            T.exp2(gk_shared[kt * k_tile + kk] * LOG2E)
                             * T.cast(h_tile[kk, j], accum_dtype)
                             + k_shared[kt * k_tile + kk] * v_shared[j],
                             dtype,
@@ -374,7 +374,7 @@ def _gla_decode_fp32_tl(
                 # S @ q_gated where q_gated = q * exp(gk)
                 for kk in T.Serial(dim_k):
                     gk_val = gk_shared[kk]
-                    alpha_i = T.exp2(gk_val * _LOG2E)
+                    alpha_i = T.exp2(gk_val * LOG2E)
                     q_gated = q_shared[kk] * alpha_i
                     for j in T.Parallel(dim_v):
                         sq_frag[j] = sq_frag[j] + q_gated * state[bid, hid, kk, j]
@@ -395,7 +395,7 @@ def _gla_decode_fp32_tl(
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
-                            T.exp2(gk_shared[kt * k_tile + kk] * _LOG2E) * h_tile[kk, j]
+                            T.exp2(gk_shared[kt * k_tile + kk] * LOG2E) * h_tile[kk, j]
                             + k_shared[kt * k_tile + kk] * v_shared[j]
                         )
 

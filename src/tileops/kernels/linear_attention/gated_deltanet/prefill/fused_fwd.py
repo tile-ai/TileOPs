@@ -9,6 +9,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
+
 from .utils import prepare_chunk_offsets
 
 MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
@@ -249,12 +251,12 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     T.barrier_wait(bar_0, i_s % 2)
                     # Precompute g, g_last/g
                     for j_s in T.Parallel(block_S):
-                        g_exp_shared[j_s] = T.exp2(g_shared[i_s % 2, j_s] * 1.442695)
+                        g_exp_shared[j_s] = T.exp2(g_shared[i_s % 2, j_s] * LOG2E)
                     for j_s in T.Parallel(block_S):
                         g_rev_exp_shared[j_s] = T.if_then_else(
                             seq_start_idx + i_s * block_S + j_s < seq_end_idx,
                             T.exp2(
-                                (g_shared[i_s % 2, block_S - 1] - g_shared[i_s % 2, j_s]) * 1.442695
+                                (g_shared[i_s % 2, block_S - 1] - g_shared[i_s % 2, j_s]) * LOG2E
                             ),
                             0.0,
                         )
@@ -326,7 +328,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         g_fragment[j_s, j_t] = g_shared[i_s % 2, j_s] - g_shared[i_s % 2, j_t]
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         if j_s >= j_t:
-                            g_fragment[j_s, j_t] = T.exp2(g_fragment[j_s, j_t] * 1.442695)
+                            g_fragment[j_s, j_t] = T.exp2(g_fragment[j_s, j_t] * LOG2E)
                         else:
                             g_fragment[j_s, j_t] = 0
                     # Ag = G * Ar * b

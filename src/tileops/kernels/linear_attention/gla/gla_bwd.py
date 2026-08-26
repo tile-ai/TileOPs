@@ -19,14 +19,13 @@ import torch
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 from ..v_tile import GEMM_MIN_N
 from .gla_fwd import _gla_precompute_g_kernel
 
 __all__ = ["GLABwdKernel"]
-
-LOG2_E = 1.44269504
 
 
 # Pass 1: compute dh per chunk (reverse order, sequential)
@@ -135,7 +134,7 @@ def _gla_bwd_dh_kernel(
                     for i_t, i_k in T.Parallel(chunk_size, dim_k):
                         q_gated_s[i_t, i_k] = T.cast(
                             T.cast(q_s[i_t, i_k], accum_dtype)
-                            * T.exp2(g_cumsum_s[i_t, i_k] * LOG2_E),
+                            * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E),
                             dtype,
                         )
 
@@ -154,7 +153,7 @@ def _gla_bwd_dh_kernel(
 
                     # Decay for next (earlier) chunk
                     for i_k, i_v in T.Parallel(dim_k, dim_v_part):
-                        dh_s[i_k, i_v] = dh_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2_E)
+                        dh_s[i_k, i_v] = dh_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2E)
 
                 # Write dh0
                 if has_initial_state:
@@ -266,7 +265,7 @@ def _gla_bwd_fused_kernel(
                         A_frag[i_t, i_j] = A_frag[i_t, i_j] + (
                             T.cast(q_s[i_t, i_k], accum_dtype)
                             * T.cast(k_s[i_j, i_k], accum_dtype)
-                            * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2_E)
+                            * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2E)
                         )
                 for i_t, i_j in T.Parallel(BT, BT):
                     A_s[i_t, i_j] = T.cast(
@@ -314,7 +313,7 @@ def _gla_bwd_fused_kernel(
                                             g_cumsum_s[s_i * BC, i_k]
                                             - g_cumsum_s[s_j * BC + i_t, i_k]
                                         )
-                                        * LOG2_E
+                                        * LOG2E
                                     ),
                                     dtype,
                                 )
@@ -323,7 +322,7 @@ def _gla_bwd_fused_kernel(
                     for i_local, i_k in T.Parallel(BC, dim_k):
                         dq_sub[i_local, i_k] = dq_sub[i_local, i_k] * T.exp2(
                             (g_cumsum_s[s_i * BC + i_local, i_k] - g_cumsum_s[s_i * BC, i_k])
-                            * LOG2_E
+                            * LOG2E
                         )
 
                     # Diagonal: fragment-based to avoid bf16 smem codegen bug
@@ -343,7 +342,7 @@ def _gla_bwd_fused_kernel(
                         for i_local, i_k in T.Parallel(BC, dim_k):
                             dq_sub[i_local, i_k] = dq_sub[i_local, i_k] + dA_col[i_local] * k_row[
                                 i_k
-                            ] * T.exp2((g_cumsum_s[s_i * BC + i_local, i_k] - g_j[i_k]) * LOG2_E)
+                            ] * T.exp2((g_cumsum_s[s_i * BC + i_local, i_k] - g_j[i_k]) * LOG2E)
 
                     for i_local, i_k in T.Parallel(BC, dim_k):
                         dq_frag[s_i * BC + i_local, i_k] = dq_sub[i_local, i_k]
@@ -369,7 +368,7 @@ def _gla_bwd_fused_kernel(
                                             g_cumsum_s[s_i * BC + i_t, i_k]
                                             - g_cumsum_s[(s_j + 1) * BC - 1, i_k]
                                         )
-                                        * LOG2_E
+                                        * LOG2E
                                     ),
                                     dtype,
                                 )
@@ -387,7 +386,7 @@ def _gla_bwd_fused_kernel(
                                 g_cumsum_s[(s_j + 1) * BC - 1, i_k]
                                 - g_cumsum_s[s_j * BC + j_local, i_k]
                             )
-                            * LOG2_E
+                            * LOG2E
                         )
 
                     # Diagonal: fragment-based
@@ -407,7 +406,7 @@ def _gla_bwd_fused_kernel(
                         for j_local, i_k in T.Parallel(BC, dim_k):
                             dk_sub[j_local, i_k] = dk_sub[j_local, i_k] + dA_row[j_local] * q_row[
                                 i_k
-                            ] * T.exp2((g_i[i_k] - g_cumsum_s[s_j * BC + j_local, i_k]) * LOG2_E)
+                            ] * T.exp2((g_i[i_k] - g_cumsum_s[s_j * BC + j_local, i_k]) * LOG2E)
 
                     for j_local, i_k in T.Parallel(BC, dim_k):
                         dk_frag[s_j * BC + j_local, i_k] = dk_sub[j_local, i_k]
@@ -431,7 +430,7 @@ def _gla_bwd_fused_kernel(
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     k_gated_s[i_t, i_k] = T.cast(
                         T.cast(k_s[i_t, i_k], accum_dtype)
-                        * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2_E),
+                        * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E),
                         dtype,
                     )
 
@@ -453,7 +452,7 @@ def _gla_bwd_fused_kernel(
                 # dq = dq_intra + scale * dq_inter * exp(g_cumsum)
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dq_frag[i_t, i_k] = dq_frag[i_t, i_k] + scale * dq_inter_s[i_t, i_k] * T.exp2(
-                        g_cumsum_s[i_t, i_k] * LOG2_E
+                        g_cumsum_s[i_t, i_k] * LOG2E
                     )
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dq_out[i_b, chunk_start + i_t, i_h, i_k] = dq_frag[i_t, i_k]
@@ -471,7 +470,7 @@ def _gla_bwd_fused_kernel(
                 # dk = dk_intra + dk_inter * exp(g_last - g_cumsum)
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dk_frag[i_t, i_k] = dk_frag[i_t, i_k] + dk_inter_s[i_t, i_k] * T.exp2(
-                        (g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2_E
+                        (g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E
                     )
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dk_out[i_b, chunk_start + i_t, i_h, i_k] = dk_frag[i_t, i_k]
@@ -487,7 +486,7 @@ def _gla_bwd_fused_kernel(
                             * T.cast(dh[i_b, i_c, i_h, i_k, i_v2], accum_dtype)
                         )
                 for i_k in T.Parallel(dim_k):
-                    dg_inter[i_k] = dg_inter[i_k] * T.exp2(g_last[i_k] * LOG2_E)
+                    dg_inter[i_k] = dg_inter[i_k] * T.exp2(g_last[i_k] * LOG2E)
 
                 # Correction: k * dk_inter_gated
                 corr_s = T.alloc_shared([BT, dim_k], accum_dtype)
@@ -495,7 +494,7 @@ def _gla_bwd_fused_kernel(
                     corr_s[i_t, i_k] = (
                         T.cast(k_s[i_t, i_k], accum_dtype)
                         * dk_inter_s[i_t, i_k]
-                        * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2_E)
+                        * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E)
                     )
                 for i_t in T.Serial(BT):
                     for i_k in T.Parallel(dim_k):

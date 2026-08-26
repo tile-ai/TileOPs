@@ -5,6 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Kernel
 
 from ._config import tile_stage_thread_configs
@@ -1053,8 +1054,8 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
         )
         rescale = make_rescale(block_m, dim)
         page_size_log2 = page_size.bit_length() - 1
-        fp8_min = -448.0
-        fp8_max = 448.0
+        fp8_min = -FP8_E4M3_MAX
+        fp8_max = FP8_E4M3_MAX
 
         @T.macro
         def quantize_fp8(value, scale_value):

@@ -18,6 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 from ..autotune import (
@@ -29,8 +30,6 @@ from ..v_tile import resolve_block_v
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
 __all__ = ["GatedDeltaNetFwdKernel", "GatedDeltaNetFwdProductionKernel"]
-
-_LOG2E = 1.4426950408889634
 
 
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
@@ -112,7 +111,7 @@ def _h_recurrence_tl(
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * LOG2E
                         )
 
                     # Store v_new tile
@@ -124,9 +123,9 @@ def _h_recurrence_tl(
 
                     # h_tile_next = h_tile * exp(g_last) + k^T @ scaled_v_new_tile
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -207,14 +206,14 @@ def _output_o_tl(
                 T.clear(o_frag)
                 T.gemm(q_c, h_c, o_frag)
                 for i, j in T.Parallel(block_C, dim_v):
-                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * _LOG2E)
+                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * LOG2E)
 
                 # attn = causal(q @ k^T) * Gamma
                 T.clear(attn_frag)
                 T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(
-                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E), T.float32(0.0)
+                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E), T.float32(0.0)
                     )
 
                 # o += attn @ v_new
