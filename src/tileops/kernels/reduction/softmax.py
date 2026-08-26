@@ -29,9 +29,16 @@ from tileops.kernels.reduction._primitives import (
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
+    ceildiv_int,
     device_smem_budget,
     restore_same_shape,
     rows_for_axes,
+)
+from tileops.kernels.reduction._split_softmax import (
+    make_split_fold,
+    softmax_split_partials_kernel,
+    split_seg_n,
+    split_target_blocks,
 )
 
 # These two kernels bake tile_n in at build time and default to the wider
@@ -439,6 +446,65 @@ def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
     return _softmax_kernel_tiled(M, N, op_kind, dtype, tile_n)
 
 
+@functools.lru_cache(maxsize=64)
+def _softmax_split_finalize_kernel(
+    M: int, N: int, op_kind: str, dtype: str, seg_n: int, threads: int
+):
+    """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
+
+    The fold reads ``num_segs`` fp32 pairs; staged through shared memory
+    once, every thread then folds redundantly from there rather than each
+    walking global memory.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+    fold = make_split_fold(num_segs)
+
+    @tilelang.jit(out_idx=[3])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            y: T.Tensor[(M, N), dtype],
+        ):
+            with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
+                stat_max = T.alloc_shared((num_segs,), "float32")
+                stat_sum = T.alloc_shared((num_segs,), "float32")
+                row_max = T.alloc_local((1,), "float32")
+                row_sum = T.alloc_local((1,), "float32")
+                held = T.alloc_local((1,), "float32")
+
+                for s in T.Parallel(num_segs):
+                    stat_max[s] = seg_max[pid_m * num_segs + s]
+                    stat_sum[s] = seg_sum[pid_m * num_segs + s]
+                T.sync_threads()
+
+                fold(stat_max, stat_sum, 0, row_max, row_sum, held)
+
+                for _, j in T.Parallel(1, seg_n):
+                    col = pid_s * seg_n + j
+                    with T.If(col < N):  # noqa: SIM117
+                        with T.Then():
+                            if op_kind == "softmax":
+                                y[pid_m, col] = T.cast(
+                                    T.exp(T.cast(x[pid_m, col], "float32") - row_max[0])
+                                    / row_sum[0],
+                                    dtype,
+                                )
+                            else:
+                                y[pid_m, col] = T.cast(
+                                    T.cast(x[pid_m, col], "float32")
+                                    - row_max[0]
+                                    - T.log(row_sum[0]),
+                                    dtype,
+                                )
+
+        return main
+
+    return _func
+
+
 def _compute_padded_cols(N: int, tile_n: int) -> int:
     """Compute the total column count (may exceed N_padded for tiled path)."""
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -511,6 +577,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
+        self._split_target = split_target_blocks(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
@@ -629,6 +696,12 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         """
         from tilelang.autotuner import autotune as tl_autotune
 
+        # The split pair bypasses the tuned kernel, so the default config stands.
+        default = self.default_config
+        if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
+            self.config = default
+            return
+
         configs = self.autotune_configs
         if not configs:
             return
@@ -707,8 +780,19 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         """Normalize the trailing axis of an ``(M, N)`` buffer.
 
         The prim_func writes an alignment-padded row; the surplus columns are trimmed
-        here.
+        here. A handful of long rows goes to the split-row pair instead, which
+        writes exact columns.
         """
+        seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
+        if seg_n:
+            # split_seg_n's fragment cap assumes the default width.
+            threads = _DEFAULT_TUNE_THREADS
+            seg_max, seg_sum = softmax_split_partials_kernel(
+                self.M, self.N, seg_n, self.dtype_str, threads
+            )()(x)
+            return _softmax_split_finalize_kernel(
+                self.M, self.N, self.op_kind, self.dtype_str, seg_n, threads
+            )()(x, seg_max, seg_sum)
         program = _softmax_kernel(self.M, self.N, self.op_kind, self.dtype_str, self._tile_n)
         y = program(self.config["block_m"], self.config["threads"])(x)
         return y[:, : self.N] if y.shape[1] > self.N else y

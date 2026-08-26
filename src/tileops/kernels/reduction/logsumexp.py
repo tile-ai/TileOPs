@@ -28,16 +28,59 @@ from tileops.kernels.reduction._primitives import (
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
+    ceildiv_int,
     device_smem_budget,
     restore_reduced,
     rows_for_axes,
+)
+from tileops.kernels.reduction._split_softmax import (
+    make_split_fold,
+    softmax_split_partials_kernel,
+    split_seg_n,
+    split_target_blocks,
 )
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
 
+_WARP_LANES = 32
+
 __all__ = ["LogSumExpKernel"]
+
+
+@functools.lru_cache(maxsize=64)
+def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
+    """Fold per-segment ``(max, sum)`` into one logsumexp per row.
+
+    The fold is over a few hundred fp32 pairs, so one warp per row is enough;
+    unlike softmax there is no second pass over the input. An all--inf row
+    reads ``-inf + log(0)``, which is torch's ``-inf``.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+    fold = make_split_fold(num_segs)
+
+    @tilelang.jit(out_idx=[2])
+    def _func():
+        @T.prim_func
+        def main(
+            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            y: T.Tensor[(M,), dtype],
+        ):
+            with T.Kernel(M, threads=_WARP_LANES) as pid_m:
+                tx = T.get_thread_binding()
+                row_max = T.alloc_local((1,), "float32")
+                row_sum = T.alloc_local((1,), "float32")
+                held = T.alloc_local((1,), "float32")
+
+                if tx == 0:
+                    fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum, held)
+                    y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
+
+        return main
+
+    return _func
 
 
 # Single-tile kernel (N fits in shared memory) -- original fast path
@@ -285,6 +328,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        self._split_target = split_target_blocks(device_index)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
@@ -384,6 +428,12 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         """
         from tilelang.autotuner import autotune as tl_autotune
 
+        # The split pair bypasses the tuned kernel, so the default config stands.
+        default = self.default_config
+        if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
+            self.config = default
+            return
+
         configs = self.autotune_configs
         if not configs:
             return
@@ -456,6 +506,20 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        """Reduce the trailing axis of an ``(M, N)`` buffer.
+
+        A handful of long rows goes to the split pair: softmax's per-segment
+        statistics, then a per-row fold.
+        """
+        seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
+        if seg_n:
+            # split_seg_n's fragment cap assumes the default width.
+            threads = _DEFAULT_TUNE_THREADS
+            seg_max, seg_sum = softmax_split_partials_kernel(
+                self.M, self.N, seg_n, self.dtype_str, threads
+            )()(x)
+            return _logsumexp_split_fold_kernel(self.M, self.N, self.dtype_str, seg_n)()(
+                seg_max, seg_sum
+            )
         program = _logsumexp_kernel(self.M, self.N, self.dtype_str, self._tile_n)
         return program(self.config["block_m"], self.config["threads"])(x)

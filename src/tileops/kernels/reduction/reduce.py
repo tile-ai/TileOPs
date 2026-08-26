@@ -13,11 +13,15 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
+    FP32_EXACT_INT_LIMIT,
     VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     align_up,
     ceildiv_int,
     device_smem_budget,
+    edge_axis_plan,
+    edge_axis_split,
+    reduce_down_rows,
     restore_reduced,
     rows_for_axes,
     torch_dtype_nbytes,
@@ -41,17 +45,6 @@ _FRAG_SLOTS = {
 
 
 @dataclass(frozen=True)
-class LeadingAxisReducePolicy:
-    """Launch heuristics for reductions down contiguous leading axes."""
-
-    cols_per_thread: int = 8
-
-    threads: int = 64
-
-    target_blocks: int = 512
-
-
-@dataclass(frozen=True)
 class ProductReducePolicy:
     """Launch heuristics for product reductions."""
 
@@ -62,7 +55,6 @@ class ProductReducePolicy:
     min_rows_for_vectorized: int = 256
 
 
-_LEADING_POLICY = LeadingAxisReducePolicy()
 _PROD_POLICY = ProductReducePolicy()
 
 
@@ -285,209 +277,6 @@ def reduces_leading_axes(ndim: int, axes: "tuple[int, ...]") -> bool:
     return 0 < len(axes) < ndim and tuple(axes) == tuple(range(len(axes)))
 
 
-def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
-    """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
-
-    Returns ``(0, 0)`` unless *axes* is a non-empty prefix plus a non-empty
-    suffix with at least one kept axis in between — the layout
-    ``ReduceKernel._reduce_edge_axes`` handles without permuting the tensor.
-    """
-    k = 0
-    while k < len(axes) and axes[k] == k:
-        k += 1
-    j = len(axes) - k
-    if k == 0 or j == 0:
-        return (0, 0)
-    if tuple(axes[k:]) != tuple(range(ndim - j, ndim)):
-        return (0, 0)
-    if k + j >= ndim:
-        return (0, 0)
-    return (k, j)
-
-
-def leading_row_splits(reduced: int, kept: int, threads: int) -> int:
-    """How many ways to split the reduced axis so the grid fills the device."""
-    block_b = threads * _LEADING_POLICY.cols_per_thread
-    column_blocks = ceildiv_int(kept, block_b)
-    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
-
-
-def _make_leading_reduce_ops(op_kind: str, divisor: float, out_dtype: str):
-    """Create the per-op macros used by the leading-axis reduction."""
-
-    @T.macro
-    def init(acc):
-        if op_kind == "amax":
-            T.fill(acc, -T.infinity("float32"))
-        elif op_kind == "amin":
-            T.fill(acc, T.infinity("float32"))
-        else:
-            T.fill(acc, 0.0)
-
-    @T.macro
-    def combine(acc, slot, value):
-        if op_kind == "amax":
-            acc[slot] = T.max(acc[slot], value)
-        elif op_kind == "amin":
-            acc[slot] = T.min(acc[slot], value)
-        else:
-            acc[slot] = acc[slot] + value
-
-    @T.macro
-    def finish(out_local, slot, accumulated):
-        if divisor:
-            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
-        else:
-            out_local[slot] = T.cast(accumulated, out_dtype)
-
-    return init, combine, finish
-
-
-@functools.lru_cache(maxsize=32)
-def _leading_reduce_kernel(
-    A: int,
-    B: int,
-    op_kind: str,
-    in_dtype: str,
-    out_dtype: str,
-    threads: int,
-    splits: int,
-    divisor: float,
-):
-    """Build a reduce down the leading axes of an ``(A, B)`` view.
-
-    One accumulator per output column, walked down the rows the block owns. Adjacent
-    threads take adjacent columns, so every row of the walk is one coalesced pass and
-    the tensor is read once in the layout it already has. The alternative -- permuting
-    the reduced axes to the end and making that contiguous -- reads and writes the whole
-    tensor before the reduction has read anything, which is three passes where this is
-    one.
-
-    The grid is ``(column blocks, splits)``: a leading-axis reduction has only as many
-    output columns as the axes it keeps, and one block per column tile would leave an
-    H200 running four of them.
-
-    Args:
-        A: Elements the reduction consumes per output column.
-        B: Output columns.
-        op_kind: One of ``_LEADING_AXIS_KINDS``.
-        in_dtype: TileLang dtype string of the input.
-        out_dtype: TileLang dtype string of the output. A split pass writes fp32
-            partials whatever it read; the pass that finishes writes the declared dtype.
-        threads: Threads per block.
-        splits: Row slices, each its own block row. Above 1 the output is one row of
-            partials per slice, for a second call with ``splits=1`` to finish.
-        divisor: What the accumulator is divided by before the output cast, or 0 for
-            none. Mean's divisor is the row count of the whole reduction, which a
-            second pass over partials can no longer see.
-    """
-    block_b = threads * _LEADING_POLICY.cols_per_thread
-    rows_per_split = ceildiv_int(A, splits)
-    exact = B % block_b == 0
-    init_acc, combine, finish = _make_leading_reduce_ops(op_kind, divisor, out_dtype)
-
-    @tilelang.jit(out_idx=[1])
-    def _func():
-        @T.prim_func
-        def main(
-            x: T.Tensor[(A, B), in_dtype],
-            out: T.Tensor[(splits * B,), out_dtype],
-        ):
-            with T.Kernel(T.ceildiv(B, block_b), splits, threads=threads) as (pid_b, pid_a):
-                acc = T.alloc_fragment((block_b,), "float32")
-                out_local = T.alloc_fragment((block_b,), out_dtype)
-
-                init_acc(acc)
-
-                for step in T.serial(rows_per_split):
-                    row = pid_a * rows_per_split + step
-                    for j in T.Parallel(block_b):
-                        col = pid_b * block_b + j
-                        in_range = row < A if exact else T.And(row < A, col < B)
-                        val = T.if_then_else(
-                            in_range,
-                            T.cast(x[row, col], "float32"),
-                            T.cast(_pad_value_for_op(op_kind), "float32"),
-                        )
-                        combine(acc, j, val)
-
-                for j in T.Parallel(block_b):
-                    finish(out_local, j, acc[j])
-
-                if exact:
-                    T.copy(out_local, out[pid_a * B + pid_b * block_b])
-                else:
-                    for j in T.Parallel(block_b):
-                        # TileLang requires T.If/T.Then as nested context managers.
-                        with T.If(pid_b * block_b + j < B):  # noqa: SIM117
-                            with T.Then():
-                                out[pid_a * B + pid_b * block_b + j] = out_local[j]
-
-        return main
-
-    return _func
-
-
-def _reduce_down_rows(
-    flat: torch.Tensor,
-    op_kind: str,
-    in_dtype: str,
-    out_dtype: str,
-    divisor: float,
-) -> torch.Tensor:
-    """Reduce an ``(A, B)`` buffer down its rows, writing one *out_dtype* row.
-
-    Splitting the reduced axis is what fills the grid, and each slice leaves an
-    fp32 partial row; a second call over those rows finishes the op. The partials
-    are a few thousand values against the millions the first pass reads, so the
-    second call costs about nothing.
-    """
-    reduced, kept = flat.shape
-    # An input smaller than one grid's worth of work cannot amortize the
-    # extra pass a split costs; reduce it in a single call.
-    grid_work = (
-        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
-    )
-    if reduced * kept <= grid_work:
-        splits = 1
-    else:
-        splits = leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
-    if splits == 1:
-        single = _leading_reduce_kernel(
-            reduced,
-            kept,
-            op_kind,
-            in_dtype,
-            out_dtype,
-            _LEADING_POLICY.threads,
-            1,
-            divisor,
-        )
-        return single()(flat)
-    partials = _leading_reduce_kernel(
-        reduced,
-        kept,
-        op_kind,
-        in_dtype,
-        "float32",
-        _LEADING_POLICY.threads,
-        splits,
-        0.0,
-    )()(flat)
-    # Partials are summed even for mean, whose divisor is the whole row count.
-    finish = _leading_reduce_kernel(
-        splits,
-        kept,
-        "sum" if op_kind == "mean" else op_kind,
-        "float32",
-        out_dtype,
-        _LEADING_POLICY.threads,
-        1,
-        divisor,
-    )
-    return finish()(partials.reshape(splits, kept))
-
-
 @functools.lru_cache(maxsize=32)
 def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
     """Build a product reduce: one block per row, multiplying in fp32.
@@ -588,21 +377,26 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
     ``0.0`` via masked loads when ``N`` is not aligned.  The padding
     correction (subtracting ``pad_count * mean^2`` from the variance sum)
     is applied analytically, so the result is exact regardless of padding.
+
+    ``op_kind="partials"`` writes each row's fp32 ``(M2, mean)`` undivided,
+    for a cross-row merge; *correction* is unused there.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
+    _pair = op_kind in ("var_mean", "partials")
+    _out_dtype = "float32" if op_kind == "partials" else dtype
 
-    out_idx = [1, 2] if op_kind == "var_mean" else [1]
+    out_idx = [1, 2] if _pair else [1]
 
     @tilelang.jit(out_idx=out_idx)
     def _func(block_m, threads):
-        if op_kind == "var_mean":
+        if _pair:
 
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N), dtype],
-                out_var: T.Tensor[(M,), dtype],
-                out_mean: T.Tensor[(M,), dtype],
+                out_var: T.Tensor[(M,), _out_dtype],
+                out_mean: T.Tensor[(M,), _out_dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     shared_buf = T.alloc_shared((block_m, N_padded), dtype)
@@ -611,8 +405,8 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     mean_val = T.alloc_fragment((block_m,), "float32")
                     sq_diff = T.alloc_fragment((block_m, N_padded), "float32")
                     var_sum = T.alloc_fragment((block_m,), "float32")
-                    out_v = T.alloc_fragment((block_m,), dtype)
-                    out_m = T.alloc_fragment((block_m,), dtype)
+                    out_v = T.alloc_fragment((block_m,), _out_dtype)
+                    out_m = T.alloc_fragment((block_m,), _out_dtype)
 
                     if _needs_pad:
                         for i in T.serial(block_m):
@@ -646,9 +440,12 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     pad_count = N_padded - N
                     for i in T.Parallel(block_m):
                         corrected_sum = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                        variance = corrected_sum / float(N - correction)
-                        out_v[i] = T.cast(variance, dtype)
-                        out_m[i] = T.cast(mean_val[i], dtype)
+                        if op_kind == "partials":
+                            out_v[i] = corrected_sum
+                            out_m[i] = mean_val[i]
+                        else:
+                            out_v[i] = T.cast(corrected_sum / float(N - correction), _out_dtype)
+                            out_m[i] = T.cast(mean_val[i], _out_dtype)
 
                     T.copy(out_v, out_var[pid_m * block_m])
                     T.copy(out_m, out_mean[pid_m * block_m])
@@ -727,23 +524,27 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
     Two-pass approach over N tiles:
       Pass 1: accumulate row sum for mean computation.
       Pass 2: accumulate sum of squared deviations from the mean.
+
+    ``op_kind="partials"`` as in ``_welford_reduce_kernel``.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     total_cols = num_tiles * tile_n
     _needs_mask = total_cols > N
+    _pair = op_kind in ("var_mean", "partials")
+    _out_dtype = "float32" if op_kind == "partials" else dtype
 
-    out_idx = [1, 2] if op_kind == "var_mean" else [1]
+    out_idx = [1, 2] if _pair else [1]
 
     @tilelang.jit(out_idx=out_idx)
     def _func(block_m, threads):
-        if op_kind == "var_mean":
+        if _pair:
 
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N), dtype],
-                out_var: T.Tensor[(M,), dtype],
-                out_mean: T.Tensor[(M,), dtype],
+                out_var: T.Tensor[(M,), _out_dtype],
+                out_mean: T.Tensor[(M,), _out_dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     shared_buf = T.alloc_shared((block_m, tile_n), dtype)
@@ -754,8 +555,8 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                     sq_diff = T.alloc_fragment((block_m, tile_n), "float32")
                     tile_sq = T.alloc_fragment((block_m,), "float32")
                     var_sum = T.alloc_fragment((block_m,), "float32")
-                    out_v = T.alloc_fragment((block_m,), dtype)
-                    out_m = T.alloc_fragment((block_m,), dtype)
+                    out_v = T.alloc_fragment((block_m,), _out_dtype)
+                    out_m = T.alloc_fragment((block_m,), _out_dtype)
 
                     T.fill(row_sum, 0.0)
 
@@ -842,8 +643,12 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                     pad_count = total_cols - N
                     for i in T.Parallel(block_m):
                         corrected = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                        out_v[i] = T.cast(corrected / float(N - correction), dtype)
-                        out_m[i] = T.cast(mean_val[i], dtype)
+                        if op_kind == "partials":
+                            out_v[i] = corrected
+                            out_m[i] = mean_val[i]
+                        else:
+                            out_v[i] = T.cast(corrected / float(N - correction), _out_dtype)
+                            out_m[i] = T.cast(mean_val[i], _out_dtype)
 
                     T.copy(out_v, out_var[pid_m * block_m])
                     T.copy(out_m, out_mean[pid_m * block_m])
@@ -966,6 +771,64 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
     return _func
 
 
+@functools.lru_cache(maxsize=32)
+def _welford_merge_kernel(A, B, op_kind, correction, count_per, out_dtype, threads):
+    """Merge per-slice Welford partials down the lead axis with Chan's method.
+
+    ``mean_in`` / ``m2_in`` hold ``A`` slices of ``B`` columns, each statistic
+    over ``count_per`` elements. One thread owns a kept column and folds the
+    slices serially; adjacent threads read adjacent columns, so every step of
+    the walk is one coalesced pass over a buffer of ``A * B`` values.
+
+    Every kind writes the ``(statistic, mean)`` pair -- ``B`` extra values --
+    so one prim_func serves the three; the caller keeps what its op returns.
+    """
+    denom = float(A * count_per - correction)
+    nb = float(count_per)
+
+    @tilelang.jit(out_idx=[2, 3])
+    def _func():
+        @T.prim_func
+        def main(
+            mean_in: T.Tensor[(A, B), "float32"],  # noqa: F821
+            m2_in: T.Tensor[(A, B), "float32"],  # noqa: F821
+            out_stat: T.Tensor[(B,), out_dtype],
+            out_mean: T.Tensor[(B,), out_dtype],
+        ):
+            with T.Kernel(T.ceildiv(B, threads), threads=threads) as pid_b:
+                tx = T.get_thread_binding()
+                n_acc = T.alloc_local((1,), "float32")
+                mean_acc = T.alloc_local((1,), "float32")
+                m2_acc = T.alloc_local((1,), "float32")
+                delta = T.alloc_local((1,), "float32")
+
+                n_acc[0] = 0.0
+                mean_acc[0] = 0.0
+                m2_acc[0] = 0.0
+                with T.If(pid_b * threads + tx < B):  # noqa: SIM117
+                    with T.Then():
+                        for a in T.serial(A):
+                            delta[0] = mean_in[a, pid_b * threads + tx] - mean_acc[0]
+                            m2_acc[0] = (
+                                m2_acc[0]
+                                + m2_in[a, pid_b * threads + tx]
+                                + delta[0] * delta[0] * (n_acc[0] * nb / (n_acc[0] + nb))
+                            )
+                            mean_acc[0] = mean_acc[0] + delta[0] * (nb / (n_acc[0] + nb))
+                            n_acc[0] = n_acc[0] + nb
+                        if op_kind == "std":
+                            out_stat[pid_b * threads + tx] = T.cast(
+                                T.sqrt(m2_acc[0] / denom), out_dtype
+                            )
+                        else:
+                            out_stat[pid_b * threads + tx] = T.cast(m2_acc[0] / denom, out_dtype)
+                        out_mean[pid_b * threads + tx] = T.cast(mean_acc[0], out_dtype)
+
+        return main
+
+    return _func
+
+
 # ReduceKernel class
 
 
@@ -1031,8 +894,9 @@ class ReduceKernel(Kernel):
             range(len(self.reduce_axes))
         )
         # Axes hugging both edges also run in the tensor's own layout; the rank
-        # check again waits for forward.
-        self._edge_axis_kind = op_kind in _LEADING_AXIS_KINDS
+        # check again waits for forward. Welford kinds merge fp32 (mean, M2)
+        # partials instead of fp32 scalars.
+        self._edge_axis_kind = op_kind in _LEADING_AXIS_KINDS or self._is_welford
         self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
@@ -1120,8 +984,23 @@ class ReduceKernel(Kernel):
             return restore_reduced(columns, in_shape, self.reduce_axes, self.keepdim)
         if self._edge_axis_kind:
             k, j = edge_axis_split(x.ndim, self.reduce_axes)
+            # The Welford merge folds counts in fp32; past fp32's integer
+            # range the weights drift, so those sizes keep the permute path.
+            if k and self._is_welford:
+                reduced_count = x.numel() // prod(x.shape[k : x.ndim - j])
+                if reduced_count > FP32_EXACT_INT_LIMIT:
+                    k = 0
             if k:
-                y = self._reduce_edge_axes(x, k, j)
+                if self._is_welford:
+                    y = self._welford_edge_axes(x, k, j)
+                    if self.op_kind == "var_mean":
+                        var, mean = y
+                        return (
+                            restore_reduced(var, in_shape, self.reduce_axes, self.keepdim),
+                            restore_reduced(mean, in_shape, self.reduce_axes, self.keepdim),
+                        )
+                else:
+                    y = self._reduce_edge_axes(x, k, j)
                 return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
         rows = rows_for_axes(x, self.reduce_axes)
         result = self._reduce_rows(rows)
@@ -1147,17 +1026,10 @@ class ReduceKernel(Kernel):
         like the single-pass kernels. ``mean`` runs the first pass as ``sum``
         and divides in the second by the full reduced count.
         """
-        shape = tuple(x.shape)
-        lead = prod(shape[:k])
-        kept = prod(shape[k : x.ndim - j])
-        trail = prod(shape[x.ndim - j :])
-        inner_kind = "sum" if self.op_kind == "mean" else self.op_kind
-        planner = BlockConfigPlanner(
-            align_up(trail, DEFAULT_ALIGNMENT),
-            self._elem_bytes,
-            self._smem_budget,
+        lead, kept, trail, planner, cfg = edge_axis_plan(
+            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
         )
-        cfg = planner.default_config()
+        inner_kind = "sum" if self.op_kind == "mean" else self.op_kind
         if planner.needs_tiling:
             rows_stage = _simple_reduce_kernel_tiled(
                 lead * kept,
@@ -1177,7 +1049,7 @@ class ReduceKernel(Kernel):
             )
         partials = rows_stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
         divisor = float(lead * trail) if self.op_kind == "mean" else 0.0
-        y = _reduce_down_rows(
+        y = reduce_down_rows(
             partials.reshape(lead, kept),
             self.op_kind,
             "float32",
@@ -1186,11 +1058,46 @@ class ReduceKernel(Kernel):
         )
         return y.to(x.dtype)
 
+    def _welford_edge_axes(self, x: torch.Tensor, k: int, j: int) -> object:
+        """Variance over edge axes without permuting the tensor.
+
+        The rows pass leaves fp32 ``(mean, M2)`` per ``(lead, kept)`` slice;
+        Chan's merge folds the slices, so the result is the single-pass
+        Welford statistic, not a naive sum of squares.
+        """
+        lead, kept, trail, planner, cfg = edge_axis_plan(
+            tuple(x.shape),
+            k,
+            j,
+            self._elem_bytes,
+            self._smem_budget,
+            num_buffers=2,
+            frag_slots=_FRAG_SLOTS.get(self.op_kind, 1),
+        )
+        if planner.needs_tiling:
+            stage = _welford_reduce_kernel_tiled(
+                lead * kept, trail, "partials", 0, self.dtype_str, cfg["tile_n"]
+            )
+        else:
+            stage = _welford_reduce_kernel(lead * kept, trail, "partials", 0, self.dtype_str)
+        m2_p, mean_p = stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
+        merge = _welford_merge_kernel(
+            lead,
+            kept,
+            self.op_kind,
+            self.correction,
+            trail,
+            self.dtype_str,
+            DEFAULT_THREADS,
+        )
+        stat, mean = merge()(mean_p.reshape(lead, kept), m2_p.reshape(lead, kept))
+        return (stat, mean) if self.op_kind == "var_mean" else stat
+
     def _reduce_leading_axes(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce the leading axes of *x* down to one value per kept column."""
         reduced, kept = leading_axis_split(tuple(x.shape), self.reduce_axes)
         divisor = float(reduced) if self.op_kind == "mean" else 0.0
-        return _reduce_down_rows(
+        return reduce_down_rows(
             x.reshape(reduced, kept),
             self.op_kind,
             self.dtype_str,

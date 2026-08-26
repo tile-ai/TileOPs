@@ -679,3 +679,50 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
     assert mem_bytes == 2 * M * N * elem_bytes, (
         f"LogSoftmax bytes {mem_bytes} != 2 * M * N * elem_bytes = {2 * M * N * elem_bytes}"
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=["fp32", "fp16"])
+def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
+    """A handful of long rows runs as segments plus a fold, not one block per row.
+
+    102400 is not a segment multiple, so the tail segment's masked lanes
+    contribute ``exp(-inf) = 0`` to the fold.
+    """
+    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    atol, rtol = (1e-6, 1e-6) if dtype == torch.float32 else (1e-3, 1e-3)
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), atol=atol, rtol=rtol)
+    torch.testing.assert_close(
+        LogSoftmaxFwdOp(dim=-1)(x), F.log_softmax(x, dim=-1), atol=5e-3, rtol=5e-3
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_logsumexp_few_long_rows_split_across_blocks() -> None:
+    """logsumexp folds the shared segment statistics without re-reading the input."""
+    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    torch.testing.assert_close(
+        LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1), atol=1e-5, rtol=1e-5
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_split_rows_survive_fully_masked_segments() -> None:
+    """A segment of only ``-inf`` contributes zero to the fold, not NaN.
+
+    Masked inputs make whole segments ``-inf``; the segment-local max is then
+    ``-inf`` and an unguarded ``exp(-inf - -inf)`` would poison rows the
+    single-block path computes fine. An all--inf row stays torch: NaN for
+    softmax, ``-inf`` for logsumexp.
+    """
+    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1))
+    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+
+    x[0, :] = float("-inf")
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
+    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))

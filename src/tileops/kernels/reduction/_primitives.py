@@ -12,9 +12,12 @@ reduction runs over — which forms an empty ``dim`` takes, and which ranks it m
 the op's contract rather than a kernel's.
 """
 
+import functools
 import itertools
+from dataclasses import dataclass
 from math import prod
 
+import tilelang
 import tilelang.language as T
 import torch
 
@@ -24,6 +27,8 @@ __all__ = [
     "AUTOTUNE_THREADS",
     "DEFAULT_ALIGNMENT",
     "DEFAULT_THREADS",
+    "FP32_EXACT_INT_LIMIT",
+    "FRAGMENT_ELEMS_PER_THREAD",
     "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
     "VECTOR_ACCESS_BYTES",
@@ -33,11 +38,14 @@ __all__ = [
     "ceildiv_int",
     "compute_tile_n",
     "device_smem_budget",
+    "edge_axis_plan",
+    "edge_axis_split",
     "make_cumulative_scan",
     "make_reduce_epilogue",
     "make_softmax_epilogue",
     "make_welford_update",
     "reduce_column_alignment",
+    "reduce_down_rows",
     "restore_reduced",
     "restore_same_shape",
     "rows_for_axes",
@@ -948,3 +956,279 @@ class RowTiledAutotuneMixin:
             configs = [{"block_m": 1, "threads": 256, "tile_n": self._tile_n}]
 
         return configs
+
+
+# ---------------------------------------------------------------------------
+# Reducing an (A, B) buffer down its rows: the outer pass every edge-axis
+# reduction shares. The inner pass is each kernel class's own; this engine
+# takes its partials and reduces them down the lead axis.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _LeadingAxisReducePolicy:
+    """Launch heuristics for reductions down contiguous leading axes."""
+
+    cols_per_thread: int = 8
+
+    threads: int = 64
+
+    target_blocks: int = 512
+
+
+_LEADING_POLICY = _LeadingAxisReducePolicy()
+
+
+# Largest integer count fp32 carries exactly; a statistic folded through
+# fp32 counts or weights is trusted only below it.
+FP32_EXACT_INT_LIMIT = 1 << 24
+
+
+def edge_axis_plan(
+    shape: "tuple[int, ...]",
+    k: int,
+    j: int,
+    elem_bytes: int,
+    smem_budget: int,
+    **planner_kwargs,
+):
+    """Split *shape* for an edge-axis reduction and plan its rows pass.
+
+    Returns ``(lead, kept, trail, planner, cfg)``: the leading and trailing
+    reduced element counts, the kept middle, and the ``BlockConfigPlanner``
+    with its default config for rows of ``trail`` elements.
+    """
+    ndim = len(shape)
+    lead = prod(shape[:k])
+    kept = prod(shape[k : ndim - j])
+    trail = prod(shape[ndim - j :])
+    planner = BlockConfigPlanner(
+        align_up(trail, DEFAULT_ALIGNMENT),
+        elem_bytes,
+        smem_budget,
+        **planner_kwargs,
+    )
+    return lead, kept, trail, planner, planner.default_config()
+
+
+def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
+    """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
+
+    Returns ``(0, 0)`` unless *axes* is a non-empty prefix plus a non-empty
+    suffix with at least one kept axis in between — the layout an edge-axis
+    reduction handles without permuting the tensor.
+    """
+    k = 0
+    while k < len(axes) and axes[k] == k:
+        k += 1
+    j = len(axes) - k
+    if k == 0 or j == 0:
+        return (0, 0)
+    if tuple(axes[k:]) != tuple(range(ndim - j, ndim)):
+        return (0, 0)
+    if k + j >= ndim:
+        return (0, 0)
+    return (k, j)
+
+
+def _leading_row_splits(reduced: int, kept: int, threads: int) -> int:
+    """How many ways to split the reduced axis so the grid fills the device."""
+    block_b = threads * _LEADING_POLICY.cols_per_thread
+    column_blocks = ceildiv_int(kept, block_b)
+    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
+
+
+def _down_rows_identity(op_kind: str) -> float:
+    """The identity element a masked lane contributes."""
+    if op_kind == "amin":
+        return float("inf")
+    if op_kind == "amax":
+        return float("-inf")
+    return 0.0
+
+
+def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
+    """Create the per-op macros used by the down-rows reduction."""
+
+    @T.macro
+    def init(acc):
+        if op_kind == "amax":
+            T.fill(acc, -T.infinity("float32"))
+        elif op_kind == "amin":
+            T.fill(acc, T.infinity("float32"))
+        else:
+            T.fill(acc, 0.0)
+
+    @T.macro
+    def combine(acc, slot, value):
+        if op_kind == "amax":
+            acc[slot] = T.max(acc[slot], value)
+        elif op_kind == "amin":
+            acc[slot] = T.min(acc[slot], value)
+        else:
+            acc[slot] = acc[slot] + value
+
+    @T.macro
+    def finish(out_local, slot, accumulated):
+        if divisor and epilogue == "sqrt":
+            out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
+        elif divisor:
+            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
+        elif epilogue == "sqrt":
+            out_local[slot] = T.cast(T.sqrt(accumulated), out_dtype)
+        else:
+            out_local[slot] = T.cast(accumulated, out_dtype)
+
+    return init, combine, finish
+
+
+@functools.lru_cache(maxsize=32)
+def _down_rows_kernel(
+    A: int,
+    B: int,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    threads: int,
+    splits: int,
+    divisor: float,
+    epilogue: str,
+):
+    """Build a reduce down the leading axis of an ``(A, B)`` buffer.
+
+    One accumulator per output column, walked down the rows the block owns. Adjacent
+    threads take adjacent columns, so every row of the walk is one coalesced pass and
+    the buffer is read once in the layout it already has.
+
+    The grid is ``(column blocks, splits)``: a leading-axis reduction has only as many
+    output columns as the axes it keeps, and one block per column tile would leave an
+    H200 running four of them.
+
+    Args:
+        A: Elements the reduction consumes per output column.
+        B: Output columns.
+        op_kind: One of ``sum`` / ``mean`` / ``amax`` / ``amin``.
+        in_dtype: TileLang dtype string of the input.
+        out_dtype: TileLang dtype string of the output. A split pass writes fp32
+            partials whatever it read; the pass that finishes writes the declared dtype.
+        threads: Threads per block.
+        splits: Row slices, each its own block row. Above 1 the output is one row of
+            partials per slice, for a second call with ``splits=1`` to finish.
+        divisor: What the accumulator is divided by before the output cast, or 0 for
+            none. Mean's divisor is the row count of the whole reduction, which a
+            second pass over partials can no longer see.
+        epilogue: ``"sqrt"`` applies a square root before the output cast, for a
+            caller whose outer pass finishes a sum-of-squares; ``""`` for none.
+    """
+    block_b = threads * _LEADING_POLICY.cols_per_thread
+    rows_per_split = ceildiv_int(A, splits)
+    exact = B % block_b == 0
+    init_acc, combine, finish = _make_down_rows_ops(op_kind, divisor, out_dtype, epilogue)
+
+    @tilelang.jit(out_idx=[1])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(A, B), in_dtype],
+            out: T.Tensor[(splits * B,), out_dtype],
+        ):
+            with T.Kernel(T.ceildiv(B, block_b), splits, threads=threads) as (pid_b, pid_a):
+                acc = T.alloc_fragment((block_b,), "float32")
+                out_local = T.alloc_fragment((block_b,), out_dtype)
+
+                init_acc(acc)
+
+                for step in T.serial(rows_per_split):
+                    row = pid_a * rows_per_split + step
+                    for j in T.Parallel(block_b):
+                        col = pid_b * block_b + j
+                        in_range = row < A if exact else T.And(row < A, col < B)
+                        val = T.if_then_else(
+                            in_range,
+                            T.cast(x[row, col], "float32"),
+                            T.cast(_down_rows_identity(op_kind), "float32"),
+                        )
+                        combine(acc, j, val)
+
+                if exact:
+                    for j in T.Parallel(block_b):
+                        finish(out_local, j, acc[j])
+                    T.copy(out_local, out[pid_a * B + pid_b * block_b])
+                else:
+                    # Finish only stored lanes: a masked lane holds the identity
+                    # (e.g. +inf), which an integer output dtype cannot take.
+                    for j in T.Parallel(block_b):
+                        # TileLang requires T.If/T.Then as nested context managers.
+                        with T.If(pid_b * block_b + j < B):  # noqa: SIM117
+                            with T.Then():
+                                finish(out_local, j, acc[j])
+                                out[pid_a * B + pid_b * block_b + j] = out_local[j]
+
+        return main
+
+    return _func
+
+
+def reduce_down_rows(
+    flat: torch.Tensor,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    divisor: float,
+    epilogue: str = "",
+) -> torch.Tensor:
+    """Reduce an ``(A, B)`` buffer down its rows, writing one *out_dtype* row.
+
+    Splitting the reduced axis is what fills the grid, and each slice leaves an
+    fp32 partial row; a second call over those rows finishes the op. The partials
+    are a few thousand values against the millions the first pass reads, so the
+    second call costs about nothing. ``divisor`` and ``epilogue`` apply only at
+    the finishing call.
+    """
+    reduced, kept = flat.shape
+    # An input smaller than one grid's worth of work cannot amortize the
+    # extra pass a split costs; reduce it in a single call.
+    grid_work = (
+        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
+    )
+    if reduced * kept <= grid_work:
+        splits = 1
+    else:
+        splits = _leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
+    if splits == 1:
+        single = _down_rows_kernel(
+            reduced,
+            kept,
+            op_kind,
+            in_dtype,
+            out_dtype,
+            _LEADING_POLICY.threads,
+            1,
+            divisor,
+            epilogue,
+        )
+        return single()(flat)
+    partials = _down_rows_kernel(
+        reduced,
+        kept,
+        op_kind,
+        in_dtype,
+        "float32",
+        _LEADING_POLICY.threads,
+        splits,
+        0.0,
+        "",
+    )()(flat)
+    # Partials are summed even for mean, whose divisor is the whole row count.
+    finish = _down_rows_kernel(
+        splits,
+        kept,
+        "sum" if op_kind == "mean" else op_kind,
+        "float32",
+        out_dtype,
+        _LEADING_POLICY.threads,
+        1,
+        divisor,
+        epilogue,
+    )
+    return finish()(partials.reshape(splits, kept))

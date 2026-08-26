@@ -94,12 +94,28 @@ def test_every_declared_dtype_matches_torch(op_cls, ref_fn, dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_cls, ref_fn", _OPS)
-def test_a_zero_correction_matches_torch(op_cls, ref_fn) -> None:
-    """The one ``correction`` that differs in kind: the denominator is ``N``, not ``N - c``."""
+@pytest.mark.parametrize(
+    "dim", [pytest.param(-1, id="dim=int"), pytest.param((0, 2), id="dim=tuple")]
+)
+def test_a_zero_correction_matches_torch(op_cls, ref_fn, dim) -> None:
+    """The one ``correction`` that differs in kind: the denominator is ``N``, not ``N - c``.
+
+    ``dim=(0, 2)`` bakes the correction into the edge-axis merge instead of the
+    rows kernel, so both denominators are exercised.
+    """
     torch.manual_seed(0)
     x = torch.randn(*_SHAPE, dtype=torch.float16, device="cuda")
 
-    _check(op_cls, ref_fn, x, dim=-1, keepdim=False, correction=0)
+    _check(op_cls, ref_fn, x, dim=dim, keepdim=False, correction=0)
+
+
+@pytest.mark.smoke
+def test_edge_axis_variance_keeps_a_large_mean_fp16() -> None:
+    """The edge-axis path merges Welford partials; a naive sum of squares would cancel."""
+    torch.manual_seed(0)
+    x = (torch.randn(4, 8, 256, dtype=torch.float16, device="cuda") + 60.0).half()
+
+    _check(VarFwdOp, _ref_var, x, dim=(0, 2), keepdim=False, correction=1)
 
 
 @pytest.mark.smoke
