@@ -428,9 +428,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         """
         from tilelang.autotuner import autotune as tl_autotune
 
-        # The split pair bypasses the tuned kernel; measuring candidates for
-        # a path forward will not take is wasted work, so the default config
-        # (whose threads the split kernels share) stands.
+        # The split pair bypasses the tuned kernel, so the default config stands.
         default = self.default_config
         if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
             self.config = default
@@ -515,8 +513,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         """
         seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
         if seg_n:
-            # The split pair stands on the default width: split_seg_n's
-            # fragment cap assumes it, and autotune never sweeps this path.
+            # split_seg_n's fragment cap assumes the default width.
             threads = _DEFAULT_TUNE_THREADS
             seg_max, seg_sum = softmax_split_partials_kernel(
                 self.M, self.N, seg_n, self.dtype_str, threads

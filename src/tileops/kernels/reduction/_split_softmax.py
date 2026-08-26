@@ -1,11 +1,9 @@
 """Split-row softmax statistics, shared by softmax, log_softmax, and logsumexp.
 
-A handful of long rows cannot fill the device one block per row. The split
-gives every row ``ceildiv(N, seg_n)`` blocks: one pass writes each segment's
-fp32 ``(max, sum)``, and a fold combines them — softmax and log_softmax then
-re-read their segment to write it normalized, logsumexp folds straight to its
-scalar. This module holds the gate, the statistics pass, and the fold; the
-pass that writes each op's output stays in that op's module.
+A handful of long rows cannot fill the device one block per row; the split
+gives every row one block per segment. This module holds the gate, the
+fp32 ``(max, sum)`` statistics pass, and the fold; the pass that writes each
+op's output stays in that op's module.
 """
 
 import functools
