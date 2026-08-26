@@ -7,6 +7,7 @@ from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
     DeltaNetFwdKernel,
 )
+from tileops.perf.profile import tensor_core_roof
 
 from .._validation import check_tensor_shape
 from ..op_base import Op, UnmanifestedOp
@@ -166,6 +167,10 @@ class DeltaNetFwdOp(Op):
         self._bind_from_inputs(q, k, v, beta)
         o, S, Aw, Au, w, u = self.kernel(q, k, v, beta)
         return o, S, Aw, Au, w, u
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class DeltaNetBwdOp(Op):
@@ -328,6 +333,10 @@ class DeltaNetBwdOp(Op):
         self._bind_from_inputs((do, q, k, v, beta, S, Aw, Au, w, u))
         dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class _DeltaNetFunction(torch.autograd.Function):

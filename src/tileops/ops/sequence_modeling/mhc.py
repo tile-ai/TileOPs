@@ -5,6 +5,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
+from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 
@@ -120,6 +121,10 @@ class MHCPreFwdOp(Op):
         return self.kernel(
             phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, sinkhorn_eps
         )
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class MHCPostFwdOp(Op):

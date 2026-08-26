@@ -252,6 +252,8 @@ class ExampleCumsumFwdOp(Op):
 
 **Reference.** [Slot S19](../../.claude/skills/scaffold-op/slot-rules.md#slot-s19).
 
+**Compute roof.** `Op.compute_roof()` names the GPU-profile unit that prices the FLOPs `eval_roofline()` counts; the base default `"cuda_core.fp32"` covers CUDA-core fp32 arithmetic. An op whose FLOPs are matmul contractions overrides it — normally `return tensor_core_roof(self.dtype)`, branching on instance state (a backend switch) where the contraction dtype differs from the input dtype. Contract and rationale: [`roofline.md §1.4`](roofline.md#14-compute-roof).
+
 ### Step 7: Package registration
 
 **Input.** The class name (Step 2) and the op's source filename.

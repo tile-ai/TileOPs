@@ -30,6 +30,7 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 from .cb_producer import CBProducerFwdOp
@@ -293,3 +294,7 @@ class Mamba2FwdOp(Op):
         # y: (B, S, H, P)  float32
 
         return y, final_states_flat.reshape(batch, n_heads, d_head, d_state)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

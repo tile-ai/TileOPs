@@ -195,6 +195,23 @@ class Op(ABC):
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
         )
 
+    def compute_roof(self) -> str:
+        """GPU-profile key of the compute unit that prices this op's FLOPs.
+
+        ``eval_roofline()`` counts the work; ``compute_roof()`` names the
+        peak that bounds it (docs/design/roofline.md §1.2). The key is a
+        statement about the *optimal* implementation, declared by the op
+        author — never inferred from the running kernel, so a kernel on the
+        wrong unit is still measured against the right ceiling.
+
+        The base default covers ops whose arithmetic runs on CUDA cores in
+        fp32 (elementwise, reductions, norms, scans). An op whose FLOPs are
+        matmul contractions overrides this with ``tensor_core_roof(self.dtype)``
+        (or a backend-specific key). Valid whenever ``eval_roofline()`` is —
+        after the dtype is bound.
+        """
+        return "cuda_core.fp32"
+
     def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``.
 

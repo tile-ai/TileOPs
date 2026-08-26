@@ -15,6 +15,7 @@ from tileops.kernels.convolution import (
     GroupConv3dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
 from .compile_boundary import get_instance
 from .op_base import Op
@@ -555,6 +556,10 @@ class Conv1dFwdOp(Op):
         ) * elem_bytes
         return int(flops), int(bytes_)
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
     return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
@@ -978,6 +983,10 @@ class Conv2dFwdOp(Op):
         ) * elem_bytes
         return int(flops), int(bytes_)
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
     return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
@@ -1378,6 +1387,10 @@ class Conv3dFwdOp(Op):
             + (c_out if has_bias else 0)
         ) * elem_bytes
         return int(flops), int(bytes_)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 # The compile boundary, one operator per op. Module-level because registration happens once

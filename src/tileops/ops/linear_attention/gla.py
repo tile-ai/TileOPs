@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
+from tileops.perf.profile import tensor_core_roof
 
 from .._validation import check_tensor_shape
 from ..op_base import Op
@@ -172,6 +173,10 @@ class GLAFwdOp(Op):
         )
         return self.kernel(q, k, v, g, initial_state)
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GLABwdOp(Op):
     """GLA (Gated Linear Attention) backward operator.
@@ -319,3 +324,7 @@ class GLABwdOp(Op):
             (q, k, v, g, h, do, dht), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
         )
         return self.kernel(q, k, v, g, h, do, dht, has_initial_state)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

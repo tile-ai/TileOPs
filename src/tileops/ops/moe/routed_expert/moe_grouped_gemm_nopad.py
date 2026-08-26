@@ -7,6 +7,7 @@ import torch
 from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmPersistent3WGKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
+from tileops.perf.profile import tensor_core_roof
 
 from ...compile_boundary import get_instance
 from ...op_base import Op
@@ -124,6 +125,10 @@ class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
             C: [numel, N] GEMM output.
         """
         return _moe_grouped_gemm_nopad_fwd(a, b, true_sizes, true_offsets, self._instance_key)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 @torch.library.custom_op("tileops::moe_grouped_gemm_nopad_fwd", mutates_args=())

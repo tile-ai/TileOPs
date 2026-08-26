@@ -1,5 +1,17 @@
 """Performance evaluation — roofline analysis and GPU hardware profiles."""
 
-from .profile import get_profile_path, load_profile
+from .profile import (
+    find_profile,
+    get_profile_path,
+    load_profile,
+    resolve_roof,
+    tensor_core_roof,
+)
 
-__all__ = ["get_profile_path", "load_profile"]
+__all__ = [
+    "find_profile",
+    "get_profile_path",
+    "load_profile",
+    "resolve_roof",
+    "tensor_core_roof",
+]
