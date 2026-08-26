@@ -29,6 +29,7 @@ from tileops.kernels.reduction._primitives import (
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
+    ceildiv_int,
     device_smem_budget,
     restore_same_shape,
     rows_for_axes,
@@ -37,6 +38,11 @@ from tileops.kernels.reduction._primitives import (
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
+
+# The split-row path turns on only when one block per row leaves the device
+# this far under-filled and a row is long enough to amortize its fold pass.
+_SPLIT_TARGET_BLOCKS = 264
+_SPLIT_MIN_COLS = 16384
 
 __all__ = ["SoftmaxKernel"]
 
@@ -439,6 +445,135 @@ def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
     return _softmax_kernel_tiled(M, N, op_kind, dtype, tile_n)
 
 
+@functools.lru_cache(maxsize=64)
+def _softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, threads: int):
+    """Per-segment softmax statistics: fp32 ``(max, sum)`` for a later fold.
+
+    One block owns one ``seg_n``-column segment of one row and writes the
+    segment's max and its sum of ``exp(x - max)``. A handful of long rows
+    cannot fill the device one block per row; ``ceildiv(N, seg_n)`` blocks
+    per row can. A masked lane loads ``-inf`` and contributes ``exp(-inf)``,
+    which is zero.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+
+    @tilelang.jit(out_idx=[1, 2])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+        ):
+            with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
+                x_f32 = T.alloc_fragment((1, seg_n), "float32")
+                m_s = T.alloc_fragment((1,), "float32")
+                s_s = T.alloc_fragment((1,), "float32")
+
+                for _, j in T.Parallel(1, seg_n):
+                    x_f32[0, j] = T.if_then_else(
+                        pid_s * seg_n + j < N,
+                        T.cast(x[pid_m, pid_s * seg_n + j], "float32"),
+                        -T.infinity("float32"),
+                    )
+                T.fill(m_s, -T.infinity("float32"))
+                T.reduce_max(x_f32, m_s, dim=1, clear=False)
+                for _, j in T.Parallel(1, seg_n):
+                    x_f32[0, j] = T.exp(x_f32[0, j] - m_s[0])
+                T.reduce_sum(x_f32, s_s, dim=1)
+
+                seg_max[pid_m * num_segs + pid_s] = m_s[0]
+                seg_sum[pid_m * num_segs + pid_s] = s_s[0]
+
+        return main
+
+    return _func
+
+
+@functools.lru_cache(maxsize=64)
+def _softmax_split_finalize_kernel(
+    M: int, N: int, op_kind: str, dtype: str, seg_n: int, threads: int
+):
+    """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
+
+    The fold reads ``num_segs`` fp32 pairs from shared memory — a few hundred
+    bytes against the segment re-read — so every thread folds redundantly
+    rather than synchronizing a broadcast.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+
+    @tilelang.jit(out_idx=[3])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            y: T.Tensor[(M, N), dtype],
+        ):
+            with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
+                stats = T.alloc_shared((num_segs, 2), "float32")
+                row_max = T.alloc_local((1,), "float32")
+                row_sum = T.alloc_local((1,), "float32")
+
+                for s, c in T.Parallel(num_segs, 2):
+                    stats[s, c] = T.if_then_else(
+                        c == 0,
+                        seg_max[pid_m * num_segs + s],
+                        seg_sum[pid_m * num_segs + s],
+                    )
+                T.sync_threads()
+
+                row_max[0] = -T.infinity("float32")
+                for s in T.serial(num_segs):
+                    row_max[0] = T.max(row_max[0], stats[s, 0])
+                row_sum[0] = 0.0
+                for s in T.serial(num_segs):
+                    row_sum[0] = row_sum[0] + stats[s, 1] * T.exp(stats[s, 0] - row_max[0])
+
+                if op_kind == "softmax":
+                    for _, j in T.Parallel(1, seg_n):
+                        col = pid_s * seg_n + j
+                        with T.If(col < N):  # noqa: SIM117
+                            with T.Then():
+                                y[pid_m, col] = T.cast(
+                                    T.exp(T.cast(x[pid_m, col], "float32") - row_max[0])
+                                    / row_sum[0],
+                                    dtype,
+                                )
+                else:
+                    for _, j in T.Parallel(1, seg_n):
+                        col = pid_s * seg_n + j
+                        with T.If(col < N):  # noqa: SIM117
+                            with T.Then():
+                                y[pid_m, col] = T.cast(
+                                    T.cast(x[pid_m, col], "float32")
+                                    - row_max[0]
+                                    - T.log(row_sum[0]),
+                                    dtype,
+                                )
+
+        return main
+
+    return _func
+
+
+def split_seg_n(M: int, N: int, N_padded: int, row_blocks: int) -> int:
+    """The split-row segment width, or 0 when one block per row is enough.
+
+    Applies when the row grid leaves the device under-filled and a row is
+    long enough to amortize the fold pass; the segment count targets
+    ``_SPLIT_TARGET_BLOCKS`` blocks and stays aligned.
+    """
+    if N_padded < _SPLIT_MIN_COLS or row_blocks >= _SPLIT_TARGET_BLOCKS:
+        return 0
+    num_segs = max(1, ceildiv_int(_SPLIT_TARGET_BLOCKS, M))
+    seg_n = align_up(ceildiv_int(N, num_segs), DEFAULT_ALIGNMENT)
+    if ceildiv_int(N, seg_n) < 2:
+        return 0
+    return seg_n
+
+
 def _compute_padded_cols(N: int, tile_n: int) -> int:
     """Compute the total column count (may exceed N_padded for tiled path)."""
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -707,8 +842,23 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         """Normalize the trailing axis of an ``(M, N)`` buffer.
 
         The prim_func writes an alignment-padded row; the surplus columns are trimmed
-        here.
+        here. A handful of long rows goes to the split-row pair instead, which
+        writes exact columns.
         """
+        seg_n = split_seg_n(
+            self.M,
+            self.N,
+            self.N_padded,
+            (self.M + self.config["block_m"] - 1) // self.config["block_m"],
+        )
+        if seg_n:
+            threads = self.config.get("threads", _DEFAULT_TUNE_THREADS)
+            seg_max, seg_sum = _softmax_split_partials_kernel(
+                self.M, self.N, seg_n, self.dtype_str, threads
+            )()(x)
+            return _softmax_split_finalize_kernel(
+                self.M, self.N, self.op_kind, self.dtype_str, seg_n, threads
+            )()(x, seg_max, seg_sum)
         program = _softmax_kernel(self.M, self.N, self.op_kind, self.dtype_str, self._tile_n)
         y = program(self.config["block_m"], self.config["threads"])(x)
         return y[:, : self.N] if y.shape[1] > self.N else y

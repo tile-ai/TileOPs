@@ -679,3 +679,30 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
     assert mem_bytes == 2 * M * N * elem_bytes, (
         f"LogSoftmax bytes {mem_bytes} != 2 * M * N * elem_bytes = {2 * M * N * elem_bytes}"
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=["fp32", "fp16"])
+def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
+    """A handful of long rows runs as segments plus a fold, not one block per row.
+
+    102400 is not a segment multiple, so the tail segment's masked lanes
+    contribute ``exp(-inf) = 0`` to the fold.
+    """
+    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    atol, rtol = (1e-6, 1e-6) if dtype == torch.float32 else (1e-3, 1e-3)
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), atol=atol, rtol=rtol)
+    torch.testing.assert_close(
+        LogSoftmaxFwdOp(dim=-1)(x), F.log_softmax(x, dim=-1), atol=5e-3, rtol=5e-3
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_logsumexp_few_long_rows_split_across_blocks() -> None:
+    """logsumexp folds the shared segment statistics without re-reading the input."""
+    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    torch.testing.assert_close(
+        LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1), atol=1e-5, rtol=1e-5
+    )

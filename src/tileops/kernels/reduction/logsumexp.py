@@ -28,16 +28,56 @@ from tileops.kernels.reduction._primitives import (
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
+    ceildiv_int,
     device_smem_budget,
     restore_reduced,
     rows_for_axes,
 )
+from tileops.kernels.reduction.softmax import _softmax_split_partials_kernel, split_seg_n
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
 
 __all__ = ["LogSumExpKernel"]
+
+
+@functools.lru_cache(maxsize=64)
+def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
+    """Fold per-segment ``(max, sum)`` into one logsumexp per row.
+
+    The fold is over a few hundred fp32 pairs, so one warp per row is enough;
+    unlike softmax there is no second pass over the input.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+
+    @tilelang.jit(out_idx=[2])
+    def _func():
+        @T.prim_func
+        def main(
+            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            y: T.Tensor[(M,), dtype],
+        ):
+            with T.Kernel(M, threads=32) as pid_m:
+                tx = T.get_thread_binding()
+                row_max = T.alloc_local((1,), "float32")
+                row_sum = T.alloc_local((1,), "float32")
+
+                if tx == 0:
+                    row_max[0] = -T.infinity("float32")
+                    for s in T.serial(num_segs):
+                        row_max[0] = T.max(row_max[0], seg_max[pid_m * num_segs + s])
+                    row_sum[0] = 0.0
+                    for s in T.serial(num_segs):
+                        row_sum[0] = row_sum[0] + seg_sum[pid_m * num_segs + s] * T.exp(
+                            seg_max[pid_m * num_segs + s] - row_max[0]
+                        )
+                    y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
+
+        return main
+
+    return _func
 
 
 # Single-tile kernel (N fits in shared memory) -- original fast path
@@ -456,6 +496,24 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        """Reduce the trailing axis of an ``(M, N)`` buffer.
+
+        A handful of long rows goes to the split pair: softmax's per-segment
+        statistics, then a per-row fold.
+        """
+        seg_n = split_seg_n(
+            self.M,
+            self.N,
+            self.N_padded,
+            (self.M + self.config["block_m"] - 1) // self.config["block_m"],
+        )
+        if seg_n:
+            threads = self.config.get("threads", _DEFAULT_TUNE_THREADS)
+            seg_max, seg_sum = _softmax_split_partials_kernel(
+                self.M, self.N, seg_n, self.dtype_str, threads
+            )()(x)
+            return _logsumexp_split_fold_kernel(self.M, self.N, self.dtype_str, seg_n)()(
+                seg_max, seg_sum
+            )
         program = _logsumexp_kernel(self.M, self.N, self.dtype_str, self._tile_n)
         return program(self.config["block_m"], self.config["threads"])(x)
