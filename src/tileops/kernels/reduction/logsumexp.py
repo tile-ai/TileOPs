@@ -72,9 +72,10 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
                 tx = T.get_thread_binding()
                 row_max = T.alloc_local((1,), "float32")
                 row_sum = T.alloc_local((1,), "float32")
+                held = T.alloc_local((1,), "float32")
 
                 if tx == 0:
-                    fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum)
+                    fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum, held)
                     y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
 
         return main

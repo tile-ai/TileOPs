@@ -452,9 +452,9 @@ def _softmax_split_finalize_kernel(
 ):
     """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
 
-    The fold reads ``num_segs`` fp32 pairs — a few hundred bytes against the
-    segment re-read — so every thread folds redundantly rather than
-    synchronizing a broadcast.
+    The fold reads ``num_segs`` fp32 pairs; staged through shared memory
+    once, every thread then folds redundantly from there rather than each
+    walking global memory.
     """
     num_segs = ceildiv_int(N, seg_n)
     fold = make_split_fold(num_segs)
@@ -469,10 +469,18 @@ def _softmax_split_finalize_kernel(
             y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
+                stat_max = T.alloc_shared((num_segs,), "float32")
+                stat_sum = T.alloc_shared((num_segs,), "float32")
                 row_max = T.alloc_local((1,), "float32")
                 row_sum = T.alloc_local((1,), "float32")
+                held = T.alloc_local((1,), "float32")
 
-                fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum)
+                for s in T.Parallel(num_segs):
+                    stat_max[s] = seg_max[pid_m * num_segs + s]
+                    stat_sum[s] = seg_sum[pid_m * num_segs + s]
+                T.sync_threads()
+
+                fold(stat_max, stat_sum, 0, row_max, row_sum, held)
 
                 for _, j in T.Parallel(1, seg_n):
                     col = pid_s * seg_n + j

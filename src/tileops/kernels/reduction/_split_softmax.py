@@ -127,23 +127,26 @@ def make_split_fold(num_segs: int):
     """Create the macro folding one row's segment statistics.
 
     Reads ``num_segs`` fp32 pairs starting at *base* and leaves the row's max
-    and rescaled sum in two scalar locals. An all--inf segment contributes
+    and rescaled sum in two scalar locals; *held* is a caller-allocated fp32
+    scalar, since a macro argument is substituted per mention and an indexed
+    read spelled twice would load twice. An all--inf segment contributes
     nothing; folding it through ``exp(-inf - row_max)`` would turn NaN when
     ``row_max`` is -inf too. An all--inf row leaves ``(-inf, 0)``, which reads
     as torch's NaN softmax and -inf logsumexp downstream.
     """
 
     @T.macro
-    def fold(seg_max, seg_sum, base, row_max, row_sum):
+    def fold(seg_max, seg_sum, base, row_max, row_sum, held):
         row_max[0] = -T.infinity("float32")
         for s in T.serial(num_segs):
             row_max[0] = T.max(row_max[0], seg_max[base + s])
         row_sum[0] = 0.0
         for s in T.serial(num_segs):
+            held[0] = seg_max[base + s]
             row_sum[0] = row_sum[0] + T.if_then_else(
-                seg_max[base + s] == -T.infinity("float32"),
+                held[0] == -T.infinity("float32"),
                 T.cast(0.0, "float32"),
-                seg_sum[base + s] * T.exp(seg_max[base + s] - row_max[0]),
+                seg_sum[base + s] * T.exp(held[0] - row_max[0]),
             )
 
     return fold
