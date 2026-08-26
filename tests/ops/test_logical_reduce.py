@@ -718,3 +718,32 @@ def test_logical_reduce_returns_bool(op_name: str) -> None:
     x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
     out = op(x)
     assert out.dtype == torch.bool
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, dtype",
+    [
+        ("any", torch.bool),
+        ("all", torch.bool),
+        ("count_nonzero", torch.float16),
+    ],
+)
+def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype) -> None:
+    """``dim=[0, 2]`` reduces without a permute: 0/1 (or count) partials, then a fold."""
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+
+    op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
+    op = op_map[op_kind](dim=[0, 2])
+    if dtype == torch.bool:
+        x = torch.rand(4, 24, 4096, device="cuda") > 0.999
+        if op_kind == "all":
+            x = ~x
+    else:
+        x = torch.randn(4, 24, 4096, dtype=dtype, device="cuda")
+    ref = {
+        "any": lambda: x.any(0).any(-1),
+        "all": lambda: x.all(0).all(-1),
+        "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
+    }[op_kind]()
+    assert torch.equal(op(x), ref)

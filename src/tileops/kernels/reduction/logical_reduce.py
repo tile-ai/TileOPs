@@ -14,6 +14,7 @@ any/all, int64 for count_nonzero.
 """
 
 import functools
+from math import prod
 from typing import Optional
 
 import tilelang
@@ -27,6 +28,8 @@ from tileops.kernels.reduction._primitives import (
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
+    edge_axis_split,
+    reduce_down_rows,
     restore_reduced,
     rows_for_axes,
     tune_by_forward,
@@ -86,8 +89,19 @@ def _pad_value_for_op(op_kind: str) -> float:
 # Logical reduce kernel
 
 
+def _logical_out_dtype(op_kind: str, partial: bool) -> str:
+    """The dtype a logical reduce writes: 0/1 stays int8, a count widens.
+
+    A count written for an outer pass stays fp32, exact below 2^24, so the
+    down-rows engine can sum it without an int accumulator.
+    """
+    if op_kind != "count_nonzero":
+        return "int8"
+    return "float32" if partial else "int64"
+
+
 @functools.lru_cache(maxsize=32)
-def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
+def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bool = False):
     """Build a TileLang any/all/count_nonzero kernel.
 
     Cast input to bool (0.0 or 1.0 in float32), then:
@@ -100,6 +114,8 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
         N: Original hidden dimension (last dim, before padding).
         op_kind: One of "any", "all", "count_nonzero".
         dtype: TileLang dtype string (e.g. "float16", "bfloat16", "float32").
+        partial: Write partials for an outer pass; only the count changes,
+            staying fp32 instead of widening to int64.
 
     Returns:
         A TileLang JIT-compiled kernel factory accepting (block_m, threads).
@@ -107,21 +123,20 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
     _pad_val = _pad_value_for_op(op_kind)
+    out_dtype = _logical_out_dtype(op_kind, partial)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.macro
         def compute(
             x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), "int8" if op_kind != "count_nonzero" else "int64"],  # noqa: F821
+            out: T.Tensor[(M,), out_dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
                 bool_vals = T.alloc_fragment((block_m, N_padded), "float32")
                 result = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment(
-                    (block_m,), "int8" if op_kind != "count_nonzero" else "int64"
-                )
+                out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 # Truthiness is decided at the load, so a tile costs one fragment.
                 if _needs_pad:
@@ -155,7 +170,7 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
 
                 if op_kind == "count_nonzero":
                     for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(result[i], "int64")
+                        out_local[i] = T.cast(result[i], out_dtype)
                 else:
                     # Cast result to int8 (bool representation: 0 or 1)
                     for i in T.Parallel(block_m):
@@ -167,7 +182,7 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), "int8" if op_kind != "count_nonzero" else "int64"],  # noqa: F821
+            out: T.Tensor[(M,), out_dtype],
         ):
             compute(x, out)
 
@@ -177,16 +192,19 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
 
 
 @functools.lru_cache(maxsize=32)
-def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int):
+def _logical_reduce_kernel_tiled(
+    M: int, N: int, op_kind: str, dtype: str, tile_n: int, partial: bool = False
+):
     """Build a tiled TileLang any/all/count_nonzero kernel.
 
     Iterates over the reduction dimension in chunks of ``tile_n`` columns, for the
-    rows a single pass cannot hold.
+    rows a single pass cannot hold. ``partial`` as in ``_logical_reduce_kernel``.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     _pad_val = _pad_value_for_op(op_kind)
     _past_n = num_tiles * tile_n > N
+    out_dtype = _logical_out_dtype(op_kind, partial)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
@@ -196,16 +214,14 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
         @T.macro
         def compute(
             x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), "int8" if op_kind != "count_nonzero" else "int64"],  # noqa: F821
+            out: T.Tensor[(M,), out_dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, tile_n), dtype)
                 bool_vals = T.alloc_fragment((block_m, tile_n), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
                 tile_acc = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment(
-                    (block_m,), "int8" if op_kind != "count_nonzero" else "int64"
-                )
+                out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 if op_kind == "all":
                     T.fill(acc, 1.0)
@@ -262,7 +278,7 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
 
                 if op_kind == "count_nonzero":
                     for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(acc[i], "int64")
+                        out_local[i] = T.cast(acc[i], out_dtype)
                 else:
                     for i in T.Parallel(block_m):
                         out_local[i] = T.cast(acc[i] > 0.5, "int8")
@@ -273,7 +289,7 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), "int8" if op_kind != "count_nonzero" else "int64"],  # noqa: F821
+            out: T.Tensor[(M,), out_dtype],
         ):
             compute(x, out)
 
@@ -404,9 +420,48 @@ class LogicalReduceKernel(Kernel):
         in_shape = tuple(x.shape)
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_storage(x)
+        k, j = edge_axis_split(x.ndim, self.reduce_axes)
+        # A count is carried in fp32 across the two passes, exact below 2^24.
+        if k and (self.op_kind != "count_nonzero" or x.numel() < 2**24):
+            y = self._reduce_edge_axes(x, k, j)
+            return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
         rows = rows_for_axes(x, self.reduce_axes)
         y = self._reduce_rows(rows)
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
+
+    def _reduce_edge_axes(self, x: torch.Tensor, k: int, j: int) -> torch.Tensor:
+        """Reduce a prefix and a suffix of the axes without permuting the tensor.
+
+        Two passes in the tensor's own layout: the trailing axes reduce as
+        contiguous rows into 0/1 int8 (or fp32 count) partials, then the
+        leading axes fold down the columns of those partials — or/and are max/
+        min over 0 and 1, a count is a sum.
+        """
+        shape = tuple(x.shape)
+        lead = prod(shape[:k])
+        kept = prod(shape[k : x.ndim - j])
+        trail = prod(shape[x.ndim - j :])
+        dtype_str = self.dtype_to_str(self._kernel_dtype)
+        planner = BlockConfigPlanner(
+            align_up(trail, DEFAULT_ALIGNMENT),
+            self._elem_bytes,
+            self._smem_budget,
+        )
+        cfg = planner.default_config()
+        if planner.needs_tiling:
+            stage = _logical_reduce_kernel_tiled(
+                lead * kept, trail, self.op_kind, dtype_str, cfg["tile_n"], partial=True
+            )
+        else:
+            stage = _logical_reduce_kernel(
+                lead * kept, trail, self.op_kind, dtype_str, partial=True
+            )
+        partials = stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
+        partials = partials.reshape(lead, kept)
+        if self.op_kind == "count_nonzero":
+            return reduce_down_rows(partials, "sum", "float32", "float32", 0.0).to(torch.int64)
+        outer_kind = "amax" if self.op_kind == "any" else "amin"
+        return reduce_down_rows(partials, outer_kind, "int8", "int8", 0.0).view(torch.bool)
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce the trailing axis of an ``(M, N)`` buffer.
