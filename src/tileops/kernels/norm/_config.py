@@ -17,6 +17,8 @@ measured runtime.
 
 import torch
 
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+
 __all__ = ["select_row_config", "select_row_configs"]
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
@@ -36,7 +38,7 @@ def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list
     4 for fp32). If no candidate meets that floor (small rows), fall back to any
     thread count that divides the row so the autotune space is never empty.
     """
-    min_elements = 16 // torch.tensor([], dtype=dtype).element_size()
+    min_elements = VECTOR_ACCESS_BYTES // torch.tensor([], dtype=dtype).element_size()
     candidates = [t for t in _CANDIDATE_THREADS if n_padded % t == 0]
     vectorizable = [t for t in candidates if n_padded // t >= min_elements]
     return vectorizable or candidates

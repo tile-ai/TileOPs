@@ -15,7 +15,7 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from .fused_prepare_compute_w_u import _LOG2E
+from tileops.kernels.constants import LOG2E
 
 __all__ = ["compute_w_u_bwd_full_tl"]
 
@@ -127,7 +127,7 @@ def compute_w_u_bwd_full_tl(
                 # dGram = dL * beta_i * exp(g_i - g_j).
                 for i, j in T.Parallel(block_C, block_C):
                     matrix_b_s[i, j] = (
-                        matrix_a_s[i, j] * beta_s[i] * T.exp2((g_s[i] - g_s[j]) * _LOG2E)
+                        matrix_a_s[i, j] * beta_s[i] * T.exp2((g_s[i] - g_s[j]) * LOG2E)
                     )
                 T.clear(dk_A_frag)
                 T.gemm(matrix_b_s, k_s, dk_A_frag)
@@ -145,7 +145,7 @@ def compute_w_u_bwd_full_tl(
                 T.gemm(k_s, k_s, matrix_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     matrix_b_s[i, j] = (
-                        matrix_a_s[i, j] * T.exp2((g_s[i] - g_s[j]) * _LOG2E) * matrix_frag[i, j]
+                        matrix_a_s[i, j] * T.exp2((g_s[i] - g_s[j]) * LOG2E) * matrix_frag[i, j]
                     )
                     matrix_a_s[i, j] = matrix_b_s[i, j] * beta_s[i]
 

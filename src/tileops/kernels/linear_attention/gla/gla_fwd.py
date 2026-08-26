@@ -6,12 +6,10 @@ import torch
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 from ..v_tile import GEMM_MIN_N
-
-LOG2_E = 1.44269504
-
 
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
 
@@ -198,14 +196,14 @@ def _gla_fwd_h_kernel(
 
                     # Decay h
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        h_s[i_k, i_v] = h_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2_E)
+                        h_s[i_k, i_v] = h_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2E)
 
                     # k_adj in fragment (RS GEMM: A=register, B=shared)
                     k_adj_f = T.alloc_fragment([chunk_size, dim_k_part], dtype)
                     for i_t, i_k in T.Parallel(chunk_size, dim_k_part):
                         k_adj_f[i_t, i_k] = T.cast(
                             T.cast(k_s[i_t, i_k], accum_dtype)
-                            * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2_E),
+                            * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E),
                             dtype,
                         )
 
@@ -315,7 +313,7 @@ def _gla_fwd_o_kernel(
                 # ---- Gated q (inter-chunk term, exp(g_cumsum) <= 1) ----
                 for i_t, i_k in T.Parallel(chunk_size, dim_k):
                     q_gated_s[i_t, i_k] = T.cast(
-                        T.cast(q_s[i_t, i_k], accum_dtype) * T.exp2(g_cumsum_s[i_t, i_k] * LOG2_E),
+                        T.cast(q_s[i_t, i_k], accum_dtype) * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E),
                         dtype,
                     )
 
@@ -327,7 +325,7 @@ def _gla_fwd_o_kernel(
                         A_frag[i_t, i_j] = A_frag[i_t, i_j] + (
                             T.cast(q_s[i_t, i_k], accum_dtype)
                             * T.cast(k_s[i_j, i_k], accum_dtype)
-                            * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2_E)
+                            * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2E)
                         )
                 for i_t, i_j in T.Parallel(chunk_size, chunk_size):
                     A_s[i_t, i_j] = T.cast(

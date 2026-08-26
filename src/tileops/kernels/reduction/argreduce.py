@@ -21,11 +21,11 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
     torch_dtype_nbytes,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = ["ArgreduceKernel"]
 
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
-_WARP_SIZE = 32
 _NUM_ACCUMULATORS = 4
 
 #: Magnitude bits of a float32 pattern -- everything but the sign; see _ordering_key.
@@ -84,7 +84,7 @@ def _plan_row_split(M: int, N: int) -> int:
 
 def _lanes_per_row(n: int) -> int:
     lanes = 1
-    while lanes < min(n, _WARP_SIZE):
+    while lanes < min(n, WARP_LANES):
         lanes *= 2
     return lanes
 
@@ -207,11 +207,11 @@ def _make_block_reduce(
         warp_indices,
         tx,
     ):
-        lane = tx % _WARP_SIZE
-        warp = tx // _WARP_SIZE
+        lane = tx % WARP_LANES
+        warp = tx // WARP_LANES
 
         ops.merge_accumulators(keys, indices, best_key, best_index)
-        ops.warp_reduce(best_key, best_index, 5, _WARP_SIZE)
+        ops.warp_reduce(best_key, best_index, WARP_LANES.bit_length() - 1, WARP_LANES)
 
         if lane == 0:
             warp_keys[warp] = best_key[0]
@@ -224,7 +224,7 @@ def _make_block_reduce(
             best_index[0] = warp_indices[lane]
 
         if warp == 0:
-            ops.warp_reduce(best_key, best_index, 5, _WARP_SIZE)
+            ops.warp_reduce(best_key, best_index, WARP_LANES.bit_length() - 1, WARP_LANES)
 
     return block_reduce
 
@@ -385,7 +385,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
 
     @tilelang.jit(out_idx=[1])
     def _func(threads: int):
-        num_warps = threads // _WARP_SIZE
+        num_warps = threads // WARP_LANES
         iterations = (N + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
         held = threads * FRAGMENT_ELEMS_PER_THREAD >= N
         ops = _make_pair_ops(op_kind, N)
@@ -462,7 +462,7 @@ def _argreduce_multicta_partial_kernel(
     def _func(threads: int, ctas_per_row: int):
         chunk_size = (N + ctas_per_row - 1) // ctas_per_row
         num_partials = M * ctas_per_row
-        num_warps = threads // _WARP_SIZE
+        num_warps = threads // WARP_LANES
         iterations = (chunk_size + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
         ops = _make_pair_ops(op_kind, N)
         key_of = _ordering_key(op_kind)
@@ -530,11 +530,11 @@ def _argreduce_multicta_final_kernel(
     """Build the final reduction over per-row block partials."""
     num_partials = M * ctas_per_row
     rows_per_block = 8
-    threads = rows_per_block * _WARP_SIZE
+    threads = rows_per_block * WARP_LANES
 
     # A lane walks its share of the row's partials, so the split is free to be
     # wider than a warp; reading one partial per lane would drop the rest.
-    partials_per_lane = ceildiv_int(ctas_per_row, _WARP_SIZE)
+    partials_per_lane = ceildiv_int(ctas_per_row, WARP_LANES)
 
     @tilelang.jit(out_idx=[2])
     def _func():
@@ -548,14 +548,14 @@ def _argreduce_multicta_final_kernel(
         ):
             with T.Kernel(T.ceildiv(M, rows_per_block), threads=threads) as pid:
                 tx = T.get_thread_binding()
-                row = pid * rows_per_block + tx // _WARP_SIZE
-                lane = tx % _WARP_SIZE
+                row = pid * rows_per_block + tx // WARP_LANES
+                lane = tx % WARP_LANES
                 best_key = T.alloc_local((1,), "int32")
                 best_index = T.alloc_local((1,), "int32")
                 ops.set_identity(best_key, best_index, 0)
 
                 for step in T.serial(partials_per_lane):
-                    partial = step * _WARP_SIZE + lane
+                    partial = step * WARP_LANES + lane
                     if row < M and partial < ctas_per_row:
                         ops.update(
                             best_key,
@@ -565,7 +565,7 @@ def _argreduce_multicta_final_kernel(
                             partial_indices[row * ctas_per_row + partial],
                         )
 
-                ops.warp_reduce(best_key, best_index, 5, _WARP_SIZE)
+                ops.warp_reduce(best_key, best_index, WARP_LANES.bit_length() - 1, WARP_LANES)
                 if row < M and lane == 0:
                     out[row] = T.cast(best_index[0], "int64")
 

@@ -15,11 +15,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 from ..v_tile import resolve_block_v
 from .gated_deltanet_fwd import (
-    _LOG2E,
     _chunk_local_cumsum,
     _h_recurrence_tl,
     _output_o_tl,
@@ -306,8 +306,8 @@ def _prefill_prepare_w_u_bhtd_tl(
                 for i_s, i_k in T.Parallel(block_C, dim_k):
                     k_beta_shared[i_s, i_k] = k_shared[i_s, i_k] * beta_shared[i_s]
                 for i in T.Parallel(block_C):
-                    g_pos_shared[i] = T.exp2(g_shared[i] * _LOG2E)
-                    g_neg_shared[i] = T.exp2(-g_shared[i] * _LOG2E)
+                    g_pos_shared[i] = T.exp2(g_shared[i] * LOG2E)
+                    g_neg_shared[i] = T.exp2(-g_shared[i] * LOG2E)
                 T.clear(gram_frag)
                 T.gemm(k_beta_shared, k_shared, gram_frag, transpose_B=True)
 
@@ -541,14 +541,14 @@ def _prefill_blocksolve_A_bthd_tl(
                     g_val = T.cast(g_s[t], accum_dtype) if use_gate else T.float32(0.0)
                     gate0_s[t] = T.exp2(
                         (g_val - (T.cast(g_s[0], accum_dtype) if use_gate else T.float32(0.0)))
-                        * _LOG2E
+                        * LOG2E
                     )
                     gate1_s[t] = T.exp2(
                         (
                             g_val
                             - (T.cast(g_s[block_c], accum_dtype) if use_gate else T.float32(0.0))
                         )
-                        * _LOG2E
+                        * LOG2E
                     )
                     gate2_s[t] = T.exp2(
                         (
@@ -559,7 +559,7 @@ def _prefill_blocksolve_A_bthd_tl(
                                 else T.float32(0.0)
                             )
                         )
-                        * _LOG2E
+                        * LOG2E
                     )
                     gate3_s[t] = T.exp2(
                         (
@@ -570,7 +570,7 @@ def _prefill_blocksolve_A_bthd_tl(
                                 else T.float32(0.0)
                             )
                         )
-                        * _LOG2E
+                        * LOG2E
                     )
                     beta_f_s[t] = beta_s[t]
                 T.sync_threads()
@@ -1065,8 +1065,8 @@ def _prefill_prepare_w_u_bthd_tl(
                 for i, d in T.Parallel(block_C, dim_k):
                     k_beta_shared[i, d] = k_shared[i, d] * beta_shared[i]
                 for i in T.Parallel(block_C):
-                    g_pos_shared[i] = T.exp2(g_shared[i] * _LOG2E)
-                    g_neg_shared[i] = T.exp2(-g_shared[i] * _LOG2E)
+                    g_pos_shared[i] = T.exp2(g_shared[i] * LOG2E)
+                    g_neg_shared[i] = T.exp2(-g_shared[i] * LOG2E)
                 T.clear(gram_frag)
                 T.gemm(k_beta_shared, k_shared, gram_frag, transpose_B=True)
 
@@ -1176,16 +1176,16 @@ def _prefill_h_recurrence_bthd_tl(
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * LOG2E
                         )
 
                     for i, j in T.Parallel(block_C, BV):
                         v_new[bid, base + i, hid, v_offset + j] = v_new_c[i, j]
 
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1257,14 +1257,14 @@ def _prefill_output_o_bthd_tl(
                 T.clear(o_frag)
                 T.gemm(q_c, h_c, o_frag)
                 for i, j in T.Parallel(block_C, dim_v):
-                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * _LOG2E)
+                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * LOG2E)
 
                 T.clear(attn_frag)
                 T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(
                         i >= j,
-                        attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E),
+                        attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E),
                         T.float32(0.0),
                     )
 
@@ -1363,13 +1363,13 @@ def _prefill_group_transition_summary_bthd_tl(
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * LOG2E
                         )
 
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1528,16 +1528,16 @@ def _prefill_grouped_replay_bthd_tl(
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * LOG2E
                         )
 
                     for i, j in T.Parallel(block_C, BV):
                         v_new[bid, base + i, hid, v_offset + j] = v_new_c[i, j]
 
                     for n, j in T.Parallel(block_C, BV):
-                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,

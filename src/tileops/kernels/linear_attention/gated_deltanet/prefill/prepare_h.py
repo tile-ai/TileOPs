@@ -8,6 +8,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
+
 from .utils import prepare_chunk_offsets
 
 
@@ -172,7 +174,7 @@ def _build_prepare_h_kernel(
                     # [STAGE = i_s % num_stages] 1
                     T.barrier_wait(bar_1, i_s % 2)
                     # S = g_last * S
-                    g_last_local_S[0] = T.exp2(g_shared[i_s % num_stages, block_S - 1] * 1.442695)
+                    g_last_local_S[0] = T.exp2(g_shared[i_s % num_stages, block_S - 1] * LOG2E)
                     for j_k, j_v in T.Parallel(DK, DV):
                         h_fragment[j_k, j_v] *= g_last_local_S[0]
                     T.barrier_arrive(bar_2)
@@ -260,7 +262,7 @@ def _build_prepare_h_kernel(
                     T.barrier_arrive(data_is_free[i_s % num_stages])
 
                 if calc_mt:
-                    g_last_local_X[0] = T.exp2(g_prod_X[0] * 1.442695)
+                    g_last_local_X[0] = T.exp2(g_prod_X[0] * LOG2E)
                     for j_k, j_v in T.Parallel(DK, DK // 2):
                         m_fragment_R[j_k, j_v] *= g_last_local_X[0]
                     T.copy(m_fragment_R, mt[bb, bh, 0:DK, DK // 2 :])
@@ -288,9 +290,9 @@ def _build_prepare_h_kernel(
                     g_last_local_Y[0] = g_shared[i_s % num_stages, block_S - 1]
                     for j_s in T.Parallel(block_S):
                         g_rev_exp_shared[j_s] = T.exp2(
-                            (g_last_local_Y[0] - g_shared[i_s % num_stages, j_s]) * 1.442695
+                            (g_last_local_Y[0] - g_shared[i_s % num_stages, j_s]) * LOG2E
                         )
-                    g_last_local_Y[0] = T.exp2(g_last_local_Y[0] * 1.442695)
+                    g_last_local_Y[0] = T.exp2(g_last_local_Y[0] * LOG2E)
                     T.barrier_arrive(bar_1)
 
                     # [STAGE = i_s % num_stages] 1
@@ -342,7 +344,7 @@ def _build_prepare_h_kernel(
                     T.barrier_arrive(data_is_free[i_s % num_stages])
 
                 if calc_mt:
-                    g_last_local_Y[0] = T.exp2(g_prod_Y[0] * 1.442695)
+                    g_last_local_Y[0] = T.exp2(g_prod_Y[0] * LOG2E)
                     for j_k, j_v in T.Parallel(DK, DK // 2):
                         m_fragment_L[j_k, j_v] *= g_last_local_Y[0]
                     T.copy(m_fragment_L, mt[bb, bh, 0:DK, : DK // 2])

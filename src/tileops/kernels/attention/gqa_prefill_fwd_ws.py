@@ -21,6 +21,8 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops.kernels.constants import LOG2E
+
 from .call_spec import (
     ATTENTION_DTYPES,
     WS_ARCH,
@@ -76,7 +78,7 @@ def _gqa_prefill_fwd_fa3_kernel(
 ):
     score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
-    scale = 1.44269504 if use_softcap else score_scale * 1.44269504
+    scale = LOG2E if use_softcap else score_scale * LOG2E
     groups = H // Hkv
     co = Skv - Sq
     accum = "float"

@@ -2,6 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
 from tileops.kernels.kernel_base import Kernel
 
@@ -213,7 +214,7 @@ class FP8LightningIndexerFwdOp(Op):
         self, x: torch.Tensor, dims: Tuple[int], use_ue8m0: bool
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x_absmax = x.to(torch.float32).abs().amax(dim=-1, keepdim=True).clamp(1e-4)
-        sf = x_absmax / 448.0
+        sf = x_absmax / FP8_E4M3_MAX
         if use_ue8m0:
             assert sf.view(-1).amax().item() > 0
             sf = torch.pow(2.0, torch.ceil(torch.log2(x_absmax)))

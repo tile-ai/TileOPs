@@ -27,15 +27,15 @@ from tileops.kernels.reduction._primitives import (
     torch_dtype_nbytes,
     tune_by_forward,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = ["ReduceKernel"]
 
 _WELFORD_KINDS = {"std", "var", "var_mean"}
 
-_WARP_LANES = 32
 
 # Stride-halving shuffle steps that reduce one warp.
-_WARP_STAGES = 5
+_WARP_STAGES = WARP_LANES.bit_length() - 1
 
 _FRAG_SLOTS = {
     "std": 2,
@@ -294,7 +294,7 @@ def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
     full_tiles = N // chunk if vectorized else 0
     tiles = ceildiv_int(N, chunk)
     exact = tiles * chunk == N
-    num_warps = threads // _WARP_LANES
+    num_warps = threads // WARP_LANES
     # One vector access is at most 16 bytes; wider per-thread spans split into
     # several back-to-back vector loads.
     vec_elems = min(_PROD_POLICY.cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
@@ -354,10 +354,10 @@ def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
 
                 for stage in T.serial(_WARP_STAGES):
                     running[0] = running[0] * T.shfl_xor(
-                        running[0], T.int32(_WARP_LANES // 2) >> stage, width=_WARP_LANES
+                        running[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
                     )
-                if tx % _WARP_LANES == 0:
-                    warp_prod[tx // _WARP_LANES] = running[0]
+                if tx % WARP_LANES == 0:
+                    warp_prod[tx // WARP_LANES] = running[0]
                 T.sync_threads()
                 if tx == 0:
                     for w in T.serial(1, num_warps):

@@ -21,7 +21,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.tiling import align_up
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -55,7 +56,7 @@ __all__ = [
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
 # shared memory instructions.  Sub-categories may override this default.
-DEFAULT_ALIGNMENT: int = 256
+DEFAULT_ALIGNMENT: int = ALIGNMENT
 
 # Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
 # and the register file are checked separately.
@@ -65,9 +66,6 @@ MAX_SINGLE_TILE_COLS: int = 32768
 # block_m that fits within a single thread block's shared memory allocation.
 SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 
-# Width of the vectorized ``ld/st`` TileLang plans for a tile buffer on the
-# architectures the reduction kernels declare (SM80-SM90): 128 bits.
-VECTOR_ACCESS_BYTES: int = 16
 
 # Thread counts offered by the reduction autotune candidate lists.
 AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)

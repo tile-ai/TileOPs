@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["FP8QuantKernel"]
@@ -17,8 +18,8 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
     def _fp8_quant_fwd_func(num_stages, block_m):
         out_dtype = T.float8_e4m3fn
         scale_dtype = T.float32
-        fp8_min = -448.0
-        fp8_max = 448.0
+        fp8_min = -FP8_E4M3_MAX
+        fp8_max = FP8_E4M3_MAX
         fp8_max_inv = 1 / fp8_max
 
         @T.prim_func

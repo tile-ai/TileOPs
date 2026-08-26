@@ -17,10 +17,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 from ..v_tile import resolve_block_v
-from .gated_deltanet_fwd import _LOG2E
 
 __all__ = [
     "GatedDeltaNetBwdKernel",
@@ -123,10 +123,10 @@ def _bwd_parallel_tl(
                 T.clear(ws_frag)
                 T.gemm(w_c, h_c, ws_frag)
                 for i in T.Parallel(block_C):
-                    exp_g[i] = T.exp2(g_c[i] * _LOG2E)
+                    exp_g[i] = T.exp2(g_c[i] * LOG2E)
                 for i, j in T.Parallel(block_C, dim_v):
                     v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                        (g_c[i] + g_c[block_C - 1]) * _LOG2E
+                        (g_c[i] + g_c[block_C - 1]) * LOG2E
                     )
 
                 # Store v_new for recurrence kernel
@@ -145,7 +145,7 @@ def _bwd_parallel_tl(
                 T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(
-                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E), T.float32(0.0)
+                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E), T.float32(0.0)
                     )
 
                 T.clear(dh_frag)
@@ -185,7 +185,7 @@ def _bwd_parallel_tl(
 
                 for i, j in T.Parallel(block_C, block_C):
                     d_attn[i, j] = T.if_then_else(
-                        i >= j, d_attn[i, j] * T.exp2((g_c[i] - g_c[j]) * _LOG2E), T.float32(0.0)
+                        i >= j, d_attn[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E), T.float32(0.0)
                     )
 
                 T.gemm(d_attn, k_c, d_q_c_frag)
@@ -197,7 +197,7 @@ def _bwd_parallel_tl(
 
                 # Step 5: dh from w/v_new, dw, dg from P
                 for i, j in T.Parallel(block_C, dim_k):
-                    P[i, j] = w_c[i, j] * T.exp2((g_c[i] + g_c[block_C - 1]) * _LOG2E)
+                    P[i, j] = w_c[i, j] * T.exp2((g_c[i] + g_c[block_C - 1]) * LOG2E)
                 T.clear(dP_frag)
                 T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, dim_k):
@@ -209,7 +209,7 @@ def _bwd_parallel_tl(
                     dh_frag[i, j] -= dh_sub_frag[i, j]
                 # dw
                 for i, j in T.Parallel(block_C, dim_k):
-                    d_w_c[i, j] = dP[i, j] * T.exp2((g_c[i] + g_c[block_C - 1]) * _LOG2E)
+                    d_w_c[i, j] = dP[i, j] * T.exp2((g_c[i] + g_c[block_C - 1]) * LOG2E)
                 # dg from P*dP
                 for i, j in T.Parallel(block_C, dim_k):
                     P[i, j] = P[i, j] * dP[i, j]
@@ -288,7 +288,7 @@ def _make_dh_correction_from_carry_macro(
         v_offset,
     ):
         for pn, sk in T.Parallel(block_C, dim_k):
-            k_scaled[pn, sk] = k_c[pn, sk] * T.exp2((g_c[block_C - 1] - g_c[pn]) * _LOG2E)
+            k_scaled[pn, sk] = k_c[pn, sk] * T.exp2((g_c[block_C - 1] - g_c[pn]) * LOG2E)
 
         T.clear(du_corr_frag)
         T.gemm(k_scaled, dh_buf, du_corr_frag)
@@ -308,7 +308,7 @@ def _make_dh_correction_from_carry_macro(
         T.gemm(du_corr_c, h_c, dP_frag, transpose_B=True)
         for n, kk in T.Parallel(block_C, dim_k):
             dw_corr_partial[bid, hid, vid, chunk_offset + n, kk] = -dP_frag[n, kk] * T.exp2(
-                (g_c[n] + g_c[block_C - 1]) * _LOG2E
+                (g_c[n] + g_c[block_C - 1]) * LOG2E
             )
 
         T.clear(dP_frag)
@@ -316,7 +316,7 @@ def _make_dh_correction_from_carry_macro(
         T.copy(dP_frag, dP)
         for n, kk in T.Parallel(block_C, dim_k):
             dk_corr_partial[bid, hid, vid, chunk_offset + n, kk] = dP[n, kk] * T.exp2(
-                (g_c[block_C - 1] - g_c[n]) * _LOG2E
+                (g_c[block_C - 1] - g_c[n]) * LOG2E
             )
 
         for n, kk in T.Parallel(block_C, dim_k):
@@ -332,7 +332,7 @@ def _make_dh_correction_from_carry_macro(
         T.reduce_sum(d_g_pos, d_g_last_scalar2, dim=0)
         dg_c[block_C - 1] = (
             dg_c[block_C - 1]
-            + d_g_last_scalar1[0] * T.exp2(g_c[block_C - 1] * _LOG2E)
+            + d_g_last_scalar1[0] * T.exp2(g_c[block_C - 1] * LOG2E)
             + d_g_last_scalar2[0]
         )
 
@@ -458,7 +458,7 @@ def _dh_recurrence_bwd_tl(
                     # dh = dh_local + dh_buf * exp(g_last)
                     for i, j in T.Parallel(dim_k, BV):
                         dh_frag[i, j] = dh_loc[i, j] + dh_buf[i, j] * T.exp2(
-                            g_c[block_C - 1] * _LOG2E
+                            g_c[block_C - 1] * LOG2E
                         )
 
                     correction_from_carry(
@@ -803,7 +803,7 @@ def _dh_segment_summary_tl(
                         dh_loc,
                         disable_tma=True,
                     )
-                    alpha = T.exp2(g_c[block_C - 1] * _LOG2E)
+                    alpha = T.exp2(g_c[block_C - 1] * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
                         summary_frag[i, j] = dh_loc[i, j] + summary[i, j] * alpha
                     T.copy(summary_frag, summary)
@@ -962,7 +962,7 @@ def _dh_segment_local_carry_tl(
                         dh_loc,
                         disable_tma=True,
                     )
-                    alpha = T.exp2(g_c[block_C - 1] * _LOG2E)
+                    alpha = T.exp2(g_c[block_C - 1] * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
                         carry_frag[i, j] = dh_loc[i, j] + carry[i, j] * alpha
                     T.copy(carry_frag, carry)

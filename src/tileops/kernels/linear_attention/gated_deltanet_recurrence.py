@@ -24,6 +24,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
@@ -32,7 +33,6 @@ __all__ = [
     "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
 ]
 
-_LOG2E = 1.4426950408889634
 _DEFAULT_K_TILE = 16
 
 
@@ -108,7 +108,7 @@ def _gated_deltanet_decode_raw_cuda_flastyle_tl(
                         q_shared[kk] = T.cast(q[bid, hid, kk], "float32")
                 T.sync_threads()
 
-                alpha = T.exp2(T.cast(g[bid, hid], "float32") * _LOG2E)
+                alpha = T.exp2(T.cast(g[bid, hid], "float32") * LOG2E)
                 beta_val = T.cast(beta[bid, hid], "float32")
 
                 for ii in T.serial(k_chunk):
@@ -178,7 +178,7 @@ def _gated_deltanet_decode_tl(
 
                 g_val = T.cast(g[bid, hid], accum_dtype)
                 beta_val = T.cast(beta[bid, hid], accum_dtype)
-                alpha = T.exp2(g_val * _LOG2E)
+                alpha = T.exp2(g_val * LOG2E)
                 alpha_beta = alpha * beta_val
 
                 # Full-fp32 matvecs.  TileLang 0.1.9 cannot reliably lower
@@ -554,7 +554,7 @@ def _gated_deltanet_decode_fp32_tl(
 
                 g_val = T.cast(g[bid, hid], accum_dtype)
                 beta_val = T.cast(beta[bid, hid], accum_dtype)
-                alpha = T.exp2(g_val * _LOG2E)
+                alpha = T.exp2(g_val * LOG2E)
                 alpha_beta = alpha * beta_val
 
                 # Zero-init fragment accumulators

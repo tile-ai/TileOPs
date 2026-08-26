@@ -17,9 +17,9 @@ import math
 import tilelang
 import tilelang.language as T
 
-__all__ = ["fused_prepare_compute_w_u_tl"]
+from tileops.kernels.constants import LOG2E
 
-_LOG2E = 1.4426950408889634
+__all__ = ["fused_prepare_compute_w_u_tl"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -104,7 +104,7 @@ def fused_prepare_compute_w_u_tl(
                         i > j,
                         -gram_frag[i, j]
                         * beta_shared[i]
-                        * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
+                        * T.exp2((g_shared[i] - g_shared[j]) * LOG2E),
                         T.float32(0.0),
                     )
                 for i, j in T.Parallel(block_C, block_C):
