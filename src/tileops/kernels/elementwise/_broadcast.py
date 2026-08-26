@@ -88,6 +88,32 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     )
 
 
+# One grid axis carries the rows, and CUDA caps grid.y at 65535.
+_MAX_ROW_GRID = 65535
+
+
+def row_broadcast_split(coalesced_shape, a_strides, b_strides):
+    """``(rows, inner)`` when the innermost coalesced dim reads at stride 0 or 1.
+
+    That layout gives every row a constant offset into each operand, so a
+    kernel can pay the divmod chain once per block and keep the inner loop
+    affine — which is what lets it vectorize. Returns ``None`` for layouts
+    this does not cover (an inner dim read at a wider stride, or more rows
+    than a grid axis holds), which keep the per-element offset path.
+    """
+    if len(coalesced_shape) < 2:
+        return None
+    if a_strides[-1] not in (0, 1) or b_strides[-1] not in (0, 1):
+        return None
+    inner = coalesced_shape[-1]
+    rows = 1
+    for d in coalesced_shape[:-1]:
+        rows *= d
+    if rows > _MAX_ROW_GRID:
+        return None
+    return rows, inner
+
+
 @dataclass(frozen=True)
 class BroadcastPlan:
     """The coalesced shape and per-operand strides a binary kernel indexes with."""

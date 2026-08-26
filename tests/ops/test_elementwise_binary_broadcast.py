@@ -116,6 +116,24 @@ def test_binary_op_bidirectional_broadcast(
     torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name", ["MaximumFwdOp", "DivFwdOp"])
+def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
+    """A per-channel operand over a non-tile-multiple inner dim.
+
+    The row-broadcast body splits at trace time into full blocks and one
+    guarded tail block; 300 columns force the tail. ``div`` is ordered, so a
+    swapped operand would not cancel out.
+    """
+    cls = getattr(elementwise_mod, op_name)
+    a = torch.randn(2, 3, 10, 30, dtype=torch.float16, device="cuda")
+    b = torch.rand(3, 1, 1, dtype=torch.float16, device="cuda") + 0.5
+    ref = torch.maximum(a, b) if op_name == "MaximumFwdOp" else a / b
+    out = cls()(a, b)
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
 # ----------------------------------------------------------------------
 # Spec pins for the broadcast-binary roofline helpers (no CUDA build).
 # ----------------------------------------------------------------------

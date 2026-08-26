@@ -5,7 +5,12 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._broadcast import _compute_broadcast_offsets, _is_contiguous_same_shape, broadcast_plan_for
+from ._broadcast import (
+    _compute_broadcast_offsets,
+    _is_contiguous_same_shape,
+    broadcast_plan_for,
+    row_broadcast_split,
+)
 from ._op_body import op_func_for
 
 
@@ -90,6 +95,64 @@ def _make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_p
     return kernel
 
 
+def _row_broadcast_prim(
+    N_total, dtype, out_dtype, op_name, plan_name, a_numel, b_numel, threads, num_per_thread
+):
+    """PrimFunc for a broadcast whose innermost coalesced dim reads at stride 0 or 1.
+
+    One grid row per output row: the divmod chain that locates each operand
+    runs once per block, and the inner loop indexes affinely, so it vectorizes.
+    The generic path pays that chain per element and every access is a gather.
+    A ragged inner extent splits at trace time: full blocks run unguarded, the
+    one tail block guards each lane.
+    """
+    op_func = op_func_for(op_name)
+    ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
+    plan = broadcast_plan_for(plan_name)
+    inner = plan.coalesced_shape[-1]
+    rows = N_total // inner
+    a_inner = plan.a_strides[-1]
+    b_inner = plan.b_strides[-1]
+    block_cols = threads * num_per_thread
+    full_blocks = inner // block_cols
+    exact = full_blocks * block_cols == inner
+
+    @T.prim_func
+    def main(
+        a: T.Tensor((a_numel,), dtype),
+        b: T.Tensor((b_numel,), dtype),
+        y: T.Tensor((N_total,), out_dtype),
+    ):
+        with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads) as (bx, by):
+            a_base, b_base = _compute_broadcast_offsets(
+                by * inner, ndim, divisors, a_strides, b_strides
+            )
+            if exact:
+                for i, j in T.Parallel(threads, num_per_thread):
+                    col = (bx * threads + i) * num_per_thread + j
+                    y[by * inner + col] = op_func(
+                        a[a_base + col * a_inner], b[b_base + col * b_inner]
+                    )
+            else:
+                with T.If(bx < full_blocks):
+                    with T.Then():
+                        for i, j in T.Parallel(threads, num_per_thread):
+                            col = (bx * threads + i) * num_per_thread + j
+                            y[by * inner + col] = op_func(
+                                a[a_base + col * a_inner], b[b_base + col * b_inner]
+                            )
+                    with T.Else():
+                        for i, j in T.Parallel(threads, num_per_thread):
+                            col = (bx * threads + i) * num_per_thread + j
+                            with T.If(col < inner):  # noqa: SIM117
+                                with T.Then():
+                                    y[by * inner + col] = op_func(
+                                        a[a_base + col * a_inner], b[b_base + col * b_inner]
+                                    )
+
+    return main
+
+
 @functools.lru_cache(maxsize=32)
 def _make_binary_register_copy(
     N_total,
@@ -165,6 +228,16 @@ def _make_binary_direct(
 
         return kernel
 
+    if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
+
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads):
+            return _row_broadcast_prim(
+                N_total, dtype, out_dtype, op_name, plan_name, a_numel, b_numel, threads, 1
+            )
+
+        return kernel
+
     @tilelang.jit(out_idx=[2])
     def kernel(threads):
         op_func = op_func_for(op_name)
@@ -208,6 +281,24 @@ def _make_binary_explicit(
     """Binary explicit_parallel: N elements per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
     plan = broadcast_plan_for(plan_name)
+
+    if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
+
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads, num_per_thread):
+            return _row_broadcast_prim(
+                N_total,
+                dtype,
+                out_dtype,
+                op_name,
+                plan_name,
+                a_numel,
+                b_numel,
+                threads,
+                num_per_thread,
+            )
+
+        return kernel
 
     if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 

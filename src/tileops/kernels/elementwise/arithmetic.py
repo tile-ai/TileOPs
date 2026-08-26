@@ -280,7 +280,9 @@ class MaximumFwdKernel(BinaryKernel):
             return result
         # Float path: T.max handles signed-zero correctly but does NOT
         # propagate NaN -- it returns the non-NaN operand. Cast to fp32
-        # for isnan (bfloat16 lacks native isnan).
+        # for isnan (bfloat16 lacks native isnan). A self-compare is not
+        # a guard here: TileLang lowers ``!=`` as an ordered compare, so
+        # ``x != x`` is false for NaN.
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         result = T.if_then_else(b_is_nan, b, result)
