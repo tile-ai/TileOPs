@@ -117,6 +117,10 @@ def _row_broadcast_prim(
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
 
+    @T.macro
+    def write_col(a, b, y, a_base, b_base, by, col):
+        y[by * inner + col] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
+
     @T.prim_func
     def main(
         a: T.Tensor((a_numel,), dtype),
@@ -129,26 +133,26 @@ def _row_broadcast_prim(
             )
             if exact:
                 for i, j in T.Parallel(threads, num_per_thread):
-                    col = (bx * threads + i) * num_per_thread + j
-                    y[by * inner + col] = op_func(
-                        a[a_base + col * a_inner], b[b_base + col * b_inner]
-                    )
+                    write_col(a, b, y, a_base, b_base, by, (bx * threads + i) * num_per_thread + j)
             else:
                 with T.If(bx < full_blocks):
                     with T.Then():
                         for i, j in T.Parallel(threads, num_per_thread):
-                            col = (bx * threads + i) * num_per_thread + j
-                            y[by * inner + col] = op_func(
-                                a[a_base + col * a_inner], b[b_base + col * b_inner]
+                            write_col(
+                                a,
+                                b,
+                                y,
+                                a_base,
+                                b_base,
+                                by,
+                                (bx * threads + i) * num_per_thread + j,
                             )
                     with T.Else():
                         for i, j in T.Parallel(threads, num_per_thread):
                             col = (bx * threads + i) * num_per_thread + j
                             with T.If(col < inner):  # noqa: SIM117
                                 with T.Then():
-                                    y[by * inner + col] = op_func(
-                                        a[a_base + col * a_inner], b[b_base + col * b_inner]
-                                    )
+                                    write_col(a, b, y, a_base, b_base, by, col)
 
     return main
 

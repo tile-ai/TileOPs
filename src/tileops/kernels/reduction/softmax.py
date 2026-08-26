@@ -34,18 +34,16 @@ from tileops.kernels.reduction._primitives import (
     restore_same_shape,
     rows_for_axes,
 )
+from tileops.kernels.reduction._split_softmax import (
+    make_split_fold,
+    softmax_split_partials_kernel,
+    split_seg_n,
+    split_target_blocks,
+)
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
-
-# The split-row path turns on only when one block per row leaves the device
-# this far under-filled and a row is long enough to amortize its fold pass.
-_SPLIT_TARGET_BLOCKS = 264
-_SPLIT_MIN_COLS = 16384
-# Widest segment a partials block holds in its fragment: 64 fp32 registers
-# per thread at 256 threads, inside the flat region of the register curve.
-_SPLIT_MAX_SEG_COLS = 16384
 
 __all__ = ["SoftmaxKernel"]
 
@@ -449,64 +447,17 @@ def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
 
 
 @functools.lru_cache(maxsize=64)
-def _softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, threads: int):
-    """Per-segment softmax statistics: fp32 ``(max, sum)`` for a later fold.
-
-    One block owns one ``seg_n``-column segment of one row and writes the
-    segment's max and its sum of ``exp(x - max)``. A handful of long rows
-    cannot fill the device one block per row; ``ceildiv(N, seg_n)`` blocks
-    per row can. With a finite segment max, a masked lane contributes
-    ``exp(-inf) = 0``; a segment whose max is ``-inf`` (all lanes masked
-    ``-inf``) writes an explicit zero sum, since ``exp(-inf - -inf)`` is NaN.
-    """
-    num_segs = ceildiv_int(N, seg_n)
-
-    @tilelang.jit(out_idx=[1, 2])
-    def _func():
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, N), dtype],
-            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
-            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
-        ):
-            with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
-                x_f32 = T.alloc_fragment((1, seg_n), "float32")
-                m_s = T.alloc_fragment((1,), "float32")
-                s_s = T.alloc_fragment((1,), "float32")
-
-                for _, j in T.Parallel(1, seg_n):
-                    x_f32[0, j] = T.if_then_else(
-                        pid_s * seg_n + j < N,
-                        T.cast(x[pid_m, pid_s * seg_n + j], "float32"),
-                        -T.infinity("float32"),
-                    )
-                T.fill(m_s, -T.infinity("float32"))
-                T.reduce_max(x_f32, m_s, dim=1, clear=False)
-                for _, j in T.Parallel(1, seg_n):
-                    x_f32[0, j] = T.exp(x_f32[0, j] - m_s[0])
-                T.reduce_sum(x_f32, s_s, dim=1)
-
-                seg_max[pid_m * num_segs + pid_s] = m_s[0]
-                seg_sum[pid_m * num_segs + pid_s] = T.if_then_else(
-                    m_s[0] == -T.infinity("float32"), T.cast(0.0, "float32"), s_s[0]
-                )
-
-        return main
-
-    return _func
-
-
-@functools.lru_cache(maxsize=64)
 def _softmax_split_finalize_kernel(
     M: int, N: int, op_kind: str, dtype: str, seg_n: int, threads: int
 ):
     """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
 
-    The fold reads ``num_segs`` fp32 pairs from shared memory — a few hundred
-    bytes against the segment re-read — so every thread folds redundantly
-    rather than synchronizing a broadcast.
+    The fold reads ``num_segs`` fp32 pairs — a few hundred bytes against the
+    segment re-read — so every thread folds redundantly rather than
+    synchronizing a broadcast.
     """
     num_segs = ceildiv_int(N, seg_n)
+    fold = make_split_fold(num_segs)
 
     @tilelang.jit(out_idx=[3])
     def _func():
@@ -518,46 +469,22 @@ def _softmax_split_finalize_kernel(
             y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
-                stats = T.alloc_shared((num_segs, 2), "float32")
                 row_max = T.alloc_local((1,), "float32")
                 row_sum = T.alloc_local((1,), "float32")
 
-                for s, c in T.Parallel(num_segs, 2):
-                    stats[s, c] = T.if_then_else(
-                        c == 0,
-                        seg_max[pid_m * num_segs + s],
-                        seg_sum[pid_m * num_segs + s],
-                    )
-                T.sync_threads()
+                fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum)
 
-                row_max[0] = -T.infinity("float32")
-                for s in T.serial(num_segs):
-                    row_max[0] = T.max(row_max[0], stats[s, 0])
-                row_sum[0] = 0.0
-                # An all--inf segment contributes nothing; folding it through
-                # exp(-inf - row_max) would turn NaN when row_max is -inf too.
-                for s in T.serial(num_segs):
-                    row_sum[0] = row_sum[0] + T.if_then_else(
-                        stats[s, 0] == -T.infinity("float32"),
-                        T.cast(0.0, "float32"),
-                        stats[s, 1] * T.exp(stats[s, 0] - row_max[0]),
-                    )
-
-                if op_kind == "softmax":
-                    for _, j in T.Parallel(1, seg_n):
-                        col = pid_s * seg_n + j
-                        with T.If(col < N):  # noqa: SIM117
-                            with T.Then():
+                for _, j in T.Parallel(1, seg_n):
+                    col = pid_s * seg_n + j
+                    with T.If(col < N):  # noqa: SIM117
+                        with T.Then():
+                            if op_kind == "softmax":
                                 y[pid_m, col] = T.cast(
                                     T.exp(T.cast(x[pid_m, col], "float32") - row_max[0])
                                     / row_sum[0],
                                     dtype,
                                 )
-                else:
-                    for _, j in T.Parallel(1, seg_n):
-                        col = pid_s * seg_n + j
-                        with T.If(col < N):  # noqa: SIM117
-                            with T.Then():
+                            else:
                                 y[pid_m, col] = T.cast(
                                     T.cast(x[pid_m, col], "float32")
                                     - row_max[0]
@@ -568,23 +495,6 @@ def _softmax_split_finalize_kernel(
         return main
 
     return _func
-
-
-def split_seg_n(M: int, N: int, N_padded: int, row_blocks: int) -> int:
-    """The split-row segment width, or 0 when one block per row is enough.
-
-    Applies when the row grid leaves the device under-filled and a row is
-    long enough to amortize the fold pass; the segment count targets
-    ``_SPLIT_TARGET_BLOCKS`` blocks and stays aligned.
-    """
-    if N_padded < _SPLIT_MIN_COLS or row_blocks >= _SPLIT_TARGET_BLOCKS:
-        return 0
-    num_segs = max(1, ceildiv_int(_SPLIT_TARGET_BLOCKS, M))
-    seg_n = align_up(ceildiv_int(N, num_segs), DEFAULT_ALIGNMENT)
-    seg_n = min(seg_n, _SPLIT_MAX_SEG_COLS)
-    if ceildiv_int(N, seg_n) < 2:
-        return 0
-    return seg_n
 
 
 def _compute_padded_cols(N: int, tile_n: int) -> int:
@@ -659,6 +569,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
+        self._split_target = split_target_blocks(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
@@ -781,7 +692,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         # for a path forward will not take is waste, so the default config
         # (whose threads the split kernels share) stands.
         default = self.default_config
-        if split_seg_n(self.M, self.N, self.N_padded, ceildiv_int(self.M, default["block_m"])):
+        if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
             self.config = default
             return
 
@@ -866,15 +777,10 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         here. A handful of long rows goes to the split-row pair instead, which
         writes exact columns.
         """
-        seg_n = split_seg_n(
-            self.M,
-            self.N,
-            self.N_padded,
-            (self.M + self.config["block_m"] - 1) // self.config["block_m"],
-        )
+        seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
         if seg_n:
             threads = self.config.get("threads", _DEFAULT_TUNE_THREADS)
-            seg_max, seg_sum = _softmax_split_partials_kernel(
+            seg_max, seg_sum = softmax_split_partials_kernel(
                 self.M, self.N, seg_n, self.dtype_str, threads
             )()(x)
             return _softmax_split_finalize_kernel(

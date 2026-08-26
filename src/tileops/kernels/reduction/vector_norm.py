@@ -13,7 +13,6 @@ Output dtype matches input dtype; l1 and l2 compute in fp32.
 """
 
 import functools
-from math import prod
 from typing import Optional
 
 import tilelang
@@ -27,6 +26,7 @@ from tileops.kernels.reduction._primitives import (
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
+    edge_axis_plan,
     edge_axis_split,
     reduce_down_rows,
     restore_reduced,
@@ -361,17 +361,10 @@ class VectorNormKernel(Kernel):
         columns of those partials. ``l2`` takes its square root and ``inf`` its
         NaN-carrying bit-pattern max at the fold.
         """
-        shape = tuple(x.shape)
-        lead = prod(shape[:k])
-        kept = prod(shape[k : x.ndim - j])
-        trail = prod(shape[x.ndim - j :])
-        dtype_str = self.dtype_to_str(self.dtype)
-        planner = BlockConfigPlanner(
-            align_up(trail, DEFAULT_ALIGNMENT),
-            self._elem_bytes,
-            self._smem_budget,
+        lead, kept, trail, planner, cfg = edge_axis_plan(
+            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
         )
-        cfg = planner.default_config()
+        dtype_str = self.dtype_to_str(self.dtype)
         if planner.needs_tiling:
             stage = _vector_norm_kernel_tiled(
                 lead * kept, trail, self.op_kind, dtype_str, cfg["tile_n"], partial=True

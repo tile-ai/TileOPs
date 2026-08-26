@@ -88,8 +88,8 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     )
 
 
-# One grid axis carries the rows, and CUDA caps grid.y at 65535.
-_MAX_ROW_GRID = 65535
+# CUDA caps grid.y at 65535, and one grid axis carries the rows.
+_CUDA_MAX_GRID_Y = 65535
 
 
 def row_broadcast_split(coalesced_shape, a_strides, b_strides):
@@ -109,7 +109,7 @@ def row_broadcast_split(coalesced_shape, a_strides, b_strides):
     rows = 1
     for d in coalesced_shape[:-1]:
         rows *= d
-    if rows > _MAX_ROW_GRID:
+    if rows > _CUDA_MAX_GRID_Y:
         return None
     return rows, inner
 

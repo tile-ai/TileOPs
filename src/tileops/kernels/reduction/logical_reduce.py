@@ -25,9 +25,11 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
+    FP32_EXACT_INT_LIMIT,
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
+    edge_axis_plan,
     edge_axis_split,
     reduce_down_rows,
     restore_reduced,
@@ -424,7 +426,7 @@ class LogicalReduceKernel(Kernel):
         # A count is carried in fp32 across the two passes: exact while the
         # elements each output reduces stay within fp32's integer range.
         reduced_count = x.numel() // prod(x.shape[k : x.ndim - j]) if k else 0
-        if k and (self.op_kind != "count_nonzero" or reduced_count <= 2**24):
+        if k and (self.op_kind != "count_nonzero" or reduced_count <= FP32_EXACT_INT_LIMIT):
             y = self._reduce_edge_axes(x, k, j)
             return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
         rows = rows_for_axes(x, self.reduce_axes)
@@ -439,17 +441,10 @@ class LogicalReduceKernel(Kernel):
         leading axes fold down the columns of those partials — or/and are max/
         min over 0 and 1, a count is a sum.
         """
-        shape = tuple(x.shape)
-        lead = prod(shape[:k])
-        kept = prod(shape[k : x.ndim - j])
-        trail = prod(shape[x.ndim - j :])
-        dtype_str = self.dtype_to_str(self._kernel_dtype)
-        planner = BlockConfigPlanner(
-            align_up(trail, DEFAULT_ALIGNMENT),
-            self._elem_bytes,
-            self._smem_budget,
+        lead, kept, trail, planner, cfg = edge_axis_plan(
+            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
         )
-        cfg = planner.default_config()
+        dtype_str = self.dtype_to_str(self._kernel_dtype)
         if planner.needs_tiling:
             stage = _logical_reduce_kernel_tiled(
                 lead * kept, trail, self.op_kind, dtype_str, cfg["tile_n"], partial=True

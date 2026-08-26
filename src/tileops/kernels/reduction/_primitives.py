@@ -27,18 +27,19 @@ __all__ = [
     "AUTOTUNE_THREADS",
     "DEFAULT_ALIGNMENT",
     "DEFAULT_THREADS",
+    "FP32_EXACT_INT_LIMIT",
+    "FRAGMENT_ELEMS_PER_THREAD",
     "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
     "VECTOR_ACCESS_BYTES",
     "BlockConfigPlanner",
-    "LeadingAxisReducePolicy",
     "RowTiledAutotuneMixin",
     "align_up",
     "ceildiv_int",
     "compute_tile_n",
     "device_smem_budget",
+    "edge_axis_plan",
     "edge_axis_split",
-    "leading_row_splits",
     "make_cumulative_scan",
     "make_reduce_epilogue",
     "make_softmax_epilogue",
@@ -965,7 +966,7 @@ class RowTiledAutotuneMixin:
 
 
 @dataclass(frozen=True)
-class LeadingAxisReducePolicy:
+class _LeadingAxisReducePolicy:
     """Launch heuristics for reductions down contiguous leading axes."""
 
     cols_per_thread: int = 8
@@ -975,7 +976,39 @@ class LeadingAxisReducePolicy:
     target_blocks: int = 512
 
 
-_LEADING_POLICY = LeadingAxisReducePolicy()
+_LEADING_POLICY = _LeadingAxisReducePolicy()
+
+
+# Largest integer count fp32 carries exactly; a statistic folded through
+# fp32 counts or weights is trusted only below it.
+FP32_EXACT_INT_LIMIT = 1 << 24
+
+
+def edge_axis_plan(
+    shape: "tuple[int, ...]",
+    k: int,
+    j: int,
+    elem_bytes: int,
+    smem_budget: int,
+    **planner_kwargs,
+):
+    """Split *shape* for an edge-axis reduction and plan its rows pass.
+
+    Returns ``(lead, kept, trail, planner, cfg)``: the leading and trailing
+    reduced element counts, the kept middle, and the ``BlockConfigPlanner``
+    with its default config for rows of ``trail`` elements.
+    """
+    ndim = len(shape)
+    lead = prod(shape[:k])
+    kept = prod(shape[k : ndim - j])
+    trail = prod(shape[ndim - j :])
+    planner = BlockConfigPlanner(
+        align_up(trail, DEFAULT_ALIGNMENT),
+        elem_bytes,
+        smem_budget,
+        **planner_kwargs,
+    )
+    return lead, kept, trail, planner, planner.default_config()
 
 
 def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
@@ -998,7 +1031,7 @@ def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     return (k, j)
 
 
-def leading_row_splits(reduced: int, kept: int, threads: int) -> int:
+def _leading_row_splits(reduced: int, kept: int, threads: int) -> int:
     """How many ways to split the reduced axis so the grid fills the device."""
     block_b = threads * _LEADING_POLICY.cols_per_thread
     column_blocks = ceildiv_int(kept, block_b)
@@ -1161,7 +1194,7 @@ def reduce_down_rows(
     if reduced * kept <= grid_work:
         splits = 1
     else:
-        splits = leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
+        splits = _leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
     if splits == 1:
         single = _down_rows_kernel(
             reduced,
