@@ -706,3 +706,23 @@ def test_logsumexp_few_long_rows_split_across_blocks() -> None:
     torch.testing.assert_close(
         LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1), atol=1e-5, rtol=1e-5
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_split_rows_survive_fully_masked_segments() -> None:
+    """A segment of only ``-inf`` contributes zero to the fold, not NaN.
+
+    Masked inputs make whole segments ``-inf``; the segment-local max is then
+    ``-inf`` and an unguarded ``exp(-inf - -inf)`` would poison rows the
+    single-block path computes fine. An all--inf row stays torch: NaN for
+    softmax, ``-inf`` for logsumexp.
+    """
+    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1))
+    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+
+    x[0, :] = float("-inf")
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
+    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))

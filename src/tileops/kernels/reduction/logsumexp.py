@@ -69,9 +69,16 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
                     for s in T.serial(num_segs):
                         row_max[0] = T.max(row_max[0], seg_max[pid_m * num_segs + s])
                     row_sum[0] = 0.0
+                    # An all--inf segment contributes nothing; folding it
+                    # through exp(-inf - row_max) would turn NaN when row_max
+                    # is -inf too. An all--inf row then reads -inf + log(0),
+                    # which is torch's -inf.
                     for s in T.serial(num_segs):
-                        row_sum[0] = row_sum[0] + seg_sum[pid_m * num_segs + s] * T.exp(
-                            seg_max[pid_m * num_segs + s] - row_max[0]
+                        row_sum[0] = row_sum[0] + T.if_then_else(
+                            seg_max[pid_m * num_segs + s] == -T.infinity("float32"),
+                            T.cast(0.0, "float32"),
+                            seg_sum[pid_m * num_segs + s]
+                            * T.exp(seg_max[pid_m * num_segs + s] - row_max[0]),
                         )
                     y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
 
@@ -423,6 +430,14 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         and picks the overall best (block_m, threads, tile_n) config.
         """
         from tilelang.autotuner import autotune as tl_autotune
+
+        # The split pair bypasses the tuned kernel; measuring candidates for
+        # a path forward will not take is waste, so the default config
+        # (whose threads the split kernels share) stands.
+        default = self.default_config
+        if split_seg_n(self.M, self.N, self.N_padded, ceildiv_int(self.M, default["block_m"])):
+            self.config = default
+            return
 
         configs = self.autotune_configs
         if not configs:
