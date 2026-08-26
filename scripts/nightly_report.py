@@ -25,7 +25,8 @@ from typing import NamedTuple
 # ---------------------------------------------------------------------------
 
 REGRESSION_THRESHOLD = 0.10  # 10% latency change => regression or improvement
-REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
+NOISE_MULTIPLE = 2.5  # a delta within 2.5x the row's p90-p10 spread is noise
+REGRESSION_ABS_MIN = 0.01  # noise floor for rows recorded without percentiles
 
 # Measurement properties carried from the benchmark XML through to the report.
 # Parsing and aggregation must read the same set.
@@ -375,75 +376,143 @@ def _same_workload(current: _WorkCounts, historical: _WorkCounts) -> bool:
     )
 
 
-def find_best_latency(
-    runs: list[dict],
-    op: str,
-    config_name: str,
-    key: str = _CONCLUSION_KEY,
-    work: _WorkCounts | None = None,
-) -> float | None:
-    """Find the best (lowest) tileops reading for an op+config across history."""
-    best = None
-    for run in runs:
-        tileops_data = run.get("ops", {}).get(op, {}).get(config_name, {}).get("tileops", {})
-        lat = tileops_data.get(key)
-        if lat is None:
-            continue
-        if work is not None and not _same_workload(work, _work_counts(tileops_data, lat)):
-            continue
-        if best is None or lat < best:
-            best = lat
-    return best
+class _Reading(NamedTuple):
+    ms: float
+    spread: float | None  # p90 - p10 of the run that produced ``ms``
 
 
-def _history_deltas(bench_ops: dict, history_runs: list[dict]):
-    """Yield ``(record, delta)`` per config with both a reading and a history best.
+def _spread(props: dict) -> float | None:
+    lo, hi = props.get("device_busy_p10_ms"), props.get("device_busy_p90_ms")
+    return hi - lo if lo is not None and hi is not None else None
 
-    ``delta`` is the fractional change against that best: positive is slower.
+
+def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) -> str | None:
+    """The unique prior display name of this row in history, or None.
+
+    A name is adopted only when its recorded FLOP and byte counts equal the
+    current row's exactly and it never shares a run with the current name: a
+    renamed row and its new name never co-occur, while another variant of the
+    same workload does.
     """
+    if not work.flops_recorded or work.flops is None or work.nbytes is None:
+        return None
+    candidates: set[str] = set()
+    excluded: set[str] = set()
+    for run in runs:
+        cfgs = run.get("ops", {}).get(op, {})
+        has_current = config_name in cfgs
+        for name, entry in cfgs.items():
+            if name == config_name:
+                continue
+            if has_current:
+                excluded.add(name)
+                continue
+            tileops_data = entry.get("tileops", {})
+            ms = tileops_data.get(_CONCLUSION_KEY, tileops_data.get("latency_ms"))
+            hist = _work_counts(tileops_data, ms)
+            if hist.flops_recorded and hist.flops == work.flops and hist.nbytes == work.nbytes:
+                candidates.add(name)
+    candidates -= excluded
+    return candidates.pop() if len(candidates) == 1 else None
+
+
+def _config_readings(
+    runs: list[dict], op: str, config_name: str, key: str, work: _WorkCounts
+) -> list[_Reading]:
+    """Workload-matched positive readings for one row, oldest first.
+
+    Per run the current display name wins; a run that recorded the row only
+    under its prior name (see ``_alias_name``) contributes that reading.
+    """
+    alias = _alias_name(runs, op, config_name, work)
+    readings = []
+    for run in runs:
+        cfgs = run.get("ops", {}).get(op, {})
+        for name in (config_name, alias):
+            if name is None or name not in cfgs:
+                continue
+            tileops_data = cfgs[name].get("tileops", {})
+            ms = tileops_data.get(key)
+            if ms is None or ms <= 0 or not _same_workload(work, _work_counts(tileops_data, ms)):
+                continue
+            readings.append(_Reading(ms, _spread(tileops_data)))
+            break
+    return readings
+
+
+def _reportable(delta_ms: float, base: _Reading, curr_spread: float | None) -> bool:
+    """Whether a move of ``delta_ms`` against ``base`` clears both gates.
+
+    Relative gate: ``REGRESSION_THRESHOLD`` of the baseline. Noise gate:
+    ``NOISE_MULTIPLE`` times the wider of the two runs' p90-p10 spreads, or
+    ``REGRESSION_ABS_MIN`` when neither run recorded percentiles.
+    """
+    spreads = [s for s in (curr_spread, base.spread) if s is not None]
+    floor = NOISE_MULTIPLE * max(spreads) if spreads else REGRESSION_ABS_MIN
+    return delta_ms / base.ms > REGRESSION_THRESHOLD and delta_ms > floor
+
+
+def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
+    """Yield one verdict input per config with a positive reading and history."""
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
-            if lat is None:
+            if lat is None or lat <= 0:
                 continue
-            work = _work_counts(
-                {k.removeprefix("tileops_"): v for k, v in cfg.items()},
-                lat,
-            )
-            best = find_best_latency(history_runs, op, cfg["name"], key, work)
-            if not best:  # a zero is not something to measure against
-                continue
-            yield (
-                {
-                    "op": op,
-                    "config": cfg["name"],
-                    "best_ms": best,
-                    "curr_ms": lat,
-                    "delta_pct": (lat - best) / best * 100,
-                    "tflops": cfg.get("tileops_tflops"),
-                },
-                (lat - best) / best,
-            )
+            props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
+            work = _work_counts(props, lat)
+            readings = _config_readings(history_runs, op, cfg["name"], key, work)
+            if readings:
+                yield op, cfg, lat, _spread(props), readings
+
+
+def _record(op: str, cfg: dict, base_ms: float, curr_ms: float) -> dict:
+    return {
+        "op": op,
+        "config": cfg["name"],
+        "base_ms": base_ms,
+        "curr_ms": curr_ms,
+        "delta_pct": (curr_ms - base_ms) / base_ms * 100,
+        "tflops": cfg.get("tileops_tflops"),
+    }
 
 
 def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance regressions vs 14-day best."""
-    return [
-        record
-        for record, delta in _history_deltas(bench_ops, history_runs)
-        if delta > REGRESSION_THRESHOLD
-        and (record["curr_ms"] - record["best_ms"]) > REGRESSION_ABS_MIN
-    ]
+    """Rows slower than their 14-day median by the threshold and the noise gate.
+
+    Why the median: the window minimum is a lucky extremum of one-sample
+    nights and would alarm on every later normal night.
+    """
+    out = []
+    for op, cfg, lat, curr_spread, readings in _verdict_inputs(bench_ops, history_runs):
+        base = sorted(readings, key=lambda r: r.ms)[(len(readings) - 1) // 2]
+        if _reportable(lat - base.ms, base, curr_spread):
+            out.append(_record(op, cfg, base.ms, lat))
+    return out
 
 
 def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
-    """Detect performance improvements vs 14-day best, on the regression's absolute floor."""
-    return [
-        record
-        for record, delta in _history_deltas(bench_ops, history_runs)
-        if delta < -REGRESSION_THRESHOLD
-        and (record["best_ms"] - record["curr_ms"]) > REGRESSION_ABS_MIN
-    ]
+    """Rows faster than every 14-day reading by the threshold and the noise gate."""
+    out = []
+    for op, cfg, lat, curr_spread, readings in _verdict_inputs(bench_ops, history_runs):
+        base = min(readings, key=lambda r: r.ms)
+        if _reportable(base.ms - lat, base, curr_spread):
+            out.append(_record(op, cfg, base.ms, lat))
+    return out
+
+
+def detect_previous_run_shifts(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
+    """Rows that moved either way since their most recent comparable reading.
+
+    A fix that returns a row to its old level reads as 0% against the 14-day
+    best; this lens reports it.
+    """
+    out = []
+    for op, cfg, lat, curr_spread, readings in _verdict_inputs(bench_ops, history_runs):
+        base = readings[-1]
+        if _reportable(abs(lat - base.ms), base, curr_spread):
+            out.append(_record(op, cfg, base.ms, lat))
+    return out
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -508,7 +577,13 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
                 for key, value in (("latency_ms", lat), (_CONCLUSION_KEY, busy)):
                     if value is not None:
                         entry["tileops"][key] = value
-                for name in ("tflops", "flops", "bytes"):
+                for name in (
+                    "tflops",
+                    "flops",
+                    "bytes",
+                    "device_busy_p10_ms",
+                    "device_busy_p90_ms",
+                ):
                     value = cfg.get(f"tileops_{name}")
                     if value is not None:
                         entry["tileops"][name] = value
@@ -637,6 +712,7 @@ def generate_report(
     coverage: list[dict] | None = None,
     coverage_prev: dict | None = None,
     bench_skips: int = 0,
+    previous_run_shifts: list[dict] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -674,10 +750,12 @@ def generate_report(
     )
     lines.append(f"| **Benchmarked Ops** | {n_bench_ops} |")
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
-    lines.append(f"| **Regressions** (vs 14-day best) | {reg_icon} |")
+    lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
     if improvements:
         lines.append(f"| **Improvements** (vs 14-day best) | {_PARTY} {len(improvements)} |")
+    if previous_run_shifts:
+        lines.append(f"| **Moved since previous run** | {_BLUE} {len(previous_run_shifts)} |")
     if coverage:
         # Repeated here because the Coverage section sits below the benchmark
         # tables, which run to hundreds of rows. One row per concern: a single
@@ -764,15 +842,15 @@ def generate_report(
 
     # ── Regressions ───────────────────────────────────────────────────────
     if regressions:
-        lines.append(f"## {_WARN} Performance Regressions (vs 14-day best)")
+        lines.append(f"## {_WARN} Performance Regressions (vs 14-day median)")
         lines.append("")
-        lines.append("| Op | Config | Best (ms) | Current (ms) | Delta | TFLOPS |")
-        lines.append("|:---|:-------|----------:|-----------:|------:|-------:|")
+        lines.append("| Op | Config | Median (ms) | Current (ms) | Delta | TFLOPS |")
+        lines.append("|:---|:-------|------------:|-----------:|------:|-------:|")
         for r in sorted(regressions, key=lambda x: -x["delta_pct"]):
             tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
             lines.append(
                 f"| **{r['op']}** | {r['config']} "
-                f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
+                f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
                 f"| +{r['delta_pct']:.1f}% | {tflops_str} |"
             )
         lines.append("")
@@ -787,8 +865,28 @@ def generate_report(
             tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
             lines.append(
                 f"| **{r['op']}** | {r['config']} "
-                f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
+                f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
                 f"| {r['delta_pct']:.1f}% | {tflops_str} |"
+            )
+        lines.append("")
+
+    # ── Moves since the previous run ──────────────────────────────────────
+    if previous_run_shifts:
+        lines.append(f"## {_BLUE} Moved Since Previous Run")
+        lines.append("")
+        lines.append(
+            "> Moves against the most recent reading. A row restored to its"
+            " old level appears only here: returning is not a new 14-day record."
+        )
+        lines.append("")
+        lines.append("| Op | Config | Previous (ms) | Current (ms) | Delta | TFLOPS |")
+        lines.append("|:---|:-------|--------------:|-----------:|------:|-------:|")
+        for r in sorted(previous_run_shifts, key=lambda x: x["delta_pct"]):
+            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
+            lines.append(
+                f"| **{r['op']}** | {r['config']} "
+                f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
+                f"| {r['delta_pct']:+.1f}% | {tflops_str} |"
             )
         lines.append("")
 
@@ -1049,10 +1147,11 @@ def main():
 
     # Prune first: the carried-over artifact can hold entries older than the
     # window when a run gap exceeds the retention period, and the verdicts below
-    # are labelled "vs 14-day best".
+    # are labelled with the 14-day window.
     history_runs = prune_history(load_history(args.history))
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
+    previous_run_shifts = detect_previous_run_shifts(bench_ops, history_runs) if bench_ops else []
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
 
     coverage = None
@@ -1072,6 +1171,7 @@ def main():
         coverage,
         coverage_prev,
         bench_skips,
+        previous_run_shifts,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
