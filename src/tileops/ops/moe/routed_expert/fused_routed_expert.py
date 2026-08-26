@@ -13,7 +13,7 @@ from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
 
-from ...op_base import Op
+from ...op_base import Op, tensor_core_roof
 from ..abc import (
     FusedMoEExpertsModular,
     WeightedReduce,
@@ -256,3 +256,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         # Unpermute reduces into ``output`` directly and folds
         # ``routed_scaling_factor`` into its prim_func — no separate copy/scale.
         self._unpermute(mm2, fwd_idx, topk_weights, out=output)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

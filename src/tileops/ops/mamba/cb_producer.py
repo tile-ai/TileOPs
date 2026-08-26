@@ -10,7 +10,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 
 from .._validation import check_tensor_shape
-from ..op_base import Op
+from ..op_base import Op, tensor_core_roof
 
 __all__ = ["CBProducerFwdOp"]
 
@@ -106,3 +106,7 @@ class CBProducerFwdOp(Op):
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         return self._get_kernel((C_mat, B_mat), C_mat.dtype)(C_mat, B_mat)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

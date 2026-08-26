@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba import SSDChunkScanFwdKernel
 
-from ..op_base import Op
+from ..op_base import Op, tensor_core_roof
 
 __all__ = ["SSDChunkScanFwdOp"]
 
@@ -180,3 +180,7 @@ class SSDChunkScanFwdOp(Op):
         dt = dt.contiguous()
 
         return self.kernel(x, cb, dA_cumsum, C, prev_states, dt)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

@@ -13,7 +13,7 @@ from tileops.kernels.moe import (
 )
 
 from ...compile_boundary import get_instance
-from ...op_base import Op
+from ...op_base import Op, tensor_core_roof
 from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGateUpFwdOp"]
@@ -144,6 +144,10 @@ class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
             [numel, ffn] activated output.
         """
         return _moe_gate_up_fwd(a, b, true_sizes, true_offsets, self._instance_key)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 @torch.library.custom_op("tileops::moe_gate_up_fwd", mutates_args=())

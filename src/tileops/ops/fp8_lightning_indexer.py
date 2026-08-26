@@ -220,3 +220,7 @@ class FP8LightningIndexerFwdOp(Op):
             sf = torch.pow(2.0, torch.ceil(torch.log2(x_absmax)))
         x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fn)
         return x_scaled, sf.squeeze(-1)
+
+    def compute_roof(self) -> str:
+        """Index scores contract at fp8 regardless of the input form."""
+        return "tensor_core.fp8"

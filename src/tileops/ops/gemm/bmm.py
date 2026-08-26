@@ -12,7 +12,7 @@ import torch
 from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op
+from ..op_base import Op, tensor_core_roof
 
 __all__ = ["BmmFp8KNFwdOp", "BmmFp8NKFwdOp", "BmmFwdOp"]
 
@@ -164,6 +164,10 @@ class BmmFwdOp(Op):
             self._active_sig = sig
 
         return self._active_kernel(a, b)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class BmmFp8KNFwdOp(Op):
@@ -406,6 +410,10 @@ class BmmFp8KNFwdOp(Op):
         scale_a = scale_a.reshape(1)
         scale_b = scale_b.reshape(1)
         return self._active(a, b, scale_a, scale_b)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class BmmFp8NKFwdOp(BmmFp8KNFwdOp):

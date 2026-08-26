@@ -95,6 +95,14 @@ class BenchmarkBase(Generic[W], ABC):
         """Bytes moved by one call, or ``None`` to leave bandwidth out of the row."""
         raise NotImplementedError
 
+    def compute_roof(self) -> Optional[str]:
+        """GPU-profile key pricing the FLOPs, or ``None`` to leave it out of the row.
+
+        ``ManifestBenchmark`` reads it off ``op.compute_roof()``; a benchmark
+        without an Op instance has no roof to declare.
+        """
+        return None
+
     def profile(self, functor: Any, *inputs: Any) -> dict:
         """Profile a callable and return its structured result."""
         with torch.no_grad():
@@ -204,6 +212,9 @@ class BenchmarkBase(Generic[W], ABC):
         if memory is not None:
             result["bytes"] = memory
             result["bandwidth_tbs"] = memory / busy * 1e-9
+        roof = self.compute_roof()
+        if roof is not None:
+            result["compute_roof"] = roof
         return result
 
 
@@ -355,3 +366,6 @@ class ManifestBenchmark(BenchmarkBase[Any]):
 
     def calculate_memory(self) -> Optional[float]:
         return self._get_roofline()[1]
+
+    def compute_roof(self) -> Optional[str]:
+        return self._op.compute_roof()

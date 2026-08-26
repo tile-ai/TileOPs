@@ -39,6 +39,8 @@ _PERF_KEYS = (
     "tileops_flops",
     "tileops_bytes",
     "tileops_bandwidth_tbs",
+    "tileops_compute_roof",
+    "tileops_uncounted_copy_ms",
     "tileops_variant",
     "tileops_timing",
     "tileops_device_busy_p10_ms",
@@ -52,6 +54,18 @@ _PERF_KEYS = (
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
+
+# Algorithmic speed-of-light (SOL) verdict lines. Efficiency is
+# sol_time / measured_time against the *calibrated* (effective) ceilings;
+# see docs/design/roofline.md §1.2 and §4.3.
+SOL_GREEN_MEMORY = 0.90  # memory-bound row at its achievable ceiling
+SOL_GREEN_COMPUTE = 0.80  # tensor-core sustained calibration is noisier
+SOL_ANOMALY = 1.05  # above the effective ceiling: formula or profile is wrong
+# Below both floors the roofline has no traction: launch overhead and wave
+# quantization dominate, so the row is labeled instead of judged. Regression
+# detection still covers it.
+LATENCY_BOUND_SOL_MS = 0.003
+LATENCY_BOUND_MEASURED_MS = 0.020
 
 # ── Emoji constants ───────────────────────────────────────────────────────
 _PASS = "\u2705"  # ✅
@@ -581,12 +595,20 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
                     "tflops",
                     "flops",
                     "bytes",
+                    "compute_roof",
                     "device_busy_p10_ms",
                     "device_busy_p90_ms",
                 ):
                     value = cfg.get(f"tileops_{name}")
                     if value is not None:
                         entry["tileops"][name] = value
+                sol = cfg.get("sol")
+                if sol is not None:
+                    entry["tileops"]["sol"] = {
+                        "efficiency": round(sol["efficiency"], 4),
+                        "bound": sol["bound"],
+                        "latency_bound": sol["latency_bound"],
+                    }
             bl_lat = cfg.get("baseline_latency_ms")
             bl_busy = cfg.get(f"baseline_{_CONCLUSION_KEY}")
             if bl_lat is not None or bl_busy is not None:
@@ -687,6 +709,117 @@ def _get_gpu_name() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Speed-of-Light (M5)
+# ---------------------------------------------------------------------------
+
+
+def _load_gpu_profile(gpu_name: str) -> dict | None:
+    """Profile matching the measured device, or None when none claims it."""
+    try:
+        from tileops.perf.profile import find_profile
+    except ImportError:
+        return None
+    try:
+        return find_profile(gpu_name)
+    except Exception:
+        return None
+
+
+def _compute_sol(cfg: dict, profile: dict) -> dict | None:
+    """Algorithmic SOL efficiency for one benchmark row, or None.
+
+    Returns None when the row lacks any input the model needs: (flops,
+    bytes) from ``op.eval_roofline()``, a declared compute roof, a CUPTI
+    reading, and a calibrated profile section for both ceilings. A missing
+    input leaves the SOL column blank rather than guessing.
+    """
+    from tileops.perf.profile import resolve_roof
+
+    flops = cfg.get("tileops_flops")
+    nbytes = cfg.get("tileops_bytes")
+    busy = cfg.get("tileops_device_busy_ms")
+    roof_key = cfg.get("tileops_compute_roof")
+    if not all(isinstance(v, (int, float)) for v in (flops, nbytes, busy)):
+        return None
+    if nbytes <= 0 or busy <= 0 or not isinstance(roof_key, str):
+        return None
+    if cfg.get("tileops_timing") != "cupti":
+        return None
+    hbm = profile.get("hbm")
+    roof = resolve_roof(profile, roof_key)
+    if not isinstance(hbm, dict) or "effective" not in hbm or roof is None:
+        return None
+    # Copies the reading excluded are device work the op's algorithm issued;
+    # the roofline denominator has to carry them or efficiency inflates.
+    denom_ms = busy + (cfg.get("tileops_uncounted_copy_ms") or 0.0)
+    mem_ms = nbytes / hbm["effective"] * 1e3
+    comp_ms = flops / roof["effective"] * 1e3
+    sol_ms = max(mem_ms, comp_ms)
+    return {
+        "efficiency": sol_ms / denom_ms,
+        "bound": "memory" if mem_ms >= comp_ms else "compute",
+        "latency_bound": (sol_ms < LATENCY_BOUND_SOL_MS and denom_ms < LATENCY_BOUND_MEASURED_MS),
+        "roof": roof_key,
+        # Physically impossible rates: the formula (or roof) is wrong, not fast.
+        "impossible": [
+            signal
+            for signal, rate, ceiling in (
+                ("bytes/s over HBM theoretical", nbytes / denom_ms * 1e3, hbm["theoretical"]),
+                ("FLOP/s over roof theoretical", flops / denom_ms * 1e3, roof["theoretical"]),
+            )
+            if rate > ceiling
+        ],
+    }
+
+
+def annotate_sol(bench_ops: dict, profile: dict | None) -> list[dict]:
+    """Attach a ``sol`` reading to every config row; return the anomalies.
+
+    FAIL anomalies are physically impossible rates (a broken formula or
+    roof); WARN anomalies exceed the calibrated ceiling by more than
+    ``SOL_ANOMALY`` allows. Both exclude the row from green verdicts.
+    """
+    anomalies = []
+    if profile is None:
+        return anomalies
+    for op, data in bench_ops.items():
+        for cfg in data["configs"]:
+            sol = _compute_sol(cfg, profile)
+            if sol is None:
+                continue
+            cfg["sol"] = sol
+            for signal in sol["impossible"]:
+                anomalies.append(
+                    {"level": "FAIL", "op": op, "config": cfg["name"], "signal": signal}
+                )
+            if not sol["impossible"] and sol["efficiency"] > SOL_ANOMALY:
+                anomalies.append(
+                    {
+                        "level": "WARN",
+                        "op": op,
+                        "config": cfg["name"],
+                        "signal": f"{sol['efficiency']:.0%} of the calibrated ceiling",
+                    }
+                )
+    return anomalies
+
+
+def _sol_cell(sol: dict | None) -> str:
+    """Render one row's SOL reading for the benchmark table."""
+    if sol is None:
+        return "-"
+    eff = sol["efficiency"]
+    bound = "M" if sol["bound"] == "memory" else "C"
+    if sol["impossible"] or eff > SOL_ANOMALY:
+        return f"{_WARN} {eff:.0%} {bound}"
+    if sol["latency_bound"]:
+        return "<sub>lat-bound</sub>"
+    green = SOL_GREEN_MEMORY if sol["bound"] == "memory" else SOL_GREEN_COMPUTE
+    mark = f"{_PASS} " if eff >= green else ""
+    return f"{mark}{eff:.0%} {bound}"
+
+
+# ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
 
@@ -713,12 +846,15 @@ def generate_report(
     coverage_prev: dict | None = None,
     bench_skips: int = 0,
     previous_run_shifts: list[dict] | None = None,
+    sol_anomalies: list[dict] | None = None,
+    have_gpu_profile: bool = False,
 ) -> str:
     """Generate markdown report."""
     lines = []
     commit = _get_git_commit()
     gpu = _get_gpu_name()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sol_fails = [a for a in (sol_anomalies or []) if a["level"] == "FAIL"]
 
     # ── Header ────────────────────────────────────────────────────────────
     n_test_ops = len(test_ops) if test_ops else 0
@@ -727,7 +863,11 @@ def generate_report(
     total_tests = sum(d["passed"] + d["failed"] + d["skipped"] for d in (test_ops or {}).values())
     total_passed = sum(d["passed"] for d in (test_ops or {}).values())
 
-    health = _PASS if (n_failures == 0 and not regressions and not bench_failures) else _FAIL
+    health = (
+        _PASS
+        if (n_failures == 0 and not regressions and not bench_failures and not sol_fails)
+        else _FAIL
+    )
     lines.append(f"# {health} TileOPs Nightly Report")
     lines.append("")
     lines.append(f"> **{now}** &ensp;|&ensp; `{commit}` &ensp;|&ensp; {gpu}")
@@ -752,6 +892,15 @@ def generate_report(
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
+    if have_gpu_profile:
+        sol_icon = (
+            f"{_FAIL} {len(sol_fails)} impossible"
+            if sol_fails
+            else f"{_WARN} {len(sol_anomalies)}"
+            if sol_anomalies
+            else f"{_PASS} None"
+        )
+        lines.append(f"| **Roofline anomalies** | {sol_icon} |")
     if improvements:
         lines.append(f"| **Improvements** (vs 14-day best) | {_PARTY} {len(improvements)} |")
     if previous_run_shifts:
@@ -890,6 +1039,23 @@ def generate_report(
             )
         lines.append("")
 
+    # ── Roofline anomalies ────────────────────────────────────────────────
+    if sol_anomalies:
+        lines.append(f"## {_WARN} Roofline Model Anomalies")
+        lines.append("")
+        lines.append(
+            "> A FAIL row implies a rate above the hardware's theoretical"
+            " ceiling: its (flops, bytes) formula or declared roof is wrong,"
+            " and its SOL reading cannot be trusted. A WARN row exceeds the"
+            " calibrated ceiling; recheck the formula or the calibration."
+        )
+        lines.append("")
+        lines.append("| Level | Op | Config | Signal |")
+        lines.append("|:------|:---|:-------|:-------|")
+        for a in sorted(sol_anomalies, key=lambda x: (x["level"] != "FAIL", x["op"])):
+            lines.append(f"| {a['level']} | **{a['op']}** | {a['config']} | {a['signal']} |")
+        lines.append("")
+
     # ── Baseline Alerts ───────────────────────────────────────────────────
     if baseline_alerts:
         lines.append(f"## {_RED} Baseline Performance Alerts")
@@ -943,8 +1109,23 @@ def generate_report(
             f" {n_bench_ops} ops)</strong></summary>"
         )
         lines.append("")
-        lines.append("| | Op | Config | Device busy (ms) | TFLOPS | BW (TB/s) | Via | Ratio |")
-        lines.append("|:-|:---|:-------|------------:|-------:|----------:|:----|------:|")
+        if have_gpu_profile:
+            lines.append(
+                "> SOL = algorithmic speed-of-light efficiency:"
+                " `max(bytes/BW, flops/roof) / device-busy` against the"
+                " calibrated ceilings. `bytes` is the algorithm's minimum"
+                " traffic (not measured DRAM bytes); `flops` follows the"
+                " TileOPs counting convention; the roof is the unit an"
+                " optimal implementation would use, not the running kernel's."
+                f" M/C = memory/compute-bound; {_PASS} at"
+                f" ≥{SOL_GREEN_MEMORY:.0%} (M) / ≥{SOL_GREEN_COMPUTE:.0%} (C);"
+                " lat-bound rows are too small for the model to judge."
+            )
+            lines.append("")
+        lines.append(
+            "| | Op | Config | Device busy (ms) | TFLOPS | BW (TB/s) | SOL | Via | Ratio |"
+        )
+        lines.append("|:-|:---|:-------|------------:|-------:|----------:|----:|:----|------:|")
         for op in sorted(bench_ops):
             for cfg in bench_ops[op]["configs"]:
                 lat = _conclusion_ms(cfg)
@@ -954,6 +1135,7 @@ def generate_report(
                 lat_str = f"{lat:.4f}" if lat is not None else "-"
                 tflops_str = f"{tflops:.2f}" if tflops is not None else "-"
                 bw_str = f"{bw:.2f}" if bw is not None else "-"
+                sol_str = _sol_cell(cfg.get("sol"))
 
                 # Collect all baselines for this config into rows
                 bl_rows = []
@@ -970,7 +1152,7 @@ def generate_report(
                     bl_str = f"strategy: {variant}" if variant else "-"
                     lines.append(
                         f"|  | {op} | {cfg['name']} "
-                        f"| {lat_str} | {tflops_str} | {bw_str} "
+                        f"| {lat_str} | {tflops_str} | {bw_str} | {sol_str} "
                         f"| {bl_str} | - |"
                     )
                 else:
@@ -984,7 +1166,7 @@ def generate_report(
                     emoji = _ratio_emoji(min(rows)) if rows else ""
                     lines.append(
                         f"| {emoji} | {op} | {cfg['name']} "
-                        f"| {lat_str} | {tflops_str} | {bw_str} "
+                        f"| {lat_str} | {tflops_str} | {bw_str} | {sol_str} "
                         f"| {via_str} | - |"
                     )
         lines.append("")
@@ -1148,6 +1330,9 @@ def main():
     # Prune first: the carried-over artifact can hold entries older than the
     # window when a run gap exceeds the retention period, and the verdicts below
     # are labelled with the 14-day window.
+    gpu_profile = _load_gpu_profile(_get_gpu_name())
+    sol_anomalies = annotate_sol(bench_ops, gpu_profile) if bench_ops else []
+
     history_runs = prune_history(load_history(args.history))
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
@@ -1172,6 +1357,8 @@ def main():
         coverage_prev,
         bench_skips,
         previous_run_shifts,
+        sol_anomalies,
+        have_gpu_profile=gpu_profile is not None,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")

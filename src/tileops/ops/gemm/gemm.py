@@ -13,7 +13,7 @@ from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op
+from ..op_base import Op, tensor_core_roof
 
 __all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
@@ -183,6 +183,10 @@ class GemmFwdOp(Op):
         if mode == "rhs_col":
             return kernel(b.reshape(-1), a).reshape(m, 1)
         return kernel(a, b)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GemmFp8FwdOp(Op):
@@ -409,6 +413,10 @@ class GemmFp8FwdOp(Op):
 
         return self._active(a, b, scale_a, scale_b, bias)
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GemmW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
@@ -609,3 +617,7 @@ class GemmW4A16FwdOp(Op):
             self._active_sig = sig
 
         return self._active(activation, packed_weight, weight_scale, weight_zero)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

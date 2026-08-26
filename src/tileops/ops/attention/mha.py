@@ -16,7 +16,7 @@ from tileops.kernels.attention import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..compile_boundary import get_instance
-from ..op_base import Op
+from ..op_base import Op, tensor_core_roof
 from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 
@@ -103,6 +103,10 @@ class MultiHeadAttentionFwdOp(Op):
     def _eager_forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         self.dtype = q.dtype
         return self._gqa_op(q, k, v)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class MultiHeadAttentionBwdOp(Op):
@@ -215,7 +219,12 @@ class MultiHeadAttentionBwdOp(Op):
         Returns:
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H, D)``; ``dv.shape == (B, S, H, D)``.
         """
+        self.dtype = q.dtype
         return self._gqa_op(q, k, v, o, do, lse)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
@@ -297,6 +306,10 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
             )
         self.dtype = q.dtype
         return self._get_kernel((q, k, v), q.dtype)(q, k, v, real_seqlen_kv)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
@@ -416,6 +429,10 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
             q, k, v, real_seqlen_kv, block_table
         )
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 # torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)

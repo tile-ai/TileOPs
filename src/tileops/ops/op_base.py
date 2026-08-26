@@ -35,6 +35,42 @@ _EMPTY_STATIC_DIMS_WARNED: set = set()
 
 _Entry = TypeVar("_Entry")
 
+# GPU-profile dtype keys (src/tileops/perf/profiles/) for the tensor-core
+# section, by the dtype the contraction consumes. fp32 maps to tf32 because
+# that is the unit an fp32 contraction runs on when tensor cores serve it.
+_TENSOR_CORE_DTYPE_KEYS: dict[str, str] = {
+    "float16": "fp16",
+    "bfloat16": "bf16",
+    "float32": "tf32",
+    "float8_e4m3fn": "fp8",
+    "float8_e5m2": "fp8",
+}
+
+
+def tensor_core_roof(dtype: Union[torch.dtype, str, None]) -> str:
+    """Tensor-core roof key for a contraction computing at *dtype*.
+
+    Args:
+        dtype: The dtype the matmul consumes — a ``torch.dtype`` or its
+            string name. Ops that retain the dtype as either form pass
+            ``self.dtype`` directly.
+
+    Returns:
+        A GPU-profile key such as ``"tensor_core.bf16"``.
+
+    Raises:
+        ValueError: If *dtype* has no tensor-core section in the profile
+            schema (including ``None`` — the op has not bound a dtype yet).
+    """
+    name = str(dtype).removeprefix("torch.") if dtype is not None else None
+    key = _TENSOR_CORE_DTYPE_KEYS.get(name) if name is not None else None
+    if key is None:
+        raise ValueError(
+            f"no tensor-core roof for dtype {dtype!r}; known dtypes: "
+            f"{sorted(_TENSOR_CORE_DTYPE_KEYS)}"
+        )
+    return f"tensor_core.{key}"
+
 
 class _Unresolved:
     """The type of :data:`_UNRESOLVED`, so a traceback says what it is."""
@@ -194,6 +230,23 @@ class Op(ABC):
             "intentionally does not provide a generic evaluator — see "
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
         )
+
+    def compute_roof(self) -> str:
+        """GPU-profile key of the compute unit that prices this op's FLOPs.
+
+        ``eval_roofline()`` counts the work; ``compute_roof()`` names the
+        peak that bounds it (docs/design/roofline.md §1.2). The key is a
+        statement about the *optimal* implementation, declared by the op
+        author — never inferred from the running kernel, so a kernel on the
+        wrong unit is still measured against the right ceiling.
+
+        The base default covers ops whose arithmetic runs on CUDA cores in
+        fp32 (elementwise, reductions, norms, scans). An op whose FLOPs are
+        matmul contractions overrides this with ``tensor_core_roof(self.dtype)``
+        (or a backend-specific key). Valid whenever ``eval_roofline()`` is —
+        after the dtype is bound.
+        """
+        return "cuda_core.fp32"
 
     def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``.

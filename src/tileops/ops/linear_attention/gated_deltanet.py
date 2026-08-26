@@ -18,7 +18,7 @@ from tileops.kernels.linear_attention.gated_deltanet_recurrence import (
 )
 
 from .._validation import check_tensor_shape
-from ..op_base import Op, UnmanifestedOp
+from ..op_base import Op, UnmanifestedOp, tensor_core_roof
 
 __all__ = [
     "GatedDeltaNetBHTDFwdOp",
@@ -283,6 +283,10 @@ class GatedDeltaNetBHTDFwdOp(Op):
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GatedDeltaNetBTHDFwdOp(Op):
     """Gated DeltaNet forward over token-major (BTHD) inputs.
@@ -439,6 +443,10 @@ class GatedDeltaNetBTHDFwdOp(Op):
         )
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GatedDeltaNetPrefillBTHDFwdOp(Op):
@@ -692,6 +700,10 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
             self._active_sig = sig
         return self.kernel(q, k, v, g, beta)
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GatedDeltaNetPrefillBHTDFwdOp(GatedDeltaNetPrefillBTHDFwdOp):
     """Gated DeltaNet inference prefill over head-major (BHTD) inputs.
@@ -830,6 +842,10 @@ class GatedDeltaNetBwdOp(Op):
         )
         dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, S)
         return dq, dk, dv, dg, dbeta
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class _GatedDeltaNetFunction(torch.autograd.Function):

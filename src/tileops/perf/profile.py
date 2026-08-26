@@ -69,6 +69,43 @@ def _inject_effective(profile):
             section["effective"] = section["theoretical"] * section["calibration"]
 
 
+def find_profile(device_name: str) -> dict | None:
+    """Load the profile whose ``gpu`` field names *device_name*, or ``None``.
+
+    Args:
+        device_name: The device name as CUDA reports it
+            (``torch.cuda.get_device_name()``), e.g. ``"NVIDIA H200"``.
+
+    Returns:
+        The loaded profile dict, or ``None`` when no profile claims the
+        device — the caller leaves speed-of-light readings blank rather
+        than guessing a ceiling.
+    """
+    for path in _PROFILES_DIR.glob("*.yaml"):
+        profile = load_profile(path.stem)
+        if profile.get("gpu") == device_name:
+            return profile
+    return None
+
+
+def resolve_roof(profile: dict, key: str) -> dict | None:
+    """Resolve a roof key like ``"tensor_core.bf16"`` to its profile section.
+
+    Args:
+        profile: A dict from :func:`load_profile`.
+        key: ``"<unit>.<dtype>"`` as declared by ``Op.compute_roof()``.
+
+    Returns:
+        The section dict (with ``theoretical`` / ``effective``), or ``None``
+        when the profile has no calibrated entry for the key.
+    """
+    unit, _, dt = key.partition(".")
+    section = (profile.get(unit) or {}).get(dt)
+    if isinstance(section, dict) and "effective" in section and "theoretical" in section:
+        return section
+    return None
+
+
 def load_profile(gpu_name: str) -> dict:
     """Load a GPU profile as a dict.
 

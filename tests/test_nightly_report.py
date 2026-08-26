@@ -152,3 +152,100 @@ def test_history_entry_records_the_percentiles(report):
     tileops = entry["ops"][_OP][_CONFIG]["tileops"]
     assert tileops["device_busy_p10_ms"] == 0.0099
     assert tileops["device_busy_p90_ms"] == 0.0101
+
+
+# ---------------------------------------------------------------------------
+# Speed-of-Light (M5)
+# ---------------------------------------------------------------------------
+
+# A fixed synthetic profile keeps the expected efficiencies exact; the real
+# h200.yaml numbers are calibration data, not arithmetic under test.
+_PROFILE = {
+    "gpu": "TestGPU",
+    "hbm": {"theoretical": 5e12, "effective": 4e12},
+    "cuda_core": {"fp32": {"theoretical": 6e13, "effective": 5e13}},
+    "tensor_core": {"bf16": {"theoretical": 1e15, "effective": 7e14}},
+}
+
+
+def _sol_row(**overrides):
+    row = {
+        "name": _CONFIG,
+        "tileops_flops": 2e9,
+        "tileops_bytes": 4e9,  # 1 ms at effective HBM
+        "tileops_device_busy_ms": 1.0,
+        "tileops_compute_roof": "cuda_core.fp32",
+        "tileops_timing": "cupti",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_sol_efficiency_is_one_at_the_effective_ceiling(report):
+    sol = report._compute_sol(_sol_row(), _PROFILE)
+    assert sol["bound"] == "memory"
+    assert sol["efficiency"] == pytest.approx(1.0)
+    assert not sol["impossible"] and not sol["latency_bound"]
+
+
+def test_sol_compute_bound_uses_the_declared_roof(report):
+    # 7e11 FLOPs on the bf16 tensor-core roof: sol_time = 1 ms; measured 2 ms.
+    sol = report._compute_sol(
+        _sol_row(
+            tileops_flops=7e11,
+            tileops_bytes=1e6,
+            tileops_device_busy_ms=2.0,
+            tileops_compute_roof="tensor_core.bf16",
+        ),
+        _PROFILE,
+    )
+    assert sol["bound"] == "compute"
+    assert sol["efficiency"] == pytest.approx(0.5)
+
+
+def test_sol_rate_above_theoretical_is_impossible_not_fast(report):
+    sol = report._compute_sol(_sol_row(tileops_device_busy_ms=0.5), _PROFILE)
+    assert sol["impossible"] == ["bytes/s over HBM theoretical"]
+
+
+def test_sol_uncounted_copies_enter_the_denominator(report):
+    sol = report._compute_sol(_sol_row(tileops_uncounted_copy_ms=1.0), _PROFILE)
+    assert sol["efficiency"] == pytest.approx(0.5)
+
+
+def test_sol_skips_rows_the_model_cannot_judge(report):
+    assert report._compute_sol(_sol_row(tileops_timing="cuda-events"), _PROFILE) is None
+    no_timing = _sol_row()
+    del no_timing["tileops_timing"]
+    assert report._compute_sol(no_timing, _PROFILE) is None
+    assert report._compute_sol(_sol_row(tileops_bytes=0), _PROFILE) is None
+    assert report._compute_sol(_sol_row(tileops_compute_roof="tensor_core.fp8"), _PROFILE) is None
+
+
+def test_sol_latency_bound_needs_both_floors(report):
+    tiny = _sol_row(tileops_flops=1e3, tileops_bytes=1e3, tileops_device_busy_ms=0.004)
+    assert report._compute_sol(tiny, _PROFILE)["latency_bound"]
+    # A tiny lower bound with a large measured time is a slow kernel, not noise.
+    slow = _sol_row(tileops_flops=1e3, tileops_bytes=1e3, tileops_device_busy_ms=0.5)
+    assert not report._compute_sol(slow, _PROFILE)["latency_bound"]
+
+
+def test_annotate_sol_reports_anomalies_and_tags_rows(report):
+    bench_ops = {
+        _OP: {
+            "module": "m",
+            "configs": [_sol_row(), _sol_row(name="impossible", tileops_device_busy_ms=0.5)],
+        }
+    }
+    anomalies = report.annotate_sol(bench_ops, _PROFILE)
+    assert [a["level"] for a in anomalies] == ["FAIL"]
+    assert bench_ops[_OP]["configs"][0]["sol"]["efficiency"] == pytest.approx(1.0)
+
+
+def test_history_entry_records_the_sol_reading(report):
+    bench_ops = {_OP: {"module": "m", "configs": [_sol_row()]}}
+    report.annotate_sol(bench_ops, _PROFILE)
+    entry = report.build_history_entry(bench_ops)
+    tileops = entry["ops"][_OP][_CONFIG]["tileops"]
+    assert tileops["compute_roof"] == "cuda_core.fp32"
+    assert tileops["sol"] == {"efficiency": 1.0, "bound": "memory", "latency_bound": False}

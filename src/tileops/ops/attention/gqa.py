@@ -25,7 +25,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from ..op_base import Op, UnmanifestedOp
+from ..op_base import Op, UnmanifestedOp, tensor_core_roof
 from ..rope import base_freqs
 from .selection import (
     DECODE_KEYS,
@@ -512,6 +512,10 @@ class GroupedQueryAttentionFwdOp(Op):
         )
         return output.view(q.shape)
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GroupedQueryAttentionPrefillFwdOp(Op):
     """Canonical packed GQA prefill. Layout: THD.
@@ -832,6 +836,17 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             kwargs.pop("cu_seqlens_kv")
         )
         return gqa_prefill_varlen_fwd_roofline(**kwargs)
+
+    def compute_roof(self) -> str:
+        """Priced on tensor cores; an fp8 contraction prices at fp8.
+
+        ``backend="auto"`` dispatches to the fp8 kernel when the call passes
+        fp8 tensors, so the recorded call dtype outranks the constructed one.
+        """
+        if self.backend == "fp8":
+            return "tensor_core.fp8"
+        recorded = (getattr(self, "_roofline_kwargs", None) or {}).get("dtype")
+        return tensor_core_roof(recorded if recorded is not None else self.dtype)
 
 
 class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
@@ -1478,6 +1493,10 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             "compute per-sample from cu_seqlens and cache_seqlens at call time."
         )
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GroupedQueryAttentionBwdOp(Op):
     """Layout: BSHD"""
@@ -1598,6 +1617,10 @@ class GroupedQueryAttentionBwdOp(Op):
         dk, dv = dk.to(q.dtype), dv.to(q.dtype)
         return dq, dk, dv
 
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
+
 
 class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
@@ -1710,6 +1733,10 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
         self._validate_dtypes(q, k, v)
         self.dtype = q.dtype
         return self._get_kernel((q, k, v), q.dtype)(q, k, v, real_seqlen_kv)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
@@ -1831,6 +1858,10 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
             q, k, v, real_seqlen_kv, block_table
         )
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GroupedQueryAttentionSlidingWindowFwdOp(Op):
@@ -2007,6 +2038,10 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
             * self.dim
             * self.dtype.itemsize
         )
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
@@ -2214,3 +2249,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
             "total_memory is not defined for varlen ops; "
             "compute per-sample from cu_seqlens at call time."
         )
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

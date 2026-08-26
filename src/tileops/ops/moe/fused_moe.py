@@ -22,7 +22,7 @@ from tileops.ops.moe.abc import (
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
-from tileops.ops.op_base import Op
+from tileops.ops.op_base import Op, tensor_core_roof
 
 __all__ = ["FusedMoe", "FusedMoeFwdOp"]
 
@@ -186,6 +186,8 @@ class FusedMoe(Op):
         self.correction_bias_shape = (
             None if correction_bias is None else tuple(correction_bias.shape)
         )
+        # The roofline prices hidden states and weights at the call's dtype.
+        self.dtype = hidden_states.dtype
 
         r = self._prepare.prepare(
             hidden_states,
@@ -234,6 +236,10 @@ class FusedMoe(Op):
             self._experts.make_weighted_reduce(),
         )
         return output
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class FusedMoeFwdOp(FusedMoe):

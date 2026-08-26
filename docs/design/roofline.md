@@ -20,10 +20,19 @@ efficiency   = sol_time / actual_time
 Inputs:
 
 - `bytes_moved`, `total_flops` — manifest `roofline` (§2).
-- `hbm_bandwidth`, `peak_flops` — GPU profile (§5.1).
-- `actual_time` — benchmark output (§5.2).
+- `hbm_bandwidth` — GPU profile (§5.1), `hbm` section, effective value.
+- `peak_flops` — GPU profile section named by `op.compute_roof()` (§1.4), effective value.
+- `actual_time` — benchmark output (§5.2): device-busy time plus any device copies the reading excluded (`uncounted_copy_ms`).
 
 Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time > compute_time`, else compute-bound). It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
+
+The metric is **algorithmic** SOL efficiency, and every reading carries three scope statements:
+
+1. `bytes_moved` is the algorithm's minimum traffic (each input read once, each output written once), not measured DRAM traffic.
+1. `total_flops` follows the §1.3 counting convention, not per-instruction hardware cost; the metric does not certify an SFU-bound kernel as at its limit.
+1. The compute roof is the unit an optimal implementation would use (§1.4), not the unit the current kernel runs on.
+
+A reading the model cannot judge is left blank rather than guessed: a row timed without CUPTI, a row whose `bytes` formula yields zero, or a device with no GPU profile. A row whose `sol_time` and measured time are both below the latency floor is labeled latency-bound — launch overhead dominates and the model has no traction there; regression detection still covers it. A row implying a rate above a *theoretical* ceiling is reported as a formula error, never as a fast kernel.
 
 ### 1.3 Convention
 
@@ -35,6 +44,15 @@ Per-element FLOP rule for elementwise ops:
 - Predicate-only outputs (`eq`, `gt`, etc.) count as 1 FLOP per element.
 
 Composite ops sum their primitives — `sigmoid = neg + exp + add + recip = 4` FLOPs/elem; `silu = sigmoid + mul = 5` FLOPs/elem.
+
+### 1.4 Compute Roof
+
+`Op.compute_roof()` returns the GPU-profile key (§5.1) of the unit that prices the op's FLOPs — `"cuda_core.fp32"`, `"tensor_core.bf16"`, `"tensor_core.fp8"`, ….
+
+- The key states which unit an **optimal** implementation of the op would use. It is declared by the op author in code, never inferred from the running kernel or from an input dtype alone: inferring from the implementation would measure a kernel on the wrong unit against the wrong ceiling and hide exactly the gap the metric exists to expose, and an input dtype does not determine the contraction dtype (an fp8-backend attention takes fp16/bf16 tensors).
+- The `Op` base defaults to `"cuda_core.fp32"`, which covers every op whose arithmetic runs on CUDA cores in fp32 (elementwise, reductions, norms, scans). An op whose FLOPs are matmul contractions overrides it, normally with `tensor_core_roof(self.dtype)`; an op whose unit depends on instance state (a backend switch, a quantized path) branches on that state in its override.
+- The declaration is valid whenever `eval_roofline()` is — after the op's dtype is bound.
+- A wrong or missing override is caught by the nightly physics check (§4.3): a tensor-core kernel priced against the CUDA-core ceiling implies a FLOP rate above that ceiling's theoretical value, which is reported as a formula error on the next run.
 
 ## 2. Field Specification
 
@@ -115,18 +133,22 @@ Contract:
 - Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives only inside each Op's generated method.
 - `ManifestBenchmark` and `workloads_to_params(..., include_extra=True)` are the canonical consumers; non-reserved workload keys forward as op-call params passed to the Op's `__init__`.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
-- Benchmark output must record the `(flops, bytes)` returned by `op.eval_roofline()` so downstream consumers (M5) can read the numbers without re-instantiating ops.
+- Benchmark output must record the `(flops, bytes)` returned by `op.eval_roofline()` and the roof key returned by `op.compute_roof()` (§1.4), so downstream consumers (M5) can read the numbers without re-instantiating ops.
 
 ### 4.3 Roofline Tool (M5)
 
 Inputs:
 
-- Benchmark output (JSON/CSV) produced by M4, carrying per-workload latency and the `(flops, bytes)` that benchmark obtained from `op.eval_roofline()`.
-- GPU profile (§5.1).
+- Benchmark output produced by M4, carrying per-workload timing, the `(flops, bytes)` from `op.eval_roofline()`, and the roof key from `op.compute_roof()`.
+- GPU profile (§5.1), selected by matching the profile's `gpu` field against the measured device name; no match leaves every SOL reading blank.
 
-Outputs: SOL efficiency, bound type, per-workload reports.
+Outputs: SOL efficiency, bound type, latency-bound labels, and anomaly reports, per workload.
 
 Does not interpret formula strings at all. M5 reads pre-computed numbers from the benchmark output; it never instantiates Ops or runs roofline expressions.
+
+Verdict lines (rendering thresholds, not CI gates): a memory-bound row is at its ceiling from 90% efficiency, a compute-bound row from 80% (the tensor-core sustained calibration is noisier). A row above 105% is an anomaly — excluded from green verdicts, since a reading above the achievable ceiling means the formula or the calibration is wrong.
+
+Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible and is reported as a formula error that fails the run's health, so a formula edit that inflates work is caught on the next nightly. This is the standing guard on formula overestimation; equality-level formula validation belongs to tests, and hardware-counter validation to the bytes audit script (§4.5).
 
 ### 4.4 Op Codegen
 
@@ -247,6 +269,23 @@ Rules:
 - No `tileops.manifest.eval_roofline()` / `resolve_roofline_vars()` helper that evaluates roofline expressions exists in the target design. Any consumer wanting `(flops, bytes)` either calls `op.eval_roofline()` on an Op instance or reads pre-computed values from benchmark output.
 - Generated `eval_roofline()` must not parse, AST-analyze, or safe-eval its own formula strings. Codegen does the name/form check at generation time (§4.4.3 / §4.4.4) and then copies validated expressions into plain Python.
 - If a formula is too complex for inline arithmetic (conditionals, shape traversal, data-dependent logic), switch the entry to `func` mode (§2.2). Do not extend inline formulas into a mini-language.
+
+### 4.5 Bytes Audit (NCU)
+
+`scripts/validate_roofline_bytes.py` compares each op's `bytes` formula against hardware counters. It exists because the metric's objectivity rests on `bytes` being the true minimum traffic, and an overestimating formula inflates every efficiency reading in a way neither review nor the physics check is guaranteed to catch.
+
+Method, per audited op:
+
+1. Pick workloads covering the formula's branch signatures (dtype combos, optional-input presence, backend labels), from the manifest's real workloads — never scaled-up shapes, which can cross kernel-selection thresholds and audit an implementation the benchmark does not run.
+1. Run `forward()` once (input-inferred ops bind their roofline variables there), then read `op.eval_roofline()`.
+1. Measure a second `forward()` under Nsight Compute with cache control on, summing `dram__bytes_read.sum + dram__bytes_write.sum` over the call's kernels.
+1. Verdicts: `measured < formula × (1 − ε)` **FAIL** (only a formula overestimate produces it — sector granularity, write-allocate, ECC, and replay cache-flushing all push `measured` up); `measured > formula × 1.5` **WARN** (multi-pass implementation or replay inflation; informational); a missing metric or an empty kernel range is **ERROR**, never a verdict.
+
+Runs on demand (profiling permissions, replay cost) — after a manifest `roofline` edit, and as the mandatory check for ops exempt from the structural oracle (data-dependent traffic the oracle cannot count).
+
+### 4.6 Structural Oracle (tests)
+
+A CI test recomputes each audited `bytes` value from an independent path — the sizes of the tensors the workload actually binds (each distinct input storage once, each output once) — and requires equality with `eval_roofline()`. The formula and the oracle share only the minimum-traffic definition; a coefficient slip, a missed output, a wrong `elem_bytes`, or a broadcast counted at the wrong shape breaks the equality. Ops whose traffic depends on tensor *content* (gather-style indexing) are exempt by explicit list and covered by §4.5 instead. Coverage is golden workloads per op, not randomized sweeps.
 
 ## 5. Reference
 

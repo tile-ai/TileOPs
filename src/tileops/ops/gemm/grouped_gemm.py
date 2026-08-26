@@ -10,7 +10,7 @@ from tileops.kernels.grouped_gemm import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
-from ..op_base import Op
+from ..op_base import Op, tensor_core_roof
 
 __all__ = ["GroupedGemmFwdOp"]
 
@@ -240,3 +240,7 @@ class GroupedGemmFwdOp(Op):
             # and has no use for the padded ones.
             return self.kernel(a, b, batch_sizes, batch_offsets)
         return self.kernel(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
