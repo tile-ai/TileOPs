@@ -421,8 +421,10 @@ class LogicalReduceKernel(Kernel):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_storage(x)
         k, j = edge_axis_split(x.ndim, self.reduce_axes)
-        # A count is carried in fp32 across the two passes, exact below 2^24.
-        if k and (self.op_kind != "count_nonzero" or x.numel() < 2**24):
+        # A count is carried in fp32 across the two passes: exact while the
+        # elements each output reduces stay within fp32's integer range.
+        reduced_count = x.numel() // prod(x.shape[k : x.ndim - j]) if k else 0
+        if k and (self.op_kind != "count_nonzero" or reduced_count <= 2**24):
             y = self._reduce_edge_axes(x, k, j)
             return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
         rows = rows_for_axes(x, self.reduce_axes)

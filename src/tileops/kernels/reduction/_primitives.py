@@ -1117,16 +1117,18 @@ def _down_rows_kernel(
                         )
                         combine(acc, j, val)
 
-                for j in T.Parallel(block_b):
-                    finish(out_local, j, acc[j])
-
                 if exact:
+                    for j in T.Parallel(block_b):
+                        finish(out_local, j, acc[j])
                     T.copy(out_local, out[pid_a * B + pid_b * block_b])
                 else:
+                    # Finish only stored lanes: a masked lane holds the identity
+                    # (e.g. +inf), which an integer output dtype cannot take.
                     for j in T.Parallel(block_b):
                         # TileLang requires T.If/T.Then as nested context managers.
                         with T.If(pid_b * block_b + j < B):  # noqa: SIM117
                             with T.Then():
+                                finish(out_local, j, acc[j])
                                 out[pid_a * B + pid_b * block_b + j] = out_local[j]
 
         return main

@@ -1166,6 +1166,12 @@ class ReduceKernel(Kernel):
             return restore_reduced(columns, in_shape, self.reduce_axes, self.keepdim)
         if self._edge_axis_kind:
             k, j = edge_axis_split(x.ndim, self.reduce_axes)
+            # The Welford merge folds counts in fp32; past fp32's integer
+            # range the weights drift, so those sizes keep the permute path.
+            if k and self._is_welford:
+                reduced_count = x.numel() // prod(x.shape[k : x.ndim - j])
+                if reduced_count > 2**24:
+                    k = 0
             if k:
                 if self._is_welford:
                     y = self._welford_edge_axes(x, k, j)
