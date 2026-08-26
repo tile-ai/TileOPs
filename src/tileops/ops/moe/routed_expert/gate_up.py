@@ -11,9 +11,10 @@ from tileops.kernels.moe import (
     MoeGroupedGemmPersistent3WGFusedActKernel,
     MoeGroupedGemmSeparateActKernel,
 )
+from tileops.perf.profile import tensor_core_roof
 
 from ...compile_boundary import get_instance
-from ...op_base import Op, tensor_core_roof
+from ...op_base import Op
 from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGateUpFwdOp"]

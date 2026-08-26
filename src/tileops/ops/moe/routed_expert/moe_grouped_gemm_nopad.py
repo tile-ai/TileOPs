@@ -7,9 +7,10 @@ import torch
 from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmPersistent3WGKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
+from tileops.perf.profile import tensor_core_roof
 
 from ...compile_boundary import get_instance
-from ...op_base import Op, tensor_core_roof
+from ...op_base import Op
 from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGroupedGemmNopadFwdOp"]

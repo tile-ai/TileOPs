@@ -12,8 +12,9 @@ import torch
 from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
-from ...op_base import Op, tensor_core_roof
+from ...op_base import Op
 from ..abc import (
     FusedMoEExpertsModular,
     WeightedReduce,

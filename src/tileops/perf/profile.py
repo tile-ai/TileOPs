@@ -69,6 +69,42 @@ def _inject_effective(profile):
             section["effective"] = section["theoretical"] * section["calibration"]
 
 
+# Tensor-core dtype keys, by the dtype the contraction consumes. fp32 maps to
+# tf32 because that is the unit an fp32 contraction runs on when tensor cores
+# serve it. Encode side of the roof-key format; ``resolve_roof`` is the decode.
+_TENSOR_CORE_DTYPE_KEYS = {
+    "float16": "fp16",
+    "bfloat16": "bf16",
+    "float32": "tf32",
+    "float8_e4m3fn": "fp8",
+    "float8_e5m2": "fp8",
+}
+
+
+def tensor_core_roof(dtype) -> str:
+    """Tensor-core roof key for a contraction computing at *dtype*.
+
+    Args:
+        dtype: The dtype the matmul consumes — a ``torch.dtype`` or its
+            string name. Ops pass ``self.dtype`` directly.
+
+    Returns:
+        A GPU-profile key such as ``"tensor_core.bf16"``.
+
+    Raises:
+        ValueError: If *dtype* has no tensor-core section in the profile
+            schema (including ``None`` — the op has not bound a dtype yet).
+    """
+    name = str(dtype).removeprefix("torch.") if dtype is not None else None
+    key = _TENSOR_CORE_DTYPE_KEYS.get(name) if name is not None else None
+    if key is None:
+        raise ValueError(
+            f"no tensor-core roof for dtype {dtype!r}; known dtypes: "
+            f"{sorted(_TENSOR_CORE_DTYPE_KEYS)}"
+        )
+    return f"tensor_core.{key}"
+
+
 def find_profile(device_name: str) -> dict | None:
     """Load the profile whose ``gpu`` field names *device_name*, or ``None``.
 

@@ -11,8 +11,9 @@ import torch
 
 from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
-from ..op_base import Op, tensor_core_roof
+from ..op_base import Op
 
 __all__ = ["BmmFp8KNFwdOp", "BmmFp8NKFwdOp", "BmmFwdOp"]
 

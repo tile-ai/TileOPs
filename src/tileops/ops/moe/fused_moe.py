@@ -22,7 +22,8 @@ from tileops.ops.moe.abc import (
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
-from tileops.ops.op_base import Op, tensor_core_roof
+from tileops.ops.op_base import Op
+from tileops.perf.profile import tensor_core_roof
 
 __all__ = ["FusedMoe", "FusedMoeFwdOp"]
 

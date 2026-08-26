@@ -15,9 +15,10 @@ from tileops.kernels.convolution import (
     GroupConv3dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
 from .compile_boundary import get_instance
-from .op_base import Op, tensor_core_roof
+from .op_base import Op
 
 __all__ = [
     "Conv1dFwdOp",

@@ -16,9 +16,10 @@ from tileops.kernels.linear_attention.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeKernel,
     GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
+from tileops.perf.profile import tensor_core_roof
 
 from .._validation import check_tensor_shape
-from ..op_base import Op, UnmanifestedOp, tensor_core_roof
+from ..op_base import Op, UnmanifestedOp
 
 __all__ = [
     "GatedDeltaNetBHTDFwdOp",

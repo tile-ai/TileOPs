@@ -24,8 +24,9 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
-from ..op_base import Op, UnmanifestedOp, tensor_core_roof
+from ..op_base import Op, UnmanifestedOp
 from ..rope import base_freqs
 from .selection import (
     DECODE_KEYS,
@@ -132,38 +133,38 @@ def _build_packed_prefill_kernel(
 
 
 class GroupedQueryAttentionDenseFwdOp(Op):
-    r"""Shape-agnostic dense BSHD GQA for prefill and contiguous decode.
+    r"""Shape-agnostic dense BSHD grouped-query attention for prefill and contiguous decode.
 
-    Let ``g = H / H_kv`` and ``r(h) = floor(h / g)`` map query head ``h`` to
-    its KV head. Rectangular attention uses bottom-right alignment:
-
-    $$
-    p_i = i + S_{kv} - S_q.
-    $$
-
-    Causal attention admits key position ``j`` when ``j <= p_i``. A finite
-    window additionally requires ``p_i - left <= j <= p_i + right``. Fused
-    RoPE rotates Q at ``p_i`` and K at ``j``; therefore causal and fused-RoPE
-    calls require ``S_q <= S_kv``.
-
-    For FP8 inputs, each query head uses the scale of its KV group:
+    Let $g = H / H_{kv}$ and $r(h) = \lfloor h / g \rfloor$ map query head
+    $h$ to its KV head. Rectangular attention aligns the two sequences at
+    the bottom right, placing query row $i$ at key position
 
     $$
-    \hat q_{bih} = q_{bih} \mathrm{qscale}_{b,r(h)},\quad
-    \hat k_{bjr} = k_{bjr} \mathrm{kscale}_{b,r},\quad
-    \hat v_{bjr} = v_{bjr} \mathrm{vscale}_{b,r}.
+    p_i = i + S_{kv} - S_q .
     $$
 
-    With ``alpha = sm_scale`` (default ``1 / sqrt(D)``), scores are
-    ``z = alpha * dot(q_hat, k_hat)``. When ``softcap > 0`` the score becomes
-    ``softcap * tanh(z / softcap)`` before masking and softmax. Dot products,
-    softmax, and the weighted V reduction accumulate in FP32; the result is
-    cast to ``dtype``.
+    Causal attention admits key position $j$ when $j \le p_i$; a finite
+    window additionally requires
+    $p_i - \mathrm{left} \le j \le p_i + \mathrm{right}$. Fused RoPE rotates
+    Q at $p_i$ and K at $j$. Causal and fused-RoPE calls therefore require
+    $S_q \le S_{kv}$.
 
-    The Op validates this public contract and uses the standard
-    :meth:`Op.get_or_build_kernel` specialization cache. A later BUILTIN PR
-    will supply the shape/dtype key, select one concrete kernel on a miss, and
-    store that kernel directly; there is no second callable-owned cache.
+    FP8 inputs are dequantized with per-KV-head scales; each query head uses
+    the scale of its KV group:
+
+    $$
+    \begin{aligned}
+    \hat q_{b,i,h} &= q_{b,i,h} \cdot \mathrm{qscale}_{b,\,r(h)} \\
+    \hat k_{b,j,r} &= k_{b,j,r} \cdot \mathrm{kscale}_{b,\,r} \\
+    \hat v_{b,j,r} &= v_{b,j,r} \cdot \mathrm{vscale}_{b,\,r}
+    \end{aligned}
+    $$
+
+    With $\alpha$ = ``sm_scale`` (default $1 / \sqrt{D}$), the raw score is
+    $z = \alpha \, \hat q \cdot \hat k$; with ``softcap`` $c > 0$ it becomes
+    $c \tanh(z / c)$ before masking and softmax. Dot products, softmax, and
+    the weighted V reduction accumulate in FP32; the result is cast to the
+    configured output dtype.
     """
 
     def __init__(
@@ -180,7 +181,34 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         *,
         target: Target = None,
     ) -> None:
-        """Configure the public Dense BSHD GQA interface."""
+        r"""Build the op. Tensor shapes arrive with each ``forward`` call.
+
+        Args:
+            is_causal: Apply the causal mask, bottom-right aligned.
+            sm_scale: Score scale $\alpha$. ``None`` resolves to
+                $1 / \sqrt{D}$ from the call's head dimension.
+            softcap: Positive cap $c$ applying $c \tanh(z / c)$ to raw
+                scores. ``None`` or ``0`` disables capping.
+            window_size_left: Keys admitted left of $p_i$; ``-1`` means
+                unlimited.
+            window_size_right: Keys admitted right of $p_i$; ``-1`` means
+                unlimited.
+            dtype: Output dtype. Required (``float16`` or ``bfloat16``) for
+                FP8 inputs; ``None`` outputs the input dtype.
+            pos_encoding_mode: ``"none"``, or ``"rope"`` to fuse the rotary
+                embedding into attention.
+            rotary_dim: Rotated width of each head; even, at most $D$,
+                default the full head dimension. Valid only with
+                ``pos_encoding_mode="rope"``.
+            rope_layout: ``"neox"`` (rotate split halves) or
+                ``"interleaved"`` (rotate adjacent pairs).
+            target: Backend target to serve this op, or ``None`` to decide
+                from the input device.
+
+        Raises:
+            ValueError: A parameter is out of range, or the combination is
+                inconsistent (e.g. ``rotary_dim`` without RoPE).
+        """
         if pos_encoding_mode not in ("none", "rope"):
             raise ValueError(f"pos_encoding_mode must be 'none' or 'rope', got {pos_encoding_mode}")
         if rotary_dim is not None and pos_encoding_mode != "rope":
@@ -378,7 +406,34 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Validate, normalize, resolve one concrete implementation, and run it."""
+        r"""Run dense GQA attention on one batch of BSHD tensors.
+
+        Args:
+            q: Queries, $[B \times S_q \times H \times D]$; ``float16``,
+                ``bfloat16``, or ``float8_e4m3fn``.
+            k: Keys, $[B \times S_{kv} \times H_{kv} \times D]$, same dtype
+                as ``q``.
+            v: Values, $[B \times S_{kv} \times H_{kv} \times D]$, same
+                dtype as ``q``.
+            q_scale: FP8 dequantization scales for ``q``,
+                $[B \times H_{kv}]$, ``float32``. The three scales are
+                required together for FP8 input and invalid otherwise.
+            k_scale: Scales for ``k``, $[B \times H_{kv}]$, ``float32``.
+            v_scale: Scales for ``v``, $[B \times H_{kv}]$, ``float32``.
+            rope_cos: RoPE cosine table, $[P \times d_r / 2]$ with
+                $P \ge S_{kv}$ and $d_r$ = ``rotary_dim``, in the output
+                dtype. The two tables are required together with
+                ``pos_encoding_mode="rope"`` and invalid otherwise.
+            rope_sin: RoPE sine table, same shape and dtype as ``rope_cos``.
+
+        Returns:
+            Attention output, $[B \times S_q \times H \times D]$, in the
+            configured output dtype.
+
+        Raises:
+            ValueError: Shapes, dtypes, devices, or optional-input
+                combinations violate the contract above.
+        """
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)

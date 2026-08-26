@@ -14,9 +14,10 @@ from tileops.kernels.attention import (
     MHADecodePagedWsKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
 from ..compile_boundary import get_instance
-from ..op_base import Op, tensor_core_roof
+from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
 from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
 

@@ -4,9 +4,10 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
+from tileops.perf.profile import tensor_core_roof
 
 from .._validation import check_tensor_shape
-from ..op_base import Op, tensor_core_roof
+from ..op_base import Op
 
 __all__ = ["GLABwdOp", "GLAFwdOp"]
 

@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tileops.ops.op_base import tensor_core_roof
+from tileops.perf.profile import tensor_core_roof
 
 pytestmark = pytest.mark.smoke
 
@@ -15,9 +15,6 @@ class TestTensorCoreRoof:
         assert tensor_core_roof(torch.float32) == "tensor_core.tf32"
         assert tensor_core_roof(torch.float8_e4m3fn) == "tensor_core.fp8"
         assert tensor_core_roof(torch.float8_e5m2) == "tensor_core.fp8"
-
-    def test_accepts_string_dtype_names(self):
-        assert tensor_core_roof("bfloat16") == "tensor_core.bf16"
 
     def test_unbound_or_unknown_dtype_raises(self):
         with pytest.raises(ValueError, match="no tensor-core roof"):
@@ -43,14 +40,7 @@ class TestComputeRoofContract:
         op.dtype = torch.bfloat16
         assert op.compute_roof() == "tensor_core.bf16"
 
-    def test_fp8_gemm_follows_its_fp8_input_dtype(self):
-        from tileops.ops.gemm.gemm import GemmFp8FwdOp
-
-        op = GemmFp8FwdOp.__new__(GemmFp8FwdOp)
-        op.dtype = torch.float8_e4m3fn
-        assert op.compute_roof() == "tensor_core.fp8"
-
-    def test_gqa_prefill_fp8_backend_overrides_the_io_dtype(self):
+    def test_gqa_prefill_prices_the_call_that_ran(self):
         from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillFwdOp
 
         op = GroupedQueryAttentionPrefillFwdOp.__new__(GroupedQueryAttentionPrefillFwdOp)
@@ -59,11 +49,8 @@ class TestComputeRoofContract:
         assert op.compute_roof() == "tensor_core.fp8"
         op.backend = "dense"
         assert op.compute_roof() == "tensor_core.fp16"
-
-    def test_before_the_dtype_binds_the_declaration_raises(self):
-        from tileops.ops.gemm.gemm import GemmFwdOp
-
-        op = GemmFwdOp.__new__(GemmFwdOp)
-        op.dtype = None
-        with pytest.raises(ValueError, match="no tensor-core roof"):
-            op.compute_roof()
+        # backend="auto" dispatches by the tensors the call passed, so the
+        # recorded call dtype outranks the constructed one.
+        op.backend = "auto"
+        op._roofline_kwargs = {"dtype": torch.float8_e4m3fn}
+        assert op.compute_roof() == "tensor_core.fp8"

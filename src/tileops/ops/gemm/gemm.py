@@ -12,8 +12,9 @@ from tileops.kernels.gemm.dense import (
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.profile import tensor_core_roof
 
-from ..op_base import Op, tensor_core_roof
+from ..op_base import Op
 
 __all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
