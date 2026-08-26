@@ -149,9 +149,9 @@ class GroupedQueryAttentionDenseFwdOp(Op):
     For FP8 inputs, each query head uses the scale of its KV group:
 
     $$
-    \hat q_{bih} = q_{bih} qscale_{b,r(h)},\quad
-    \hat k_{bjr} = k_{bjr} kscale_{b,r},\quad
-    \hat v_{bjr} = v_{bjr} vscale_{b,r}.
+    \hat q_{bih} = q_{bih} \mathrm{qscale}_{b,r(h)},\quad
+    \hat k_{bjr} = k_{bjr} \mathrm{kscale}_{b,r},\quad
+    \hat v_{bjr} = v_{bjr} \mathrm{vscale}_{b,r}.
     $$
 
     With ``alpha = sm_scale`` (default ``1 / sqrt(D)``), scores are
