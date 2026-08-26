@@ -297,6 +297,9 @@ class LogSumExpFixture(FixtureBase):
                 pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=-1, non-aligned M + large-N tiled path
                 pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
+                # dim=-1, long rows on a filled grid (streaming kernel)
+                pytest.param((256, 16384), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((256, 16384), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=0
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -361,6 +364,35 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
         f"keepdim logsumexp failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@pytest.mark.smoke
+def test_logsumexp_streaming_special_values() -> None:
+    """Streaming-kernel special rows: -inf folds, +inf stays +inf, NaN propagates.
+
+    The streaming kernel seeds its running max with a finite floor instead of
+    -inf and guards the exp2 call sites for +inf; these rows pin the
+    semantics those choices must preserve.
+    """
+    x = torch.randn(256, 16384, dtype=torch.bfloat16, device="cuda")
+    x[0] = float("-inf")
+    x[1] = float("-inf")
+    x[1, 7] = 2.0
+    x[2, ::2] = float("-inf")
+    x[3, 100] = float("nan")
+    x[4, 200] = float("inf")
+    op = LogSumExpFwdOp(dim=-1)
+
+    y = op(x).float()
+    y_ref = torch.logsumexp(x.float(), dim=-1)
+    assert y[0].item() == float("-inf")
+    assert torch.isnan(y[3])
+    assert y[4].item() == float("inf")
+    atol, rtol = _get_tolerances(torch.bfloat16)
+    finite = torch.isfinite(y_ref)
+    assert torch.allclose(y[finite], y_ref[finite], atol=atol, rtol=rtol), (
+        f"special-value logsumexp failed, max err: {(y[finite] - y_ref[finite]).abs().max()}"
     )
 
 
