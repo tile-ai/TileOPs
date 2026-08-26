@@ -369,12 +369,7 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 def test_logsumexp_streaming_special_values() -> None:
-    """Streaming-kernel special rows: -inf folds, +inf stays +inf, NaN propagates.
-
-    The streaming kernel seeds its running max with a finite floor instead of
-    -inf and guards the exp2 call sites for +inf; these rows pin the
-    semantics those choices must preserve.
-    """
+    """Streaming logsumexp preserves -inf, +inf, and NaN row semantics."""
     x = torch.randn(256, 16384, dtype=torch.bfloat16, device="cuda")
     x[0] = float("-inf")
     x[1] = float("-inf")

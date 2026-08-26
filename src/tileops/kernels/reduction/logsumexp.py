@@ -7,9 +7,8 @@ Supports arbitrarily large N dimensions by tiling over N when the full
 N_padded does not fit in shared memory.  Uses the online softmax recurrence
 (track running max and rescaled running sum) across N-tiles.
 
-Long fp16/bf16 rows on a filled grid take a streaming kernel instead: direct
-vectorized loads into registers with per-thread online chains, no
-shared-memory staging (see ``_logsumexp_kernel_stream``).
+Long fp16/bf16 rows on a filled grid take a streaming kernel instead
+(see ``_logsumexp_kernel_streaming`` and ``StreamingLogSumExpPolicy``).
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.  Boundary handling for non-aligned N is performed
@@ -20,6 +19,7 @@ vectorized T.copy path since their columns are fully in-bounds.
 """
 
 import functools
+from dataclasses import dataclass
 from typing import Optional
 
 import tilelang
@@ -29,6 +29,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
+    VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
@@ -36,6 +37,7 @@ from tileops.kernels.reduction._primitives import (
     device_smem_budget,
     restore_reduced,
     rows_for_axes,
+    torch_dtype_nbytes,
 )
 from tileops.kernels.reduction._split_softmax import (
     make_split_fold,
@@ -50,30 +52,59 @@ _DEFAULT_TUNE_THREADS = 256
 
 _WARP_LANES = 32
 
-# Launch shape of the streaming kernel: one block per row, each thread owning
-# `cols_per_thread` consecutive elements per chunk. Fixed rather than tuned --
-# measured best at [1024, 32768] bf16 on H200 with the L2 flushed per
-# iteration (the benchmark's metric), and the eligibility gate below keeps
-# the kernel on shapes where this pair was measured.
-_STREAM_THREADS = 128
-_STREAM_COLS_PER_THREAD = 8
-
-# Streaming eligibility: enough rows to fill the device with one block per
-# row, and rows long enough that the tiled kernel's staging measurably loses.
-_STREAM_MIN_ROWS = 256
-_STREAM_MIN_COLS = 16384
-
-# Bounds that keep the streaming kernel's exponent arguments NaN-free with no
-# per-element guard. The running max seeds at the floor -- below every finite
-# fp16/bf16 value, but finite -- so an all--inf row keeps a zero sum and
-# floor + log(0) folds to -inf. Exponents subtract the max clamped to the
-# ceiling -- above every finite fp16/bf16 value, but finite -- so a +inf
-# element yields exp2(+inf) = +inf and its row folds to +inf. Both match
-# torch; a NaN element propagates through exp2 either way.
-_STREAM_MAX_FLOOR = -3.4e38
-_STREAM_MAX_CEIL = 3.4e38
-
 _LOG2E = 1.4426950408889634
+
+
+@dataclass(frozen=True)
+class StreamingLogSumExpPolicy:
+    """Launch shape and eligibility gate of the streaming kernel.
+
+    The launch pair is fixed rather than tuned: measured best at
+    [1024, 32768] bf16 on H200 with the L2 flushed per iteration (the
+    benchmark's metric), and ``eligible`` keeps the kernel on shapes
+    where that pair was measured.
+    """
+
+    threads: int = 128
+
+    cols_per_thread: int = 8
+
+    # Enough rows to fill the device with one block per row.
+    min_rows: int = 256
+
+    # Rows long enough that the tiled kernel's staging measurably loses.
+    min_cols: int = 16384
+
+    # Seed of the running max: below every finite fp16/bf16 value, but
+    # finite, so an all--inf row keeps a zero sum and folds to
+    # max_floor + log(0) = -inf, matching torch.
+    max_floor: float = -3.4e38
+
+    @property
+    def max_ceil(self) -> float:
+        """Clamp for exponent arguments: above every finite fp16/bf16 value.
+
+        Subtracting ``min(max, max_ceil)`` instead of the true max keeps
+        (+inf) - (+inf) = NaN out of exp2: a +inf element contributes
+        exp2(+inf) = +inf and its row folds to +inf, matching torch. A NaN
+        element propagates through exp2, and a finite max is never clamped.
+        """
+        return -self.max_floor
+
+    @property
+    def chunk(self) -> int:
+        return self.threads * self.cols_per_thread
+
+    def eligible(self, M: int, N: int, dtype: torch.dtype) -> bool:
+        return (
+            dtype in (torch.float16, torch.bfloat16)
+            and self.min_rows <= M
+            and self.min_cols <= N
+            and N % self.chunk == 0
+        )
+
+
+_STREAM_POLICY = StreamingLogSumExpPolicy()
 
 __all__ = ["LogSumExpKernel"]
 
@@ -280,36 +311,41 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
 # Streaming kernel (one block per row, direct vectorized loads)
 
 
-@functools.lru_cache(maxsize=64)
-def _logsumexp_kernel_stream(M: int, N: int, dtype: str, threads: int, cols_per_thread: int):
-    """Build a streaming logsumexp kernel for long, device-filling rows.
+@functools.lru_cache(maxsize=32)
+def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_per_thread: int):
+    """Build a streaming logsumexp kernel for long rows on a filled grid.
 
     One block per row. Each thread vector-loads its ``cols_per_thread``
-    consecutive elements per chunk straight into registers (no shared-memory
-    staging -- a reduction has no reuse to stage for), keeps one running max
-    and ``cols_per_thread`` independent fp32 sum chains, and rescales the
-    chains once per chunk with the online-softmax recurrence. Threads merge
-    once at the end: a warp shuffle tree, then one warp folding the per-warp
-    partials. ``exp2((v - clamped_max) * log2e)`` is the fast
-    single-instruction exponential; for finite rows the argument is never
-    positive, and the ceiling clamp turns a +inf element into ``exp2(+inf)``
-    instead of NaN (see ``_STREAM_MAX_CEIL``).
-
-    Requires ``N % (threads * cols_per_thread) == 0`` and an fp16/bf16 input
-    (``_STREAM_MAX_FLOOR`` sits below every finite value of those dtypes).
+    consecutive elements per chunk straight into registers (a reduction has
+    no reuse to stage through shared memory), keeps one running max and
+    ``cols_per_thread`` independent fp32 sum chains rescaled once per chunk
+    with the online-softmax recurrence, and merges once at the end: a warp
+    shuffle tree, then one warp folding the per-warp partials.
     """
     chunk = threads * cols_per_thread
     if N % chunk:
         raise ValueError(f"streaming kernel needs N % {chunk} == 0, got N={N}")
     num_chunks = N // chunk
     num_warps = threads // _WARP_LANES
-    elem_bytes = torch.tensor([], dtype=getattr(torch, dtype)).element_size()
-    vec_elems = min(cols_per_thread, 16 // elem_bytes)
+    vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
     vec_groups = cols_per_thread // vec_elems
     warp_stages = _WARP_LANES.bit_length() - 1
+    floor = _STREAM_POLICY.max_floor
+    ceil = _STREAM_POLICY.max_ceil
 
     @tilelang.jit(out_idx=[1])
     def _func():
+        @T.macro
+        def merge_pair(dst_m, dst_s, src_m, src_s, m_new, m_safe):
+            # Exponents subtract the ceiling-clamped max, never the true one,
+            # so (+inf) - (+inf) = NaN cannot form; see _STREAM_POLICY.max_ceil.
+            m_new[0] = T.max(dst_m[0], src_m)
+            m_safe[0] = T.min(m_new[0], ceil)
+            dst_s[0] = dst_s[0] * T.exp2(
+                (T.min(dst_m[0], ceil) - m_safe[0]) * _LOG2E
+            ) + src_s * T.exp2((T.min(src_m, ceil) - m_safe[0]) * _LOG2E)
+            dst_m[0] = m_new[0]
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -325,11 +361,13 @@ def _logsumexp_kernel_stream(M: int, N: int, dtype: str, threads: int, cols_per_
                 s_run = T.alloc_local((1,), "float32")
                 m_new = T.alloc_local((1,), "float32")
                 scale = T.alloc_local((1,), "float32")
+                other_m = T.alloc_local((1,), "float32")
+                other_s = T.alloc_local((1,), "float32")
                 warp_m = T.alloc_shared((num_warps,), "float32")
                 warp_s = T.alloc_shared((num_warps,), "float32")
 
-                m_run[0] = _STREAM_MAX_FLOOR
-                m_safe[0] = _STREAM_MAX_FLOOR
+                m_run[0] = floor
+                m_safe[0] = floor
                 for c in T.serial(cols_per_thread):
                     slots[c] = 0.0
 
@@ -345,15 +383,9 @@ def _logsumexp_kernel_stream(M: int, N: int, dtype: str, threads: int, cols_per_
                     m_new[0] = m_run[0]
                     for c in T.serial(cols_per_thread):
                         m_new[0] = T.max(m_new[0], held_f[c])
-                    # Exponents subtract the ceiling-clamped max, never the true
-                    # one, so (+inf) - (+inf) = NaN cannot form: a +inf element
-                    # contributes exp2(+inf) = +inf, its row folds to
-                    # max + log(inf) = +inf, and finite rows are untouched --
-                    # every finite fp16/bf16 max sits below the ceiling, where
-                    # the clamp is exact. NaN still propagates through exp2.
-                    scale[0] = T.exp2((m_safe[0] - T.min(m_new[0], _STREAM_MAX_CEIL)) * _LOG2E)
+                    scale[0] = T.exp2((m_safe[0] - T.min(m_new[0], ceil)) * _LOG2E)
                     m_run[0] = m_new[0]
-                    m_safe[0] = T.min(m_new[0], _STREAM_MAX_CEIL)
+                    m_safe[0] = T.min(m_new[0], ceil)
                     for c in T.serial(cols_per_thread):
                         slots[c] = slots[c] * scale[0] + T.exp2((held_f[c] - m_safe[0]) * _LOG2E)
 
@@ -361,8 +393,6 @@ def _logsumexp_kernel_stream(M: int, N: int, dtype: str, threads: int, cols_per_
                 for c in T.serial(1, cols_per_thread):
                     s_run[0] = s_run[0] + slots[c]
 
-                other_m = T.alloc_local((1,), "float32")
-                other_s = T.alloc_local((1,), "float32")
                 for stage in T.serial(warp_stages):
                     # Bound locals: a bare expression is substituted per mention.
                     other_m[0] = T.shfl_xor(
@@ -371,47 +401,19 @@ def _logsumexp_kernel_stream(M: int, N: int, dtype: str, threads: int, cols_per_
                     other_s[0] = T.shfl_xor(
                         s_run[0], T.int32(_WARP_LANES // 2) >> stage, width=_WARP_LANES
                     )
-                    m_new[0] = T.max(m_run[0], other_m[0])
-                    m_safe[0] = T.min(m_new[0], _STREAM_MAX_CEIL)
-                    s_run[0] = s_run[0] * T.exp2(
-                        (T.min(m_run[0], _STREAM_MAX_CEIL) - m_safe[0]) * _LOG2E
-                    ) + other_s[0] * T.exp2(
-                        (T.min(other_m[0], _STREAM_MAX_CEIL) - m_safe[0]) * _LOG2E
-                    )
-                    m_run[0] = m_new[0]
+                    merge_pair(m_run, s_run, other_m[0], other_s[0], m_new, m_safe)
                 if tx % _WARP_LANES == 0:
                     warp_m[tx // _WARP_LANES] = m_run[0]
                     warp_s[tx // _WARP_LANES] = s_run[0]
                 T.sync_threads()
                 if tx == 0:
                     for w in T.serial(1, num_warps):
-                        m_new[0] = T.max(warp_m[0], warp_m[w])
-                        m_safe[0] = T.min(m_new[0], _STREAM_MAX_CEIL)
-                        warp_s[0] = warp_s[0] * T.exp2(
-                            (T.min(warp_m[0], _STREAM_MAX_CEIL) - m_safe[0]) * _LOG2E
-                        ) + warp_s[w] * T.exp2(
-                            (T.min(warp_m[w], _STREAM_MAX_CEIL) - m_safe[0]) * _LOG2E
-                        )
-                        warp_m[0] = m_new[0]
+                        merge_pair(warp_m, warp_s, warp_m[w], warp_s[w], m_new, m_safe)
                     y[row] = T.cast(warp_m[0] + T.log(warp_s[0]), dtype)
 
         return main
 
     return _func
-
-
-def _stream_eligible(M: int, N: int, dtype: torch.dtype) -> bool:
-    """Whether the streaming kernel serves this row shape.
-
-    Narrow by design: only the fp16/bf16 long-row, device-filling shapes it
-    was measured on. Everything else keeps the tiled/single-tile paths.
-    """
-    return (
-        dtype in (torch.float16, torch.bfloat16)
-        and M >= _STREAM_MIN_ROWS
-        and N >= _STREAM_MIN_COLS
-        and N % (_STREAM_THREADS * _STREAM_COLS_PER_THREAD) == 0
-    )
 
 
 # Dispatch
@@ -432,11 +434,6 @@ def _compute_padded_cols(N: int, tile_n: int) -> int:
         return N_padded
     num_tiles = (N_padded + tile_n - 1) // tile_n
     return num_tiles * tile_n
-
-
-def _elem_bytes(dtype: torch.dtype) -> int:
-    """Return bytes per element for the given dtype."""
-    return torch.tensor([], dtype=dtype).element_size()
 
 
 class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
@@ -495,7 +492,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         self.keepdim = keepdim
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._split_target = split_target_blocks(device_index)
-        self._elem_bytes = _elem_bytes(dtype)
+        self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
@@ -508,15 +505,15 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         #
         # tile_n is baked into the kernel at build time, so pre-compute it from
         # default_config; autotune() rebuilds once per candidate width.
-        self._streaming = _stream_eligible(M, N, dtype)
+        self._streaming = _STREAM_POLICY.eligible(M, N, dtype)
         self._tile_n = self.default_config["tile_n"]
         if self._streaming:
-            self.kernel = _logsumexp_kernel_stream(
+            self.kernel = _logsumexp_kernel_streaming(
                 self.M,
                 self.N,
                 self.dtype_str,
-                _STREAM_THREADS,
-                _STREAM_COLS_PER_THREAD,
+                _STREAM_POLICY.threads,
+                _STREAM_POLICY.cols_per_thread,
             )
         else:
             self.kernel = _logsumexp_kernel(
