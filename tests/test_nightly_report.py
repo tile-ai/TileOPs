@@ -117,6 +117,12 @@ def test_restored_row_shows_as_moved_since_previous_run(report):
     assert found["base_ms"] == 0.082
 
 
+def test_non_positive_reading_is_not_a_measurement(report):
+    """A zero on either side is rejected, not reported as a 100% move."""
+    assert report.detect_improvements(_bench_ops(0.0), [_history_run(0.10)]) == []
+    assert report.detect_regressions(_bench_ops(0.4), [_history_run(0.0)]) == []
+
+
 def test_renamed_row_keeps_its_history(report):
     """History under the row's prior display name still baselines it."""
     runs = [_history_run(0.1, name="test_foo_bench[old-bfloat16]", flops=5e9, bytes=1e6)]

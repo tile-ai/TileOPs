@@ -26,9 +26,7 @@ from typing import NamedTuple
 
 REGRESSION_THRESHOLD = 0.10  # 10% latency change => regression or improvement
 NOISE_MULTIPLE = 2.5  # a delta within 2.5x the row's p90-p10 spread is noise
-# Verdict floor for rows measured before percentiles were recorded; rows with a
-# p10/p90 spread gate on NOISE_MULTIPLE x spread instead.
-REGRESSION_ABS_MIN = 0.01
+REGRESSION_ABS_MIN = 0.01  # noise floor for rows recorded without percentiles
 
 # Measurement properties carried from the benchmark XML through to the report.
 # Parsing and aggregation must read the same set.
@@ -391,12 +389,10 @@ def _spread(props: dict) -> float | None:
 def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) -> str | None:
     """The unique prior display name of this row in history, or None.
 
-    A parametrized test's display name can change while the row's workload does
-    not, which would orphan the history recorded under the old name. A
-    historical name is adopted only when its recorded FLOP and byte counts
-    equal the current row's exactly and it never shares a run with the current
-    name: a renamed row and its new name never co-occur, while a different
-    variant of the same workload does.
+    A name is adopted only when its recorded FLOP and byte counts equal the
+    current row's exactly and it never shares a run with the current name: a
+    renamed row and its new name never co-occur, while another variant of the
+    same workload does.
     """
     if not work.flops_recorded or work.flops is None or work.nbytes is None:
         return None
@@ -409,8 +405,6 @@ def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) 
             if name == config_name:
                 continue
             if has_current:
-                # Co-occurrence disqualifies at any counts: a rename never
-                # leaves both names in one run, so this name is another row.
                 excluded.add(name)
                 continue
             tileops_data = entry.get("tileops", {})
@@ -425,7 +419,7 @@ def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) 
 def _config_readings(
     runs: list[dict], op: str, config_name: str, key: str, work: _WorkCounts
 ) -> list[_Reading]:
-    """Workload-matched readings for one row, oldest first.
+    """Workload-matched positive readings for one row, oldest first.
 
     Per run the current display name wins; a run that recorded the row only
     under its prior name (see ``_alias_name``) contributes that reading.
@@ -439,31 +433,31 @@ def _config_readings(
                 continue
             tileops_data = cfgs[name].get("tileops", {})
             ms = tileops_data.get(key)
-            if ms is None or not _same_workload(work, _work_counts(tileops_data, ms)):
+            if ms is None or ms <= 0 or not _same_workload(work, _work_counts(tileops_data, ms)):
                 continue
             readings.append(_Reading(ms, _spread(tileops_data)))
             break
     return readings
 
 
-def _significant(delta_abs: float, curr_spread: float | None, base_spread: float | None) -> bool:
-    """Whether a delta clears the row's measurement noise.
+def _reportable(delta_ms: float, base: _Reading, curr_spread: float | None) -> bool:
+    """Whether a move of ``delta_ms`` against ``base`` clears both gates.
 
-    The gate is ``NOISE_MULTIPLE`` times the wider of the two runs' p90-p10
-    spreads. Rows measured before percentiles were recorded fall back to the
-    fixed ``REGRESSION_ABS_MIN`` floor.
+    Relative gate: ``REGRESSION_THRESHOLD`` of the baseline. Noise gate:
+    ``NOISE_MULTIPLE`` times the wider of the two runs' p90-p10 spreads, or
+    ``REGRESSION_ABS_MIN`` when neither run recorded percentiles.
     """
-    spreads = [s for s in (curr_spread, base_spread) if s is not None]
+    spreads = [s for s in (curr_spread, base.spread) if s is not None]
     floor = NOISE_MULTIPLE * max(spreads) if spreads else REGRESSION_ABS_MIN
-    return delta_abs > floor
+    return delta_ms / base.ms > REGRESSION_THRESHOLD and delta_ms > floor
 
 
 def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
-    """Yield one verdict input per config that has both a reading and history."""
+    """Yield one verdict input per config with a positive reading and history."""
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
-            if lat is None:
+            if lat is None or lat <= 0:
                 continue
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
             work = _work_counts(props, lat)
@@ -486,19 +480,13 @@ def _record(op: str, cfg: dict, base_ms: float, curr_ms: float) -> dict:
 def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     """Rows slower than their 14-day median by the threshold and the noise gate.
 
-    The median, not the minimum: the minimum of one-sample-per-night readings
-    is an optimistic extremum, and comparing against it reports a regression
-    whenever one past night got lucky. The lower median keeps the baseline an
-    actual reading.
+    Why the median: the window minimum is a lucky extremum of one-sample
+    nights and would alarm on every later normal night.
     """
     out = []
     for op, cfg, lat, curr_spread, readings in _verdict_inputs(bench_ops, history_runs):
         base = sorted(readings, key=lambda r: r.ms)[(len(readings) - 1) // 2]
-        if base.ms <= 0:
-            continue
-        if (lat - base.ms) / base.ms > REGRESSION_THRESHOLD and _significant(
-            lat - base.ms, curr_spread, base.spread
-        ):
+        if _reportable(lat - base.ms, base, curr_spread):
             out.append(_record(op, cfg, base.ms, lat))
     return out
 
@@ -508,11 +496,7 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
     out = []
     for op, cfg, lat, curr_spread, readings in _verdict_inputs(bench_ops, history_runs):
         base = min(readings, key=lambda r: r.ms)
-        if base.ms <= 0:
-            continue
-        if (base.ms - lat) / base.ms > REGRESSION_THRESHOLD and _significant(
-            base.ms - lat, curr_spread, base.spread
-        ):
+        if _reportable(base.ms - lat, base, curr_spread):
             out.append(_record(op, cfg, base.ms, lat))
     return out
 
@@ -526,11 +510,7 @@ def detect_previous_run_shifts(bench_ops: dict, history_runs: list[dict]) -> lis
     out = []
     for op, cfg, lat, curr_spread, readings in _verdict_inputs(bench_ops, history_runs):
         base = readings[-1]
-        if base.ms <= 0:
-            continue
-        if abs(lat - base.ms) / base.ms > REGRESSION_THRESHOLD and _significant(
-            abs(lat - base.ms), curr_spread, base.spread
-        ):
+        if _reportable(abs(lat - base.ms), base, curr_spread):
             out.append(_record(op, cfg, base.ms, lat))
     return out
 
