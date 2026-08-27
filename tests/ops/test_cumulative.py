@@ -301,13 +301,16 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
         (64, 32768, torch.bfloat16, "row_scan"),
         (64, 8200, torch.float32, "parallel_scan"),  # a padded width the row scan declines
         (64, 8200, torch.bfloat16, "parallel_scan"),  # same, at the other element width
+        # 65 elements per thread is not a whole number of vector accesses
+        (64, 16640, torch.bfloat16, "parallel_scan"),
     ],
 )
 def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: str) -> None:
     """Each shape takes the expected backend and matches torch.cumsum.
 
-    The row scan takes every width it can stage exactly, which is where it measures
-    fastest; the parallel scan is left the widths the alignment would pad.
+    The row scan takes every width it can stage exactly at a chunk whose bytes are a
+    whole number of vector accesses, which is where it measures fastest; the parallel
+    scan is left the widths the alignment would pad and the chunks it would misalign.
     """
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
