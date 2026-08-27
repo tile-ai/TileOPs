@@ -59,11 +59,9 @@ HISTORY_RETENTION_DAYS = 14
 # sol_time / measured_time against the *calibrated* (effective) ceilings;
 # see docs/design/roofline.md §1.2 and §4.3.
 #
-# The HBM ceiling is the envelope over access mixes (pure read is the highest),
-# while a kernel's own mix caps lower — a perfect 2R:1W kernel reaches ~90% of
-# the envelope, a perfect 1R:1W ~87%. The green line sits below every mix's
-# personal ceiling; tightening it above ~0.87 would bar copy-shaped kernels
-# from ever reading as done.
+# The HBM ceiling is the envelope over access mixes, and a kernel's own mix
+# caps lower (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%);
+# the green line must sit below every mix's personal ceiling.
 SOL_GREEN_MEMORY = 0.80
 SOL_GREEN_COMPUTE = 0.80  # tensor-core sustained calibration is noisier
 SOL_ANOMALY = 1.05  # above the effective ceiling: formula or profile is wrong

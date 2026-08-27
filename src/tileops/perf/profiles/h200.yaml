@@ -9,12 +9,9 @@
 gpu: NVIDIA H200
 compute_capability: 9.0
 
-# calibration is the envelope over the measured access mixes — the highest
-# sustained rate any read:write ratio reaches — so no legitimate kernel can
-# exceed the effective ceiling. calibration_mixes keeps each mix's own measured
-# fraction as data (a future per-mix ceiling reads it instead of re-measuring).
-# From benchmarks/hardware/memory/hbm_bandwidth.py on one board: 2048 MB working
-# set, 5 runs x 200 reps, memory clock at its 3201 MHz max.
+# From benchmarks/hardware/memory/hbm_bandwidth.py: 2048 MB working set,
+# 5 runs x 200 reps, memory clock at its 3201 MHz max. Envelope semantics:
+# docs/design/roofline.md §5.1.
 hbm:
   theoretical: 4800e9        # bytes/s, spec sheet
   calibration: 0.9380        # = max(calibration_mixes)

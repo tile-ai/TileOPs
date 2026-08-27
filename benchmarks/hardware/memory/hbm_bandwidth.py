@@ -3,13 +3,10 @@
 Compiles and runs the CUDA microbenchmark, parses output, and prints
 the calibration factor for src/tileops/perf/profiles/.
 
-Calibration is the **envelope** across the measured access mixes (copy 1R:1W,
-STREAM Triad 2R:1W, pure read, pure write): the highest sustained rate any mix
-reaches.  A ceiling is a rate no kernel exceeds; calibrating on one mix alone
-(Triad) put read-heavy kernels — decode reading a KV cache, multi-input
-elementwise — above 100% SOL on the nightly pages, which must be reserved for
-formula errors.  Triad remains the reference mix the roofline literature
-calibrates against; each mix's own rate is printed for the profile comment:
+Calibration is the envelope across the measured access mixes (copy 1R:1W,
+STREAM Triad 2R:1W, pure read, pure write): a ceiling is a rate no kernel
+exceeds, and one mix's rate is not that — read-heavier kernels beat it.
+Each mix's rate is emitted for the profile's ``calibration_mixes``.
 
     McCalpin, J.D., 1995. "Memory Bandwidth and Machine Balance in Current
     High Performance Computers." IEEE TCCA Newsletter.
@@ -112,8 +109,7 @@ def main():
     for line in lines:
         print(line)
 
-    # Calibration = the envelope over the measured access mixes. A mix the
-    # output no longer carries would silently shrink the envelope, so refuse.
+    # A mix the output no longer carries would silently shrink the envelope.
     peaks = _parse_peaks(lines)
     missing = [mix for mix, gbs in peaks.items() if gbs <= 0]
     if missing:
