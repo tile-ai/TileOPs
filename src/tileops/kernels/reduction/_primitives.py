@@ -95,7 +95,7 @@ def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
 _BUSY_TIMING_SPIN_CYCLES = 50_000_000
 
 
-def device_busy_of(call, device=None, warmup: int = 5, rep: int = 20) -> float:
+def device_busy_of(call, device: "torch.device", warmup: int = 5, rep: int = 20) -> float:
     """Mean device time of *call* in milliseconds with host gaps excluded.
 
     Judges paths that launch different kernel counts by their GPU work alone;
@@ -106,7 +106,7 @@ def device_busy_of(call, device=None, warmup: int = 5, rep: int = 20) -> float:
     owns the process's CUPTI subscription, and a second subscriber would break
     its kernel attribution for the rest of the process.
     """
-    with torch.cuda.device(device if device is not None else torch.cuda.current_device()):
+    with torch.cuda.device(device):
         for _ in range(warmup):
             call()
         torch.cuda.synchronize()
