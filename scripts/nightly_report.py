@@ -51,6 +51,7 @@ _PERF_KEYS = (
     "baseline_ratio",
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
+BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
 HISTORY_RETENTION_DAYS = 14
 
 # Algorithmic speed-of-light (SOL) verdict lines. Efficiency is
@@ -821,6 +822,21 @@ def _shift_table(
     return lines
 
 
+def _alert_rows(alerts: list[dict]) -> list[str]:
+    """One baseline-alert table for the given rows, worst first."""
+    lines = ["| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |"]
+    lines.append("|:-|:---|:-------|------------:|-------------:|------:|:----|")
+    for a in alerts:
+        emoji = _ratio_emoji(a["ratio"])
+        lines.append(
+            f"| {emoji} | **{a['op']}** | {a['config']} "
+            f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
+            f"| {a['ratio']:.1%} | {a['baseline_tag']} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _ratio_emoji(ratio: float) -> str:
     """Return an emoji indicator for a baseline ratio value."""
     if ratio >= 1.5:
@@ -1042,16 +1058,16 @@ def generate_report(
             " Ratio = baseline device-busy / tileops device-busy."
         )
         lines.append("")
-        lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |")
-        lines.append("|:-|:---|:-------|------------:|-------------:|------:|:----|")
-        for a in sorted(baseline_alerts, key=lambda x: x.get("ratio", 1)):
-            emoji = _ratio_emoji(a["ratio"])
-            lines.append(
-                f"| {emoji} | **{a['op']}** | {a['config']} "
-                f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
-                f"| {a['ratio']:.1%} | {a['baseline_tag']} |"
-            )
-        lines.append("")
+        ranked = sorted(baseline_alerts, key=lambda x: x.get("ratio", 1))
+        worst, rest = ranked[:BASELINE_ALERT_WORST_N], ranked[BASELINE_ALERT_WORST_N:]
+        lines.extend(_alert_rows(worst))
+        if rest:
+            lines.append("<details>")
+            lines.append(f"<summary><strong>{len(rest)} more alerts</strong></summary>")
+            lines.append("")
+            lines.extend(_alert_rows(rest))
+            lines.append("</details>")
+            lines.append("")
 
     # ── Coverage ──────────────────────────────────────────────────────────
     if coverage:
