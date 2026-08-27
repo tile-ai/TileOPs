@@ -36,17 +36,20 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     ceildiv_int,
     device_smem_budget,
+    edge_axis_split,
     restore_reduced,
     rows_for_axes,
     torch_dtype_nbytes,
 )
 from tileops.kernels.reduction._split_softmax import (
+    edge_split_partials_kernel,
+    edge_split_view,
     make_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
     split_target_blocks,
 )
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, device_busy_of
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
@@ -554,6 +557,13 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
                 )
             self.config["tile_n"] = self._tile_n
 
+        # A config from before the split choice was recorded falls back to
+        # the gate; a round-tripped tuned config keeps its recorded choice.
+        self.config.setdefault(
+            "split",
+            bool(split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)),
+        )
+
     @property
     def default_config(self) -> dict:
         """Select default block_m based on shared memory budget.
@@ -589,7 +599,12 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
                     best_bm = bm
                     best_tile_n = tn
 
-        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS, "tile_n": best_tile_n}
+        return {
+            "block_m": best_bm,
+            "threads": _DEFAULT_TUNE_THREADS,
+            "tile_n": best_tile_n,
+            "split": bool(split_seg_n(self.M, self.N, best_bm, self._split_target)),
+        }
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune across tile_n candidates by rebuilding the kernel per regime.
@@ -605,14 +620,12 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
             self.config = self.default_config
             return
 
-        # The split pair bypasses the tuned kernel, so the default config stands.
         default = self.default_config
-        if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
-            self.config = default
-            return
+        split_eligible = bool(split_seg_n(self.M, self.N, default["block_m"], self._split_target))
 
         configs = self.autotune_configs
         if not configs:
+            self.config = default
             return
 
         # Group configs by tile_n
@@ -663,6 +676,23 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
                     self._tile_n,
                 )
 
+        # The split pair has nothing for the sweep to vary, so it is timed
+        # against the sweep's winner on device kernel time: paths launching
+        # different kernel counts are judged by GPU work, not host-launch gaps.
+        if split_eligible and best_config is not None:
+            device = torch.device(
+                "cuda",
+                self.device_index if self.device_index is not None else torch.cuda.current_device(),
+            )
+            probe = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
+            swept_config = dict(self.config, split=False)
+            self.config = swept_config
+            swept_ms = device_busy_of(lambda: self._reduce_rows(probe), device)
+            self.config = default
+            split_ms = device_busy_of(lambda: self._reduce_rows(probe), device)
+            if split_ms > swept_ms:
+                self.config = swept_config
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce *reduce_axes* of *x*.
 
@@ -679,8 +709,34 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         """
         self._require_cuda(x=x)
         in_shape = tuple(x.shape)
-        y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
+        k, j = edge_axis_split(x.ndim, self.reduce_axes)
+        view = edge_split_view(in_shape, k, j, _DEFAULT_TUNE_THREADS) if k else None
+        if view is not None:
+            y = self._reduce_edge_axes(x, view)
+        else:
+            y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
+
+    def _reduce_edge_axes(self, x: torch.Tensor, view: "tuple[int, int, int]") -> torch.Tensor:
+        """Reduce edge axes in the tensor's own layout.
+
+        Each kept row is ``outer`` contiguous runs of ``inner`` elements, so
+        the split pair reads them directly -- per-run ``(max, sum)`` partials,
+        then the per-row fold -- skipping the permute ``rows_for_axes`` pays.
+
+        A layout dispatch decided from the shape alone, like the vector-norm
+        edge path: the alternative pays the permute and then the same
+        reduction, so there is no trade for the tuner to referee.
+        ``config["split"]`` governs only the long-row split in
+        ``_reduce_rows``.
+        """
+        outer, kept, inner = view
+        seg_max, seg_sum = edge_split_partials_kernel(
+            outer, kept, inner, self.dtype_str, _DEFAULT_TUNE_THREADS
+        )()(x.reshape(view))
+        return _logsumexp_split_fold_kernel(kept, outer * inner, self.dtype_str, inner)()(
+            seg_max, seg_sum
+        )
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce the trailing axis of an ``(M, N)`` buffer.
@@ -691,7 +747,11 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         """
         if self._streaming:
             return self.kernel()(x)
-        seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
+        seg_n = (
+            split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
+            if self.config["split"]
+            else 0
+        )
         if seg_n:
             # split_seg_n's fragment cap assumes the default width.
             threads = _DEFAULT_TUNE_THREADS

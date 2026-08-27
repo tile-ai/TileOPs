@@ -40,6 +40,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
     split_target_blocks,
 )
+from tileops.utils import device_busy_of
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
@@ -633,6 +634,13 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                 )
             self.config["tile_n"] = self._tile_n
 
+        # A config from before the split choice was recorded falls back to
+        # the gate; a round-tripped tuned config keeps its recorded choice.
+        self.config.setdefault(
+            "split",
+            bool(split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)),
+        )
+
     # Tiled softmax/log_softmax allocates 2 shared buffers (one per pass)
     # due to TileLang allocator aliasing -- see _softmax_kernel_tiled docstring.
     _NUM_SHARED_BUFFERS = 2
@@ -686,7 +694,12 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                     best_bm = bm
                     best_tile_n = tn
 
-        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS, "tile_n": best_tile_n}
+        return {
+            "block_m": best_bm,
+            "threads": _DEFAULT_TUNE_THREADS,
+            "tile_n": best_tile_n,
+            "split": bool(split_seg_n(self.M, self.N, best_bm, self._split_target)),
+        }
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune across tile_n candidates by rebuilding the kernel per regime.
@@ -696,14 +709,12 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         """
         from tilelang.autotuner import autotune as tl_autotune
 
-        # The split pair bypasses the tuned kernel, so the default config stands.
         default = self.default_config
-        if split_seg_n(self.M, self.N, default["block_m"], self._split_target):
-            self.config = default
-            return
+        split_eligible = bool(split_seg_n(self.M, self.N, default["block_m"], self._split_target))
 
         configs = self.autotune_configs
         if not configs:
+            self.config = default
             return
 
         # Group configs by tile_n
@@ -756,6 +767,23 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                     self._tile_n,
                 )
 
+        # The split pair has nothing for the sweep to vary, so it is timed
+        # against the sweep's winner on device kernel time: paths launching
+        # different kernel counts are judged by GPU work, not host-launch gaps.
+        if split_eligible and best_config is not None:
+            device = torch.device(
+                "cuda",
+                self.device_index if self.device_index is not None else torch.cuda.current_device(),
+            )
+            probe = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
+            swept_config = dict(self.config, split=False)
+            self.config = swept_config
+            swept_ms = device_busy_of(lambda: self._normalize_rows(probe), device)
+            self.config = default
+            split_ms = device_busy_of(lambda: self._normalize_rows(probe), device)
+            if split_ms > swept_ms:
+                self.config = swept_config
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize *x* over *norm_axis*.
 
@@ -783,7 +811,11 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         here. A handful of long rows goes to the split-row pair instead, which
         writes exact columns.
         """
-        seg_n = split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
+        seg_n = (
+            split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
+            if self.config["split"]
+            else 0
+        )
         if seg_n:
             # split_seg_n's fragment cap assumes the default width.
             threads = _DEFAULT_TUNE_THREADS
