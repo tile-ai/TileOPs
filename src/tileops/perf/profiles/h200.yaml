@@ -2,7 +2,8 @@
 # Source: NVIDIA H200 datasheet (dense, no sparsity)
 # Calibration: benchmarks/hardware/ microbenchmarks
 #
-# Only store measured values here (theoretical, calibration, calibration_burst).
+# Only store measured values here (theoretical, calibration,
+# calibration_burst, calibration_mixes).
 # effective = theoretical × calibration is computed by load_profile().
 
 gpu: NVIDIA H200
@@ -10,12 +11,14 @@ compute_capability: 9.0
 
 # calibration is the envelope over the measured access mixes — the highest
 # sustained rate any read:write ratio reaches — so no legitimate kernel can
-# exceed the effective ceiling. From benchmarks/hardware/memory/hbm_bandwidth.py
-# on one board (2048 MB working set, 5 runs x 200 reps, memory clock at its
-# 3201 MHz max): copy 0.8183, triad 0.8427, read 0.9380 (envelope), write 0.8926.
+# exceed the effective ceiling. calibration_mixes keeps each mix's own measured
+# fraction as data (a future per-mix ceiling reads it instead of re-measuring).
+# From benchmarks/hardware/memory/hbm_bandwidth.py on one board: 2048 MB working
+# set, 5 runs x 200 reps, memory clock at its 3201 MHz max.
 hbm:
   theoretical: 4800e9        # bytes/s, spec sheet
-  calibration: 0.9380
+  calibration: 0.9380        # = max(calibration_mixes)
+  calibration_mixes: {copy: 0.8183, triad: 0.8427, read: 0.9380, write: 0.8926}
 
 cuda_core:
   fp32:

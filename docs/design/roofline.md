@@ -307,7 +307,7 @@ A completeness test keeps the classification total: every implemented op is audi
 
 ### 5.1 GPU Profile
 
-Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write): a ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors. YAML files store only `theoretical` and `calibration`; `effective = theoretical × calibration` is computed by `load_profile()`:
+Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write): a ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors; each mix's own measured fraction is kept as data (`calibration_mixes`), so a future per-mix ceiling reads it instead of re-measuring. YAML files store only measured values; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
 # src/tileops/perf/profiles/<gpu>.yaml

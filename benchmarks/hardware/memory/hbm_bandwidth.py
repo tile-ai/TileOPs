@@ -133,8 +133,10 @@ def main():
         print(f"\nEnvelope ({envelope_mix}):  {measured_peak:.2f} GB/s")
         print(f"Theoretical:      {theo_peak_gbs:.1f} GB/s")
         print(f"Calibration:      {calibration:.4f}")
+        mixes = ", ".join(f"{m}: {peaks[m] / theo_peak_gbs:.4f}" for m in _MIXES)
         print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
+        print(f"  hbm.calibration_mixes: {{{mixes}}}")
         print(f"{'=' * 60}")
 
 
