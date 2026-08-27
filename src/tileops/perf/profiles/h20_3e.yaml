@@ -23,6 +23,8 @@ compute_capability: 9.0
 
 hbm:
   theoretical: 4800e9        # bytes/s, HBM3e 141GB stack (same silicon as H200)
+  # Triad-only; until re-measured as an envelope (hbm_bandwidth.py),
+  # read-heavy kernels on this part may read above 100% SOL.
   calibration: 0.8083
 
 tensor_core:

@@ -57,7 +57,11 @@ HISTORY_RETENTION_DAYS = 14
 # Algorithmic speed-of-light (SOL) verdict lines. Efficiency is
 # sol_time / measured_time against the *calibrated* (effective) ceilings;
 # see docs/design/roofline.md §1.2 and §4.3.
-SOL_GREEN_MEMORY = 0.90  # memory-bound row at its achievable ceiling
+#
+# The HBM ceiling is the envelope over access mixes, and a kernel's own mix
+# caps lower (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%);
+# the green line must sit below every mix's personal ceiling.
+SOL_GREEN_MEMORY = 0.80
 SOL_GREEN_COMPUTE = 0.80  # tensor-core sustained calibration is noisier
 SOL_ANOMALY = 1.05  # above the effective ceiling: formula or profile is wrong
 # Below both floors the roofline has no traction: launch overhead and wave

@@ -1,7 +1,9 @@
 // HBM Saturation Benchmark
 // Measures peak HBM bandwidth with vectorized CUDA kernels.
-// Uses STREAM Triad [1] as the primary calibration pattern for roofline
-// analysis [2], with Copy/Read/Write as reference measurements.
+// The calibration is the envelope over the measured access mixes
+// (Copy/Triad/Read/Write): the highest sustained rate any mix reaches,
+// so no legitimate kernel exceeds the effective ceiling [2]. STREAM
+// Triad [1] remains the reference mix the roofline literature quotes.
 //
 // Triad (a[i] = b[i] + s*c[i]) has a 2:1 read:write ratio — closer to real
 // compute kernels than pure Copy (1:1), which suffers worst-case HBM bus
@@ -198,7 +200,7 @@ int main(int argc, char* argv[]) {
     //    Note: 1:1 read:write creates worst-case bus turnaround pressure.
     //    Real kernels are typically read-heavy and achieve higher bandwidth.
     // ============================================================
-    printf("# Copy (read+write, 1:1 ratio) — reference\n");
+    printf("# Copy (read+write, 1:1 ratio)\n");
     for (int bi = 0; bi < 3; bi++) {
         int bs = bss[bi];
         int nblocks = sm_count * (2048 / bs);
@@ -211,10 +213,9 @@ int main(int argc, char* argv[]) {
     // ============================================================
     // 2. STREAM Triad: a[i] = b[i] + s*c[i] (2 reads + 1 write)
     //    Bytes reported = 3 * nbytes (read b + read c + write a)
-    //    2:1 read:write ratio — closer to real compute kernels than copy.
-    //    Used as the primary calibration measurement.
+    //    2:1 read:write ratio — the literature's reference mix.
     // ============================================================
-    printf("# Triad (2 reads + 1 write) — primary calibration\n");
+    printf("# Triad (2 reads + 1 write)\n");
     for (int bi = 0; bi < 3; bi++) {
         int bs = bss[bi];
         int nblocks = sm_count * (2048 / bs);
@@ -229,9 +230,9 @@ int main(int argc, char* argv[]) {
     }
 
     // ============================================================
-    // 3. Read-only (for reference, not used for calibration)
+    // 3. Read-only — the highest-rate mix, usually the envelope
     // ============================================================
-    printf("# Read-only — reference\n");
+    printf("# Read-only\n");
     for (int bi = 0; bi < 3; bi++) {
         int bs = bss[bi];
         int nblocks = sm_count * (2048 / bs);
@@ -242,9 +243,9 @@ int main(int argc, char* argv[]) {
     }
 
     // ============================================================
-    // 4. Write-only (for reference, not used for calibration)
+    // 4. Write-only
     // ============================================================
-    printf("# Write-only — reference\n");
+    printf("# Write-only\n");
     for (int bi = 0; bi < 3; bi++) {
         int bs = bss[bi];
         int nblocks = sm_count * (2048 / bs);

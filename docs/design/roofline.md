@@ -152,10 +152,10 @@ Does not interpret formula strings at all. M5 reads pre-computed numbers from th
 
 Verdict lines are rendering thresholds, not CI gates:
 
-| Verdict    | Condition                               | Meaning                                                                                            |
-| ---------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| At ceiling | memory-bound ≥ 90%, compute-bound ≥ 80% | Done; the compute line is looser because tensor-core sustained calibration is noisier.             |
-| Anomaly    | > 105%                                  | Above the achievable ceiling: the formula or the calibration is wrong. Excluded from "at ceiling". |
+| Verdict    | Condition | Meaning                                                                                                                                                                                                           |
+| ---------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| At ceiling | ≥ 80%     | Done. The HBM ceiling is an envelope over access mixes, and a kernel's own mix caps below it (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%); the line sits below every mix's personal ceiling. |
+| Anomaly    | > 105%    | Above the achievable ceiling: the formula or the calibration is wrong. Excluded from "at ceiling".                                                                                                                |
 
 Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible, so it is reported as a formula error that fails the run's health — a formula edit that inflates work is caught on the next nightly. This check is the standing guard on formula overestimation; equality-level validation belongs to the structural oracle (§4.6), hardware-counter validation to the bytes audit (§4.5).
 
@@ -307,13 +307,13 @@ A completeness test keeps the classification total: every implemented op is audi
 
 ### 5.1 GPU Profile
 
-Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. YAML files store only `theoretical` and `calibration`; `effective = theoretical × calibration` is computed by `load_profile()`:
+Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write): a ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors; each mix's own measured fraction is kept as data (`calibration_mixes`), so a future per-mix ceiling reads it instead of re-measuring. YAML files store only measured values; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
 # src/tileops/perf/profiles/<gpu>.yaml
 hbm:
   theoretical: 4800e9       # bytes/s, from spec sheet
-  calibration: 0.848        # from microbench (STREAM Triad)
+  calibration: 0.938        # microbench envelope over access mixes
 tensor_core:
   fp16:
     theoretical: 989.5e12   # FLOPS, from spec sheet
