@@ -35,7 +35,6 @@ from tileops.kernels.reduction._primitives import (
     RowTiledAutotuneMixin,
     align_up,
     ceildiv_int,
-    device_busy_of,
     device_smem_budget,
     edge_axis_split,
     restore_reduced,
@@ -50,7 +49,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
     split_target_blocks,
 )
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, device_busy_of
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
