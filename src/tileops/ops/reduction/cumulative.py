@@ -137,8 +137,9 @@ class CumsumFwdOp(CumulativeOp):
     Output has the same shape and dtype as ``x``. Alignment padding is
     handled inside the kernel via masked loads.
 
-    Shapes with ``M < 128 and N > 8192`` take a three-pass parallel scan for
-    SM utilization; every other shape takes the sequential scan.
+    A row one thread block can stage in shared memory takes the whole-row scan.
+    Of what is left, shapes with ``M < 128 and N > 8192`` take a three-pass
+    parallel scan for SM utilization; every other shape takes the tiled scan.
 
     Args:
         dim: Reduction axis (default -1). Negative values are normalized

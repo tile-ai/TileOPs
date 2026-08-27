@@ -3,6 +3,9 @@
 # Widest vectorized global access the kernels plan for: 128 bits.
 VECTOR_ACCESS_BYTES: int = 16
 
+# Address range the shared-memory banks cover before repeating: 32 banks of 4 bytes.
+SHARED_BANK_SPAN_BYTES: int = 128
+
 # log2(e), to fold exp(x) into the single-instruction exp2(x * LOG2E).
 LOG2E: float = 1.4426950408889634
 

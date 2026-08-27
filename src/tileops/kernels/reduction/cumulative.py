@@ -2,6 +2,7 @@
 
 import functools
 import itertools
+import math
 import warnings
 from dataclasses import dataclass
 from typing import Optional
@@ -13,7 +14,9 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
+    SHARED_BANK_SPAN_BYTES,
     SHARED_MEMORY_BUDGET_BYTES,
+    VECTOR_ACCESS_BYTES,
     align_up,
     device_smem_budget,
     restore_same_shape,
@@ -34,8 +37,15 @@ class CumulativeScanPolicy:
     # Breaks shared-memory bank conflicts for fp16/bf16 row staging.
     smem_pad: int = 8
 
+    # Elements per thread the split aims for.
     row_scan_chunk: int = 64
-    row_scan_pad_bytes: int = 16
+    # Block width past which the split lengthens the chunk instead of adding warps.
+    row_scan_wide_threads: int = 256
+    # Longest chunk a thread takes. It lives in fp32 registers, so 256 would spill.
+    row_scan_max_chunk: int = 128
+    # Pads row_scan_pad chooses between, in vector accesses. A whole vector access is
+    # what keeps a chunk 16-byte aligned, which the shared access needs to stay 128-bit.
+    row_scan_pad_vectors: tuple = (1, 2)
     row_scan_min_threads: int = 64
     row_scan_max_threads: int = 1024
 
@@ -43,14 +53,50 @@ class CumulativeScanPolicy:
 _SCAN_POLICY = CumulativeScanPolicy()
 
 
-def row_scan_threads(N_padded: int) -> int:
-    """Threads the whole-row kernel gives a row of *N_padded*."""
+def row_scan_pad(chunk: int, elem_bytes: int) -> int:
+    """Return the padding, in elements, each staged chunk gets.
+
+    Neighbouring lanes read one chunk each, so they sit ``(chunk + pad) * elem_bytes``
+    apart, and the conflict ways grow with what that stride shares with
+    ``SHARED_BANK_SPAN_BYTES``. This returns the candidate pad that shares least, which
+    depends on *chunk*: a fixed pad leaves some chunks striding the whole span.
+    """
+    candidates = [k * VECTOR_ACCESS_BYTES // elem_bytes for k in _SCAN_POLICY.row_scan_pad_vectors]
+    return min(
+        candidates,
+        key=lambda pad: (math.gcd((chunk + pad) * elem_bytes, SHARED_BANK_SPAN_BYTES), pad),
+    )
+
+
+def row_scan_chunk_ok(chunk: int, elem_bytes: int, threads: int) -> bool:
+    """Whether a block of *threads* may give each thread a chunk of *chunk* elements.
+
+    Up to ``row_scan_chunk`` always. A block already ``row_scan_wide_threads`` wide may
+    go as far as ``row_scan_max_chunk``, but only with a chunk of whole vector accesses,
+    which is what keeps the chunk 16-byte aligned.
+    """
+    if chunk <= _SCAN_POLICY.row_scan_chunk:
+        return True
+    return (
+        threads >= _SCAN_POLICY.row_scan_wide_threads
+        and chunk <= _SCAN_POLICY.row_scan_max_chunk
+        and (chunk * elem_bytes) % VECTOR_ACCESS_BYTES == 0
+    )
+
+
+def row_scan_threads(N_padded: int, elem_bytes: int) -> int:
+    """Threads the whole-row kernel gives a row of *N_padded*.
+
+    The narrowest block that divides the row and whose chunk :func:`row_scan_chunk_ok`
+    accepts, or the widest divisor tried when no block qualifies -- which
+    :func:`row_scan_fits` then declines.
+    """
     threads = _SCAN_POLICY.row_scan_min_threads
     widest = threads
     while threads <= _SCAN_POLICY.row_scan_max_threads:
         if N_padded % threads == 0:
             widest = threads
-            if N_padded // threads <= _SCAN_POLICY.row_scan_chunk:
+            if row_scan_chunk_ok(N_padded // threads, elem_bytes, threads):
                 return threads
         threads *= 2
     return widest
@@ -58,12 +104,12 @@ def row_scan_threads(N_padded: int) -> int:
 
 def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
     """Whether a row of *N_padded* can be scanned by one thread block."""
-    threads = row_scan_threads(N_padded)
+    threads = row_scan_threads(N_padded, elem_bytes)
     if N_padded % threads:
         return False
     chunk = N_padded // threads
-    staged = threads * (chunk + _SCAN_POLICY.row_scan_pad_bytes // elem_bytes) * elem_bytes
-    return staged <= smem_budget and chunk <= _SCAN_POLICY.row_scan_chunk
+    staged = threads * (chunk + row_scan_pad(chunk, elem_bytes)) * elem_bytes
+    return staged <= smem_budget and row_scan_chunk_ok(chunk, elem_bytes, threads)
 
 
 @functools.lru_cache(maxsize=32)
@@ -93,7 +139,7 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
         threads: Threads per row, from :func:`row_scan_threads`.
     """
     chunk_len = N // threads
-    pad = _SCAN_POLICY.row_scan_pad_bytes // torch_dtype_nbytes(dtype)
+    pad = row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
     # Stride-doubling steps to scan `threads` totals.
     n_steps = threads.bit_length() - 1
     identity = 0.0 if op_kind == "sum" else 1.0
@@ -393,7 +439,9 @@ class CumulativeKernel(Kernel):
             self.N_padded, self._elem_bytes, device_smem_budget(device_index)
         )
         can_parallel = M < 128 and N > 8192 and op_kind == "sum"
-        self._row_scan_threads = row_scan_threads(self.N_padded) if can_row_scan else 0
+        self._row_scan_threads = (
+            row_scan_threads(self.N_padded, self._elem_bytes) if can_row_scan else 0
+        )
 
         if can_row_scan:
             self.strategy = "row_scan"

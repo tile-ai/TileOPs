@@ -21,7 +21,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "FP32_EXACT_INT_LIMIT",
     "FRAGMENT_ELEMS_PER_THREAD",
     "MAX_SINGLE_TILE_COLS",
+    "SHARED_BANK_SPAN_BYTES",
     "SHARED_MEMORY_BUDGET_BYTES",
     "VECTOR_ACCESS_BYTES",
     "BlockConfigPlanner",
