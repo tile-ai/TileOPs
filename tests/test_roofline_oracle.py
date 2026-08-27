@@ -1,10 +1,13 @@
-"""Structural oracle for roofline ``bytes`` (docs/design/roofline.md §4.6).
+"""Structural oracle for roofline ``bytes`` and ``flops`` (docs/design/roofline.md §4.6).
 
-Each case recomputes the minimum traffic from the tensors the workload binds
-— every distinct input storage read once, every output written once — and
-requires equality with ``eval_roofline()``. The oracle enumerates tensors
+Each bytes case recomputes the minimum traffic from the tensors the workload
+binds — every distinct input storage read once, every output written once —
+and requires equality with ``eval_roofline()``. The oracle enumerates tensors
 from the signature, so a formula that drops a term, double-counts a tensor,
 or prices a broadcast operand at the output's shape breaks the equality.
+
+The flops cases pin each op's per-element cost to the §1.3 constant its
+decomposition implies, so a coefficient that drifts from the convention fails.
 """
 
 from math import prod
@@ -73,6 +76,7 @@ class TestBytesOracle:
         op.input_shape = a_shape
         op.other_shape = b_shape  # out_shape derives via _infer_output_shapes
         op.dtype = torch.bfloat16
+        op.alpha = 1  # the flops half branches on it
         oracle = _nbytes(
             (a_shape, torch.bfloat16),
             (b_shape, torch.bfloat16),
@@ -183,6 +187,59 @@ class TestBytesOracle:
             ((2, 3), torch.int32),  # cu_seqlens_q + cu_seqlens_kv, [batch+1] each
         )
         assert op.eval_roofline()[1] == oracle
+
+
+class TestFlopsConsistency:
+    # roofline.md §1.3 prices one basic arithmetic op at 1, so the four
+    # broadcast-binary ops share a per-element cost wherever their operand
+    # counts agree. add/sub carry a scalar `alpha` that adds a multiply only
+    # when it is not the default.
+
+    def _flops_per_elem(self, cls, **state):
+        shape = (4, 2048, 4096)
+        op = cls.__new__(cls)
+        op.input_shape = shape
+        op.other_shape = (1, 1, 4096)
+        op.dtype = torch.bfloat16
+        for name, value in state.items():
+            setattr(op, name, value)
+        flops = op.eval_roofline()[0]
+        numel = prod(shape)
+        assert flops % numel == 0, f"{cls.__name__}: {flops} is not a multiple of {numel}"
+        return flops // numel
+
+    def test_broadcast_binary_ops_share_the_basic_arithmetic_cost(self):
+        from tileops.ops.elementwise.arithmetic import (
+            AddFwdOp,
+            DivFwdOp,
+            MulFwdOp,
+            SubFwdOp,
+        )
+
+        costs = {
+            "add": self._flops_per_elem(AddFwdOp, alpha=1),
+            "sub": self._flops_per_elem(SubFwdOp, alpha=1),
+            "mul": self._flops_per_elem(MulFwdOp),
+            "div": self._flops_per_elem(DivFwdOp, rounding_mode=None),
+        }
+        assert set(costs.values()) == {1}, costs
+
+    def test_alpha_adds_the_scale_multiply_and_only_then(self):
+        from tileops.ops.elementwise.arithmetic import AddFwdOp, SubFwdOp
+
+        for cls in (AddFwdOp, SubFwdOp):
+            assert self._flops_per_elem(cls, alpha=1) == 1, cls.__name__
+            assert self._flops_per_elem(cls, alpha=2.5) == 2, cls.__name__
+
+    def test_predicate_and_bitwise_ops_cost_one(self):
+        import tileops.ops.elementwise as ew
+
+        names = (
+            "EqFwdOp", "NeFwdOp", "GtFwdOp", "LtFwdOp", "GeFwdOp", "LeFwdOp",
+            "BitwiseAndFwdOp", "BitwiseOrFwdOp", "BitwiseXorFwdOp",
+        )  # fmt: skip
+        costs = {n: self._flops_per_elem(getattr(ew, n)) for n in names}
+        assert set(costs.values()) == {1}, costs
 
 
 # Classification registry: every implemented op appears in exactly one of

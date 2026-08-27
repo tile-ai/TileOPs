@@ -96,3 +96,24 @@ The image expects a cache directory bind-mounted at `/ci-cache`; `TILELANG_CACHE
 `TRITON_CACHE_DIR` and friends point under it and are pre-created, so the container also works
 unmounted. Which labels a runner registers with, and how the pools are provisioned, is a
 maintainer task outside this repository.
+
+## GPU performance counters
+
+The roofline bytes audit (`docs/design/roofline.md` §4.5) reads Nsight Compute counters. `ncu`
+comes from the CUDA base image, so nothing is added for it, but the driver restricts the
+counters to admin users by default. Any one of these lifts that:
+
+| Route                                                        | Note                                                                                                                     |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| Load the driver with `NVreg_RestrictProfilingToAdminUsers=0` | The `/etc/modprobe.d/` setting applies at the next module load, so a host that gained the file after boot still refuses. |
+| Run the audit as root on the host                            | No driver change needed.                                                                                                 |
+| A rootful container running as root                          |                                                                                                                          |
+
+A **rootless** Docker daemon cannot satisfy it however the container is privileged: container
+root maps into a subuid namespace, so neither `--cap-add SYS_ADMIN` nor `--privileged` passes
+the driver's admin check.
+
+Check a runner with `grep RmProfilingAdminOnly /proc/driver/nvidia/params` (`0` is open) or
+`python scripts/validate_roofline_bytes.py --check-counters`. The audit workflow runs the
+latter before measuring, so an unprovisioned runner fails loudly instead of uploading an empty
+result.

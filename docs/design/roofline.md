@@ -105,7 +105,7 @@ roofline:
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
 - **Op codegen** — generates each op's `eval_roofline()` method; is the authoritative gate for name and form correctness. Spec: §4.4.
 
-Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
+Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5). Which one owns an op follows from what determines its traffic (§4.7).
 
 Tests and workloads are not consumers: they may supply shapes and dtypes but must not define or reinterpret roofline formulas.
 
@@ -157,7 +157,7 @@ Verdict lines are rendering thresholds, not CI gates:
 | At ceiling | ≥ 80%     | Done. The HBM ceiling is an envelope over access mixes, and a kernel's own mix caps below it (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%); the line sits below every mix's personal ceiling. |
 | Anomaly    | > 105%    | Above the achievable ceiling: the formula or the calibration is wrong. Excluded from "at ceiling".                                                                                                                |
 
-Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible, so it is reported as a formula error that fails the run's health — a formula edit that inflates work is caught on the next nightly. This check is the standing guard on formula overestimation; equality-level validation belongs to the structural oracle (§4.6), hardware-counter validation to the bytes audit (§4.5).
+Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible, so it is reported as a formula error that fails the run's health — a formula edit that inflates work is caught on the next nightly. This check is the standing guard on formula overestimation; equality-level validation belongs to the structural oracle (§4.6), and read-side hardware-counter validation to the bytes audit (§4.5).
 
 ### 4.4 Op Codegen
 
@@ -279,29 +279,49 @@ Rules:
 
 ### 4.5 Bytes Audit (NCU)
 
-`scripts/validate_roofline_bytes.py` compares each op's `bytes` formula against hardware counters. It exists because the metric's objectivity rests on `bytes` being the true minimum traffic, and an overestimating formula inflates every efficiency reading in a way neither review nor the physics check is guaranteed to catch.
+`scripts/validate_roofline_bytes.py` compares each op's `bytes` formula against DRAM counters. It is the last resort of the three layers (§4.7), and its verdict covers the read side only: a cold-cache launch cannot read less than the formula's read half, while writes still resident in L2 when the kernel ends fall outside the profiled range.
 
 Method, per audited op:
 
 1. Pick workloads covering the formula's branch signatures (dtype combos, optional-input presence, backend labels), from the manifest's real workloads — never scaled-up shapes, which can cross kernel-selection thresholds and audit an implementation the benchmark does not run.
 1. Run `forward()` once (input-inferred ops bind their roofline variables there), then read `op.eval_roofline()`.
-1. Measure a second `forward()` under Nsight Compute with cache control on, summing `dram__bytes_read.sum + dram__bytes_write.sum` over the call's kernels.
+1. Measure a second `forward()` under Nsight Compute with cache control on, keeping `dram__bytes_read.sum` and `dram__bytes_write.sum` separate over the call's kernels.
 
-| Verdict | Condition                            | Reading                                                                                                                             |
-| ------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| FAIL    | `measured < formula × (1 − ε)`       | Only a formula overestimate produces it: sector granularity, write-allocate, ECC, and replay cache-flushing all push `measured` up. |
-| WARN    | `measured > formula × 1.5`           | Multi-pass implementation or replay inflation; informational.                                                                       |
-| ERROR   | missing metric or empty kernel range | A broken audit, never a verdict.                                                                                                    |
+| Verdict | Condition                              | Reading                                        |
+| ------- | -------------------------------------- | ---------------------------------------------- |
+| FAIL    | `measured_read < read_bytes × (1 − ε)` | A formula overestimate on the read side.       |
+| WARN    | `measured_read > read_bytes × 1.5`     | Multi-pass implementation or replay inflation. |
+| ERROR   | missing metric or empty kernel range   | A broken audit, never a verdict.               |
 
-Runs on demand (profiling permissions, replay cost) — after a manifest `roofline` edit, and as the mandatory check for ops exempt from the structural oracle (data-dependent traffic the oracle cannot count).
+Write traffic is reported beside the verdict, never judged.
+
+A verdict needs the formula's read half, which the `bytes` total does not carry. An op §4.7 routes here declares that half; one that does not gets no verdict. §2.1's output contract is unchanged for every op the oracle covers.
+
+Runs on demand (profiling permissions, replay cost) — after a manifest `roofline` edit, and for the ops §4.7 routes here.
 
 ### 4.6 Structural Oracle (tests)
 
 A CI test recomputes each audited `bytes` value from an independent path — the sizes of the tensors the workload actually binds (each distinct input storage once, each output once) — and requires equality with `eval_roofline()`. The formula and the oracle share only the minimum-traffic definition, so a coefficient slip, a missed output, a wrong `elem_bytes`, or a broadcast counted at the wrong shape breaks the equality.
 
-Ops whose traffic depends on tensor *content* (gather-style indexing) are exempt by explicit list and covered by §4.5 instead. Coverage is golden workloads per op, not randomized sweeps.
+Content-dependent traffic belongs here: fixing the index tensor — a page table, a routing map, a cumulative-length vector — makes the traffic countable, and the case states that content. An op is exempt only when no fixed content makes its traffic countable; the exemption carries the reason and routes the op to §4.5.
 
-A completeness test keeps the classification total: every implemented op is audited, exempt with a reason, or on an explicit pending list to burn down. An op added to the manifest fails the test until it is classified.
+Coverage is golden workloads per op, not randomized sweeps, and one case per distinct formula branch. Ops whose traffic follows one family-wide shape rule take cases generated from that rule.
+
+A `flops` case pins the op's per-element cost to the §1.3 constant its decomposition implies, and — where the op's reference decomposes into primitive aten operations — counts the operations that reference performs. Relating two ops' coefficients to each other is not a check: both can drift together and preserve the relation. The aten cost table is a projection of §1.3 and is updated with it; it holds primitive operations only, since pricing a fused one would restate the manifest's own derivation.
+
+A completeness test keeps the classification total: every implemented op is audited or exempt with a reason. An op added to the manifest fails the test until it is classified.
+
+### 4.7 Division of Labour
+
+Which layer checks an op follows from what determines its traffic, not from what a layer can reach.
+
+| What determines the traffic       | Layer                    | Verdict        |
+| --------------------------------- | ------------------------ | -------------- |
+| Shape alone                       | Structural oracle (§4.6) | Exact equality |
+| Shape plus fixed index content    | Structural oracle (§4.6) | Exact equality |
+| Neither — no fixed content counts | Bytes audit (§4.5)       | Read side only |
+
+The exact layer is primary and leaves a residue, not the reverse.
 
 ## 5. Reference
 

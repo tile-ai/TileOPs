@@ -1,0 +1,81 @@
+name: Roofline Bytes Audit
+
+# On demand only (docs/design/roofline.md §4.5): the audit needs GPU performance
+# counters and replays every kernel, so it never joins the nightly path.
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+    inputs:
+      op:
+        description: "Single op to audit (takes precedence over family)"
+        required: false
+        type: string
+      family:
+        description: "Manifest family to audit"
+        required: false
+        type: string
+
+concurrency:
+  group: roofline-bytes-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TILELANG_CACHE_DIR: /ci-cache/tilelang
+  TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
+  TRITON_CACHE_DIR: /ci-cache/triton
+  PIP_CACHE_DIR: /ci-cache/pip
+
+jobs:
+  audit:
+    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    timeout-minutes: 240
+    runs-on: [self-hosted, tile-ops, bench]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
+        shell: bash
+
+      - name: Check GPU performance counters
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          python3 scripts/validate_roofline_bytes.py --check-counters
+        shell: bash
+
+      - name: Run bytes audit
+        env:
+          AUDIT_OP: ${{ inputs.op }}
+          AUDIT_FAMILY: ${{ inputs.family }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          scope=()
+          if [[ -n "$AUDIT_OP" ]]; then
+            scope=(--op "$AUDIT_OP")
+          elif [[ -n "$AUDIT_FAMILY" ]]; then
+            scope=(--family "$AUDIT_FAMILY")
+          fi
+          python3 scripts/validate_roofline_bytes.py "${scope[@]}" \
+            --out roofline_bytes_audit | tee roofline_bytes_audit.log
+        shell: bash
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: roofline_bytes_audit_${{ github.run_id }}
+          path: |
+            roofline_bytes_audit/
+            roofline_bytes_audit.log
+          retention-days: 30
