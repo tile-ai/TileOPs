@@ -3,8 +3,13 @@
 Compiles and runs the CUDA microbenchmark, parses output, and prints
 the calibration factor for src/tileops/perf/profiles/.
 
-Calibration is derived from the STREAM Triad kernel (a = b + s*c, 2 reads +
-1 write).  Triad is the industry standard for roofline bandwidth calibration:
+Calibration is the **envelope** across the measured access mixes (copy 1R:1W,
+STREAM Triad 2R:1W, pure read, pure write): the highest sustained rate any mix
+reaches.  A ceiling is a rate no kernel exceeds; calibrating on one mix alone
+(Triad) put read-heavy kernels — decode reading a KV cache, multi-input
+elementwise — above 100% SOL on the nightly pages, which must be reserved for
+formula errors.  Triad remains the reference mix the roofline literature
+calibrates against; each mix's own rate is printed for the profile comment:
 
     McCalpin, J.D., 1995. "Memory Bandwidth and Machine Balance in Current
     High Performance Computers." IEEE TCCA Newsletter.
@@ -55,26 +60,28 @@ def _run(binary_path, size_mb, theo_peak_gbs):
     return result.stdout.strip().splitlines()
 
 
-def _parse_triad_peak(lines):
-    """Extract the best Triad bandwidth (GB/s) from CSV output.
+_MIXES = ("copy", "triad", "read", "write")
 
-    Only considers lines starting with 'triad,' — STREAM Triad (2 reads +
-    1 write) is the standard calibration kernel for roofline analysis.
-    Its 2:1 read:write ratio is closer to real compute kernels than pure
-    copy (1:1), which suffers worst-case HBM bus turnaround overhead.
+
+def _parse_peaks(lines):
+    """Best bandwidth (GB/s) per access mix from the CSV output.
+
+    The benchmark sweeps block sizes per mix; the mix's rate is the best
+    row. The calibration is the maximum over the mixes — the envelope a
+    kernel of any read:write ratio can reach.
     """
-    best_gbs = 0.0
+    peaks = dict.fromkeys(_MIXES, 0.0)
     for line in lines:
-        if not line.startswith("triad,"):
+        op = line.split(",", 1)[0]
+        if op not in peaks:
             continue
         parts = line.split(",")
         if len(parts) >= 6:
             try:
-                gbs = float(parts[5])  # best_gbs column
-                best_gbs = max(best_gbs, gbs)
+                peaks[op] = max(peaks[op], float(parts[5]))  # best_gbs column
             except ValueError:
                 continue
-    return best_gbs
+    return peaks
 
 
 def main():
@@ -105,14 +112,27 @@ def main():
     for line in lines:
         print(line)
 
-    # Extract calibration from STREAM Triad results
-    measured_peak = _parse_triad_peak(lines)
+    # Calibration = the envelope over the measured access mixes. A mix the
+    # output no longer carries would silently shrink the envelope, so refuse.
+    peaks = _parse_peaks(lines)
+    missing = [mix for mix, gbs in peaks.items() if gbs <= 0]
+    if missing:
+        print(
+            f"no measurement for mixes {missing}; the envelope needs all of {list(_MIXES)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    envelope_mix = max(peaks, key=peaks.get)
+    measured_peak = peaks[envelope_mix]
     if measured_peak > 0 and theo_peak_gbs > 0:
-        calibration = measured_peak / theo_peak_gbs
         print(f"\n{'=' * 60}")
-        print(f"Measured peak (triad vec4): {measured_peak:.2f} GB/s")
-        print(f"Theoretical:               {theo_peak_gbs:.1f} GB/s")
-        print(f"Calibration:               {calibration:.4f}")
+        for mix in _MIXES:
+            frac = peaks[mix] / theo_peak_gbs
+            print(f"{mix:>6}: {peaks[mix]:8.2f} GB/s  ({frac:.4f} of theoretical)")
+        calibration = measured_peak / theo_peak_gbs
+        print(f"\nEnvelope ({envelope_mix}):  {measured_peak:.2f} GB/s")
+        print(f"Theoretical:      {theo_peak_gbs:.1f} GB/s")
+        print(f"Calibration:      {calibration:.4f}")
         print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
         print(f"{'=' * 60}")
