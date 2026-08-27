@@ -7,7 +7,7 @@ in microseconds, without autotuning. The module also owns the measured
 config bands of the bandwidth-mode kernels (``gemv_config``,
 ``small_batch_config``), so the family's per-shape configuration lives in one
 place; which kernel serves a call is a separate question, answered by each
-kernel's own region (``gemm_call.gemv_region`` / ``small_batch_region``). The scored path follows DeepGEMM's SM90
+kernel's own region (``call_spec.gemv_region`` / ``small_batch_region``). The scored path follows DeepGEMM's SM90
 heuristics (enumerate -> prune -> score -> derive, see
 ``csrc/jit_kernels/heuristics/sm90.hpp``), with three extensions the
 TileOPs kernel family needs:
@@ -65,7 +65,7 @@ _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
 
 # n-tile width of the tiny-m generic configs (``_tiny_m_config``). The
-# occupancy note in ``gemm_call.small_batch_region`` prices a full wave of
+# occupancy note in ``call_spec.small_batch_region`` prices a full wave of
 # that band with this width — retune them together.
 TINY_M_BLOCK_N = 128
 
@@ -248,7 +248,7 @@ def swap_ab_grid_underfills(n: int, sm_count: int) -> bool:
     The measured n boundary where the operand-swapped grid loses its width
     advantage, written once for its two consumers: ``swap_ab_stages`` returns
     None below it (the tiny-m band falls to split-K or the plain tile), and
-    ``gemm_call.small_batch_region`` claims exactly this underfilled band at
+    ``call_spec.small_batch_region`` claims exactly this underfilled band at
     ``m == 2`` — that handoff has no gap and no overlap. Retune the two
     together.
     """

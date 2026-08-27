@@ -579,8 +579,7 @@ def _gemm_kernel(
                 m_start = by * block_m
                 n_start = bx * block_n
 
-                # Previous ring slot, kept in a register: recomputing it
-                # costs a second ``% num_stages`` in the hot loop.
+                # Previous ring slot; see the ring-protocol note at the top.
                 ps = T.alloc_local((1,), "int32")
 
                 tx = T.get_thread_binding()
@@ -1045,17 +1044,13 @@ def _gemm_coop2_kernel(
                     }
                 )
 
-                # Producer (arrive_count 128) fills a slot; both consumers
-                # (arrive_count 256) must drain it before the producer refills.
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
 
                 gi_prod = T.alloc_var("int32", init=0)
                 gi_cons_0 = T.alloc_var("int32", init=0)
                 gi_cons_1 = T.alloc_var("int32", init=0)
-                # Previous ring slot, carried in a register rather than
-                # recomputed. See the deferred-release note in the module header:
-                # a second ``% num_stages`` in this loop costs 4-13%.
+                # Previous ring slot; see the ring-protocol note at the top.
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
@@ -1275,9 +1270,7 @@ def _gemm_coop2_splitk_kernel(
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
 
-                # Previous ring slot, carried in a register rather than
-                # recomputed: a second ``% num_stages`` in this loop is the
-                # cost documented in the module header.
+                # Previous ring slot; see the ring-protocol note at the top.
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
 
@@ -1649,14 +1642,11 @@ def _gemm_coop2s_kernel(
                     }
                 )
 
-                # Producer (arrive_count 128) fills a slot; both consumers
-                # (arrive_count 256) must drain it before the producer refills.
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
                 m_start = by * block_m
                 n_start = bx * block_n
-                # Previous ring slot, kept in a register: recomputing it
-                # costs a second ``% num_stages`` in the hot loop.
+                # Previous ring slot; see the ring-protocol note at the top.
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
 
@@ -2013,15 +2003,9 @@ class GemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Two-tier selection:
-        #   1. ``_TUNED_CONFIGS`` exact hit — human-pinned shapes stay
-        #      authoritative and are never overridden by the model;
-        #   2. otherwise the analytic selector picks structure + tiles
-        #      (``heuristics.best_config``). It replaces both the old
-        #      modal 128x128x64 fallback and the hand-written "coop2 when the
-        #      grid fills the GPU" gate: the selector reproduces those choices
-        #      where they were measured best and picks narrower tiles /
-        #      split-K for the shapes the modal default starved.
+        # Two tiers, in order: a ``_TUNED_CONFIGS`` exact hit is authoritative and
+        # the analytic selector never overrides it; every other shape takes
+        # structure and tiles from ``heuristics.best_config``.
         modal = {
             "block_m": 128,
             "block_n": 128,
@@ -2050,8 +2034,6 @@ class GemmKernel(Kernel):
     # ``_TUNED_CONFIGS``.
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Simple (non-warp-specialized) pipelined path for short-mainloop
-        # shapes pinned in ``_TUNED_CONFIGS`` (``simple: True``).
         if self.config.get("simple"):
             cfg = self.config
             compiled = _gemm_simple_kernel(
@@ -2067,9 +2049,6 @@ class GemmKernel(Kernel):
             )
             return compiled(a, b)
 
-        # swap_ab path: operand-swapped tiny-m NT kernel. Selected by the
-        # analytic band (``heuristics._tiny_m_config``) whenever its
-        # ``ceil(n / block_nn)`` grid fills enough of the device.
         if self.config.get("swap_ab"):
             cfg = self.config
             compiled = _gemm_swap_ab_kernel(
@@ -2077,9 +2056,6 @@ class GemmKernel(Kernel):
             )(cfg["block_nn"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
-        # coop2s path: single-tile 2-consumer kernel for small NN shapes whose
-        # mainloop is too short to amortize the persistent loop. Selected via
-        # config (``coop2s``) from ``_TUNED_CONFIGS``.
         if self.config.get("coop2s"):
             cfg = self.config
             compiled = _gemm_coop2s_kernel(
@@ -2087,10 +2063,8 @@ class GemmKernel(Kernel):
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
-        # coop2 path: persistent 2-consumer (cooperative) kernel for large-M NT
-        # shapes whose grid fills the GPU. Selected via config (``coop2``) from
-        # ``default_config`` / ``_TUNED_CONFIGS``. Called directly (like split-K)
-        # — it carries no trace instrumentation.
+        # Called directly, like the split-K paths below: this kernel carries no
+        # trace instrumentation, so there is nothing for ``trace.run`` to collect.
         if self.config.get("coop2"):
             cfg = self.config
             compiled = _gemm_coop2_kernel(
@@ -2110,9 +2084,6 @@ class GemmKernel(Kernel):
             )
             return compiled(a, b)
 
-        # coop2 split-K path: 2-consumer mainloop sliced over K into an fp32
-        # workspace, then reduced. For large-K small-M shapes that underfill the
-        # (M, N) grid (see ``_gemm_coop2_splitk_kernel``).
         if self.config.get("coop2_splitk"):
             cfg = self.config
             mainloop, reduce_ = _splitk_pair(
@@ -2135,11 +2106,8 @@ class GemmKernel(Kernel):
             reduce_(mainloop(a, b), c)
             return c
 
-        # Split-K path: slice K across grid-z CTAs into an fp32 workspace,
-        # then reduce. Selected via config only (``split_k > 1``); the in-tree
-        # tuner cannot rank it (see the class-level ``autotune_configs`` note).
-        # Worth trying when the natural grid underfills the GPU (fewer CTAs
-        # than SMs).
+        # Config-only: the in-tree tuner cannot reach this path, so no sweep
+        # will ever propose it (see the ``autotune_configs`` note on the class).
         split_k = self.config.get("split_k", 1)
         if split_k > 1:
             cfg = self.config
@@ -2163,9 +2131,8 @@ class GemmKernel(Kernel):
             reduce_(mainloop(a, b), c)
             return c
 
-        # Call the compiled JIT directly (cf. GemvKernel); _gemm_wrapped_kernel is
-        # kept only for torch.compile compatibility. trace.run dumps the timeline
-        # when tracing is on and otherwise just returns C — so no branch here.
+        # ``trace.run`` dumps the timeline when tracing is on and otherwise just
+        # returns C, so this path needs no branch on ``trace.enabled``.
         main_cfg = {k2: v for k2, v in self.config.items() if k2 != "split_k"}
         compiled = _gemm_kernel(
             self.m,
@@ -2366,8 +2333,7 @@ class GemvKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # Measured SM90 band rules live with the rest of the family's shape
-        # policy in ``heuristics.gemv_config``; ``tune=True`` replaces them
-        # with the ``autotune_configs`` sweep winner.
+        # policy in ``heuristics.gemv_config``.
         return gemv_config(self.k)
 
     @property
@@ -2398,12 +2364,11 @@ class SmallBatchGemmKernel(Kernel):
     the measured config band they pick. Its inner loop pays ``m`` FMAs and ``m``
     converts per weight element on CUDA cores, so the lead over the tensor-core
     ``GemmKernel`` shrinks as ``m`` grows — the measured crossover and the
-    dispatch band live in :func:`~tileops.kernels.gemm_call.small_batch_region`.
+    dispatch band live in :func:`~tileops.kernels.gemm.call_spec.small_batch_region`.
 
     Scope: SM90, NT only — ``B`` is ``[N,K]``, so K is contiguous and the
-    reduction over it coalesces; no other layout has that property. The kernel
-    is correct for any ``m``; the region it claims is ``m == 2`` on an n too
-    narrow to fill the device (:func:`~tileops.kernels.gemm_call.small_batch_region`).
+    reduction over it coalesces; no other layout has that property. The kernel is
+    correct for any ``m``; the band above is what it claims.
 
     Args:
         m: Batch rows.
@@ -2440,8 +2405,7 @@ class SmallBatchGemmKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # Measured band rule lives with the rest of the family's shape policy
-        # in ``heuristics.small_batch_config``; ``tune=True`` replaces it
-        # with the ``autotune_configs`` sweep winner.
+        # in ``heuristics.small_batch_config``.
         return small_batch_config(self.n, self.k, get_sm_count())
 
     @property

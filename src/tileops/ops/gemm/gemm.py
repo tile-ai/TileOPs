@@ -62,9 +62,8 @@ class GemmFwdOp(Op):
         self.trans_b = trans_b
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # (m, n, k, dtype) -> Kernel instance; built lazily on first use.
-        # Fast path: skip re-inference when the input signature is unchanged.
-        # _active_sig = (a.shape, b.shape, dtype); _active = (mode, kernel, n, m).
+        # Last call's input signature and what it resolved to, so a repeat call
+        # skips re-inference. ``forward`` states what the signature must carry.
         self._active_sig: Optional[tuple] = None
         self._active: Optional[tuple] = None
         # Roofline / dtype bindings, populated on the first forward().
