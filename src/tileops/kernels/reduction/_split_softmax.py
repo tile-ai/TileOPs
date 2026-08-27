@@ -7,6 +7,7 @@ op's output stays in that op's module.
 """
 
 import functools
+from math import prod
 
 import tilelang
 import tilelang.language as T
@@ -21,6 +22,8 @@ from tileops.kernels.reduction._primitives import (
 )
 
 __all__ = [
+    "edge_split_partials_kernel",
+    "edge_split_view",
     "make_split_fold",
     "softmax_split_partials_kernel",
     "split_seg_n",
@@ -148,3 +151,64 @@ def make_split_fold(num_segs: int):
             )
 
     return fold
+
+
+def edge_split_view(
+    shape: "tuple[int, ...]", k: int, j: int, threads: int
+) -> "tuple[int, int, int] | None":
+    """The ``(outer, kept, inner)`` view an edge-axis split reads, or None.
+
+    An edge-axis reduction (a leading prefix of *k* axes plus a trailing
+    suffix of *j* axes) leaves each kept row as ``outer`` contiguous runs of
+    ``inner`` elements in the tensor's own layout, so the partials pass can
+    read it without the permute ``rows_for_axes`` would pay. Eligible when a
+    ``(1, inner)`` fragment builds (``threads`` divides ``inner``) and stays
+    in registers.
+    """
+    outer = prod(shape[:k])
+    inner = prod(shape[len(shape) - j :])
+    kept = prod(shape[k : len(shape) - j])
+    if inner % threads or inner > _SPLIT_MAX_SEG_COLS:
+        return None
+    return (outer, kept, inner)
+
+
+@functools.lru_cache(maxsize=32)
+def edge_split_partials_kernel(outer: int, kept: int, inner: int, dtype: str, threads: int):
+    """Per-run softmax statistics over an ``(outer, kept, inner)`` view.
+
+    One block owns one row's run ``x[s, m, :]`` and writes its fp32
+    ``(max, sum)`` pair at ``m * outer + s`` -- row-major by kept row, the
+    order ``make_split_fold`` reads. Semantics match
+    ``softmax_split_partials_kernel``: an all--inf run writes a zero sum.
+    """
+
+    @tilelang.jit(out_idx=[1, 2])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(outer, kept, inner), dtype],
+            seg_max: T.Tensor[(kept * outer,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(kept * outer,), "float32"],  # noqa: F821
+        ):
+            with T.Kernel(outer, kept, threads=threads) as (pid_s, pid_m):
+                x_f32 = T.alloc_fragment((1, inner), "float32")
+                m_s = T.alloc_fragment((1,), "float32")
+                s_s = T.alloc_fragment((1,), "float32")
+
+                for _, i in T.Parallel(1, inner):
+                    x_f32[0, i] = T.cast(x[pid_s, pid_m, i], "float32")
+                T.fill(m_s, -T.infinity("float32"))
+                T.reduce_max(x_f32, m_s, dim=1, clear=False)
+                for _, i in T.Parallel(1, inner):
+                    x_f32[0, i] = T.exp(x_f32[0, i] - m_s[0])
+                T.reduce_sum(x_f32, s_s, dim=1)
+
+                seg_max[pid_m * outer + pid_s] = m_s[0]
+                seg_sum[pid_m * outer + pid_s] = T.if_then_else(
+                    m_s[0] == -T.infinity("float32"), T.cast(0.0, "float32"), s_s[0]
+                )
+
+        return main
+
+    return _func

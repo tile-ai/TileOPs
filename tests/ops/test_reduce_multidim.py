@@ -264,6 +264,22 @@ def test_logsumexp_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
+@pytest.mark.smoke
+def test_logsumexp_edge_axes_special_values() -> None:
+    """Own-layout edge-axis logsumexp preserves -inf and NaN row semantics."""
+    from tileops.ops.reduction.softmax import LogSumExpFwdOp
+
+    x = torch.randn(4, 32, 256, dtype=torch.float16, device="cuda")
+    x[:, 0, :] = float("-inf")
+    x[2, 1, 7] = float("nan")
+    y = LogSumExpFwdOp(dim=[0, 2])(x).float()
+    ref = torch.logsumexp(x.float(), dim=[0, 2])
+    assert y[0].item() == float("-inf")
+    assert torch.isnan(y[1])
+    finite = torch.isfinite(ref)
+    assert torch.allclose(y[finite], ref[finite], **_tol(torch.float16))
+
+
 # Logical reduce ops: all, any, count_nonzero
 
 
