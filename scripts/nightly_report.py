@@ -11,7 +11,6 @@ Usage:
 """
 
 import argparse
-import contextlib
 import json
 import subprocess
 import xml.etree.ElementTree as ET
@@ -41,7 +40,6 @@ _PERF_KEYS = (
     "tileops_bandwidth_tbs",
     "tileops_compute_roof",
     "tileops_uncounted_copy_ms",
-    "tileops_variant",
     "tileops_timing",
     "tileops_device_busy_p10_ms",
     "tileops_device_busy_p90_ms",
@@ -53,6 +51,7 @@ _PERF_KEYS = (
     "baseline_ratio",
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
+BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
 HISTORY_RETENTION_DAYS = 14
 
 # Algorithmic speed-of-light (SOL) verdict lines. Efficiency is
@@ -113,7 +112,6 @@ def parse_test_xml(path: str) -> list[dict]:
                 "outcome": outcome,
                 "op": props.get("op"),
                 "op_module": props.get("op_module"),
-                "max_abs_err": props.get("max_abs_err"),
                 "failure_message": (
                     failure.attrib.get("message", "")
                     if failure is not None
@@ -256,7 +254,6 @@ def aggregate_test_results(results: list[dict]) -> dict:
             "passed": 0,
             "failed": 0,
             "skipped": 0,
-            "max_abs_err": 0.0,
             "failing_tests": [],
         }
     )
@@ -268,10 +265,6 @@ def aggregate_test_results(results: list[dict]) -> dict:
         if not d["module"]:
             d["module"] = r.get("op_module")
         d[r["outcome"]] += 1
-        err = r.get("max_abs_err")
-        if err:
-            with contextlib.suppress(ValueError):
-                d["max_abs_err"] = max(d["max_abs_err"], float(err))
         if r["outcome"] == "failed":
             d["failing_tests"].append(r["name"])
     return dict(ops)
@@ -804,24 +797,44 @@ def annotate_sol(bench_ops: dict, profile: dict | None) -> list[dict]:
     return anomalies
 
 
-def _sol_cell(sol: dict | None) -> str:
-    """Render one row's SOL reading for the benchmark table."""
-    if sol is None:
-        return "-"
-    eff = sol["efficiency"]
-    bound = "M" if sol["bound"] == "memory" else "C"
-    if sol["impossible"] or eff > SOL_ANOMALY:
-        return f"{_WARN} {eff:.0%} {bound}"
-    if sol["latency_bound"]:
-        return "<sub>lat-bound</sub>"
-    green = SOL_GREEN_MEMORY if sol["bound"] == "memory" else SOL_GREEN_COMPUTE
-    mark = f"{_PASS} " if eff >= green else ""
-    return f"{mark}{eff:.0%} {bound}"
+def _shift_table(
+    title: str,
+    base_label: str,
+    rows: list[dict],
+    sort_key,
+    delta_fmt: str,
+    note: str | None = None,
+) -> list[str]:
+    """One movement table: the op, the config, both readings, the delta."""
+    lines = [title, ""]
+    if note:
+        lines += [note, ""]
+    lines.append(f"| Op | Config | {base_label} (ms) | Current (ms) | Delta | TFLOPS |")
+    lines.append("|:---|:-------|------------:|-----------:|------:|-------:|")
+    for r in sorted(rows, key=sort_key):
+        tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
+        lines.append(
+            f"| **{r['op']}** | {r['config']} "
+            f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
+            f"| {delta_fmt.format(r['delta_pct'])} | {tflops_str} |"
+        )
+    lines.append("")
+    return lines
 
 
-# ---------------------------------------------------------------------------
-# Report generation
-# ---------------------------------------------------------------------------
+def _alert_rows(alerts: list[dict]) -> list[str]:
+    """One baseline-alert table for the given rows, worst first."""
+    lines = ["| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |"]
+    lines.append("|:-|:---|:-------|------------:|-------------:|------:|:----|")
+    for a in alerts:
+        emoji = _ratio_emoji(a["ratio"])
+        lines.append(
+            f"| {emoji} | **{a['op']}** | {a['config']} "
+            f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
+            f"| {a['ratio']:.1%} | {a['baseline_tag']} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _ratio_emoji(ratio: float) -> str:
@@ -906,10 +919,9 @@ def generate_report(
     if previous_run_shifts:
         lines.append(f"| **Moved since previous run** | {_BLUE} {len(previous_run_shifts)} |")
     if coverage:
-        # Repeated here because the Coverage section sits below the benchmark
-        # tables, which run to hundreds of rows. One row per concern: a single
-        # untested-line total would double-count ops/ against its own branch
-        # figure and bury perf/, where a wrong number fails silently.
+        # One row per concern: a single untested-line total would double-count
+        # ops/ against its own branch figure and bury perf/, where a wrong
+        # number fails silently.
         sig = _coverage_signals(coverage)
         prev = coverage_prev or {}
         sep = " &ensp;·&ensp; "
@@ -989,55 +1001,35 @@ def generate_report(
             lines.append(f"| {name} | {msg} |")
         lines.append("")
 
-    # ── Regressions ───────────────────────────────────────────────────────
+    # ── Movement tables ───────────────────────────────────────────────────
     if regressions:
-        lines.append(f"## {_WARN} Performance Regressions (vs 14-day median)")
-        lines.append("")
-        lines.append("| Op | Config | Median (ms) | Current (ms) | Delta | TFLOPS |")
-        lines.append("|:---|:-------|------------:|-----------:|------:|-------:|")
-        for r in sorted(regressions, key=lambda x: -x["delta_pct"]):
-            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
-            lines.append(
-                f"| **{r['op']}** | {r['config']} "
-                f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
-                f"| +{r['delta_pct']:.1f}% | {tflops_str} |"
-            )
-        lines.append("")
-
-    # ── Improvements ──────────────────────────────────────────────────────
-    if improvements:
-        lines.append(f"## {_PARTY} Performance Improvements (vs 14-day best)")
-        lines.append("")
-        lines.append("| Op | Config | Prev Best (ms) | Current (ms) | Delta | TFLOPS |")
-        lines.append("|:---|:-------|---------------:|-----------:|------:|-------:|")
-        for r in sorted(improvements, key=lambda x: x["delta_pct"]):
-            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
-            lines.append(
-                f"| **{r['op']}** | {r['config']} "
-                f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
-                f"| {r['delta_pct']:.1f}% | {tflops_str} |"
-            )
-        lines.append("")
-
-    # ── Moves since the previous run ──────────────────────────────────────
-    if previous_run_shifts:
-        lines.append(f"## {_BLUE} Moved Since Previous Run")
-        lines.append("")
-        lines.append(
-            "> Moves against the most recent reading. A row restored to its"
-            " old level appears only here: returning is not a new 14-day record."
+        lines += _shift_table(
+            f"## {_WARN} Performance Regressions (vs 14-day median)",
+            "Median",
+            regressions,
+            lambda x: -x["delta_pct"],
+            "+{:.1f}%",
         )
-        lines.append("")
-        lines.append("| Op | Config | Previous (ms) | Current (ms) | Delta | TFLOPS |")
-        lines.append("|:---|:-------|--------------:|-----------:|------:|-------:|")
-        for r in sorted(previous_run_shifts, key=lambda x: x["delta_pct"]):
-            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
-            lines.append(
-                f"| **{r['op']}** | {r['config']} "
-                f"| {r['base_ms']:.4f} | {r['curr_ms']:.4f} "
-                f"| {r['delta_pct']:+.1f}% | {tflops_str} |"
-            )
-        lines.append("")
+    if improvements:
+        lines += _shift_table(
+            f"## {_PARTY} Performance Improvements (vs 14-day best)",
+            "Prev Best",
+            improvements,
+            lambda x: x["delta_pct"],
+            "{:.1f}%",
+        )
+    if previous_run_shifts:
+        lines += _shift_table(
+            f"## {_BLUE} Moved Since Previous Run",
+            "Previous",
+            previous_run_shifts,
+            lambda x: x["delta_pct"],
+            "{:+.1f}%",
+            note=(
+                "> Moves against the most recent reading. A row restored to its"
+                " old level appears only here: returning is not a new 14-day record."
+            ),
+        )
 
     # ── Roofline anomalies ────────────────────────────────────────────────
     if sol_anomalies:
@@ -1066,112 +1058,16 @@ def generate_report(
             " Ratio = baseline device-busy / tileops device-busy."
         )
         lines.append("")
-        lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Via |")
-        lines.append("|:-|:---|:-------|------------:|-------------:|------:|:----|")
-        for a in sorted(baseline_alerts, key=lambda x: x.get("ratio", 1)):
-            emoji = _ratio_emoji(a["ratio"])
-            lines.append(
-                f"| {emoji} | **{a['op']}** | {a['config']} "
-                f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
-                f"| {a['ratio']:.1%} | {a['baseline_tag']} |"
-            )
-        lines.append("")
-
-    # ── Full Correctness Results (collapsible) ────────────────────────────
-    if test_ops:
-        lines.append("<details>")
-        lines.append(
-            f"<summary><strong>Full Correctness Results ({n_test_ops} ops)</strong></summary>"
-        )
-        lines.append("")
-        lines.append("| | Op | Module | Pass | Fail | Skip | Max Error |")
-        lines.append("|:-|:---|:-------|-----:|-----:|-----:|----------:|")
-        for op in sorted(test_ops):
-            d = test_ops[op]
-            err_str = f"{d['max_abs_err']:.2e}" if d["max_abs_err"] else "-"
-            icon = _PASS if d["failed"] == 0 else _FAIL
-            lines.append(
-                f"| {icon} | {op} | `{d['module'] or 'N/A'}` "
-                f"| {d['passed']} | {d['failed']} | {d['skipped']} "
-                f"| {err_str} |"
-            )
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
-
-    # ── Full Benchmark Results (collapsible) ──────────────────────────────
-    if bench_ops:
-        n_configs = sum(len(d["configs"]) for d in bench_ops.values())
-        lines.append("<details>")
-        lines.append(
-            f"<summary><strong>Full Benchmark Results"
-            f" ({n_configs} configs across"
-            f" {n_bench_ops} ops)</strong></summary>"
-        )
-        lines.append("")
-        if have_gpu_profile:
-            lines.append(
-                "> SOL = algorithmic speed-of-light efficiency:"
-                " `max(bytes/BW, flops/roof) / device-busy` against the"
-                " calibrated ceilings. `bytes` is the algorithm's minimum"
-                " traffic (not measured DRAM bytes); `flops` follows the"
-                " TileOPs counting convention; the roof is the unit an"
-                " optimal implementation would use, not the running kernel's."
-                f" M/C = memory/compute-bound; {_PASS} at"
-                f" ≥{SOL_GREEN_MEMORY:.0%} (M) / ≥{SOL_GREEN_COMPUTE:.0%} (C);"
-                " lat-bound rows are too small for the model to judge."
-            )
+        ranked = sorted(baseline_alerts, key=lambda x: x.get("ratio", 1))
+        worst, rest = ranked[:BASELINE_ALERT_WORST_N], ranked[BASELINE_ALERT_WORST_N:]
+        lines.extend(_alert_rows(worst))
+        if rest:
+            lines.append("<details>")
+            lines.append(f"<summary><strong>{len(rest)} more alerts</strong></summary>")
             lines.append("")
-        lines.append(
-            "| | Op | Config | Device busy (ms) | TFLOPS | BW (TB/s) | SOL | Via | Ratio |"
-        )
-        lines.append("|:-|:---|:-------|------------:|-------:|----------:|----:|:----|------:|")
-        for op in sorted(bench_ops):
-            for cfg in bench_ops[op]["configs"]:
-                lat = _conclusion_ms(cfg)
-                tflops = cfg.get("tileops_tflops")
-                bw = cfg.get("tileops_bandwidth_tbs")
-                variant = cfg.get("tileops_variant")
-                lat_str = f"{lat:.4f}" if lat is not None else "-"
-                tflops_str = f"{tflops:.2f}" if tflops is not None else "-"
-                bw_str = f"{bw:.2f}" if bw is not None else "-"
-                sol_str = _sol_cell(cfg.get("sol"))
-
-                # Collect all baselines for this config into rows
-                bl_rows = []
-                bl_tag = cfg.get("baseline_tag", "")
-                ratio = cfg.get("baseline_ratio")
-                if bl_tag:
-                    bl_rows.append((bl_tag, ratio))
-                for tag, bl in cfg.get("baselines", {}).items():
-                    if tag == bl_tag:
-                        continue
-                    bl_rows.append((tag, bl.get("ratio")))
-
-                if not bl_rows:
-                    bl_str = f"strategy: {variant}" if variant else "-"
-                    lines.append(
-                        f"|  | {op} | {cfg['name']} "
-                        f"| {lat_str} | {tflops_str} | {bw_str} | {sol_str} "
-                        f"| {bl_str} | - |"
-                    )
-                else:
-                    via_parts = []
-                    for btag, bratio in bl_rows:
-                        r_str = f"{bratio:.1%}" if bratio is not None else "-"
-                        via_parts.append(f"{btag} {r_str}")
-                    via_str = ", ".join(via_parts)
-                    # Strongest baseline = fastest = lowest ratio.
-                    rows = [r for _, r in bl_rows if r is not None]
-                    emoji = _ratio_emoji(min(rows)) if rows else ""
-                    lines.append(
-                        f"| {emoji} | {op} | {cfg['name']} "
-                        f"| {lat_str} | {tflops_str} | {bw_str} | {sol_str} "
-                        f"| {via_str} | - |"
-                    )
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
+            lines.extend(_alert_rows(rest))
+            lines.append("</details>")
+            lines.append("")
 
     # ── Coverage ──────────────────────────────────────────────────────────
     if coverage:

@@ -6,7 +6,6 @@
 <p>The spec is the source; kernels are derived from it and judged against it.</p>
 
 <p>
-    <a href="https://github.com/tile-ai/tilelang"><img src="https://img.shields.io/badge/built%20on-TileLang-1E90FF" alt="Built on TileLang"></a>
     <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
     <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
     <a href="https://tile-ai.github.io/TileOPs.github.io/api/"><img src="https://img.shields.io/badge/docs-API%20reference-1E90FF" alt="API reference"></a>
