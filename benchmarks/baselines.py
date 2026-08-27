@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 import torch
 
 __all__ = [
+    "CUBLASLT_TAG",
     "DEEPGEMM_TAG",
     "FLAGGEMS_TAG",
     "FLASHINFER_TAG",
@@ -25,6 +26,7 @@ __all__ = [
     "VLLM_TAG",
     "assert_matches_reference",
     "compiled_reference",
+    "cublaslt_best",
     "deepgemm_op",
     "flaggems_dims",
     "flaggems_group_norm",
@@ -43,6 +45,7 @@ _TOLERANCES = {
     torch.float64: (1e-7, 1e-7),
 }
 
+CUBLASLT_TAG = "cublaslt-best"
 DEEPGEMM_TAG = "deepgemm"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
@@ -179,6 +182,26 @@ def flaggems_group_norm(n: int, c: int, hxw: int, groups: int, eps: float) -> Ca
         return fn(x, weight, bias, n, c, hxw, groups, eps)[0]
 
     return baseline_fn
+
+
+def cublaslt_best(
+    a: torch.Tensor, b: torch.Tensor, *, trans_a: bool, trans_b: bool
+) -> Optional[Callable]:
+    """Return a GEMM bound to the fastest cuBLASLt algorithm for this shape, or None.
+
+    ``torch.matmul`` takes cuBLAS's top-1 heuristic; this searches the heuristic
+    list and keeps the fastest, so a row cannot be credited with a win a cuBLASLt
+    user would not concede. ``None`` means the row keeps ``torch-cublas`` alone:
+    the layout or dtype is one this baseline has no form for, which is the bench
+    file's own call, not a missing library.
+
+    Unlike the ``*_op`` resolvers this returns rather than raises for an
+    inapplicable case, and raises only when ``nvmath`` itself is absent — a
+    declared runner dependency, so its absence is a degraded image.
+    """
+    from benchmarks.cublaslt_baseline import make_cublaslt_best
+
+    return make_cublaslt_best(a, b, trans_a, trans_b)
 
 
 def deepgemm_op(name: str) -> Callable:

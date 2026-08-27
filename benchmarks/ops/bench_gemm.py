@@ -4,15 +4,16 @@ import pytest
 import torch
 
 from benchmarks.baselines import (
+    CUBLASLT_TAG,
     DEEPGEMM_TAG,
     FLAGGEMS_TAG,
     assert_matches_reference,
+    cublaslt_best,
     deepgemm_op,
     flaggems_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
-from benchmarks.cublaslt_baseline import make_cublaslt_best
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
@@ -325,10 +326,10 @@ def test_gemm_bench(
     # beats it on the shapes where that heuristic is weakest, so timing against
     # torch alone would credit a win a cuBLASLt user would not concede.
     functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
-    best_fn = make_cublaslt_best(m, n, k, dtype, trans_a, trans_b)
+    best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
         assert_matches_reference(best_fn, workload.torch_matmul, a, b, **reference_tolerance(dtype))
-        functors["cublaslt-best"] = best_fn
+        functors[CUBLASLT_TAG] = best_fn
 
     deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
     if deepgemm_fn is not None:
