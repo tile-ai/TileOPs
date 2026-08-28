@@ -266,6 +266,12 @@ def _propagate_nan(a, b, result):
     float32 for ``isnan``, which bfloat16 has no native form of; a self-compare
     is not a guard here, because TileLang lowers ``!=`` as an ordered compare and
     ``x != x`` is false for NaN.
+
+    The NaN returned is a canonical one. ``torch.minimum`` and ``torch.maximum``
+    return the offending operand itself, so a caller reading the raw bits sees
+    0x7fff where torch gives back whatever NaN it was handed. Naming which operand
+    is what the second select bought, and every comparison in this repo -- and
+    every one torch offers -- treats the two as equal.
     """
     either_is_nan = tirx.any(T.isnan(T.Cast("float32", a)), T.isnan(T.Cast("float32", b)))
     return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)

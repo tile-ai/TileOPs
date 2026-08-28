@@ -512,6 +512,23 @@ class MaxMinNanFixture(FixtureBase):
     ]
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls", [MaximumFwdOp, MinimumFwdOp])
+def test_max_min_return_a_canonical_nan(op_cls) -> None:
+    """The NaN handed back is a canonical one, not the operand torch would return.
+
+    Deliberate: naming which operand costs a second select, which costs the
+    element body its float4 lanes. Nothing comparing floats can see the
+    difference, so this reads the bits, and pins the deviation rather than
+    leaving a later change to make it by accident.
+    """
+    negative_nan = torch.tensor([0xFE00], dtype=torch.uint16, device="cuda").view(torch.float16)
+    other = torch.tensor([1.0], dtype=torch.float16, device="cuda")
+    out = op_cls()(negative_nan, other)
+    assert torch.isnan(out).all()
+    assert out.view(torch.uint16).item() == 0x7FFF
+
+
 @MaxMinNanFixture
 def test_max_min_nan_propagation(op_cls, torch_ref, dtype: torch.dtype) -> None:
     """Verify maximum/minimum propagate NaN when either operand is NaN."""
