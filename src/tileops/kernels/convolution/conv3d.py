@@ -48,12 +48,9 @@ def _conv3d_kernel(
     out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     k_total = kernel_d * kernel_h * kernel_w * c_in
 
-    # Re-enable automatic async copy once TileLang lowers scalar cp.async
-    # widening for vectorized manual data loads. Keep weight T.copy eligible for TMA.
     @tilelang.jit(
         out_idx=[2],
         compile_flags=["-O3", "-DENABLE_BF16"],
-        pass_configs={"tl.enable_async_copy": False},
     )
     def _conv3d_func(
         block_m: int,
@@ -199,7 +196,6 @@ def _conv3d_group_kernel(
     @tilelang.jit(
         out_idx=[2],
         compile_flags=["-O3", "-DENABLE_BF16"],
-        pass_configs={"tl.enable_async_copy": False},
     )
     def _conv3d_group_func(
         block_m: int,
@@ -368,9 +364,10 @@ def _conv3d_ndhwc_kernel(
     out_dhw = out_d * out_h * out_w
     k_total = c_in * kernel_d * kernel_h * kernel_w
 
-    # Unlike the NCDHW kernels above, tl.enable_async_copy stays enabled here:
-    # the NDHWC gather vectorises to >=4B accesses, which are cp.async-eligible
-    # inside the pipelined K loop (aspp workload: 0.0413 -> 0.0328 ms).
+    # tl.enable_async_copy matters here: the NDHWC gather vectorises to >=4B
+    # accesses, which are cp.async-eligible inside the pipelined K loop (aspp
+    # workload: 0.0413 -> 0.0328 ms). The NCDHW kernels' scalar gathers are not
+    # eligible, so the flag is a no-op for them.
     @tilelang.jit(
         out_idx=[5],
         compile_flags=["-O3", "-DENABLE_BF16"],
