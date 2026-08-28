@@ -5,6 +5,7 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
+import tvm.tirx as tirx
 
 from ._base import (
     _FLOAT_DTYPES,
@@ -254,6 +255,22 @@ def _is_float_dtype_str(dtype_str: str) -> bool:
     return dtype_str.startswith(("float", "bfloat"))
 
 
+def _propagate_nan(a, b, result):
+    """Return NaN where either operand is NaN, and *result* everywhere else.
+
+    ``T.min`` and ``T.max`` lower to ``fminf``/``fmaxf``, which return the
+    non-NaN operand, so the NaN torch.minimum and torch.maximum propagate has to
+    be put back. One select rather than two: each ``T.if_then_else`` in an
+    element body makes TileLang emit a scalar loop instead of float4 lanes, and a
+    second one measured 34.2us against 18.0us on the broadcast rows. Cast to
+    float32 for ``isnan``, which bfloat16 has no native form of; a self-compare
+    is not a guard here, because TileLang lowers ``!=`` as an ordered compare and
+    ``x != x`` is false for NaN.
+    """
+    either_is_nan = tirx.any(T.isnan(T.Cast("float32", a)), T.isnan(T.Cast("float32", b)))
+    return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)
+
+
 class MaximumFwdKernel(BinaryKernel):
     """Element-wise maximum: y = max(a, b).
 
@@ -265,9 +282,8 @@ class MaximumFwdKernel(BinaryKernel):
     directly without the NaN guards.
 
     Performance (float path): uses T.max for the fast path (correct
-    signed-zero on CUDA -- fmaxf returns +0 for max(+0,-0)) plus two
-    isnan guards for NaN propagation. Total IR: 1 max + 2 fp32 casts +
-    2 isnan + 2 select.
+    signed-zero on CUDA -- fmaxf returns +0 for max(+0,-0)) plus one
+    isnan guard for NaN propagation.
     """
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
@@ -278,16 +294,7 @@ class MaximumFwdKernel(BinaryKernel):
         if not _is_float_dtype_str(str(a.dtype)):
             # Integer / bool: no NaN representation, T.max is sufficient.
             return result
-        # Float path: T.max handles signed-zero correctly but does NOT
-        # propagate NaN -- it returns the non-NaN operand. Cast to fp32
-        # for isnan (bfloat16 lacks native isnan). A self-compare is not
-        # a guard here: TileLang lowers ``!=`` as an ordered compare, so
-        # ``x != x`` is false for NaN.
-        a_is_nan = T.isnan(T.Cast("float32", a))
-        b_is_nan = T.isnan(T.Cast("float32", b))
-        result = T.if_then_else(b_is_nan, b, result)
-        result = T.if_then_else(a_is_nan, a, result)
-        return result
+        return _propagate_nan(a, b, result)
 
 
 class MinimumFwdKernel(BinaryKernel):
@@ -301,8 +308,8 @@ class MinimumFwdKernel(BinaryKernel):
     directly without the NaN guards.
 
     Performance (float path): uses T.min for the fast path (correct
-    signed-zero on CUDA -- fminf returns -0 for min(-0,+0)) plus two
-    isnan guards for NaN propagation. See MaximumFwdKernel for full
+    signed-zero on CUDA -- fminf returns -0 for min(-0,+0)) plus one
+    isnan guard for NaN propagation. See MaximumFwdKernel for full
     rationale.
     """
 
@@ -313,11 +320,7 @@ class MinimumFwdKernel(BinaryKernel):
         result = T.min(a, b)
         if not _is_float_dtype_str(str(a.dtype)):
             return result
-        a_is_nan = T.isnan(T.Cast("float32", a))
-        b_is_nan = T.isnan(T.Cast("float32", b))
-        result = T.if_then_else(b_is_nan, b, result)
-        result = T.if_then_else(a_is_nan, a, result)
-        return result
+        return _propagate_nan(a, b, result)
 
 
 @functools.lru_cache(maxsize=32)

@@ -57,7 +57,11 @@ def default_launch_config(
         if strategy != "direct":  # a direct block spans `threads` whatever npt says
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
-    elif _torch_dtype_nbytes(output_dtype) < elem_bytes:
+    elif output_dtype != torch.bool and _torch_dtype_nbytes(output_dtype) < elem_bytes:
+        # A narrower result would leave the store short of a vector, so widen to
+        # cover it -- except for a bool result, whose int8 store is a quarter the
+        # width of the read. Widening for it costs the read more than the store
+        # gains: measured 15.1us against 18.6us on the broadcast comparison rows.
         npt *= 2
 
     while (
@@ -117,9 +121,9 @@ def elementwise_output_plan(
     ):
         logical_dtype, post_cast_dtype = torch.float16, input_dtype
 
-    bool_via_int8 = (
-        bool_storage and declared_output_dtype == torch.bool and strategy == "register_copy"
-    )
+    # Every strategy but `direct` can store the result through an int8 buffer, and
+    # wants to: a bool store lowers to one byte per lane, where int8 vectorises.
+    bool_via_int8 = bool_storage and declared_output_dtype == torch.bool and strategy != "direct"
     if bool_via_int8:
         kernel_output_dtype = BOOL_STORAGE_DTYPE
     elif post_cast_dtype is not None:
