@@ -10,6 +10,7 @@ from tileops.kernels.convolution import (
     Conv2dKernel,
     Conv2dSymmetricKernel,
     Conv3dKernel,
+    Conv3dNdhwcKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
@@ -1041,6 +1042,7 @@ class Conv3dFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "conv3d_kernel": Conv3dKernel,
+            "conv3d_ndhwc_kernel": Conv3dNdhwcKernel,
             "group_conv3d_kernel": GroupConv3dKernel,
         }
 
@@ -1138,8 +1140,9 @@ class Conv3dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
+        use_ndhwc = self.groups == 1 and c_in % 32 == 0 and "conv3d_ndhwc_kernel" in self.kernel_map
         use_group = self.groups > 1 and "group_conv3d_kernel" in self.kernel_map
-        variant = "group" if use_group else "general"
+        variant = "ndhwc" if use_ndhwc else "group" if use_group else "general"
         key = (
             variant,
             n,
@@ -1186,6 +1189,30 @@ class Conv3dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
+            if use_ndhwc:
+                return self.kernel_map["conv3d_ndhwc_kernel"](
+                    n=n,
+                    c_in=c_in,
+                    d=d,
+                    h=h,
+                    w=w,
+                    c_out=c_out,
+                    kernel_d=kernel_d,
+                    kernel_h=kernel_h,
+                    kernel_w=kernel_w,
+                    stride_d=self.stride[0],
+                    stride_h=self.stride[1],
+                    stride_w=self.stride[2],
+                    pad_d=pad_d,
+                    pad_h=pad_h,
+                    pad_w=pad_w,
+                    dilation_d=self.dilation[0],
+                    dilation_h=self.dilation[1],
+                    dilation_w=self.dilation[2],
+                    dtype=dtype,
+                    has_bias=has_bias,
+                    tune=self.tune,
+                )
             if use_group:
                 return self.kernel_map["group_conv3d_kernel"](
                     **kernel_kwargs,

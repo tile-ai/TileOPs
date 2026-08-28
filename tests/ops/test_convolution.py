@@ -10,6 +10,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dSymmetricKernel,
     Conv3dKernel,
+    Conv3dNdhwcKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
@@ -769,6 +770,24 @@ class Conv3dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-3d-unet-k3-s1-bf16",
                 ),
+                # Non-symmetric dilation/padding on the NDHWC fast path (c_in % 32 == 0).
+                pytest.param(
+                    1,
+                    32,
+                    8,
+                    16,
+                    16,
+                    64,
+                    (3, 3, 3),
+                    (1, 1, 1),
+                    (2, 1, 3),
+                    (2, 1, 3),
+                    1,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-3d-ndhwc-nonsymmetric-dilation-fp16",
+                ),
                 # Video depthwise 3D block, reduced size for smoke cost.
                 pytest.param(
                     1,
@@ -978,6 +997,50 @@ def test_conv3d_dispatches_kernel() -> None:
     weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
     assert isinstance(op.kernel, Conv3dKernel)
+
+
+@pytest.mark.smoke
+def test_conv3d_dispatches_ndhwc_kernel() -> None:
+    op = Conv3dFwdOp(stride=1, padding=1)
+    x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    ref = F.conv3d(x, weight, bias=None, padding=1)
+    torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_ndhwc_kernel_matches_torch_dilated() -> None:
+    # The 3d-unet-aspp manifest shape family: symmetric pad == dilation, c_in % 32 == 0.
+    op = Conv3dFwdOp(stride=1, padding=6, dilation=6)
+    x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    ref = F.conv3d(x, weight, bias=None, padding=6, dilation=6)
+    torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_ndhwc_kernel_matches_torch_stride2_bias() -> None:
+    op = Conv3dFwdOp(stride=2, padding=1)
+    x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight, bias)
+    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    ref = F.conv3d(x, weight, bias=bias, stride=2, padding=1)
+    torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_ndhwc_kernel_not_used_when_c_in_unaligned() -> None:
+    op = Conv3dFwdOp(stride=1, padding=1)
+    x = torch.randn(1, 16, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 16, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
+    assert not isinstance(op.kernel, Conv3dNdhwcKernel)
 
 
 @pytest.mark.smoke

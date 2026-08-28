@@ -7,7 +7,7 @@ from .conv2d import (
     Conv2dSymmetricKernel,
     GroupConv2dKernel,
 )
-from .conv3d import Conv3dKernel, GroupConv3dKernel
+from .conv3d import Conv3dKernel, Conv3dNdhwcKernel, GroupConv3dKernel
 
 __all__ = [
     "Conv1dKernel",
@@ -16,6 +16,7 @@ __all__ = [
     "Conv2dKernel",
     "Conv2dSymmetricKernel",
     "Conv3dKernel",
+    "Conv3dNdhwcKernel",
     "GroupConv1dKernel",
     "GroupConv2dKernel",
     "GroupConv3dKernel",
