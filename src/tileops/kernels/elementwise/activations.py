@@ -114,7 +114,8 @@ class HardswishFwdKernel(FloatUnaryKernel):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) * (1 / 6).
 
     Scaling by the reciprocal is what ``torch.nn.functional.hardswish`` does, so
-    the result is bit-identical to it; dividing by 6 lowers to ``div.rn.f32``.
+    finite inputs come out bit-identical to it; dividing by 6 lowers to
+    ``div.rn.f32``.
     """
 
     @staticmethod
@@ -131,7 +132,9 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) * (1 / 6).
 
     Scaling by the reciprocal is what ``torch.nn.functional.hardsigmoid`` does, so
-    the result is bit-identical to it; dividing by 6 lowers to ``div.rn.f32``.
+    finite inputs come out bit-identical to it; dividing by 6 lowers to
+    ``div.rn.f32``. A NaN input reads back as 0, since the clamp lowers to
+    ``fminf``/``fmaxf``, which return their non-NaN operand.
     """
 
     @staticmethod

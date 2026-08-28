@@ -430,14 +430,16 @@ def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
 
     float16 and bfloat16 evaluate a polynomial, saturated past a clamp that normal
     inputs never reach, and the op tolerance is a whole ulp wider than the fit
-    needs. Enumerating the dtype is cheap enough to leave nothing untested.
+    needs. Enumerating the dtype is cheap enough to leave nothing untested -- the
+    non-finite inputs included, which the clamp would otherwise swallow.
     """
     codes = torch.arange(1 << 16, dtype=torch.int32, device="cuda").to(torch.int16)
     x = codes.view(dtype)
-    x = x[torch.isfinite(x)]
     out = ErfFwdOp()(x)
     ref = torch.erf(x.float()).to(dtype)
-    assert _representable_steps(out, ref).max().item() <= 1
+    finite = torch.isfinite(x)
+    assert _representable_steps(out[finite], ref[finite]).max().item() <= 1
+    torch.testing.assert_close(out[~finite], ref[~finite], rtol=0, atol=0, equal_nan=True)
 
 
 @MathEdgeFixture
