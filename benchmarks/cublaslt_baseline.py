@@ -163,7 +163,7 @@ class CublasLtBestGemm:
 
 
 def make_cublaslt_best(
-    a: torch.Tensor, b: torch.Tensor, trans_a: bool, trans_b: bool
+    a: torch.Tensor, b: torch.Tensor, *, trans_a: bool, trans_b: bool
 ) -> Optional[Callable]:
     """Build a cuBLASLt searched-best GEMM callable, or None for a row it cannot take.
 
