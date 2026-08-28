@@ -11,6 +11,7 @@ from ._base import (
     _FLOAT_DTYPES,
     FloatUnaryKernel,
     FusedGatedKernel,
+    LatencyBoundUnaryKernel,
     ParametricUnaryKernel,
 )
 from ._dtype import _fp8_accum_dtype_str, log_for_output_precision
@@ -45,7 +46,7 @@ class ReluFwdKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class GeluFwdKernel(FloatUnaryKernel):
+class GeluFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise GELU using the standard erf formulation."""
 
     @staticmethod
@@ -89,7 +90,7 @@ class SiluFwdKernel(FloatUnaryKernel):
         return wide / (one + T.exp(-wide))
 
 
-class SigmoidFwdKernel(FloatUnaryKernel):
+class SigmoidFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise sigmoid(x)."""
 
     @staticmethod
@@ -102,7 +103,7 @@ class SigmoidFwdKernel(FloatUnaryKernel):
         return one / (one + T.exp(-T.cast(x, "float32")))
 
 
-class TanhFwdKernel(FloatUnaryKernel):
+class TanhFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise tanh(x)."""
 
     @staticmethod

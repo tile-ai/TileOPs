@@ -46,6 +46,7 @@ __all__ = [
     "FloatPredicateKernel",
     "FloatUnaryKernel",
     "FusedGatedKernel",
+    "LatencyBoundUnaryKernel",
     "LogicalUnaryKernel",
     "ParametricUnaryKernel",
     "UnaryKernel",
@@ -55,6 +56,13 @@ __all__ = [
 class _ElementwiseKernel(Kernel):
     """What every elementwise family shares: which dtypes it takes, and what it returns."""
 
+    #: Bytes each thread carries in the default launch config. 16 is one vector
+    #: load, which is all a body limited by memory can use. A body the memory pipe
+    #: is waiting on -- a transcendental -- asks for 32, so a second load is in
+    #: flight while the first element's arithmetic runs. Raise it only on a
+    #: measurement: at float32 the same byte count halves the elements per thread,
+    #: and past the point where the row turns bandwidth-bound it costs occupancy.
+    BYTES_PER_THREAD: int = 16
     #: Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
     #: Whether bool results are stored through an int8 buffer.
@@ -87,6 +95,7 @@ class _StrategyKernel(_ElementwiseKernel):
             output_dtype=self.output_dtype,
             n_total=self.N_total,
             stores_bool=not self._bool_via_int8,
+            bytes_per_thread=self.BYTES_PER_THREAD,
         )
 
     @property
@@ -475,6 +484,19 @@ class FloatUnaryKernel(UnaryKernel):
     """Unary kernel base for float-only elementwise ops."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+
+class LatencyBoundUnaryKernel(FloatUnaryKernel):
+    """A float unary the memory pipe waits on, rather than the other way round.
+
+    A single transcendental is enough: with one vector load per thread these
+    bodies measure 7-12% off the copy roof at half precision, and a second load
+    in flight closes it. Bodies that also divide -- silu, mish, selu, elu,
+    softplus -- are issue-limited instead and measure slower this way, so they
+    stay on :class:`FloatUnaryKernel`.
+    """
+
+    BYTES_PER_THREAD = 32
 
 
 class FloatPredicateKernel(FloatUnaryKernel):

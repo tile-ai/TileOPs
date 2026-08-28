@@ -5,6 +5,7 @@ import torch
 
 from ._base import (
     FloatUnaryKernel,
+    LatencyBoundUnaryKernel,
 )
 from ._dtype import log_for_output_precision
 from ._erf import erf
@@ -38,7 +39,7 @@ class ExpFwdKernel(FloatUnaryKernel):
         return T.exp(T.cast(x, "float32"))
 
 
-class LogFwdKernel(FloatUnaryKernel):
+class LogFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise log(x)."""
 
     @staticmethod
@@ -46,7 +47,7 @@ class LogFwdKernel(FloatUnaryKernel):
         return log_for_output_precision(x, T.cast(x, "float32"))
 
 
-class SqrtFwdKernel(FloatUnaryKernel):
+class SqrtFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise sqrt(x)."""
 
     @staticmethod
@@ -78,7 +79,7 @@ class NegFwdKernel(FloatUnaryKernel):
         return -x
 
 
-class ReciprocalFwdKernel(FloatUnaryKernel):
+class ReciprocalFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise 1/x.
 
     Integral inputs are this backend's business: it has no integer kernel, so it
@@ -123,7 +124,7 @@ class SignFwdKernel(FloatUnaryKernel):
         )
 
 
-class SinFwdKernel(FloatUnaryKernel):
+class SinFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise sin(x)."""
 
     @staticmethod
@@ -131,7 +132,7 @@ class SinFwdKernel(FloatUnaryKernel):
         return T.sin(T.cast(x, "float32"))
 
 
-class CosFwdKernel(FloatUnaryKernel):
+class CosFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise cos(x)."""
 
     @staticmethod
@@ -188,7 +189,7 @@ class TruncFwdKernel(FloatUnaryKernel):
         return T.trunc(T.cast(x, "float32"))
 
 
-class ErfFwdKernel(FloatUnaryKernel):
+class ErfFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise erf(x)."""
 
     @staticmethod
@@ -196,7 +197,7 @@ class ErfFwdKernel(FloatUnaryKernel):
         return erf(x, x.dtype)
 
 
-class Log1pFwdKernel(FloatUnaryKernel):
+class Log1pFwdKernel(LatencyBoundUnaryKernel):
     """Element-wise log(1 + x).
 
     fp32 takes ``T.log1p``, which keeps the small values ``log(1 + x)`` rounds away

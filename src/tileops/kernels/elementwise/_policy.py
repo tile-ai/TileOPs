@@ -33,8 +33,15 @@ def default_launch_config(
     output_dtype: torch.dtype,
     n_total: int | None,
     stores_bool: bool = True,
+    bytes_per_thread: int = _BYTES_PER_THREAD,
 ) -> dict:
-    """Return the default launch config for one elementwise specialization."""
+    """Return the default launch config for one elementwise specialization.
+
+    *bytes_per_thread* sets how much each thread carries, and so how many loads
+    it has in flight. Asking for more than one vector load only pays where the
+    body's latency is what the kernel is waiting on; see
+    ``_ElementwiseKernel.BYTES_PER_THREAD``.
+    """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
     # are what has to stay wide enough to keep the memory pipe busy.
@@ -43,7 +50,7 @@ def default_launch_config(
         return {"strategy": strategy, "threads": threads, "num_per_thread": _FP8_NPT}
 
     elem_bytes = _torch_dtype_nbytes(input_dtype)
-    npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
+    npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
 
     if output_dtype == torch.bool and stores_bool:
         capped = min(npt, _BOOL_OUTPUT_MAX_NPT)
