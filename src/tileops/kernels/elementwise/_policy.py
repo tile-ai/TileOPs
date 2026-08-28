@@ -70,13 +70,26 @@ def default_launch_config(
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
 
 
-def elementwise_autotune_configs(dtype: torch.dtype, strategy: str | None = None) -> list[dict]:
-    """Return the launch configs to time for one elementwise specialization."""
+def elementwise_autotune_configs(
+    dtype: torch.dtype,
+    strategy: str | None = None,
+    bytes_per_thread: int = _BYTES_PER_THREAD,
+) -> list[dict]:
+    """Return the launch configs to time for one elementwise specialization.
+
+    The swept elements-per-thread brackets the default the same *bytes_per_thread*
+    produces, so a kernel can always land back on its shipped config; a sweep with
+    a fixed range would leave a latency-bound body unable to reach its own default.
+    """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
         return [{"threads": t} for t in _AUTOTUNE_THREADS]
-    npts = (16, 32) if _is_fp8(dtype) else (2, 4, 8)
+    if _is_fp8(dtype):
+        npts = (_FP8_NPT, _FP8_NPT * 2)
+    else:
+        default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
+        npts = tuple(sorted({max(_MIN_NUM_PER_THREAD, default // 2), default, default * 2}))
     return [{"threads": t, "num_per_thread": n} for t in _AUTOTUNE_THREADS for n in npts]
 
 

@@ -100,7 +100,7 @@ class _StrategyKernel(_ElementwiseKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return elementwise_autotune_configs(self.dtype, self.strategy)
+        return elementwise_autotune_configs(self.dtype, self.strategy, self.BYTES_PER_THREAD)
 
     def init_config(self, config=None, tune=False) -> None:
         Kernel.init_config(self, config, tune)
@@ -487,13 +487,14 @@ class FloatUnaryKernel(UnaryKernel):
 
 
 class LatencyBoundUnaryKernel(FloatUnaryKernel):
-    """A float unary the memory pipe waits on, rather than the other way round.
+    """A float unary that measured faster with a second load in flight per thread.
 
-    A single transcendental is enough: with one vector load per thread these
-    bodies measure 7-12% off the copy roof at half precision, and a second load
-    in flight closes it. Bodies that also divide -- silu, mish, selu, elu,
-    softplus -- are issue-limited instead and measure slower this way, so they
-    stay on :class:`FloatUnaryKernel`.
+    With one vector load per thread these bodies ran 4% to 16% off the copy roof
+    at half precision. Membership is settled by measurement rather than by reading
+    the expression: silu, mish, selu, elu and softplus measured *slower* at 32
+    bytes and stay on :class:`FloatUnaryKernel`, though none of them is obviously
+    heavier than sigmoid, which is here. Measure both ways before moving a kernel
+    across.
     """
 
     BYTES_PER_THREAD = 32
