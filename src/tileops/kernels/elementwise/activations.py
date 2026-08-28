@@ -159,17 +159,15 @@ class MishFwdKernel(FloatUnaryKernel):
         With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
         this avoids extra transcendentals and keeps the small values ``log(1 + e)``
         rounds away. Past ``_SATURATION`` the ratio is 1 to every bit fp32 carries,
-        which is also what keeps ``e^2`` finite.
+        so clamping the exponent's argument there returns ``x`` on its own and keeps
+        ``e^2`` finite. Clamping rather than selecting on it also keeps the element
+        loop vectorised, which ``T.if_then_else`` does not.
         """
         two = T.cast(2.0, "float32")
         wide = T.cast(x, "float32")
-        e = T.exp(wide)
+        e = T.exp(T.min(wide, T.cast(MishFwdKernel._SATURATION, "float32")))
         saturated = e * e + two * e
-        return T.if_then_else(
-            wide > T.cast(MishFwdKernel._SATURATION, "float32"),
-            wide,
-            wide * saturated / (saturated + two),
-        )
+        return wide * saturated / (saturated + two)
 
 
 class SeluFwdKernel(FloatUnaryKernel):

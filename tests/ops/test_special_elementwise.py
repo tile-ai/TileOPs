@@ -284,6 +284,9 @@ class SinusoidalFixture(FixtureBase):
             [
                 pytest.param(512, 256, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(512, 256, torch.float32, marks=pytest.mark.smoke),
+                # Neither extent divides the block tile: covers the partial tile
+                # on both axes, which the aligned cases above never reach.
+                pytest.param(65, 130, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -310,6 +313,15 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
+
+
+@pytest.mark.smoke
+def test_sinusoidal_rejects_odd_d_model() -> None:
+    """An odd d_model has a dimension with no pair, which the kernel cannot place."""
+    from tileops.kernels.elementwise import SinusoidalFwdKernel
+
+    with pytest.raises(ValueError, match="even d_model"):
+        SinusoidalFwdKernel(8, 7, torch.float16)
 
 
 # L2 — Dtype x Size (4 cases for clamp)
