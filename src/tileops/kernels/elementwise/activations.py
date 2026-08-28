@@ -113,9 +113,8 @@ class TanhFwdKernel(FloatUnaryKernel):
 class HardswishFwdKernel(FloatUnaryKernel):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) * (1 / 6).
 
-    ``torch.nn.functional.hardswish`` scales by the reciprocal too, so the result
-    is bit-identical to it. An IEEE divide by 6 is neither that nor cheap: it
-    lowers to ``div.rn.f32``, several instructions per element.
+    Scaling by the reciprocal is what ``torch.nn.functional.hardswish`` does, so
+    the result is bit-identical to it; dividing by 6 lowers to ``div.rn.f32``.
     """
 
     @staticmethod
@@ -131,9 +130,8 @@ class HardswishFwdKernel(FloatUnaryKernel):
 class HardsigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) * (1 / 6).
 
-    ``torch.nn.functional.hardsigmoid`` scales by the reciprocal too, so the
-    result is bit-identical to it. An IEEE divide by 6 is neither that nor cheap:
-    it lowers to ``div.rn.f32``, several instructions per element.
+    Scaling by the reciprocal is what ``torch.nn.functional.hardsigmoid`` does, so
+    the result is bit-identical to it; dividing by 6 lowers to ``div.rn.f32``.
     """
 
     @staticmethod

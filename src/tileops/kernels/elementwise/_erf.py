@@ -4,31 +4,13 @@ import tilelang.language as T
 
 __all__ = ["erf"]
 
-#: |x| at which erf is taken as saturated. erf(3.6) = 1 - 7.4e-7, three hundred
-#: times finer than half a float16 ulp at 1.0, so the clamp costs neither dtype
-#: anything it could store.
+#: |x| taken as saturated. erf(3.6) = 1 - 7.4e-7, far below half a float16 ulp.
 _CLAMP = 3.6
 
-#: erf(x) = clip(t * P(w), -1, 1) for t = clamp(x, -_CLAMP, _CLAMP) and
-#: w = 1 - (t / _CLAMP)**2, coefficients highest degree first. Three properties of
-#: this form, in this order:
-#:
-#: - erf saturates to exactly +-1 at the clamp, which GELU depends on: it scales
-#:   the 1 - erf(x) residual by x, so a tail off by eps carries an error of
-#:   |x| * eps / 2, unbounded in |x|. Two things make it exact. _CLAMP is scaled
-#:   out of x before squaring rather than after, so w is exactly zero at the clamp
-#:   and P is exactly its constant term float32(1 / _CLAMP), whose product with
-#:   _CLAMP is 1.0; and the clip stops the backend contracting that product into
-#:   the caller's add, which would evaluate it to full width and land 7e-9 short.
-#: - w rather than x**2 as the polynomial variable keeps the Horner chain
-#:   conditioned in float32. The same fit in unnormalised x**2 loses four digits
-#:   to cancellation at the clamp.
-#: - t * P(w) rather than a polynomial in x alone keeps the *relative* error small
-#:   near zero, where erf(x) -> x.
-#:
-#: Worst case over the real line is 1.7e-5, an order below half a float16 ulp at
-#: 1.0 (2.4e-4). tests/ops/test_unary_math.py measures the resulting ulp distance
-#: on device, over every float16 and every bfloat16 value.
+#: erf(x) = clip(t * P(w), -1, 1), t = clamp(x, -_CLAMP, _CLAMP), w = 1 - (t / _CLAMP)**2,
+#: highest degree first. Worst case over the real line is 1.7e-5, an order below half
+#: a float16 ulp at 1.0; tests/ops/test_unary_math.py measures the ulp distance on
+#: device over every float16 and every bfloat16 value.
 _POLY_COEFFS = (
     8.971932411193848,
     -33.1397590637207,
@@ -48,14 +30,7 @@ def erf(x, out_dtype):
     """Element-wise erf(x), evaluated and returned in float32.
 
     ``erff`` is correct to 2 ulp of float32 and costs roughly twice the
-    polynomial's instruction count. A float16 or bfloat16 result cannot hold that
-    accuracy, so only float32 pays for it.
-
-    NaN is not preserved: the clamp lowers to ``fminf``/``fmaxf``, which return
-    their non-NaN operand, so a NaN argument reads back as +-1. That matches what
-    the other clamp-shaped bodies in this package already do -- relu, hardtanh and
-    hardsigmoid all answer a NaN input with a finite value. Guarding it costs 23%,
-    because ``T.if_then_else`` in an element body scalarises the loop.
+    polynomial's instruction count, which only a float32 result can hold.
 
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
@@ -73,9 +48,18 @@ def erf(x, out_dtype):
         return T.erf(wide)
     one = T.cast(1.0, "float32")
     clamped = T.min(T.max(wide, T.cast(-_CLAMP, "float32")), T.cast(_CLAMP, "float32"))
+    # Scaling the clamp out before squaring, not after, is what makes w exactly zero
+    # at the clamp: float32(1 / _CLAMP) * _CLAMP is 1.0, where 1 - x**2 / _CLAMP**2
+    # leaves 1e-8 once the backend contracts it into an FMA.
     scaled = clamped * T.cast(1.0 / _CLAMP, "float32")
     w = one - scaled * scaled
     acc = T.cast(_POLY_COEFFS[0], "float32")
     for coeff in _POLY_COEFFS[1:]:
         acc = acc * w + T.cast(coeff, "float32")
-    return T.min(T.max(clamped * acc, -one), one)
+    # The clip keeps the backend from contracting the product into a caller's add,
+    # which would evaluate it to full width and land the tail 7e-9 short of +-1.
+    # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
+    saturated = T.min(T.max(clamped * acc, -one), one)
+    # fminf and fmaxf return their non-NaN operand, so the clamp above has already
+    # lost a NaN argument by here.
+    return T.if_then_else(T.isnan(wide), T.cast(float("nan"), "float32"), saturated)

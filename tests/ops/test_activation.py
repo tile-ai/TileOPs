@@ -247,16 +247,22 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
 def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     """Edge: GELU reaches exactly 0 below its tail and exactly x above it.
 
-    float16 and bfloat16 evaluate a polynomial erf, and GELU scales the
-    1 - erf(x / sqrt(2)) residual by x. A tail off by eps therefore costs
-    |x| * eps / 2, which at the dtype's largest finite value is not small; only
-    an erf that saturates exactly keeps it at zero.
+    It scales the 1 - erf(x / sqrt(2)) residual by x, so an erf tail off by eps
+    costs |x| * eps / 2 -- unbounded in |x| unless erf saturates exactly. The
+    non-finite cases ride on the same saturation: -inf reaches 0 * -inf.
     """
     from tileops.ops.elementwise import GeluFwdOp
 
     largest = torch.finfo(dtype).max
-    x = torch.tensor([-largest, -1000.0, -8.0, 8.0, 1000.0, largest], device="cuda", dtype=dtype)
-    torch.testing.assert_close(GeluFwdOp()(x), F.gelu(x.float()).to(dtype), rtol=0, atol=0)
+    inf, nan = float("inf"), float("nan")
+    x = torch.tensor(
+        [-largest, -1000.0, -8.0, 8.0, 1000.0, largest, -inf, inf, nan],
+        device="cuda",
+        dtype=dtype,
+    )
+    torch.testing.assert_close(
+        GeluFwdOp()(x), F.gelu(x.float()).to(dtype), rtol=0, atol=0, equal_nan=True
+    )
 
 
 # Independent activation ops

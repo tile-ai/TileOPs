@@ -413,14 +413,10 @@ def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
 
 
 def _representable_steps(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """How many values of their shared 16-bit dtype separate *a* and *b*, elementwise.
-
-    Sign-magnitude bit patterns do not order like the values they encode, so map
-    each to the monotone integer that does. Both zeros land on 0, which is what
-    the count should say about them.
-    """
+    """How many values of their shared 16-bit dtype separate *a* and *b*, elementwise."""
 
     def ordered(t: torch.Tensor) -> torch.Tensor:
+        """Sign-magnitude patterns do not sort like the values; these do. Zeros meet at 0."""
         code = t.view(torch.int16).to(torch.int32)
         return torch.where(code < 0, -32768 - code, code)
 
@@ -432,12 +428,9 @@ def _representable_steps(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
     """erf lands within one representable step of the rounded value, at every input.
 
-    float16 and bfloat16 evaluate a polynomial instead of ``erff``, saturated past
-    a clamp. Normal inputs reach neither the clamp nor the subnormals, and the op
-    tolerance is a whole ulp wider than the polynomial needs, so it would admit a
-    refit that had drifted. Enumerate the dtype instead: 16 bits is small enough
-    to leave nothing untested, and count steps rather than distance so the bound
-    means the same thing at every magnitude.
+    float16 and bfloat16 evaluate a polynomial, saturated past a clamp that normal
+    inputs never reach, and the op tolerance is a whole ulp wider than the fit
+    needs. Enumerating the dtype is cheap enough to leave nothing untested.
     """
     codes = torch.arange(1 << 16, dtype=torch.int32, device="cuda").to(torch.int16)
     x = codes.view(dtype)
