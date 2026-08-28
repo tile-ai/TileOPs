@@ -147,14 +147,6 @@ def _gqa_decode_no_split_paged_kernel(
                     )
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
-                    T.copy(
-                        V[
-                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
-                            cur_kv_head,
-                            :,
-                        ],
-                        V_shared,
-                    )
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
@@ -315,14 +307,6 @@ def _gqa_decode_split_paged_kernel(
                     )
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
-                    T.copy(
-                        V[
-                            blockn_num_offset * block_N : (blockn_num_offset + 1) * block_N,
-                            cur_kv_head,
-                            :,
-                        ],
-                        V_shared,
-                    )
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     # When loop_range was 0 (split entirely beyond real_seqlen_kv), logsum=0 -> avoid 0/0
