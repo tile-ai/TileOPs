@@ -4,14 +4,12 @@ import functools
 
 import tilelang
 import tilelang.language as T
-import torch
 
 from tileops.kernels.kernel_base import Kernel
 
 from ._base import (
     _FLOAT_DTYPES,
     _get_fp8_output_dtypes,
-    _is_fp8,
 )
 
 __all__ = [
@@ -19,43 +17,56 @@ __all__ = [
 ]
 
 
+#: Positions and dimension pairs one block covers. The divisor depends on the pair
+#: and not the position, so a block spanning several positions calls ``pow`` once
+#: per pair instead of once per element; 64 x 32 measured fastest on H200 across
+#: the manifest shapes. Both are capped to the tensor at build time.
+_ROWS, _COLS = 64, 32
+
+
 @functools.lru_cache(maxsize=32)
-def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
+def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, rows=_ROWS, cols=_COLS):
     """Build sinusoidal positional encoding kernel.
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
     PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
     Output shape: (seq_len, d_model).
     """
-    N_total = seq_len * d_model
+    half = d_model // 2
+    rows, cols = min(rows, seq_len), min(cols, half)
+    width = cols * 2
 
     @tilelang.jit(out_idx=[0])
-    def kernel(threads_arg, npt_arg):
-        block_size = threads_arg * npt_arg
-
+    def kernel(threads_arg):
         @T.prim_func
-        def main(out: T.Tensor((N_total,), dtype)):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat = (bx * threads_arg + i) * npt_arg + j
-                    if flat < N_total:
-                        pos = flat // d_model
-                        dim = flat % d_model
-                        # dim_pair = dim // 2 (the "i" in the formula)
-                        dim_pair = dim // 2
-                        # angle = pos / 10000^(2*dim_pair / d_model)
-                        base = T.cast(10000.0, "float32")
-                        exp_frac = (
-                            T.cast(dim_pair, "float32")
-                            * T.cast(2.0, "float32")
-                            / T.cast(d_model, "float32")
-                        )
-                        divisor = T.pow(base, exp_frac)
-                        angle = T.cast(pos, "float32") / divisor
-                        # Even dim -> sin, odd dim -> cos
-                        is_even = dim % 2 == 0
-                        result = T.if_then_else(is_even, T.sin(angle), T.cos(angle))
-                        out[flat] = T.Cast(dtype, result)
+        def main(out: T.Tensor((seq_len, d_model), dtype)):
+            with T.Kernel(T.ceildiv(half, cols), T.ceildiv(seq_len, rows), threads=threads_arg) as (
+                bc,
+                br,
+            ):
+                # Named `divisor`, not `div`: stdlib.h declares a `div` the emitted
+                # CUDA would collide with.
+                divisor = T.alloc_shared((cols,), "float32")
+                angle = T.alloc_fragment((rows, cols), "float32")
+                pe = T.alloc_fragment((rows, width), dtype)
+                for c in T.Parallel(cols):
+                    exponent = (
+                        T.cast(bc * cols + c, "float32")
+                        * T.cast(2.0, "float32")
+                        / T.cast(d_model, "float32")
+                    )
+                    divisor[c] = T.pow(T.cast(10000.0, "float32"), exponent)
+                for r, c in T.Parallel(rows, cols):
+                    angle[r, c] = T.cast(br * rows + r, "float32") / divisor[c]
+                # Even dim -> sin, odd dim -> cos, both of the angle its pair shares.
+                for r, c in T.Parallel(rows, width):
+                    pe[r, c] = T.Cast(
+                        dtype,
+                        T.if_then_else(
+                            c % 2 == 0, T.sin(angle[r, c // 2]), T.cos(angle[r, c // 2])
+                        ),
+                    )
+                T.copy(pe, out[br * rows : (br + 1) * rows, bc * width : (bc + 1) * width])
 
         return main
 
@@ -87,30 +98,25 @@ class SinusoidalFwdKernel(Kernel):
             raise ValueError(
                 f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
             )
+        if d_model % 2:
+            raise ValueError(f"{type(self).__name__} needs an even d_model, got {d_model}")
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
         self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
         self.kernel = _make_sinusoidal_kernel(
-            seq_len,
-            d_model,
-            self.dtype_to_str(self.output_dtype),
-            cfg["threads"],
-            cfg["num_per_thread"],
+            seq_len, d_model, self.dtype_to_str(self.output_dtype)
         )
         self.init_config(config, tune)
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"threads": 256}
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        self._compiled_fn = self.kernel(self.config["threads"])
 
     def forward(self):
         return self._compiled_fn()
