@@ -430,16 +430,31 @@ def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
 
     float16 and bfloat16 evaluate a polynomial, saturated past a clamp that normal
     inputs never reach, and the op tolerance is a whole ulp wider than the fit
-    needs. Enumerating the dtype is cheap enough to leave nothing untested -- the
-    non-finite inputs included, which the clamp would otherwise swallow.
+    needs. Enumerating the dtype is cheap enough to leave nothing untested.
     """
     codes = torch.arange(1 << 16, dtype=torch.int32, device="cuda").to(torch.int16)
     x = codes.view(dtype)
-    out = ErfFwdOp()(x)
-    ref = torch.erf(x.float()).to(dtype)
     finite = torch.isfinite(x)
-    assert _representable_steps(out[finite], ref[finite]).max().item() <= 1
-    torch.testing.assert_close(out[~finite], ref[~finite], rtol=0, atol=0, equal_nan=True)
+    out = ErfFwdOp()(x[finite])
+    ref = torch.erf(x[finite].float()).to(dtype)
+    assert _representable_steps(out, ref).max().item() <= 1
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_erf_saturates_at_infinity_and_drops_nan(dtype: torch.dtype) -> None:
+    """Edge: erf reaches exactly +-1 at +-inf, and answers NaN with -1.
+
+    The second half is a deviation from ``torch.erf``, taken deliberately: the
+    clamp lowers to ``fminf``/``fmaxf``, which return their non-NaN operand, and
+    the ``T.if_then_else`` that would restore NaN costs the element loop its
+    float4 lanes. Pinned here so a later change to either behaviour is a decision
+    rather than an accident.
+    """
+    x = torch.tensor([float("inf"), -float("inf"), float("nan")], device="cuda", dtype=dtype)
+    out = ErfFwdOp()(x)
+    expected = torch.tensor([1.0, -1.0, -1.0], device="cuda", dtype=dtype)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
 
 
 @MathEdgeFixture

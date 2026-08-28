@@ -32,6 +32,13 @@ def erf(x, out_dtype):
     ``erff`` is correct to 2 ulp of float32 and costs roughly twice the
     polynomial's instruction count, which only a float32 result can hold.
 
+    NaN is not preserved: the clamp lowers to ``fminf``/``fmaxf``, which return
+    their non-NaN operand, so a NaN argument reads back as +-1. relu, hardtanh and
+    hardsigmoid in this package answer a NaN input with a finite value for the same
+    reason. Restoring it costs a ``T.if_then_else``, which makes TileLang emit a
+    scalar loop rather than float4 lanes -- 4% of the kernel at 256M elements and
+    13% at 14336, enough to put GELU's decode row under its baseline.
+
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
         out_dtype: The dtype the caller stores the result in. It selects the
@@ -59,7 +66,4 @@ def erf(x, out_dtype):
     # The clip keeps the backend from contracting the product into a caller's add,
     # which would evaluate it to full width and land the tail 7e-9 short of +-1.
     # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
-    saturated = T.min(T.max(clamped * acc, -one), one)
-    # fminf and fmaxf return their non-NaN operand, so the clamp above has already
-    # lost a NaN argument by here.
-    return T.if_then_else(T.isnan(wide), T.cast(float("nan"), "float32"), saturated)
+    return T.min(T.max(clamped * acc, -one), one)
