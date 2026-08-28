@@ -64,14 +64,10 @@ __all__ = [
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
 
-# n-tile width of the tiny-m generic configs (``_tiny_m_config``). The
-# occupancy note in ``call_spec.small_batch_region`` prices a full wave of
-# that band with this width — retune them together.
+# n-tile width of the tiny-m configs; ``small_batch_region`` prices a wave at it — retune together.
 TINY_M_BLOCK_N = 128
 
-# Operand-swapped tiny-m kernel geometry (``_gemm_swap_ab_kernel``): ``n`` rides
-# the 64-row WGMMA axis, ``m`` the 8-wide one — 8 being the WGMMA N minimum, so
-# every m in the band pads into a single tile.
+# Operand-swapped tiny-m geometry: ``n`` rides the 64-row WGMMA axis, ``m`` the 8-wide minimum.
 SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
 
@@ -161,8 +157,7 @@ def _coop2_ns_sn(bn: int, bk: int):
 
 
 def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
-    # DeepGEMM sm90.hpp stage rule: < 3 stages cannot hide TMA latency;
-    # small tiles (bm*bn < 128*192) need at least 4.
+    # DeepGEMM sm90.hpp stage rule: <3 stages cannot hide TMA latency; small tiles need >=4.
     if ns < 3:
         return False
     return not (bm * bn < 128 * 192 and ns < 4)
@@ -196,14 +191,10 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 ns, sn = d
                 if not _stage_rule_ok(128, bn, ns):
                     continue
-                # Plain coop2 never measured a win below bn=192 (narrow tiles
-                # cannot feed two consumer warpgroups); split-K coop2 is the
-                # structure that owns the narrow-bn regime.
+                # coop2 never won below bn=192; split-K coop2 owns the narrow-bn regime.
                 coop2_ok = bn >= 192
                 mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
-                # Persistent coop2 below one full wave of tiles is measured
-                # far slower than basic (idle SMs + static-wave overhead);
-                # the same regime DeepGEMM guards by disabling multicast.
+                # Persistent coop2 below one wave measures far slower than basic (idle SMs).
                 if coop2_ok and mn_tiles >= sm_count:
                     out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
                 k_iters = math.ceil(k / bk)
@@ -344,17 +335,12 @@ def _best_config_cached(
         return _tiny_m_config(n, k, sm_count)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
     if not cands:
-        # Unreachable: the single-consumer family is enumerated without reference
-        # to m/n/k and bm = bn = 64 always clears both budgets. Stated as an
-        # invariant rather than the modal-config fallback that stood here, which
-        # read as an any-shape safety net this module does not provide -- shapes
-        # it cannot serve are refused by ``GemmKernel``, not silently retiled.
+        # Unreachable: bm = bn = 64 is always enumerated and clears both budgets.
         raise AssertionError(
             f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
             f"trans_b={trans_b}, sm_count={sm_count})"
         )
-    # Residual score ties break toward larger block_k (fewer K iterations,
-    # measured faster whenever the byte model cannot separate candidates).
+    # Score ties break toward larger block_k (fewer K iterations, measured faster).
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count), -c.block_k))
     return best.to_config()
 

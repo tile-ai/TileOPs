@@ -69,9 +69,7 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-nt-dense-ws",
                 ),
-                # The only ``trans_a=True`` case, and so the only cover for A stored
-                # ``[K, M]``: its TMA descriptor addresses M rather than K, and the
-                # logical M comes from a's second axis.
+                # The only ``trans_a=True`` case: A stored [K, M], M from a's second axis.
                 pytest.param(
                     256,
                     512,
@@ -204,9 +202,7 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-tuned-thin-n-alt",
                 ),
-                # small-batch NT kernel-mode: tier-1 (m<=4) on both decode regimes +
-                # both dtypes + a non-power-of-two n tail; tier-2 (5<=m<=8) on a
-                # severely-underfilled grid.
+                # small-batch NT: tier-1 (m<=4) both decode regimes, tier-2 (5<=m<=8) underfilled.
                 pytest.param(
                     2,
                     2112,
@@ -251,9 +247,7 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-small-m8-splitk",
                 ),
-                # swap_ab band (n wide enough for the operand-swapped grid): bf16,
-                # a non-block_nn-divisible n exercising the predicated transpose
-                # epilogue, and the deep-ring stage count of the mid-CTA bucket.
+                # swap_ab band: bf16, a non-block_nn-divisible n, and the mid-CTA deep-ring stages.
                 pytest.param(
                     4,
                     5000,
@@ -265,11 +259,7 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-small-m4-swap-ab-ntail",
                 ),
-                # coop2 (persistent 2-consumer): the structure serving every dense
-                # prefill row. Both cases select block_n=192 / num_stages=5 /
-                # stage_n=96 — field-for-field the shipped prefill-gate-up pin — on
-                # a K short enough to keep the test cheap.
-                #   no tails: every tile takes the chunked TMA-store epilogue.
+                # coop2, shipped prefill pin: no tails, so every tile takes the TMA-store epilogue.
                 pytest.param(
                     1536,
                     2112,
@@ -281,10 +271,7 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-coop2-persistent",
                 ),
-                #   m tail 32 + n tail 160: the last M tile leaves consumer 0 with
-                #   32 rows (predicated scalar store) and consumer 1 with none at
-                #   all (its ``arows > 0`` guard), while interior tiles still take
-                #   the TMA path.
+                # m tail 32 + n tail 160: consumer 0 stores 32 predicated rows, consumer 1 none.
                 pytest.param(
                     1440,
                     2080,
@@ -296,10 +283,7 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-coop2-mn-tail",
                 ),
-                # simple (non-warp-specialized pipelined): reachable only from a
-                # ``_TUNED_CONFIGS`` pin, so these two shapes are the only way to
-                # cover it. m=64 takes the plain grid, m=128 the cluster_m=2
-                # ClusterKernel path.
+                # simple (pipelined, no WS): m=64 plain grid, m=128 the cluster_m=2 ClusterKernel.
                 pytest.param(
                     64,
                     7168,
@@ -667,14 +651,11 @@ def test_small_batch_dispatch() -> None:
         pytest.skip("small_batch kernel-mode is SM90-only")
 
     op = GemmFwdOp(trans_a=False, trans_b=True)  # NT
-    # m == 2, and n too narrow for the operand-swapped grid (2112 / 64 = 33
-    # CTAs): the bandwidth kernel's remaining band.
+    # m == 2 with n too narrow for the swapped grid (2112/64 = 33 CTAs): bandwidth kernel.
     assert op._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "small_batch"
-    # n wide enough for swap_ab (7168 / 64 = 112 CTAs): the generic kernel
-    # streams the same weights on a wider grid and wins.
+    # n wide enough for swap_ab (7168/64 = 112 CTAs): the generic kernel wins.
     assert op._get_kernel((), 2, 7168, 2048, torch.float16)[0] == "gemm"
-    # m == 3 is the first m the bandwidth body loses (its per-element CUDA-core
-    # cost scales with m); m == 1 is the GEMV region below it.
+    # m == 3 is the first m the bandwidth body loses; m == 1 is the GEMV region below it.
     assert op._get_kernel((), 3, 2112, 7168, torch.float16)[0] == "gemm"
     assert op._get_kernel((), 1, 2112, 7168, torch.float16)[0] == "lhs_row"
     op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
@@ -824,8 +805,7 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
 
     with pytest.raises(ValueError, match=r"contracts two matrices.*a\.ndim=3"):
         op(a, a)
-    # The dims the refused call would have inferred are neither bound (the
-    # roofline reads them) nor compiled for.
+    # The refused call's dims are neither bound (the roofline reads them) nor compiled for.
     assert (op.m, op.n, op.k) == (None, None, None)
     assert not op.built_kernels("gemm_kernel")
 

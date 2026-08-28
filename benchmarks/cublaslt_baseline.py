@@ -48,13 +48,10 @@ __all__ = ["CublasLtBestGemm", "make_cublaslt_best"]
 #: dtypes this baseline serves; fp32 accumulation for both.
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
 
-#: cuBLASLt workspace ceiling. Sized to admit the split-K algorithms, which are
-#: what the search wins on; a smaller ceiling drops them from the candidate list
-#: before ranking ever sees them.
+#: cuBLASLt workspace ceiling: sized to admit the split-K algorithms the search wins on.
 _WORKSPACE_BYTES = 256 * 1024 * 1024
 
-#: Heuristic candidates to request. cuBLASLt returns what it has, which on the
-#: workload shapes here is around eight.
+#: Heuristic candidates to request; cuBLASLt returns what it has, about eight on these shapes.
 _N_CANDIDATES = 8
 
 
@@ -104,9 +101,7 @@ class CublasLtBestGemm:
         self._b = b
         rhs = b.t() if trans_b else b
 
-        # COMPUTE_32F is stated rather than left to the default: fp32 accumulation
-        # is what the TileOPs kernel this baseline is timed against does, and a
-        # baseline accumulating narrower would be a different computation.
+        # COMPUTE_32F is stated, not defaulted: the kernel timed against this accumulates in fp32.
         self._mm = Matmul(
             a,
             rhs,
@@ -124,10 +119,7 @@ class CublasLtBestGemm:
         self._algorithm = min(
             algorithms, key=lambda al: _busy_ms(lambda: self._mm.execute(algorithm=al))
         )
-        # torch.matmul is ranked as one of the candidates: a "best cuBLAS" entry
-        # that reads slower than the plain one would be worse than no entry at
-        # all. Measured necessary -- without it two of the four rows checked on
-        # 2026-08-26 read 0.996x instead of 1.000x.
+        # torch.matmul is ranked too: a "best cuBLAS" slower than the plain one is worse than none.
         self._use_torch = _busy_ms(lambda: torch.matmul(a, rhs)) < _busy_ms(
             lambda: self._mm.execute(algorithm=self._algorithm)
         )
@@ -144,17 +136,14 @@ class CublasLtBestGemm:
             self._mm = None
 
     def __del__(self) -> None:
-        # Teardown can run while the interpreter is tearing down too; a failure
-        # here has nobody left to report to.
+        # Teardown can run during interpreter shutdown, where a failure has nobody to report to.
         with contextlib.suppress(Exception):
             self.free()
 
     def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         rhs = b.t() if self.trans_b else b
         if a is not self._a or b is not self._b:
-            # The plan is bound to the operands construction saw. Rebinding is a
-            # host-side pointer swap outside the timed kernel, so a caller that
-            # hands over different tensors still gets the right answer.
+            # The plan is bound to construction's operands; rebinding is a host-side swap, untimed.
             self._mm.reset_operands(a=a, b=rhs)
             self._a, self._b = a, b
         if self._use_torch:

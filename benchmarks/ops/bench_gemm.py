@@ -322,9 +322,7 @@ def test_gemm_bench(
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
 
-    # torch.matmul takes cuBLAS's top-1 heuristic; searching cuBLASLt's algorithms
-    # beats it on the shapes where that heuristic is weakest, so timing against
-    # torch alone would credit a win a cuBLASLt user would not concede.
+    # torch.matmul takes cuBLAS's top-1 heuristic; the search beats it where that is weakest.
     functors = {"tileops": op, "torch-cublas": workload.torch_matmul}
     best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
@@ -338,8 +336,7 @@ def test_gemm_bench(
         )
         functors[DEEPGEMM_TAG] = deepgemm_fn
 
-    # flag_gems' mm takes row-major operands; a transposed row is its own layout,
-    # which its kernel does not express, so those rows carry cuBLAS alone.
+    # flag_gems' mm takes row-major operands only; a transposed row is a layout it cannot express.
     if not trans_a and not trans_b:
         flaggems_mm = flaggems_op("mm")
         assert_matches_reference(
