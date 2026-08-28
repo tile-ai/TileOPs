@@ -7,6 +7,7 @@ from ._base import (
     FloatUnaryKernel,
 )
 from ._dtype import log_for_output_precision
+from ._erf import erf
 
 __all__ = [
     "AbsFwdKernel",
@@ -109,13 +110,20 @@ class SignFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        neg_one = T.cast(-1.0, x.dtype)
+        """The three-way select, in float32.
+
+        The comparisons are exact in either width, and float32 is what the
+        backend vectorises: a half-native select lowers to scalar code and runs
+        the kernel 5% off the copy roof.
+        """
+        zero = T.cast(0.0, "float32")
+        one = T.cast(1.0, "float32")
+        neg_one = T.cast(-1.0, "float32")
+        wide = T.cast(x, "float32")
         return T.if_then_else(
-            x > zero,
+            wide > zero,
             one,
-            T.if_then_else(x < zero, neg_one, zero),
+            T.if_then_else(wide < zero, neg_one, zero),
         )
 
 
@@ -185,15 +193,11 @@ class TruncFwdKernel(FloatUnaryKernel):
 
 
 class ErfFwdKernel(FloatUnaryKernel):
-    """Element-wise erf(x).
-
-    Casts to fp32 before calling ``T.erf`` because the half-precision
-    intrinsic ``herf`` is not a valid CUDA built-in.
-    """
+    """Element-wise erf(x)."""
 
     @staticmethod
     def op_func(x):
-        return T.erf(T.cast(x, "float32"))
+        return erf(x, x.dtype)
 
 
 class Log1pFwdKernel(FloatUnaryKernel):
