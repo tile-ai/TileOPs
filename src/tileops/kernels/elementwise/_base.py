@@ -70,6 +70,19 @@ class _ElementwiseKernel(Kernel):
     #: Dtype the result is cast back to when the kernel writes a wider one.
     _fp8_output_dtype = None
 
+    @property
+    def stage_broadcast(self) -> bool:
+        """Whether a broadcast block reads and writes through fragments.
+
+        A body TileLang cannot vectorise -- a predicate, whose ``boolx<N>`` has no
+        CUDA type -- drags the loads and stores down to its own width when they
+        share its loop. Staging keeps the copies wide and leaves only the
+        arithmetic scalar, and costs about 2% where the body did vectorise. The
+        default follows the output dtype; a body that scalarises for another
+        reason overrides this.
+        """
+        return self.output_dtype == torch.bool
+
     def _validate_supported_dtype(self, dtype) -> None:
         if self.SUPPORTED_DTYPES is None or dtype in self.SUPPORTED_DTYPES:
             return
@@ -353,6 +366,7 @@ class BinaryKernel(_StrategyKernel):
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
+                stage=self.stage_broadcast,
             )
         elif strategy == "register_copy":
             return _make_binary_register_copy(

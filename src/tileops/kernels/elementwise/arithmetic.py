@@ -75,13 +75,17 @@ class MulFwdKernel(BinaryKernel):
 
 
 class DivFwdKernel(BinaryKernel):
-    """Element-wise division: y = a / b."""
+    """Element-wise division: y = a / b.
+
+    Divides in float32 and rounds once at the store, which is what torch does and
+    what the half-precision divide is measurably slower than.
+    """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        return a / b
+        return T.Cast(a.dtype, T.Cast("float32", a) / T.Cast("float32", b))
 
 
 class DivTruncFwdKernel(BinaryKernel):
@@ -294,6 +298,11 @@ class MaximumFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
+    @property
+    def stage_broadcast(self) -> bool:
+        """The NaN select scalarises the body, so keep the copies off its loop."""
+        return True
+
     @staticmethod
     def op_func(a, b):
         result = T.max(a, b)
@@ -320,6 +329,11 @@ class MinimumFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+
+    @property
+    def stage_broadcast(self) -> bool:
+        """The NaN select scalarises the body, so keep the copies off its loop."""
+        return True
 
     @staticmethod
     def op_func(a, b):
