@@ -629,3 +629,30 @@ def test_duplicate_dims_raises() -> None:
     op = SumFwdOp(dim=[1, 1], keepdim=False)
     with pytest.raises(ValueError, match="Duplicate dims"):
         op(x)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
+    """The columns pass writes the result dtype itself rather than fp32 plus a cast.
+
+    Reducing a prefix and a suffix of the axes takes the two-pass edge path, whose
+    second pass now writes the storage dtype. Nothing downstream converts, so a
+    pass that wrote fp32 would reach the caller as fp32.
+    """
+    from tileops.ops.reduction import CountNonzeroFwdOp
+    from tileops.ops.reduction.reduce import AmaxFwdOp, MeanFwdOp, SumFwdOp
+
+    x = torch.randn(4, 32, 512, dtype=dtype, device="cuda")
+    for op_cls, ref in (
+        (SumFwdOp, lambda z: torch.sum(z.float(), dim=[0, 2])),
+        (MeanFwdOp, lambda z: torch.mean(z.float(), dim=[0, 2])),
+        (AmaxFwdOp, lambda z: torch.amax(z.float(), dim=[0, 2])),
+    ):
+        out = op_cls(dim=[0, 2])(x)
+        assert out.dtype == dtype, f"{op_cls.__name__} returned {out.dtype}"
+        torch.testing.assert_close(out.float(), ref(x), rtol=1.6e-2, atol=1.6e-2)
+
+    counted = CountNonzeroFwdOp(dim=[0, 2])(x)
+    assert counted.dtype == torch.int64
+    assert torch.equal(counted, torch.count_nonzero(x, dim=[0, 2]))

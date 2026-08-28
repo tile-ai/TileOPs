@@ -300,8 +300,13 @@ class MaximumFwdKernel(BinaryKernel):
 
     @property
     def stage_broadcast(self) -> bool:
-        """The NaN select scalarises the body, so keep the copies off its loop."""
-        return True
+        """The float body's NaN select scalarises it, so keep the copies off its loop.
+
+        Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
+        to scalarise them, and measure the same staged or not; they follow the base
+        default rather than carrying an exception.
+        """
+        return self.dtype.is_floating_point or super().stage_broadcast
 
     @staticmethod
     def op_func(a, b):
@@ -332,8 +337,13 @@ class MinimumFwdKernel(BinaryKernel):
 
     @property
     def stage_broadcast(self) -> bool:
-        """The NaN select scalarises the body, so keep the copies off its loop."""
-        return True
+        """The float body's NaN select scalarises it, so keep the copies off its loop.
+
+        Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
+        to scalarise them, and measure the same staged or not; they follow the base
+        default rather than carrying an exception.
+        """
+        return self.dtype.is_floating_point or super().stage_broadcast
 
     @staticmethod
     def op_func(a, b):
