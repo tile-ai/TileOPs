@@ -110,12 +110,8 @@ class SignFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        """The three-way select, in float32.
-
-        The comparisons are exact in either width, and float32 is what the
-        backend vectorises: a half-native select lowers to scalar code and runs
-        the kernel 5% off the copy roof.
-        """
+        # In float32, not x.dtype: the comparisons are exact in either width, and a
+        # half-native select lowers to scalar code instead of vectorising.
         zero = T.cast(0.0, "float32")
         one = T.cast(1.0, "float32")
         neg_one = T.cast(-1.0, "float32")
