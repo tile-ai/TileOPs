@@ -87,7 +87,6 @@ def test_grouped_gemm_bench(
     transpose_b: bool,
 ) -> None:
     layout = ("T" if transpose_a else "N") + ("T" if transpose_b else "N")
-    name = f"grouped_gemm_{layout.lower()}"
 
     test = GroupedGemmWorkload(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
     inputs = test.gen_inputs()
@@ -106,4 +105,6 @@ def test_grouped_gemm_bench(
             grouped_mm_fn, test.ref_program, *inputs, **reference_tolerance(dtype)
         )
         functors["torch"] = grouped_mm_fn
-    bm.compare(functors, *inputs, record_as=name, params=locals())
+    # Rows are named by the op, with the layout among their params: a row named
+    # for the layout leaves the op it measured out of the report.
+    bm.compare(functors, *inputs, record_as=op, params=locals())

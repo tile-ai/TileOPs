@@ -342,6 +342,9 @@ class ManifestBenchmark(BenchmarkBase[Any]):
 
     Called lazily while building a result, because a dynamic-shape op binds its
     roofline variables during ``forward()``.
+
+    The benchmark reads its op's name off the instance: ``self.op_name`` is the
+    wrapped class's name, which every manifest key equals by validator rule.
     """
 
     def __init__(self, op: Any, workload: Any):

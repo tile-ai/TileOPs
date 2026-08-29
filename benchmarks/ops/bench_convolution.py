@@ -5,8 +5,8 @@ are loaded from the ops manifest (``src/tileops/manifest/convolution.yaml``);
 FLOP/byte counts come from each op's ``eval_roofline()`` via
 :class:`ManifestBenchmark`.
 
-One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
-``load_workloads("<OpName>")`` call to its manifest entry. A row passes bias
+One ``test_*_bench`` per op, so every op this file is declared the benchmark
+of records a row of its own. A row passes bias
 when it declares ``bias_shape``.
 
 Every row is timed against flag_gems' Triton convolutions, ``F.convNd`` eager
@@ -201,8 +201,8 @@ def _run_conv(
 ) -> None:
     """Profile op against flag_gems and torch on the same inputs, recording all.
 
-    One caller per manifest op, so each ``ManifestBenchmark`` wraps the op the
-    manifest validator matches it against statically.
+    One caller per manifest op, so every op the manifest declares this file for
+    records a row of its own.
     """
     inputs = _conv_inputs(
         case.input_shape,
