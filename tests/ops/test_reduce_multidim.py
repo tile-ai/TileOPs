@@ -655,3 +655,13 @@ def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
     counted = CountNonzeroFwdOp(dim=[0, 2])(x)
     assert counted.dtype == torch.int64
     assert torch.equal(counted, torch.count_nonzero(x, dim=[0, 2]))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("shape", [(768, 512), (1536, 512)], ids=["ragged-split", "exact-split"])
+def test_leading_axis_split_reduces_every_row(shape):
+    """A split that does not divide the reduced extent still sums every row."""
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    x = torch.randn(shape, dtype=torch.float32, device="cuda")
+    torch.testing.assert_close(SumFwdOp(dim=0)(x), x.sum(dim=0), rtol=1e-4, atol=1e-4)
