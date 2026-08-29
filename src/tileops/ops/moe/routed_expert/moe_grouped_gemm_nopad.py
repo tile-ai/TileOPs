@@ -15,7 +15,7 @@ from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGroupedGemmNopadFwdOp"]
 
-#: The implementations of this role; each states its own region.
+# The implementations of this role; each states its own region.
 _GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
@@ -36,7 +36,6 @@ class MoeGroupedGemmNopadFwdOp(GroupedOperandEagerForward, Op):
         ```
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_grouped_gemm_nopad_fwd",)
 
     def __init__(

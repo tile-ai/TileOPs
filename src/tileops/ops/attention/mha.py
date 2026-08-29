@@ -36,7 +36,6 @@ class MultiHeadAttentionFwdOp(Op):
     maintained forward path through the GQA prefill dispatcher.
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::mha_fwd",)
 
     def __init__(

@@ -229,7 +229,6 @@ def _conv1d_l_out(
 
 
 class Conv1dFwdOp(Op):
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv1d_fwd",)
 
     def __init__(
@@ -576,7 +575,6 @@ def _conv_out_dim(
 
 
 class Conv2dFwdOp(Op):
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv2d_fwd",)
 
     def __init__(
@@ -993,7 +991,6 @@ def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
 
 
 class Conv3dFwdOp(Op):
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv3d_fwd",)
 
     def __init__(

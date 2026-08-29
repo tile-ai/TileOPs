@@ -13,7 +13,7 @@ from tileops.manifest.dtype_rules import promote_int_to_float_ref, same_as_ref
 
 __all__ = ["resolve_output_dtype"]
 
-#: What ``promote_int_to_float`` promotes an integral input to.
+# What ``promote_int_to_float`` promotes an integral input to.
 _PROMOTED_FLOAT_DTYPE = torch.float32
 
 

@@ -2,8 +2,8 @@
 
 __all__ = ["ALIGNMENT", "align_up"]
 
-#: Element count a row is padded to before ``T.copy`` moves it through shared
-#: memory: 256 elements, i.e. 512 bytes for fp16/bf16 and 1024 for fp32.
+# Element count a row is padded to before ``T.copy`` moves it through shared
+# memory: 256 elements, i.e. 512 bytes for fp16/bf16 and 1024 for fp32.
 ALIGNMENT = 256
 
 

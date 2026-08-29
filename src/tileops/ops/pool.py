@@ -209,11 +209,11 @@ class _AvgPoolFwdOpBase(Op):
     """
 
     ndim: ClassVar[int]
-    #: Average pooling has one output; the registration below reads this.
+    # Average pooling has one output; the registration below reads this.
     _returns_indices: ClassVar[bool] = False
 
-    #: This op's operator, and its name; both set by the registrations at the bottom of
-    #: this module, one per concrete op class.
+    # This op's operator, and its name; both set by the registrations at the bottom of
+    # this module, one per concrete op class.
     _wrapped: ClassVar[Any]
     compile_op_names: ClassVar[Tuple[str, ...]] = ()
 
@@ -593,8 +593,8 @@ class _MaxPoolFwdOpBase(Op):
     _kernel_slot: ClassVar[str] = ""
     _returns_indices: ClassVar[bool] = False
 
-    #: This op's operator, and its name; both set by the registrations at the bottom of
-    #: this module, one per concrete op class.
+    # This op's operator, and its name; both set by the registrations at the bottom of
+    # this module, one per concrete op class.
     _wrapped: ClassVar[Any]
     compile_op_names: ClassVar[Tuple[str, ...]] = ()
 
@@ -1258,8 +1258,8 @@ class _AdaptivePool2dFwdOpBase(Op):
     _kernel_slot: ClassVar[str] = ""
     _returns_indices: ClassVar[bool] = False
 
-    #: This op's operator, and its name; both set by the registrations at the bottom of
-    #: this module, one per concrete op class.
+    # This op's operator, and its name; both set by the registrations at the bottom of
+    # this module, one per concrete op class.
     _wrapped: ClassVar[Any]
     compile_op_names: ClassVar[Tuple[str, ...]] = ()
 

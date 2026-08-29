@@ -49,11 +49,10 @@ class RMSNormFwdOp(Op):
         ```
     """
 
-    #: Manifest ``params.eps.default``. The signature default and the ``None``
-    #: normalization both read it, so the two cannot drift apart.
+    # Manifest ``params.eps.default``. The signature default and the ``None``
+    # normalization both read it, so the two cannot drift apart.
     DEFAULT_EPS = 1.0e-6
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_rms_norm_fwd",)
 
     def __init__(

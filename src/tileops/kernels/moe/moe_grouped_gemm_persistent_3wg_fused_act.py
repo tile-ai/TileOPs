@@ -69,7 +69,7 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    #: Gated activations this kernel can carry in its epilogue.
+    # Gated activations this kernel can carry in its epilogue.
     SUPPORTED_ACTIVATIONS = ("gelu_and_mul", "silu_and_mul")
 
     def __init__(

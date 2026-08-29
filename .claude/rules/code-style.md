@@ -34,6 +34,10 @@
 
 - Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may use a single-line summary. Never mix Sphinx (`:param:`) or NumPy headers in one file.
 
+- The docs site renders the class, `__init__` and `forward` docstrings of the `src/tileops/ops/` classes `docs/api/*.md` collects, and nothing else. A guarantee a caller acts on -- an accuracy bound, a deviation from torch -- goes in the op's class docstring; a kernel comment does not reach them.
+
+- Comment an attribute with `#`, above its assignment. `#:` is Sphinx autodoc markup and the site is mkdocs; griffe reads a string literal under the assignment, never the comment above it.
+
 - Expand domain abbreviations on first use in a docstring: `State Space Model (SSM)`, `State-Space Dual (SSD)`. Later uses may abbreviate.
 
 - Shipped source (code, docstrings, manifest YAML) must not reference issue/PR numbers, AC labels, round numbers, reviewer names, or `Follow-up: #N`. See [domain-rules/manifest-spec.md](../domain-rules/manifest-spec.md).

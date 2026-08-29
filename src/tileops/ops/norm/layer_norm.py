@@ -32,11 +32,10 @@ class LayerNormFwdOp(Op):
 
     """
 
-    #: Manifest ``params.eps.default``, which PyTorch shares. The signature default and the
-    #: ``None`` normalization both read it, so the two cannot drift apart.
+    # Manifest ``params.eps.default``, which PyTorch shares. The signature default and the
+    # ``None`` normalization both read it, so the two cannot drift apart.
     DEFAULT_EPS = 1e-5
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_layer_norm_fwd",)
 
     def __init__(

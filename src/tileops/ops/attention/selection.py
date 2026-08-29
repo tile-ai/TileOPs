@@ -17,7 +17,7 @@ __all__ = [
     "fp8_dtype",
 ]
 
-#: Implementations of packed GQA prefill, as ``kernel_map`` keys.
+# Implementations of packed GQA prefill, as ``kernel_map`` keys.
 PACKED_PREFILL_KEYS = (
     "gqa_prefill_fp8_tensor_core_fwd_kernel",
     "gqa_sliding_window_varlen_fwd_kernel",
@@ -27,27 +27,27 @@ PACKED_PREFILL_KEYS = (
     "gqa_prefill_varlen_fwd_kernel",
 )
 
-#: The subset serving a uniform dense request, for the fixed-shape wrapper.
+# The subset serving a uniform dense request, for the fixed-shape wrapper.
 DENSE_PREFILL_KEYS = (
     "gqa_prefill_square_fwd_kernel",
     "gqa_prefill_causal_fwd_kernel",
     "gqa_prefill_fwd_kernel",
 )
 
-#: Implementations of paged GQA prefill.
+# Implementations of paged GQA prefill.
 PAGED_PREFILL_KEYS = (
     "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel",
     "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel",
     "gqa_prefill_paged_with_kv_cache_fwd_kernel",
 )
 
-#: Implementations of contiguous GQA decode.
+# Implementations of contiguous GQA decode.
 DECODE_KEYS = ("gqa_decode_bs1_kernel", "gqa_decode_kernel")
 
-#: Implementations of paged GQA decode.
+# Implementations of paged GQA decode.
 PAGED_DECODE_KEYS = ("gqa_decode_paged_bs1_kernel", "gqa_decode_paged_kernel")
 
-#: Implementations of paged MHA decode.
+# Implementations of paged MHA decode.
 MHA_PAGED_DECODE_KEYS = ("mha_decode_paged_ws_kernel", "mha_decode_paged_kernel")
 
 

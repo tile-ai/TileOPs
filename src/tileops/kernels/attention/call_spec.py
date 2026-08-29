@@ -30,9 +30,9 @@ ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
 
 _WS_BLOCK_M = 128
 _H200_SMS = 132
-#: Architecture the warp-specialized prefill kernels are written for. The
-#: classes declare it as their ``supported_archs`` and the region below reads
-#: the same name, so the two statements of one fact cannot drift apart.
+# Architecture the warp-specialized prefill kernels are written for. The
+# classes declare it as their ``supported_archs`` and the region below reads
+# the same name, so the two statements of one fact cannot drift apart.
 WS_ARCH = 90
 
 
@@ -138,12 +138,12 @@ def causal_ws_prefill_region(call: AttentionCall) -> bool:
     )
 
 
-#: Tile heights the warp-specialized paged decode kernel can pick from. A tile
-#: divides the page size, so one tile never straddles two pages, and it splits
-#: evenly across the four consumer warps.
+# Tile heights the warp-specialized paged decode kernel can pick from. A tile
+# divides the page size, so one tile never straddles two pages, and it splits
+# evenly across the four consumer warps.
 _WS_DECODE_TILES = (16, 32, 64, 128)
-#: Head dims that map onto one warp: the score reduction is a shuffle chain over
-#: 32 lanes, so a lane owns ``dim / 32`` elements of the head vector.
+# Head dims that map onto one warp: the score reduction is a shuffle chain over
+# 32 lanes, so a lane owns ``dim / 32`` elements of the head vector.
 _WS_DECODE_LANES = 32
 
 

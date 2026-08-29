@@ -25,7 +25,7 @@ class CumulativeOp(Op):
 
     _op_kind: str
 
-    #: Set by ``register_reduction_op`` on each concrete op; a base registers none.
+    # Set by ``register_reduction_op`` on each concrete op; a base registers none.
     _wrapped = None
 
     def __init__(

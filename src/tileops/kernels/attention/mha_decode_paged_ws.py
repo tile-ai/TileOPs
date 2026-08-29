@@ -39,23 +39,21 @@ from .call_spec import paged_decode_ws_region
 
 __all__ = ["MHADecodePagedWsKernel"]
 
-#: log2(e): the softmax runs on exp2, which is one instruction.
-
 WARP = 32
-#: Warps in the consumer group. One warp group of each role, 256 threads: two
-#: consumer groups deadlock the block-wide sync the layout pass inserts.
+# Warps in the consumer group. One warp group of each role, 256 threads: two
+# consumer groups deadlock the block-wide sync the layout pass inserts.
 CONS_WARPS = 4
 CONS = CONS_WARPS * WARP
 PROD = 128
-#: Named barrier the consumer group uses on its own, never block-wide.
+# Named barrier the consumer group uses on its own, never block-wide.
 _MERGE_BARRIER = 1
-#: Blocks to aim the split count at, so one wave covers the device.
+# Blocks to aim the split count at, so one wave covers the device.
 _TARGET_BLOCKS = 128
-#: Finite stand-in for -inf in the running max, so a fully masked tile rescales
-#: by exactly one instead of evaluating exp2(-inf - -inf).
+# Finite stand-in for -inf in the running max, so a fully masked tile rescales
+# by exactly one instead of evaluating exp2(-inf - -inf).
 _NEG_FLOOR = -1.0e38
-#: What an empty split publishes as its log-sum-exp: finite, so the cross-split
-#: merge gives it weight exp2(_EMPTY_LSE - peak) = 0 rather than 0 * NaN.
+# What an empty split publishes as its log-sum-exp: finite, so the cross-split
+# merge gives it weight exp2(_EMPTY_LSE - peak) = 0 rather than 0 * NaN.
 _EMPTY_LSE = -1.0e30
 
 
@@ -74,8 +72,8 @@ def _mha_decode_paged_ws_kernel(
     scale = dim**-0.5 * LOG2E
     accum = "float"
     num_pages = (seqlen_kv + page_size - 1) // page_size
-    #: Head-vector elements a lane owns. The dot product is a whole warp wide,
-    #: so this is what makes the shuffle chain exactly five steps.
+    # Head-vector elements a lane owns. The dot product is a whole warp wide,
+    # so this is what makes the shuffle chain exactly five steps.
     vec = dim // WARP
 
     @tilelang.jit(**_jit_kwargs())

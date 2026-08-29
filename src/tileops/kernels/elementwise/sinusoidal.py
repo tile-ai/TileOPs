@@ -17,10 +17,10 @@ __all__ = [
 ]
 
 
-#: Positions and dimension pairs one block covers. The divisor depends on the pair
-#: and not the position, so a block spanning several positions calls ``pow`` once
-#: per pair instead of once per element. Both are capped to the tensor at build
-#: time.
+# Positions and dimension pairs one block covers. The divisor depends on the pair
+# and not the position, so a block spanning several positions calls ``pow`` once
+# per pair instead of once per element. Both are capped to the tensor at build
+# time.
 _ROWS, _COLS = 64, 32
 
 

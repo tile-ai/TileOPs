@@ -6,8 +6,8 @@ from tilelang.autotuner import autotune
 
 __all__ = ["Kernel"]
 
-#: Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
-#: supplier. Distinct from ``None``, which means "no supplier".
+# Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
+# supplier. Distinct from ``None``, which means "no supplier".
 _INHERIT_SUPPLY_PROG = object()
 
 
@@ -61,18 +61,18 @@ class Kernel(ABC):
         self._check_arch()
         self.config = {}
 
-    #: Set True when this kernel's integer tensor inputs are data or masks, so
-    #: autotuning may generate them from ``randint(-2, 3)``. A kernel whose
-    #: integer values decide how much work runs overrides
-    #: ``autotune_supply_prog`` instead; left False, autotuning refuses.
+    # Set True when this kernel's integer tensor inputs are data or masks, so
+    # autotuning may generate them from ``randint(-2, 3)``. A kernel whose
+    # integer values decide how much work runs overrides
+    # ``autotune_supply_prog`` instead; left False, autotuning refuses.
     autotune_accepts_random_int_inputs: bool = False
 
-    #: Whether this implementation is the one behind the specialised ones.
-    #: A dispatch key may have at most one general implementation applying to a
-    #: call; it runs when no specialised implementation of that key serves it.
-    #: Stating it here rather than as an exclusion in every specialised sibling
-    #: is what lets a specialisation appear, or be replaced, without the general
-    #: implementation naming it.
+    # Whether this implementation is the one behind the specialised ones.
+    # A dispatch key may have at most one general implementation applying to a
+    # call; it runs when no specialised implementation of that key serves it.
+    # Stating it here rather than as an exclusion in every specialised sibling
+    # is what lets a specialisation appear, or be replaced, without the general
+    # implementation naming it.
     general: bool = False
 
     @classmethod
@@ -201,8 +201,8 @@ class Kernel(ABC):
         """Return the default config for the kernel"""
         return {}
 
-    #: Implementation serving bool operands, as ``(class, construction dtype)``.
-    #: Left unset by a backend whose general implementation handles bool.
+    # Implementation serving bool operands, as ``(class, construction dtype)``.
+    # Left unset by a backend whose general implementation handles bool.
     BOOL_IMPL: Optional[tuple] = None
 
     @classmethod

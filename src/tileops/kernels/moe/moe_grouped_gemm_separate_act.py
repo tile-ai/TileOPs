@@ -29,7 +29,7 @@ class MoeGroupedGemmSeparateActKernel(Kernel):
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    #: Gated activations this kernel can launch after the GEMM.
+    # Gated activations this kernel can launch after the GEMM.
     SUPPORTED_ACTIVATIONS = tuple(sorted(_ACTIVATIONS))
 
     @classmethod

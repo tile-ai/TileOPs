@@ -23,7 +23,7 @@ class GroupedGemmCall(CallSpec):
     n: int = 0
     k: int = 0
     dtype: Optional[torch.dtype] = None
-    #: Gated activation the caller wants applied, "" when the role has none.
+    # Gated activation the caller wants applied, "" when the role has none.
     activation: str = ""
     transpose_a: bool = False
     transpose_b: bool = True

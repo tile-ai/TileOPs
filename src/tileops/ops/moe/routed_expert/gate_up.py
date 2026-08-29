@@ -19,10 +19,10 @@ from ._common import GroupedOperandEagerForward
 
 __all__ = ["MoeGateUpFwdOp"]
 
-#: The implementations of this role; each states its own region.
+# The implementations of this role; each states its own region.
 _GATE_UP_KEYS = ("moe_grouped_gemm_fused_act_kernel", "moe_grouped_gemm_act_kernel")
 
-#: The grouped GEMM the separate-activation implementation composes with.
+# The grouped GEMM the separate-activation implementation composes with.
 _GEMM_KEYS = ("moe_grouped_gemm_kernel", "moe_grouped_gemm_persistent_kernel")
 
 
@@ -39,7 +39,6 @@ class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
         ```
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_gate_up_fwd",)
 
     def __init__(

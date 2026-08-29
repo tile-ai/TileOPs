@@ -5,7 +5,7 @@ import math
 import tilelang.language as T
 import torch
 
-#: Bool has no vectorised CUDA type, so a bool result is stored one byte per element.
+# Bool has no vectorised CUDA type, so a bool result is stored one byte per element.
 BOOL_STORAGE_DTYPE = "int8"
 
 
