@@ -23,10 +23,10 @@ class MoeUnpermuteFwdOp(Op):
         ```
     """
 
-    #: Two operators, because ``mutates_args`` is fixed at registration while ``out``
-    #: decides per call whether this op writes a caller buffer. Same split as aten's
-    #: ``relu`` / ``relu_``: ``forward`` picks one, and a test asserts the graph holds
-    #: nothing else.
+    # Two operators, because ``mutates_args`` is fixed at registration while ``out``
+    # decides per call whether this op writes a caller buffer. Same split as aten's
+    # ``relu`` / ``relu_``: ``forward`` picks one, and a test asserts the graph holds
+    # nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = (
         "tileops::moe_unpermute_fwd",
         "tileops::moe_unpermute_fwd_inplace",

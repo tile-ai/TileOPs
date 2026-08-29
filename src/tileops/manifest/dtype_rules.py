@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-#: Group 1 is the referenced tensor name.
+# Group 1 is the referenced tensor name.
 SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
 PROMOTE_INT_TO_FLOAT_RE = re.compile(r"^promote_int_to_float\(\s*(\w+)\s*\)$")
 

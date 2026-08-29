@@ -56,19 +56,19 @@ __all__ = [
 class _ElementwiseKernel(Kernel):
     """What every elementwise family shares: which dtypes it takes, and what it returns."""
 
-    #: Bytes each thread carries, which sets the default ``num_per_thread``. 16
-    #: is one vector load. A body the memory pipe waits on sets 32, keeping a
-    #: second load in flight while the first element's arithmetic runs.
+    # Bytes each thread carries, which sets the default ``num_per_thread``. 16
+    # is one vector load. A body the memory pipe waits on sets 32, keeping a
+    # second load in flight while the first element's arithmetic runs.
     BYTES_PER_THREAD: int = 16
-    #: Input dtypes admitted; ``None`` admits every dtype the builder handles.
+    # Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
-    #: Whether bool results are stored through an int8 buffer.
+    # Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
-    #: Dtype the result is cast back to when the kernel writes a wider one.
+    # Dtype the result is cast back to when the kernel writes a wider one.
     _fp8_output_dtype = None
 
-    #: Extent of the row a broadcast block walks, or ``None`` where blocks are not
-    #: cut from rows. Only the binary families lay a grid out that way.
+    # Extent of the row a broadcast block walks, or ``None`` where blocks are not
+    # cut from rows. Only the binary families lay a grid out that way.
     row_broadcast_inner: int | None = None
 
     @property
@@ -99,6 +99,9 @@ class _ElementwiseKernel(Kernel):
 
 class _StrategyKernel(_ElementwiseKernel):
     """An elementwise family whose kernel body is picked by a named strategy."""
+
+    # Integer tensors are data; uint8 cond/mask tensors only select results.
+    autotune_accepts_random_int_inputs: bool = True
 
     @property
     def default_config(self) -> dict:
@@ -144,12 +147,9 @@ class UnaryKernel(_StrategyKernel):
             within the resolved strategy).
     """
 
-    #: Integer tensors are data; uint8 cond/mask tensors only select results.
-    autotune_accepts_random_int_inputs: bool = True
-
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    #: Fragment copy is the measured default for float unaries.
+    # Fragment copy is the measured default for float unaries.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
@@ -261,9 +261,6 @@ class BinaryKernel(_StrategyKernel):
         out_shape: Broadcast output shape.
         N_total: Total output elements.
     """
-
-    #: Integer tensors are data; uint8 cond/mask tensors only select results.
-    autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
@@ -407,9 +404,6 @@ class FusedGatedKernel(_StrategyKernel):
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
     """
-
-    #: Integer tensors are data; uint8 cond/mask tensors only select results.
-    autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]

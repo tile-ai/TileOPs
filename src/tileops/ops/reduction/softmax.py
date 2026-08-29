@@ -41,7 +41,7 @@ class _SoftmaxBaseOp(Op):
 
     """
 
-    #: Set by ``register_reduction_op`` on each concrete op; a base registers none.
+    # Set by ``register_reduction_op`` on each concrete op; a base registers none.
     _wrapped = None
 
     _op_kind: str  # set by subclass

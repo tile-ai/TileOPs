@@ -4,12 +4,12 @@ import tilelang.language as T
 
 __all__ = ["erf"]
 
-#: |x| taken as saturated. erf(3.6) = 1 - 7.4e-7, far below half a float16 ulp.
+# |x| taken as saturated. erf(3.6) = 1 - 7.4e-7, far below half a float16 ulp.
 _CLAMP = 3.6
 
-#: erf(x) = clip(t * P(w), -1, 1), t = clamp(x, -_CLAMP, _CLAMP), w = 1 - (t / _CLAMP)**2,
-#: highest degree first. Worst case over the real line is 1.7e-5, an order below half
-#: a float16 ulp at 1.0.
+# erf(x) = clip(t * P(w), -1, 1), t = clamp(x, -_CLAMP, _CLAMP), w = 1 - (t / _CLAMP)**2,
+# highest degree first. Worst case over the real line is 1.7e-5, an order below half
+# a float16 ulp at 1.0.
 _POLY_COEFFS = (
     8.971932411193848,
     -33.1397590637207,

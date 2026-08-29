@@ -827,11 +827,11 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
     mixin and ``UnaryOp``.
     """
 
-    #: Names of the scalar parameters baked into the kernel; each names both the
-    #: attribute on ``self`` and the kernel kwarg. The entry builder validates
-    #: them against the element type before baking, which is why the check
-    #: cannot live in ``__init__``: it needs a dtype, and none exists until a
-    #: tensor arrives.
+    # Names of the scalar parameters baked into the kernel; each names both the
+    # attribute on ``self`` and the kernel kwarg. The entry builder validates
+    # them against the element type before baking, which is why the check
+    # cannot live in ``__init__``: it needs a dtype, and none exists until a
+    # tensor arrives.
     _scalar_params: tuple[str, ...] = ()
 
     def _build(self, dtype: torch.dtype, n_total: int):

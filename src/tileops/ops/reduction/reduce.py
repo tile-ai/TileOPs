@@ -82,7 +82,7 @@ class _ReduceOpBase(Op):
     - ``_build_kernel_kwargs(x, axes)``: extra kwargs for the kernel constructor.
     """
 
-    #: Set by ``register_reduction_op`` on each concrete op; a base registers none.
+    # Set by ``register_reduction_op`` on each concrete op; a base registers none.
     _wrapped = None
 
     _op_kind: str = ""  # overridden by subclasses

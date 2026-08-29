@@ -37,7 +37,6 @@ class AdaLayerNormZeroFwdOp(Op):
 
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_ada_layer_norm_zero_fwd",)
 
     def __init__(

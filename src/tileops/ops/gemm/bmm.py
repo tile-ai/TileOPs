@@ -180,7 +180,7 @@ class BmmFp8KNFwdOp(Op):
 
     """
 
-    #: Whether ``b`` arrives with K innermost, which is what the kernel wants.
+    # Whether ``b`` arrives with K innermost, which is what the kernel wants.
     B_IS_NK: ClassVar[bool] = False
 
     def __init__(

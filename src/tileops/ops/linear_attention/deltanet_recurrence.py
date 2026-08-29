@@ -14,7 +14,7 @@ from ..op_base import Op
 
 __all__ = ["DeltaNetDecodeFwdOp"]
 
-#: Implementations of the DeltaNet decode slot.
+# Implementations of the DeltaNet decode slot.
 DELTANET_DECODE_KEYS = (
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",

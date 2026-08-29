@@ -1122,10 +1122,16 @@ def _down_rows_kernel(
     block_b = threads * _LEADING_POLICY.cols_per_thread
     rows_per_split = ceildiv_int(A, splits)
     exact = B % block_b == 0
+    rows_exact = rows_per_split * splits == A
     init_acc, combine, finish = _make_down_rows_ops(op_kind, divisor, out_dtype, epilogue)
 
     @tilelang.jit(out_idx=[1])
     def _func():
+        @T.macro
+        def walk_row(x, acc, row, pid_b):
+            for j in T.Parallel(block_b):
+                combine(acc, j, T.cast(x[row, pid_b * block_b + j], "float32"))
+
         @T.prim_func
         def main(
             x: T.Tensor[(A, B), in_dtype],
@@ -1137,17 +1143,25 @@ def _down_rows_kernel(
 
                 init_acc(acc)
 
+                # A per-lane select for a bound the whole block shares scalarizes
+                # the loop and costs it its vector loads.
                 for step in T.serial(rows_per_split):
                     row = pid_a * rows_per_split + step
-                    for j in T.Parallel(block_b):
-                        col = pid_b * block_b + j
-                        in_range = row < A if exact else T.And(row < A, col < B)
-                        val = T.if_then_else(
-                            in_range,
-                            T.cast(x[row, col], "float32"),
-                            T.cast(_down_rows_identity(op_kind), "float32"),
-                        )
-                        combine(acc, j, val)
+                    if exact and rows_exact:
+                        walk_row(x, acc, row, pid_b)
+                    elif exact:
+                        with T.If(row < A):  # noqa: SIM117
+                            with T.Then():
+                                walk_row(x, acc, row, pid_b)
+                    else:
+                        for j in T.Parallel(block_b):
+                            col = pid_b * block_b + j
+                            val = T.if_then_else(
+                                T.And(row < A, col < B),
+                                T.cast(x[row, col], "float32"),
+                                T.cast(_down_rows_identity(op_kind), "float32"),
+                            )
+                            combine(acc, j, val)
 
                 if exact:
                     for j in T.Parallel(block_b):

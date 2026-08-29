@@ -58,7 +58,6 @@ class InstanceNormFwdOp(Op):
 
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_instance_norm_fwd",)
 
     def __init__(

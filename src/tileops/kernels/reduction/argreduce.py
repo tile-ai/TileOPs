@@ -28,25 +28,25 @@ __all__ = ["ArgreduceKernel"]
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
 _NUM_ACCUMULATORS = 4
 
-#: Magnitude bits of a float32 pattern -- everything but the sign; see _ordering_key.
+# Magnitude bits of a float32 pattern -- everything but the sign; see _ordering_key.
 _KEY_MAGNITUDE = 0x7FFFFFFF
 
-#: The key every NaN takes: int32's largest, so no number outranks one and two NaNs tie.
+# The key every NaN takes: int32's largest, so no number outranks one and two NaNs tie.
 _KEY_NAN = 0x7FFFFFFF
 
-#: Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
+# Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
 _KEY_IDENTITY = -(2**31)
 # Row-splitting thresholds are measured defaults.
-#: A row shorter than this is a handful of passes; splitting cannot save more
-#: than the second pass costs.
+# A row shorter than this is a handful of passes; splitting cannot save more
+# than the second pass costs.
 _SPLIT_MIN_N = 32768
-#: Above this many rows the blocks already queue, and splitting only adds the
-#: final pass.
+# Above this many rows the blocks already queue, and splitting only adds the
+# final pass.
 _ROWS_SATURATED = 512
-#: A chunk shorter than this cannot amortize its share of the final pass.
+# A chunk shorter than this cannot amortize its share of the final pass.
 _MIN_CHUNK = 512
-#: Output-parallel gives a thread the whole axis to walk, so it pays only while
-#: that walk is short; it loses from N=32 up.
+# Output-parallel gives a thread the whole axis to walk, so it pays only while
+# that walk is short; it loses from N=32 up.
 _STRIDED_AXIS_MAX_N = 16
 
 

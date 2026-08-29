@@ -159,7 +159,7 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
 class MishFwdKernel(FloatUnaryKernel):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
-    #: Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
+    # Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
     _SATURATION: float = 20.0
 
     @staticmethod

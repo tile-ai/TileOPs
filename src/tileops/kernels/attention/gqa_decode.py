@@ -414,7 +414,7 @@ def _(
 
 class GQADecodeKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
-    #: The implementation behind the specialised ones for this key.
+    # The implementation behind the specialised ones for this key.
     general: bool = True
 
     @classmethod

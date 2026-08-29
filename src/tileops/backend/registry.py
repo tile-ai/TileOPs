@@ -15,27 +15,27 @@ from typing import Callable, NamedTuple
 from .errors import BackendError
 from .protocol import BuildKernel, DetectFn, Target
 
-#: The value names a *module*; importing it must perform the registration.
+# The value names a *module*; importing it must perform the registration.
 ENTRY_POINT_GROUP = "tileops.backends"
 
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
 
-#: One line per backend that failed to import. Strings, not records: they are read to be
-#: printed.
+# One line per backend that failed to import. Strings, not records: they are read to be
+# printed.
 LOAD_FAILURES: list[str] = []
 
-#: Which target ops use when they name none. ``None`` replaces nothing.
+# Which target ops use when they name none. ``None`` replaces nothing.
 default_target: Target = None
 
-#: Set only once every entry point has been tried, so no thread sees a half-built registry.
+# Set only once every entry point has been tried, so no thread sees a half-built registry.
 _loaded = False
 
-#: Reentrant: discovery holds it while importing backends, whose top level registers.
+# Reentrant: discovery holds it while importing backends, whose top level registers.
 LOCK = threading.RLock()
 
-#: Set on the discovery thread, which reads the partial registry it is building while the
-#: others wait for the finished one.
+# Set on the discovery thread, which reads the partial registry it is building while the
+# others wait for the finished one.
 _LOADING = threading.local()
 
 

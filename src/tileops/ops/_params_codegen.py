@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from tileops.manifest import try_load_entry
 
-#: Attached to a class when its manifest entry declares ``signature.params``. The empty
-#: tuple is a real answer: plenty of ops take no params.
+# Attached to a class when its manifest entry declares ``signature.params``. The empty
+# tuple is a real answer: plenty of ops take no params.
 ATTRIBUTE = "__manifest_param_names__"
 
 

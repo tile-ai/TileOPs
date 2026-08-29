@@ -357,8 +357,8 @@ class SSDChunkStateFwdKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    #: ``seq_idx`` masks contributions; the trip count comes from the chunk
-    #: length.
+    # ``seq_idx`` masks contributions; the trip count comes from the chunk
+    # length.
     autotune_accepts_random_int_inputs: bool = True
 
     def __init__(

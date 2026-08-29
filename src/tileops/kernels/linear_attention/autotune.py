@@ -23,25 +23,25 @@ __all__ = [
     "tune_delta_rule_fwd",
 ]
 
-#: ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
+# ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
 PIPELINE_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
     {"num_stages": num_stages, "threads": threads}
     for num_stages in (1, 2)
     for threads in (128, 256)
 )
 
-#: ``threads`` candidates for the output projection, which takes no pipeline depth.
+# ``threads`` candidates for the output projection, which takes no pipeline depth.
 OUTPUT_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
     {"threads": threads} for threads in (64, 128, 256)
 )
 
-#: V-tile widths the recurrence may be built with. 0 means one tile spanning dim_v.
-#: 16 is absent because it loses too much precision in fp16.
+# V-tile widths the recurrence may be built with. 0 means one tile spanning dim_v.
+# 16 is absent because it loses too much precision in fp16.
 H_BLOCK_V_WIDTHS: Tuple[int, ...] = (0, 32)
 
-#: Chunk length at or above which the untuned recurrence prefers a tiled width.
-#: Inherited from the per-kernel defaults with no reason stated; no builder
-#: enforces it, so it steers the default only, never the sweep.
+# Chunk length at or above which the untuned recurrence prefers a tiled width.
+# Inherited from the per-kernel defaults with no reason stated; no builder
+# enforces it, so it steers the default only, never the sweep.
 TILED_DEFAULT_MIN_CHUNK_SIZE: int = 64
 
 
@@ -267,9 +267,9 @@ def tune_delta_rule_fwd(
 
     h_config: Optional[Dict[str, int]] = None
     h_block_v: Optional[int] = None
-    #: Widths whose sweep returned, having compiled: the autotuner raises when
-    #: no candidate of a width compiles, and JIT-compiles directly when it skips
-    #: the search. Only a measurement, not membership here, says one is fast.
+    # Widths whose sweep returned, having compiled: the autotuner raises when
+    # no candidate of a width compiles, and JIT-compiles directly when it skips
+    # the search. Only a measurement, not membership here, says one is fast.
     compiled: List[int] = []
     failures: List[Tuple[str, Exception]] = []
     best_latency = float("inf")

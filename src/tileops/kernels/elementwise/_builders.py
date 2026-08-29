@@ -13,6 +13,13 @@ from ._broadcast import (
 )
 from ._op_body import op_func_for
 
+# Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
+# slots and spends rows * T index chains, so it pays while T / (W - T) stays under
+# the lane slots one chain is worth. At W // 4 that ratio is 1/3 -- one chain per
+# three idle slots. The workloads sit either side of it: T/W = 0.125 packs and
+# gains, T/W = 0.53 with a single full block per row costs 8.0us -> 14.3us.
+_TAIL_PACK_RATIO = 4
+
 
 def _broadcast_index_terms(plan_name):
     """Return ``(ndim, divisors, a_strides, b_strides)`` for one broadcast plan.
@@ -112,12 +119,13 @@ def _row_broadcast_prim(
     One grid row per output row: the divmod chain that locates each operand
     runs once per block, and the inner loop indexes affinely, so it vectorizes.
     The generic path pays that chain per element and every access is a gather.
-    A ragged inner extent splits at trace time: full blocks run unguarded, the
-    one tail block guards each lane.
+    A ragged inner extent splits at trace time. Full blocks always run unguarded.
+    The columns past them go one of two ways: packed end to end across rows into
+    blocks of their own, or left in place as one guarded block per row.
 
     *stage* moves the full blocks through fragments, which keeps the copies wide
     when the body cannot vectorize. It is opt-in because a body that does
-    vectorize is slower for the round trip. The tail block stays scalar either way.
+    vectorize is slower for the round trip. Leftover columns stay scalar either way.
     """
     op_func = op_func_for(op_name)
     ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -129,6 +137,11 @@ def _row_broadcast_prim(
     block_cols = threads * num_per_thread
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
+    tail_cols = inner - full_blocks * block_cols
+    tail_slots = rows * tail_cols
+    body_blocks = full_blocks * rows
+    tail_blocks = -(-tail_slots // block_cols)
+    pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // _TAIL_PACK_RATIO
 
     @T.macro
     def write_col(a, b, y, a_base, b_base, by, col):
@@ -157,6 +170,52 @@ def _row_broadcast_prim(
             )
         T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
+    @T.macro
+    def write_full_block(a, b, y, a_base, b_base, by, bxc):
+        if stage:
+            write_block_staged(a, b, y, a_base, b_base, by, bxc)
+        else:
+            for i, j in T.Parallel(threads, num_per_thread):
+                write_col(a, b, y, a_base, b_base, by, (bxc * threads + i) * num_per_thread + j)
+
+    if pack_tail:
+
+        @T.prim_func
+        def packed_main(
+            a: T.Tensor((a_numel,), dtype),
+            b: T.Tensor((b_numel,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            with T.Kernel(body_blocks + tail_blocks, threads=threads) as bx:  # noqa: SIM117
+                with T.If(bx < body_blocks):
+                    with T.Then():
+                        by = bx // full_blocks
+                        bxc = bx % full_blocks
+                        a_base, b_base = _compute_broadcast_offsets(
+                            by * inner, ndim, divisors, a_strides, b_strides
+                        )
+                        write_full_block(a, b, y, a_base, b_base, by, bxc)
+                    with T.Else():
+                        for i, j in T.Parallel(threads, num_per_thread):
+                            slot = (bx - body_blocks) * block_cols + i * num_per_thread + j
+                            with T.If(slot < tail_slots):  # noqa: SIM117
+                                with T.Then():
+                                    tail_row = slot // tail_cols
+                                    ta_base, tb_base = _compute_broadcast_offsets(
+                                        tail_row * inner, ndim, divisors, a_strides, b_strides
+                                    )
+                                    write_col(
+                                        a,
+                                        b,
+                                        y,
+                                        ta_base,
+                                        tb_base,
+                                        tail_row,
+                                        full_blocks * block_cols + slot % tail_cols,
+                                    )
+
+        return packed_main
+
     @T.prim_func
     def main(
         a: T.Tensor((a_numel,), dtype),
@@ -168,29 +227,11 @@ def _row_broadcast_prim(
                 by * inner, ndim, divisors, a_strides, b_strides
             )
             if exact:
-                if stage:
-                    write_block_staged(a, b, y, a_base, b_base, by, bx)
-                else:
-                    for i, j in T.Parallel(threads, num_per_thread):
-                        write_col(
-                            a, b, y, a_base, b_base, by, (bx * threads + i) * num_per_thread + j
-                        )
+                write_full_block(a, b, y, a_base, b_base, by, bx)
             else:
                 with T.If(bx < full_blocks):
                     with T.Then():
-                        if stage:
-                            write_block_staged(a, b, y, a_base, b_base, by, bx)
-                        else:
-                            for i, j in T.Parallel(threads, num_per_thread):
-                                write_col(
-                                    a,
-                                    b,
-                                    y,
-                                    a_base,
-                                    b_base,
-                                    by,
-                                    (bx * threads + i) * num_per_thread + j,
-                                )
+                        write_full_block(a, b, y, a_base, b_base, by, bx)
                     with T.Else():
                         for i, j in T.Parallel(threads, num_per_thread):
                             col = (bx * threads + i) * num_per_thread + j

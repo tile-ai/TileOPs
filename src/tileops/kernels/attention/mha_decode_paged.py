@@ -550,9 +550,9 @@ def _(
 
 class MHADecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
-    #: The implementation behind the specialised one for this key: it serves any
-    #: paged decode call, including the query lengths, head dims and page sizes
-    #: the warp-specialized Hopper kernel does not claim.
+    # The implementation behind the specialised one for this key: it serves any
+    # paged decode call, including the query lengths, head dims and page sizes
+    # the warp-specialized Hopper kernel does not claim.
     general: bool = True
 
     def __init__(

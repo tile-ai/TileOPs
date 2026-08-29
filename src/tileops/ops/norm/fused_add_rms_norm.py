@@ -38,7 +38,6 @@ class FusedAddRMSNormFwdOp(Op):
 
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_fused_add_rms_norm_fwd",)
 
     def __init__(

@@ -57,8 +57,8 @@ _DEFAULT_CONFIG = {
     "group_size_m": 8,
 }
 
-#: For shapes whose groups hold fewer rows than a default tile: shorter block, shorter
-#: pipeline. ``_config.rows_per_group_regime`` says which shapes those are.
+# For shapes whose groups hold fewer rows than a default tile: shorter block, shorter
+# pipeline. ``_config.rows_per_group_regime`` says which shapes those are.
 _DECODE_CONFIG = {
     "block_m": 64,
     "block_n": 256,

@@ -62,7 +62,6 @@ class BatchNormFwdOp(Op):
 
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_batch_norm_fwd",)
 
     def __init__(
@@ -253,7 +252,6 @@ class BatchNormBwdOp(Op):
 
     """
 
-    #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_batch_norm_bwd",)
 
     def __init__(

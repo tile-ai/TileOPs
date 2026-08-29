@@ -45,8 +45,8 @@ class _Unresolved:
         return "<not resolved yet>"
 
 
-#: ``Op._builder`` before the first call. Distinct from ``None``, the decided answer
-#: "run the in-tree implementation".
+# ``Op._builder`` before the first call. Distinct from ``None``, the decided answer
+# "run the in-tree implementation".
 _UNRESOLVED = _Unresolved()
 
 
@@ -140,12 +140,12 @@ class Op(ABC):
     def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    #: Operators this op registers on the torch.compile boundary. Naming them is what lets
-    #: a test assert the traced graph holds nothing else, which is what keeps the graph the
-    #: same when another target serves the op. A tuple because a conditional in-place write
-    #: registers two. Registration happens once per class, so this is class state; an op
-    #: that declares ``torch_compile_fullgraph`` names its operators, which
-    #: ``register_compile_contract`` requires.
+    # Operators this op registers on the torch.compile boundary. Naming them is what lets
+    # a test assert the traced graph holds nothing else, which is what keeps the graph the
+    # same when another target serves the op. A tuple because a conditional in-place write
+    # registers two. Registration happens once per class, so this is class state; an op
+    # that declares ``torch_compile_fullgraph`` names its operators, which
+    # ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod

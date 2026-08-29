@@ -31,7 +31,7 @@ __all__ = [
     "GatedDeltaNetPrefillBTHDFwdOp",
 ]
 
-#: Implementations of the gated DeltaNet decode slot.
+# Implementations of the gated DeltaNet decode slot.
 GATED_DELTANET_DECODE_KEYS = (
     "GatedDeltaNetDecodeFP32Kernel",
     "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
@@ -463,8 +463,8 @@ class GatedDeltaNetPrefillBTHDFwdOp(Op):
     otherwise 64.
     """
 
-    #: The memory order this op takes. One entry declares one order: the order changes
-    #: what an axis means, so an op serving two layouts is two entries.
+    # The memory order this op takes. One entry declares one order: the order changes
+    # what an axis means, so an op serving two layouts is two entries.
     LAYOUT: ClassVar[str] = "bthd"
 
     def __init__(
