@@ -11,6 +11,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 from ._common import _launch, conv_autotune_configs
+from .call_spec import Conv3dCall, conv3d_dense_region, conv3d_group_region, conv3d_ndhwc_region
 
 __all__ = [
     "Conv3dKernel",
@@ -614,7 +615,12 @@ def _conv3d_ndhwc_kernel(
 
 
 class Conv3dKernel(Kernel):
+    general = True
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv3dCall) -> bool:
+        return conv3d_dense_region(call)
 
     def __init__(
         self,
@@ -731,6 +737,10 @@ class Conv3dKernel(Kernel):
 
 class GroupConv3dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv3dCall) -> bool:
+        return conv3d_group_region(call)
 
     def __init__(
         self,
@@ -890,6 +900,10 @@ class Conv3dNdhwcKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv3dCall) -> bool:
+        return conv3d_ndhwc_region(call)
 
     def __init__(
         self,

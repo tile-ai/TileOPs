@@ -15,6 +15,12 @@ from tileops.kernels.convolution import (
     GroupConv2dKernel,
     GroupConv3dKernel,
 )
+from tileops.kernels.convolution.call_spec import (
+    Conv1dCall,
+    Conv2dCall,
+    Conv3dCall,
+    conv3d_ndhwc_region,
+)
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -229,6 +235,42 @@ def _conv1d_l_out(
     return l_out
 
 
+def _conv1d_call(
+    *,
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    c_in_g: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_left: int,
+    pad_right: int,
+    dilation_l: int,
+    groups: int,
+    out_l: int,
+    dtype: torch.dtype,
+    has_bias: bool,
+) -> Conv1dCall:
+    """Build the Conv1d dispatch record after op-level validation."""
+    return Conv1dCall(
+        n=n,
+        c_in=c_in,
+        c_out=c_out,
+        c_in_g=c_in_g,
+        l_in=l_in,
+        kernel_l=kernel_l,
+        stride_l=stride_l,
+        pad_left=pad_left,
+        pad_right=pad_right,
+        dilation_l=dilation_l,
+        groups=groups,
+        out_l=out_l,
+        dtype=dtype,
+        has_bias=has_bias,
+    )
+
+
 class Conv1dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv1d_fwd",)
@@ -330,24 +372,28 @@ class Conv1dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        use_pointwise = (
-            self.groups == 1
-            and kernel_l == 1
-            and self.stride == 1
-            and pad_left == 0
-            and pad_right == 0
-            and self.dilation == 1
-            and "conv1d_pointwise_kernel" in self.kernel_map
+        call = _conv1d_call(
+            n=n,
+            c_in=c_in,
+            l_in=l_in,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            kernel_l=kernel_l,
+            stride_l=self.stride,
+            pad_left=pad_left,
+            pad_right=pad_right,
+            dilation_l=self.dilation,
+            groups=self.groups,
+            out_l=out_l,
+            dtype=dtype,
+            has_bias=has_bias,
         )
-        use_group = self.groups > 1 and "group_conv1d_kernel" in self.kernel_map
-        if use_pointwise:
-            variant = "pointwise"
-        elif use_group:
-            variant = "group"
-        else:
-            variant = "general"
+        selected_key = self.select_kernel_key(
+            ("conv1d_pointwise_kernel", "group_conv1d_kernel", "conv1d_kernel"),
+            call,
+        )
         key = (
-            variant,
+            selected_key,
             n,
             c_in,
             l_in,
@@ -375,9 +421,9 @@ class Conv1dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
-            if use_pointwise:
+            if selected_key == "conv1d_pointwise_kernel":
                 return self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
-            elif use_group:
+            elif selected_key == "group_conv1d_kernel":
                 return self.kernel_map["group_conv1d_kernel"](
                     **kernel_kwargs,
                     kernel_l=kernel_l,
@@ -576,6 +622,46 @@ def _conv_out_dim(
     return (input_size + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
 
 
+def _conv2d_call(
+    *,
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    c_in_g: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride: tuple[int, int],
+    padding: tuple[int, int],
+    dilation: tuple[int, int],
+    groups: int,
+    out_h: int,
+    out_w: int,
+    dtype: torch.dtype,
+    has_bias: bool,
+) -> Conv2dCall:
+    """Build the Conv2d dispatch record after op-level validation."""
+    return Conv2dCall(
+        n=n,
+        c_in=c_in,
+        c_out=c_out,
+        c_in_g=c_in_g,
+        h=h,
+        w=w,
+        kernel_h=kernel_h,
+        kernel_w=kernel_w,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        out_h=out_h,
+        out_w=out_w,
+        dtype=dtype,
+        has_bias=has_bias,
+    )
+
+
 class Conv2dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv2d_fwd",)
@@ -708,39 +794,35 @@ class Conv2dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        is_symmetric = (
-            kernel_h == kernel_w
-            and self.stride[0] == self.stride[1]
-            and pad_h == pad_w
-            and self.dilation[0] == self.dilation[1]
+        call = _conv2d_call(
+            n=n,
+            c_in=c_in,
+            h=h,
+            w=w,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            stride=self.stride,
+            padding=(pad_h, pad_w),
+            dilation=self.dilation,
+            groups=self.groups,
+            out_h=out_h,
+            out_w=out_w,
+            dtype=dtype,
+            has_bias=has_bias,
         )
-        can_use_symmetric_kernel = is_symmetric and c_in % 32 == 0
-        use_pointwise = (
-            self.groups == 1
-            and kernel_h == 1
-            and kernel_w == 1
-            and self.stride == (1, 1)
-            and pad_h == 0
-            and pad_w == 0
-            and self.dilation == (1, 1)
-            and "conv2d_1x1_kernel" in self.kernel_map
+        selected_key = self.select_kernel_key(
+            (
+                "conv2d_1x1_kernel",
+                "conv2d_symmetric_kernel",
+                "group_conv2d_kernel",
+                "conv2d_kernel",
+            ),
+            call,
         )
-        use_symmetric = (
-            self.groups == 1
-            and can_use_symmetric_kernel
-            and "conv2d_symmetric_kernel" in self.kernel_map
-        )
-        use_group = self.groups > 1 and "group_conv2d_kernel" in self.kernel_map
-        if use_pointwise:
-            variant = "1x1"
-        elif use_symmetric:
-            variant = "symmetric"
-        elif use_group:
-            variant = "group"
-        else:
-            variant = "general"
         key = (
-            variant,
+            selected_key,
             n,
             c_in,
             h,
@@ -774,9 +856,9 @@ class Conv2dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
-            if use_pointwise:
+            if selected_key == "conv2d_1x1_kernel":
                 return self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
-            elif use_symmetric:
+            elif selected_key == "conv2d_symmetric_kernel":
                 return self.kernel_map["conv2d_symmetric_kernel"](
                     n=n,
                     c_in=c_in,
@@ -791,7 +873,7 @@ class Conv2dFwdOp(Op):
                     has_bias=has_bias,
                     tune=self.tune,
                 )
-            elif use_group:
+            elif selected_key == "group_conv2d_kernel":
                 return self.kernel_map["group_conv2d_kernel"](
                     **kernel_kwargs,
                     kernel_h=kernel_h,
@@ -1022,15 +1104,73 @@ def _can_use_conv3d_ndhwc(
     dense, 16-bit, non-pointwise calls large enough to amortize that fixed
     layout-transform cost.
     """
-    kernel_volume = kernel_d * kernel_h * kernel_w
-    output_spatial = n * out_d * out_h * out_w
-    return (
-        groups == 1
-        and dtype in {torch.float16, torch.bfloat16}
-        and c_in % 32 == 0
-        and c_out >= 64
-        and output_spatial >= 1024
-        and kernel_volume > 1
+    return conv3d_ndhwc_region(
+        Conv3dCall(
+            arch=0,
+            n=n,
+            c_in=c_in,
+            c_out=c_out,
+            kernel_d=kernel_d,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
+            groups=groups,
+            dtype=dtype,
+        )
+    )
+
+
+def _conv3d_call(
+    *,
+    n: int,
+    c_in: int,
+    d: int,
+    h: int,
+    w: int,
+    c_out: int,
+    c_in_g: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride: tuple[int, int, int],
+    padding: tuple[int, int, int],
+    dilation: tuple[int, int, int],
+    groups: int,
+    out_d: int,
+    out_h: int,
+    out_w: int,
+    dtype: torch.dtype,
+    has_bias: bool,
+) -> Conv3dCall:
+    """Build the Conv3d dispatch record after op-level validation.
+
+    The record carries the public NCDHW/OIDHW convolution semantics and the
+    resolved output shape. Kernel classes use it to state positive regions, so
+    adding a specialized Conv3d implementation does not require the dense
+    fallback to know that implementation by name.
+    """
+    return Conv3dCall(
+        n=n,
+        c_in=c_in,
+        c_out=c_out,
+        c_in_g=c_in_g,
+        d=d,
+        h=h,
+        w=w,
+        kernel_d=kernel_d,
+        kernel_h=kernel_h,
+        kernel_w=kernel_w,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        out_d=out_d,
+        out_h=out_h,
+        out_w=out_w,
+        dtype=dtype,
+        has_bias=has_bias,
     )
 
 
@@ -1181,23 +1321,33 @@ class Conv3dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        use_ndhwc = "conv3d_ndhwc_kernel" in self.kernel_map and _can_use_conv3d_ndhwc(
-            groups=self.groups,
+        call = _conv3d_call(
+            n=n,
             c_in=c_in,
+            d=d,
+            h=h,
+            w=w,
             c_out=c_out,
+            c_in_g=c_in_g,
             kernel_d=kernel_d,
             kernel_h=kernel_h,
             kernel_w=kernel_w,
+            stride=self.stride,
+            padding=(pad_d, pad_h, pad_w),
+            dilation=self.dilation,
+            groups=self.groups,
             out_d=out_d,
             out_h=out_h,
             out_w=out_w,
-            n=n,
             dtype=dtype,
+            has_bias=has_bias,
         )
-        use_group = self.groups > 1 and "group_conv3d_kernel" in self.kernel_map
-        variant = "ndhwc" if use_ndhwc else "group" if use_group else "general"
+        selected_key = self.select_kernel_key(
+            ("conv3d_ndhwc_kernel", "group_conv3d_kernel", "conv3d_kernel"),
+            call,
+        )
         key = (
-            variant,
+            selected_key,
             n,
             c_in,
             d,
@@ -1242,7 +1392,7 @@ class Conv3dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
-            if use_ndhwc:
+            if selected_key == "conv3d_ndhwc_kernel":
                 return self.kernel_map["conv3d_ndhwc_kernel"](
                     n=n,
                     c_in=c_in,
@@ -1266,7 +1416,7 @@ class Conv3dFwdOp(Op):
                     has_bias=has_bias,
                     tune=self.tune,
                 )
-            if use_group:
+            if selected_key == "group_conv3d_kernel":
                 return self.kernel_map["group_conv3d_kernel"](
                     **kernel_kwargs,
                     groups=self.groups,
