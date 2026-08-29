@@ -96,7 +96,16 @@ def _make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_p
 
 
 def _row_broadcast_prim(
-    N_total, dtype, out_dtype, op_name, plan_name, a_numel, b_numel, threads, num_per_thread
+    N_total,
+    dtype,
+    out_dtype,
+    op_name,
+    plan_name,
+    a_numel,
+    b_numel,
+    threads,
+    num_per_thread,
+    stage=False,
 ):
     """PrimFunc for a broadcast whose innermost coalesced dim reads at stride 0 or 1.
 
@@ -105,6 +114,10 @@ def _row_broadcast_prim(
     The generic path pays that chain per element and every access is a gather.
     A ragged inner extent splits at trace time: full blocks run unguarded, the
     one tail block guards each lane.
+
+    *stage* moves the full blocks through fragments, which keeps the copies wide
+    when the body cannot vectorize. It is opt-in because a body that does
+    vectorize is slower for the round trip. The tail block stays scalar either way.
     """
     op_func = op_func_for(op_name)
     ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -121,6 +134,29 @@ def _row_broadcast_prim(
     def write_col(a, b, y, a_base, b_base, by, col):
         y[by * inner + col] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
 
+    @T.macro
+    def write_block_staged(a, b, y, a_base, b_base, by, bx):
+        """One full block, read and written a fragment at a time.
+
+        An operand at stride 0 is one value for the whole row, so it is read
+        where it is used and never staged.
+        """
+        y_reg = T.alloc_fragment((block_cols,), out_dtype)
+        col0 = bx * block_cols
+        if a_inner:
+            a_reg = T.alloc_fragment((block_cols,), dtype)
+            T.copy(a[a_base + col0 : a_base + col0 + block_cols], a_reg)
+        if b_inner:
+            b_reg = T.alloc_fragment((block_cols,), dtype)
+            T.copy(b[b_base + col0 : b_base + col0 + block_cols], b_reg)
+        for i, j in T.Parallel(threads, num_per_thread):
+            idx = i * num_per_thread + j
+            y_reg[idx] = op_func(
+                a_reg[idx] if a_inner else a[a_base],
+                b_reg[idx] if b_inner else b[b_base],
+            )
+        T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
+
     @T.prim_func
     def main(
         a: T.Tensor((a_numel,), dtype),
@@ -132,21 +168,29 @@ def _row_broadcast_prim(
                 by * inner, ndim, divisors, a_strides, b_strides
             )
             if exact:
-                for i, j in T.Parallel(threads, num_per_thread):
-                    write_col(a, b, y, a_base, b_base, by, (bx * threads + i) * num_per_thread + j)
+                if stage:
+                    write_block_staged(a, b, y, a_base, b_base, by, bx)
+                else:
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        write_col(
+                            a, b, y, a_base, b_base, by, (bx * threads + i) * num_per_thread + j
+                        )
             else:
                 with T.If(bx < full_blocks):
                     with T.Then():
-                        for i, j in T.Parallel(threads, num_per_thread):
-                            write_col(
-                                a,
-                                b,
-                                y,
-                                a_base,
-                                b_base,
-                                by,
-                                (bx * threads + i) * num_per_thread + j,
-                            )
+                        if stage:
+                            write_block_staged(a, b, y, a_base, b_base, by, bx)
+                        else:
+                            for i, j in T.Parallel(threads, num_per_thread):
+                                write_col(
+                                    a,
+                                    b,
+                                    y,
+                                    a_base,
+                                    b_base,
+                                    by,
+                                    (bx * threads + i) * num_per_thread + j,
+                                )
                     with T.Else():
                         for i, j in T.Parallel(threads, num_per_thread):
                             col = (bx * threads + i) * num_per_thread + j
@@ -281,6 +325,7 @@ def _make_binary_explicit(
     output_dtype=None,
     threads=256,
     num_per_thread=8,
+    stage=False,
 ):
     """Binary explicit_parallel: N elements per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
@@ -300,6 +345,7 @@ def _make_binary_explicit(
                 b_numel,
                 threads,
                 num_per_thread,
+                stage=stage,
             )
 
         return kernel

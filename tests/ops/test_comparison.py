@@ -392,3 +392,21 @@ def test_comparison_rejects_unsupported_dtype(
     x = torch.zeros(shape, device="cuda", dtype=dtype)
     with pytest.raises(ValueError, match="has dtype|does not support dtype"):
         op(x, x)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("strategy", ["explicit_parallel", "direct"])
+def test_comparison_bool_result_per_strategy(strategy: str) -> None:
+    """Every strategy returns the same bool tensor, whatever it stores underneath.
+
+    Every strategy but ``direct`` now writes an int8 buffer the op views back as
+    bool; only ``register_copy`` used to.
+    """
+    from tileops.kernels.elementwise import GtFwdKernel
+
+    shape = (4096,)
+    a = torch.randn(shape, device="cuda", dtype=torch.float16)
+    b = torch.randn(shape, device="cuda", dtype=torch.float16)
+    out = GtFwdKernel(shape, shape, torch.float16, config={"strategy": strategy}).forward(a, b)
+    assert out.dtype == torch.bool
+    assert torch.equal(out, torch.gt(a, b))

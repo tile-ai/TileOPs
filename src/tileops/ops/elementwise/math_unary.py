@@ -203,7 +203,12 @@ class TruncFwdOp(_IntIdentityUnaryOp):
 
 
 class ErfFwdOp(UnaryOp):
-    """Element-wise erf(x)."""
+    """Element-wise erf(x).
+
+    On float16 and bfloat16 the error function is evaluated as a polynomial that
+    saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
+    order below half a float16 ulp at 1.0. float32 keeps `erff`.
+    """
 
     _op_name = "erf"
     kernel_cls = ErfFwdKernel

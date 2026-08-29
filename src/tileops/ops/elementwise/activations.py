@@ -46,6 +46,10 @@ class ReluFwdOp(_ParamFreeActivationOp):
 class GeluFwdOp(_GeluApproximateBase):
     """Element-wise GELU honoring the manifest ``approximate`` contract.
 
+    On float16 and bfloat16 the error function is evaluated as a polynomial that
+    saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
+    order below half a float16 ulp at 1.0. float32 keeps `erff`.
+
     Args:
         approximate: Approximation mode. ``'none'`` (default) routes to
             the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
@@ -307,7 +311,12 @@ class SiluAndMulFwdOp(FusedGatedOp):
 
 
 class GeluAndMulFwdOp(FusedGatedOp):
-    """GELU-and-Mul: y = gelu(gate) * value (exact GELU)."""
+    """GELU-and-Mul: y = gelu(gate) * value (exact GELU).
+
+    On float16 and bfloat16 the error function is evaluated as a polynomial that
+    saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
+    order below half a float16 ulp at 1.0. float32 keeps `erff`.
+    """
 
     _op_name = "gelu_and_mul"
     kernel_cls = GeluAndMulFwdKernel

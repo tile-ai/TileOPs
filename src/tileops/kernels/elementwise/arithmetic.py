@@ -5,6 +5,7 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
+import tvm.tirx as tirx
 
 from ._base import (
     _FLOAT_DTYPES,
@@ -74,13 +75,16 @@ class MulFwdKernel(BinaryKernel):
 
 
 class DivFwdKernel(BinaryKernel):
-    """Element-wise division: y = a / b."""
+    """Element-wise division: y = a / b.
+
+    Divides in float32 and rounds once at the store, which is what torch does.
+    """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        return a / b
+        return T.Cast(a.dtype, T.Cast("float32", a) / T.Cast("float32", b))
 
 
 class DivTruncFwdKernel(BinaryKernel):
@@ -254,6 +258,22 @@ def _is_float_dtype_str(dtype_str: str) -> bool:
     return dtype_str.startswith(("float", "bfloat"))
 
 
+def _propagate_nan(a, b, result):
+    """Return NaN where either operand is NaN, and *result* everywhere else.
+
+    ``fminf``/``fmaxf`` return the non-NaN operand, so the NaN torch propagates
+    has to be put back. One select, not two: each ``T.if_then_else`` scalarises
+    the element loop. ``isnan`` takes float32 because bfloat16 has no native
+    form; a self-compare is not a guard, since TileLang lowers ``!=`` as an
+    ordered compare.
+
+    The NaN is canonical where torch returns the offending operand, visible only
+    to a caller reading raw bits. Naming which operand would cost a second select.
+    """
+    either_is_nan = tirx.any(T.isnan(T.Cast("float32", a)), T.isnan(T.Cast("float32", b)))
+    return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)
+
+
 class MaximumFwdKernel(BinaryKernel):
     """Element-wise maximum: y = max(a, b).
 
@@ -265,12 +285,20 @@ class MaximumFwdKernel(BinaryKernel):
     directly without the NaN guards.
 
     Performance (float path): uses T.max for the fast path (correct
-    signed-zero on CUDA -- fmaxf returns +0 for max(+0,-0)) plus two
-    isnan guards for NaN propagation. Total IR: 1 max + 2 fp32 casts +
-    2 isnan + 2 select.
+    signed-zero on CUDA -- fmaxf returns +0 for max(+0,-0)) plus one
+    isnan guard for NaN propagation.
     """
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+
+    @property
+    def stage_broadcast(self) -> bool:
+        """The float body's NaN select scalarises it, so keep the copies off its loop.
+
+        Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
+        to scalarise them, and follow the base default.
+        """
+        return self.dtype.is_floating_point or super().stage_broadcast
 
     @staticmethod
     def op_func(a, b):
@@ -278,16 +306,7 @@ class MaximumFwdKernel(BinaryKernel):
         if not _is_float_dtype_str(str(a.dtype)):
             # Integer / bool: no NaN representation, T.max is sufficient.
             return result
-        # Float path: T.max handles signed-zero correctly but does NOT
-        # propagate NaN -- it returns the non-NaN operand. Cast to fp32
-        # for isnan (bfloat16 lacks native isnan). A self-compare is not
-        # a guard here: TileLang lowers ``!=`` as an ordered compare, so
-        # ``x != x`` is false for NaN.
-        a_is_nan = T.isnan(T.Cast("float32", a))
-        b_is_nan = T.isnan(T.Cast("float32", b))
-        result = T.if_then_else(b_is_nan, b, result)
-        result = T.if_then_else(a_is_nan, a, result)
-        return result
+        return _propagate_nan(a, b, result)
 
 
 class MinimumFwdKernel(BinaryKernel):
@@ -301,23 +320,28 @@ class MinimumFwdKernel(BinaryKernel):
     directly without the NaN guards.
 
     Performance (float path): uses T.min for the fast path (correct
-    signed-zero on CUDA -- fminf returns -0 for min(-0,+0)) plus two
-    isnan guards for NaN propagation. See MaximumFwdKernel for full
+    signed-zero on CUDA -- fminf returns -0 for min(-0,+0)) plus one
+    isnan guard for NaN propagation. See MaximumFwdKernel for full
     rationale.
     """
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+
+    @property
+    def stage_broadcast(self) -> bool:
+        """The float body's NaN select scalarises it, so keep the copies off its loop.
+
+        Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
+        to scalarise them, and follow the base default.
+        """
+        return self.dtype.is_floating_point or super().stage_broadcast
 
     @staticmethod
     def op_func(a, b):
         result = T.min(a, b)
         if not _is_float_dtype_str(str(a.dtype)):
             return result
-        a_is_nan = T.isnan(T.Cast("float32", a))
-        b_is_nan = T.isnan(T.Cast("float32", b))
-        result = T.if_then_else(b_is_nan, b, result)
-        result = T.if_then_else(a_is_nan, a, result)
-        return result
+        return _propagate_nan(a, b, result)
 
 
 @functools.lru_cache(maxsize=32)

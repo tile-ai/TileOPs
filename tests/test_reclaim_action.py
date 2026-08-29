@@ -408,9 +408,9 @@ def test_reclaim_defers_to_an_in_flight_nightly() -> None:
     maint = yaml.safe_load(MAINTENANCE_WORKFLOW.read_text())
     nightly = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())
     # `on` is the YAML 1.1 boolean `true` once parsed.
-    maint_cron = (maint.get(True) or maint["on"])["schedule"][0]["cron"]
-    nightly_cron = (nightly.get(True) or nightly["on"])["schedule"][0]["cron"]
-    assert maint_cron != nightly_cron, "reclaim and nightly must not share a cron"
+    assert "schedule" not in (nightly.get(True) or nightly["on"]), (
+        "a nightly cron would have to be separated from the reclaim cron again"
+    )
 
     guard = next(s for s in maint["jobs"]["nightly-guard"]["steps"] if s.get("id") == "check")
     reclaim = maint["jobs"]["reclaim-disk"]

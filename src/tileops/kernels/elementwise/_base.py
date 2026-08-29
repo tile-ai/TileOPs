@@ -13,6 +13,7 @@ from ._broadcast import (
     _is_contiguous_same_shape,
     coalesce_broadcast_dims,
     register_broadcast_plan,
+    row_broadcast_split,
 )
 from ._builders import (
     _make_binary_direct,
@@ -55,12 +56,32 @@ __all__ = [
 class _ElementwiseKernel(Kernel):
     """What every elementwise family shares: which dtypes it takes, and what it returns."""
 
+    #: Bytes each thread carries, which sets the default ``num_per_thread``. 16
+    #: is one vector load. A body the memory pipe waits on sets 32, keeping a
+    #: second load in flight while the first element's arithmetic runs.
+    BYTES_PER_THREAD: int = 16
     #: Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
     #: Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
     #: Dtype the result is cast back to when the kernel writes a wider one.
     _fp8_output_dtype = None
+
+    #: Extent of the row a broadcast block walks, or ``None`` where blocks are not
+    #: cut from rows. Only the binary families lay a grid out that way.
+    row_broadcast_inner: int | None = None
+
+    @property
+    def stage_broadcast(self) -> bool:
+        """Whether a broadcast block reads and writes through fragments.
+
+        A body TileLang cannot vectorise -- a predicate, whose ``boolx<N>`` has no
+        CUDA type -- drags the loads and stores to its own width when they share
+        its loop. Staging keeps the copies wide, at the cost of a round trip
+        through registers. A body that scalarises for another reason overrides
+        this.
+        """
+        return self.output_dtype == torch.bool
 
     def _validate_supported_dtype(self, dtype) -> None:
         if self.SUPPORTED_DTYPES is None or dtype in self.SUPPORTED_DTYPES:
@@ -87,11 +108,13 @@ class _StrategyKernel(_ElementwiseKernel):
             output_dtype=self.output_dtype,
             n_total=self.N_total,
             stores_bool=not self._bool_via_int8,
+            bytes_per_thread=self.BYTES_PER_THREAD,
+            row_broadcast_inner=self.row_broadcast_inner,
         )
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return elementwise_autotune_configs(self.dtype, self.strategy)
+        return elementwise_autotune_configs(self.dtype, self.strategy, self.BYTES_PER_THREAD)
 
     def init_config(self, config=None, tune=False) -> None:
         Kernel.init_config(self, config, tune)
@@ -276,6 +299,8 @@ class BinaryKernel(_StrategyKernel):
             a_strides,
             b_strides,
         )
+        split = row_broadcast_split(coalesced_shape, a_strides, b_strides)
+        self.row_broadcast_inner = None if self._same_shape or split is None else split[1]
         requested = (config or {}).get("strategy")
         self.strategy = choose_binary_strategy(
             requested=requested,
@@ -344,6 +369,7 @@ class BinaryKernel(_StrategyKernel):
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
+                stage=self.stage_broadcast,
             )
         elif strategy == "register_copy":
             return _make_binary_register_copy(

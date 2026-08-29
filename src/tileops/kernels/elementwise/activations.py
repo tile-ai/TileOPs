@@ -14,6 +14,7 @@ from ._base import (
     ParametricUnaryKernel,
 )
 from ._dtype import _fp8_accum_dtype_str, log_for_output_precision
+from ._erf import erf
 
 __all__ = [
     "EluFwdKernel",
@@ -47,12 +48,15 @@ class ReluFwdKernel(FloatUnaryKernel):
 class GeluFwdKernel(FloatUnaryKernel):
     """Element-wise GELU using the standard erf formulation."""
 
+    BYTES_PER_THREAD = 32
+
     @staticmethod
     def op_func(x):
         inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
-        return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
+        wide = T.cast(x, "float32")
+        return half * wide * (one + erf(wide * inv_sqrt_2, x.dtype))
 
 
 class GeluTanhFwdKernel(FloatUnaryKernel):
@@ -78,30 +82,38 @@ class SiluFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        """x / (1 + exp(-x)), in fp32.
+        """x / (1 + exp2(-x * log2 e)), in fp32.
 
-        Running the exponential in fp32 improves both speed and fp32-reference error.
+        The exponential runs in fp32 for both speed and fp32-reference error, and
+        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
+        ``SiluAndMulFwdKernel`` computes the same form.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
-        return wide / (one + T.exp(-wide))
+        return wide / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
 
 
 class SigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise sigmoid(x)."""
 
+    BYTES_PER_THREAD = 32
+
     @staticmethod
     def op_func(x):
-        """1 / (1 + exp(-x)), in fp32.
+        """1 / (1 + exp2(-x * log2 e)), in fp32.
 
-        Running the exponential in fp32 improves both speed and fp32-reference error.
+        The exponential runs in fp32 for both speed and fp32-reference error, and
+        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
         """
         one = T.cast(1.0, "float32")
-        return one / (one + T.exp(-T.cast(x, "float32")))
+        wide = T.cast(x, "float32")
+        return one / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
 
 
 class TanhFwdKernel(FloatUnaryKernel):
     """Element-wise tanh(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -109,26 +121,39 @@ class TanhFwdKernel(FloatUnaryKernel):
 
 
 class HardswishFwdKernel(FloatUnaryKernel):
-    """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
+    """Element-wise HardSwish: x * clamp(x + 3, 0, 6) * (1 / 6).
+
+    Scaling by the reciprocal is what ``torch.nn.functional.hardswish`` does, so
+    finite inputs come out bit-identical to it; dividing by 6 lowers to
+    ``div.rn.f32``.
+    """
 
     @staticmethod
     def op_func(x):
         three = T.cast(3.0, "float32")
         six = T.cast(6.0, "float32")
         zero = T.cast(0.0, "float32")
+        one_sixth = T.cast(1.0 / 6.0, "float32")
         clamped = T.min(T.max(x + three, zero), six)
-        return x * clamped / six
+        return x * clamped * one_sixth
 
 
 class HardsigmoidFwdKernel(FloatUnaryKernel):
-    """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
+    """Element-wise HardSigmoid: clamp(x + 3, 0, 6) * (1 / 6).
+
+    Scaling by the reciprocal is what ``torch.nn.functional.hardsigmoid`` does, so
+    finite inputs come out bit-identical to it; dividing by 6 lowers to
+    ``div.rn.f32``. A NaN input reads back as 0, since the clamp lowers to
+    ``fminf``/``fmaxf``, which return their non-NaN operand.
+    """
 
     @staticmethod
     def op_func(x):
         three = T.cast(3.0, "float32")
         six = T.cast(6.0, "float32")
         zero = T.cast(0.0, "float32")
-        return T.min(T.max(x + three, zero), six) / six
+        one_sixth = T.cast(1.0 / 6.0, "float32")
+        return T.min(T.max(x + three, zero), six) * one_sixth
 
 
 class MishFwdKernel(FloatUnaryKernel):
@@ -144,17 +169,15 @@ class MishFwdKernel(FloatUnaryKernel):
         With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
         this avoids extra transcendentals and keeps the small values ``log(1 + e)``
         rounds away. Past ``_SATURATION`` the ratio is 1 to every bit fp32 carries,
-        which is also what keeps ``e^2`` finite.
+        so clamping the exponent's argument there returns ``x`` on its own and keeps
+        ``e^2`` finite. Clamping rather than selecting on it also keeps the element
+        loop vectorised, which ``T.if_then_else`` does not.
         """
         two = T.cast(2.0, "float32")
         wide = T.cast(x, "float32")
-        e = T.exp(wide)
+        e = T.exp(T.min(wide, T.cast(MishFwdKernel._SATURATION, "float32")))
         saturated = e * e + two * e
-        return T.if_then_else(
-            wide > T.cast(MishFwdKernel._SATURATION, "float32"),
-            wide,
-            wide * saturated / (saturated + two),
-        )
+        return wide * saturated / (saturated + two)
 
 
 class SeluFwdKernel(FloatUnaryKernel):
@@ -485,7 +508,6 @@ class GeluAndMulFwdKernel(FusedGatedKernel):
     """GELU-and-Mul: y = gelu(gate) * value.
 
     Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
-    erf is computed in float32 to avoid missing half-precision intrinsic.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -496,7 +518,7 @@ class GeluAndMulFwdKernel(FusedGatedKernel):
         half = T.cast(0.5, x.dtype)
         one = T.cast(1.0, x.dtype)
         x_f32 = T.Cast("float32", x)
-        erf_val = T.Cast(x.dtype, T.erf(x_f32 * inv_sqrt2))
+        erf_val = T.Cast(x.dtype, erf(x_f32 * inv_sqrt2, x.dtype))
         return x * half * (one + erf_val)
 
 

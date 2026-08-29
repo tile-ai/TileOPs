@@ -33,8 +33,15 @@ def default_launch_config(
     output_dtype: torch.dtype,
     n_total: int | None,
     stores_bool: bool = True,
+    bytes_per_thread: int = _BYTES_PER_THREAD,
+    row_broadcast_inner: int | None = None,
 ) -> dict:
-    """Return the default launch config for one elementwise specialization."""
+    """Return the default launch config for one elementwise specialization.
+
+    *bytes_per_thread* is how much each thread carries; see
+    ``_ElementwiseKernel.BYTES_PER_THREAD``. *row_broadcast_inner* is the row
+    extent a broadcast block walks, or ``None``; see ``_tail_dominated``.
+    """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
     # are what has to stay wide enough to keep the memory pipe busy.
@@ -43,14 +50,17 @@ def default_launch_config(
         return {"strategy": strategy, "threads": threads, "num_per_thread": _FP8_NPT}
 
     elem_bytes = _torch_dtype_nbytes(input_dtype)
-    npt = max(_MIN_NUM_PER_THREAD, _BYTES_PER_THREAD // elem_bytes)
+    npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
 
     if output_dtype == torch.bool and stores_bool:
         capped = min(npt, _BOOL_OUTPUT_MAX_NPT)
         if strategy != "direct":  # a direct block spans `threads` whatever npt says
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
-    elif _torch_dtype_nbytes(output_dtype) < elem_bytes:
+    elif _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
+        row_broadcast_inner, threads, npt
+    ):
+        # A narrower result leaves the store short of a vector, so widen to cover it.
         npt *= 2
 
     while (
@@ -63,13 +73,37 @@ def default_launch_config(
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
 
 
-def elementwise_autotune_configs(dtype: torch.dtype, strategy: str | None = None) -> list[dict]:
-    """Return the launch configs to time for one elementwise specialization."""
+def _tail_dominated(inner: int | None, threads: int, npt: int) -> bool:
+    """Whether doubling the block width pushes more columns onto the guarded tail path.
+
+    A row-broadcast block covers columns of one row, and the remainder the width
+    does not cover runs the slower per-lane path.
+    """
+    if inner is None:
+        return False
+    wide = threads * npt * 2
+    return inner % wide > inner % (threads * npt)
+
+
+def elementwise_autotune_configs(
+    dtype: torch.dtype,
+    strategy: str | None = None,
+    bytes_per_thread: int = _BYTES_PER_THREAD,
+) -> list[dict]:
+    """Return the launch configs to time for one elementwise specialization.
+
+    The swept elements-per-thread brackets the default the same *bytes_per_thread*
+    produces, so a kernel can always land back on its shipped config.
+    """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
         return [{"threads": t} for t in _AUTOTUNE_THREADS]
-    npts = (16, 32) if _is_fp8(dtype) else (2, 4, 8)
+    if _is_fp8(dtype):
+        npts = (_FP8_NPT, _FP8_NPT * 2)
+    else:
+        default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
+        npts = tuple(sorted({max(_MIN_NUM_PER_THREAD, default // 2), default, default * 2}))
     return [{"threads": t, "num_per_thread": n} for t in _AUTOTUNE_THREADS for n in npts]
 
 
@@ -97,9 +131,9 @@ def elementwise_output_plan(
     ):
         logical_dtype, post_cast_dtype = torch.float16, input_dtype
 
-    bool_via_int8 = (
-        bool_storage and declared_output_dtype == torch.bool and strategy == "register_copy"
-    )
+    # Every strategy but `direct` can store the result through an int8 buffer, and
+    # wants to: a bool store lowers to one byte per lane, where int8 vectorises.
+    bool_via_int8 = bool_storage and declared_output_dtype == torch.bool and strategy != "direct"
     if bool_via_int8:
         kernel_output_dtype = BOOL_STORAGE_DTYPE
     elif post_cast_dtype is not None:

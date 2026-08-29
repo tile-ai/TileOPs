@@ -456,7 +456,9 @@ class LogicalReduceKernel(Kernel):
         partials = stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
         partials = partials.reshape(lead, kept)
         if self.op_kind == "count_nonzero":
-            return reduce_down_rows(partials, "sum", "float32", "float32", 0.0).to(torch.int64)
+            # The columns pass writes int64 itself; leaving it in fp32 and casting
+            # after costs a third kernel launch.
+            return reduce_down_rows(partials, "sum", "float32", "int64", 0.0)
         outer_kind = "amax" if self.op_kind == "any" else "amin"
         return reduce_down_rows(partials, outer_kind, "int8", "int8", 0.0).view(torch.bool)
 

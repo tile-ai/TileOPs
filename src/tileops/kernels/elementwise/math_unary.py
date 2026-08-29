@@ -7,6 +7,7 @@ from ._base import (
     FloatUnaryKernel,
 )
 from ._dtype import log_for_output_precision
+from ._erf import erf
 
 __all__ = [
     "AbsFwdKernel",
@@ -40,6 +41,8 @@ class ExpFwdKernel(FloatUnaryKernel):
 class LogFwdKernel(FloatUnaryKernel):
     """Element-wise log(x)."""
 
+    BYTES_PER_THREAD = 32
+
     @staticmethod
     def op_func(x):
         return log_for_output_precision(x, T.cast(x, "float32"))
@@ -47,6 +50,8 @@ class LogFwdKernel(FloatUnaryKernel):
 
 class SqrtFwdKernel(FloatUnaryKernel):
     """Element-wise sqrt(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -86,6 +91,8 @@ class ReciprocalFwdKernel(FloatUnaryKernel):
     and receives the integers.
     """
 
+    BYTES_PER_THREAD = 32
+
     _INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
 
     @classmethod
@@ -109,18 +116,23 @@ class SignFwdKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        neg_one = T.cast(-1.0, x.dtype)
+        # In float32, not x.dtype: the comparisons are exact in either width, and a
+        # half-native select lowers to scalar code instead of vectorising.
+        zero = T.cast(0.0, "float32")
+        one = T.cast(1.0, "float32")
+        neg_one = T.cast(-1.0, "float32")
+        wide = T.cast(x, "float32")
         return T.if_then_else(
-            x > zero,
+            wide > zero,
             one,
-            T.if_then_else(x < zero, neg_one, zero),
+            T.if_then_else(wide < zero, neg_one, zero),
         )
 
 
 class SinFwdKernel(FloatUnaryKernel):
     """Element-wise sin(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -129,6 +141,8 @@ class SinFwdKernel(FloatUnaryKernel):
 
 class CosFwdKernel(FloatUnaryKernel):
     """Element-wise cos(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -185,15 +199,13 @@ class TruncFwdKernel(FloatUnaryKernel):
 
 
 class ErfFwdKernel(FloatUnaryKernel):
-    """Element-wise erf(x).
+    """Element-wise erf(x)."""
 
-    Casts to fp32 before calling ``T.erf`` because the half-precision
-    intrinsic ``herf`` is not a valid CUDA built-in.
-    """
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
-        return T.erf(T.cast(x, "float32"))
+        return erf(x, x.dtype)
 
 
 class Log1pFwdKernel(FloatUnaryKernel):
@@ -203,6 +215,8 @@ class Log1pFwdKernel(FloatUnaryKernel):
     once x falls under the epsilon of 1. A narrower result cannot hold them either way,
     so it takes the composite over the faster logarithm.
     """
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):

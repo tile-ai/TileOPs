@@ -120,13 +120,13 @@ The Op layer never contains TileLang code. The Kernel layer never validates user
 
 Documentation combines auto-generated content (API reference, perf tables) with design artifacts produced during agent-driven development.
 
-| Content                        | Data Source                    | Generation    |
-| ------------------------------ | ------------------------------ | ------------- |
-| API reference                  | Code docstrings (Google style) | sphinx/mkdocs |
-| Performance tables             | Benchmark raw data             | Script        |
-| Bound type per workload        | Roofline analysis output       | Script        |
-| Support matrix (dtype × shape) | Manifest workloads             | Script        |
-| Op list and status             | Manifest + test pass status    | Script        |
+| Content                        | Data Source                    | Generation   |
+| ------------------------------ | ------------------------------ | ------------ |
+| API reference                  | Code docstrings (Google style) | mkdocstrings |
+| Performance tables             | Benchmark raw data             | Script       |
+| Bound type per workload        | Roofline analysis output       | Script       |
+| Support matrix (dtype × shape) | Manifest workloads             | Script       |
+| Op list and status             | Manifest + test pass status    | Script       |
 
 Design documents are authored during development and published alongside auto-generated content.
 

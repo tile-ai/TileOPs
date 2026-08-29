@@ -412,6 +412,51 @@ def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
     )
 
 
+def _representable_steps(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """How many values of their shared 16-bit dtype separate *a* and *b*, elementwise."""
+
+    def ordered(t: torch.Tensor) -> torch.Tensor:
+        """Sign-magnitude patterns do not sort like the values; these do. Zeros meet at 0."""
+        code = t.view(torch.int16).to(torch.int32)
+        return torch.where(code < 0, -32768 - code, code)
+
+    return (ordered(a) - ordered(b)).abs()
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
+    """erf lands within one representable step of the rounded value, at every input.
+
+    float16 and bfloat16 evaluate a polynomial, saturated past a clamp that normal
+    inputs never reach, and the op tolerance is a whole ulp wider than the fit
+    needs. Enumerating the dtype is cheap enough to leave nothing untested.
+    """
+    codes = torch.arange(1 << 16, dtype=torch.int32, device="cuda").to(torch.int16)
+    x = codes.view(dtype)
+    finite = torch.isfinite(x)
+    out = ErfFwdOp()(x[finite])
+    ref = torch.erf(x[finite].float()).to(dtype)
+    assert _representable_steps(out, ref).max().item() <= 1
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_erf_saturates_at_infinity_and_drops_nan(dtype: torch.dtype) -> None:
+    """Edge: erf reaches exactly +-1 at +-inf, and answers NaN with -1.
+
+    The second half is a deviation from ``torch.erf``, taken deliberately: the
+    clamp lowers to ``fminf``/``fmaxf``, which return their non-NaN operand, and
+    the ``T.if_then_else`` that would restore NaN costs the element loop its
+    float4 lanes. Pinned here so a later change to either behaviour is a decision
+    rather than an accident.
+    """
+    x = torch.tensor([float("inf"), -float("inf"), float("nan")], device="cuda", dtype=dtype)
+    out = ErfFwdOp()(x)
+    expected = torch.tensor([1.0, -1.0, -1.0], device="cuda", dtype=dtype)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+
+
 @MathEdgeFixture
 def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(

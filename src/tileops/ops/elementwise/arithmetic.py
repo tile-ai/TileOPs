@@ -192,14 +192,22 @@ class LerpFwdOp(BinaryOp):
 
 
 class MaximumFwdOp(BinaryOp):
-    """Element-wise maximum with broadcast: y = max(a, b)."""
+    """Element-wise maximum with broadcast: y = max(a, b).
+
+    A NaN operand gives a NaN result, canonical rather than the operand's own
+    payload and sign bit; `torch.maximum` returns the operand's bit pattern.
+    """
 
     _op_name = "maximum"
     kernel_cls = MaximumFwdKernel
 
 
 class MinimumFwdOp(BinaryOp):
-    """Element-wise minimum with broadcast: y = min(a, b)."""
+    """Element-wise minimum with broadcast: y = min(a, b).
+
+    A NaN operand gives a NaN result, canonical rather than the operand's own
+    payload and sign bit; `torch.minimum` returns the operand's bit pattern.
+    """
 
     _op_name = "minimum"
     kernel_cls = MinimumFwdKernel
