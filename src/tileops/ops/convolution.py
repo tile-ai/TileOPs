@@ -15,6 +15,7 @@ from tileops.kernels.convolution import (
     GroupConv2dKernel,
     GroupConv3dKernel,
 )
+from tileops.kernels.convolution.call_spec import Conv3dCall, conv3d_ndhwc_region
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -1022,15 +1023,73 @@ def _can_use_conv3d_ndhwc(
     dense, 16-bit, non-pointwise calls large enough to amortize that fixed
     layout-transform cost.
     """
-    kernel_volume = kernel_d * kernel_h * kernel_w
-    output_spatial = n * out_d * out_h * out_w
-    return (
-        groups == 1
-        and dtype in {torch.float16, torch.bfloat16}
-        and c_in % 32 == 0
-        and c_out >= 64
-        and output_spatial >= 1024
-        and kernel_volume > 1
+    return conv3d_ndhwc_region(
+        Conv3dCall(
+            arch=0,
+            n=n,
+            c_in=c_in,
+            c_out=c_out,
+            kernel_d=kernel_d,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
+            groups=groups,
+            dtype=dtype,
+        )
+    )
+
+
+def _conv3d_call(
+    *,
+    n: int,
+    c_in: int,
+    d: int,
+    h: int,
+    w: int,
+    c_out: int,
+    c_in_g: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride: tuple[int, int, int],
+    padding: tuple[int, int, int],
+    dilation: tuple[int, int, int],
+    groups: int,
+    out_d: int,
+    out_h: int,
+    out_w: int,
+    dtype: torch.dtype,
+    has_bias: bool,
+) -> Conv3dCall:
+    """Build the Conv3d dispatch record after op-level validation.
+
+    The record carries the public NCDHW/OIDHW convolution semantics and the
+    resolved output shape. Kernel classes use it to state positive regions, so
+    adding a specialized Conv3d implementation does not require the dense
+    fallback to know that implementation by name.
+    """
+    return Conv3dCall(
+        n=n,
+        c_in=c_in,
+        c_out=c_out,
+        c_in_g=c_in_g,
+        d=d,
+        h=h,
+        w=w,
+        kernel_d=kernel_d,
+        kernel_h=kernel_h,
+        kernel_w=kernel_w,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        out_d=out_d,
+        out_h=out_h,
+        out_w=out_w,
+        dtype=dtype,
+        has_bias=has_bias,
     )
 
 
@@ -1181,23 +1240,33 @@ class Conv3dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        use_ndhwc = "conv3d_ndhwc_kernel" in self.kernel_map and _can_use_conv3d_ndhwc(
-            groups=self.groups,
+        call = _conv3d_call(
+            n=n,
             c_in=c_in,
+            d=d,
+            h=h,
+            w=w,
             c_out=c_out,
+            c_in_g=c_in_g,
             kernel_d=kernel_d,
             kernel_h=kernel_h,
             kernel_w=kernel_w,
+            stride=self.stride,
+            padding=(pad_d, pad_h, pad_w),
+            dilation=self.dilation,
+            groups=self.groups,
             out_d=out_d,
             out_h=out_h,
             out_w=out_w,
-            n=n,
             dtype=dtype,
+            has_bias=has_bias,
         )
-        use_group = self.groups > 1 and "group_conv3d_kernel" in self.kernel_map
-        variant = "ndhwc" if use_ndhwc else "group" if use_group else "general"
+        selected_key = self.select_kernel_key(
+            ("conv3d_ndhwc_kernel", "group_conv3d_kernel", "conv3d_kernel"),
+            call,
+        )
         key = (
-            variant,
+            selected_key,
             n,
             c_in,
             d,
@@ -1242,7 +1311,7 @@ class Conv3dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
-            if use_ndhwc:
+            if selected_key == "conv3d_ndhwc_kernel":
                 return self.kernel_map["conv3d_ndhwc_kernel"](
                     n=n,
                     c_in=c_in,
@@ -1266,7 +1335,7 @@ class Conv3dFwdOp(Op):
                     has_bias=has_bias,
                     tune=self.tune,
                 )
-            if use_group:
+            if selected_key == "group_conv3d_kernel":
                 return self.kernel_map["group_conv3d_kernel"](
                     **kernel_kwargs,
                     groups=self.groups,
