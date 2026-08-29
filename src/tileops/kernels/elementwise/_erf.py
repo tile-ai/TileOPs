@@ -32,9 +32,8 @@ def erf(x, out_dtype):
     polynomial's instruction count, which only a float32 result can hold.
 
     NaN is not preserved: the clamp lowers to ``fminf``/``fmaxf``, which return
-    their non-NaN operand, so a NaN argument reads back as -1, as it does from
-    relu, hardtanh and hardsigmoid here. Restoring it costs a ``T.if_then_else``,
-    which scalarises the element loop.
+    their non-NaN operand, so a NaN argument reads back as -1. Restoring it
+    costs a ``T.if_then_else``, which scalarises the element loop.
 
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
