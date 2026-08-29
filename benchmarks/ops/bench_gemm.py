@@ -25,11 +25,6 @@ _W4A16_GROUP_SIZE = 128
 _FP8_BLOCK = 128
 
 
-_WORKSPACE_BYTES = 256 * 1024 * 1024
-
-_N_CANDIDATES = 8
-
-
 CUBLASLT_TAG = "cublaslt-best"
 
 
@@ -53,6 +48,9 @@ class _CublasLtBestGemm:
         RuntimeError: dtype unsupported, or the plan produced no algorithm.
     """
 
+    WORKSPACE_BYTES = 256 * 1024 * 1024
+    N_CANDIDATES = 8
+
     def __init__(self, a: torch.Tensor, b: torch.Tensor, trans_b: bool) -> None:
         from nvmath.linalg.advanced import (
             Matmul,
@@ -73,10 +71,10 @@ class _CublasLtBestGemm:
             rhs,
             options=MatmulOptions(
                 compute_type=MatmulComputeType.COMPUTE_32F,
-                memory_limit=_WORKSPACE_BYTES,
+                memory_limit=self.WORKSPACE_BYTES,
             ),
         )
-        algorithms = self._mm.plan(preferences=MatmulPlanPreferences(limit=_N_CANDIDATES))
+        algorithms = self._mm.plan(preferences=MatmulPlanPreferences(limit=self.N_CANDIDATES))
         if not algorithms:
             self._mm.free()
             raise RuntimeError("cuBLASLt returned no runnable algorithm")
