@@ -3667,7 +3667,7 @@ def _ast_manifest_call_usage(
                 bindings,
             ):
                 matched_calls.add(func_name)
-            # Indirect call (workloads_to_params / ManifestBenchmark).
+            # Indirect call (workloads_to_params).
             equiv = _INDIRECT_EQUIV.get(func_name)
             if (
                 equiv
@@ -3685,17 +3685,13 @@ def _ast_manifest_call_usage(
             and node.func.attr == "eval_roofline"
             and "eval_roofline" in target_names
         ):
-            imported.add("eval_roofline")
             direct_roofline = True
 
     if "eval_roofline" in target_names:
-        # The roofline half ties to the op class the benchmark wraps. Falling back on the
-        # file naming the class is for a file where nothing resolves at all: a file that
-        # resolves other classes and not this one is benchmarking the wrong op.
+        # The roofline half ties to the op the benchmark wraps. A call this check cannot
+        # read fails; only a file with no such call at all — its own BenchmarkBase
+        # subclass — ties by building the op instead.
         resolved, all_resolved = _op_classes_benchmarked(tree, known_ops)
-        # No ManifestBenchmark call to read means a file with its own BenchmarkBase
-        # subclass; it ties to the op by naming that class. A call this check cannot
-        # read is a failure, not a fallback.
         ties = op_name in resolved or (
             all_resolved and not resolved and direct_roofline and _file_builds_class(tree, op_name)
         )
