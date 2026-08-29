@@ -299,12 +299,6 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 
 Kernel implementation is not covered by the scaffold-op skill. The device-side interface a scaffolded Op depends on — required `__init__` / `forward` / `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
 
-### Launch width for an elementwise kernel
-
-`_ElementwiseKernel.BYTES_PER_THREAD` sets how much of the tensor one thread carries, and so how many loads it has in flight. It defaults to 16 — one vector load, which is all a body limited by memory can use. `LatencyBoundUnaryKernel` sets it to 32 for the bodies that measured faster with a second load in flight; `default_launch_config` divides it by the element size, so the elements per thread follow the dtype, and the small-shape guard still reduces it where the tensor cannot fill the grid. `autotune_configs` brackets whatever default it produces, so a swept kernel can land back on its shipped config.
-
-Raise it only on a measurement, per dtype and per workload: past the point where a row turns bandwidth-bound the extra width costs occupancy, and which bodies benefit does not follow from reading the expression.
-
 ## Compile Dispatch Boundary
 
 Contract for every op declaring `torch_compile_fullgraph` while resolving

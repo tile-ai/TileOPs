@@ -38,15 +38,9 @@ def default_launch_config(
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
-    *bytes_per_thread* sets how much each thread carries, and so how many loads
-    it has in flight. Asking for more than one vector load only pays where the
-    body's latency is what the kernel is waiting on; see
-    ``_ElementwiseKernel.BYTES_PER_THREAD``.
-
-    *row_broadcast_inner* is the extent of the row a broadcast block walks, where
-    the kernel walks one. A block there covers columns of a single row, so any
-    width the extent does not divide is idle lanes in the tail block, and the
-    waste grows with the width.
+    *bytes_per_thread* is how much each thread carries; see
+    ``_ElementwiseKernel.BYTES_PER_THREAD``. *row_broadcast_inner* is the row
+    extent a broadcast block walks, or ``None``; see ``_tail_dominated``.
     """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
@@ -66,9 +60,7 @@ def default_launch_config(
     elif _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
         row_broadcast_inner, threads, npt
     ):
-        # A narrower result leaves the store short of a vector, so widen to cover
-        # it -- unless the row a broadcast block walks is short enough that the
-        # wider block wastes more of its tail than the store gains.
+        # A narrower result leaves the store short of a vector, so widen to cover it.
         npt *= 2
 
     while (
@@ -82,12 +74,11 @@ def default_launch_config(
 
 
 def _tail_dominated(inner: int | None, threads: int, npt: int) -> bool:
-    """Whether doubling the block width would leave most of a tail block idle.
+    """Whether doubling the block width pushes more columns onto the guarded tail path.
 
-    A row-broadcast block covers columns of one row, so a width the row's extent
-    does not divide costs the lanes past the end. Measured on a 3136-column row:
-    1024-wide leaves 6% of one block in three idle, 2048-wide leaves 47% of one
-    in two, and the predicate rows run 13.3us against 18.0.
+    A row-broadcast block covers columns of one row, so the remainder runs the
+    slower per-lane path. Doubling 1024 to 2048 takes a 3136-column row from 64
+    such columns to 1088, and the predicate rows from 13.3us to 18.0.
     """
     if inner is None:
         return False

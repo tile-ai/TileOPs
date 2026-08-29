@@ -262,20 +262,15 @@ def _is_float_dtype_str(dtype_str: str) -> bool:
 def _propagate_nan(a, b, result):
     """Return NaN where either operand is NaN, and *result* everywhere else.
 
-    ``T.min`` and ``T.max`` lower to ``fminf``/``fmaxf``, which return the
-    non-NaN operand, so the NaN torch.minimum and torch.maximum propagate has to
-    be put back. One select rather than two: each ``T.if_then_else`` in an
-    element body makes TileLang emit a scalar loop instead of float4 lanes, and a
-    second one measured 34.2us against 18.0us on the broadcast rows. Cast to
-    float32 for ``isnan``, which bfloat16 has no native form of; a self-compare
-    is not a guard here, because TileLang lowers ``!=`` as an ordered compare and
-    ``x != x`` is false for NaN.
+    ``fminf``/``fmaxf`` return the non-NaN operand, so the NaN torch propagates
+    has to be put back. One select, not two: each ``T.if_then_else`` scalarises
+    the element loop, and a second measured 34.2us against 18.0. ``isnan`` takes
+    float32 because bfloat16 has no native form; a self-compare is not a guard,
+    since TileLang lowers ``!=`` as an ordered compare.
 
-    The NaN returned is a canonical one. ``torch.minimum`` and ``torch.maximum``
-    return the offending operand itself, so a caller reading the raw bits sees
-    0x7fff where torch gives back whatever NaN it was handed. Naming which operand
-    is what the second select bought, and every comparison in this repo -- and
-    every one torch offers -- treats the two as equal.
+    The NaN is canonical where torch returns the offending operand, visible only
+    to a caller reading raw bits. Naming which operand is what the second select
+    bought.
     """
     either_is_nan = tirx.any(T.isnan(T.Cast("float32", a)), T.isnan(T.Cast("float32", b)))
     return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)

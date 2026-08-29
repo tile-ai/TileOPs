@@ -115,12 +115,10 @@ def _row_broadcast_prim(
     A ragged inner extent splits at trace time: full blocks run unguarded, the
     one tail block guards each lane.
 
-    *stage* moves the full blocks through fragments. A body TileLang cannot
-    vectorize takes the loads and stores down to its own width when they share
-    its loop; copying in and out separately keeps them wide and leaves only the
-    arithmetic scalar. It is opt-in because a body that does vectorize is
-    slightly worse for the extra round trip -- measured -2% on add against +30%
-    on a predicate and +49% on minimum. The tail block stays scalar either way.
+    *stage* moves the full blocks through fragments, which keeps the copies wide
+    when the body cannot vectorize. Opt-in: a body that does vectorize pays 2%
+    for the round trip, against 30% gained on a predicate and 49% on minimum.
+    The tail block stays scalar either way.
     """
     op_func = op_func_for(op_name)
     ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)

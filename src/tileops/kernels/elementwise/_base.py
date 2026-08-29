@@ -57,12 +57,10 @@ __all__ = [
 class _ElementwiseKernel(Kernel):
     """What every elementwise family shares: which dtypes it takes, and what it returns."""
 
-    #: Bytes each thread carries in the default launch config. 16 is one vector
-    #: load, which is all a body limited by memory can use. A body the memory pipe
-    #: is waiting on -- a transcendental -- asks for 32, so a second load is in
-    #: flight while the first element's arithmetic runs. Raise it only on a
-    #: measurement: at float32 the same byte count halves the elements per thread,
-    #: and past the point where the row turns bandwidth-bound it costs occupancy.
+    #: Bytes each thread carries. 16 is one vector load, all a body limited by
+    #: memory can use; a body the memory pipe waits on asks for more. Raise it only
+    #: on a measurement -- past the point where a row turns bandwidth-bound the
+    #: extra width costs occupancy.
     BYTES_PER_THREAD: int = 16
     #: Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
@@ -80,11 +78,9 @@ class _ElementwiseKernel(Kernel):
         """Whether a broadcast block reads and writes through fragments.
 
         A body TileLang cannot vectorise -- a predicate, whose ``boolx<N>`` has no
-        CUDA type -- drags the loads and stores down to its own width when they
-        share its loop. Staging keeps the copies wide and leaves only the
-        arithmetic scalar, and costs about 2% where the body did vectorise. The
-        default follows the output dtype; a body that scalarises for another
-        reason overrides this.
+        CUDA type -- drags the loads and stores to its own width when they share
+        its loop. Staging keeps the copies wide, and costs 2% where the body did
+        vectorise. A body that scalarises for another reason overrides this.
         """
         return self.output_dtype == torch.bool
 
@@ -511,12 +507,9 @@ class FloatUnaryKernel(UnaryKernel):
 class LatencyBoundUnaryKernel(FloatUnaryKernel):
     """A float unary that measured faster with a second load in flight per thread.
 
-    With one vector load per thread these bodies ran 4% to 16% off the copy roof
-    at half precision. Membership is settled by measurement rather than by reading
-    the expression: silu, mish, selu, elu and softplus measured *slower* at 32
-    bytes and stay on :class:`FloatUnaryKernel`, though none of them is obviously
-    heavier than sigmoid, which is here. Measure both ways before moving a kernel
-    across.
+    These bodies ran 4% to 16% off the copy roof at half precision on one load.
+    Membership is measured, not read off the expression: mish, selu, elu and
+    softplus measured slower at 32 bytes and stay on :class:`FloatUnaryKernel`.
     """
 
     BYTES_PER_THREAD = 32

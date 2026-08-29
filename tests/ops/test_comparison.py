@@ -399,10 +399,8 @@ def test_comparison_rejects_unsupported_dtype(
 def test_comparison_bool_result_per_strategy(strategy: str) -> None:
     """Every strategy returns the same bool tensor, whatever it stores underneath.
 
-    Only ``register_copy`` used to route a bool result through an int8 buffer;
-    the others stored one byte per lane. Now every strategy but ``direct`` takes
-    the int8 path, which changes the buffer the kernel writes and the view the op
-    hands back.
+    Every strategy but ``direct`` now writes an int8 buffer the op views back as
+    bool; only ``register_copy`` used to.
     """
     from tileops.kernels.elementwise import GtFwdKernel
 

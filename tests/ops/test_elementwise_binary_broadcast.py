@@ -167,13 +167,11 @@ def test_broadcast_binary_helper_bool_output_byte_accounting():
     assert nbytes == (1024 + 1024) * 4 + 1024
 
 
-# The staged row-broadcast path: a predicate body cannot be vectorised, so the
-# full blocks copy through fragments while the ragged tail stays scalar. These
-# shapes put the inner extent off a block boundary and cover each stride pair the
-# staged block can be handed.
+# `test_channel_broadcast_with_ragged_inner_dim` above already covers a ragged
+# tail on both paths -- maximum stages, div does not. What it does not reach is a
+# staged block handed an operand at inner stride 0, or both at 1.
 _STAGED_SHAPES = [
     pytest.param((4, 1), (4, 1000), id="inner-stride-0-and-1"),
-    pytest.param((4, 1000), (4, 1), id="inner-stride-1-and-0"),
     pytest.param((4, 1000), (1, 1000), id="inner-stride-1-and-1"),
     pytest.param((3, 5000), (3, 1), id="inner-spans-several-blocks"),
 ]
@@ -190,14 +188,3 @@ def test_staged_row_broadcast_matches_torch(a_shape, b_shape):
     out = GtFwdOp()(a, b)
     assert out.dtype == torch.bool
     assert torch.equal(out, torch.gt(a, b))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("a_shape, b_shape", _STAGED_SHAPES)
-def test_unstaged_row_broadcast_matches_torch(a_shape, b_shape):
-    """The same shapes on a body that vectorises, which takes the direct path."""
-    from tileops.ops.elementwise import AddFwdOp
-
-    a = torch.randn(a_shape, device="cuda", dtype=torch.float16)
-    b = torch.randn(b_shape, device="cuda", dtype=torch.float16)
-    torch.testing.assert_close(AddFwdOp()(a, b), torch.add(a, b), rtol=0, atol=0)

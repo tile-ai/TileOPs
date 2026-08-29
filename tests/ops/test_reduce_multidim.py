@@ -634,11 +634,10 @@ def test_duplicate_dims_raises() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
-    """The columns pass writes the result dtype itself rather than fp32 plus a cast.
+    """The edge-axis columns pass writes the result dtype itself, with no cast after.
 
-    Reducing a prefix and a suffix of the axes takes the two-pass edge path, whose
-    second pass now writes the storage dtype. Nothing downstream converts, so a
-    pass that wrote fp32 would reach the caller as fp32.
+    Nothing downstream converts, so a pass left writing fp32 reaches the caller
+    as fp32.
     """
     from tileops.ops.reduction import CountNonzeroFwdOp
     from tileops.ops.reduction.reduce import AmaxFwdOp, MeanFwdOp, SumFwdOp
