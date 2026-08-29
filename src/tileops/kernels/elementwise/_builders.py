@@ -134,10 +134,8 @@ def _row_broadcast_prim(
     block_cols = threads * num_per_thread
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
-    # Pack the leftover columns only while they fit _TAIL_PACK_RATIO of a block.
-    # Packing costs a row/column divmod per element; leaving them costs one block
-    # per row running a fraction of its lanes. A wide remainder sends more
-    # elements through the divmod than the idle lanes ever cost.
+    # Packing costs a row/column divmod per leftover element; leaving the columns
+    # in place costs one block per row running a fraction of its lanes.
     tail_cols = inner - full_blocks * block_cols
     tail_slots = rows * tail_cols
     body_blocks = full_blocks * rows

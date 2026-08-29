@@ -185,3 +185,23 @@ def test_staged_row_broadcast_matches_torch(a_shape, b_shape):
     out = GtFwdOp()(a, b)
     assert out.dtype == torch.bool
     assert torch.equal(out, torch.gt(a, b))
+
+
+# A row extent of 1088 leaves 64 columns past two full blocks of 512, which is
+# within the share the builder packs across rows; 5000 leaves 392, which is not.
+_TAIL_SHAPES = [
+    pytest.param((4, 1088), (4, 1), id="packed-tail-inner-stride-0"),
+    pytest.param((5, 1088), (1, 1088), id="packed-tail-inner-stride-1"),
+    pytest.param((3, 5000), (3, 1), id="guarded-tail"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("a_shape, b_shape", _TAIL_SHAPES)
+def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
+    """Both endings of a ragged row write every element torch writes."""
+    from tileops.ops.elementwise import AddFwdOp
+
+    a = torch.randn(a_shape, device="cuda", dtype=torch.float32)
+    b = torch.randn(b_shape, device="cuda", dtype=torch.float32)
+    assert torch.equal(AddFwdOp()(a, b), a + b)
