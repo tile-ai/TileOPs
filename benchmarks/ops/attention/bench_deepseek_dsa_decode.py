@@ -132,7 +132,7 @@ def test_dsa_decode_bench(
         sm_scale=sm_scale,
         tune=tune,
     )
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     baselines = {}
     sdpa_fn = _torch_sdpa_dsa(test)

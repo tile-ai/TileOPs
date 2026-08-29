@@ -159,7 +159,7 @@ def test_rope_neox_bench(
     layout: str,
 ) -> None:
     op = RopeNeoxFwdOp(layout=layout, base=_BASE)
-    bm = ManifestBenchmark(_NEOX_OP, op, RopeWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
@@ -176,7 +176,7 @@ def test_rope_non_neox_bench(
     layout: str,
 ) -> None:
     op = RopeNonNeoxFwdOp(layout=layout, base=_BASE)
-    bm = ManifestBenchmark(_NON_NEOX_OP, op, RopeWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
@@ -193,7 +193,7 @@ def test_rope_llama31_bench(
     layout: str,
 ) -> None:
     op = RopeLlama31FwdOp(layout=layout, base=_BASE)
-    bm = ManifestBenchmark(_LLAMA31_OP, op, RopeWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
@@ -210,7 +210,7 @@ def test_rope_yarn_bench(
     layout: str,
 ) -> None:
     op = RopeYarnFwdOp(layout=layout, base=_BASE)
-    bm = ManifestBenchmark(_YARN_OP, op, RopeWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
@@ -227,7 +227,7 @@ def test_rope_longrope_bench(
     layout: str,
 ) -> None:
     op = RopeLongRopeFwdOp(layout=layout, base=_BASE)
-    bm = ManifestBenchmark(_LONGROPE_OP, op, RopeWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
     _profile_rope(op, bm, shape, dtype, layout)
 
 
@@ -255,7 +255,7 @@ def test_rope_neox_position_ids_bench(
     )
 
     op = RopeNeoxPositionIdsFwdOp(max_position=max_position, base=_BASE)
-    bm = ManifestBenchmark(_POSITION_IDS_OP, op, RopeWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
     params = {"shape": shape, "dtype": dtype, "max_position": max_position}
 
     cos, sin = _rope_tables(max_position, head_dim, dtype)

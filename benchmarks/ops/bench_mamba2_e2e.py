@@ -134,8 +134,6 @@ def mamba2_fwd_ref(
 
 # Benchmark test
 
-_OP_NAME = "Mamba2FwdOp"
-
 
 def _mamba2_args(workload: dict) -> tuple:
     """Constructor arguments for one manifest workload row."""
@@ -203,7 +201,7 @@ def test_mamba2_fwd_bench(
         dt_softplus=dt_softplus,
         tune=tune,
     )
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Pass inputs directly so bench_kernel clones them each iteration,
     # giving accurate per-clone addressing and fair kernel-only timing.

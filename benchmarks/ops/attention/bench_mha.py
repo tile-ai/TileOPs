@@ -128,7 +128,7 @@ def test_mha_fwd_bench(
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, tune=tune)
-    bm = ManifestBenchmark(_MHA_FWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_fwd(test)
@@ -158,7 +158,7 @@ def test_mha_bwd_bench(
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
-    bm = ManifestBenchmark(_MHA_BWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_bwd(test)

@@ -49,7 +49,7 @@ def test_moe_gate_up_bench(
     a, b, true_sizes, true_offsets = workload.gen_inputs()
 
     op = MoeGateUpFwdOp(numel, num_experts, ffn, k)
-    bm = ManifestBenchmark(_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     # Warmup: trigger JIT compilation before timed profiling.
     op(a, b, true_sizes, true_offsets)

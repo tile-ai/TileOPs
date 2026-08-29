@@ -64,7 +64,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
 
     op_params.setdefault("dim", -1)
     op = L1NormFwdOp(**op_params)
-    bm = ManifestBenchmark(_L1_NORM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -104,7 +104,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
 
     op_params.setdefault("dim", -1)
     op = L2NormFwdOp(**op_params)
-    bm = ManifestBenchmark(_L2_NORM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -144,7 +144,7 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
 
     op_params.setdefault("dim", -1)
     op = InfNormFwdOp(**op_params)
-    bm = ManifestBenchmark(_INF_NORM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 

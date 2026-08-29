@@ -97,7 +97,7 @@ def test_topk_selector_bench(
     inputs = test.gen_inputs()
 
     op = TopkSelectorFwdOp(topk=topk, tune=_TUNE)
-    bm = ManifestBenchmark(_TOPK_SELECTOR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     functors = {
         "tileops": op,

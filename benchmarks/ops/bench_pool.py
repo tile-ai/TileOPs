@@ -740,7 +740,7 @@ def test_avg_pool1d_bench(
         count_include_pad=count_include_pad,
         tune=tune,
     )
-    bm = ManifestBenchmark(_AVG_POOL1D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     # torch stays alongside the library baseline: it is what the nightly's ratio alert and
@@ -826,7 +826,7 @@ def test_avg_pool2d_bench(
         divisor_override=divisor_override,
         tune=tune,
     )
-    bm = ManifestBenchmark(_AVG_POOL2D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -913,7 +913,7 @@ def test_avg_pool3d_bench(
         divisor_override=divisor_override,
         tune=tune,
     )
-    bm = ManifestBenchmark(_AVG_POOL3D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1000,7 +1000,7 @@ def test_max_pool2d_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = ManifestBenchmark(_MAX_POOL2D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1056,7 +1056,7 @@ def test_max_pool2d_indices_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = ManifestBenchmark(_MAX_POOL2D_INDICES_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1143,7 +1143,7 @@ def test_max_pool1d_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = ManifestBenchmark(_MAX_POOL1D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1197,7 +1197,7 @@ def test_max_pool1d_indices_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = ManifestBenchmark(_MAX_POOL1D_INDICES_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1290,7 +1290,7 @@ def test_max_pool3d_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = ManifestBenchmark(_MAX_POOL3D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1348,7 +1348,7 @@ def test_max_pool3d_indices_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1413,7 +1413,7 @@ def test_adaptive_avg_pool2d_bench(
     inputs = test.gen_inputs()
 
     op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
-    bm = ManifestBenchmark(_ADAPTIVE_AVG_POOL2D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1446,7 +1446,7 @@ def test_adaptive_max_pool2d_bench(
     inputs = test.gen_inputs()
 
     op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
-    bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
@@ -1481,7 +1481,7 @@ def test_adaptive_max_pool2d_indices_bench(
     inputs = test.gen_inputs()
 
     op = AdaptiveMaxPool2dIndicesFwdOp(output_size=output_size, tune=tune)
-    bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(

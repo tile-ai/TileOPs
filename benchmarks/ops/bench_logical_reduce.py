@@ -62,7 +62,7 @@ def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)
     op = AnyFwdOp(**op_params)
-    bm = ManifestBenchmark(_ANY_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -95,7 +95,7 @@ def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)
     op = AllFwdOp(**op_params)
-    bm = ManifestBenchmark(_ALL_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -128,7 +128,7 @@ def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype, op_params: dict) 
 
     op_params.setdefault("dim", -1)
     op = CountNonzeroFwdOp(**op_params)
-    bm = ManifestBenchmark(_COUNT_NONZERO_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
 
     def baseline_fn(x):

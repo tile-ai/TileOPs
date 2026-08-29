@@ -148,7 +148,7 @@ def test_gated_deltanet_prefill_bhtd_bench(
     inputs = test.gen_inputs()
 
     op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
-    bm = ManifestBenchmark(_BHTD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     bm.compare(
         {"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)},
@@ -180,7 +180,7 @@ def test_gated_deltanet_prefill_fwd_bench(
     inputs = test.gen_inputs()
 
     op = GatedDeltaNetPrefillBTHDFwdOp(chunk_size=chunk_size, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}
 

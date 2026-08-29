@@ -182,7 +182,7 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     op.k_lens = seqlens_k
     op.max_seqlen_q = max(seqlens_q)
     op.max_seqlen_k = max(seqlens_k)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

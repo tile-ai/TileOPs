@@ -74,7 +74,7 @@ def test_fp8_lightning_indexer_bench(
     inputs = test.gen_inputs()
 
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, config=_CONFIG, tune=_TUNE)
-    bm = ManifestBenchmark(_FP8_LIGHTNING_INDEXER_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

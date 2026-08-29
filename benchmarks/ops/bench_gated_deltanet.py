@@ -81,7 +81,7 @@ def test_gated_deltanet_vs_fla_fwd(
     bthd = _to_fla_layout(q, k, v, g, beta)
 
     op = GatedDeltaNetBTHDFwdOp(chunk_size=chunk_size, tune=tune)
-    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def fla_fwd():
         return chunk_gated_delta_rule(*bthd, scale=1.0)
@@ -109,7 +109,7 @@ def test_gated_deltanet_bhtd_vs_fla_fwd(
     bthd = _to_fla_layout(*inputs)
 
     op = GatedDeltaNetBHTDFwdOp(chunk_size=chunk_size, tune=tune)
-    bm = ManifestBenchmark(_BHTD_FWD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def fla_fwd():
         return chunk_gated_delta_rule(*bthd, scale=1.0)
@@ -149,7 +149,7 @@ def test_gated_deltanet_vs_fla_bwd(
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
 
     bwd_op = GatedDeltaNetBwdOp(chunk_size=BC, tune=tune)
-    bm = ManifestBenchmark(_BWD_OP_NAME, bwd_op, test)
+    bm = ManifestBenchmark(bwd_op, test)
     functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---

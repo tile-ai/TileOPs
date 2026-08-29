@@ -67,7 +67,7 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype: torch.dtype) -> No
     a, b = workload.gen_inputs()
 
     op = BmmFwdOp(tune=True)
-    bm = ManifestBenchmark(_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     # eval_roofline() is read lazily after profiling, by which point
     # forward() has bound the dims.
@@ -105,7 +105,7 @@ def test_bmm_fp8_kn_bench(
     a, b_kn, scale_a, scale_b = workload.gen_inputs()
 
     op = BmmFp8KNFwdOp(out_dtype=out_dtype, tune=True)
-    bm = ManifestBenchmark(_FP8_KN_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
     functors = {
         "tileops": (op, (a, b_kn, scale_a, scale_b)),
         "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),
@@ -144,7 +144,7 @@ def test_bmm_fp8_nk_bench(
 
     # Fast path: feed [B, N, K] (K-innermost) using BmmFp8NKFwdOp.
     op = BmmFp8NKFwdOp(out_dtype=out_dtype, tune=True)
-    bm = ManifestBenchmark(_FP8_NK_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
     functors = {
         "tileops": (op, (a, b_nk, scale_a, scale_b)),
         "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),

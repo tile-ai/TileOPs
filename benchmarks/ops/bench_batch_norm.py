@@ -139,7 +139,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     op = BatchNormFwdOp(training=training, tune=tune)
 
     test = BatchNormFwdWorkload(N, C, spatial, dtype, training)
-    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
@@ -172,7 +172,7 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     op = BatchNormBwdOp()
 
     test = BatchNormBwdWorkload(N, C, spatial, dtype)
-    bm = ManifestBenchmark(_BWD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 

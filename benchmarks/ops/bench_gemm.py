@@ -422,7 +422,7 @@ def test_gemm_bench(
     a, b = workload.gen_inputs()
 
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
-    bm = ManifestBenchmark(_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
@@ -467,7 +467,7 @@ def test_gemm_fp8_bench(
     inputs = workload.gen_inputs()
 
     op = GemmFp8FwdOp(out_dtype=out_dtype)
-    bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     if scale_mode not in ("per_tensor", "block128"):
         raise ValueError(f"unsupported FP8 GEMM scale_mode for benchmark: {scale_mode!r}")
@@ -535,7 +535,7 @@ def test_gemm_w4a16_bench(
     inputs = workload.gen_inputs()
 
     op = GemmW4A16FwdOp(group_size=group_size)
-    bm = ManifestBenchmark(_W4A16_OP_NAME, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     expected = workload.ref_program(*inputs)
     torch.testing.assert_close(op(*inputs), expected, atol=7e-2, rtol=5e-2)

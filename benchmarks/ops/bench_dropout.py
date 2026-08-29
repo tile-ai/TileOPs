@@ -34,7 +34,7 @@ def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
     (x,) = test.gen_inputs()
 
     op = DropoutFwdOp(p=test.p, seed=42)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

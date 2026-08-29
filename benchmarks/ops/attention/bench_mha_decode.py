@@ -74,7 +74,7 @@ def test_mha_decode_bench(
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_decode_fwd(test)

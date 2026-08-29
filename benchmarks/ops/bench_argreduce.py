@@ -55,7 +55,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     inputs = workload.gen_inputs()
 
     op = ArgmaxFwdOp(**extra)
-    bm = ManifestBenchmark(_ARGMAX_OP, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     dim = extra["dim"]
 
@@ -79,7 +79,7 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     inputs = workload.gen_inputs()
 
     op = ArgminFwdOp(**extra)
-    bm = ManifestBenchmark(_ARGMIN_OP, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     dim = extra["dim"]
 

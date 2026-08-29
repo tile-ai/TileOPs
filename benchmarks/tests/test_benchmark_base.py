@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from benchmarks.benchmark_base import workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from benchmarks.timing import (
     Trace,
     _attributed_samples,
@@ -247,3 +247,24 @@ def test_kernel_runtime_error_propagates():
 
     with pytest.raises(RuntimeError, match="kernel failure"):
         bench_kernel(boom)
+
+
+class SumFwdOp:
+    """Stands in for the manifest op of that name; only the class name is read."""
+
+
+class NotAManifestOp:
+    """A wrapper of the kind a benchmark must not report under."""
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_takes_its_name_from_the_op():
+    """The report name is the op's class, so it cannot disagree with what ran."""
+    assert ManifestBenchmark(SumFwdOp(), object()).op_name == "SumFwdOp"
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_refuses_an_op_the_manifest_does_not_declare():
+    """A wrapper or a subclass would report numbers under a name no spec knows."""
+    with pytest.raises(KeyError, match="NotAManifestOp"):
+        ManifestBenchmark(NotAManifestOp(), object())

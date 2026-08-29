@@ -44,7 +44,7 @@ def test_group_norm_bench(
     x, weight, bias = test.gen_inputs()
 
     op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: torch.nn.functional.group_norm
     def baseline_fn(x, weight, bias):
@@ -78,7 +78,7 @@ def test_group_norm_no_affine_bench(
     x, _, _ = test.gen_inputs()
 
     op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_no_affine(x):
         return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)

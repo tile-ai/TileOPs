@@ -287,7 +287,7 @@ def test_gqa_fwd_bench(
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
-    bm = ManifestBenchmark(_GQA_FWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     tileops_variant = _tileops_gqa_variant(op, dtype)
     functors = {f"tileops_{tileops_variant}": op}
 
@@ -331,7 +331,7 @@ def test_gqa_bwd_bench(
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
-    bm = ManifestBenchmark(_GQA_BWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     fa3_fn = _fa3_gqa_bwd(test)
@@ -398,7 +398,7 @@ def test_gqa_prefill_fwd_bench(
         sm_scale=sm_scale,
         softcap=softcap,
     )
-    bm = ManifestBenchmark(_GQA_PREFILL_FWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     functors["torch-ref"] = (_torch_gqa_prefill_ref(test), (*inputs,))
@@ -667,7 +667,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     op.q_lens = q_lens
     op.cache_lens = cache_lens
     op.max_seqlen_q = test.max_seqlen_q
-    bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     fa3_fn = _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap)
     if fa3_fn is None:
         # FIXME(staged-rollout): this row records no baseline.

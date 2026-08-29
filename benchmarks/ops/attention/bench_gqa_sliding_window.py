@@ -141,7 +141,7 @@ def test_gqa_sliding_window_fwd_bench(
         window_size_right=wr,
         tune=tune,
     )
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

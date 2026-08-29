@@ -112,7 +112,7 @@ def test_mha_decode_paged_bench(
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, tune=tune
     )
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     fa3_fn = _fa3_mha_decode_paged(test, k, v)
