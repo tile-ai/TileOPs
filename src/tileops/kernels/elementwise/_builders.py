@@ -129,6 +129,16 @@ def _row_broadcast_prim(
     block_cols = threads * num_per_thread
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
+    # Columns past the last full block. Left in place they each hold a block open
+    # for a fraction of its lanes; packed end to end across rows they fill whole
+    # blocks instead, at the cost of locating each column by divmod. That trade
+    # only pays while they are a small part of the row -- a wide remainder sends
+    # more elements down the divmod path than the idle lanes ever cost.
+    tail_cols = inner - full_blocks * block_cols
+    tail_slots = rows * tail_cols
+    body_blocks = full_blocks * rows
+    tail_blocks = -(-tail_slots // block_cols)
+    packed = not exact and full_blocks > 0 and tail_cols * 4 <= block_cols
 
     @T.macro
     def write_col(a, b, y, a_base, b_base, by, col):
@@ -157,6 +167,52 @@ def _row_broadcast_prim(
             )
         T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
+    @T.macro
+    def write_full_block(a, b, y, a_base, b_base, by, bxc):
+        if stage:
+            write_block_staged(a, b, y, a_base, b_base, by, bxc)
+        else:
+            for i, j in T.Parallel(threads, num_per_thread):
+                write_col(a, b, y, a_base, b_base, by, (bxc * threads + i) * num_per_thread + j)
+
+    if packed:
+
+        @T.prim_func
+        def packed_main(
+            a: T.Tensor((a_numel,), dtype),
+            b: T.Tensor((b_numel,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            with T.Kernel(body_blocks + tail_blocks, threads=threads) as bx:  # noqa: SIM117
+                with T.If(bx < body_blocks):
+                    with T.Then():
+                        by = bx // full_blocks
+                        bxc = bx % full_blocks
+                        a_base, b_base = _compute_broadcast_offsets(
+                            by * inner, ndim, divisors, a_strides, b_strides
+                        )
+                        write_full_block(a, b, y, a_base, b_base, by, bxc)
+                    with T.Else():
+                        for i, j in T.Parallel(threads, num_per_thread):
+                            slot = (bx - body_blocks) * block_cols + i * num_per_thread + j
+                            with T.If(slot < tail_slots):  # noqa: SIM117
+                                with T.Then():
+                                    trow = slot // tail_cols
+                                    ta_base, tb_base = _compute_broadcast_offsets(
+                                        trow * inner, ndim, divisors, a_strides, b_strides
+                                    )
+                                    write_col(
+                                        a,
+                                        b,
+                                        y,
+                                        ta_base,
+                                        tb_base,
+                                        trow,
+                                        full_blocks * block_cols + slot % tail_cols,
+                                    )
+
+        return packed_main
+
     @T.prim_func
     def main(
         a: T.Tensor((a_numel,), dtype),
@@ -168,29 +224,11 @@ def _row_broadcast_prim(
                 by * inner, ndim, divisors, a_strides, b_strides
             )
             if exact:
-                if stage:
-                    write_block_staged(a, b, y, a_base, b_base, by, bx)
-                else:
-                    for i, j in T.Parallel(threads, num_per_thread):
-                        write_col(
-                            a, b, y, a_base, b_base, by, (bx * threads + i) * num_per_thread + j
-                        )
+                write_full_block(a, b, y, a_base, b_base, by, bx)
             else:
                 with T.If(bx < full_blocks):
                     with T.Then():
-                        if stage:
-                            write_block_staged(a, b, y, a_base, b_base, by, bx)
-                        else:
-                            for i, j in T.Parallel(threads, num_per_thread):
-                                write_col(
-                                    a,
-                                    b,
-                                    y,
-                                    a_base,
-                                    b_base,
-                                    by,
-                                    (bx * threads + i) * num_per_thread + j,
-                                )
+                        write_full_block(a, b, y, a_base, b_base, by, bx)
                     with T.Else():
                         for i, j in T.Parallel(threads, num_per_thread):
                             col = (bx * threads + i) * num_per_thread + j
