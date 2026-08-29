@@ -1742,6 +1742,7 @@ class GemmKernel(Kernel):
         self.trans_a = trans_a
         self.trans_b = trans_b
         self.sm_count = get_sm_count()
+        self.device_name = torch.cuda.get_device_name()
 
         self.kernel = _gemm_kernel(
             m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
@@ -1854,7 +1855,10 @@ class GemmKernel(Kernel):
         if override is not None:
             self_contained = override.get("coop2") or override.get("coop2s")
             return dict(override) if self_contained else {**modal, **override}
-        return best_config(self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count)
+        scored = best_config(
+            self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count, self.device_name
+        )
+        return scored if scored is not None else modal
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.config.get("simple"):

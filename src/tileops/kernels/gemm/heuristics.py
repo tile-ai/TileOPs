@@ -20,13 +20,12 @@ TileOPs kernel family needs:
 - a per-K-iteration issue-overhead term separates ``block_k`` candidates
   the byte model cannot (measured: block_k=128 beats 32 consistently).
 
-The constants below are *effective ranking constants*, not physical rates, and
-they describe one device class: they were calibrated on H200. Re-calibrate when
-the kernel structures change materially, or when the target does — an SM90 part
-whose compute is capped elsewhere ranks wrong against them. A device profile
-cannot substitute: it carries neither the bandwidths nor the latencies this
-model reads, and its peak times a ratio is a different quantity from a
-per-structure achieved rate.
+The ranking constants are fitted per board, and the scorer reads the current
+device's from ``_CALIBRATIONS``. A board absent from that table is not ranked
+at all: :func:`best_config` returns ``None`` and the kernel takes its own
+default, because ranking with another board's numbers is worse than not
+ranking. Re-fit when the kernel structures change materially, or when a new
+board is added.
 
 Resource model mirrors ``tileops/kernels/gemm.py``:
 
@@ -60,12 +59,51 @@ SWAP_AB_MPAD = 8
 
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
 
-_L1_TBPS = 33.0
-_L2_TBPS = 17.5
-_TC_TFLOPS = {"basic": 420.0, "splitk": 420.0, "coop2": 525.0, "coop2_splitk": 525.0}
-_RED_TBPS = 1.5
-_LAUNCH_US = 2.25
-_ISSUE_NS = 150.0
+
+@dataclass(frozen=True)
+class _Calibration:
+    """The scorer's ranking constants for one board.
+
+    Effective ranking constants, not physical rates: each was fitted so the
+    model's ordering matches a measured sweep of this kernel family, not
+    measured with a microbenchmark. ``l1_tbps`` and ``l2_tbps`` are not this
+    board's SMEM and L2 bandwidths, and no other algorithm can read them as
+    such — which is why they live here and not in ``perf/profiles/``.
+    """
+
+    l1_tbps: float
+    l2_tbps: float
+    reduce_tbps: float
+    launch_us: float
+    issue_ns: float
+    tensor_core_tflops: tuple
+
+    def tc_tflops(self, structure: str) -> float:
+        return dict(self.tensor_core_tflops)[structure]
+
+
+#: One entry per board the scorer has been calibrated on, by the name CUDA
+#: reports. A board absent here is not ranked; see :func:`best_config`.
+_CALIBRATIONS = {
+    "NVIDIA H200": _Calibration(
+        l1_tbps=33.0,
+        l2_tbps=17.5,
+        reduce_tbps=1.5,
+        launch_us=2.25,
+        issue_ns=150.0,
+        tensor_core_tflops=(
+            ("basic", 420.0),
+            ("coop2", 525.0),
+            ("coop2_splitk", 525.0),
+            ("splitk", 420.0),
+        ),
+    ),
+}
+
+
+def _calibration(device_name: str) -> Optional[_Calibration]:
+    """The calibration measured on *device_name*, or ``None`` for a board without one."""
+    return _CALIBRATIONS.get(device_name)
 
 
 @dataclass
@@ -188,7 +226,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     return out
 
 
-def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
+def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
     """Predicted microseconds; only the relative ordering is meaningful."""
     bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
     elem, elem_out = 2, 2
@@ -203,15 +241,15 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
     l1_tc = k_exp * (max(64, bm) + bn) * elem + bm * bn * ws
     cd_bytes = bm * bn * ws
 
-    l2_us = (l2_ab + cd_bytes) * num_blocks / (_L2_TBPS * 1e6)
-    l1_us = (l1_ab + l1_tc + cd_bytes) * num_blocks / (_L1_TBPS * 1e6)
-    tc_us = 2.0 * m * n * k / (_TC_TFLOPS[cd.structure] * 1e6)
-    issue_us = (k_exp / cd.block_k) * num_waves * _ISSUE_NS * 1e-3
+    l2_us = (l2_ab + cd_bytes) * num_blocks / (cal.l2_tbps * 1e6)
+    l1_us = (l1_ab + l1_tc + cd_bytes) * num_blocks / (cal.l1_tbps * 1e6)
+    tc_us = 2.0 * m * n * k / (cal.tc_tflops(cd.structure) * 1e6)
+    issue_us = (k_exp / cd.block_k) * num_waves * cal.issue_ns * 1e-3
 
     us = max(tc_us, l1_us, l2_us) / wave_eff + issue_us
     if sk > 1:
         red_bytes = sk * m * n * 4 + m * n * elem_out
-        us += red_bytes / (_RED_TBPS * 1e6) + _LAUNCH_US
+        us += red_bytes / (cal.reduce_tbps * 1e6) + cal.launch_us
     return us
 
 
@@ -305,7 +343,7 @@ def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
 
 @functools.lru_cache(maxsize=512)
 def _best_config_cached(
-    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, cal: _Calibration
 ) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
     if m <= 8 and not trans_a and trans_b:
@@ -316,11 +354,13 @@ def _best_config_cached(
             f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
             f"trans_b={trans_b}, sm_count={sm_count})"
         )
-    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count), -c.block_k))
+    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal), -c.block_k))
     return best.to_config()
 
 
-def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> dict:
+def best_config(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, device_name: str
+) -> Optional[dict]:
     """Return the analytically selected ``GemmKernel`` config for a shape.
 
     Args:
@@ -330,9 +370,13 @@ def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: 
         trans_a: ``A`` stored ``[k, m]`` when True.
         trans_b: ``B`` stored ``[n, k]`` when True.
         sm_count: Streaming multiprocessors of the target device.
+        device_name: The target device as CUDA names it, which selects the
+            profile the ranking constants come from.
 
     Returns:
-        A config dict in ``GemmKernel`` schema — either the single-consumer
+        ``None`` when no profile carries this board's ranking constants, so the
+        caller takes its own default rather than a ranking measured elsewhere.
+        Otherwise a config dict in ``GemmKernel`` schema — either the single-consumer
         form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
         optionally ``simple``) or a structure-flagged form (``coop2`` /
         ``coop2_splitk``). A fresh dict per call: the selection itself is
@@ -340,7 +384,10 @@ def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: 
         kernel families mutate ``self.config`` in place, and a shared cached
         dict would be poisoned by that idiom.
     """
-    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count))
+    cal = _calibration(device_name)
+    if cal is None:
+        return None
+    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, cal))
 
 
 def gemv_config(k: int) -> dict:

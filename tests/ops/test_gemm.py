@@ -4,6 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gemm import GemmKernel, SmallBatchGemmKernel
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel
+from tileops.kernels.gemm.heuristics import best_config
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
@@ -854,3 +855,16 @@ def test_gemm_kernel_tune_falls_back_to_default() -> None:
     with pytest.warns(UserWarning, match="does not define autotune_configs"):
         kernel = GemmKernel(4096, 4096, 7168, torch.float16, tune=True, trans_a=False, trans_b=True)
     assert kernel.config == kernel.default_config
+
+
+@pytest.mark.smoke
+def test_config_selector_declines_a_board_it_was_not_measured_on() -> None:
+    """The ranking constants are achieved rates for one board.
+
+    A board whose profile carries no ``gemm_selector`` section is not ranked:
+    ``best_config`` returns ``None`` so the kernel takes its modal default,
+    rather than a ranking measured somewhere else.
+    """
+    assert best_config(1024, 1024, 1024, False, False, 132, "NVIDIA H200") is not None
+    assert best_config(1024, 1024, 1024, False, False, 132, "NVIDIA H20-3e") is None
+    assert best_config(1024, 1024, 1024, False, False, 132, "no such board") is None
