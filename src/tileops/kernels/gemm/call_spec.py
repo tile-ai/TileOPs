@@ -1,13 +1,13 @@
-"""The facts of one GEMM call, and the region the GEMV kernel serves."""
+"""The facts of one GEMM call, as the op knows them after inferring ``(m, n, k)``."""
 
 import dataclasses
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 
 from ..call_spec import CallSpec
 
-__all__ = ["GemmCall", "gemv_region"]
+__all__ = ["GemmCall"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -21,14 +21,30 @@ class GemmCall(CallSpec):
     trans_a: bool = False
     trans_b: bool = False
 
+    @property
+    def gemv_mode(self) -> Optional[Literal["lhs_row", "rhs_col"]]:
+        """Which operand is the vector: ``"lhs_row"``, ``"rhs_col"``, or neither.
 
-def gemv_region(call: GemmCall) -> bool:
-    """Whether the call is a matrix-vector product the GEMV kernel is written for.
+        ``a`` is a single row with ``b`` transposed, or ``b`` is a single column
+        with neither transposed; the other two layouts have no GEMV form here.
+        Two readers need this one fact -- ``GemvKernel.applies`` to claim the
+        call, and the op to reshape the operand the kernel takes flat.
+        """
+        if self.trans_a:
+            return None
+        if self.m == 1 and self.trans_b:
+            return "lhs_row"
+        if self.n == 1 and not self.trans_b:
+            return "rhs_col"
+        return None
 
-    Either operand may be the vector: ``a`` is a single row with ``b``
-    transposed, or ``b`` is a single column with neither transposed. The other
-    two layouts have no GEMV form here.
-    """
-    lhs_row = call.m == 1 and not call.trans_a and call.trans_b
-    rhs_col = call.n == 1 and not call.trans_a and not call.trans_b
-    return lhs_row or rhs_col
+    @property
+    def gemv_n(self) -> int:
+        """Output elements the GEMV kernel produces, its ``n``.
+
+        Raises:
+            ValueError: The call has no GEMV form, so there is no such count.
+        """
+        if self.gemv_mode is None:
+            raise ValueError(f"call has no GEMV form: {self}")
+        return self.n if self.gemv_mode == "lhs_row" else self.m

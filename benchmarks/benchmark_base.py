@@ -23,6 +23,7 @@ from benchmarks.timing import (
     _capture_bench_meta,
     _sample_spread_ms,
     bench_kernel,
+    median_busy_ms,
 )
 from tileops.manifest import (
     WORKLOAD_RESERVED_KEYS,
@@ -179,7 +180,7 @@ class BenchmarkBase(Generic[W], ABC):
         """
         if not samples:
             raise ValueError("bench_kernel returned no samples")
-        busy = statistics.median(s.device_busy_ms for s in samples)
+        busy = median_busy_ms(samples)
         latency = statistics.median(s.latency_ms for s in samples)
         result = {
             "device_busy_ms": busy,

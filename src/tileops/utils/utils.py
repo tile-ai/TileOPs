@@ -45,10 +45,13 @@ def get_sm_version(index: "int | None" = None) -> int:
 
 
 def get_sm_count(index: "int | None" = None) -> int:
-    """Multiprocessors on the device; defaults to current.
+    """Streaming-multiprocessor count of the device; defaults to current.
 
     Uncached: torch already caches device properties in C++, and the only
-    callers read this once per kernel construction.
+    callers read this once per kernel construction. Raises without a device,
+    like :func:`get_sm_version`: kernel selection reads this number, and a
+    stand-in for it decides a dispatch the caller cannot tell from a measured
+    one.
     """
     device = torch.cuda.current_device() if index is None else index
     return torch.cuda.get_device_properties(device).multi_processor_count

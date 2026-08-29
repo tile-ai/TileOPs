@@ -13,7 +13,7 @@ import torch
 
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
-from tileops.ops.gemm.gemm import GemmFwdOp
+from tileops.ops.gemm.gemm import _GEMM_KEYS, GemmFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import (
     DELTANET_DECODE_KEYS,
     DeltaNetDecodeFwdOp,
@@ -42,9 +42,7 @@ _SM80 = 80
         pytest.param(1, 8, False, True, "gemv_kernel", id="lhs-row"),
         pytest.param(8, 1, False, False, "gemv_kernel", id="rhs-col"),
         pytest.param(1, 8, False, False, "gemm_kernel", id="lhs-row-wrong-layout"),
-        pytest.param(1, 8, True, True, "gemm_kernel", id="lhs-row-trans-a"),
         pytest.param(8, 1, False, True, "gemm_kernel", id="rhs-col-wrong-layout"),
-        pytest.param(8, 1, True, False, "gemm_kernel", id="rhs-col-trans-a"),
         pytest.param(8, 8, False, False, "gemm_kernel", id="neither-is-a-vector"),
         pytest.param(1, 1, False, False, "gemv_kernel", id="both-are-vectors"),
     ],
@@ -55,7 +53,33 @@ def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: s
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    assert op.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == expected
+    assert op.select_kernel_key(_GEMM_KEYS, call) == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("m", "n", "trans_a", "trans_b", "dim"),
+    [
+        pytest.param(1, 8, True, True, "m=1", id="lhs-row-trans-a"),
+        pytest.param(8, 1, True, False, "n=1", id="rhs-col-trans-a"),
+    ],
+)
+def test_gemm_vector_on_a_transposed_operand_is_refused(
+    m: int, n: int, trans_a: bool, trans_b: bool, dim: str
+) -> None:
+    """A ``trans_a`` layout puts the vector on an operand's TMA-loaded innermost
+    dimension, where the descriptor needs a multiple of 8 fp16 elements — and the
+    GEMV kernel has no form for these layouts. Selection refuses, naming the
+    dimension; it used to hand these to the general kernel, whose build then died
+    inside TileLang (``T.tma_copy() ... TMA is not available``).
+    """
+    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
+    call = GemmCall(
+        arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
+    )
+
+    with pytest.raises(ValueError, match=f"multiple of 8 .*and {dim}"):
+        op.select_kernel_key(_GEMM_KEYS, call)
 
 
 @pytest.mark.smoke
@@ -147,13 +171,13 @@ def test_every_family_call_record_reads_the_device_when_unstated() -> None:
 
 
 @pytest.mark.smoke
-def test_gemv_region_matches_the_layouts_it_was_written_for() -> None:
+def test_gemv_kernel_claims_the_layouts_it_was_written_for() -> None:
     """The predicate the op used to carry, over every (m, n, layout) combination."""
-    from tileops.kernels.gemm.call_spec import gemv_region
+    from tileops.kernels.gemm import GemvKernel
 
     for m, n, trans_a, trans_b in itertools.product([1, 8], [1, 8], [False, True], [False, True]):
         expected = (m == 1 and not trans_a and trans_b) or (n == 1 and not trans_a and not trans_b)
         call = GemmCall(
             arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
         )
-        assert gemv_region(call) is expected, (m, n, trans_a, trans_b)
+        assert GemvKernel.applies(call) is expected, (m, n, trans_a, trans_b)

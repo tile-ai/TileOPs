@@ -1,4 +1,4 @@
-from typing import Dict, Hashable, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -8,6 +8,7 @@ from tileops.kernels.gemm.dense import (
     GemmFp8EpilogueKernel,
     GemmKernel,
     GemvKernel,
+    SmallBatchGemmKernel,
 )
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
@@ -17,6 +18,8 @@ from tileops.perf.profile import tensor_core_roof
 from ..op_base import Op
 
 __all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+
+_GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
 
 
 class GemmFwdOp(Op):
@@ -58,9 +61,6 @@ class GemmFwdOp(Op):
         self.trans_b = trans_b
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # (m, n, k, dtype) -> Kernel instance; built lazily on first use.
-        # Fast path: skip re-inference when the input signature is unchanged.
-        # _active_sig = (a.shape, b.shape, dtype); _active = (mode, kernel, n, m).
         self._active_sig: Optional[tuple] = None
         self._active: Optional[tuple] = None
         # Roofline / dtype bindings, populated on the first forward().
@@ -71,12 +71,27 @@ class GemmFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gemm_kernel": GemmKernel, "gemv_kernel": GemvKernel}
+        return {
+            "gemm_kernel": GemmKernel,
+            "gemv_kernel": GemvKernel,
+            "small_batch_kernel": SmallBatchGemmKernel,
+        }
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
-        """Derive logical ``(m, n, k)`` from input shapes per the trans flags."""
-        k_a, m = (a.shape[0], a.shape[1]) if self.trans_a else (a.shape[1], a.shape[0])
-        n, k_b = (b.shape[0], b.shape[1]) if self.trans_b else (b.shape[1], b.shape[0])
+        """Derive logical ``(m, n, k)`` from input shapes per the trans flags.
+
+        Rank is checked first: an extra axis is otherwise dropped silently, and
+        the dims read out of the remaining axes reach the kernel builder, which
+        compiles for a shape the call does not have before TileLang rejects the
+        arguments.
+        """
+        if a.ndim != 2 or b.ndim != 2:
+            raise ValueError(
+                f"GemmFwdOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
+            )
+        m, n = self._infer_output_shapes(a.shape, b.shape)["d"]
+        k_a = a.shape[0] if self.trans_a else a.shape[1]
+        k_b = b.shape[1] if self.trans_b else b.shape[0]
         if k_a != k_b:
             raise ValueError(
                 f"GEMM contraction dim mismatch: a contributes K={k_a}, b contributes K={k_b} "
@@ -85,38 +100,42 @@ class GemmFwdOp(Op):
             )
         return m, n, k_a
 
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
-        """Project onto the dims the kernel actually specializes on."""
-        return (
-            self.m,
-            self.n,
-            self.k,
-            self.trans_a,
-            self.trans_b,
-            None if self.dtype is None else str(self.dtype),
-        )
-
     def _get_kernel(
         self, inputs: "tuple[torch.Tensor | None, ...]", m: int, n: int, k: int, dtype: torch.dtype
     ) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
 
-        ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path, else
-        ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
-        covering all four ``(trans_a, trans_b)`` layouts.
+        ``mode`` is ``GemmCall.gemv_mode`` for the GEMV fast path (which operand
+        is the vector decides how ``forward`` reshapes it), ``"small_batch"`` for
+        the low-``m`` NT bandwidth kernel, else ``"gemm"`` — ``GemmKernel``
+        (SM90), covering all four ``(trans_a, trans_b)`` layouts.
+
+        Which one serves the call is stated by the candidates themselves
+        (each kernel's ``applies``, read through
+        ``Kernel.applies``); this method owns only mechanism: mapping the
+        selected key to a kernel instance and caching it.
         """
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
-        if self.select_kernel_key(("gemv_kernel", "gemm_kernel"), call) == "gemv_kernel":
-            # lhs_row: a is [1, K], reduce over K -> use (n, k); rhs_col uses (m, k).
-            mode = "lhs_row" if m == 1 and self.trans_b else "rhs_col"
+        key = self.select_kernel_key(_GEMM_KEYS, call)
+        if key == "gemv_kernel":
             gemv_cls = self.kernel_map["gemv_kernel"]
             kernel = self.get_or_build_kernel(
                 "gemv_kernel",
                 inputs,
-                key=(mode, m, n, k, dtype),
-                build=lambda: gemv_cls(n if mode == "lhs_row" else m, k, dtype, tune=self.tune),
+                key=(call.gemv_mode, m, n, k, dtype),
+                build=lambda: gemv_cls(call.gemv_n, k, dtype, tune=self.tune),
             )
-            return mode, kernel
+            return call.gemv_mode, kernel
+
+        if key == "small_batch_kernel":
+            sb_cls = self.kernel_map["small_batch_kernel"]
+            kernel = self.get_or_build_kernel(
+                "small_batch_kernel",
+                inputs,
+                key=(m, n, k, dtype),
+                build=lambda: sb_cls(m, n, k, dtype, tune=self.tune),
+            )
+            return "small_batch", kernel
 
         kernel = self.get_or_build_kernel(
             "gemm_kernel",
@@ -159,11 +178,7 @@ class GemmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        # Fast path: same input signature as the last call → reuse the already
-        # built/JIT'd kernel directly, skipping dtype validation, shape
-        # inference, and the cache lookup (this is the steady state in
-        # benchmarking / serving, where per-call Python overhead matters).
-        sig = (a.shape, b.shape, a.dtype)
+        sig = (a.shape, b.shape, a.dtype, b.dtype)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)
             m, n, k = self._infer_mnk(a, b)

@@ -43,6 +43,7 @@ from .gemm import (
     GemmFp8EpilogueKernel,
     GemmKernel,
     GemvKernel,
+    SmallBatchGemmKernel,
 )
 from .grouped_gemm import GroupedGemmKernel
 from .kernel_base import Kernel
@@ -194,6 +195,7 @@ __all__ = [
     "RopeNeoxPositionIdsKernel",
     "RopeNonNeoxKernel",
     "RopeYarnKernel",
+    "SmallBatchGemmKernel",
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",

@@ -16,6 +16,7 @@ import contextlib
 import ctypes
 import logging
 import os
+import statistics
 import sys
 import threading
 from typing import Any, Callable, NamedTuple, Optional
@@ -569,6 +570,15 @@ def _capture_bench_meta() -> dict:
         for key in ("timing", "fallback_reason", "attribution_retries")
         if (value := getattr(_bench_meta, key, None)) is not None
     }
+
+
+def median_busy_ms(samples: "list[Sample]") -> float:
+    """The device-busy figure a report publishes for a run: the median sample.
+
+    One definition, so a baseline that ranks candidates on this number and the
+    row that reports it cannot drift apart.
+    """
+    return statistics.median(s.device_busy_ms for s in samples)
 
 
 def bench_kernel(
