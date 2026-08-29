@@ -10,6 +10,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dSymmetricKernel,
     Conv3dKernel,
+    Conv3dNdhwcKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
@@ -19,6 +20,7 @@ from tileops.ops import (
     Conv2dFwdOp,
     Conv3dFwdOp,
 )
+from tileops.ops.convolution import _can_use_conv3d_ndhwc
 from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
 
 for _op_cls in (Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp):
@@ -769,6 +771,24 @@ class Conv3dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-3d-unet-k3-s1-bf16",
                 ),
+                # Non-symmetric dilation/padding on the NDHWC fast path (c_in % 32 == 0).
+                pytest.param(
+                    1,
+                    32,
+                    8,
+                    16,
+                    16,
+                    64,
+                    (3, 3, 3),
+                    (1, 1, 1),
+                    (2, 1, 3),
+                    (2, 1, 3),
+                    1,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-3d-ndhwc-nonsymmetric-dilation-fp16",
+                ),
                 # Video depthwise 3D block, reduced size for smoke cost.
                 pytest.param(
                     1,
@@ -910,6 +930,20 @@ def test_conv3d(
     )
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    if _can_use_conv3d_ndhwc(
+        groups=groups,
+        c_in=c_in,
+        c_out=c_out,
+        kernel_d=kernel_size[0],
+        kernel_h=kernel_size[1],
+        kernel_w=kernel_size[2],
+        out_d=op.out_d,
+        out_h=op.out_h,
+        out_w=op.out_w,
+        n=n,
+        dtype=dtype,
+    ):
+        assert isinstance(op.kernel, Conv3dNdhwcKernel)
     if groups > 1:
         assert isinstance(op.kernel, GroupConv3dKernel)
 
@@ -978,6 +1012,80 @@ def test_conv3d_dispatches_kernel() -> None:
     weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
     assert isinstance(op.kernel, Conv3dKernel)
+
+
+@pytest.mark.smoke
+def test_conv3d_dispatches_ndhwc_kernel_no_bias() -> None:
+    op = Conv3dFwdOp(stride=1, padding=1)
+    x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+
+    out = op(x, weight)
+
+    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_ndhwc_kernel_roofline_counts_layout_traffic() -> None:
+    op = Conv3dFwdOp(stride=1, padding=1)
+    x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+
+    op(x, weight)
+
+    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    _, nbytes = op.eval_roofline()
+    out_elems = 1 * 64 * 8 * 16 * 16
+    input_elems = 1 * 32 * 8 * 16 * 16
+    weight_elems = 64 * 32 * 3 * 3 * 3
+    semantic_bytes = (input_elems + weight_elems + out_elems) * x.element_size()
+    layout_bytes = (input_elems + weight_elems + 2 * out_elems) * x.element_size()
+    assert nbytes == semantic_bytes + layout_bytes
+
+
+@pytest.mark.smoke
+def test_conv3d_does_not_dispatch_ndhwc_for_pointwise() -> None:
+    op = Conv3dFwdOp(stride=1, padding=0)
+    x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 1, 1, 1, device="cuda", dtype=torch.float16).contiguous()
+
+    out = op(x, weight)
+
+    assert isinstance(op.kernel, Conv3dKernel)
+    ref = F.conv3d(x, weight, bias=None, stride=1, padding=0).contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_does_not_dispatch_ndhwc_for_small_output() -> None:
+    op = Conv3dFwdOp(stride=1, padding=1)
+    x = torch.randn(1, 32, 2, 4, 4, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+
+    out = op(x, weight)
+
+    assert isinstance(op.kernel, Conv3dKernel)
+    ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_ndhwc_guard_rejects_float32() -> None:
+    assert not _can_use_conv3d_ndhwc(
+        groups=1,
+        c_in=32,
+        c_out=64,
+        kernel_d=3,
+        kernel_h=3,
+        kernel_w=3,
+        out_d=8,
+        out_h=16,
+        out_w=16,
+        n=1,
+        dtype=torch.float32,
+    )
 
 
 @pytest.mark.smoke

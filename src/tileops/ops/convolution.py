@@ -10,6 +10,7 @@ from tileops.kernels.convolution import (
     Conv2dKernel,
     Conv2dSymmetricKernel,
     Conv3dKernel,
+    Conv3dNdhwcKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
@@ -992,6 +993,47 @@ def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
     return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
 
 
+def _can_use_conv3d_ndhwc(
+    *,
+    groups: int,
+    c_in: int,
+    c_out: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    out_d: int,
+    out_h: int,
+    out_w: int,
+    n: int,
+    dtype: torch.dtype,
+) -> bool:
+    """Return whether the NDHWC Conv3d fast path should serve this call.
+
+    This is a performance eligibility guard, not the full Conv3d validity check.
+    The op layer has already validated the convolution shape and computes
+    ``out_d``, ``out_h``, and ``out_w`` as::
+
+        out_axis = floor((in_axis + 2 * pad_axis
+                          - dilation_axis * (kernel_axis - 1) - 1)
+                         / stride_axis) + 1
+
+    The NDHWC fast path materializes input, weight, and output staging layouts
+    so the activation gather reads channel-contiguous runs. Keep it limited to
+    dense, 16-bit, non-pointwise calls large enough to amortize that fixed
+    layout-transform cost.
+    """
+    kernel_volume = kernel_d * kernel_h * kernel_w
+    output_spatial = n * out_d * out_h * out_w
+    return (
+        groups == 1
+        and dtype in {torch.float16, torch.bfloat16}
+        and c_in % 32 == 0
+        and c_out >= 64
+        and output_spatial >= 1024
+        and kernel_volume > 1
+    )
+
+
 class Conv3dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv3d_fwd",)
@@ -1041,6 +1083,7 @@ class Conv3dFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "conv3d_kernel": Conv3dKernel,
+            "conv3d_ndhwc_kernel": Conv3dNdhwcKernel,
             "group_conv3d_kernel": GroupConv3dKernel,
         }
 
@@ -1138,8 +1181,21 @@ class Conv3dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
+        use_ndhwc = "conv3d_ndhwc_kernel" in self.kernel_map and _can_use_conv3d_ndhwc(
+            groups=self.groups,
+            c_in=c_in,
+            c_out=c_out,
+            kernel_d=kernel_d,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
+            n=n,
+            dtype=dtype,
+        )
         use_group = self.groups > 1 and "group_conv3d_kernel" in self.kernel_map
-        variant = "group" if use_group else "general"
+        variant = "ndhwc" if use_ndhwc else "group" if use_group else "general"
         key = (
             variant,
             n,
@@ -1186,6 +1242,30 @@ class Conv3dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
+            if use_ndhwc:
+                return self.kernel_map["conv3d_ndhwc_kernel"](
+                    n=n,
+                    c_in=c_in,
+                    d=d,
+                    h=h,
+                    w=w,
+                    c_out=c_out,
+                    kernel_d=kernel_d,
+                    kernel_h=kernel_h,
+                    kernel_w=kernel_w,
+                    stride_d=self.stride[0],
+                    stride_h=self.stride[1],
+                    stride_w=self.stride[2],
+                    pad_d=pad_d,
+                    pad_h=pad_h,
+                    pad_w=pad_w,
+                    dilation_d=self.dilation[0],
+                    dilation_h=self.dilation[1],
+                    dilation_w=self.dilation[2],
+                    dtype=dtype,
+                    has_bias=has_bias,
+                    tune=self.tune,
+                )
             if use_group:
                 return self.kernel_map["group_conv3d_kernel"](
                     **kernel_kwargs,
@@ -1380,12 +1460,20 @@ class Conv3dFwdOp(Op):
             out_elems if has_bias else 0
         )
         elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        bytes_ = (
+        traffic_elems = (
             n * c_in * d * h * w
             + c_out * c_in_g * kernel_d * kernel_h * kernel_w
             + out_elems
             + (c_out if has_bias else 0)
-        ) * elem_bytes
+        )
+        if isinstance(self.kernel, Conv3dNdhwcKernel):
+            # The channels-last fast path materializes input, weight, and output
+            # staging buffers. Count their lower-bound traffic so roofline does
+            # not compare this algorithm against the semantic conv bytes only.
+            traffic_elems += n * c_in * d * h * w
+            traffic_elems += c_out * c_in_g * kernel_d * kernel_h * kernel_w
+            traffic_elems += 2 * out_elems
+        bytes_ = traffic_elems * elem_bytes
         return int(flops), int(bytes_)
 
     def compute_roof(self) -> str:
