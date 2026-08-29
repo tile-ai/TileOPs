@@ -81,7 +81,7 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)  # baseline below reduces dim=-1
     op = SumFwdOp(**op_params)
-    bm = ManifestBenchmark(_SUM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params.get("dim", -1)
     keepdim = op_params.get("keepdim", False)
 
@@ -119,7 +119,7 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)  # baseline below mirrors the op's dim
     op = MeanFwdOp(**op_params)
-    bm = ManifestBenchmark(_MEAN_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -157,7 +157,7 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)
     op = AmaxFwdOp(**op_params)
-    bm = ManifestBenchmark(_AMAX_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -195,7 +195,7 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)
     op = AminFwdOp(**op_params)
-    bm = ManifestBenchmark(_AMIN_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -224,7 +224,7 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = ProdFwdOp()
-    bm = ManifestBenchmark(_PROD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_fn(x):
         return x.float().prod(dim=-1).to(x.dtype)
@@ -260,7 +260,7 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)
     op = StdFwdOp(correction=1, **op_params)
-    bm = ManifestBenchmark(_STD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -298,7 +298,7 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
     op_params.setdefault("dim", -1)
     op = VarFwdOp(correction=1, **op_params)
-    bm = ManifestBenchmark(_VAR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 
@@ -336,7 +336,7 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
 
     op_params.setdefault("dim", -1)
     op = VarMeanFwdOp(correction=1, **op_params)
-    bm = ManifestBenchmark(_VAR_MEAN_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 

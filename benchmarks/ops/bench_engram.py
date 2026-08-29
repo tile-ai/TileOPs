@@ -45,7 +45,7 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     inputs = test.gen_inputs()
 
     op = EngramGateConvFwdOp(M, seq_len, d, tune=_TUNE)
-    bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
@@ -73,7 +73,7 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     inputs = test.gen_inputs()
 
     op = EngramGateConvBwdOp(M, seq_len, d, tune=_TUNE)
-    bm = ManifestBenchmark(_ENGRAM_GATE_CONV_BWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     @torch.enable_grad()
     def ref_with_grad(*args):
@@ -116,7 +116,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
         dilation,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

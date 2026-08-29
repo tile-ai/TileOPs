@@ -39,7 +39,7 @@ def test_fp8_quant_bench(
     inputs = test.gen_inputs()
 
     op = FP8QuantFwdOp(tune=_TUNE)
-    bm = ManifestBenchmark(_FP8_QUANT_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

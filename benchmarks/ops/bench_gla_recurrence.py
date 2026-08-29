@@ -109,7 +109,7 @@ def test_gla_decode_bench(
 
     # --- TileOPs ---
     op = GLADecodeFwdOp(scale=scale, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     if fused_recurrent_gla is not None:

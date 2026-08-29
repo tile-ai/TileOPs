@@ -124,9 +124,9 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 ### Workloads
 
 Import the op's workload from `workloads/`. `BenchmarkBase[W]` is generic over
-workload type and reads no attribute off it — `ManifestBenchmark` takes its
-roofline from `op.eval_roofline()` — so a workload needs nothing beyond the
-fields its own benchmark reads.
+workload type and reads no attribute off it — `ManifestBenchmark(op, workload)`
+takes its roofline from `op.eval_roofline()` and its report name from the op's
+class — so a workload needs nothing beyond the fields its own benchmark reads.
 
 ### File checklist
 

@@ -2653,30 +2653,73 @@ class TestBench:
         cases = [
             # (description, bench file text, expected substrings or None)
             (
-                "direct load_workloads + eval_roofline passes",
+                "ManifestBenchmark wrapping the declared op passes",
                 """\
-                from tileops.manifest import load_workloads
-                workloads = load_workloads('test_op')
-                op.eval_roofline()
+                from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
+                from tileops.ops import TestFwdOp
+                params = workloads_to_params('TestFwdOp')
+                def test_bench():
+                    op = TestFwdOp()
+                    ManifestBenchmark(op, params[0])
             """,
                 None,
             ),
             (
-                "indirect base helpers pass",
+                "direct load_workloads with the op built in the file passes",
                 """\
-                from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
-                params = workloads_to_params('test_op')
-                ManifestBenchmark('test_op', op, params[0])
+                from tileops.manifest import load_workloads
+                from tileops.ops import TestFwdOp
+                workloads = load_workloads('TestFwdOp')
+                def test_bench():
+                    op = TestFwdOp()
+                    op.eval_roofline()
             """,
                 None,
+            ),
+            (
+                "a factory-built op fails: the call is not written to the standard",
+                """\
+                from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
+                from tileops.ops import TestFwdOp
+                params = workloads_to_params('TestFwdOp')
+                def _make():
+                    return TestFwdOp()
+                def test_bench():
+                    op = _make()
+                    ManifestBenchmark(op, params[0])
+            """,
+                ["ManifestBenchmark"],
+            ),
+            (
+                "wrapping another op fails even with the declared class imported",
+                """\
+                from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
+                from tileops.ops import TestFwdOp, OtherFwdOp
+                params = workloads_to_params('TestFwdOp')
+                def test_bench():
+                    op = OtherFwdOp()
+                    ManifestBenchmark(op, params[0])
+            """,
+                ["ManifestBenchmark"],
+            ),
+            (
+                "eval_roofline reached while naming no class of the declared op fails",
+                """\
+                from tileops.manifest import load_workloads
+                workloads = load_workloads('TestFwdOp')
+                def test_bench():
+                    op = build()
+                    op.eval_roofline()
+            """,
+                ["ManifestBenchmark"],
             ),
             (
                 "load_workloads without eval_roofline fails",
                 """\
                 from tileops.manifest import load_workloads
-                workloads = load_workloads('test_op')
+                workloads = load_workloads('TestFwdOp')
             """,
-                ["eval_roofline"],
+                ["ManifestBenchmark"],
             ),
             (
                 "no load_workloads fails",
@@ -2690,8 +2733,11 @@ class TestBench:
                 "wrong op name fails (direct path)",
                 """\
                 from tileops.manifest import load_workloads
-                workloads = load_workloads('wrong_op')
-                op.eval_roofline()
+                from tileops.ops import TestFwdOp
+                workloads = load_workloads('OtherFwdOp')
+                def test_bench():
+                    op = TestFwdOp()
+                    op.eval_roofline()
             """,
                 ["load_workloads"],
             ),
@@ -2699,10 +2745,13 @@ class TestBench:
                 "wrong op name fails (indirect path)",
                 """\
                 from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
-                params = workloads_to_params('wrong_op')
-                ManifestBenchmark('wrong_op', op, params[0])
+                from tileops.ops import TestFwdOp
+                params = workloads_to_params('OtherFwdOp')
+                def test_bench():
+                    op = TestFwdOp()
+                    ManifestBenchmark(op, params[0])
             """,
-                ["load_workloads", "eval_roofline"],
+                ["load_workloads"],
             ),
             ("syntax error fails", "def broken(\n", ["syntax error"]),
         ]
@@ -2710,9 +2759,10 @@ class TestBench:
             bench_file = tmp_path / "bench_test.py"
             bench_file.write_text(textwrap.dedent(text))
             errors = validator.check_l4_benchmark(
-                "test_op",
+                "TestFwdOp",
                 str(bench_file),
                 REPO_ROOT,
+                {"TestFwdOp", "OtherFwdOp"},
             )
             if expected is None:
                 assert errors == [], (desc, errors)
@@ -2721,6 +2771,87 @@ class TestBench:
                     assert any(substring in e for e in errors), (
                         f"{desc}: expected {substring!r} in errors, got: {errors}"
                     )
+
+    def test_l4_reads_only_the_standard_call_form(self, validator, tmp_path):
+        """A benchmark states its op by building it; L4 reads that and nothing else.
+
+        The two readable shapes are the op constructed in the call and a name the
+        test assigns once. A loop variable, a factory or a name assigned twice is
+        not a benchmark written to the standard, so it fails rather than falling
+        back on the file naming the class somewhere.
+        """
+        header = (
+            "from tileops.ops import TestFwdOp, OtherFwdOp\n"
+            "from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params\n"
+            "params = workloads_to_params('TestFwdOp')\n"
+        )
+        cases = [
+            (
+                "the standard form",
+                "def t():\n    op = TestFwdOp()\n    ManifestBenchmark(op, params)\n",
+                True,
+            ),
+            (
+                "constructed in the call",
+                "def t():\n    ManifestBenchmark(TestFwdOp(), params)\n",
+                True,
+            ),
+            (
+                "an attribute assignment is not a rebinding",
+                "def t():\n    op = TestFwdOp()\n    op.total_q = 3\n    ManifestBenchmark(op, params)\n",
+                True,
+            ),
+            (
+                "two tests keep their own op",
+                "def a():\n    op = TestFwdOp()\n    ManifestBenchmark(op, params)\ndef b():\n    op = OtherFwdOp()\n    ManifestBenchmark(op, params)\n",
+                True,
+            ),
+            (
+                "a file with its own benchmark class names the op",
+                "class B:\n    def f(self):\n        return self._op.eval_roofline()\ndef t():\n    op = TestFwdOp()\n",
+                True,
+            ),
+            (
+                "wrapping another op fails",
+                "def t():\n    op = OtherFwdOp()\n    ManifestBenchmark(op, params)\n",
+                False,
+            ),
+            (
+                "a name assigned twice fails",
+                "def t():\n    op = OtherFwdOp()\n    ManifestBenchmark(op, params)\n    op = TestFwdOp()\n",
+                False,
+            ),
+            (
+                "a loop variable fails",
+                "def t():\n    for op in [OtherFwdOp()]:\n        ManifestBenchmark(op, params)\n",
+                False,
+            ),
+            (
+                "a comprehension variable fails",
+                "def t():\n    xs = [ManifestBenchmark(op, params) for op in [OtherFwdOp()]]\n",
+                False,
+            ),
+            (
+                "a with-item target fails",
+                "def t():\n    with ctx(OtherFwdOp()) as op:\n        ManifestBenchmark(op, params)\n",
+                False,
+            ),
+            (
+                "a factory fails",
+                "def t():\n    op = _make()\n    ManifestBenchmark(op, params)\n",
+                False,
+            ),
+        ]
+        for desc, body, passes in cases:
+            bench_file = tmp_path / "bench_case.py"
+            bench_file.write_text(header + body)
+            errors = validator.check_l4_benchmark(
+                "TestFwdOp",
+                str(bench_file),
+                REPO_ROOT,
+                {"TestFwdOp", "OtherFwdOp"},
+            )
+            assert (errors == []) is passes, (desc, errors)
 
     # --check-op: force all levels on a specific op, ignoring status
 

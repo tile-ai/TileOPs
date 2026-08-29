@@ -118,7 +118,7 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     inputs = test.gen_inputs()
 
     op = RMSNormFwdOp(normalized_shape=(n,), tune=tune)
-    bm = ManifestBenchmark(_RMS_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     tolerance = reference_tolerance(dtype)
     library = {
@@ -153,7 +153,7 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     inputs = test.gen_inputs()
 
     op = FusedAddRMSNormFwdOp(tune=tune)
-    bm = ManifestBenchmark(_FUSED_RMS_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: add + manual rmsnorm (separate ops)
     def baseline_fn(x, residual, weight):
@@ -188,7 +188,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     inputs = test.gen_inputs()
 
     op = LayerNormFwdOp(normalized_shape=(n,), tune=tune)
-    bm = ManifestBenchmark(_LN_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline uses torch.nn.functional.layer_norm
     def baseline_fn(x, weight, bias):
@@ -233,7 +233,7 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
     inputs = test.gen_inputs()
 
     op = FusedAddLayerNormFwdOp(tune=tune)
-    bm = ManifestBenchmark(_FUSED_LN_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: add + F.layer_norm (separate ops)
     def baseline_fn(x, residual, weight, bias):

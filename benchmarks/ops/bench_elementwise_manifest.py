@@ -229,7 +229,7 @@ def test_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = ReluFwdOp()
-    bm = ManifestBenchmark(_RELU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, F.relu)
 
 
@@ -240,7 +240,7 @@ def test_gelu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = GeluFwdOp()
-    bm = ManifestBenchmark(_GELU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, lambda x: F.gelu(x, approximate="none"))
 
 
@@ -251,7 +251,7 @@ def test_silu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SiluFwdOp()
-    bm = ManifestBenchmark(_SILU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, F.silu)
 
 
@@ -262,7 +262,7 @@ def test_hardswish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) ->
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = HardswishFwdOp()
-    bm = ManifestBenchmark(_HARDSWISH_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, F.hardswish)
 
 
@@ -273,7 +273,7 @@ def test_hardsigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = HardsigmoidFwdOp()
-    bm = ManifestBenchmark(_HARDSIGMOID_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, F.hardsigmoid)
 
 
@@ -284,7 +284,7 @@ def test_mish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = MishFwdOp()
-    bm = ManifestBenchmark(_MISH_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, F.mish)
 
 
@@ -295,7 +295,7 @@ def test_selu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SeluFwdOp()
-    bm = ManifestBenchmark(_SELU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, F.selu)
 
 
@@ -306,7 +306,7 @@ def test_leaky_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = LeakyReluFwdOp()
-    bm = ManifestBenchmark(_LEAKY_RELU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, lambda x: F.leaky_relu(x, 0.01))
 
 
@@ -317,7 +317,7 @@ def test_elu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = EluFwdOp()
-    bm = ManifestBenchmark(_ELU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, lambda x: F.elu(x, 1.0))
 
 
@@ -328,7 +328,7 @@ def test_hardtanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = HardtanhFwdOp()
-    bm = ManifestBenchmark(_HARDTANH_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, lambda x: F.hardtanh(x, -1.0, 1.0))
 
 
@@ -339,7 +339,7 @@ def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SoftplusFwdOp()
-    bm = ManifestBenchmark(_SOFTPLUS_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, lambda x: F.softplus(x, 1.0, 20.0))
 
 
@@ -350,7 +350,7 @@ def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> N
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SigmoidFwdOp()
-    bm = ManifestBenchmark(_SIGMOID_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, torch.sigmoid)
 
 
@@ -361,7 +361,7 @@ def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = TanhFwdOp()
-    bm = ManifestBenchmark(_TANH_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, torch.tanh)
 
 
@@ -372,7 +372,7 @@ def test_clamp_scalar_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype)
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
-    bm = ManifestBenchmark(_CLAMP_SCALAR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, lambda x: torch.clamp(x, -0.5, 0.5))
 
 
@@ -383,7 +383,7 @@ def test_nan_to_num_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -
     test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = NanToNumFwdOp()
-    bm = ManifestBenchmark(_NAN_TO_NUM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_unary(op, bm, inputs, torch.nan_to_num)
 
 
@@ -402,7 +402,7 @@ def test_prelu_manifest_bench(
     test = PreluManifestWorkload(input_shape, weight_shape, dtype)
     x, weight = test.gen_inputs()
     op = PreluFwdOp()
-    bm = ManifestBenchmark(_PRELU_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     bm.compare(
         {
             "tileops": op,
@@ -433,7 +433,7 @@ def test_masked_fill_tensor_manifest_bench(
     test = MaskedFillTensorManifestWorkload(input_shape, mask_shape, value_shape, dtype)
     x, mask, value = test.gen_inputs()
     op = MaskedFillFwdOp()
-    bm = ManifestBenchmark(_MASKED_FILL_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_fn(a, m, v):
         return a.masked_fill(m, v)
@@ -466,7 +466,7 @@ def test_masked_fill_scalar_manifest_bench(
     test = MaskedFillScalarManifestWorkload(shape, dtype)
     x, mask = test.gen_inputs()
     op = MaskedFillScalarFwdOp(value=-100.0)
-    bm = ManifestBenchmark(_MASKED_FILL_SCALAR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_fn(a, m):
         return a.masked_fill(m, -100.0)
@@ -506,7 +506,7 @@ def test_add_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = AddFwdOp()
-    bm = ManifestBenchmark(_ADD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.add)
 
 
@@ -518,7 +518,7 @@ def test_sub_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = SubFwdOp()
-    bm = ManifestBenchmark(_SUB_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.sub)
 
 
@@ -530,7 +530,7 @@ def test_mul_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = MulFwdOp()
-    bm = ManifestBenchmark(_MUL_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.mul)
 
 
@@ -542,7 +542,7 @@ def test_div_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, positive=True)
     inputs = test.gen_inputs()
     op = DivFwdOp()
-    bm = ManifestBenchmark(_DIV_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.div)
 
 
@@ -558,7 +558,7 @@ def test_remainder_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, positive=True)
     inputs = test.gen_inputs()
     op = RemainderFwdOp()
-    bm = ManifestBenchmark(_REMAINDER_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.remainder)
 
 
@@ -578,7 +578,7 @@ def test_pow_manifest_bench(
     test = BinaryManifestWorkload(input_shape, exponent_shape, dtype, positive=True)
     inputs = test.gen_inputs()
     op = PowFwdOp()
-    bm = ManifestBenchmark(_POW_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.pow)
 
 
@@ -594,7 +594,7 @@ def test_floor_divide_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, positive=True)
     inputs = test.gen_inputs()
     op = FloorDivideFwdOp()
-    bm = ManifestBenchmark(_FLOOR_DIVIDE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.floor_divide)
 
 
@@ -610,7 +610,7 @@ def test_lerp_manifest_bench(input_shape: tuple, end_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, end_shape, dtype)
     inputs = test.gen_inputs()
     op = LerpFwdOp()
-    bm = ManifestBenchmark(_LERP_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, lambda a, b: torch.lerp(a, b, 0.5))
 
 
@@ -622,7 +622,7 @@ def test_maximum_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: t
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = MaximumFwdOp()
-    bm = ManifestBenchmark(_MAXIMUM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.maximum)
 
 
@@ -634,7 +634,7 @@ def test_minimum_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: t
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = MinimumFwdOp()
-    bm = ManifestBenchmark(_MINIMUM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.minimum)
 
 
@@ -659,7 +659,7 @@ def test_eq_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = EqFwdOp()
-    bm = ManifestBenchmark(_EQ_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.eq)
 
 
@@ -671,7 +671,7 @@ def test_ne_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = NeFwdOp()
-    bm = ManifestBenchmark(_NE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.ne)
 
 
@@ -683,7 +683,7 @@ def test_gt_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = GtFwdOp()
-    bm = ManifestBenchmark(_GT_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.gt)
 
 
@@ -695,7 +695,7 @@ def test_lt_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = LtFwdOp()
-    bm = ManifestBenchmark(_LT_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.lt)
 
 
@@ -707,7 +707,7 @@ def test_ge_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = GeFwdOp()
-    bm = ManifestBenchmark(_GE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.ge)
 
 
@@ -719,7 +719,7 @@ def test_le_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
     inputs = test.gen_inputs()
     op = LeFwdOp()
-    bm = ManifestBenchmark(_LE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.le)
 
 
@@ -733,7 +733,7 @@ def test_logical_and_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, logical=True)
     inputs = test.gen_inputs()
     op = LogicalAndFwdOp()
-    bm = ManifestBenchmark(_LOGICAL_AND_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.logical_and)
 
 
@@ -747,7 +747,7 @@ def test_logical_or_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, logical=True)
     inputs = test.gen_inputs()
     op = LogicalOrFwdOp()
-    bm = ManifestBenchmark(_LOGICAL_OR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.logical_or)
 
 
@@ -761,7 +761,7 @@ def test_bitwise_and_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, integer=True)
     inputs = test.gen_inputs()
     op = BitwiseAndFwdOp()
-    bm = ManifestBenchmark(_BITWISE_AND_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.bitwise_and)
 
 
@@ -775,7 +775,7 @@ def test_bitwise_or_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, integer=True)
     inputs = test.gen_inputs()
     op = BitwiseOrFwdOp()
-    bm = ManifestBenchmark(_BITWISE_OR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.bitwise_or)
 
 
@@ -789,7 +789,7 @@ def test_bitwise_xor_manifest_bench(
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, integer=True)
     inputs = test.gen_inputs()
     op = BitwiseXorFwdOp()
-    bm = ManifestBenchmark(_BITWISE_XOR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _record_binary(op, bm, inputs, torch.bitwise_xor)
 
 
@@ -804,7 +804,7 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
     test = WhereManifestWorkload(shape, dtype)
     cond, x, other = test.gen_inputs()
     op = WhereFwdOp()
-    bm = ManifestBenchmark(_WHERE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     bm.compare(
         {
             "tileops": op,
@@ -826,7 +826,7 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     test = LerpTensorManifestWorkload(shape, dtype)
     x, end, weight = test.gen_inputs()
     op = LerpTensorFwdOp()
-    bm = ManifestBenchmark(_LERP_TENSOR_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     bm.compare(
         {
             "tileops": op,

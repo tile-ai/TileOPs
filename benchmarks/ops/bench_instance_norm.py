@@ -47,7 +47,7 @@ def test_instance_norm_bench(
         weight = bias = None
 
     op = InstanceNormFwdOp(tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: torch.nn.functional.instance_norm
     def baseline_fn(x, running_mean, running_var, weight, bias):

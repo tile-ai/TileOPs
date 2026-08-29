@@ -664,7 +664,7 @@ def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str, par
 def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = SiluAndMulFwdOp()
-    bm = ManifestBenchmark(_SILU_AND_MUL_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _profile_fused_gated(bm, op, test, "silu_and_mul", {"M": M, "N": N, "dtype": dtype})
 
 
@@ -672,7 +672,7 @@ def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
 def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = GeluAndMulFwdOp()
-    bm = ManifestBenchmark(_GELU_AND_MUL_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _profile_fused_gated(bm, op, test, "gelu_and_mul", {"M": M, "N": N, "dtype": dtype})
 
 
@@ -680,7 +680,7 @@ def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
 def test_gelu_tanh_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = GeluTanhAndMulFwdOp()
-    bm = ManifestBenchmark(_GELU_TANH_AND_MUL_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul", {"M": M, "N": N, "dtype": dtype})
 
 

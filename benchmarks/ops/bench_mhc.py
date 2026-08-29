@@ -65,7 +65,7 @@ def test_mhc_pre_bench(
     inputs = (phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, _SINKHORN_EPS)
 
     op = MHCPreFwdOp(tune=_TUNE)
-    bm = ManifestBenchmark(_MHC_PRE_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
@@ -93,7 +93,7 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
     inputs = test.gen_inputs()
 
     op = MHCPostFwdOp(tune=_TUNE)
-    bm = ManifestBenchmark(_MHC_POST_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

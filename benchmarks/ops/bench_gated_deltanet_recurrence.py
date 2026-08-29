@@ -98,7 +98,7 @@ def test_gated_deltanet_decode_bench(
     inputs = test.gen_inputs()
 
     op = GatedDeltaNetDecodeFwdOp(tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     if fused_recurrent_gated_delta_rule is not None:

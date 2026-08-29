@@ -585,13 +585,13 @@ workloads:
 
 [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) runs five levels:
 
-| Level | Check     | Description                                                                                                                 |
-| ----- | --------- | --------------------------------------------------------------------------------------------------------------------------- |
-| L0    | Schema    | Required fields exist, correct types                                                                                        |
-| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                                                        |
-| L2    | Shape     | `shape_rules` are valid Python expressions                                                                                  |
-| L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                     |
-| L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
+| Level | Check     | Description                                                                                  |
+| ----- | --------- | -------------------------------------------------------------------------------------------- |
+| L0    | Schema    | Required fields exist, correct types                                                         |
+| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                         |
+| L2    | Shape     | `shape_rules` are valid Python expressions                                                   |
+| L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs      |
+| L4    | Benchmark | Bench file calls `load_workloads` with the op name, and hands that op to `ManifestBenchmark` |
 
 `spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on the targeted entry. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
 

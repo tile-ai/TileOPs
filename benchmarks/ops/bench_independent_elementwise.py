@@ -103,7 +103,7 @@ def test_clamp_tensor_bench(
     t_max = bounds.pop(0) if max_shape is not None else None
 
     op = ClampFwdOp()
-    bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_fn(x, t_min, t_max):
         return torch.clamp(x, t_min, t_max)
@@ -180,7 +180,7 @@ def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> tor
 def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
     workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
-    bm = ManifestBenchmark(_ALIBI_OP, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     def baseline_fn():
         return _alibi_reference(seq_len, num_heads, dtype)
@@ -200,7 +200,7 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
 def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
     workload = _GenerativeWorkload((seq_len, d_model), dtype)
-    bm = ManifestBenchmark(_SINUSOIDAL_OP, op, workload)
+    bm = ManifestBenchmark(op, workload)
 
     def baseline_fn():
         return _sinusoidal_reference(seq_len, d_model, dtype)

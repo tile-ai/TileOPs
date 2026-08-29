@@ -53,7 +53,7 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = SoftmaxFwdOp(dim=-1, tune=True)
-    bm = ManifestBenchmark(_SOFTMAX_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_fn(x):
         return F.softmax(x, dim=-1)
@@ -88,7 +88,7 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = LogSoftmaxFwdOp(dim=-1, tune=True)
-    bm = ManifestBenchmark(_LOG_SOFTMAX_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline_fn(x):
         return F.log_softmax(x, dim=-1)
@@ -127,7 +127,7 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> N
 
     op_params.setdefault("dim", -1)
     op = LogSumExpFwdOp(tune=True, **op_params)
-    bm = ManifestBenchmark(_LOGSUMEXP_OP, op, test)
+    bm = ManifestBenchmark(op, test)
     dim = op_params["dim"]
     keepdim = op_params.get("keepdim", False)
 

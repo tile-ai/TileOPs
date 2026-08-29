@@ -154,7 +154,7 @@ def test_gqa_decode_bench(
         softcap=softcap,
         tune=tune,
     )
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     fa3_fn = _fa3_gqa_decode_fwd(test)

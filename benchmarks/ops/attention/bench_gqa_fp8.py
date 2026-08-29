@@ -156,7 +156,7 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     op(*inputs)
     torch.cuda.synchronize()
 
-    bm = ManifestBenchmark(_OP_NAME, op, case)
+    bm = ManifestBenchmark(op, case)
     sdpa_fn = _torch_sdpa_dequant_fwd(case)
     # The tolerance tests/ops/attention/test_gqa_fp8.py holds its own dequantized
     # reference to: fp8 quantization is the whole difference between the two.

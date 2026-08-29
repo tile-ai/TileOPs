@@ -58,7 +58,7 @@ def test_cb_producer_fwd_bench(
     inputs = test.gen_inputs()
 
     op = CBProducerFwdOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
-    bm = ManifestBenchmark(_CB_PRODUCER_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {"tileops": op, "torch": (test.ref_program, inputs)}, *inputs, record_as=op, params=locals()
@@ -190,7 +190,7 @@ def test_da_cumsum_fwd_bench(
         dtype=dtype,
         tune=tune,
     )
-    bm = ManifestBenchmark(_DA_CUMSUM_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     # ── Mamba-2 Triton baseline ──
@@ -328,7 +328,7 @@ def test_ssd_chunk_scan_fwd_bench(
 
     # ── TileOPs kernel ──
     op = SSDChunkScanFwdOp(tune=tune)
-    bm = ManifestBenchmark(_CHUNK_SCAN_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     # ── Mamba-2 Triton baseline ──
@@ -420,7 +420,7 @@ def test_ssd_chunk_state_fwd_bench(
     inputs = test.gen_inputs()
 
     op = SSDChunkStateFwdOp(tune=tune)
-    bm = ManifestBenchmark(_CHUNK_STATE_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     if _mamba_chunk_state_fwd is not None:
@@ -480,7 +480,7 @@ def test_ssd_state_passing_fwd_bench(
     states, dA_chunk_cumsum, initial_states = inputs
 
     op = SSDStatePassingFwdOp(tune=tune)
-    bm = ManifestBenchmark(_STATE_PASSING_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     if _mamba_state_passing_fwd is not None:
@@ -575,7 +575,7 @@ def test_ssd_decode_bench(
     state_bl = state.clone()
 
     op = SSDDecodeFwdOp(tune=tune)
-    bm = ManifestBenchmark(_DECODE_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     def baseline(A, dt, x, B_in, C_in, state):

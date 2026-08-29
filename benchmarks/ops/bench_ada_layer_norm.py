@@ -24,7 +24,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = AdaLayerNormFwdOp()
-    bm = ManifestBenchmark(_ADA_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic
     def baseline_fn(x, scale, shift):
@@ -51,7 +51,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = AdaLayerNormZeroFwdOp()
-    bm = ManifestBenchmark(_ADA_ZERO_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic + gate
     def baseline_fn(x, scale, shift, gate):

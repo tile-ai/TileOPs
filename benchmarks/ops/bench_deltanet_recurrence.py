@@ -89,7 +89,7 @@ def test_deltanet_decode_bench(
     inputs = test.gen_inputs()
 
     op = DeltaNetDecodeFwdOp(tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

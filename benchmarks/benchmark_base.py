@@ -344,15 +344,14 @@ class ManifestBenchmark(BenchmarkBase[Any]):
     roofline variables during ``forward()``.
     """
 
-    def __init__(
-        self,
-        # Nothing reads it at run time; validate_manifest parses this argument to
-        # tie the benchmark file to a manifest entry, so it must stay a literal.
-        op_name: str,
-        op: Any,
-        workload: Any,
-    ):
+    def __init__(self, op: Any, workload: Any):
         super().__init__(workload)
+        self.op_name = type(op).__name__
+        if self.op_name not in load_manifest():
+            raise KeyError(
+                f"{self.op_name} is not a manifest op; a benchmark reports under the name the "
+                "manifest declares, so a wrapper or a subclass cannot stand in for one"
+            )
         self._op = op
         self._roofline_cache: Optional[tuple[float, float]] = None
 

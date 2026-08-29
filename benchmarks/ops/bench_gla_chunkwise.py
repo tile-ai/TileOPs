@@ -78,7 +78,7 @@ def test_gla_fwd_bench(
     # --- TileOPs ---
     scale = dim_k**-0.5
     op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
-    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op.forward}
 
     # --- FLA ---
@@ -132,7 +132,7 @@ def test_gla_bwd_bench(
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
 
     bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
-    bm = ManifestBenchmark(_BWD_OP_NAME, bwd_op, test)
+    bm = ManifestBenchmark(bwd_op, test)
     functors = {"tileops": (bwd_op.forward, (q, k, v, g, h, do, dht))}
 
     # --- FLA: the backward node, called directly ---

@@ -201,9 +201,8 @@ def _run_conv(
 ) -> None:
     """Profile op against flag_gems and torch on the same inputs, recording all.
 
-    One caller per manifest op, so each keeps a literal
-    ``ManifestBenchmark(<op name>, ...)`` the manifest validator matches
-    statically.
+    One caller per manifest op, so each ``ManifestBenchmark`` wraps the op the
+    manifest validator matches it against statically.
     """
     inputs = _conv_inputs(
         case.input_shape,
@@ -309,7 +308,7 @@ def test_conv1d_bench(case: ConvCase) -> None:
         groups=case.groups,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV1D_OP, op, ConvWorkload(case.input_shape, case.dtype))
+    bm = ManifestBenchmark(op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv1d, case, rank=1, with_bias=case.with_bias, static_weight=True)
 
 
@@ -335,7 +334,7 @@ def test_conv2d_bench(case: ConvCase) -> None:
         groups=case.groups,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV2D_OP, op, ConvWorkload(case.input_shape, case.dtype))
+    bm = ManifestBenchmark(op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv2d, case, rank=2, with_bias=case.with_bias)
 
 
@@ -361,5 +360,5 @@ def test_conv3d_bench(case: ConvCase) -> None:
         groups=case.groups,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV3D_OP, op, ConvWorkload(case.input_shape, case.dtype))
+    bm = ManifestBenchmark(op, ConvWorkload(case.input_shape, case.dtype))
     _run_conv(op, bm, F.conv3d, case, rank=3, with_bias=case.with_bias)

@@ -55,7 +55,7 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
 
     # TileOPs
     op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     op(mm2_pad, fwd_idx, topk_weights)  # warmup / JIT compile
     torch.cuda.synchronize()
 

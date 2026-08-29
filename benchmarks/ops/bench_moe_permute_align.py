@@ -163,7 +163,7 @@ def test_permute_align_bench(
 
     # TileOPs
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

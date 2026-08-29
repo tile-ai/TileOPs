@@ -126,7 +126,7 @@ def test_moe_experts_nopad_bench(
         hidden_size=hidden_size,
         ffn_size=ffn_size,
     )
-    bm = ManifestBenchmark(_OP_NAME, nopad, test)
+    bm = ManifestBenchmark(nopad, test)
 
     def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
         nopad.forward(

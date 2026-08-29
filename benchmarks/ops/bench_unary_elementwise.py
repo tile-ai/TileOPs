@@ -80,9 +80,9 @@ def _profile_and_record(
     """Profile op and torch baseline against the same inputs and record both.
 
     ``ManifestBenchmark`` must be constructed at the call site of each per-op
-    test (with the literal op-name constant) so that the manifest validator's
-    AST check can tie ``ManifestBenchmark("<OpName>FwdOp", ...)`` to the
-    intended op. This helper only handles the profile + record pair.
+    test, wrapping that test's own op, so the manifest validator's AST check can
+    tie the call to the op it measures. This helper only handles the profile +
+    record pair.
 
     ``params`` is the workload metadata (shape / dtype / n_total) from the
     caller's scope; passing it explicitly keeps the report rows distinguishable
@@ -101,9 +101,9 @@ def _profile_and_record(
         raise
 
 
-# Per-op constants and tests — one block per manifest entry so the
-# validator AST check ties each ``load_workloads(<OpName>)`` /
-# ``ManifestBenchmark(<OpName>, ...)`` call to its op.
+# Per-op constants and tests — one block per manifest entry so the validator AST
+# check ties each ``load_workloads(<OpName>)`` call, and the op each
+# ``ManifestBenchmark`` wraps, to that entry.
 
 _EXP_OP = "ExpFwdOp"
 
@@ -113,7 +113,7 @@ def test_exp_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = ExpFwdOp()
-    bm = ManifestBenchmark(_EXP_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.exp, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -127,7 +127,7 @@ def test_log_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
     op = LogFwdOp()
-    bm = ManifestBenchmark(_LOG_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.log, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -141,7 +141,7 @@ def test_sqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
     op = SqrtFwdOp()
-    bm = ManifestBenchmark(_SQRT_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.sqrt, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -155,7 +155,7 @@ def test_rsqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
     op = RsqrtFwdOp()
-    bm = ManifestBenchmark(_RSQRT_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.rsqrt, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -169,7 +169,7 @@ def test_abs_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = AbsFwdOp()
-    bm = ManifestBenchmark(_ABS_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.abs, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -183,7 +183,7 @@ def test_neg_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = NegFwdOp()
-    bm = ManifestBenchmark(_NEG_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.neg, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -197,7 +197,7 @@ def test_reciprocal_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
     op = ReciprocalFwdOp()
-    bm = ManifestBenchmark(_RECIPROCAL_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.reciprocal, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -211,7 +211,7 @@ def test_sign_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = SignFwdOp()
-    bm = ManifestBenchmark(_SIGN_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.sign, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -225,7 +225,7 @@ def test_sin_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = SinFwdOp()
-    bm = ManifestBenchmark(_SIN_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.sin, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -239,7 +239,7 @@ def test_cos_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = CosFwdOp()
-    bm = ManifestBenchmark(_COS_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.cos, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -253,7 +253,7 @@ def test_floor_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = FloorFwdOp()
-    bm = ManifestBenchmark(_FLOOR_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.floor, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -267,7 +267,7 @@ def test_ceil_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = CeilFwdOp()
-    bm = ManifestBenchmark(_CEIL_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.ceil, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -281,7 +281,7 @@ def test_round_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = RoundFwdOp()
-    bm = ManifestBenchmark(_ROUND_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.round, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -295,7 +295,7 @@ def test_trunc_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = TruncFwdOp()
-    bm = ManifestBenchmark(_TRUNC_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.trunc, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -309,7 +309,7 @@ def test_erf_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = ErfFwdOp()
-    bm = ManifestBenchmark(_ERF_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.erf, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -323,7 +323,7 @@ def test_log1p_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
     op = Log1pFwdOp()
-    bm = ManifestBenchmark(_LOG1P_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.log1p, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -337,7 +337,7 @@ def test_expm1_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
     op = Expm1FwdOp()
-    bm = ManifestBenchmark(_EXPM1_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.expm1, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -355,7 +355,7 @@ def test_logical_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_bool(shape, dtype)
     n_total = inputs[0].numel()
     op = LogicalNotFwdOp()
-    bm = ManifestBenchmark(_LOGICAL_NOT_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.logical_not, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -369,7 +369,7 @@ def test_bitwise_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_int(shape, dtype)
     n_total = inputs[0].numel()
     op = BitwiseNotFwdOp()
-    bm = ManifestBenchmark(_BITWISE_NOT_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.bitwise_not, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -383,7 +383,7 @@ def test_isnan_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
     n_total = inputs[0].numel()
     op = IsnanFwdOp()
-    bm = ManifestBenchmark(_ISNAN_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.isnan, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -397,7 +397,7 @@ def test_isinf_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
     n_total = inputs[0].numel()
     op = IsinfFwdOp()
-    bm = ManifestBenchmark(_ISINF_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.isinf, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )
@@ -411,7 +411,7 @@ def test_isfinite_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
     n_total = inputs[0].numel()
     op = IsfiniteFwdOp()
-    bm = ManifestBenchmark(_ISFINITE_OP, op, UnaryWorkload(shape, dtype))
+    bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.isfinite, {"shape": shape, "dtype": dtype, "n_total": n_total}
     )

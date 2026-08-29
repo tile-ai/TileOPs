@@ -93,7 +93,7 @@ def test_grouped_gemm_bench(
     inputs = test.gen_inputs()
 
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)
-    bm = ManifestBenchmark(_GROUPED_GEMM_OP, op, test)
+    bm = ManifestBenchmark(op, test)
 
     functors = {
         "tileops": op,

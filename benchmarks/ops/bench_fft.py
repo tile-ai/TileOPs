@@ -25,7 +25,7 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     op(*inputs)
     torch.cuda.synchronize()
 
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {

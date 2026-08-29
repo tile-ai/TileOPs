@@ -69,7 +69,7 @@ def test_deltanet_vs_fla_fwd(
 
     # --- TileOPs (BHSD) ---
     op = DeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
-    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
     # --- FLA (BTHK) ---
@@ -116,7 +116,7 @@ def test_deltanet_vs_fla_bwd(
     _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
 
     bwd_op = DeltaNetBwdOp(chunk_size=BC, tune=tune)
-    bm = ManifestBenchmark(_BWD_OP_NAME, bwd_op, test)
+    bm = ManifestBenchmark(bwd_op, test)
     functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---

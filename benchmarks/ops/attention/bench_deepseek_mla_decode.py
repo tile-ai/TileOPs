@@ -40,7 +40,7 @@ def test_mla_decode_bench(
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
         batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune
     )
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
