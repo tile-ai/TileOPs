@@ -11,6 +11,13 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 from ._common import _launch, conv_autotune_configs
+from .call_spec import (
+    Conv2dCall,
+    conv2d_dense_region,
+    conv2d_group_region,
+    conv2d_pointwise_region,
+    conv2d_symmetric_region,
+)
 
 __all__ = [
     "Conv2d1x1Kernel",
@@ -720,6 +727,10 @@ def _conv2d_symmetric_kernel(
 class Conv2dSymmetricKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    @classmethod
+    def applies(cls, call: Conv2dCall) -> bool:
+        return conv2d_symmetric_region(call)
+
     def __init__(
         self,
         n: int,
@@ -813,7 +824,12 @@ class Conv2dSymmetricKernel(Kernel):
 
 
 class Conv2dKernel(Kernel):
+    general = True
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv2dCall) -> bool:
+        return conv2d_dense_region(call)
 
     def __init__(
         self,
@@ -924,6 +940,10 @@ class Conv2dKernel(Kernel):
 
 class GroupConv2dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv2dCall) -> bool:
+        return conv2d_group_region(call)
 
     def __init__(
         self,
@@ -1073,6 +1093,10 @@ class GroupConv2dKernel(Kernel):
 
 class Conv2d1x1Kernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv2dCall) -> bool:
+        return conv2d_pointwise_region(call)
 
     def __init__(
         self,

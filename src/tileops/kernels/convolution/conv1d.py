@@ -11,6 +11,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 from ._common import _launch, conv_autotune_configs
+from .call_spec import Conv1dCall, conv1d_dense_region, conv1d_group_region, conv1d_pointwise_region
 
 __all__ = [
     "Conv1dKernel",
@@ -471,6 +472,10 @@ def _conv1d_pointwise_kernel(
 class Conv1dPointwiseKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    @classmethod
+    def applies(cls, call: Conv1dCall) -> bool:
+        return conv1d_pointwise_region(call)
+
     def __init__(
         self,
         n: int,
@@ -537,7 +542,12 @@ class Conv1dPointwiseKernel(Kernel):
 
 
 class Conv1dKernel(Kernel):
+    general = True
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv1dCall) -> bool:
+        return conv1d_dense_region(call)
 
     def __init__(
         self,
@@ -644,6 +654,10 @@ class Conv1dKernel(Kernel):
 
 class GroupConv1dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: Conv1dCall) -> bool:
+        return conv1d_group_region(call)
 
     def __init__(
         self,

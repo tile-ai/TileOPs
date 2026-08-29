@@ -15,7 +15,12 @@ from tileops.kernels.convolution import (
     GroupConv2dKernel,
     GroupConv3dKernel,
 )
-from tileops.kernels.convolution.call_spec import Conv3dCall, conv3d_ndhwc_region
+from tileops.kernels.convolution.call_spec import (
+    Conv1dCall,
+    Conv2dCall,
+    Conv3dCall,
+    conv3d_ndhwc_region,
+)
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -230,6 +235,42 @@ def _conv1d_l_out(
     return l_out
 
 
+def _conv1d_call(
+    *,
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    c_in_g: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_left: int,
+    pad_right: int,
+    dilation_l: int,
+    groups: int,
+    out_l: int,
+    dtype: torch.dtype,
+    has_bias: bool,
+) -> Conv1dCall:
+    """Build the Conv1d dispatch record after op-level validation."""
+    return Conv1dCall(
+        n=n,
+        c_in=c_in,
+        c_out=c_out,
+        c_in_g=c_in_g,
+        l_in=l_in,
+        kernel_l=kernel_l,
+        stride_l=stride_l,
+        pad_left=pad_left,
+        pad_right=pad_right,
+        dilation_l=dilation_l,
+        groups=groups,
+        out_l=out_l,
+        dtype=dtype,
+        has_bias=has_bias,
+    )
+
+
 class Conv1dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv1d_fwd",)
@@ -331,24 +372,28 @@ class Conv1dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        use_pointwise = (
-            self.groups == 1
-            and kernel_l == 1
-            and self.stride == 1
-            and pad_left == 0
-            and pad_right == 0
-            and self.dilation == 1
-            and "conv1d_pointwise_kernel" in self.kernel_map
+        call = _conv1d_call(
+            n=n,
+            c_in=c_in,
+            l_in=l_in,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            kernel_l=kernel_l,
+            stride_l=self.stride,
+            pad_left=pad_left,
+            pad_right=pad_right,
+            dilation_l=self.dilation,
+            groups=self.groups,
+            out_l=out_l,
+            dtype=dtype,
+            has_bias=has_bias,
         )
-        use_group = self.groups > 1 and "group_conv1d_kernel" in self.kernel_map
-        if use_pointwise:
-            variant = "pointwise"
-        elif use_group:
-            variant = "group"
-        else:
-            variant = "general"
+        selected_key = self.select_kernel_key(
+            ("conv1d_pointwise_kernel", "group_conv1d_kernel", "conv1d_kernel"),
+            call,
+        )
         key = (
-            variant,
+            selected_key,
             n,
             c_in,
             l_in,
@@ -376,9 +421,9 @@ class Conv1dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
-            if use_pointwise:
+            if selected_key == "conv1d_pointwise_kernel":
                 return self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
-            elif use_group:
+            elif selected_key == "group_conv1d_kernel":
                 return self.kernel_map["group_conv1d_kernel"](
                     **kernel_kwargs,
                     kernel_l=kernel_l,
@@ -577,6 +622,46 @@ def _conv_out_dim(
     return (input_size + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
 
 
+def _conv2d_call(
+    *,
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    c_in_g: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride: tuple[int, int],
+    padding: tuple[int, int],
+    dilation: tuple[int, int],
+    groups: int,
+    out_h: int,
+    out_w: int,
+    dtype: torch.dtype,
+    has_bias: bool,
+) -> Conv2dCall:
+    """Build the Conv2d dispatch record after op-level validation."""
+    return Conv2dCall(
+        n=n,
+        c_in=c_in,
+        c_out=c_out,
+        c_in_g=c_in_g,
+        h=h,
+        w=w,
+        kernel_h=kernel_h,
+        kernel_w=kernel_w,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        out_h=out_h,
+        out_w=out_w,
+        dtype=dtype,
+        has_bias=has_bias,
+    )
+
+
 class Conv2dFwdOp(Op):
     #: The operator this op registers; a test asserts the graph holds nothing else.
     compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv2d_fwd",)
@@ -709,39 +794,35 @@ class Conv2dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        is_symmetric = (
-            kernel_h == kernel_w
-            and self.stride[0] == self.stride[1]
-            and pad_h == pad_w
-            and self.dilation[0] == self.dilation[1]
+        call = _conv2d_call(
+            n=n,
+            c_in=c_in,
+            h=h,
+            w=w,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            stride=self.stride,
+            padding=(pad_h, pad_w),
+            dilation=self.dilation,
+            groups=self.groups,
+            out_h=out_h,
+            out_w=out_w,
+            dtype=dtype,
+            has_bias=has_bias,
         )
-        can_use_symmetric_kernel = is_symmetric and c_in % 32 == 0
-        use_pointwise = (
-            self.groups == 1
-            and kernel_h == 1
-            and kernel_w == 1
-            and self.stride == (1, 1)
-            and pad_h == 0
-            and pad_w == 0
-            and self.dilation == (1, 1)
-            and "conv2d_1x1_kernel" in self.kernel_map
+        selected_key = self.select_kernel_key(
+            (
+                "conv2d_1x1_kernel",
+                "conv2d_symmetric_kernel",
+                "group_conv2d_kernel",
+                "conv2d_kernel",
+            ),
+            call,
         )
-        use_symmetric = (
-            self.groups == 1
-            and can_use_symmetric_kernel
-            and "conv2d_symmetric_kernel" in self.kernel_map
-        )
-        use_group = self.groups > 1 and "group_conv2d_kernel" in self.kernel_map
-        if use_pointwise:
-            variant = "1x1"
-        elif use_symmetric:
-            variant = "symmetric"
-        elif use_group:
-            variant = "group"
-        else:
-            variant = "general"
         key = (
-            variant,
+            selected_key,
             n,
             c_in,
             h,
@@ -775,9 +856,9 @@ class Conv2dFwdOp(Op):
                 has_bias=has_bias,
                 tune=self.tune,
             )
-            if use_pointwise:
+            if selected_key == "conv2d_1x1_kernel":
                 return self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
-            elif use_symmetric:
+            elif selected_key == "conv2d_symmetric_kernel":
                 return self.kernel_map["conv2d_symmetric_kernel"](
                     n=n,
                     c_in=c_in,
@@ -792,7 +873,7 @@ class Conv2dFwdOp(Op):
                     has_bias=has_bias,
                     tune=self.tune,
                 )
-            elif use_group:
+            elif selected_key == "group_conv2d_kernel":
                 return self.kernel_map["group_conv2d_kernel"](
                     **kernel_kwargs,
                     kernel_h=kernel_h,
