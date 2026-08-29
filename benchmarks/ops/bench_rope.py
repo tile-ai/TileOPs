@@ -4,8 +4,8 @@ Workload shapes, dtypes, layouts, and roofline formulas are loaded from the
 ops manifest (``src/tileops/manifest/position_encoding.yaml``); nothing about a
 workload is hard-coded here.
 
-One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
-``load_workloads("<OpName>")`` call to its manifest entry.
+One ``test_*_bench`` per op, so every op this file is declared the benchmark
+of records a row of its own.
 
 Baselines build their cos/sin tables outside the timed window, so only the
 rotation itself is measured.

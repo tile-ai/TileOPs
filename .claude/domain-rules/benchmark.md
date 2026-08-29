@@ -12,4 +12,5 @@ ______________________________________________________________________
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
 - Name the scenario (`serving-130m-4k`), not the parameters; a `label` omits the dtype, the case id appends it. The `workload-names-lint` hook checks a name exists, not that it reads as one.
 - Tag names: lowercase, hyphen-separated. A `tileops` prefix marks a TileOPs entry; everything else is a baseline.
+- Every op records at least one row under its own instance (`record_as=op`); what distinguishes cases goes in `params`, never into the row's name. A study of something other than the op — a kernel strategy, a broadcast pattern — may take a name of its own beside those rows. `scripts/check_bench_coverage.py` fails an op whose benchmark passed without recording it.
 - Benchmark shapes reflect real DNN workloads (LLaMA-family by default). Annotate shape constants with the model/scenario; never arbitrary flat numbers (262K, 1M, 4M).

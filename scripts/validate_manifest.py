@@ -3513,205 +3513,63 @@ def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_constant_str_bindings(tree: ast.Module) -> dict[str, str]:
-    """Collect simple module-level string constants: NAME = 'value'."""
-    bindings: dict[str, str] = {}
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            bindings[target.id] = node.value.value
-    return bindings
+def _reads_manifest_workloads(tree: ast.Module) -> bool:
+    """Whether the file loads its workloads from the manifest.
 
-
-def _call_uses_expected_op_name(
-    call: ast.Call,
-    expected_op_name: str,
-    bindings: dict[str, str],
-) -> bool:
-    """Return True when call(arg0, ...) uses the expected op name."""
-    if not call.args:
-        return False
-    first_arg = call.args[0]
-    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
-        return first_arg.value == expected_op_name
-    if isinstance(first_arg, ast.Name):
-        return bindings.get(first_arg.id) == expected_op_name
-    return False
-
-
-def _op_classes_benchmarked(tree: ast.Module, known_ops: set) -> tuple[set[str], bool]:
-    """Op classes the file's ``ManifestBenchmark`` calls wrap, and whether all resolved.
-
-    Benchmarks are written one way: the test builds its op and hands it over, so the
-    op argument is ``N(...)``, or a name the enclosing function assigns once to
-    ``N(...)``. Those two shapes resolve. Anything else — a factory, a loop variable,
-    a name assigned twice — does not, and an unresolved call fails the check rather
-    than falling back: the benchmark is not written the way the check reads, and the
-    fix is to write it that way.
-
-    Returns:
-        The resolved class names, and whether every ``ManifestBenchmark`` call in the
-        file resolved. A file with no such call reports ``True``: it satisfies the
-        roofline half another way, which is what the caller falls back on.
+    Either ``load_workloads`` from ``tileops.manifest`` or the
+    ``workloads_to_params`` wrapper in ``benchmarks.benchmark_base``, imported
+    and called. Which op it names is a run-time fact, checked against a
+    benchmark run by ``scripts/check_bench_coverage.py``, never against the
+    source: a bench file may reach its op through a loop, a factory or a
+    helper, and none of those shapes is worse than a literal.
     """
-    resolved: set[str] = set()
-    all_resolved = True
-
-    def assigned_class(name: str, scopes: list) -> "str | None":
-        """The class *name* is assigned, when one scope assigns it exactly once."""
-        for body in scopes:
-            assigns = [
-                node
-                for node in ast.walk(ast.Module(body=body, type_ignores=[]))
-                if isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
-            ]
-            if not assigns:
-                continue
-            if len(assigns) != 1:
-                return None
-            value = assigns[0].value
-            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
-                return value.func.id
-            return None
-        return None
-
-    def visit(node: ast.AST, scopes: list) -> None:
-        nonlocal all_resolved
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, [child.body] + scopes)
-                continue
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id == "ManifestBenchmark"
-                and child.args
-            ):
-                arg = child.args[0]
-                if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name):
-                    name = arg.func.id
-                elif isinstance(arg, ast.Name):
-                    name = assigned_class(arg.id, scopes)
-                else:
-                    name = None
-                if name in known_ops:
-                    resolved.add(name)
-                else:
-                    all_resolved = False
-            visit(child, scopes)
-
-    visit(tree, [tree.body])
-    return resolved, all_resolved
-
-
-def _file_builds_class(tree: ast.Module, op_name: str) -> bool:
-    """Whether the file constructs *op_name*.
-
-    The tie for a file with its own ``BenchmarkBase`` subclass, which takes its op
-    somewhere this check does not read. Importing the class is not enough: a file
-    imports what it names in a type hint or a comparison too.
-    """
-    return any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == op_name
-        for node in ast.walk(tree)
-    )
-
-
-def _ast_manifest_call_usage(
-    tree: ast.Module,
-    op_name: str,
-    target_names: set[str],
-    known_ops: set,
-) -> dict[str, bool]:
-    """Check whether target functions are imported and used for this op.
-
-    ``load_workloads`` matches on the op name it is called with, directly or
-    through ``workloads_to_params``. ``eval_roofline`` matches on the op class a
-    ``ManifestBenchmark`` call wraps; where no call in the file resolves to a
-    class, on the file naming that class.
-    """
-    # Maps from the indirect helper name → the direct target it satisfies.
-    # workloads_to_params wraps load_workloads and carries the same op-name argument.
-    # ManifestBenchmark is not here: it no longer takes a name, and the op it wraps is
-    # read by _op_classes_benchmarked instead.
-    _INDIRECT_EQUIV: dict[str, str] = {"workloads_to_params": "load_workloads"}
-
-    imported: set[str] = set()
-    matched_calls: set[str] = set()
-    direct_roofline = False
-    bindings = _resolve_constant_str_bindings(tree)
-
+    imported = False
+    called = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.module == "tileops.manifest" and node.names:
-                for alias in node.names:
-                    if alias.name in target_names:
-                        imported.add(alias.name)
-            # Indirect helpers live in benchmarks.benchmark_base.
-            if node.module == "benchmarks.benchmark_base" and node.names:
-                for alias in node.names:
-                    equiv = _INDIRECT_EQUIV.get(alias.name)
-                    if equiv and equiv in target_names:
-                        imported.add(equiv)
+        if isinstance(node, ast.ImportFrom) and node.names:
+            module_targets = {
+                "tileops.manifest": "load_workloads",
+                "benchmarks.benchmark_base": "workloads_to_params",
+            }
+            target = module_targets.get(node.module or "")
+            if target and any(alias.name == target for alias in node.names):
+                imported = True
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            func_name = node.func.id
-            # Direct call (load_workloads).
-            if func_name in target_names and _call_uses_expected_op_name(
-                node,
-                op_name,
-                bindings,
-            ):
-                matched_calls.add(func_name)
-            # Indirect call (workloads_to_params).
-            equiv = _INDIRECT_EQUIV.get(func_name)
-            if (
-                equiv
-                and equiv in target_names
-                and _call_uses_expected_op_name(
-                    node,
-                    op_name,
-                    bindings,
-                )
-            ):
-                matched_calls.add(equiv)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "eval_roofline"
-            and "eval_roofline" in target_names
-        ):
-            direct_roofline = True
-
-    if "eval_roofline" in target_names:
-        # The roofline half ties to the op the benchmark wraps. A call this check cannot
-        # read fails; only a file with no such call at all — its own BenchmarkBase
-        # subclass — ties by building the op instead.
-        resolved, all_resolved = _op_classes_benchmarked(tree, known_ops)
-        ties = op_name in resolved or (
-            all_resolved and not resolved and direct_roofline and _file_builds_class(tree, op_name)
-        )
-        if ties:
-            imported.add("eval_roofline")
-            matched_calls.add("eval_roofline")
-
-    return {name: (name in imported and name in matched_calls) for name in target_names}
+            if node.func.id in ("load_workloads", "workloads_to_params"):
+                called = True
+    return imported and called
 
 
-def check_l4_benchmark(
-    op_name: str,
-    bench_path: str,
-    repo_root: Path,
-    known_ops: set,
-) -> list[str]:
-    """Check that the benchmark file uses manifest workloads and op roofline.
+def _reads_op_roofline(tree: ast.Module) -> bool:
+    """Whether the file takes its roofline off an Op, not off its own arithmetic.
+
+    ``<expr>.eval_roofline()`` directly, or a ``ManifestBenchmark`` — which
+    reads the roofline off the op it wraps — imported and constructed.
+    """
+    imported = False
+    called = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "benchmarks.benchmark_base":
+            if any(alias.name == "ManifestBenchmark" for alias in node.names):
+                imported = True
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "ManifestBenchmark":
+                called = True
+            elif isinstance(node.func, ast.Attribute) and node.func.attr == "eval_roofline":
+                return True
+    return imported and called
+
+
+def check_l4_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[str]:
+    """Check that the benchmark file obeys the benchmark contract.
 
     Uses Python AST parsing (no execution) to verify actual import and usage,
     rather than raw substring matching which can be fooled by comments.
+
+    This is a property of the file: its workloads come from the manifest and
+    its roofline comes from the op. Which manifest entry the file benchmarks is
+    a separate question, answered from a run's report by
+    ``scripts/check_bench_coverage.py``.
 
     Returns a list of hard validation errors.
     """
@@ -3724,28 +3582,23 @@ def check_l4_benchmark(
         errors.append(f"[bench] {op_name}: bench file not found: {bench_path}")
         return errors
 
-    content = full_path.read_text(encoding="utf-8")
-
     try:
-        tree = ast.parse(content, filename=bench_path)
+        tree = ast.parse(full_path.read_text(encoding="utf-8"), filename=bench_path)
     except SyntaxError as exc:
         errors.append(f"[bench] {op_name}: bench file {bench_path} has syntax error: {exc}")
         return errors
 
-    targets = {"load_workloads", "eval_roofline"}
-    usage = _ast_manifest_call_usage(tree, op_name, targets, known_ops)
-
-    if not usage["load_workloads"]:
+    if not _reads_manifest_workloads(tree):
         errors.append(
-            f"[bench] {op_name}: bench file {bench_path} must import "
-            f"load_workloads from tileops.manifest and call it with op name {op_name!r}"
+            f"[bench] {op_name}: bench file {bench_path} must import and call "
+            "load_workloads from tileops.manifest, or workloads_to_params from "
+            "benchmarks.benchmark_base"
         )
-    if not usage["eval_roofline"]:
+    if not _reads_op_roofline(tree):
         errors.append(
-            f"[bench] {op_name}: bench file {bench_path} must hand a {op_name} to "
-            f"ManifestBenchmark — built in the call, or assigned once in the test: "
-            f"op = {op_name}(...); ManifestBenchmark(op, workload). A file with its own "
-            f"BenchmarkBase subclass names {op_name} instead"
+            f"[bench] {op_name}: bench file {bench_path} must take its roofline "
+            "off the op — eval_roofline() on an Op instance, or a "
+            "ManifestBenchmark construction"
         )
     return errors
 
@@ -4360,7 +4213,7 @@ def validate_manifest(
             all_errors.extend(check_bench_declaration(op_name, entry))
             bench_path = entry.get("source", {}).get("bench", "")
             if bench_path:
-                bench_errors = check_l4_benchmark(op_name, bench_path, repo_root, set(ops))
+                bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)
                 if _is_bench_manifest_driven(entry):
                     all_errors.extend(bench_errors)
                 else:

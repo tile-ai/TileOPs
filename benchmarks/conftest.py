@@ -31,7 +31,7 @@ def pytest_make_parametrize_id(config, val, argname):
 
 
 # Set by the recorder, not measurements.
-_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module"})
+_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops"})
 
 
 def _prop(value) -> str:
@@ -106,6 +106,11 @@ def pytest_runtest_call(item):
 
         if tileops_entry:
             item.user_properties.append(("op", tileops_entry["op"]))
+            # Every op this case benchmarked, for the coverage gate: one case
+            # may time more than one, and the row properties above describe
+            # only the first.
+            benchmarked = sorted({e["op"] for e in entries if e["tag"].startswith("tileops")})
+            item.user_properties.append(("ops", ",".join(benchmarked)))
             if "op_module" in tileops_entry:
                 item.user_properties.append(("op_module", tileops_entry["op_module"]))
             tag = tileops_entry["tag"]

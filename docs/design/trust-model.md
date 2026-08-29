@@ -57,6 +57,17 @@ A baseline that is a different implementation is timed under its own tag next
 to the reference: the tag is what names it in the report, so it is checked
 against the reference before the case is timed.
 
+Which manifest entry a benchmark measures is settled by running it, not by
+reading it. The op is whatever class the benchmark constructs, so the run's
+report carries that class's name and is compared against the entries declaring a
+benchmark. A source check can only look for a marker, and a marker is not the op:
+it goes unchecked against what ran, and it makes the shape of the source — a
+literal here, a construction there — a condition of passing.
+
+What the source does answer is the file's own contract: workloads from the
+manifest, roofline from the op. That needs no op name, so no benchmark shape is
+illegal.
+
 [`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
 checks the `tests/` import and a locally defined `gen_inputs`, both by literal
 name.

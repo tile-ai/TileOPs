@@ -4,8 +4,8 @@ Measures latency, FLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes, dtypes, and roofline formulas are loaded from the ops
 manifest (``src/tileops/manifest/elementwise_unary_math.yaml``).
 
-One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
-``load_workloads("<OpName>")`` call to its manifest entry. A shared
+One ``test_*_bench`` per op, so every op this file is declared the benchmark
+of records a row of its own. A shared
 ``_profile_and_record`` helper handles the profile + record pair so the
 per-op functions stay tiny and intentional.
 
@@ -79,10 +79,9 @@ def _profile_and_record(
 ) -> None:
     """Profile op and torch baseline against the same inputs and record both.
 
-    ``ManifestBenchmark`` must be constructed at the call site of each per-op
-    test, wrapping that test's own op, so the manifest validator's AST check can
-    tie the call to the op it measures. This helper only handles the profile +
-    record pair.
+    ``ManifestBenchmark`` is constructed at the call site of each per-op test,
+    over the op that test builds. This helper only handles the profile + record
+    pair.
 
     ``params`` is the workload metadata (shape / dtype / n_total) from the
     caller's scope; passing it explicitly keeps the report rows distinguishable
@@ -101,9 +100,8 @@ def _profile_and_record(
         raise
 
 
-# Per-op constants and tests — one block per manifest entry so the validator AST
-# check ties each ``load_workloads(<OpName>)`` call, and the op each
-# ``ManifestBenchmark`` wraps, to that entry.
+# Per-op constants and tests — one block per manifest entry, so each op loads
+# its own workloads and records a row of its own.
 
 _EXP_OP = "ExpFwdOp"
 

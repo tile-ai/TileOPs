@@ -171,6 +171,20 @@ jobs:
           fi
         shell: bash
 
+      - name: Check benchmark coverage
+        id: bench_coverage
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          # Which op each bench file measured is read off the run's own report:
+          # a benchmark that passes without benchmarking the op its manifest
+          # entry declares is a coverage gap no static check can see.
+          python3 scripts/check_bench_coverage.py \
+            --bench-xml bench_results.xml \
+            --output bench_coverage.md
+        shell: bash
+
       - name: Record the run environment
         if: ${{ always() }}
         run: |
@@ -188,13 +202,16 @@ jobs:
           path: |
             tileops_benchmarks.log
             bench_results.xml
+            bench_coverage.md
             env.json
             bench_stack_dumps/
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Fail benchmark job if pytest failed
-        if: ${{ always() && steps.benchmark_tests.outcome == 'failure' }}
+      - name: Fail benchmark job if pytest or the coverage check failed
+        if: >-
+          ${{ always() && (steps.benchmark_tests.outcome == 'failure'
+          || steps.bench_coverage.outcome == 'failure') }}
         run: exit 1
         shell: bash
 
