@@ -13,6 +13,7 @@ from ._broadcast import (
     _is_contiguous_same_shape,
     coalesce_broadcast_dims,
     register_broadcast_plan,
+    row_broadcast_split,
 )
 from ._builders import (
     _make_binary_direct,
@@ -70,6 +71,10 @@ class _ElementwiseKernel(Kernel):
     #: Dtype the result is cast back to when the kernel writes a wider one.
     _fp8_output_dtype = None
 
+    #: Extent of the row a broadcast block walks, or ``None`` where blocks are not
+    #: cut from rows. Only the binary families lay a grid out that way.
+    row_broadcast_inner: int | None = None
+
     @property
     def stage_broadcast(self) -> bool:
         """Whether a broadcast block reads and writes through fragments.
@@ -109,6 +114,7 @@ class _StrategyKernel(_ElementwiseKernel):
             n_total=self.N_total,
             stores_bool=not self._bool_via_int8,
             bytes_per_thread=self.BYTES_PER_THREAD,
+            row_broadcast_inner=self.row_broadcast_inner,
         )
 
     @property
@@ -298,6 +304,8 @@ class BinaryKernel(_StrategyKernel):
             a_strides,
             b_strides,
         )
+        split = row_broadcast_split(coalesced_shape, a_strides, b_strides)
+        self.row_broadcast_inner = None if self._same_shape or split is None else split[1]
         requested = (config or {}).get("strategy")
         self.strategy = choose_binary_strategy(
             requested=requested,

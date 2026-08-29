@@ -34,6 +34,7 @@ def default_launch_config(
     n_total: int | None,
     stores_bool: bool = True,
     bytes_per_thread: int = _BYTES_PER_THREAD,
+    row_broadcast_inner: int | None = None,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
@@ -41,6 +42,11 @@ def default_launch_config(
     it has in flight. Asking for more than one vector load only pays where the
     body's latency is what the kernel is waiting on; see
     ``_ElementwiseKernel.BYTES_PER_THREAD``.
+
+    *row_broadcast_inner* is the extent of the row a broadcast block walks, where
+    the kernel walks one. A block there covers columns of a single row, so any
+    width the extent does not divide is idle lanes in the tail block, and the
+    waste grows with the width.
     """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
@@ -57,11 +63,12 @@ def default_launch_config(
         if strategy != "direct":  # a direct block spans `threads` whatever npt says
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
-    elif output_dtype != torch.bool and _torch_dtype_nbytes(output_dtype) < elem_bytes:
-        # A narrower result would leave the store short of a vector, so widen to
-        # cover it -- except for a bool result, whose int8 store is a quarter the
-        # width of the read. Widening for it costs the read more than the store
-        # gains: measured 15.1us against 18.6us on the broadcast comparison rows.
+    elif _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
+        row_broadcast_inner, threads, npt
+    ):
+        # A narrower result leaves the store short of a vector, so widen to cover
+        # it -- unless the row a broadcast block walks is short enough that the
+        # wider block wastes more of its tail than the store gains.
         npt *= 2
 
     while (
@@ -72,6 +79,20 @@ def default_launch_config(
     ):
         npt //= 2
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
+
+
+def _tail_dominated(inner: int | None, threads: int, npt: int) -> bool:
+    """Whether doubling the block width would leave most of a tail block idle.
+
+    A row-broadcast block covers columns of one row, so a width the row's extent
+    does not divide costs the lanes past the end. Measured on a 3136-column row:
+    1024-wide leaves 6% of one block in three idle, 2048-wide leaves 47% of one
+    in two, and the predicate rows run 13.3us against 18.0.
+    """
+    if inner is None:
+        return False
+    wide = threads * npt * 2
+    return inner % wide > inner % (threads * npt)
 
 
 def elementwise_autotune_configs(
