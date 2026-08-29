@@ -167,9 +167,6 @@ def test_broadcast_binary_helper_bool_output_byte_accounting():
     assert nbytes == (1024 + 1024) * 4 + 1024
 
 
-# `test_channel_broadcast_with_ragged_inner_dim` above already covers a ragged
-# tail on both paths -- maximum stages, div does not. What it does not reach is a
-# staged block handed an operand at inner stride 0, or both at 1.
 _STAGED_SHAPES = [
     pytest.param((4, 1), (4, 1000), id="inner-stride-0-and-1"),
     pytest.param((4, 1000), (1, 1000), id="inner-stride-1-and-1"),

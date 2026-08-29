@@ -9,8 +9,7 @@ _CLAMP = 3.6
 
 #: erf(x) = clip(t * P(w), -1, 1), t = clamp(x, -_CLAMP, _CLAMP), w = 1 - (t / _CLAMP)**2,
 #: highest degree first. Worst case over the real line is 1.7e-5, an order below half
-#: a float16 ulp at 1.0; tests/ops/test_unary_math.py measures the ulp distance on
-#: device over every float16 and every bfloat16 value.
+#: a float16 ulp at 1.0.
 _POLY_COEFFS = (
     8.971932411193848,
     -33.1397590637207,

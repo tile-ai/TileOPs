@@ -56,11 +56,9 @@ __all__ = [
 class _ElementwiseKernel(Kernel):
     """What every elementwise family shares: which dtypes it takes, and what it returns."""
 
-    #: Bytes each thread carries. 16 is one vector load, which is all a body
-    #: limited by memory can use; a body the memory pipe waits on sets 32, so a
-    #: second load is in flight while the first element's arithmetic runs. Whether
-    #: that pays depends on the dtype and the shape, so raise it only where it
-    #: measures faster across the op's workloads.
+    #: Bytes each thread carries, which sets the default ``num_per_thread``. 16
+    #: is one vector load. A body the memory pipe waits on sets 32, keeping a
+    #: second load in flight while the first element's arithmetic runs.
     BYTES_PER_THREAD: int = 16
     #: Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
