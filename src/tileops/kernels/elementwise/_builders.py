@@ -13,9 +13,9 @@ from ._broadcast import (
 )
 from ._op_body import op_func_for
 
-#: Largest share of a block the leftover columns of a broadcast row may take and
-#: still be packed across rows. Packing them costs a divmod per element; leaving
-#: them costs one block per row running a fraction of its lanes.
+# Largest share of a block the leftover columns of a broadcast row may take and
+# still be packed across rows. Packing them costs a divmod per element; leaving
+# them costs one block per row running a fraction of its lanes.
 _TAIL_PACK_RATIO = 4
 
 
