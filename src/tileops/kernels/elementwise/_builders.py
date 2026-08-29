@@ -13,6 +13,10 @@ from ._broadcast import (
 )
 from ._op_body import op_func_for
 
+#: Largest share of a block the leftover columns of a broadcast row may take
+#: and still be packed across rows rather than left to a guarded per-row block.
+_TAIL_PACK_RATIO = 4
+
 
 def _broadcast_index_terms(plan_name):
     """Return ``(ndim, divisors, a_strides, b_strides)`` for one broadcast plan.
@@ -112,12 +116,13 @@ def _row_broadcast_prim(
     One grid row per output row: the divmod chain that locates each operand
     runs once per block, and the inner loop indexes affinely, so it vectorizes.
     The generic path pays that chain per element and every access is a gather.
-    A ragged inner extent splits at trace time: full blocks run unguarded, the
-    one tail block guards each lane.
+    A ragged inner extent splits at trace time. Full blocks always run unguarded.
+    The columns past them go one of two ways: packed end to end across rows into
+    blocks of their own, or left in place as one guarded block per row.
 
     *stage* moves the full blocks through fragments, which keeps the copies wide
     when the body cannot vectorize. It is opt-in because a body that does
-    vectorize is slower for the round trip. The tail block stays scalar either way.
+    vectorize is slower for the round trip. Leftover columns stay scalar either way.
     """
     op_func = op_func_for(op_name)
     ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -129,16 +134,15 @@ def _row_broadcast_prim(
     block_cols = threads * num_per_thread
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
-    # Columns past the last full block. Left in place they each hold a block open
-    # for a fraction of its lanes; packed end to end across rows they fill whole
-    # blocks instead, at the cost of locating each column by divmod. That trade
-    # only pays while they are a small part of the row -- a wide remainder sends
-    # more elements down the divmod path than the idle lanes ever cost.
+    # Pack the leftover columns only while they fit _TAIL_PACK_RATIO of a block.
+    # Packing costs a row/column divmod per element; leaving them costs one block
+    # per row running a fraction of its lanes. A wide remainder sends more
+    # elements through the divmod than the idle lanes ever cost.
     tail_cols = inner - full_blocks * block_cols
     tail_slots = rows * tail_cols
     body_blocks = full_blocks * rows
     tail_blocks = -(-tail_slots // block_cols)
-    packed = not exact and full_blocks > 0 and tail_cols * 4 <= block_cols
+    pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // _TAIL_PACK_RATIO
 
     @T.macro
     def write_col(a, b, y, a_base, b_base, by, col):
@@ -175,7 +179,7 @@ def _row_broadcast_prim(
             for i, j in T.Parallel(threads, num_per_thread):
                 write_col(a, b, y, a_base, b_base, by, (bxc * threads + i) * num_per_thread + j)
 
-    if packed:
+    if pack_tail:
 
         @T.prim_func
         def packed_main(
@@ -197,9 +201,9 @@ def _row_broadcast_prim(
                             slot = (bx - body_blocks) * block_cols + i * num_per_thread + j
                             with T.If(slot < tail_slots):  # noqa: SIM117
                                 with T.Then():
-                                    trow = slot // tail_cols
+                                    tail_row = slot // tail_cols
                                     ta_base, tb_base = _compute_broadcast_offsets(
-                                        trow * inner, ndim, divisors, a_strides, b_strides
+                                        tail_row * inner, ndim, divisors, a_strides, b_strides
                                     )
                                     write_col(
                                         a,
@@ -207,7 +211,7 @@ def _row_broadcast_prim(
                                         y,
                                         ta_base,
                                         tb_base,
-                                        trow,
+                                        tail_row,
                                         full_blocks * block_cols + slot % tail_cols,
                                     )
 
