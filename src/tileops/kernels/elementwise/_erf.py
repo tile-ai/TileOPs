@@ -43,9 +43,6 @@ def erf(x, out_dtype):
 
     Returns:
         erf(x) in float32.
-
-    Example:
-        >>> erf(T.cast(x, "float32") * inv_sqrt_2, x.dtype)  # doctest: +SKIP
     """
     wide = T.cast(x, "float32")
     if out_dtype == "float32":
