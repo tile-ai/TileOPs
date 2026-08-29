@@ -1,16 +1,13 @@
-"""The facts of one GEMM call, and the regions the bandwidth kernels serve."""
+"""The facts of one GEMM call, as the op knows them after inferring ``(m, n, k)``."""
 
 import dataclasses
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 
-from tileops.utils import get_sm_count
-
 from ..call_spec import CallSpec
-from .heuristics import swap_ab_grid_underfills
 
-__all__ = ["GemmCall", "gemv_region", "small_batch_region"]
+__all__ = ["GemmCall"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -25,14 +22,13 @@ class GemmCall(CallSpec):
     trans_b: bool = False
 
     @property
-    def gemv_mode(self) -> Optional[str]:
+    def gemv_mode(self) -> Optional[Literal["lhs_row", "rhs_col"]]:
         """Which operand is the vector: ``"lhs_row"``, ``"rhs_col"``, or neither.
 
         ``a`` is a single row with ``b`` transposed, or ``b`` is a single column
         with neither transposed; the other two layouts have no GEMV form here.
-        Two readers need this one fact -- ``gemv_region`` to claim the call, and
-        the op to reshape the operand the kernel takes flat -- so the call states
-        it rather than each deriving it from the flags.
+        Two readers need this one fact -- ``GemvKernel.applies`` to claim the
+        call, and the op to reshape the operand the kernel takes flat.
         """
         if self.trans_a:
             return None
@@ -44,41 +40,11 @@ class GemmCall(CallSpec):
 
     @property
     def gemv_n(self) -> int:
-        """Output elements the GEMV kernel produces, its ``n``."""
+        """Output elements the GEMV kernel produces, its ``n``.
+
+        Raises:
+            ValueError: The call has no GEMV form, so there is no such count.
+        """
+        if self.gemv_mode is None:
+            raise ValueError(f"call has no GEMV form: {self}")
         return self.n if self.gemv_mode == "lhs_row" else self.m
-
-
-def gemv_region(call: GemmCall) -> bool:
-    """Whether the call is a matrix-vector product the GEMV kernel is written for."""
-    return call.gemv_mode is not None
-
-
-def small_batch_region(call: GemmCall) -> bool:
-    """The region the small-batch bandwidth kernel claims: m == 2, NT, narrow n.
-
-    Its CUDA-core inner loop pays ``m`` FMAs and ``m`` converts per weight
-    element, so its lead over the tensor-core kernel shrinks as ``m`` grows.
-    Once the analytic small-``m`` configs (split-K / simple, see
-    ``heuristics._tiny_m_config``) lifted the general kernel to cuBLAS
-    parity the crossover moved down to ``m == 2`` — measured on H200 (per-rep
-    interleaved, full config-grid sweep on the decode shapes): this kernel
-    beats the best general config at ``m = 2`` on all three families and loses
-    from ``m = 3`` up (gate-up 1.02x vs 1.05x, down 0.81x vs 0.92x).
-
-    The n bound is ``swap_ab_grid_underfills``: the claim holds while a
-    64-wide n-tiling sits below three-eighths of a wave. From that fill upward
-    the lead inverts — a grid that wide streams the same weights with no
-    padded ``A`` re-read, and measures 1.07-1.08x cuBLAS at ``m = 2`` on the
-    down and attention shapes against this kernel's 1.01x.
-
-    The same bound settles occupancy: a full wave of the tiny-m generic band
-    needs ``n >= TINY_M_BLOCK_N * sm_count``, far past it — so nothing claimed
-    here is out of idle SMs a generic config could reclaim. Widening the
-    claimed band brings that condition back.
-
-    ``m == 1`` is the GEMV region. NT only: the reduction over ``K`` needs
-    ``K`` contiguous.
-    """
-    if call.trans_a or not call.trans_b or call.m != 2:
-        return False
-    return swap_ab_grid_underfills(call.n, get_sm_count())

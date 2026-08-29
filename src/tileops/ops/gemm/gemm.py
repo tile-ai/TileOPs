@@ -17,9 +17,9 @@ from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 
-__all__ = ["GEMM_KEYS", "GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+__all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
-GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
+_GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
 
 
 class GemmFwdOp(Op):
@@ -111,12 +111,12 @@ class GemmFwdOp(Op):
         (SM90), covering all four ``(trans_a, trans_b)`` layouts.
 
         Which one serves the call is stated by the candidates themselves
-        (``call_spec.gemv_region`` / ``small_batch_region``, read through
+        (each kernel's ``applies``, read through
         ``Kernel.applies``); this method owns only mechanism: mapping the
         selected key to a kernel instance and caching it.
         """
         call = GemmCall(m=m, n=n, k=k, dtype=dtype, trans_a=self.trans_a, trans_b=self.trans_b)
-        key = self.select_kernel_key(GEMM_KEYS, call)
+        key = self.select_kernel_key(_GEMM_KEYS, call)
         if key == "gemv_kernel":
             gemv_cls = self.kernel_map["gemv_kernel"]
             kernel = self.get_or_build_kernel(

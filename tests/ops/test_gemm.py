@@ -632,7 +632,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
 def test_small_batch_dispatch() -> None:
     """small_batch dispatches only at m == 2, on the n band swap_ab leaves it.
 
-    One case per clause of ``call_spec.small_batch_region``: m == 1 stays on
+    One case per clause of ``SmallBatchGemmKernel.applies``: m == 1 stays on
     gemv, m >= 3 and non-NT stay on the generic kernel (whose small-m band
     picks swap_ab / split-K / simple configs analytically), and so does any n
     wide enough for the operand-swapped grid. Dispatch only — ``_get_kernel``

@@ -7,7 +7,7 @@ in microseconds, without autotuning. The module also owns the measured
 config bands of the bandwidth-mode kernels (``gemv_config``,
 ``small_batch_config``), so the family's per-shape configuration lives in one
 place; which kernel serves a call is a separate question, answered by each
-kernel's own region (``call_spec.gemv_region`` / ``small_batch_region``). The scored path follows DeepGEMM's SM90
+kernel's own ``applies``. The scored path follows DeepGEMM's SM90
 heuristics (enumerate -> prune -> score -> derive, see
 ``csrc/jit_kernels/heuristics/sm90.hpp``), with three extensions the
 TileOPs kernel family needs:
@@ -20,22 +20,13 @@ TileOPs kernel family needs:
 - a per-K-iteration issue-overhead term separates ``block_k`` candidates
   the byte model cannot (measured: block_k=128 beats 32 consistently).
 
-The constants below are *effective ranking constants*, not physical rates:
-they were calibrated on H200 (132 SM) against a per-rep interleaved CUPTI
-kernel-only sweep of 16 shapes x ~7 configs spanning all four structures
-(geometric-mean regret 1.001, model top1 inside measured top2 on 15/16
-shapes). Within these four structures, pinned shapes measure within ~2% of
-their ``GemmKernel._TUNED_CONFIGS`` entry; the ``simple``-structure pins
-(short-mainloop decode-down family) sit outside the candidate space and
-hold a 3-7% edge the selector cannot reproduce. Re-calibrate when kernel
-structures change materially — or when the target does. They describe one
-device class, and an SM90 part whose compute is capped elsewhere ranks wrong
-against them: ``perf/profiles/h20_3e.yaml`` is such a part, at ~15% of H200's
-tensor-core peak, and it clears ``supported_archs`` all the same. Reading them
-off that profile instead needs fields it does not carry (L2 and SMEM bandwidth,
-launch and issue latency) and a re-anchor, because the profile's peak times a
-calibration ratio is a different quantity from a per-structure achieved rate —
-substituting one for the other reopens every pinned config.
+The constants below are *effective ranking constants*, not physical rates, and
+they describe one device class: they were calibrated on H200. Re-calibrate when
+the kernel structures change materially, or when the target does — an SM90 part
+whose compute is capped elsewhere ranks wrong against them. A device profile
+cannot substitute: it carries neither the bandwidths nor the latencies this
+model reads, and its peak times a ratio is a different quantity from a
+per-structure achieved rate.
 
 Resource model mirrors ``tileops/kernels/gemm.py``:
 
@@ -52,13 +43,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 __all__ = [
-    "SWAP_AB_BLOCK_NN",
     "SWAP_AB_MPAD",
     "best_config",
     "gemv_config",
     "small_batch_config",
     "swap_ab_grid_underfills",
-    "swap_ab_stages",
 ]
 
 _SMEM_BUDGET = 227 * 1024
@@ -66,7 +55,7 @@ _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128
 
-SWAP_AB_BLOCK_NN = 64
+_SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
 
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
@@ -227,23 +216,23 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
 
 
 def swap_ab_grid_underfills(n: int, sm_count: int) -> bool:
-    """Whether ``ceil(n / SWAP_AB_BLOCK_NN)`` CTAs sit below three-eighths of a wave.
+    """Whether ``ceil(n / _SWAP_AB_BLOCK_NN)`` CTAs sit below three-eighths of a wave.
 
     The measured n boundary where the operand-swapped grid loses its width
-    advantage, written once for its two consumers: ``swap_ab_stages`` returns
+    advantage, written once for its two consumers: ``_swap_ab_stages`` returns
     None below it (the tiny-m band falls to split-K or the plain tile), and
-    ``call_spec.small_batch_region`` claims exactly this underfilled band at
+    ``SmallBatchGemmKernel.applies`` claims exactly this underfilled band at
     ``m == 2`` — that handoff has no gap and no overlap. Retune the two
     together.
     """
-    return -(-n // SWAP_AB_BLOCK_NN) * 8 < sm_count * 3
+    return -(-n // _SWAP_AB_BLOCK_NN) * 8 < sm_count * 3
 
 
-def swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
+def _swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     """``num_stages`` for the tiny-m swap_ab kernel, or None if it underfills.
 
     ``_gemm_swap_ab_kernel`` puts ``n`` on the 64-row WGMMA axis, so its grid
-    is ``ceil(n / SWAP_AB_BLOCK_NN)`` CTAs — the whole point being that this is
+    is ``ceil(n / _SWAP_AB_BLOCK_NN)`` CTAs — the whole point being that this is
     twice the CTA count of the ``block_n = 128`` output tiling, with no padded
     ``A`` re-read. Below three-eighths of a wave
     (``swap_ab_grid_underfills``) that advantage is gone and the split-K path
@@ -262,42 +251,37 @@ def swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     """
     if swap_ab_grid_underfills(n, sm_count):
         return None
-    ctas = -(-n // SWAP_AB_BLOCK_NN)
+    ctas = -(-n // _SWAP_AB_BLOCK_NN)
     return 4 if ctas * 4 >= sm_count * 3 else 8
 
 
 def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
     """m <= 8 NT band: bandwidth-regime rule, not the compute-regime score.
 
-    The score above divides byte terms by wave efficiency — right when SMs
-    bound the shape, wrong at m <= 8 where the kernel is a weight stream
-    (arithmetic intensity ~= m) and DRAM is shared across however many CTAs
-    carry it. Ranked that way, full-wave narrow tiles (bn=64 split-K) beat
-    the measured-best wide tiles (bn=128, ~half wave), costing 3-8%.
+    The score above divides byte terms by wave efficiency, which is right when
+    SMs bound the shape and wrong at m <= 8, where the kernel is a weight stream
+    (arithmetic intensity ~= m) and DRAM is shared across the CTAs carrying it.
 
-    Measured rule (H200 per-rep interleaved sweep, {2112x7168, 7168x2048,
-    4096x7168} x m{2,4,8} x {full sb grid, split-K/simple/basic variants},
-    winner reproduced in every cell):
+    - long K: grid-z split-K on the 64-row tile, ``split_k=4`` while the K-tile
+      count leaves at least 12 iterations per slice; shorter slices pay the
+      warp-specialized pipeline's fill and drain.
+    - short K: the plain 64-row tile. Its slices are too short to amortize the
+      reduce, and ``simple`` needs ``m % block_m == 0``, never true here.
 
-    - long K: grid-z split-K on the 64-row tile — split_k=4 when the K-tile
-      count allows >= 12 iterations per slice (shorter slices pay the WS
-      pipeline fill/drain: split_k=8 at 7 iters/slice measured 20% slower,
-      and split_k=2 at 8 iters/slice lost to the plain tile on the 16-tile K);
-    - short K: the plain (split_k=1) 64-row tile — split-K slices of a
-      16-tile K are too short to amortize, and the ``simple`` structure is
-      unavailable here (``_gemm_simple_kernel`` requires ``m % block_m == 0``,
-      never true at m <= 8).
-
-    Both use block_n=128: half the CTAs of bn=64 still saturate the weight
-    stream, and the padded-A reread (block_m=64 vs m <= 8) through L2 halves.
-
-    Both are also beaten outright wherever the operand-swapped kernel's grid
-    fills the device, which removes the padded-A re-read instead of halving it
-    (:func:`swap_ab_stages`); the rules below serve the shapes it leaves.
+    Both use ``block_n=128``: half the CTAs of ``bn=64`` still saturate the
+    weight stream, and it halves the padded-``A`` re-read through L2. Wherever
+    the operand-swapped kernel's grid fills the device it removes that re-read
+    instead, and wins (:func:`_swap_ab_stages`); these rules serve what it
+    leaves.
     """
-    stages = swap_ab_stages(n, sm_count)
+    stages = _swap_ab_stages(n, sm_count)
     if stages is not None:
-        return {"swap_ab": True, "block_nn": SWAP_AB_BLOCK_NN, "block_k": 128, "num_stages": stages}
+        return {
+            "swap_ab": True,
+            "block_nn": _SWAP_AB_BLOCK_NN,
+            "block_k": 128,
+            "num_stages": stages,
+        }
     k_iters = math.ceil(k / 128)
     for sk in (4, 2):
         if k_iters % sk == 0 and k_iters // sk >= 12:

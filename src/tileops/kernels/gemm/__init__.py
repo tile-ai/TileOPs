@@ -5,7 +5,7 @@ over a group offset table rather than a single ``(m, n, k)``.
 """
 
 from .bmm import BmmFp8Kernel, BmmKernel
-from .call_spec import GemmCall, gemv_region, small_batch_region
+from .call_spec import GemmCall
 from .dense import (
     GemmFp8BlockScaledKernel,
     GemmFp8EpilogueKernel,
@@ -27,6 +27,4 @@ __all__ = [
     "GemmW4A16Kernel",
     "GemvKernel",
     "SmallBatchGemmKernel",
-    "gemv_region",
-    "small_batch_region",
 ]

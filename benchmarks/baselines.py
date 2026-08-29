@@ -17,10 +17,7 @@ from typing import Any, Callable, Optional
 
 import torch
 
-from benchmarks.cublaslt_baseline import make_cublaslt_best as cublaslt_best
-
 __all__ = [
-    "CUBLASLT_TAG",
     "DEEPGEMM_TAG",
     "FLAGGEMS_TAG",
     "FLASHINFER_TAG",
@@ -28,7 +25,6 @@ __all__ = [
     "VLLM_TAG",
     "assert_matches_reference",
     "compiled_reference",
-    "cublaslt_best",
     "deepgemm_op",
     "flaggems_dims",
     "flaggems_group_norm",
@@ -47,7 +43,6 @@ _TOLERANCES = {
     torch.float64: (1e-7, 1e-7),
 }
 
-CUBLASLT_TAG = "cublaslt-best"
 DEEPGEMM_TAG = "deepgemm"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"

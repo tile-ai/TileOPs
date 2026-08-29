@@ -9,8 +9,13 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.trace import trace
 from tileops.utils import get_sm_count, str2dtype
 
-from .call_spec import gemv_region, small_batch_region
-from .heuristics import SWAP_AB_MPAD, best_config, gemv_config, small_batch_config
+from .heuristics import (
+    SWAP_AB_MPAD,
+    best_config,
+    gemv_config,
+    small_batch_config,
+    swap_ab_grid_underfills,
+)
 
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
@@ -852,28 +857,6 @@ def _gemm_coop2_kernel(
     (``group_size_m``) keeps concurrently-resident CTAs on a shared ``B`` column
     stripe for L2 reuse.
 
-    Wave quantization is the dominant residual against cuBLAS here. Sweeping
-    ``n`` at a fixed config, the ratio to cuBLAS moves with
-    ``tiles / (ceil(tiles / sm_count) * sm_count)``: over n in
-    {1920, 2112, 2304, 2496, 3168} the two agree within 4% (ratio/fill spans
-    0.96-1.03). That is a correlation across five different problems, not an
-    attribution -- cuBLAS's own tiling quantizes too, and how much is not
-    observable from here. Two ways of removing it were measured and rejected:
-
-    - every wave-filling tile shape costs more than the fill is worth. On
-      prefill-gate-up (4096x2112x7168) ``block_n=64`` gives 33 n-tiles, exactly
-      8 waves on 132 SMs, and measures 385-452 TF depending on structure
-      against 715 TF for the shipped ``block_n=192`` at 89% fill.
-    - stream-K tail balancing -- whole tiles for the even rounds, the leftover
-      tiles split along K across the full grid, fp32 partials combined by TMA
-      region reduce under a counter election -- is numerically correct but the
-      workspace path costs more than it recovers. Holding geometry fixed and
-      toggling only the path, a control doing the *same* whole-tile work
-      measures 181 us without it and 229 us with it: +27% for a prize worth
-      11%. The penalty is proportional rather than fixed, so a long mainloop
-      does not amortize it; the same effect closed the fused split-K route on
-      the much shorter decode shapes.
-
     NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
     back to ``_gemm_kernel``. M / N tails are handled by a predicated scalar
@@ -1106,13 +1089,9 @@ def _gemm_coop2_splitk_kernel(
     into ``w[split_k, m, n]``; ``_splitk_reduce_kernel`` then sums the slices and
     casts to the storage dtype.
 
-    The 2-consumer mainloop is more WGMMA-efficient than the single-consumer
-    ``_gemm_splitk_kernel``, so it wins on **large-K** decode shapes (e.g.
-    decode-gate-up 128x2112x7168: the K=7168 slice is long enough to amortize
-    the reduce, 33 n-tiles x split_k=4 fill the 132-SM wave — 0.98x -> 1.04x,
-    beating cuBLAS). It loses on small-K decode shapes where the K-slice is too
-    short to amortize the reduce round-trip — dispatch keeps those on the
-    single-consumer path.
+    The 2-consumer mainloop is the more WGMMA-efficient of the two, so it takes
+    the large-K decode shapes, whose slices amortize the reduce round-trip;
+    dispatch keeps short-K shapes on ``_gemm_splitk_kernel``.
 
     NT only. ``split_k`` must divide the K-tile count evenly.
 
@@ -1389,9 +1368,7 @@ def _gemm_swap_ab_kernel(
 
     Tiling the output the usual way wastes the M dimension at ``m <= 8``: WGMMA
     needs 64 rows, so ``A`` is padded 8-32x and the grid is only
-    ``ceil(n / block_n)`` CTAs — 56 of an H200's 132 on the decode-down shape,
-    which streams the weights at ~2.2 TB/s where the ``m = 1`` GEMV reaches
-    2.7 TB/s.
+    ``ceil(n / block_n)`` CTAs, too few to fill the device.
 
     Computing the transpose instead, ``Cᵀ[n,m] = B[n,k] @ A[m,k]ᵀ``, keeps the
     same NT operand form but puts ``n`` on the 64-row WGMMA axis and ``m`` on
@@ -1400,7 +1377,7 @@ def _gemm_swap_ab_kernel(
     through SMEM and writes ``c[mi, n0 + j]``, contiguous along ``n``.
 
     Only worth it when that grid fills enough of the device — see
-    ``heuristics.swap_ab_stages``, which also sets ``num_stages``: with
+    ``heuristics._swap_ab_stages``, which also sets ``num_stages``: with
     fewer CTAs resident the ring has to be deeper to hide the same latency.
 
     Args:
@@ -1462,15 +1439,10 @@ def _gemm_coop2s_kernel(
     ``_gemm_coop2_kernel`` stripped of its persistent loop: the grid *is* the
     tile grid (``n / block_n`` by ``m / block_m``), so a CTA computes exactly
     one output tile and needs no cross-wave ring carry, no tile decode and no
-    grouped swizzle. Small square shapes cannot amortize that machinery — the
-    mainloop is only ``k / block_k`` iterations — and the single-consumer
-    structures cap at 0.87x cuBLAS there across a 13-variant tile sweep.
-
-    The shape of the kernel is cuBLAS's own winner on square-1k
-    (``nvjet_tst_128x64_64x8_1x2_h_bz_NNT``: 384 threads / 3 warpgroups over a
-    128x64 tile): one producer warpgroup issues TMA into a ``num_stages`` ring;
-    two consumer warpgroups each own ``block_m // 2 = 64`` rows and share the
-    ``B`` tile (split-A / shared-B).
+    grouped swizzle. Small square shapes cannot amortize that machinery: the
+    mainloop is only ``k / block_k`` iterations. One producer warpgroup issues
+    TMA into a ``num_stages`` ring; two consumer warpgroups each own
+    ``block_m // 2 = 64`` rows and share the ``B`` tile (split-A / shared-B).
 
     NN only (``A[m,k] @ B[k,n]``): ``B`` tiles load as ``(block_k, block_n)``
     and feed WGMMA with ``transpose_B=False``. Requires tiles that divide the
@@ -2138,7 +2110,7 @@ class GemvKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return gemv_region(call)
+        return call.gemv_mode is not None
 
     def __init__(
         self, n: int, k: int, dtype: torch.dtype, config: Optional[dict] = None, tune: bool = False
@@ -2174,10 +2146,9 @@ class SmallBatchGemmKernel(Kernel):
 
     Builds :func:`_gemm_small_batch_kernel`, the same body :class:`GemvKernel`
     builds at ``m = 1``; the two classes differ only in the region they serve and
-    the measured config band they pick. Its inner loop pays ``m`` FMAs and ``m``
-    converts per weight element on CUDA cores, so the lead over the tensor-core
-    ``GemmKernel`` shrinks as ``m`` grows — the measured crossover and the
-    dispatch band live in :func:`~tileops.kernels.gemm.call_spec.small_batch_region`.
+    the config band they pick. Its inner loop pays ``m`` FMAs and ``m`` converts
+    per weight element on CUDA cores, so its lead over the tensor-core
+    ``GemmKernel`` shrinks as ``m`` grows; :meth:`applies` states the band.
 
     Scope: SM90, NT only — ``B`` is ``[N,K]``, so K is contiguous and the
     reduction over it coalesces; no other layout has that property. The kernel is
@@ -2196,7 +2167,14 @@ class SmallBatchGemmKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return small_batch_region(call)
+        """``m == 2`` NT, while a 64-wide n-tiling still underfills a wave.
+
+        Above that fill a generic config streams the same weights with no padded
+        ``A`` re-read and wins; ``m == 1`` belongs to :class:`GemvKernel`.
+        """
+        if call.trans_a or not call.trans_b or call.m != 2:
+            return False
+        return swap_ab_grid_underfills(call.n, call.sm_count)
 
     def __init__(
         self,
