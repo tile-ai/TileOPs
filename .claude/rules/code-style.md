@@ -14,9 +14,9 @@
 
 - Promote overflow-prone fp16/bf16 math (cubic, division, `exp`, softmax accumulators) to fp32; cast back to storage dtype at the boundary.
 
-- Decorate each `_<op>_kernel` builder (the `@tilelang.jit`-wrapping `Callable`) with `@functools.lru_cache(maxsize=<N>)`; every parameter must be hashable. Default `maxsize=32`; use `64` only when the distinct-config working set demands it; `maxsize=None` only for intrinsically bounded config spaces. Document any non-default choice at the call site.
+- Decorate each `_<op>_kernel` builder (the `@tilelang.jit`-wrapping `Callable`) with `@functools.lru_cache(maxsize=<N>)`; every parameter must be hashable. `maxsize=32` needs no comment; `64` and `None` state above the decorator what makes the config space that wide or bounded.
 
-- Tag code degraded by something outside its own scope — a contract stub that cannot be made abstract until every op migrates, a benchmark that must skip a manifest workload no kernel can run — with `FIXME(staged-rollout)`. Cleanup line names the invariant to restore — never a PR number. Scan: `grep -rn 'FIXME(staged-rollout)'`.
+- Tag code degraded by something outside its own scope — a contract stub that cannot be made abstract until every op migrates, a benchmark that must skip a manifest workload no kernel can run — with `FIXME(staged-rollout)`. Scan: `grep -rn 'FIXME(staged-rollout)'`.
 
   ```python
   # FIXME(staged-rollout): <one-line summary of what's degraded>
@@ -28,18 +28,12 @@
 
 - PascalCase abbreviations stay fully uppercase: `RMSNormKernel`, `SSDDecodeFwdOp`, `FusedAddRMSNormFwdOp`.
 
-- Filenames: all-lowercase with underscores. Multi-letter abbreviations stay lowercase (`rms_norm.py`, `ssd_decode.py`); never capitalize a single letter. Never contract norm names (`rms_norm`, not `rmsnorm`).
+- Filenames: lowercase with underscores, abbreviations included (`rms_norm.py`, `ssd_decode.py`). Never contract a norm name (`rms_norm`, not `rmsnorm`).
 
 - An `optional: true` input defaults to `None` in `forward`, and presence is read from the call, not settled at construction. Where the presence changes what the kernel build produces, it goes in that kernel's cache key.
 
-- Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may use a single-line summary. Never mix Sphinx (`:param:`) or NumPy headers in one file.
+- Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may use a single-line summary. Never mix Sphinx (`:param:`, `#:`) or NumPy headers in one file; comment an attribute with `#` above its assignment.
 
-- The docs site renders the class, `__init__` and `forward` docstrings of the `src/tileops/ops/` classes `docs/api/*.md` collects, and nothing else. A guarantee a caller acts on -- an accuracy bound, a deviation from torch -- goes in the op's class docstring; a kernel comment does not reach them.
-
-- Comment an attribute with `#`, above its assignment. `#:` is Sphinx autodoc markup and the site is mkdocs; griffe reads a string literal under the assignment, never the comment above it.
+- The docs site renders the class, `__init__` and `forward` docstrings of the `src/tileops/ops/` classes `docs/api/*.md` collects, and nothing else. A guarantee a caller acts on — an accuracy bound, a deviation from torch — goes in the op's class docstring; a kernel comment does not reach them.
 
 - Expand domain abbreviations on first use in a docstring: `State Space Model (SSM)`, `State-Space Dual (SSD)`. Later uses may abbreviate.
-
-- Shipped source (code, docstrings, manifest YAML) must not reference issue/PR numbers, AC labels, round numbers, reviewer names, or `Follow-up: #N`. See [domain-rules/manifest-spec.md](../domain-rules/manifest-spec.md).
-
-  Discovery scan: `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' --exclude-dir=manifest src/tileops/ tests/ benchmarks/ scripts/`
