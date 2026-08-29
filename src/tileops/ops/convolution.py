@@ -1007,11 +1007,20 @@ def _can_use_conv3d_ndhwc(
     n: int,
     dtype: torch.dtype,
 ) -> bool:
-    """Whether the NDHWC Conv3d fast path is a conservative win candidate.
+    """Return whether the NDHWC Conv3d fast path should serve this call.
 
-    The fast path pays input, weight, and output layout transforms to make the
-    activation gather channel-contiguous. Keep it out of small or pointwise
-    cases where that fixed cost is unlikely to amortize.
+    This is a performance eligibility guard, not the full Conv3d validity check.
+    The op layer has already validated the convolution shape and computes
+    ``out_d``, ``out_h``, and ``out_w`` as::
+
+        out_axis = floor((in_axis + 2 * pad_axis
+                          - dilation_axis * (kernel_axis - 1) - 1)
+                         / stride_axis) + 1
+
+    The NDHWC fast path materializes input, weight, and output staging layouts
+    so the activation gather reads channel-contiguous runs. Keep it limited to
+    dense, 16-bit, non-pointwise calls large enough to amortize that fixed
+    layout-transform cost.
     """
     kernel_volume = kernel_d * kernel_h * kernel_w
     output_spatial = n * out_d * out_h * out_w

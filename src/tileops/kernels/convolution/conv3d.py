@@ -350,16 +350,34 @@ def _conv3d_ndhwc_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    """3D conv on NDHWC: transpose, implicit GEMM, transpose back.
+    """Build the NDHWC-staged dense Conv3d forward kernel.
 
-    Mirrors :func:`tileops.kernels.convolution.conv2d._conv2d_symmetric_kernel`.
+    The public op accepts NCDHW input and OIDHW weight, and returns NCDHW output.
+    This kernel stages those tensors as NDHWC and ODHW(I) before the contraction,
+    then transposes the result back. The computed cross-correlation is::
+
+        out[n, oc, od, oh, ow] =
+            bias[oc] +
+            sum_{ci,kd,kh,kw} x[n, ci, id, ih, iw]
+                              * weight[oc, ci, kd, kh, kw]
+
+        id = od * stride_d + kd * dilation_d - pad_d
+        ih = oh * stride_h + kh * dilation_h - pad_h
+        iw = ow * stride_w + kw * dilation_w - pad_w
+
+    Terms with ``id``, ``ih``, or ``iw`` outside the input bounds contribute
+    zero. Output dimensions are computed per axis as::
+
+        out_axis = floor((in_axis + 2 * pad_axis
+                          - dilation_axis * (kernel_axis - 1) - 1)
+                         / stride_axis) + 1
+
     TileLang's ``T.im2col`` is 2D-only, so the im2col gather is written out as an
-    element-wise ``T.Parallel`` loop over the NDHWC input: the K dim decomposes as
-    ``((kd, kh, kw), c)`` with c contiguous, which lets the parallel-loop
-    vectorizer emit wide global loads — the thing the NCDHW gather cannot do.
-    Kernel/stride/pad/dilation are per-axis trace-time constants; they cost
-    nothing extra here, so unlike the 2D kernel this path is not restricted to
-    symmetric values.
+    element-wise ``T.Parallel`` loop over the NDHWC input. The K dimension is
+    decomposed as ``((kd, kh, kw), c)`` with ``c`` contiguous, which lets the
+    parallel-loop vectorizer emit wide global loads. Kernel, stride, padding,
+    and dilation are per-axis trace-time constants, so this path supports
+    non-symmetric 3D parameters.
     """
     accum_dtype = "float"
     out_d = (d + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
@@ -847,12 +865,28 @@ class GroupConv3dKernel(Kernel):
 
 
 class Conv3dNdhwcKernel(Kernel):
-    """3D conv via NDHWC transpose + implicit GEMM.
+    """Dense Conv3d forward through an NDHWC-staged implicit GEMM.
 
-    Selected by the op layer when ``groups == 1`` and ``c_in % 32 == 0``; pays
-    three layout transposes (input, weight, output) so the im2col gather reads
-    contiguous channel runs, the same trade cuDNN makes for NCDHW inputs.
-    Kernel/stride/pad/dilation may differ per axis.
+    Inputs use the public NCDHW/OIDHW layout and the result is NCDHW. Internally
+    the kernel materializes:
+
+    - ``x_ndhwc`` with shape ``(n, d, h, w, c_in)``
+    - ``weight_kdrsc`` with shape ``(c_out, kernel_d, kernel_h, kernel_w, c_in)``
+    - ``out_ndhwc`` with shape ``(n, out_d, out_h, out_w, c_out)``
+
+    The staged contraction computes the same cross-correlation as
+    ``torch.nn.functional.conv3d`` for ``groups == 1``::
+
+        out[n, oc, od, oh, ow] =
+            bias[oc] +
+            sum_{ci,kd,kh,kw} x[n, ci, id, ih, iw]
+                              * weight[oc, ci, kd, kh, kw]
+
+    where ``id = od * stride_d + kd * dilation_d - pad_d`` and likewise for
+    ``ih`` and ``iw``. Out-of-bounds input coordinates are zero-padded. The op
+    layer selects this variant only for large enough 16-bit dense calls where
+    channel-contiguous NDHWC gathers are expected to amortize the three layout
+    transforms.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

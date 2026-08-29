@@ -1071,6 +1071,7 @@ def test_conv3d_does_not_dispatch_ndhwc_for_small_output() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.smoke
 def test_conv3d_ndhwc_guard_rejects_float32() -> None:
     assert not _can_use_conv3d_ndhwc(
         groups=1,
