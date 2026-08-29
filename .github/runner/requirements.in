@@ -39,5 +39,6 @@ py-spy
 flash-linear-attention
 vllm
 cupti-python
+nvmath-python
 # For flag_gems, which cannot be listed here.
 sqlalchemy

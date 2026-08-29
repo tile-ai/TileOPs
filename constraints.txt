@@ -40,6 +40,9 @@ vllm==0.27.1
 flag_gems==5.0.2
 # flag_gems imports it at module load.
 sqlalchemy==2.0.52
+# cuBLASLt's algorithm-selection API for the GEMM benchmark. Bare, not `[cu13]`: it maps torch's
+# own libcublasLt through cuda-pathfinder, where the extra installs a second CUDA-13 wheel set.
+nvmath-python==1.0.0
 # Tracks the image CUDA version; bump with it.
 cupti-python==13.2.0
 # Stack dump of a hung benchmark child before the runner kills it.

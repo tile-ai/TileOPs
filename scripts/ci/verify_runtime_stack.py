@@ -84,6 +84,7 @@ for dist, why in (
     ("flag_gems", "the flaggems columns"),
     ("flashinfer-python", "the flashinfer columns"),
     ("flash-linear-attention", "the linear-attention columns"),
+    ("nvmath-python", "the cuBLASLt-search GEMM baseline"),
 ):
     try:
         md.version(dist)
