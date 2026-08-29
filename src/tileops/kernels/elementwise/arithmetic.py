@@ -77,8 +77,7 @@ class MulFwdKernel(BinaryKernel):
 class DivFwdKernel(BinaryKernel):
     """Element-wise division: y = a / b.
 
-    Divides in float32 and rounds once at the store, which is what torch does and
-    what the half-precision divide is measurably slower than.
+    Divides in float32 and rounds once at the store, which is what torch does.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -264,13 +263,12 @@ def _propagate_nan(a, b, result):
 
     ``fminf``/``fmaxf`` return the non-NaN operand, so the NaN torch propagates
     has to be put back. One select, not two: each ``T.if_then_else`` scalarises
-    the element loop, and a second measured 34.2us against 18.0. ``isnan`` takes
-    float32 because bfloat16 has no native form; a self-compare is not a guard,
-    since TileLang lowers ``!=`` as an ordered compare.
+    the element loop. ``isnan`` takes float32 because bfloat16 has no native
+    form; a self-compare is not a guard, since TileLang lowers ``!=`` as an
+    ordered compare.
 
     The NaN is canonical where torch returns the offending operand, visible only
-    to a caller reading raw bits. Naming which operand is what the second select
-    bought.
+    to a caller reading raw bits. Naming which operand would cost a second select.
     """
     either_is_nan = tirx.any(T.isnan(T.Cast("float32", a)), T.isnan(T.Cast("float32", b)))
     return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)
@@ -298,8 +296,7 @@ class MaximumFwdKernel(BinaryKernel):
         """The float body's NaN select scalarises it, so keep the copies off its loop.
 
         Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
-        to scalarise them, and measure the same staged or not; they follow the base
-        default rather than carrying an exception.
+        to scalarise them, and follow the base default.
         """
         return self.dtype.is_floating_point or super().stage_broadcast
 
@@ -335,8 +332,7 @@ class MinimumFwdKernel(BinaryKernel):
         """The float body's NaN select scalarises it, so keep the copies off its loop.
 
         Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
-        to scalarise them, and measure the same staged or not; they follow the base
-        default rather than carrying an exception.
+        to scalarise them, and follow the base default.
         """
         return self.dtype.is_floating_point or super().stage_broadcast
 

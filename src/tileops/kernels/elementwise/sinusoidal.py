@@ -19,8 +19,8 @@ __all__ = [
 
 #: Positions and dimension pairs one block covers. The divisor depends on the pair
 #: and not the position, so a block spanning several positions calls ``pow`` once
-#: per pair instead of once per element; 64 x 32 measured fastest on H200 across
-#: the manifest shapes. Both are capped to the tensor at build time.
+#: per pair instead of once per element. Both are capped to the tensor at build
+#: time.
 _ROWS, _COLS = 64, 32
 
 
@@ -58,7 +58,6 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, rows=_ROWS, co
                     divisor[c] = T.pow(T.cast(10000.0, "float32"), exponent)
                 for r, c in T.Parallel(rows, cols):
                     angle[r, c] = T.cast(br * rows + r, "float32") / divisor[c]
-                # Even dim -> sin, odd dim -> cos, both of the angle its pair shares.
                 for r, c in T.Parallel(rows, width):
                     pe[r, c] = T.Cast(
                         dtype,

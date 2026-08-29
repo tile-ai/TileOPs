@@ -11,7 +11,6 @@ from ._base import (
     _FLOAT_DTYPES,
     FloatUnaryKernel,
     FusedGatedKernel,
-    LatencyBoundUnaryKernel,
     ParametricUnaryKernel,
 )
 from ._dtype import _fp8_accum_dtype_str, log_for_output_precision
@@ -46,8 +45,10 @@ class ReluFwdKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class GeluFwdKernel(LatencyBoundUnaryKernel):
+class GeluFwdKernel(FloatUnaryKernel):
     """Element-wise GELU using the standard erf formulation."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -84,33 +85,35 @@ class SiluFwdKernel(FloatUnaryKernel):
         """x / (1 + exp2(-x * log2 e)), in fp32.
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
-        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence --
-        5% of the kernel at half precision. It is the form ``SiluAndMulFwdKernel``
-        already computes, so the two now agree.
+        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
+        ``SiluAndMulFwdKernel`` computes the same form.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
         return wide / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
 
 
-class SigmoidFwdKernel(LatencyBoundUnaryKernel):
+class SigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise sigmoid(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
         """1 / (1 + exp2(-x * log2 e)), in fp32.
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
-        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence --
-        5% of the kernel at half precision, and bit-identical there.
+        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
         return one / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
 
 
-class TanhFwdKernel(LatencyBoundUnaryKernel):
+class TanhFwdKernel(FloatUnaryKernel):
     """Element-wise tanh(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):

@@ -5,7 +5,6 @@ import torch
 
 from ._base import (
     FloatUnaryKernel,
-    LatencyBoundUnaryKernel,
 )
 from ._dtype import log_for_output_precision
 from ._erf import erf
@@ -39,16 +38,20 @@ class ExpFwdKernel(FloatUnaryKernel):
         return T.exp(T.cast(x, "float32"))
 
 
-class LogFwdKernel(LatencyBoundUnaryKernel):
+class LogFwdKernel(FloatUnaryKernel):
     """Element-wise log(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
         return log_for_output_precision(x, T.cast(x, "float32"))
 
 
-class SqrtFwdKernel(LatencyBoundUnaryKernel):
+class SqrtFwdKernel(FloatUnaryKernel):
     """Element-wise sqrt(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -79,7 +82,7 @@ class NegFwdKernel(FloatUnaryKernel):
         return -x
 
 
-class ReciprocalFwdKernel(LatencyBoundUnaryKernel):
+class ReciprocalFwdKernel(FloatUnaryKernel):
     """Element-wise 1/x.
 
     Integral inputs are this backend's business: it has no integer kernel, so it
@@ -87,6 +90,8 @@ class ReciprocalFwdKernel(LatencyBoundUnaryKernel):
     boundary. A backend with a native integer-input reciprocal declares nothing
     and receives the integers.
     """
+
+    BYTES_PER_THREAD = 32
 
     _INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
 
@@ -124,16 +129,20 @@ class SignFwdKernel(FloatUnaryKernel):
         )
 
 
-class SinFwdKernel(LatencyBoundUnaryKernel):
+class SinFwdKernel(FloatUnaryKernel):
     """Element-wise sin(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
         return T.sin(T.cast(x, "float32"))
 
 
-class CosFwdKernel(LatencyBoundUnaryKernel):
+class CosFwdKernel(FloatUnaryKernel):
     """Element-wise cos(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
@@ -189,21 +198,25 @@ class TruncFwdKernel(FloatUnaryKernel):
         return T.trunc(T.cast(x, "float32"))
 
 
-class ErfFwdKernel(LatencyBoundUnaryKernel):
+class ErfFwdKernel(FloatUnaryKernel):
     """Element-wise erf(x)."""
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):
         return erf(x, x.dtype)
 
 
-class Log1pFwdKernel(LatencyBoundUnaryKernel):
+class Log1pFwdKernel(FloatUnaryKernel):
     """Element-wise log(1 + x).
 
     fp32 takes ``T.log1p``, which keeps the small values ``log(1 + x)`` rounds away
     once x falls under the epsilon of 1. A narrower result cannot hold them either way,
     so it takes the composite over the faster logarithm.
     """
+
+    BYTES_PER_THREAD = 32
 
     @staticmethod
     def op_func(x):

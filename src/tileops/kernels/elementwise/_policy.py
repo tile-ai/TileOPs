@@ -76,9 +76,8 @@ def default_launch_config(
 def _tail_dominated(inner: int | None, threads: int, npt: int) -> bool:
     """Whether doubling the block width pushes more columns onto the guarded tail path.
 
-    A row-broadcast block covers columns of one row, so the remainder runs the
-    slower per-lane path. Doubling 1024 to 2048 takes a 3136-column row from 64
-    such columns to 1088, and the predicate rows from 13.3us to 18.0.
+    A row-broadcast block covers columns of one row, and the remainder the width
+    does not cover runs the slower per-lane path.
     """
     if inner is None:
         return False
@@ -94,8 +93,7 @@ def elementwise_autotune_configs(
     """Return the launch configs to time for one elementwise specialization.
 
     The swept elements-per-thread brackets the default the same *bytes_per_thread*
-    produces, so a kernel can always land back on its shipped config; a sweep with
-    a fixed range would leave a latency-bound body unable to reach its own default.
+    produces, so a kernel can always land back on its shipped config.
     """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.

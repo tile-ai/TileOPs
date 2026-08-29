@@ -1049,9 +1049,8 @@ class ReduceKernel(Kernel):
             )
         partials = rows_stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
         divisor = float(lead * trail) if self.op_kind == "mean" else 0.0
-        # The columns pass writes the storage dtype itself. Leaving it in fp32 and
-        # casting after costs a third kernel launch, which on the small edge-axis
-        # shapes is a fifth of the op.
+        # The columns pass writes the storage dtype itself; leaving it in fp32 and
+        # casting after costs a third kernel launch.
         return reduce_down_rows(
             partials.reshape(lead, kept),
             self.op_kind,
