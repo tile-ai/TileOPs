@@ -30,11 +30,6 @@ _WORKSPACE_BYTES = 256 * 1024 * 1024
 _N_CANDIDATES = 8
 
 
-def _busy(run: Callable[[], object]) -> float:
-    """Device-busy time of *run*, the figure the row is reported on."""
-    return median_busy_ms(bench_kernel(run))
-
-
 CUBLASLT_TAG = "cublaslt-best"
 
 
@@ -73,7 +68,6 @@ class _CublasLtBestGemm:
         self._b = b
         rhs = b.t() if trans_b else b
 
-        # Stated, not defaulted: the kernel timed against this accumulates in fp32.
         self._mm = Matmul(
             a,
             rhs,
@@ -89,12 +83,12 @@ class _CublasLtBestGemm:
         self.n_searched = len(algorithms)
 
         self._algorithm = min(
-            algorithms, key=lambda al: _busy(lambda: self._mm.execute(algorithm=al))
+            algorithms,
+            key=lambda al: median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=al))),
         )
-        # torch.matmul is ranked too: a "best cuBLAS" slower than the plain one is worse than none.
-        self._use_torch = _busy(lambda: torch.matmul(a, rhs)) < _busy(
-            lambda: self._mm.execute(algorithm=self._algorithm)
-        )
+        torch_ms = median_busy_ms(bench_kernel(lambda: torch.matmul(a, rhs)))
+        best_ms = median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=self._algorithm)))
+        self._use_torch = torch_ms < best_ms
 
     def free(self) -> None:
         """Release the plan and its 256 MB workspace, one per workload row."""
@@ -104,14 +98,12 @@ class _CublasLtBestGemm:
             self._mm = None
 
     def __del__(self) -> None:
-        # Teardown can run during interpreter shutdown, where a failure has nobody to report to.
         with contextlib.suppress(Exception):
             self.free()
 
     def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         rhs = b.t() if self.trans_b else b
         if a is not self._a or b is not self._b:
-            # The plan is bound to construction's operands; rebinding is a host-side swap, untimed.
             self._mm.reset_operands(a=a, b=rhs)
             self._a, self._b = a, b
         if self._use_torch:
