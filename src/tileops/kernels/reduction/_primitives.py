@@ -1143,9 +1143,8 @@ def _down_rows_kernel(
 
                 init_acc(acc)
 
-                # A bound that holds for the whole block guards the walk, not each
-                # lane: expressed as a per-lane select it scalarizes the loop and
-                # costs it its vector loads. Only a ragged column extent needs one.
+                # A per-lane select for a bound the whole block shares scalarizes
+                # the loop and costs it its vector loads.
                 for step in T.serial(rows_per_split):
                     row = pid_a * rows_per_split + step
                     if exact and rows_exact:

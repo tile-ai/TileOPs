@@ -187,8 +187,6 @@ def test_staged_row_broadcast_matches_torch(a_shape, b_shape):
     assert torch.equal(out, torch.gt(a, b))
 
 
-# A row extent of 1088 leaves 64 columns past two full blocks of 512, which is
-# within the share the builder packs across rows; 5000 leaves 392, which is not.
 _TAIL_SHAPES = [
     pytest.param((4, 1088), (4, 1), id="packed-tail-inner-stride-0"),
     pytest.param((5, 1088), (1, 1088), id="packed-tail-inner-stride-1"),

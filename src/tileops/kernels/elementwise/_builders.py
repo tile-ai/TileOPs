@@ -13,8 +13,9 @@ from ._broadcast import (
 )
 from ._op_body import op_func_for
 
-#: Largest share of a block the leftover columns of a broadcast row may take
-#: and still be packed across rows rather than left to a guarded per-row block.
+#: Largest share of a block the leftover columns of a broadcast row may take and
+#: still be packed across rows. Packing them costs a divmod per element; leaving
+#: them costs one block per row running a fraction of its lanes.
 _TAIL_PACK_RATIO = 4
 
 
@@ -134,8 +135,6 @@ def _row_broadcast_prim(
     block_cols = threads * num_per_thread
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
-    # Packing costs a row/column divmod per leftover element; leaving the columns
-    # in place costs one block per row running a fraction of its lanes.
     tail_cols = inner - full_blocks * block_cols
     tail_slots = rows * tail_cols
     body_blocks = full_blocks * rows
