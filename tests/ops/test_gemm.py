@@ -69,7 +69,6 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-nt-dense-ws",
                 ),
-                # The only ``trans_a=True`` case: A stored [K, M], M from a's second axis.
                 pytest.param(
                     256,
                     512,
@@ -202,7 +201,6 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-tuned-thin-n-alt",
                 ),
-                # small-batch NT: tier-1 (m<=4) both decode regimes, tier-2 (5<=m<=8) underfilled.
                 pytest.param(
                     2,
                     2112,
@@ -247,7 +245,6 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-small-m8-splitk",
                 ),
-                # swap_ab band: bf16, a non-block_nn-divisible n, and the mid-CTA deep-ring stages.
                 pytest.param(
                     4,
                     5000,
@@ -259,7 +256,6 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-small-m4-swap-ab-ntail",
                 ),
-                # coop2, shipped prefill pin: no tails, so every tile takes the TMA-store epilogue.
                 pytest.param(
                     1536,
                     2112,
@@ -271,7 +267,6 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-coop2-persistent",
                 ),
-                # m tail 32 + n tail 160: consumer 0 stores 32 predicated rows, consumer 1 none.
                 pytest.param(
                     1440,
                     2080,
@@ -283,7 +278,6 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-coop2-mn-tail",
                 ),
-                # simple (pipelined, no WS): m=64 plain grid, m=128 the cluster_m=2 ClusterKernel.
                 pytest.param(
                     64,
                     7168,
@@ -650,15 +644,12 @@ def test_small_batch_dispatch() -> None:
     if get_sm_version() not in (SmallBatchGemmKernel.supported_archs or []):
         pytest.skip("small_batch kernel-mode is SM90-only")
 
-    op = GemmFwdOp(trans_a=False, trans_b=True)  # NT
-    # m == 2 with n too narrow for the swapped grid (2112/64 = 33 CTAs): bandwidth kernel.
+    op = GemmFwdOp(trans_a=False, trans_b=True)
     assert op._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "small_batch"
-    # n wide enough for swap_ab (7168/64 = 112 CTAs): the generic kernel wins.
     assert op._get_kernel((), 2, 7168, 2048, torch.float16)[0] == "gemm"
-    # m == 3 is the first m the bandwidth body loses; m == 1 is the GEMV region below it.
     assert op._get_kernel((), 3, 2112, 7168, torch.float16)[0] == "gemm"
     assert op._get_kernel((), 1, 2112, 7168, torch.float16)[0] == "lhs_row"
-    op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
+    op_nn = GemmFwdOp(trans_a=False, trans_b=False)
     assert op_nn._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "gemm"
 
 
@@ -676,14 +667,12 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
     if get_sm_version() != 90:
         pytest.skip("the GEMM structures are SM90-only")
 
-    # 1536x2112x256 NT is served by coop2 (block_n=192) analytically.
     assert GemmKernel(1536, 2112, 256, torch.bfloat16, trans_b=True).config["block_n"] == 192
 
     requested = {"coop2s": True, "block_n": 64, "block_k": 128, "num_stages": 4}
     kernel = GemmKernel(1536, 2112, 256, torch.bfloat16, trans_b=True, config=dict(requested))
     assert kernel.config == requested
 
-    # A config without a structure flag still merges over the default.
     merged = GemmKernel(512, 512, 512, torch.float16, config={"block_k": 32}).config
     assert merged["block_k"] == 32
     assert "block_m" in merged and "panel_size" in merged
@@ -713,7 +702,7 @@ def test_registered_wrapped_ops_keep_their_contracts() -> None:
     b = torch.randn(n, k, dtype=torch.bfloat16, device="cuda")
     ref = a.float() @ b.float().T
 
-    for split_k in (1, 4):  # split_k > 1 takes the branch added here
+    for split_k in (1, 4):
         args = (m, n, k, False, True, "bfloat16", 64, 128, 128, 4, 16, split_k, a, b)
         out = _gemm_wrapped_kernel(*args)
         assert out.shape == (m, n)
@@ -755,18 +744,14 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
     nt, nn = GemmFwdOp(trans_a=False, trans_b=True), GemmFwdOp(trans_a=False, trans_b=False)
     fp = torch.bfloat16
 
-    # k is innermost for both operands under NT, so 1001 is refused there...
     with pytest.raises(ValueError, match=r"multiple of 8 elements.*k=1001"):
         nt._get_kernel((), 256, 512, 1001, fp)
-    # ...while n = 511 is innermost only where b is not transposed.
     with pytest.raises(ValueError, match=r"multiple of 8 elements.*n=511"):
         nn._get_kernel((), 256, 511, 1024, fp)
     assert nt._get_kernel((), 256, 511, 1024, fp)[0] == "gemm"
 
-    # m == 1 stays served at any extent: the bandwidth body uses cp.async.
     assert nt._get_kernel((), 1, 512, 1001, fp)[0] == "lhs_row"
 
-    # Constructing the kernel directly bypasses selection, so it refuses too.
     with pytest.raises(ValueError, match=r"cannot serve 256x512x1001"):
         GemmKernel(256, 512, 1001, fp, trans_a=False, trans_b=True)
 
@@ -805,7 +790,6 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
 
     with pytest.raises(ValueError, match=r"contracts two matrices.*a\.ndim=3"):
         op(a, a)
-    # The refused call's dims are neither bound (the roofline reads them) nor compiled for.
     assert (op.m, op.n, op.k) == (None, None, None)
     assert not op.built_kernels("gemm_kernel")
 
@@ -828,7 +812,6 @@ def test_structure_routing_matches_test_ids() -> None:
     if get_sm_version() != 90:
         pytest.skip("structure routing is SM90-specific")
 
-    # (test id, m, n, k, dtype, trans_b, expected structure)
     expected = [
         ("smoke-fp16-square", 1024, 1024, 1024, torch.float16, False, "coop2s"),
         ("smoke-bf16-square", 1024, 1024, 1024, torch.bfloat16, False, "coop2s"),

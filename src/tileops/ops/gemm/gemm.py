@@ -19,7 +19,6 @@ from ..op_base import Op
 
 __all__ = ["GEMM_KEYS", "GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
-#: Implementations of the dense-GEMM slot.
 GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
 
 
@@ -62,7 +61,6 @@ class GemmFwdOp(Op):
         self.trans_b = trans_b
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # Last call's input signature and what it resolved to, so a repeat call skips re-inference.
         self._active_sig: Optional[tuple] = None
         self._active: Optional[tuple] = None
         # Roofline / dtype bindings, populated on the first forward().
@@ -180,7 +178,6 @@ class GemmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        # The fast path skips the dtype gate, so the signature carries every dtype that gate reads.
         sig = (a.shape, b.shape, a.dtype, b.dtype)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)

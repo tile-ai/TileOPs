@@ -12,7 +12,6 @@ from tileops.utils import get_sm_count, str2dtype
 from .call_spec import gemv_region, small_batch_region
 from .heuristics import SWAP_AB_MPAD, best_config, gemv_config, small_batch_config
 
-# Ids 8/9, not 4/5: TileLang hands out its own fragment-copy syncs from the bottom.
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
@@ -488,7 +487,6 @@ def _gemm_kernel(
         # reconcile them with the logical (M,K) x (K,N) contraction.
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
-        # TMA store needs C's row stride 16B-aligned, and only pays off on multi-wave grids.
         grid_size = -(-n // block_n) * -(-m // block_m)
         tma_epilogue = (n * 2) % 16 == 0 and grid_size > sm_count
 
@@ -502,7 +500,6 @@ def _gemm_kernel(
                 bx,
                 by,
             ):
-                # L2 rasterization: serpentine panels so resident CTAs re-read A/B from L2.
                 T.use_swizzle(panel_size, enable=panel_size > 0)
                 # Multi-stage ring of A/B SMEM buffers. Indexed by stage = gi %
                 # num_stages; the phase bit flips every num_stages iterations.
@@ -511,7 +508,6 @@ def _gemm_kernel(
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 if tma_epilogue:
-                    # Epilogue staging tile: accumulator cast to storage dtype, then one TMA store.
                     c_smem = T.alloc_shared((block_m, block_n), dtype)
                     T.annotate_layout(
                         {
@@ -541,7 +537,6 @@ def _gemm_kernel(
                 m_start = by * block_m
                 n_start = bx * block_n
 
-                # Previous ring slot in a register; recomputing adds a modulo to the hot loop.
                 ps = T.alloc_local((1,), "int32")
 
                 tx = T.get_thread_binding()
@@ -612,16 +607,13 @@ def _gemm_kernel(
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(c_local, num_regs=num_accum_regs)
                         T.barrier_arrive(ab_empty[ps[0]])
-                        # TMA epilogue: M/N tails need no predicate, hardware drops OOB coords.
                         if tma_epilogue:
                             with trace.range("epilogue"):
                                 T.copy(c_local, c_smem)
-                                # WG-scoped barrier, not sync_threads: the branch is WG-divergent.
                                 T.fence_proxy_async()
                                 T.sync_threads(barrier_id=4, arrive_count=128)
                                 T.copy(c_smem, c[m_start, n_start])
                         else:
-                            # Fallback (misaligned N): predicated scalar store for the M/N tail.
                             with trace.range("epilogue"):
                                 for i, j in T.Parallel(block_m, block_n):
                                     if m_start + i < m and n_start + j < n:
@@ -700,7 +692,6 @@ def _gemm_splitk_kernel(
             with T.Kernel(
                 T.ceildiv(n, block_n), T.ceildiv(m, block_m), split_k, threads=threads
             ) as (bx, by, bz):
-                # Rasterization remaps (bx, by) only; the z (K-slice) index passes through.
                 T.use_swizzle(panel_size, enable=panel_size > 0)
                 a_smem = T.alloc_shared((num_stages,) + a_tile, dtype)
                 b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
@@ -719,13 +710,11 @@ def _gemm_splitk_kernel(
 
                 m_start = by * block_m
                 n_start = bx * block_n
-                # First K tile of this CTA's slice; the global K tail lands in the last slice.
                 ki_base = bz * k_slice
 
                 tx = T.get_thread_binding()
 
                 if tx < 128:
-                    # ── Producer warpgroup: TMA loads for this K slice. ──
                     T.dec_max_nreg(24)
                     for ki in T.serial(k_slice):
                         slot = ki % num_stages
@@ -758,7 +747,6 @@ def _gemm_splitk_kernel(
                             )
                         T.barrier_arrive(ab_full[slot])
                 else:
-                    # ── Consumer warpgroup: WGMMA over this K slice. ──
                     T.inc_max_nreg(240)
                     num_accum_regs = (block_m * block_n) // 128
                     for ki in T.serial(k_slice):
@@ -783,7 +771,6 @@ def _gemm_splitk_kernel(
                     T.wait_wgmma(0)
                     T.warpgroup_fence_operand(c_local, num_regs=num_accum_regs)
                     T.barrier_arrive(ab_empty[ps[0]])
-                    # Scalar store is deliberate: split-K grids leave the TMA drain exposed.
                     for i, j in T.Parallel(block_m, block_n):
                         if m_start + i < m and n_start + j < n:
                             w[bz, m_start + i, n_start + j] = c_local[i, j]
@@ -812,7 +799,6 @@ def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") 
     @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
     def _splitk_reduce_func(elems_per_cta: int = 1024) -> Callable:
         def _slice_sum(w, gi, gj):
-            # Plain-Python builder: a traced ``for`` would rebind an immutable var per frame.
             expr = w[0, gi, gj]
             for s in range(1, split_k):
                 expr = expr + w[s, gi, gj]
@@ -823,7 +809,6 @@ def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") 
             w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
             c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
-            # Flat 1-D tiling over m*n: a 2-D grid underfills the SMs on a skinny output.
             total = m * n
             with T.Kernel(T.ceildiv(total, elems_per_cta), threads=256) as bx:
                 base = bx * elems_per_cta
@@ -911,7 +896,7 @@ def _gemm_coop2_kernel(
     if trans_a or not trans_b:
         raise ValueError("_gemm_coop2_kernel is NT-only (trans_a=False, trans_b=True)")
     accum_dtype = "float"
-    block_m = 128  # cooperative: two consumers each own block_m // 2 = 64 rows
+    block_m = 128
 
     @tilelang.jit(
         out_idx=[-1],
@@ -926,8 +911,7 @@ def _gemm_coop2_kernel(
         stage_n: int = 0,
     ) -> Callable:
         half_m = block_m // 2
-        nr = (half_m * block_n) // 128  # fp32 accum regs per consumer thread
-        # ``stage_n < block_n`` chunks the TMA store so a deeper A/B ring fits the 227 KB cap.
+        nr = (half_m * block_n) // 128
         sn = block_n if stage_n <= 0 else stage_n
         n_chunks = block_n // sn
         num_pid_m = -(-m // block_m)
@@ -938,7 +922,6 @@ def _gemm_coop2_kernel(
 
         @T.macro
         def decode(flat_id, mt, nt):
-            # Grouped tile order: group_size_m m-tiles share an n-stripe to reuse B in L2.
             gin = T.int32(group_size_m * num_pid_n)
             gid = flat_id // gin
             first_m = gid * T.int32(group_size_m)
@@ -979,7 +962,6 @@ def _gemm_coop2_kernel(
                 gi_prod = T.alloc_var("int32", init=0)
                 gi_cons_0 = T.alloc_var("int32", init=0)
                 gi_cons_1 = T.alloc_var("int32", init=0)
-                # Previous ring slot in a register; recomputing adds a modulo to the hot loop.
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
@@ -988,7 +970,6 @@ def _gemm_coop2_kernel(
                 tx = T.get_thread_binding()
 
                 if tx < 128:
-                    # ── Producer WG: 3 TMAs (A_top, A_bot, B) per K step. ──
                     T.dec_max_nreg(24)
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
@@ -1019,7 +1000,6 @@ def _gemm_coop2_kernel(
                                 gi_prod = gi_prod + 1
 
                 elif tx < 256:
-                    # ── Consumer WG0: top half rows [0, half_m). ──
                     T.inc_max_nreg(240)
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
@@ -1063,7 +1043,6 @@ def _gemm_coop2_kernel(
                                         c[m_start + i, n_start + j] = c_cast_0[i, j]
 
                 else:
-                    # ── Consumer WG1: bottom half rows [half_m, block_m). ──
                     T.inc_max_nreg(240)
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
@@ -1199,7 +1178,6 @@ def _gemm_coop2_splitk_kernel(
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
 
-                # Previous ring slot in a register; recomputing adds a modulo to the hot loop.
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
 
@@ -1367,11 +1345,9 @@ def _gemm_simple_kernel(
                     f"cluster_m={cluster_m} must divide the M grid ({m // block_m} tiles)"
                 )
             if panel_size > 0:
-                # TileLang lowers the swizzle annotation only for clusters on X; ours pairs M on Y.
                 raise ValueError("cluster_m > 1 requires panel_size == 0")
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
 
-        # ``cluster_m > 1`` pairs M tiles so B hits L2 — geometry only, no multicast.
         def _launch():
             if cluster_m > 1:
                 return T.ClusterKernel(
@@ -1463,13 +1439,11 @@ def _gemm_swap_ab_kernel(
                 ct_smem = T.alloc_shared((block_nn, mpad), dtype)
                 T.clear(ct_local)
                 for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    # Partial tiles zero-fill, so the K tail and m < mpad rows add nothing.
                     T.copy(b[bx * block_nn, ki * block_k], b_smem)
                     T.copy(a[0, ki * block_k], a_smem)
                     T.gemm(b_smem, a_smem, ct_local, transpose_B=True)
                 T.copy(ct_local, ct_cast)
                 T.copy(ct_cast, ct_smem)
-                # Transpose out of SMEM: consecutive ``j`` per thread keeps C writes coalesced.
                 for mi, j in T.Parallel(mpad, block_nn):
                     if mi < m and bx * block_nn + j < n:
                         c[mi, bx * block_nn + j] = ct_smem[j, mi]
@@ -1519,7 +1493,7 @@ def _gemm_coop2s_kernel(
     if trans_a or trans_b:
         raise ValueError("_gemm_coop2s_kernel is NN-only (trans_a=False, trans_b=False)")
     accum_dtype = "float"
-    block_m = 128  # cooperative: two consumers each own block_m // 2 = 64 rows
+    block_m = 128
 
     @tilelang.jit(
         out_idx=[-1],
@@ -1533,7 +1507,7 @@ def _gemm_coop2s_kernel(
                 f"m={m} % {block_m}, n={n} % {block_n}, k={k} % {block_k}"
             )
         half_m = block_m // 2
-        nr = (half_m * block_n) // 128  # fp32 accum regs per consumer thread
+        nr = (half_m * block_n) // 128
         k_iters = k // block_k
 
         @T.prim_func
@@ -1567,14 +1541,12 @@ def _gemm_coop2s_kernel(
                 ab_empty = T.alloc_barrier([256] * num_stages)
                 m_start = by * block_m
                 n_start = bx * block_n
-                # Previous ring slot in a register; recomputing adds a modulo to the hot loop.
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
 
                 tx = T.get_thread_binding()
 
                 if tx < 128:
-                    # ── Producer WG: TMA the A halves and the shared B tile. ──
                     T.dec_max_nreg(24)
                     for ki in T.serial(k_iters):
                         slot = ki % num_stages
@@ -1598,7 +1570,6 @@ def _gemm_coop2s_kernel(
                         )
                         T.barrier_arrive(ab_full[slot])
                 elif tx < 256:
-                    # ── Consumer WG0: top half rows [0, half_m). ──
                     T.inc_max_nreg(240)
                     for ki in T.serial(k_iters):
                         slot = ki % num_stages
@@ -1627,7 +1598,6 @@ def _gemm_coop2s_kernel(
                     T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
                     T.copy(c_smem_0, c[m_start, n_start])
                 else:
-                    # ── Consumer WG1: bottom half rows [half_m, block_m). ──
                     T.inc_max_nreg(240)
                     for ki in T.serial(k_iters):
                         slot = ki % num_stages
@@ -1773,7 +1743,6 @@ class GemmKernel(Kernel):
 
     @classmethod
     def refusal(cls, call) -> Optional[str]:
-        # The base relays only a yes/no from ``applies``; name the dimension instead.
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return super().refusal(call)
@@ -1791,7 +1760,6 @@ class GemmKernel(Kernel):
         trans_b: bool = False,
     ) -> None:
         super().__init__()
-        # Selection asks ``refusal`` this too; a direct construction must refuse as well.
         misaligned = _tma_misalignment(m, n, k, dtype, trans_a, trans_b)
         if misaligned is not None:
             raise ValueError(f"{type(self).__name__} cannot serve {m}x{n}x{k}: {misaligned}")
@@ -1801,7 +1769,6 @@ class GemmKernel(Kernel):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
-        # Device SM count: the coop2 persistent-grid width and the basic multi-wave gate.
         self.sm_count = get_sm_count()
 
         self.kernel = _gemm_kernel(
@@ -1810,9 +1777,7 @@ class GemmKernel(Kernel):
 
         self.init_config(config, tune)
 
-    # Per-shape H200 overrides; an exact hit is authoritative, everything else takes the selector.
     _TUNED_CONFIGS: dict = {
-        # decode-gate-up: bn=64 gives 33 n-tiles, split_k=4 fills exactly one 132-CTA wave.
         (128, 2112, 7168, False, True, "bfloat16"): {
             "coop2_splitk": True,
             "block_n": 64,
@@ -1820,7 +1785,6 @@ class GemmKernel(Kernel):
             "num_stages": 4,
             "split_k": 4,
         },
-        # square-1k: too small for a persistent wave, so ``_gemm_coop2s_kernel`` takes it.
         (1024, 1024, 1024, False, False, "float16"): {
             "coop2s": True,
             "block_n": 64,
@@ -1833,7 +1797,6 @@ class GemmKernel(Kernel):
             "block_k": 128,
             "num_stages": 4,
         },
-        # decode-down: 16 K-iterations is too short a mainloop to repay a producer warpgroup.
         (128, 7168, 2048, False, True, "bfloat16"): {
             "simple": True,
             "block_m": 64,
@@ -1905,7 +1868,6 @@ class GemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # An entry without a structure flag merges over the modal base config.
         modal = {
             "block_m": 128,
             "block_n": 128,
@@ -1918,12 +1880,9 @@ class GemmKernel(Kernel):
             (self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str)
         )
         if override is not None:
-            # coop2 / coop2s configs own their schema; do not merge the modal keys into them.
             self_contained = override.get("coop2") or override.get("coop2s")
             return dict(override) if self_contained else {**modal, **override}
         return best_config(self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count)
-
-    # No ``autotune_configs``: the in-tree tuner wraps only ``self.kernel``, so it misses the rest.
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.config.get("simple"):
@@ -1955,7 +1914,6 @@ class GemmKernel(Kernel):
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
-        # Called directly: this kernel carries no trace instrumentation for ``trace.run``.
         if self.config.get("coop2"):
             cfg = self.config
             compiled = _gemm_coop2_kernel(
@@ -1992,12 +1950,10 @@ class GemmKernel(Kernel):
                 0,
                 cfg["split_k"],
             )
-            # Allocate C before the first launch: see ``_splitk_pair``.
             c = torch.empty((self.m, self.n), dtype=a.dtype, device=a.device)
             reduce_(mainloop(a, b), c)
             return c
 
-        # Config-only: the in-tree tuner cannot reach this path (see the class note).
         split_k = self.config.get("split_k", 1)
         if split_k > 1:
             cfg = self.config
@@ -2016,12 +1972,10 @@ class GemmKernel(Kernel):
                 cfg["panel_size"],
                 split_k,
             )
-            # Allocate C before the first launch: see ``_splitk_pair``.
             c = torch.empty((self.m, self.n), dtype=a.dtype, device=a.device)
             reduce_(mainloop(a, b), c)
             return c
 
-        # ``trace.run`` dumps when tracing is on and otherwise returns C, so no branch here.
         main_cfg = {k2: v for k2, v in self.config.items() if k2 != "split_k"}
         compiled = _gemm_kernel(
             self.m,
@@ -2087,7 +2041,6 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
             b: T.Tensor((n, k), dtype),
             c: T.Tensor((m, n), dtype),
         ):
-            # tk=threadIdx.x is the reduce lane over K (coalesced B reads); tn selects the column.
             with T.Kernel(T.ceildiv(n, block_n), threads=(reduce_threads, block_n)) as bn:
                 tk = T.get_thread_binding(0)
                 tn = T.get_thread_binding(1)
@@ -2098,7 +2051,6 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
 
                 for bk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
                     T.copy(b[bn * block_n, bk * block_k], b_shared, disable_tma=True)
-                    # Both loads reach past ``k`` on the last tile; the buffer extents guard them.
                     for mi in T.serial(m):
                         for _k in T.vectorized(tile_k):
                             a_local[mi, _k] = a[mi, bk * block_k + tk * tile_k + _k]
@@ -2163,7 +2115,6 @@ def _(
     return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
-# cp.async B-ring geometry: 128-bit fp16/bf16 loads give 8 elements per thread per tile.
 _TILE_K = 8
 _SMEM_CAP = 224 * 1024
 
@@ -2197,23 +2148,19 @@ class GemvKernel(Kernel):
         self.k = k
         self.dtype = dtype
 
-        # The matrix-vector case is ``_gemm_small_batch_kernel`` at m = 1; there is no GEMV body.
         self.kernel = _gemm_small_batch_kernel(1, n, k, self.dtype_str)
 
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        # The measured SM90 band rules live in ``heuristics.gemv_config``.
         return gemv_config(self.k)
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # reduce_threads>32 opens a cross-warp SMEM tree reduction; num_stages>=2 pipelines B.
         return _bandwidth_autotune_grid((32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6))
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # One-row ``A`` for the shared small-batch body; called directly to skip a cache lookup.
         a = a.reshape(1, -1).contiguous()
         return self.kernel(
             self.config["block_n"],
@@ -2270,12 +2217,10 @@ class SmallBatchGemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # The measured band rule lives in ``heuristics.small_batch_config``.
         return small_batch_config(self.n, self.k, get_sm_count())
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Narrower than the GEMV grid: block_n > 4 starves the per-row reduction.
         return _bandwidth_autotune_grid((32, 64, 128), (1, 2, 4), (2, 3, 4, 5))
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

@@ -61,26 +61,22 @@ __all__ = [
     "swap_ab_stages",
 ]
 
-_SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
+_SMEM_BUDGET = 227 * 1024
 _MAX_ACCUM_REGS = 200
 
-# n-tile width of the tiny-m configs; ``small_batch_region`` prices a wave at it — retune together.
 TINY_M_BLOCK_N = 128
 
-# Operand-swapped tiny-m geometry: ``n`` rides the 64-row WGMMA axis, ``m`` the 8-wide minimum.
 SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
 
-# Validated num_stages ranges per structure in the shipped kernels.
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
 
-# Calibrated ranking constants (H200; see module docstring for protocol).
-_L1_TBPS = 33.0  # aggregate SMEM<->core bandwidth proxy
-_L2_TBPS = 17.5  # aggregate L2 bandwidth proxy
+_L1_TBPS = 33.0
+_L2_TBPS = 17.5
 _TC_TFLOPS = {"basic": 420.0, "splitk": 420.0, "coop2": 525.0, "coop2_splitk": 525.0}
-_RED_TBPS = 1.5  # split-K workspace round-trip bandwidth
-_LAUNCH_US = 2.25  # reduce-pass launch + sync overhead
-_ISSUE_NS = 150.0  # per-K-iteration issue/TMA overhead
+_RED_TBPS = 1.5
+_LAUNCH_US = 2.25
+_ISSUE_NS = 150.0
 
 
 @dataclass
@@ -157,7 +153,6 @@ def _coop2_ns_sn(bn: int, bk: int):
 
 
 def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
-    # DeepGEMM sm90.hpp stage rule: <3 stages cannot hide TMA latency; small tiles need >=4.
     if ns < 3:
         return False
     return not (bm * bn < 128 * 192 and ns < 4)
@@ -191,10 +186,8 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 ns, sn = d
                 if not _stage_rule_ok(128, bn, ns):
                     continue
-                # coop2 never won below bn=192; split-K coop2 owns the narrow-bn regime.
                 coop2_ok = bn >= 192
                 mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
-                # Persistent coop2 below one wave measures far slower than basic (idle SMs).
                 if coop2_ok and mn_tiles >= sm_count:
                     out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
                 k_iters = math.ceil(k / bk)
@@ -214,7 +207,7 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
     num_waves = math.ceil(num_blocks / sm_count)
     wave_eff = num_blocks / (num_waves * sm_count)
     k_exp = k / sk
-    ws = 4 if sk > 1 else elem_out  # split-K mainloop writes fp32 workspace
+    ws = 4 if sk > 1 else elem_out
 
     l2_ab = k_exp * (bm + bn) * elem
     l1_ab = k_exp * (bm + bn) * elem
@@ -335,12 +328,10 @@ def _best_config_cached(
         return _tiny_m_config(n, k, sm_count)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
     if not cands:
-        # Unreachable: bm = bn = 64 is always enumerated and clears both budgets.
         raise AssertionError(
             f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
             f"trans_b={trans_b}, sm_count={sm_count})"
         )
-    # Score ties break toward larger block_k (fewer K iterations, measured faster).
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count), -c.block_k))
     return best.to_config()
 
@@ -406,7 +397,6 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     (attn-family 4096x7168 at m=2).
     """
     cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
-    # per-thread K iterations: tile_k is 8 for fp16/bf16 128-bit loads
     k_iters = math.ceil(k / (cfg["reduce_threads"] * 8))
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
