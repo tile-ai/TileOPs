@@ -76,7 +76,7 @@ Three files. `PIP_CONSTRAINT` hands the latter two to every `pip install` in the
 
 | File                          | Written by | Holds                                                    |
 | ----------------------------- | ---------- | -------------------------------------------------------- |
-| `requirements.in`             | by hand    | What the image installs directly.                        |
+| `requirements.in`             | by hand    | Direct requirements, for the lock compile alone.         |
 | `constraints.txt`             | by hand    | Chosen versions and why. Also used by the CPU preflight. |
 | `constraints-runner-lock.txt` | generated  | The transitive closure of both.                          |
 

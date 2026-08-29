@@ -119,6 +119,7 @@ nvidia-nvjitlink==13.3.33
 nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.2.75
 nvidia-nvvm==13.3.73
+nvmath-python==1.0.0
 nvtx==0.2.15
 openai==2.53.0
 openai-harmony==0.0.8

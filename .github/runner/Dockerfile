@@ -170,6 +170,9 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
     fi
 # --no-deps: it must not re-resolve a CUDA wheel under torch.
 RUN uv pip install --no-deps cupti-python
+# Deps resolved, unlike cupti-python: all four are already pinned in the lock. Fatal, unlike the
+# bench baselines: the GEMM benchmark imports it with no fallback, so its absence fails rows.
+RUN uv pip install nvmath-python
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 

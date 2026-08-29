@@ -54,6 +54,15 @@ def main() -> int:
     assert torch.einsum("bik,bkj->bij", ab, ab).isfinite().all()
     print("cuBLAS matmul / bmm / einsum OK")
 
+    # Whether nvmath resolves torch's libcublasLt through cuda-pathfinder needs a GPU to answer.
+    from nvmath.linalg.advanced import Matmul, MatmulComputeType, MatmulOptions
+
+    with Matmul(a, a, options=MatmulOptions(compute_type=MatmulComputeType.COMPUTE_32F)) as mm:
+        algorithms = mm.plan()
+        assert algorithms, "cuBLASLt returned no algorithm"
+        assert mm.execute(algorithm=algorithms[0]).isfinite().all()
+    print(f"nvmath cuBLASLt plan OK ({len(algorithms)} algorithms)")
+
     print("image OK")
     return 0
 
