@@ -23,8 +23,7 @@ PUBLISH = REPO_ROOT / "scripts" / "ci" / "publish_meta.py"
 
 
 def test_the_caption_carries_what_the_run_cannot_be_reproduced_without(tmp_path, monkeypatch):
-    # The host passes the digest in, and the unset application clock reports
-    # `[N/A]` — which must not reach the page.
+    # An unset application clock reports `[N/A]`, which must not reach the page.
     monkeypatch.setenv("TILEOPS_RUNNER_IMAGE", "ghcr.io/tile-ai/tileops-runner:cu132")
     monkeypatch.setenv("TILEOPS_RUNNER_IMAGE_DIGEST", "sha256:" + "ab" * 32)
     monkeypatch.setattr(
@@ -36,7 +35,7 @@ def test_the_caption_carries_what_the_run_cannot_be_reproduced_without(tmp_path,
     )
     env = tmp_path / "env.json"
     env.write_text(json.dumps(collect_env.collect()))
-    # `collect_env.subprocess` is the module itself: the patch would reach the
+    # `collect_env.subprocess` is the module: the patch would reach the
     # publisher below too.
     monkeypatch.undo()
 
