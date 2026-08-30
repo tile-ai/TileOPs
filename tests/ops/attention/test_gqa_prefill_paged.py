@@ -548,13 +548,15 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         block_table,
         max(q_lens),
     )
-    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+    atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
+    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
     for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
         q_start = int(cu_seqlens_q[b].item())
         for i in range(q_len):
             row = paged_cache_row(block_table, b, old_len + i, page_size)
-            torch.testing.assert_close(k_pages[row], k_new_rot[q_start + i], atol=5e-3, rtol=1e-5)
+            # Two rotations of the same input, not a copy: the kernel's against the reference.
+            torch.testing.assert_close(k_pages[row], k_new_rot[q_start + i], atol=atol, rtol=rtol)
             torch.testing.assert_close(v_pages[row], v_new[q_start + i])
         for pos in range(old_len):
             row = paged_cache_row(block_table, b, pos, page_size)

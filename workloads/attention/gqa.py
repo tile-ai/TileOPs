@@ -448,10 +448,11 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
             physical_tokens, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
         ).contiguous()
         v_pages = torch.randn_like(k_pages)
-        cu_seqlens_q = torch.tensor(
-            [0] + torch.tensor(self.q_lens).cumsum(0).tolist(), dtype=torch.int32, device="cuda"
-        )
+        cu_seqlens_q = make_cu_seqlens(self.q_lens)
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device="cuda")
+        # Identity mapping, not make_interleaved_block_table: a timed run reports the
+        # page walk of a cache that was filled in order, and the correctness of the
+        # walk under a permuted table is the test's question.
         block_table = (
             torch.arange(self.batch * self.max_pages_per_req, dtype=torch.int32, device="cuda")
             .reshape(self.batch, self.max_pages_per_req)
