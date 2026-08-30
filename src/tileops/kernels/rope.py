@@ -210,6 +210,13 @@ def _make_rope_neox_position_ids_thd(
     the rotated half, not the head. Where ``rotary_dim < head_dim`` a second walk
     copies the columns past it. The rotation runs in f32 and rounds once, at the
     store into ``y``.
+
+    ``status`` counts the positions seen outside ``[0, max_position)``. It is
+    reported from a walk over the token axis, which is ``num_heads * half`` times
+    shorter than the rotation's, so the rotation stays branch-free; the rotation
+    clamps its own table index so an out-of-range position cannot fault before the
+    caller reads the count back. The count only grows, which is what lets one
+    buffer serve every call without a reset: a caller raises when it moves.
     """
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
@@ -221,7 +228,7 @@ def _make_rope_neox_position_ids_thd(
     # where there are more of them than there are rotated pairs.
     n_walked = max(n_pairs, n_tail)
 
-    @tilelang.jit(out_idx=[4])
+    @tilelang.jit(out_idx=[5])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
@@ -229,15 +236,22 @@ def _make_rope_neox_position_ids_thd(
             cos_table: T.Tensor((max_position, half), dtype),
             sin_table: T.Tensor((max_position, half), dtype),
             position_ids: T.Tensor((num_tokens,), "int32"),
+            status: T.Tensor((1,), "int32"),
             y: T.Tensor((n_total,), dtype),
         ):
             with T.Kernel(T.ceildiv(n_walked, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    token = (bx * threads_arg + i) * npt_arg + j
+                    if token < num_tokens:
+                        seen = position_ids[token]
+                        if seen != T.max(0, T.min(seen, max_position - 1)):
+                            T.atomic_add(status[0], 1)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     pair_idx = (bx * threads_arg + i) * npt_arg + j
                     if pair_idx < n_pairs:
                         row = pair_idx // half
                         col = pair_idx % half
-                        pos = position_ids[row // num_heads]
+                        pos = T.max(0, T.min(position_ids[row // num_heads], max_position - 1))
                         low = row * head_dim + col
                         x_low = T.Cast("float32", x[low])
                         x_high = T.Cast("float32", x[low + half])
@@ -492,6 +506,11 @@ class RopeNeoxPositionIdsKernel(Kernel):
         self.rotary_dim = rotary_dim
         self.max_position = max_position
         self.dtype = dtype
+        #: Grows by one per position seen outside ``[0, max_position)``. One buffer
+        #: serves every call because the count is never reset; ``out_of_range_since``
+        #: answers whether it moved.
+        self._status: torch.Tensor | None = None
+        self._seen_out_of_range = 0
         self.kernel = self._build_kernel()
         self.init_config(config, tune)
 
@@ -513,16 +532,32 @@ class RopeNeoxPositionIdsKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
+    def take_out_of_range(self) -> bool:
+        """Whether a call since the previous ask saw a position outside the table.
+
+        One device read per ask, and the count it compares against is held here, so
+        a caller pays one synchronisation rather than one before and one after.
+        """
+        if self._status is None:
+            return False
+        count = int(self._status.item())
+        moved = count != self._seen_out_of_range
+        self._seen_out_of_range = count
+        return moved
+
     def forward(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor
     ) -> torch.Tensor:
         cfg = self.config
         orig_shape = x.shape
+        if self._status is None:
+            self._status = torch.zeros(1, device=x.device, dtype=torch.int32)
         result = self.kernel(cfg["threads"], cfg["num_per_thread"])(
             x.contiguous().reshape(-1),
             cos,
             sin,
             position_ids.contiguous(),
+            self._status,
         )
         return result.reshape(orig_shape)
 
