@@ -747,3 +747,37 @@ def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype
         "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
     }[op_kind]()
     assert torch.equal(op(x), ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "op_kind, dtype",
+    [
+        ("any", torch.bool),
+        ("all", torch.bool),
+        ("count_nonzero", torch.float16),
+    ],
+)
+def test_logical_reduce_edge_axes_fused_dispatch(op_kind: str, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+    from tileops.utils import is_h200
+
+    if not is_h200():
+        pytest.skip("fused edge logical reduce is selected only for the measured H200 region")
+
+    op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
+    op = op_map[op_kind](dim=[0, 2])
+    if dtype == torch.bool:
+        x = torch.rand(4, 128, 4096, device="cuda") > 0.999
+        if op_kind == "all":
+            x = ~x
+    else:
+        x = torch.randn(4, 128, 4096, dtype=dtype, device="cuda")
+    ref = {
+        "any": lambda: x.any(0).any(-1),
+        "all": lambda: x.all(0).all(-1),
+        "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
+    }[op_kind]()
+    assert torch.equal(op(x), ref)
+    assert "logical_reduce_edge_fused" in op._kernel_roles

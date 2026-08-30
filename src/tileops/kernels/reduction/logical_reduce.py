@@ -36,8 +36,18 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
     tune_by_forward,
 )
+from tileops.kernels.reduction.call_spec import (
+    LogicalReduceCall,
+    logical_edge_fused_region,
+    logical_reduce_region,
+)
 
-__all__ = ["LogicalReduceKernel", "storage_dtype_for", "to_logical_storage"]
+__all__ = [
+    "LogicalReduceEdgeFusedKernel",
+    "LogicalReduceKernel",
+    "storage_dtype_for",
+    "to_logical_storage",
+]
 
 _LOGICAL_REDUCE_KINDS = {"any", "all", "count_nonzero"}
 
@@ -100,12 +110,6 @@ def _logical_out_dtype(op_kind: str, partial: bool) -> str:
     if op_kind != "count_nonzero":
         return "int8"
     return "float32" if partial else "int64"
-
-
-# The fused pass runs one block per kept column and has no other parallelism, so
-# it takes over only where that alone is enough. Measured on an H200 (lead 4,
-# trail 4096, bool): fused wins from kept 32 up and ties below it.
-_FUSE_MIN_KEPT = 32
 
 
 @functools.lru_cache(maxsize=32)
@@ -407,6 +411,11 @@ class LogicalReduceKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    general: bool = True
+
+    @classmethod
+    def applies(cls, call: LogicalReduceCall) -> bool:
+        return logical_reduce_region(call)
 
     def __init__(
         self,
@@ -520,12 +529,6 @@ class LogicalReduceKernel(Kernel):
             tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
         )
         dtype_str = self.dtype_to_str(self._kernel_dtype)
-        if kept >= _FUSE_MIN_KEPT and not planner.needs_tiling:
-            fused = _logical_reduce_edge_fused(lead, kept, trail, self.op_kind, dtype_str)
-            counted = fused(cfg["threads"])(x.reshape(lead, kept, trail))
-            if self.op_kind == "count_nonzero":
-                return counted
-            return counted.view(torch.bool)
         if planner.needs_tiling:
             stage = _logical_reduce_kernel_tiled(
                 lead * kept, trail, self.op_kind, dtype_str, cfg["tile_n"], partial=True
@@ -561,3 +564,70 @@ class LogicalReduceKernel(Kernel):
             return counted.to(torch.int64)
         # 0 or 1 in int8 is bool's own representation, so this is a reinterpretation.
         return counted.view(torch.bool)
+
+
+class LogicalReduceEdgeFusedKernel(Kernel):
+    """Fused H200 logical reduction for a prefix and suffix axis set.
+
+    One block reduces one kept column, walking the leading axis serially while
+    reducing each contiguous trailing row. The general logical reducer remains
+    responsible for non-edge layouts and for rows that require N-tiling.
+    """
+
+    supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call: LogicalReduceCall) -> bool:
+        return logical_edge_fused_region(call)
+
+    def __init__(
+        self,
+        M: int,
+        N: int,
+        op_kind: str,
+        dtype: torch.dtype,
+        reduce_axes: "tuple[int, ...]",
+        keepdim: bool = False,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        device_index: "int | None" = None,
+    ):
+        super().__init__(device_index=device_index)
+        if op_kind not in _LOGICAL_REDUCE_KINDS:
+            raise ValueError(
+                f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_LOGICAL_REDUCE_KINDS)}."
+            )
+        self.M = M
+        self.N = N
+        self.op_kind = op_kind
+        self.dtype = dtype
+        self.reduce_axes = tuple(reduce_axes)
+        self.keepdim = keepdim
+        self._kernel_dtype = storage_dtype_for(dtype)
+        self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
+        self._smem_budget = device_smem_budget(device_index)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": DEFAULT_THREADS}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._require_cuda(x=x)
+        in_shape = tuple(x.shape)
+        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
+            x = to_logical_storage(x)
+        k, j = edge_axis_split(x.ndim, self.reduce_axes)
+        if not k:
+            raise ValueError("LogicalReduceEdgeFusedKernel requires edge reduction axes")
+        lead, kept, trail, planner, cfg = edge_axis_plan(
+            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
+        )
+        if planner.needs_tiling:
+            raise ValueError("LogicalReduceEdgeFusedKernel requires an untiled trailing pass")
+        threads = self.config.get("threads", cfg["threads"])
+        dtype_str = self.dtype_to_str(self._kernel_dtype)
+        fused = _logical_reduce_edge_fused(lead, kept, trail, self.op_kind, dtype_str)
+        counted = fused(threads)(x.reshape(lead, kept, trail))
+        y = counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
+        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)

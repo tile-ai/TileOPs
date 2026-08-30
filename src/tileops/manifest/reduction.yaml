@@ -674,6 +674,7 @@ AllFwdOp:
   source:
     kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
+      logical_reduce_edge_fused: LogicalReduceEdgeFusedKernel
       logical_reduce: LogicalReduceKernel
     op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
@@ -720,6 +721,7 @@ AnyFwdOp:
   source:
     kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
+      logical_reduce_edge_fused: LogicalReduceEdgeFusedKernel
       logical_reduce: LogicalReduceKernel
     op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
@@ -763,6 +765,7 @@ CountNonzeroFwdOp:
   source:
     kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
+      logical_reduce_edge_fused: LogicalReduceEdgeFusedKernel
       logical_reduce: LogicalReduceKernel
     op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
