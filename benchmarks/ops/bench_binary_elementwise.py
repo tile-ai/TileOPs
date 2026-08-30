@@ -630,13 +630,11 @@ _FUSED_BASELINES = {
 }
 
 
-def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str, params: dict) -> None:
+def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str) -> None:
     inputs = test.gen_inputs()
     baseline_fn = _FUSED_BASELINES[baseline_key]
     flashinfer_fn = flashinfer_op(baseline_key)
-    assert_matches_reference(
-        flashinfer_fn, baseline_fn, *inputs, **reference_tolerance(params["dtype"])
-    )
+    assert_matches_reference(flashinfer_fn, baseline_fn, *inputs, **reference_tolerance(test.dtype))
     bm.compare(
         {
             "tileops": op,
@@ -653,7 +651,7 @@ def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = SiluAndMulFwdOp()
     bm = ManifestBenchmark(op, test)
-    _profile_fused_gated(bm, op, test, "silu_and_mul", {"M": M, "N": N, "dtype": dtype})
+    _profile_fused_gated(bm, op, test, "silu_and_mul")
 
 
 @GeluAndMulBenchFixture
@@ -661,7 +659,7 @@ def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = GeluAndMulFwdOp()
     bm = ManifestBenchmark(op, test)
-    _profile_fused_gated(bm, op, test, "gelu_and_mul", {"M": M, "N": N, "dtype": dtype})
+    _profile_fused_gated(bm, op, test, "gelu_and_mul")
 
 
 @GeluTanhAndMulBenchFixture
@@ -669,7 +667,7 @@ def test_gelu_tanh_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = GeluTanhAndMulFwdOp()
     bm = ManifestBenchmark(op, test)
-    _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul", {"M": M, "N": N, "dtype": dtype})
+    _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul")
 
 
 # Fused gated strategy benchmark (direct vs explicit_parallel)

@@ -77,8 +77,6 @@ class BinaryManifestWorkload:
     ):
         self.input_shape = input_shape
         self.other_shape = other_shape
-        self.a_shape = input_shape
-        self.b_shape = other_shape
         self.shape = tuple(torch.broadcast_shapes(input_shape, other_shape))
         self.n_total = prod(self.shape)
         # What kind of broadcast the case exercises, which is the axis its rows
