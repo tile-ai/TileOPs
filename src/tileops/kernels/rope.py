@@ -208,8 +208,8 @@ def _make_rope_neox_position_ids_thd(
     A thread owns the pair ``(c, c + half)`` a neox rotation couples, so ``x`` is
     read once and both of its outputs leave in the same step: the walked space is
     the rotated half, not the head. Where ``rotary_dim < head_dim`` a second walk
-    copies the columns past it. The arithmetic stays in the storage dtype, which
-    is what ``GQAPrefillPagedWithKVCacheRopeAppendKernel`` is compared against.
+    copies the columns past it. The rotation runs in f32 and rounds once, at the
+    store into ``y``.
     """
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
@@ -239,12 +239,12 @@ def _make_rope_neox_position_ids_thd(
                         col = pair_idx % half
                         pos = position_ids[row // num_heads]
                         low = row * head_dim + col
-                        x_low = x[low]
-                        x_high = x[low + half]
-                        c = cos_table[pos, col]
-                        s = sin_table[pos, col]
-                        y[low] = x_low * c + (-x_high) * s
-                        y[low + half] = x_high * c + x_low * s
+                        x_low = T.Cast("float32", x[low])
+                        x_high = T.Cast("float32", x[low + half])
+                        c = T.Cast("float32", cos_table[pos, col])
+                        s = T.Cast("float32", sin_table[pos, col])
+                        y[low] = T.Cast(dtype, x_low * c - x_high * s)
+                        y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
                 if n_tail > 0:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         tail_idx = (bx * threads_arg + i) * npt_arg + j
