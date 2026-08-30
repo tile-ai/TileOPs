@@ -6,14 +6,11 @@ When FLA is not installed, benchmarks still run using a pure-torch reference
 implementation as baseline, so CI is never blocked by a missing optional dependency.
 """
 
-from typing import Optional
-
 import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    OpBenchmark,
     then_dtype,
     workload_params,
 )
@@ -51,24 +48,6 @@ try:
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
     fused_recurrent_gla = None
-
-
-class GLADecodeBenchmark(OpBenchmark[GLADecodeWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        # One matvec: S @ q_gated -> B*H*DK*DV (multiply + add)
-        # dot product q.k -> B*H*DK
-        # state update: element-wise scale + outer product -> B*H*DK*DV
-        return 2.0 * B * H * (DK * DV + DK * DV + DK)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        # Read: q(DK) + k(DK) + v(DV) + gk(DK) + state(DK*DV)
-        # Write: o(DV) + new_state(DK*DV)
-        return B * H * (3 * DK + DV + 2 * DK * DV + DV) * elem
 
 
 class GLADecodeBenchFixture(FixtureBase):

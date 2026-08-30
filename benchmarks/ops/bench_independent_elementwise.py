@@ -16,7 +16,6 @@ import torch.nn.functional as F
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    OpBenchmark,
     fields,
     workload_params,
 )
@@ -33,7 +32,6 @@ from tileops.ops.elementwise import (
 from workloads.elementwise import (
     Fp8MaskedFillBenchCase,
     Fp8UnaryBenchCase,
-    ShapedRandnWorkload,
     TensorClampBenchCase,
     _GenerativeWorkload,
 )
@@ -47,14 +45,6 @@ _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
 # Benchmark base classes
-
-
-class UnaryBenchmark(OpBenchmark[ShapedRandnWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
 # Tensor-bound clamp. N_total is post-broadcast, i.e. product(out_shape).
@@ -214,15 +204,6 @@ _UNSUPPORTED_FP8_SKIP = pytest.mark.skip(
 )
 
 
-class Fp8UnaryBenchmark(OpBenchmark[Fp8UnaryBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        # fp8 in (1B) + fp8 out (1B) per element
-        return self.workload.n_total * 2
-
-
 _FP8_UNARY_OPS = {
     "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
     "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
@@ -264,7 +245,7 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
     inputs = test.gen_inputs()
 
     op = op_cls(**extra_kwargs)
-    bm = Fp8UnaryBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     # Baseline: PyTorch fp16 compute then cast back to fp8
     def baseline(x):
@@ -281,15 +262,6 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
 
 
 # fp8 masked_fill (a selection op — fp8 passes through)
-
-
-class Fp8MaskedFillBenchmark(OpBenchmark[Fp8MaskedFillBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        # fp8 x (1B) + mask (1B) + fp8 out (1B)
-        return self.workload.n_total * 3
 
 
 def _fp8_selection_params():
@@ -318,7 +290,7 @@ def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> 
     x, mask = test.gen_inputs()
 
     op = MaskedFillScalarFwdOp(value=-100.0)
-    bm = Fp8MaskedFillBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     def baseline(x, mask):
         return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)

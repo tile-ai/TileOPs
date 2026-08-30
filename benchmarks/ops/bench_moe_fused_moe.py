@@ -12,8 +12,6 @@ Coverage:
   ``correction_bias_shape``.
 """
 
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -31,33 +29,12 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark_base import (
-    OpBenchmark,
+    ManifestBenchmark,
     workload_params,
 )
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
 from workloads.moe import FusedMoeWorkload
-
-
-class FusedMoeBenchmark(OpBenchmark[FusedMoeWorkload]):
-    """Benchmark wrapper sourcing flops/bytes from the bound op's roofline."""
-
-    def __init__(self, op, test):
-        super().__init__(op, test)
-        self._roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        cache = self._roofline_cache
-        if cache is None:
-            cache = self.op.eval_roofline()
-            self._roofline_cache = cache
-        return cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _routed_scaling_factor(w: dict) -> float:
@@ -129,7 +106,7 @@ def _run_bench(
 
     # -- TileOPs nopad -----------------------------------------------------
     op = FusedMoeFwdOp(**common_kwargs)
-    bm = FusedMoeBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
     op(*forward_args_tileops)  # warmup / JIT compile
     torch.cuda.synchronize()
 

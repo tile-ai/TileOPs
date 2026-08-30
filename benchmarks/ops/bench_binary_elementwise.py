@@ -7,7 +7,6 @@ Every row adds the same reference through inductor. The three fused gated ops ad
 flashinfer's kernel, which takes the concatenated input the reference splits.
 """
 
-from math import prod
 from typing import Optional
 
 import pytest
@@ -25,7 +24,6 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import (
     BenchmarkBase,
     ManifestBenchmark,
-    OpBenchmark,
     workload_params,
 )
 from tileops.kernels.elementwise import (
@@ -72,19 +70,6 @@ _SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
 # Workloads
-
-
-class BinaryBenchmark(OpBenchmark[BinaryBenchCase]):
-    """Bandwidth-oriented benchmark for binary elementwise ops."""
-
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        in_bytes = t.dtype.itemsize
-        out_bytes = t.output_dtype.itemsize
-        return t.n_total * (2 * in_bytes + out_bytes)
 
 
 class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
@@ -368,7 +353,7 @@ def test_binary_arith_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    bm = BinaryBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
@@ -421,7 +406,7 @@ def test_comparison_bench(
     inputs = test.gen_inputs()
 
     op = _CMP_OPS[op_name]()
-    bm = BinaryBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
@@ -490,7 +475,7 @@ def test_logical_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    bm = BinaryBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
     # The baseline takes the tensors the row declares, as the op does: ``bool`` copies
     # read one byte per element against the op's two, both credited with two.
     functors = {
@@ -554,7 +539,7 @@ def test_bitwise_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    bm = BinaryBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
@@ -758,20 +743,6 @@ _BROADCAST_SHAPES = [
 ]
 
 
-class BroadcastBenchmark(OpBenchmark[BroadcastBenchCase]):
-    """Bandwidth-oriented benchmark for broadcast binary ops."""
-
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem = t.dtype.itemsize
-        out_elem = t.output_dtype.itemsize
-        # Read a + read b (smaller, broadcast) + write output
-        return (prod(t.a_shape) + prod(t.b_shape)) * elem + t.n_total * out_elem
-
-
 class BroadcastBenchFixture(FixtureBase):
     PARAMS = [
         (
@@ -880,7 +851,7 @@ def test_broadcast_bench(
     inputs = test.gen_inputs()
 
     op = op_cls()
-    bm = BroadcastBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     bm.compare(
         {
