@@ -12,6 +12,8 @@ torchvision==0.28.0+cu132
 # carries no such extension.
 torchaudio==2.11.0+cpu
 setuptools
+# tileops' build backend, so its editable install can skip build isolation.
+setuptools-scm
 wheel
 ninja
 scikit-build-core

@@ -39,9 +39,10 @@ ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
 # minor refuses to load beside this torch, so vllm's pin is met by the extension-free CPU wheel.
 RUN uv pip install "torch==2.13.0+cu132" "torchvision==0.28.0+cu132"
 # tilelang's build backend and runtime deps, so its stage can use --no-build-isolation. The wheel
-# cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22.
+# cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22. setuptools-scm is tileops'
+# backend, baked in for the same reason.
 RUN uv pip install \
-        setuptools wheel ninja scikit-build-core patchelf cmake \
+        setuptools setuptools-scm wheel ninja scikit-build-core patchelf cmake \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 ARG MAX_JOBS=64
