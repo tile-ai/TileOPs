@@ -29,6 +29,7 @@ from tileops.manifest import (
     WORKLOAD_RESERVED_KEYS,
     load_manifest,
     load_workloads,
+    manifest_key,
     single_input_workload_contract,
 )
 
@@ -252,12 +253,13 @@ def then_dtype(
     return build
 
 
-def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
-    """Single-tensor-input wrapper over :func:`workload_params`: reads the manifest,
-    checks each row against the signature, and yields ``pytest.param(shape,
-    dtype)``; with *include_extra* a third element carries the row's op-call
-    params (e.g. ``{"dim": 0}``)."""
-    workloads = load_workloads(op_name)  # canonical not-found error
+def workloads_to_params(op: "str | type", include_extra: bool = False) -> list:
+    """Single-tensor-input wrapper over :func:`workload_params`: reads the manifest
+    entry of *op* (an Op class or its manifest key), checks each row against the
+    signature, and yields ``pytest.param(shape, dtype)``; with *include_extra* a
+    third element carries the row's op-call params (e.g. ``{"dim": 0}``)."""
+    workloads = load_workloads(op)  # canonical not-found error
+    op_name = manifest_key(op)
     shape_key, allowed = _workload_contract(op_name)
     for w in workloads:
         if shape_key not in w:

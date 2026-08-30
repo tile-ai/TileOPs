@@ -156,7 +156,7 @@ def _mamba2_args(workload: dict) -> tuple:
 @pytest.mark.parametrize(
     "batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dt_softplus,"
     " has_dt_bias, has_initial_states, dtype, tune",
-    workload_params(load_workloads("Mamba2FwdOp"), then_dtype(_mamba2_args, tune=False)),
+    workload_params(load_workloads(Mamba2FwdOp), then_dtype(_mamba2_args, tune=False)),
 )
 def test_mamba2_fwd_bench(
     batch,

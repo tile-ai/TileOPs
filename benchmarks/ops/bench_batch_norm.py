@@ -23,9 +23,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
 
-_FWD_OP_NAME = "BatchNormFwdOp"
-_BWD_OP_NAME = "BatchNormBwdOp"
-
 # Benchmark classes
 
 
@@ -129,7 +126,8 @@ def _bwd_args(w: dict, dtype: torch.dtype) -> tuple:
 
 
 @pytest.mark.parametrize(
-    "N, C, spatial, dtype, training, tune", workload_params(load_workloads(_FWD_OP_NAME), _fwd_args)
+    "N, C, spatial, dtype, training, tune",
+    workload_params(load_workloads(BatchNormFwdOp), _fwd_args),
 )
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype)
@@ -162,7 +160,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 
 
 @pytest.mark.parametrize(
-    "N, C, spatial, dtype", workload_params(load_workloads(_BWD_OP_NAME), _bwd_args)
+    "N, C, spatial, dtype", workload_params(load_workloads(BatchNormBwdOp), _bwd_args)
 )
 def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     inputs = _make_bwd_inputs(N, C, spatial, dtype)

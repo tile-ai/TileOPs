@@ -23,9 +23,6 @@ from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 from workloads.reduction import ArgmaxWorkload, ArgminWorkload
 
-_ARGMAX_OP = "ArgmaxFwdOp"
-_ARGMIN_OP = "ArgminFwdOp"
-
 
 def _functors(op, baseline_fn, flaggems_name: str, dim: int, inputs) -> dict:
     """The op, flag_gems' argreduce, and torch eager and compiled.
@@ -49,7 +46,9 @@ def _functors(op, baseline_fn, flaggems_name: str, dim: int, inputs) -> dict:
 # Argmax benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMAX_OP, include_extra=True))
+@pytest.mark.parametrize(
+    "shape, dtype, extra", workloads_to_params(ArgmaxFwdOp, include_extra=True)
+)
 def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     workload = ArgmaxWorkload(shape, dtype)
     inputs = workload.gen_inputs()
@@ -68,7 +67,9 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
 # Argmin benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMIN_OP, include_extra=True))
+@pytest.mark.parametrize(
+    "shape, dtype, extra", workloads_to_params(ArgminFwdOp, include_extra=True)
+)
 def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     workload = ArgminWorkload(shape, dtype)
     inputs = workload.gen_inputs()

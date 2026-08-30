@@ -9,10 +9,8 @@ from benchmarks.benchmark_base import (
 from tileops.ops import FFTC2CFwdOp
 from workloads.fft import FFTWorkload
 
-_OP_NAME = "FFTC2CFwdOp"
 
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(FFTC2CFwdOp))
 def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     n = shape[-1]
     batch_shape = shape[:-1]

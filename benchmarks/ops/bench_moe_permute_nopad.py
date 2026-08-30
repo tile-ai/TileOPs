@@ -27,8 +27,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.moe import MoePermuteWorkload
 
-_OP_NAME = "MoePermuteNopadFwdOp"
-
 # Benchmark class
 
 
@@ -45,7 +43,7 @@ def _permute_nopad_args(w: dict, _dtype) -> tuple:
 
 @pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, num_experts_local, hidden_size",
-    workload_params(load_workloads(_OP_NAME), _permute_nopad_args),
+    workload_params(load_workloads(MoePermuteNopadFwdOp), _permute_nopad_args),
 )
 def test_moe_permute_nopad_bench(
     total_tokens: int,

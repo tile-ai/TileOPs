@@ -24,10 +24,6 @@ from workloads.reduction import AllWorkload, AnyWorkload, CountNonzeroWorkload
 
 # Op name constants
 
-_ANY_OP = "AnyFwdOp"
-_ALL_OP = "AllFwdOp"
-_COUNT_NONZERO_OP = "CountNonzeroFwdOp"
-
 
 def _functors(op, baseline_fn, inputs, flaggems_name=None, dim=None, keepdim=False) -> dict:
     """The op, flag_gems where it has a kernel, and torch eager and compiled.
@@ -54,7 +50,7 @@ def _functors(op, baseline_fn, inputs, flaggems_name=None, dim=None, keepdim=Fal
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_ANY_OP, include_extra=True),
+    workloads_to_params(AnyFwdOp, include_extra=True),
 )
 def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = AnyWorkload(shape, dtype)
@@ -82,7 +78,7 @@ def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_ALL_OP, include_extra=True),
+    workloads_to_params(AllFwdOp, include_extra=True),
 )
 def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = AllWorkload(shape, dtype)
@@ -110,7 +106,7 @@ def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_COUNT_NONZERO_OP, include_extra=True),
+    workloads_to_params(CountNonzeroFwdOp, include_extra=True),
 )
 def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = CountNonzeroWorkload(shape, dtype)

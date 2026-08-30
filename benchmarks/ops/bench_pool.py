@@ -599,20 +599,6 @@ def pool_baseline(op_name: str, test, *inputs) -> tuple:
     return choice, fn
 
 
-_ADAPTIVE_AVG_POOL2D_OP_NAME = "AdaptiveAvgPool2dFwdOp"
-_ADAPTIVE_MAX_POOL2D_OP_NAME = "AdaptiveMaxPool2dFwdOp"
-_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME = "AdaptiveMaxPool2dIndicesFwdOp"
-_AVG_POOL1D_OP_NAME = "AvgPool1dFwdOp"
-_AVG_POOL2D_OP_NAME = "AvgPool2dFwdOp"
-_AVG_POOL3D_OP_NAME = "AvgPool3dFwdOp"
-_MAX_POOL1D_OP_NAME = "MaxPool1dFwdOp"
-_MAX_POOL1D_INDICES_OP_NAME = "MaxPool1dIndicesFwdOp"
-_MAX_POOL2D_OP_NAME = "MaxPool2dFwdOp"
-_MAX_POOL2D_INDICES_OP_NAME = "MaxPool2dIndicesFwdOp"
-_MAX_POOL3D_OP_NAME = "MaxPool3dFwdOp"
-_MAX_POOL3D_INDICES_OP_NAME = "MaxPool3dIndicesFwdOp"
-
-
 def _avg_pool1d_args(workload: dict, dtype: torch.dtype) -> tuple:
     n, c_in, l_in = workload["input_shape"]
     kernel_size = workload["kernel_size"]
@@ -713,7 +699,7 @@ class MaxPool3dBenchmarkWorkload(MaxPool3dBenchCase):
 
 @pytest.mark.parametrize(
     "n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype, tune",
-    workload_params(load_workloads(_AVG_POOL1D_OP_NAME), _avg_pool1d_args),
+    workload_params(load_workloads(AvgPool1dFwdOp), _avg_pool1d_args),
 )
 def test_avg_pool1d_bench(
     n: int,
@@ -784,7 +770,7 @@ def _avg_pool2d_args(workload: dict, dtype: torch.dtype) -> tuple:
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override, dtype, tune",
-    workload_params(load_workloads(_AVG_POOL2D_OP_NAME), _avg_pool2d_args),
+    workload_params(load_workloads(AvgPool2dFwdOp), _avg_pool2d_args),
 )
 def test_avg_pool2d_bench(
     n: int,
@@ -867,7 +853,7 @@ def _avg_pool3d_args(workload: dict, dtype: torch.dtype) -> tuple:
 
 @pytest.mark.parametrize(
     "n, c_in, d_in, h_in, w_in, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override, dtype, tune",
-    workload_params(load_workloads(_AVG_POOL3D_OP_NAME), _avg_pool3d_args),
+    workload_params(load_workloads(AvgPool3dFwdOp), _avg_pool3d_args),
 )
 def test_avg_pool3d_bench(
     n: int,
@@ -948,11 +934,11 @@ def _max_pool2d_args(workload: dict, dtype: torch.dtype) -> tuple:
 
 
 def _max_pool2d_bench_params() -> list:
-    return workload_params(load_workloads(_MAX_POOL2D_OP_NAME), _max_pool2d_args)
+    return workload_params(load_workloads(MaxPool2dFwdOp), _max_pool2d_args)
 
 
 def _max_pool2d_indices_bench_params() -> list:
-    return workload_params(load_workloads(_MAX_POOL2D_INDICES_OP_NAME), _max_pool2d_args)
+    return workload_params(load_workloads(MaxPool2dIndicesFwdOp), _max_pool2d_args)
 
 
 @pytest.mark.parametrize(
@@ -1089,11 +1075,11 @@ def _max_pool1d_args(workload: dict, dtype: torch.dtype) -> tuple:
 
 
 def _max_pool1d_bench_params() -> list:
-    return workload_params(load_workloads(_MAX_POOL1D_OP_NAME), _max_pool1d_args)
+    return workload_params(load_workloads(MaxPool1dFwdOp), _max_pool1d_args)
 
 
 def _max_pool1d_indices_bench_params() -> list:
-    return workload_params(load_workloads(_MAX_POOL1D_INDICES_OP_NAME), _max_pool1d_args)
+    return workload_params(load_workloads(MaxPool1dIndicesFwdOp), _max_pool1d_args)
 
 
 @pytest.mark.parametrize(
@@ -1228,11 +1214,11 @@ def _max_pool3d_args(workload: dict, dtype: torch.dtype) -> tuple:
 
 
 def _max_pool3d_bench_params() -> list:
-    return workload_params(load_workloads(_MAX_POOL3D_OP_NAME), _max_pool3d_args)
+    return workload_params(load_workloads(MaxPool3dFwdOp), _max_pool3d_args)
 
 
 def _max_pool3d_indices_bench_params() -> list:
-    return workload_params(load_workloads(_MAX_POOL3D_INDICES_OP_NAME), _max_pool3d_args)
+    return workload_params(load_workloads(MaxPool3dIndicesFwdOp), _max_pool3d_args)
 
 
 @pytest.mark.parametrize(
@@ -1380,7 +1366,7 @@ def _adaptive_pool2d_args(workload: dict, dtype: torch.dtype) -> tuple:
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    workload_params(load_workloads(_ADAPTIVE_AVG_POOL2D_OP_NAME), _adaptive_pool2d_args),
+    workload_params(load_workloads(AdaptiveAvgPool2dFwdOp), _adaptive_pool2d_args),
 )
 def test_adaptive_avg_pool2d_bench(
     n: int,
@@ -1411,7 +1397,7 @@ def test_adaptive_avg_pool2d_bench(
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    workload_params(load_workloads(_ADAPTIVE_MAX_POOL2D_OP_NAME), _adaptive_pool2d_args),
+    workload_params(load_workloads(AdaptiveMaxPool2dFwdOp), _adaptive_pool2d_args),
 )
 def test_adaptive_max_pool2d_bench(
     n: int,
@@ -1442,7 +1428,7 @@ def test_adaptive_max_pool2d_bench(
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    workload_params(load_workloads(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME), _adaptive_pool2d_args),
+    workload_params(load_workloads(AdaptiveMaxPool2dIndicesFwdOp), _adaptive_pool2d_args),
 )
 def test_adaptive_max_pool2d_indices_bench(
     n: int,

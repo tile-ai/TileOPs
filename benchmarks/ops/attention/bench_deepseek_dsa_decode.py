@@ -17,11 +17,8 @@ from tileops.manifest import load_workloads
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek import DsaDecodeWorkload
 
-_OP_NAME = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
-
-
 _DSA_DECODE_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME),
+    load_workloads(DeepSeekSparseAttentionDecodeWithKVCacheFwdOp),
     then_dtype(
         dsa_decode_args,
         tune=False,

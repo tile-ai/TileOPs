@@ -274,14 +274,13 @@ def _profile_conv(
 
 # Conv1d
 
-_CONV1D_OP = "Conv1dFwdOp"
 _CONV1D_KERNEL_KEYS = ("kW",)
 
 
 @pytest.mark.parametrize(
     "case",
     workload_params(
-        load_workloads(_CONV1D_OP),
+        load_workloads(Conv1dFwdOp),
         functools.partial(_conv_args, kernel_keys=_CONV1D_KERNEL_KEYS),
         smoke_first=True,
     ),
@@ -300,14 +299,13 @@ def test_conv1d_bench(case: ConvCase) -> None:
 
 # Conv2d
 
-_CONV2D_OP = "Conv2dFwdOp"
 _CONV2D_KERNEL_KEYS = ("kH", "kW")
 
 
 @pytest.mark.parametrize(
     "case",
     workload_params(
-        load_workloads(_CONV2D_OP),
+        load_workloads(Conv2dFwdOp),
         functools.partial(_conv_args, kernel_keys=_CONV2D_KERNEL_KEYS),
         smoke_first=True,
     ),
@@ -326,14 +324,13 @@ def test_conv2d_bench(case: ConvCase) -> None:
 
 # Conv3d
 
-_CONV3D_OP = "Conv3dFwdOp"
 _CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
 
 
 @pytest.mark.parametrize(
     "case",
     workload_params(
-        load_workloads(_CONV3D_OP),
+        load_workloads(Conv3dFwdOp),
         functools.partial(_conv_args, kernel_keys=_CONV3D_KERNEL_KEYS),
         smoke_first=True,
     ),

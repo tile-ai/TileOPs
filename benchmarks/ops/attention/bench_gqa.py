@@ -42,11 +42,6 @@ from workloads.attention.gqa import (
     uniform_packed_prefill_inputs,
 )
 
-_GQA_FWD_OP = "GroupedQueryAttentionFwdOp"
-_GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
-_GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
-_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
-
 
 class GQAPrefillVarlenFwdBenchmark(OpBenchmark[GQAPrefillVarlenFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
@@ -265,7 +260,7 @@ def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> 
 # B=1-2 reflects typical micro-batch sizes.  No long-context training configs
 # since >90% of pretraining compute is at 4K-8K.
 _GQA_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_GQA_FWD_OP), then_dtype(gqa_qkv_args, tune=True)
+    load_workloads(GroupedQueryAttentionFwdOp), then_dtype(gqa_qkv_args, tune=True)
 )
 
 
@@ -309,7 +304,7 @@ def test_gqa_fwd_bench(
 # Backward is only used during training — extract the training subset from
 # _GQA_FWD_BENCH_PARAMS by ID prefix to avoid manual duplication.
 _GQA_BWD_BENCH_PARAMS = workload_params(
-    load_workloads(_GQA_BWD_OP), then_dtype(gqa_qkv_args, tune=True)
+    load_workloads(GroupedQueryAttentionBwdOp), then_dtype(gqa_qkv_args, tune=True)
 )
 
 
@@ -347,7 +342,7 @@ def test_gqa_bwd_bench(
 _GQA_PREFILL_FWD_BENCH_PARAMS = workload_params(
     [
         workload
-        for workload in load_workloads(_GQA_PREFILL_FWD_OP)
+        for workload in load_workloads(GroupedQueryAttentionPrefillFwdOp)
         if workload.get("backend") != "fp8"
     ],
     then_dtype(
@@ -569,7 +564,7 @@ def _fp8_paged_cache_inputs(
 
 
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP),
+    load_workloads(GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp),
     then_dtype(
         gqa_prefill_paged_args,
         tune=False,

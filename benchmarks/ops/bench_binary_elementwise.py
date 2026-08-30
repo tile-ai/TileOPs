@@ -569,11 +569,6 @@ def test_bitwise_bench(
 # Fused gated ops (2)
 
 
-_SILU_AND_MUL_OP = "SiluAndMulFwdOp"
-_GELU_AND_MUL_OP = "GeluAndMulFwdOp"
-_GELU_TANH_AND_MUL_OP = "GeluTanhAndMulFwdOp"
-
-
 def _fused_gated_args(w: dict, dtype: torch.dtype) -> tuple:
     """``(M, N, dtype)``; the x_shape trailing axis is 2*N."""
     m, two_n = w["x_shape"]
@@ -584,7 +579,7 @@ class SiluAndMulBenchFixture(FixtureBase):
     PARAMS = [
         (
             "M, N, dtype",
-            workload_params(load_workloads(_SILU_AND_MUL_OP), _fused_gated_args, smoke_first=True),
+            workload_params(load_workloads(SiluAndMulFwdOp), _fused_gated_args, smoke_first=True),
         )
     ]
 
@@ -593,7 +588,7 @@ class GeluAndMulBenchFixture(FixtureBase):
     PARAMS = [
         (
             "M, N, dtype",
-            workload_params(load_workloads(_GELU_AND_MUL_OP), _fused_gated_args, smoke_first=True),
+            workload_params(load_workloads(GeluAndMulFwdOp), _fused_gated_args, smoke_first=True),
         )
     ]
 
@@ -603,7 +598,7 @@ class GeluTanhAndMulBenchFixture(FixtureBase):
         (
             "M, N, dtype",
             workload_params(
-                load_workloads(_GELU_TANH_AND_MUL_OP),
+                load_workloads(GeluTanhAndMulFwdOp),
                 _fused_gated_args,
                 smoke_first=True,
             ),

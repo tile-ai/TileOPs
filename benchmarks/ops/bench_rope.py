@@ -143,12 +143,10 @@ def _profile_rope(
 
 # Per-op tests — one block per manifest entry.
 
-_NEOX_OP = "RopeNeoxFwdOp"
-
 
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    workload_params(load_workloads(_NEOX_OP), _layout_args, smoke_first=True),
+    workload_params(load_workloads(RopeNeoxFwdOp), _layout_args, smoke_first=True),
 )
 def test_rope_neox_bench(
     shape: tuple[int, ...],
@@ -160,12 +158,9 @@ def test_rope_neox_bench(
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_NON_NEOX_OP = "RopeNonNeoxFwdOp"
-
-
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    workload_params(load_workloads(_NON_NEOX_OP), _layout_args, smoke_first=True),
+    workload_params(load_workloads(RopeNonNeoxFwdOp), _layout_args, smoke_first=True),
 )
 def test_rope_non_neox_bench(
     shape: tuple[int, ...],
@@ -177,12 +172,9 @@ def test_rope_non_neox_bench(
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_LLAMA31_OP = "RopeLlama31FwdOp"
-
-
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    workload_params(load_workloads(_LLAMA31_OP), _layout_args, smoke_first=True),
+    workload_params(load_workloads(RopeLlama31FwdOp), _layout_args, smoke_first=True),
 )
 def test_rope_llama31_bench(
     shape: tuple[int, ...],
@@ -194,12 +186,9 @@ def test_rope_llama31_bench(
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_YARN_OP = "RopeYarnFwdOp"
-
-
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    workload_params(load_workloads(_YARN_OP), _layout_args, smoke_first=True),
+    workload_params(load_workloads(RopeYarnFwdOp), _layout_args, smoke_first=True),
 )
 def test_rope_yarn_bench(
     shape: tuple[int, ...],
@@ -211,12 +200,9 @@ def test_rope_yarn_bench(
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_LONGROPE_OP = "RopeLongRopeFwdOp"
-
-
 @pytest.mark.parametrize(
     "shape, dtype, layout",
-    workload_params(load_workloads(_LONGROPE_OP), _layout_args, smoke_first=True),
+    workload_params(load_workloads(RopeLongRopeFwdOp), _layout_args, smoke_first=True),
 )
 def test_rope_longrope_bench(
     shape: tuple[int, ...],
@@ -228,12 +214,9 @@ def test_rope_longrope_bench(
     _profile_rope(op, bm, shape, dtype, layout)
 
 
-_POSITION_IDS_OP = "RopeNeoxPositionIdsFwdOp"
-
-
 @pytest.mark.parametrize(
     "shape, dtype, max_position",
-    workload_params(load_workloads(_POSITION_IDS_OP), _position_ids_args, smoke_first=True),
+    workload_params(load_workloads(RopeNeoxPositionIdsFwdOp), _position_ids_args, smoke_first=True),
 )
 def test_rope_neox_position_ids_bench(
     shape: tuple[int, int, int],

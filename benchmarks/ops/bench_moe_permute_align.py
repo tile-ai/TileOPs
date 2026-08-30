@@ -26,8 +26,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignWorkload
 
-_OP_NAME = "MoePermuteAlignFwdOp"
-
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 
 
@@ -150,7 +148,7 @@ def _triton_permute_align(
 @pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, block_size",
     workload_params(
-        load_workloads(_OP_NAME),
+        load_workloads(MoePermuteAlignFwdOp),
         fields("total_tokens", "top_k", "num_experts", "block_size"),
     ),
 )

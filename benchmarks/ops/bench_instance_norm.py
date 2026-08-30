@@ -24,8 +24,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.normalization import InstanceNormWorkload
 
-_OP_NAME = "InstanceNormFwdOp"
-
 
 def _instance_norm_args(w: dict, dtype: torch.dtype) -> tuple:
     """``(n, c, spatial, dtype, tune, affine)``; a row is affine exactly when it
@@ -36,7 +34,7 @@ def _instance_norm_args(w: dict, dtype: torch.dtype) -> tuple:
 
 @pytest.mark.parametrize(
     "n, c, spatial, dtype, tune, affine",
-    workload_params(load_workloads(_OP_NAME), _instance_norm_args),
+    workload_params(load_workloads(InstanceNormFwdOp), _instance_norm_args),
 )
 def test_instance_norm_bench(
     n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool, affine: bool

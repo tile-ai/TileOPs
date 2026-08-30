@@ -103,10 +103,8 @@ def _profile_and_record(
 # Per-op constants and tests — one block per manifest entry, so each op loads
 # its own workloads and records a row of its own.
 
-_EXP_OP = "ExpFwdOp"
 
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_EXP_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ExpFwdOp))
 def test_exp_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -117,10 +115,7 @@ def test_exp_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_LOG_OP = "LogFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(LogFwdOp))
 def test_log_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
@@ -131,10 +126,7 @@ def test_log_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_SQRT_OP = "SqrtFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SQRT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SqrtFwdOp))
 def test_sqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
@@ -145,10 +137,7 @@ def test_sqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_RSQRT_OP = "RsqrtFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_RSQRT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(RsqrtFwdOp))
 def test_rsqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
@@ -159,10 +148,7 @@ def test_rsqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_ABS_OP = "AbsFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ABS_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(AbsFwdOp))
 def test_abs_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -173,10 +159,7 @@ def test_abs_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_NEG_OP = "NegFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_NEG_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(NegFwdOp))
 def test_neg_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -187,10 +170,7 @@ def test_neg_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_RECIPROCAL_OP = "ReciprocalFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_RECIPROCAL_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ReciprocalFwdOp))
 def test_reciprocal_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
@@ -201,10 +181,7 @@ def test_reciprocal_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_SIGN_OP = "SignFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SIGN_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SignFwdOp))
 def test_sign_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -215,10 +192,7 @@ def test_sign_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_SIN_OP = "SinFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SIN_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SinFwdOp))
 def test_sin_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -229,10 +203,7 @@ def test_sin_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_COS_OP = "CosFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_COS_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(CosFwdOp))
 def test_cos_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -243,10 +214,7 @@ def test_cos_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_FLOOR_OP = "FloorFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_FLOOR_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(FloorFwdOp))
 def test_floor_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -257,10 +225,7 @@ def test_floor_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_CEIL_OP = "CeilFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CEIL_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(CeilFwdOp))
 def test_ceil_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -271,10 +236,7 @@ def test_ceil_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_ROUND_OP = "RoundFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ROUND_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(RoundFwdOp))
 def test_round_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -285,10 +247,7 @@ def test_round_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_TRUNC_OP = "TruncFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_TRUNC_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(TruncFwdOp))
 def test_trunc_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -299,10 +258,7 @@ def test_trunc_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_ERF_OP = "ErfFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ERF_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ErfFwdOp))
 def test_erf_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -313,10 +269,7 @@ def test_erf_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_LOG1P_OP = "Log1pFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG1P_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(Log1pFwdOp))
 def test_log1p_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
     n_total = inputs[0].numel()
@@ -327,10 +280,7 @@ def test_log1p_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_EXPM1_OP = "Expm1FwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_EXPM1_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(Expm1FwdOp))
 def test_expm1_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
     n_total = inputs[0].numel()
@@ -345,10 +295,8 @@ def test_expm1_bench(shape: tuple, dtype: torch.dtype) -> None:
 # points to ``benchmarks/ops/bench_elementwise_manifest.py`` and is
 # intentionally out of scope for this file.
 
-_LOGICAL_NOT_OP = "LogicalNotFwdOp"
 
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOGICAL_NOT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(LogicalNotFwdOp))
 def test_logical_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_bool(shape, dtype)
     n_total = inputs[0].numel()
@@ -359,10 +307,7 @@ def test_logical_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_BITWISE_NOT_OP = "BitwiseNotFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_BITWISE_NOT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(BitwiseNotFwdOp))
 def test_bitwise_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_int(shape, dtype)
     n_total = inputs[0].numel()
@@ -373,10 +318,7 @@ def test_bitwise_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_ISNAN_OP = "IsnanFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ISNAN_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(IsnanFwdOp))
 def test_isnan_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
     n_total = inputs[0].numel()
@@ -387,10 +329,7 @@ def test_isnan_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_ISINF_OP = "IsinfFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ISINF_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(IsinfFwdOp))
 def test_isinf_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
     n_total = inputs[0].numel()
@@ -401,10 +340,7 @@ def test_isinf_bench(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-_ISFINITE_OP = "IsfiniteFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ISFINITE_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(IsfiniteFwdOp))
 def test_isfinite_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
     n_total = inputs[0].numel()

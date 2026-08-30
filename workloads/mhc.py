@@ -6,11 +6,35 @@ from workloads.workload_base import WorkloadBase
 
 
 class MHCPreWorkload(WorkloadBase):
-    def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
+    """One MHC pre case: its shape, its dtype, and the scalars it is run with.
+
+    The scaling and sinkhorn scalars are arguments of the call rather than of the
+    op, so the case is where they live; ``gen_inputs`` hands them back with the
+    tensors, and a caller that wants the manifest's values passes them here.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        n_expand: int,
+        c_x: int,
+        dtype: torch.dtype,
+        *,
+        alpha_pre: float | None = None,
+        alpha_post: float | None = None,
+        alpha_res: float | None = None,
+        sinkhorn_repeat: int = 20,
+        eps: float = 0.02,
+    ):
         self.batch = batch
         self.n_expand = n_expand
         self.c_x = c_x
         self.dtype = dtype
+        self.alpha_pre = float(torch.randn(())) if alpha_pre is None else alpha_pre
+        self.alpha_post = float(torch.randn(())) if alpha_post is None else alpha_post
+        self.alpha_res = float(torch.randn(())) if alpha_res is None else alpha_res
+        self.sinkhorn_repeat = sinkhorn_repeat
+        self.eps = eps
 
     def gen_inputs(
         self,
@@ -33,12 +57,16 @@ class MHCPreWorkload(WorkloadBase):
         )
         x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
         b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
-        alpha_pre = torch.randn(())
-        alpha_post = torch.randn(())
-        alpha_res = torch.randn(())
-        sinkhorn_repeat = 20
-        eps = 0.02
-        return phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, eps
+        return (
+            phi,
+            x,
+            b,
+            self.alpha_pre,
+            self.alpha_post,
+            self.alpha_res,
+            self.sinkhorn_repeat,
+            self.eps,
+        )
 
     def ref_program(
         self,

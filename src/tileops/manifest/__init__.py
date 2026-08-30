@@ -75,18 +75,25 @@ def try_load_entry(op_name: str) -> dict[str, Any] | None:
     return entry if isinstance(entry, dict) else None
 
 
-def load_workloads(op_name: str) -> list[dict[str, Any]]:
-    """Return the workloads list for *op_name*.
+def manifest_key(op: "str | type") -> str:
+    """Return the manifest key naming *op*, which may be an Op class or that key.
 
-    *op_name* must be the canonical PascalCase manifest key
-    (e.g. ``RMSNormFwdOp``).
+    A manifest key is its op class's name, so a caller that holds the class does
+    not have to repeat the name as a string.
+    """
+    return op.__name__ if isinstance(op, type) else op
+
+
+def load_workloads(op: "str | type") -> list[dict[str, Any]]:
+    """Return the workloads list for *op*, an Op class or its manifest key.
 
     ```python linenums="1"
-    workloads = load_workloads("RMSNormFwdOp")
+    workloads = load_workloads(RMSNormFwdOp)
     workloads[0]
     # {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-8b-prefill'}
     ```
     """
+    op_name = manifest_key(op)
     ops = load_manifest()
     if op_name not in ops:
         raise KeyError(f"op '{op_name}' not found in ops manifest")
@@ -130,6 +137,7 @@ __all__ = [
     "load_manifest",
     "load_workloads",
     "manifest_files",
+    "manifest_key",
     "single_input_workload_contract",
     "try_load_entry",
 ]

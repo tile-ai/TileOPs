@@ -39,9 +39,6 @@ def _to_fla_layout(q, k, v, beta):
 
 # Forward benchmark
 
-_FWD_OP_NAME = "DeltaNetFwdOp"
-_BWD_OP_NAME = "DeltaNetBwdOp"
-
 
 def _deltanet_args(workload: dict) -> tuple[int, int, int, int, int, int]:
     """Constructor arguments for one manifest workload row."""
@@ -52,7 +49,7 @@ def _deltanet_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(_FWD_OP_NAME), then_dtype(_deltanet_args, tune=False)),
+    workload_params(load_workloads(DeltaNetFwdOp), then_dtype(_deltanet_args, tune=False)),
 )
 def test_deltanet_vs_fla_fwd(
     batch: int,
@@ -90,7 +87,7 @@ def test_deltanet_vs_fla_fwd(
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(_BWD_OP_NAME), then_dtype(_deltanet_args, tune=False)),
+    workload_params(load_workloads(DeltaNetBwdOp), then_dtype(_deltanet_args, tune=False)),
 )
 def test_deltanet_vs_fla_bwd(
     batch: int,

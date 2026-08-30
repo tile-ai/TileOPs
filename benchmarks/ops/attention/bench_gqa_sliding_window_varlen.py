@@ -18,10 +18,8 @@ from workloads.attention.gqa import (
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
 
-_OP_NAME = "GroupedQueryAttentionSlidingWindowVarlenFwdOp"
-
 _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME),
+    load_workloads(GroupedQueryAttentionSlidingWindowVarlenFwdOp),
     then_dtype(
         gqa_sliding_window_varlen_args,
         tune=False,

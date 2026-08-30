@@ -12,8 +12,6 @@ from workloads.gqa_fp8_utils import (
     quantize_q_fa3_gqa_descale,
 )
 
-_OP_NAME = "GroupedQueryAttentionPrefillFwdOp"
-
 
 @dataclass(frozen=True)
 class GQAFp8TensorCoreBenchCase:
@@ -132,7 +130,7 @@ def _fa3_gqa_fp8_fwd(case: GQAFp8TensorCoreBenchCase):
 @pytest.mark.parametrize(
     "case",
     workload_params(
-        [w for w in load_workloads(_OP_NAME) if w.get("backend") == "fp8"],
+        [w for w in load_workloads(GroupedQueryAttentionPrefillFwdOp) if w.get("backend") == "fp8"],
         _fp8_case_args,
     ),
 )

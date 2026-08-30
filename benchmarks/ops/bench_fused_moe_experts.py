@@ -61,9 +61,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
 from workloads.moe import MoeExpertsWorkload
 
-_OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
-
-
 # Workload
 
 
@@ -79,7 +76,7 @@ _OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
 @pytest.mark.parametrize(
     "num_tokens, num_experts, num_experts_local, top_k, hidden_size, ffn_size, dtype",
     workload_params(
-        load_workloads(_OP_NAME),
+        load_workloads(FusedMoEExpertsNopadPersistent3WGFwdOp),
         fields(
             "num_tokens",
             "num_experts",

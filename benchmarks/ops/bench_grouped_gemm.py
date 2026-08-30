@@ -34,9 +34,8 @@ _TUNE = True
 
 # Test functions
 
-_GROUPED_GEMM_OP = "GroupedGemmFwdOp"
 _GROUPED_GEMM_PARAMS = workload_params(
-    load_workloads(_GROUPED_GEMM_OP),
+    load_workloads(GroupedGemmFwdOp),
     fields("batch_sum", "batch_count", "n", "k", "dtype", "transpose_a", "transpose_b"),
     smoke_first=True,
 )

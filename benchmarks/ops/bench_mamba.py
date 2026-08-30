@@ -25,13 +25,6 @@ from workloads.mamba import (
     ssd_state_passing_fwd_ref,
 )
 
-_CB_PRODUCER_OP_NAME = "CBProducerFwdOp"
-_DA_CUMSUM_OP_NAME = "DaCumsumFwdOp"
-_CHUNK_STATE_OP_NAME = "SSDChunkStateFwdOp"
-_CHUNK_SCAN_OP_NAME = "SSDChunkScanFwdOp"
-_STATE_PASSING_OP_NAME = "SSDStatePassingFwdOp"
-_DECODE_OP_NAME = "SSDDecodeFwdOp"
-
 
 def _cb_producer_args(w: dict) -> tuple:
     """Constructor arguments for one manifest workload row."""
@@ -40,9 +33,7 @@ def _cb_producer_args(w: dict) -> tuple:
 
 @pytest.mark.parametrize(
     "batch, num_chunks, n_groups, chunk_len, d_state, dtype, tune",
-    workload_params(
-        load_workloads(_CB_PRODUCER_OP_NAME), then_dtype(_cb_producer_args, tune=False)
-    ),
+    workload_params(load_workloads(CBProducerFwdOp), then_dtype(_cb_producer_args, tune=False)),
 )
 def test_cb_producer_fwd_bench(
     batch: int,
@@ -166,7 +157,7 @@ def da_cumsum_fwd_ref(
 
 @pytest.mark.parametrize(
     "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune",
-    workload_params(load_workloads(_DA_CUMSUM_OP_NAME), then_dtype(_da_cumsum_args, tune=False)),
+    workload_params(load_workloads(DaCumsumFwdOp), then_dtype(_da_cumsum_args, tune=False)),
 )
 def test_da_cumsum_fwd_bench(
     batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune
@@ -299,7 +290,7 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
 # Schema: (batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune)
 @pytest.mark.parametrize(
     "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune",
-    workload_params(load_workloads(_CHUNK_SCAN_OP_NAME), then_dtype(_chunk_scan_args, tune=False)),
+    workload_params(load_workloads(SSDChunkScanFwdOp), then_dtype(_chunk_scan_args, tune=False)),
 )
 def test_ssd_chunk_scan_fwd_bench(
     batch: int,
@@ -388,9 +379,7 @@ def ssd_chunk_state_fwd_ref(
 
 @pytest.mark.parametrize(
     "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, has_seq_idx, dtype, tune",
-    workload_params(
-        load_workloads(_CHUNK_STATE_OP_NAME), then_dtype(_chunk_state_args, tune=False)
-    ),
+    workload_params(load_workloads(SSDChunkStateFwdOp), then_dtype(_chunk_state_args, tune=False)),
 )
 def test_ssd_chunk_state_fwd_bench(
     batch: int,
@@ -459,7 +448,7 @@ def test_ssd_chunk_state_fwd_bench(
 @pytest.mark.parametrize(
     "batch, num_chunks, n_heads, d_state, has_initial_states, dtype, tune",
     workload_params(
-        load_workloads(_STATE_PASSING_OP_NAME), then_dtype(_state_passing_args, tune=False)
+        load_workloads(SSDStatePassingFwdOp), then_dtype(_state_passing_args, tune=False)
     ),
 )
 def test_ssd_state_passing_fwd_bench(
@@ -553,7 +542,7 @@ def ssd_decode_ref(
 # Schema: (batch, n_heads, d_head, d_state, n_groups, dtype, tune)
 @pytest.mark.parametrize(
     "batch, n_heads, d_head, d_state, n_groups, dtype, tune",
-    workload_params(load_workloads(_DECODE_OP_NAME), then_dtype(_decode_args, tune=False)),
+    workload_params(load_workloads(SSDDecodeFwdOp), then_dtype(_decode_args, tune=False)),
 )
 def test_ssd_decode_bench(
     batch: int,

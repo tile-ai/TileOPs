@@ -16,9 +16,6 @@ from workloads.attention.mha import (
     MhaFwdWorkload,
 )
 
-_MHA_FWD_OP = "MultiHeadAttentionFwdOp"
-_MHA_BWD_OP = "MultiHeadAttentionBwdOp"
-
 
 def _fa3_mha_fwd(test: MhaFwdWorkload):
     """Return FA3 forward baseline callable, or None if not installed."""
@@ -116,7 +113,7 @@ def _torch_mha_bwd(test):
 
 
 _MHA_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_MHA_FWD_OP), then_dtype(mha_qkv_args, tune=True)
+    load_workloads(MultiHeadAttentionFwdOp), then_dtype(mha_qkv_args, tune=True)
 )
 
 
@@ -146,7 +143,7 @@ def test_mha_fwd_bench(
 
 
 _MHA_BWD_BENCH_PARAMS = workload_params(
-    load_workloads(_MHA_BWD_OP), then_dtype(mha_qkv_args, tune=True)
+    load_workloads(MultiHeadAttentionBwdOp), then_dtype(mha_qkv_args, tune=True)
 )
 
 

@@ -12,11 +12,9 @@ from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek import MlaDecodeWorkload
 
-_OP_NAME = "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"
-
-
 _MLA_DECODE_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME), then_dtype(mla_decode_args, tune=True)
+    load_workloads(MultiHeadLatentAttentionDecodeWithKVCacheFwdOp),
+    then_dtype(mla_decode_args, tune=True),
 )
 
 

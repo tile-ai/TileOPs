@@ -38,8 +38,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
 from workloads.moe import FusedMoeWorkload
 
-_OP_NAME = "FusedMoeFwdOp"
-
 
 class FusedMoeBenchmark(OpBenchmark[FusedMoeWorkload]):
     """Benchmark wrapper sourcing flops/bytes from the bound op's roofline."""
@@ -87,7 +85,7 @@ def _fused_moe_args(w: dict, dtype: torch.dtype) -> tuple:
     )
 
 
-_FWD_PARAMS = workload_params(load_workloads(_OP_NAME), _fused_moe_args)
+_FWD_PARAMS = workload_params(load_workloads(FusedMoeFwdOp), _fused_moe_args)
 
 
 def _run_bench(

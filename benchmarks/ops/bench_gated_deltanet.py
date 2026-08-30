@@ -41,11 +41,6 @@ def _to_fla_layout(q, k, v, g, beta):
 # Forward benchmark
 
 
-_FWD_OP_NAME = "GatedDeltaNetBTHDFwdOp"
-_BHTD_FWD_OP_NAME = "GatedDeltaNetBHTDFwdOp"
-_BWD_OP_NAME = "GatedDeltaNetBwdOp"
-
-
 def _gdn_bhtd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
     """Constructor arguments for one manifest workload row, head-major."""
     batch, heads, seq_len, dim_k = workload["q_shape"]
@@ -62,7 +57,7 @@ def _gdn_bthd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(_FWD_OP_NAME), then_dtype(_gdn_bthd_args, tune=False)),
+    workload_params(load_workloads(GatedDeltaNetBTHDFwdOp), then_dtype(_gdn_bthd_args, tune=False)),
 )
 def test_gated_deltanet_vs_fla_fwd(
     batch: int,
@@ -91,7 +86,7 @@ def test_gated_deltanet_vs_fla_fwd(
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(_BHTD_FWD_OP_NAME), then_dtype(_gdn_bhtd_args, tune=False)),
+    workload_params(load_workloads(GatedDeltaNetBHTDFwdOp), then_dtype(_gdn_bhtd_args, tune=False)),
 )
 def test_gated_deltanet_bhtd_vs_fla_fwd(
     batch: int,
@@ -122,7 +117,7 @@ def test_gated_deltanet_bhtd_vs_fla_fwd(
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(_BWD_OP_NAME), then_dtype(_gdn_bhtd_args, tune=False)),
+    workload_params(load_workloads(GatedDeltaNetBwdOp), then_dtype(_gdn_bhtd_args, tune=False)),
 )
 def test_gated_deltanet_vs_fla_bwd(
     batch: int,

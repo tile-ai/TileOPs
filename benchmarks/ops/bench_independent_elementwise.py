@@ -59,8 +59,6 @@ class UnaryBenchmark(OpBenchmark[ShapedRandnWorkload]):
 
 # Tensor-bound clamp. N_total is post-broadcast, i.e. product(out_shape).
 
-_CLAMP_FWD_OP = "ClampFwdOp"
-
 
 def _clamp_args(w: dict, dtype: torch.dtype) -> tuple:
     """``(input_shape, min_shape, max_shape, dtype)``; a row passes a bound
@@ -80,7 +78,7 @@ def _clamp_marks(w: dict, dtype: torch.dtype, index: int) -> tuple:
 
 @pytest.mark.parametrize(
     "input_shape, min_shape, max_shape, dtype",
-    workload_params(load_workloads(_CLAMP_FWD_OP), _clamp_args, marks=_clamp_marks),
+    workload_params(load_workloads(ClampFwdOp), _clamp_args, marks=_clamp_marks),
 )
 def test_clamp_tensor_bench(
     input_shape: tuple,
@@ -119,16 +117,13 @@ def test_clamp_tensor_bench(
 
 # alibi & sinusoidal (generative: no input tensors)
 
-_ALIBI_OP = "AlibiFwdOp"
-_SINUSOIDAL_OP = "SinusoidalFwdOp"
-
 
 class AlibiBenchFixture(FixtureBase):
     PARAMS = [
         (
             "seq_len, num_heads, dtype",
             workload_params(
-                load_workloads(_ALIBI_OP),
+                load_workloads(AlibiFwdOp),
                 fields("seq_len", "num_heads", dtype_last=True),
                 smoke_first=True,
             ),
@@ -141,7 +136,7 @@ class SinusoidalBenchFixture(FixtureBase):
         (
             "seq_len, d_model, dtype",
             workload_params(
-                load_workloads(_SINUSOIDAL_OP),
+                load_workloads(SinusoidalFwdOp),
                 fields("seq_len", "d_model", dtype_last=True),
                 smoke_first=True,
             ),

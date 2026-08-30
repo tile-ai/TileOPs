@@ -25,9 +25,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
 
-_OP_NAME = "GatedDeltaNetPrefillBTHDFwdOp"
-_BHTD_OP_NAME = "GatedDeltaNetPrefillBHTDFwdOp"
-
 
 def _fla_prefill_fwd():
     """Return the FLA prefill baseline callable."""
@@ -108,9 +105,11 @@ def _gdn_prefill_args(
     )
 
 
-_BENCH_PARAMS = workload_params(load_workloads(_OP_NAME), then_dtype(_gdn_prefill_args, tune=False))
+_BENCH_PARAMS = workload_params(
+    load_workloads(GatedDeltaNetPrefillBTHDFwdOp), then_dtype(_gdn_prefill_args, tune=False)
+)
 _BHTD_BENCH_PARAMS = workload_params(
-    load_workloads(_BHTD_OP_NAME),
+    load_workloads(GatedDeltaNetPrefillBHTDFwdOp),
     then_dtype(
         functools.partial(_gdn_prefill_args, layout="bhtd"),
         tune=False,

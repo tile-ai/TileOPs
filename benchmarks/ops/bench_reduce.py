@@ -47,15 +47,6 @@ from workloads.reduction import (
 
 # Op name constants
 
-_SUM_OP = "SumFwdOp"
-_MEAN_OP = "MeanFwdOp"
-_AMAX_OP = "AmaxFwdOp"
-_AMIN_OP = "AminFwdOp"
-_PROD_OP = "ProdFwdOp"
-_STD_OP = "StdFwdOp"
-_VAR_OP = "VarFwdOp"
-_VAR_MEAN_OP = "VarMeanFwdOp"
-
 
 def _functors(op, baseline_fn, inputs, dtype: torch.dtype, flaggems_fn=None) -> dict:
     """The op, flag_gems where it has a kernel, and torch eager and compiled."""
@@ -73,7 +64,7 @@ def _functors(op, baseline_fn, inputs, dtype: torch.dtype, flaggems_fn=None) -> 
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_SUM_OP, include_extra=True),
+    workloads_to_params(SumFwdOp, include_extra=True),
 )
 def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = SumWorkload(shape, dtype)
@@ -106,7 +97,7 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_MEAN_OP, include_extra=True),
+    workloads_to_params(MeanFwdOp, include_extra=True),
 )
 def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = MeanWorkload(shape, dtype)
@@ -139,7 +130,7 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_AMAX_OP, include_extra=True),
+    workloads_to_params(AmaxFwdOp, include_extra=True),
 )
 def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = AmaxWorkload(shape, dtype)
@@ -172,7 +163,7 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_AMIN_OP, include_extra=True),
+    workloads_to_params(AminFwdOp, include_extra=True),
 )
 def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = AminWorkload(shape, dtype)
@@ -198,7 +189,7 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 # Prod benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_PROD_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ProdFwdOp))
 def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = ProdWorkload(shape, dtype)
     inputs = test.gen_inputs()
@@ -227,7 +218,7 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_STD_OP, include_extra=True),
+    workloads_to_params(StdFwdOp, include_extra=True),
 )
 def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = StdWorkload(shape, dtype)
@@ -260,7 +251,7 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_VAR_OP, include_extra=True),
+    workloads_to_params(VarFwdOp, include_extra=True),
 )
 def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = VarWorkload(shape, dtype)
@@ -293,7 +284,7 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_VAR_MEAN_OP, include_extra=True),
+    workloads_to_params(VarMeanFwdOp, include_extra=True),
 )
 def test_var_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = VarMeanWorkload(shape, dtype)

@@ -29,10 +29,6 @@ from workloads.reduction import (
 
 # Op name constants
 
-_SOFTMAX_OP = "SoftmaxFwdOp"
-_LOG_SOFTMAX_OP = "LogSoftmaxFwdOp"
-_LOGSUMEXP_OP = "LogSumExpFwdOp"
-
 
 def _flaggems_softmax(name: str, dim: int):
     """Bind a flag_gems softmax entry point to *dim*."""
@@ -47,7 +43,7 @@ def _flaggems_softmax(name: str, dim: int):
 # Softmax benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SOFTMAX_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SoftmaxFwdOp))
 def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = SoftmaxWorkload(shape, dtype)
     inputs = test.gen_inputs()
@@ -80,7 +76,7 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 # LogSoftmax benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_SOFTMAX_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(LogSoftmaxFwdOp))
 def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = LogSoftmaxWorkload(shape, dtype)
     inputs = test.gen_inputs()
@@ -115,7 +111,7 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
-    workloads_to_params(_LOGSUMEXP_OP, include_extra=True),
+    workloads_to_params(LogSumExpFwdOp, include_extra=True),
 )
 def test_logsumexp_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
     test = LogSumExpWorkload(shape, dtype)

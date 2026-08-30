@@ -30,8 +30,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.moe import MoeUnpermuteWorkload
 
-_OP_NAME = "MoeUnpermuteFwdOp"
-
 # Benchmark class
 
 
@@ -44,7 +42,7 @@ _OP_NAME = "MoeUnpermuteFwdOp"
 @pytest.mark.parametrize(
     "total_tokens, top_k, hidden_size",
     workload_params(
-        load_workloads(_OP_NAME),
+        load_workloads(MoeUnpermuteFwdOp),
         fields("total_tokens", "top_k", "hidden_size"),
     ),
 )

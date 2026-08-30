@@ -31,9 +31,8 @@ from workloads.engram import (
 _TUNE = True
 
 
-_ENGRAM_GATE_CONV_FWD_OP = "EngramGateConvFwdOp"
 _ENGRAM_GATE_CONV_FWD_PARAMS = workload_params(
-    load_workloads(_ENGRAM_GATE_CONV_FWD_OP),
+    load_workloads(EngramGateConvFwdOp),
     fields("M", "seq_len", "d", "dtype"),
     smoke_first=True,
 )
@@ -57,9 +56,8 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     )
 
 
-_ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
 _ENGRAM_GATE_CONV_BWD_PARAMS = workload_params(
-    load_workloads(_ENGRAM_GATE_CONV_BWD_OP),
+    load_workloads(EngramGateConvBwdOp),
     fields("M", "seq_len", "d", "dtype"),
     smoke_first=True,
 )
@@ -87,9 +85,8 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     )
 
 
-_ENGRAM_DECODE_OP = "EngramDecodeFwdOp"
 _ENGRAM_DECODE_PARAMS = workload_params(
-    load_workloads(_ENGRAM_DECODE_OP),
+    load_workloads(EngramDecodeFwdOp),
     fields("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
     smoke_first=True,
 )

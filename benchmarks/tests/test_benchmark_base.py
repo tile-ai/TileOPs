@@ -16,6 +16,7 @@ from benchmarks.timing import (
     _OffThreadLaunchError,
     bench_kernel,
 )
+from tileops.manifest import load_workloads
 
 
 @pytest.mark.smoke
@@ -40,6 +41,14 @@ def test_workloads_to_params_include_extra_propagates_dim():
         assert isinstance(extra, dict)
     # A workload with no extras must yield an empty dict, not a missing slot.
     assert any(p.values[2] == {} for p in triples)
+
+
+def test_an_op_class_names_its_own_workloads():
+    """A caller holding the Op class does not have to repeat its name as a string."""
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    assert load_workloads(SumFwdOp) == load_workloads("SumFwdOp")
+    assert workloads_to_params(SumFwdOp) == workloads_to_params("SumFwdOp")
 
 
 def test_no_bench_reaches_its_gradients_through_the_autograd_engine():

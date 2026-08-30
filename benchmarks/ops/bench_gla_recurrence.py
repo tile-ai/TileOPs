@@ -22,8 +22,6 @@ from tileops.ops import GLADecodeFwdOp
 from workloads.linear_attention import GLADecodeWorkload
 from workloads.workload_base import FixtureBase
 
-_OP_NAME = "GLADecodeFwdOp"
-
 
 def gla_decode_torch(
     q: torch.Tensor,
@@ -78,7 +76,7 @@ class GLADecodeBenchFixture(FixtureBase):
         (
             "batch, heads, dim_k, dim_v, scale, dtype, tune",
             workload_params(
-                load_workloads(_OP_NAME),
+                load_workloads(GLADecodeFwdOp),
                 then_dtype(
                     lambda w: (
                         w["q_shape"][0],

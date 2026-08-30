@@ -16,8 +16,6 @@ from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.dropout import DropoutFwdOp
 from workloads.elementwise import ShapedRandnWorkload
 
-_OP_NAME = "DropoutFwdOp"
-
 
 class DropoutBenchmarkWorkload(ShapedRandnWorkload):
     def __init__(self, shape: tuple, dtype, p: float = 0.5):
@@ -28,7 +26,7 @@ class DropoutBenchmarkWorkload(ShapedRandnWorkload):
         return F.dropout(x, p=self.p, training=True)
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(DropoutFwdOp))
 def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = DropoutBenchmarkWorkload(shape, dtype)
     (x,) = test.gen_inputs()

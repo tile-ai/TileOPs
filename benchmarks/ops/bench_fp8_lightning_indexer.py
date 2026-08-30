@@ -22,8 +22,6 @@ _TUNE = False
 _CONFIG = None
 
 
-_FP8_LIGHTNING_INDEXER_OP = "FP8LightningIndexerFwdOp"
-
 _SHAPE_KEYS = (
     "batch",
     "seq_len",
@@ -54,7 +52,7 @@ def _one_row_per_shape(workloads: list[dict]) -> list[dict]:
 @pytest.mark.parametrize(
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits",
     workload_params(
-        _one_row_per_shape(load_workloads(_FP8_LIGHTNING_INDEXER_OP)),
+        _one_row_per_shape(load_workloads(FP8LightningIndexerFwdOp)),
         fields(*_SHAPE_KEYS),
         smoke_first=True,
     ),

@@ -14,8 +14,6 @@ from tileops.ops import DeltaNetDecodeFwdOp
 from workloads.linear_attention import DeltaNetDecodeWorkload
 from workloads.workload_base import FixtureBase
 
-_OP_NAME = "DeltaNetDecodeFwdOp"
-
 
 def deltanet_decode_torch(
     q: torch.Tensor,
@@ -66,7 +64,7 @@ class DeltaNetDecodeBenchFixture(FixtureBase):
         (
             "batch, heads, dim_k, dim_v, dtype, tune",
             workload_params(
-                load_workloads(_OP_NAME),
+                load_workloads(DeltaNetDecodeFwdOp),
                 then_dtype(
                     lambda w: (w["q_shape"][0], w["q_shape"][1], w["q_shape"][2], w["v_shape"][2]),
                     tune=False,
