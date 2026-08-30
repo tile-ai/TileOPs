@@ -679,11 +679,6 @@ class RopeNeoxPositionIdsFwdOp(Op):
             raise ValueError(
                 f"Expected position_ids.dtype int32 or int64, got {position_ids.dtype}"
             )
-        if position_ids.numel() and (
-            bool(torch.any(position_ids < 0).item())
-            or bool(torch.any(position_ids >= self.max_position).item())
-        ):
-            raise ValueError("position_ids must be in [0, max_position)")
         self.kernel = self._get_kernel((x, position_ids), x.device.index)
         return x.contiguous(), position_ids.to(torch.int32).contiguous()
 
@@ -712,8 +707,16 @@ class RopeNeoxPositionIdsFwdOp(Op):
         x, position_ids = self._validate_and_prepare(x, position_ids)
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, position_ids, self._instance_key)
-        return self._eager_forward(x, position_ids)
+            output = wrapped(x, position_ids, self._instance_key)
+        else:
+            output = self._eager_forward(x, position_ids)
+        # The kernel counts the positions it found outside the table rather than the
+        # op proving they are inside it first: two reductions and two launches in
+        # front of every call cost more device time than the rotation they guard.
+        # It clamps its own table index, so this call read nothing out of bounds.
+        if self.kernel.take_out_of_range():
+            raise ValueError("position_ids must be in [0, max_position)")
+        return output
 
 
 class RopeNonNeoxFwdOp(_RopeOpBase):

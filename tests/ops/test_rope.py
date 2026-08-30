@@ -390,13 +390,20 @@ def test_rope_neox_2d(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("rotary_dim", [None, 32])
-def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
+@pytest.mark.parametrize(
+    "rotary_dim, dtype",
+    [
+        (None, torch.float16),
+        (32, torch.float16),
+        (None, torch.bfloat16),
+        (None, torch.float32),
+    ],
+)
+def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) -> None:
     from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
     num_tokens, num_heads, head_dim, max_position = 96, 8, 64, 512
     table_dim = head_dim if rotary_dim is None else rotary_dim
-    dtype = torch.float16
     x = torch.randn(num_tokens, num_heads, head_dim, device="cuda", dtype=dtype)
     position_ids = (
         torch.arange(num_tokens, device="cuda", dtype=torch.int32) * 3 + 17
@@ -409,7 +416,8 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
         rotary_dim=rotary_dim,
     )
     output = op(x, position_ids)
-    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+    atol, rtol = _get_tolerances(dtype)
+    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
 
 @pytest.mark.smoke
