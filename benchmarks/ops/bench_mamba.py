@@ -60,7 +60,7 @@ def test_cb_producer_fwd_bench(
     op = CBProducerFwdOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
     bm = ManifestBenchmark(op, test)
 
-    bm.compare({"tileops": op, "torch": (test.ref_program, inputs)}, *inputs, params=locals())
+    bm.compare({"tileops": op, "torch": (test.ref_program, inputs)}, *inputs)
 
 
 def _da_cumsum_args(w: dict) -> tuple:
@@ -221,7 +221,7 @@ def test_da_cumsum_fwd_bench(
     functors["torch-ref"] = baseline
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
@@ -346,7 +346,7 @@ def test_ssd_chunk_scan_fwd_bench(
     functors["torch-ref"] = torch_ref
     functors[TORCH_COMPILE_TAG] = compiled_reference(torch_ref)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 def ssd_chunk_state_fwd_ref(
@@ -443,7 +443,7 @@ def test_ssd_chunk_state_fwd_bench(
     functors["torch-ref"] = baseline
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 # State passing benchmark parameters.
@@ -507,7 +507,7 @@ def test_ssd_state_passing_fwd_bench(
     functors["torch-ref"] = baseline
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 def ssd_decode_ref(
@@ -586,4 +586,4 @@ def test_ssd_decode_bench(
         compiled_reference(baseline),
         (A, dt, x, B_in, C_in, state.clone()),
     )
-    bm.compare(functors, A, dt, x, B_in, C_in, state_for_op, params=locals())
+    bm.compare(functors, A, dt, x, B_in, C_in, state_for_op)

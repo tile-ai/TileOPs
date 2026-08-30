@@ -136,4 +136,4 @@ def test_gla_decode_bench(
     functors["torch"] = test.ref_program
     functors[TORCH_COMPILE_TAG] = compiled_reference(test.ref_program)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)

@@ -137,7 +137,6 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -173,7 +172,7 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     functors["torch-ref"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 _LN_OP_NAME = "LayerNormFwdOp"
@@ -216,7 +215,6 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -247,5 +245,4 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=locals(),
     )

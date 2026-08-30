@@ -128,4 +128,4 @@ def test_gated_deltanet_decode_bench(
         # --- Torch reference baseline ---
         functors["torch-ref"] = test.ref_program
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)

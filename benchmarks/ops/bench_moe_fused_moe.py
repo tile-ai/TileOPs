@@ -218,7 +218,7 @@ def _run_bench(
             ),
         )
 
-    bm.compare(functors, *forward_args_tileops, params=locals())
+    bm.compare(functors, *forward_args_tileops)
 
 
 @pytest.mark.parametrize(

@@ -137,4 +137,4 @@ def test_fused_topk_bench(
 
         functors["torch-ref"] = _ref_fn
 
-    bm.compare(functors, gating_output, params=locals())
+    bm.compare(functors, gating_output)

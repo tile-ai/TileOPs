@@ -8,7 +8,7 @@ import logging
 import subprocess
 import threading
 from datetime import datetime
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 import torch
 
@@ -78,46 +78,15 @@ def _get_env_metadata() -> list[str]:
     return lines
 
 
-def _op_kernels(op: object) -> Iterator[object]:
-    """Yield the kernels *op* holds.
+def _run_config(op: object) -> Optional[dict]:
+    """What the op ran with, as the op itself reports it.
 
-    An ``Op`` enumerates them itself through ``iter_kernels`` — slot entries and
-    a directly bound ``op.kernel`` alike. A baseline that is not an ``Op``
-    exposes at most a single ``kernel`` attribute.
+    An Op answers through ``run_config()``. A baseline that is not an Op has no
+    such report, and a row for it carries no config.
     """
-    iter_kernels = getattr(op, "iter_kernels", None)
-    if callable(iter_kernels):
-        yield from iter_kernels()
-        return
-    kernel = getattr(op, "kernel", None)
-    if kernel is not None:
-        yield kernel
-
-
-def _extract_op_config(op: object) -> Optional[dict]:
-    """Return the kernel config for an Op instance, or None if unavailable.
-
-    A direct ``op.config`` attribute (explicit override) takes precedence over
-    kernel introspection. Otherwise the first config among the kernels the op
-    holds: kernels an op built share dtype and op kind, so the first is
-    sufficient for a report that records one entry per call.
-    """
-    op_config = getattr(op, "config", None)
-    if op_config:
-        return op_config
-
-    # FIXME(staged-rollout): reads `config` off the kernel object.
-    #
-    # Broken invariant: callers reach an op by calling it, not by reading its
-    #   kernel's attributes.
-    # Why: nothing reports what a call ran with; enumeration names the kernels
-    #   but not what they were built for.
-    # Cleanup: read the op's own execution metadata once it reports any.
-    for kernel in _op_kernels(op):
-        op_config = getattr(kernel, "config", None)
-        if op_config:
-            return op_config
-
+    run_config = getattr(op, "run_config", None)
+    if callable(run_config):
+        return run_config()
     return None
 
 
@@ -153,7 +122,7 @@ class BenchmarkReport:
             )
         name = op.__class__.__name__
         op_module = op.__class__.__module__
-        op_config = _extract_op_config(op)
+        op_config = _run_config(op)
 
         # Filter params to only include serializable benchmark parameters.
         # Tuples of primitives (e.g. ``shape=(4096, 4096)``) are preserved
@@ -166,13 +135,9 @@ class BenchmarkReport:
                 return all(_is_serializable(x) for x in v)
             return False
 
-        filtered_params = {
-            k: v
-            for k, v in params.items()
-            if k not in ("test", "bm", "op", "inputs", "result", "result_bl", "baseline_fn", "tune")
-            and not k.startswith("_")
-            and _is_serializable(v)
-        }
+        # The workload's own fields, kept where the log can print them. No name
+        # list to maintain: the caller no longer hands over a frame's locals.
+        filtered_params = {k: v for k, v in params.items() if _is_serializable(v)}
         record_entry = {
             "op": name,
             "tag": tag,

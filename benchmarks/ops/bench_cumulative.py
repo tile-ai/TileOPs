@@ -63,7 +63,6 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -82,5 +81,4 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )

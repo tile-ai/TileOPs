@@ -753,7 +753,6 @@ def test_avg_pool1d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -836,7 +835,6 @@ def test_avg_pool2d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -922,7 +920,6 @@ def test_avg_pool3d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1008,7 +1005,6 @@ def test_max_pool2d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1063,7 +1059,6 @@ def test_max_pool2d_indices_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1149,7 +1144,6 @@ def test_max_pool1d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1202,7 +1196,6 @@ def test_max_pool1d_indices_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1294,7 +1287,6 @@ def test_max_pool3d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1351,7 +1343,6 @@ def test_max_pool3d_indices_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1415,7 +1406,6 @@ def test_adaptive_avg_pool2d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1447,7 +1437,6 @@ def test_adaptive_max_pool2d_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -1481,5 +1470,4 @@ def test_adaptive_max_pool2d_indices_bench(
             "torch-compile": compiled_reference(test),
         },
         *inputs,
-        params=locals(),
     )

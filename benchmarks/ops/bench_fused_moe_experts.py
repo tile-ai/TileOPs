@@ -156,15 +156,7 @@ def test_moe_experts_nopad_bench(
         #   expert table, and vLLM's fused_experts takes the full table, so the
         #   column would time a different amount of work.
         # Cleanup: a baseline that runs the experts this rank owns.
-        bm.compare(
-            functors,
-            hidden,
-            w1,
-            w2,
-            topk_weights,
-            topk_ids,
-            params=locals(),
-        )
+        bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids)
         return
 
     # -- vLLM Triton baseline -------------------------------------------------
@@ -219,4 +211,4 @@ def test_moe_experts_nopad_bench(
 
         functors["torch-ref"] = _torch_fn
 
-    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids, params=locals())
+    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids)

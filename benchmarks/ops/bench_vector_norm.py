@@ -79,11 +79,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
     flaggems_fn = _flaggems_vector_norm(1, dim, keepdim)
 
     try:
-        bm.compare(
-            _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
-            *inputs,
-            params=locals(),
-        )
+        bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -118,11 +114,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
     flaggems_fn = _flaggems_vector_norm(2, dim, keepdim)
 
     try:
-        bm.compare(
-            _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
-            *inputs,
-            params=locals(),
-        )
+        bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -157,11 +149,7 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
     flaggems_fn = _flaggems_vector_norm(float("inf"), dim, keepdim)
 
     try:
-        bm.compare(
-            _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
-            *inputs,
-            params=locals(),
-        )
+        bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

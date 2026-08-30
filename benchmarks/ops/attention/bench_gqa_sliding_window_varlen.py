@@ -204,4 +204,4 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch"] = _torch_sliding_window_varlen_fwd(test)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)

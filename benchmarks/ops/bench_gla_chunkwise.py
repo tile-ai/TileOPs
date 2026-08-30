@@ -89,7 +89,7 @@ def test_gla_fwd_bench(
 
     functors["fla"] = (fla_fwd, ())
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 # Backward benchmark
@@ -152,7 +152,7 @@ def test_gla_bwd_bench(
 
     functors["fla"] = (fla_bwd, ())
 
-    bm.compare(functors, params=locals())
+    bm.compare(functors)
 
 
 # Combined fwd+bwd benchmark

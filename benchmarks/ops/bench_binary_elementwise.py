@@ -377,7 +377,6 @@ def test_binary_arith_bench(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -431,7 +430,6 @@ def test_comparison_bench(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -500,7 +498,7 @@ def test_logical_bench(
         "torch": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 # Bitwise ops (3)
@@ -565,7 +563,6 @@ def test_bitwise_bench(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -653,7 +650,6 @@ def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str, par
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=params,
     )
 
 
@@ -900,5 +896,4 @@ def test_broadcast_bench(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=locals(),
     )

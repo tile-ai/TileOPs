@@ -149,11 +149,7 @@ def test_gated_deltanet_prefill_bhtd_bench(
     op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
     bm = ManifestBenchmark(op, test)
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
-    bm.compare(
-        {"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)},
-        *inputs,
-        params=locals(),
-    )
+    bm.compare({"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)}, *inputs)
 
 
 @pytest.mark.parametrize(
@@ -182,4 +178,4 @@ def test_gated_deltanet_prefill_fwd_bench(
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)

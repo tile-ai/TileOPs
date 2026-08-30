@@ -60,14 +60,15 @@ class FileRun:
     def __init__(self) -> None:
         self.testcases = 0
         self.passed = 0
-        self.recorded: set[str] = set()
+        self.recorded: dict[str, list[str]] = {}
         self.skip_reasons: list[str] = []
         self.broken_reasons: list[str] = []
 
     def absorb(self, other: "FileRun") -> None:
         self.testcases += other.testcases
         self.passed += other.passed
-        self.recorded |= other.recorded
+        for op, cases in other.recorded.items():
+            self.recorded.setdefault(op, []).extend(cases)
         self.skip_reasons.extend(other.skip_reasons)
         self.broken_reasons.extend(other.broken_reasons)
 
@@ -111,7 +112,9 @@ def parse_run(xml_path: Path) -> dict[str, FileRun]:
         # benchmarked; ``op`` is the first, kept for older reports.
         props = _properties(testcase)
         recorded = props.get("ops") or props.get("op") or ""
-        run.recorded.update(name for name in recorded.split(",") if name)
+        case = testcase.attrib.get("name", "")
+        for name in (n for n in recorded.split(",") if n):
+            run.recorded.setdefault(name, []).append(case)
     return runs
 
 
@@ -124,7 +127,43 @@ def _run_of(module: str, runs: dict[str, FileRun]) -> FileRun:
     return folded
 
 
-def _verdict(op_name: str, run: FileRun) -> tuple[str, str]:
+def declared_case_ids(entry: dict) -> set[str]:
+    """The case ids the entry's own workloads produce: the label, then the dtype.
+
+    A row whose id is none of them measured a shape this op does not declare,
+    which is what L4 stopped asserting when it stopped matching op names in the
+    source. Ids are compared whole, so ``llama-8b-short`` does not answer for a
+    row of ``llama-8b-short-w256``.
+
+    It catches a file reading workloads declared under other names, not one
+    reading a sibling's: ops declaring the same labels and dtypes — ``AddFwdOp``
+    and ``SubFwdOp``, say — produce the same ids, and rows on them sit on shapes
+    this op declares anyway.
+    """
+    ids = set()
+    for workload in entry.get("workloads") or ():
+        label = workload.get("label")
+        if not label:
+            for key, value in workload.items():
+                if key.endswith("_shape") and isinstance(value, list):
+                    label = "x".join(str(v) for v in value)
+                    break
+        if not label:
+            continue
+        ids.add(label)
+        for dtype in workload.get("dtypes") or ():
+            ids.add(f"{label}-{dtype}")
+    return ids
+
+
+def _case_id(name: str) -> str:
+    """The parametrized part of a testcase name, which is the case's own id."""
+    if name.endswith("]") and "[" in name:
+        return name[name.index("[") + 1 : -1]
+    return name
+
+
+def _verdict(op_name: str, run: FileRun, declared: set[str]) -> tuple[str, str]:
     """Judge one op against its bench file's run.
 
     A testcase that failed or was skipped carries no op name, so which op it
@@ -132,7 +171,13 @@ def _verdict(op_name: str, run: FileRun) -> tuple[str, str]:
     did not record. Only a file whose every testcase passed accuses an
     unrecorded op — there, nothing is left that could have benchmarked it.
     """
-    if op_name in run.recorded:
+    cases = run.recorded.get(op_name)
+    if cases:
+        if declared and not any(_case_id(case) in declared for case in cases):
+            return FAIL, (
+                f"{len(cases)} rows, none on a workload the manifest declares "
+                f"(e.g. {_case_id(cases[0])!r})"
+            )
         return OK, f"{run.passed} testcases passed"
     if run.broken_reasons:
         return NO_VERDICT, f"{len(run.broken_reasons)} failed: {run.broken_reasons[0]}"
@@ -152,7 +197,9 @@ def verdicts(runs: dict[str, FileRun], manifest: dict) -> list[tuple[str, str, s
         bench = (entry.get("source") or {}).get("bench")
         if not bench:
             continue
-        verdict, detail = _verdict(op_name, _run_of(_module_of(bench), runs))
+        verdict, detail = _verdict(
+            op_name, _run_of(_module_of(bench), runs), declared_case_ids(entry)
+        )
         rows.append((op_name, bench, verdict, detail))
     return rows
 

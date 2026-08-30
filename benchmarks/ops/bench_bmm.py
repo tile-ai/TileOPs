@@ -83,7 +83,6 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype: torch.dtype) -> No
         },
         a,
         b,
-        params=locals(),
     )
 
 
@@ -121,7 +120,7 @@ def test_bmm_fp8_kn_bench(
     else:
         functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kn, scale_a, scale_b))
 
-    bm.compare(functors, params=locals())
+    bm.compare(functors)
 
 
 @pytest.mark.parametrize(
@@ -162,4 +161,4 @@ def test_bmm_fp8_nk_bench(
     else:
         functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kmajor, scale_a, scale_b))
 
-    bm.compare(functors, params=locals())
+    bm.compare(functors)

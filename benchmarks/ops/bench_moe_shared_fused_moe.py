@@ -296,5 +296,4 @@ def test_shared_fused_moe_bench(
         correction_bias,
         shared_w_gate_up,
         shared_w_down,
-        params=locals(),
     )

@@ -70,5 +70,4 @@ def test_moe_grouped_gemm_nopad_bench(
         b,
         true_sizes,
         true_offsets,
-        params=locals(),
     )

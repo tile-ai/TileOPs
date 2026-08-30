@@ -122,7 +122,6 @@ def _profile_rope(
 ) -> None:
     """Profile op and the torch rotation baseline on the same input."""
     x = torch.randn(shape, device="cuda", dtype=dtype)
-    params = {"shape": shape, "dtype": dtype, "layout": layout}
 
     seq_len = shape[0] if layout == "1d" else shape[1]
     cos, sin = _rope_tables(seq_len, shape[-1], dtype)
@@ -139,7 +138,6 @@ def _profile_rope(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         x,
-        params=params,
     )
 
 
@@ -255,7 +253,6 @@ def test_rope_neox_position_ids_bench(
 
     op = RopeNeoxPositionIdsFwdOp(max_position=max_position, base=_BASE)
     bm = ManifestBenchmark(op, RopeWorkload(shape, dtype))
-    params = {"shape": shape, "dtype": dtype, "max_position": max_position}
 
     cos, sin = _rope_tables(max_position, head_dim, dtype)
 
@@ -284,5 +281,4 @@ def test_rope_neox_position_ids_bench(
         },
         x,
         position_ids,
-        params=params,
     )

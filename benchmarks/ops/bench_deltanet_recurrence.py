@@ -98,5 +98,4 @@ def test_deltanet_decode_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )

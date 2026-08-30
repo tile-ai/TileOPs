@@ -48,5 +48,4 @@ def test_fp8_quant_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )

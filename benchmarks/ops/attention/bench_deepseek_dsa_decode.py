@@ -152,5 +152,4 @@ def test_dsa_decode_bench(
             **baselines,
         },
         *inputs,
-        params=locals(),
     )

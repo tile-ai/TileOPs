@@ -84,13 +84,7 @@ def test_moe_permute_nopad_bench(
         #   table, and vLLM's and torch's permute both take the whole table, so
         #   either column would time a different amount of work.
         # Cleanup: a baseline that permutes against the local expert slice.
-        bm.compare(
-            functors,
-            hidden_states,
-            topk_ids,
-            expert_map,
-            params=locals(),
-        )
+        bm.compare(functors, hidden_states, topk_ids, expert_map)
         return
 
     # vLLM baseline (optional)
@@ -143,4 +137,4 @@ def test_moe_permute_nopad_bench(
 
         functors["torch-ref"] = _torch_fn
 
-    bm.compare(functors, hidden_states, topk_ids, params=locals())
+    bm.compare(functors, hidden_states, topk_ids)

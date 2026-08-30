@@ -21,7 +21,11 @@ sys.modules["check_bench_coverage"] = coverage
 _spec.loader.exec_module(coverage)
 
 MANIFEST = {
-    "FooOp": {"status": "implemented", "source": {"bench": "benchmarks/ops/bench_foo.py"}},
+    "FooOp": {
+        "status": "implemented",
+        "source": {"bench": "benchmarks/ops/bench_foo.py"},
+        "workloads": [{"label": "foo-case", "x_shape": [8], "dtypes": ["float16"]}],
+    },
     "BarOp": {"status": "implemented", "source": {"bench": "benchmarks/ops/bench_foo.py"}},
     "SpecOp": {"status": "spec-only", "source": {"bench": "benchmarks/ops/bench_foo.py"}},
     "NoBenchOp": {"status": "implemented", "source": {}},
@@ -74,14 +78,18 @@ class TestVerdicts:
 
     def test_recorded_op_passes_and_an_unrecorded_sibling_fails(self, tmp_path):
         """A green file that never records an op it is declared for is the gap."""
-        path = _report(tmp_path, _passed("test_foo", op="FooOp"), _passed("test_other"))
+        path = _report(
+            tmp_path, _passed("test_foo[foo-case-float16]", op="FooOp"), _passed("test_other")
+        )
         assert _verdicts(path) == {"FooOp": coverage.OK, "BarOp": coverage.FAIL}
 
     def test_a_failing_testcase_leaves_no_verdict(self, tmp_path):
         """The benchmark job's own exit code already reports a failed run."""
         for tag in ("failure", "error"):
             path = _report(
-                tmp_path, _passed("test_foo", op="FooOp"), _failed("test_bar", "boom", tag)
+                tmp_path,
+                _passed("test_foo[foo-case-float16]", op="FooOp"),
+                _failed("test_bar", "boom", tag),
             )
             assert _verdicts(path)["BarOp"] == coverage.NO_VERDICT
 
@@ -97,7 +105,7 @@ class TestVerdicts:
         """
         path = _report(
             tmp_path,
-            _passed("test_foo", op="FooOp"),
+            _passed("test_foo[foo-case-float16]", op="FooOp"),
             _skipped("test_bar", "bar dependency missing"),
         )
         assert _verdicts(path) == {"FooOp": coverage.OK, "BarOp": coverage.SKIPPED}
@@ -112,20 +120,43 @@ class TestVerdicts:
         """pytest names a test inside a class ``module.ClassName``."""
         path = _report(
             tmp_path,
-            _passed("test_foo", op="FooOp", classname="benchmarks.ops.bench_foo.TestFoo"),
+            _passed(
+                "test_foo[foo-case-float16]",
+                op="FooOp",
+                classname="benchmarks.ops.bench_foo.TestFoo",
+            ),
             _passed("test_bar", op="BarOp", classname="benchmarks.ops.bench_foo.TestBar"),
         )
         assert _verdicts(path) == {"FooOp": coverage.OK, "BarOp": coverage.OK}
 
+    def test_rows_that_miss_every_declared_workload_fail(self, tmp_path):
+        """A run on shapes the manifest never declared is not this op's coverage.
+
+        L4 stopped matching the op name in the source; this is what catches a
+        file reading workloads declared under other names. A sibling declaring
+        the same labels is indistinguishable, and its shapes are this op's too.
+        """
+        path = _report(tmp_path, _passed("test_foo[other-case-float16]", op="FooOp"))
+        assert _verdicts(path)["FooOp"] == coverage.FAIL
+
+    def test_a_longer_id_does_not_borrow_a_shorter_declared_one(self, tmp_path):
+        """``foo-case`` must not answer for a row of ``foo-case-wide``."""
+        path = _report(tmp_path, _passed("test_foo[foo-case-wide-float16]", op="FooOp"))
+        assert _verdicts(path)["FooOp"] == coverage.FAIL
+
+    def test_a_declared_workload_in_the_case_id_is_the_coverage(self, tmp_path):
+        path = _report(tmp_path, _passed("test_foo[foo-case-float16]", op="FooOp"))
+        assert _verdicts(path)["FooOp"] == coverage.OK
+
     def test_one_testcase_may_benchmark_several_ops(self, tmp_path):
         """``op`` alone names the first; the gate reads them all off ``ops``."""
-        path = _report(tmp_path, _passed("test_both", op="BarOp,FooOp"))
+        path = _report(tmp_path, _passed("test_both[foo-case-float16]", op="BarOp,FooOp"))
         assert _verdicts(path) == {"FooOp": coverage.OK, "BarOp": coverage.OK}
 
     def test_a_report_without_the_ops_property_still_attributes(self, tmp_path):
         """A report predating ``ops`` carries ``op`` only."""
         case = (
-            '<testcase classname="benchmarks.ops.bench_foo" name="test_foo">'
+            '<testcase classname="benchmarks.ops.bench_foo" name="test_foo[foo-case-float16]">'
             '<properties><property name="op" value="FooOp"/></properties></testcase>'
         )
         path = _report(tmp_path, case)
@@ -133,7 +164,7 @@ class TestVerdicts:
 
     def test_only_implemented_ops_declaring_a_bench_are_expected(self, tmp_path):
         """A spec-only op and an op without a bench pointer are not rows."""
-        path = _report(tmp_path, _passed("test_foo", op="FooOp"))
+        path = _report(tmp_path, _passed("test_foo[foo-case-float16]", op="FooOp"))
         assert set(_verdicts(path)) == {"FooOp", "BarOp"}
 
 
@@ -143,11 +174,13 @@ class TestExitCodes:
     def test_exit_codes_follow_the_worst_verdict(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)
 
-        gap = _report(tmp_path, _passed("test_foo", op="FooOp"))
+        gap = _report(tmp_path, _passed("test_foo[foo-case-float16]", op="FooOp"))
         assert coverage.main(["--bench-xml", str(gap)]) == coverage.EXIT_GAP
 
         covered = _report(
-            tmp_path, _passed("test_foo", op="FooOp"), _passed("test_bar", op="BarOp")
+            tmp_path,
+            _passed("test_foo[foo-case-float16]", op="FooOp"),
+            _passed("test_bar", op="BarOp"),
         )
         out = tmp_path / "coverage.md"
         assert (

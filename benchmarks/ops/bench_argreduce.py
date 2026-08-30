@@ -62,11 +62,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     def baseline_fn(x):
         return x.argmax(dim=dim)
 
-    bm.compare(
-        _functors(op, baseline_fn, "argmax", dim, inputs),
-        *inputs,
-        params={"shape": shape, "dtype": dtype, "dim": dim},
-    )
+    bm.compare(_functors(op, baseline_fn, "argmax", dim, inputs), *inputs)
 
 
 # Argmin benchmarks
@@ -85,8 +81,4 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     def baseline_fn(x):
         return x.argmin(dim=dim)
 
-    bm.compare(
-        _functors(op, baseline_fn, "argmin", dim, inputs),
-        *inputs,
-        params={"shape": shape, "dtype": dtype, "dim": dim},
-    )
+    bm.compare(_functors(op, baseline_fn, "argmin", dim, inputs), *inputs)

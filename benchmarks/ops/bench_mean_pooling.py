@@ -160,4 +160,4 @@ def test_mean_pooling_bench(
         assert_matches_reference(view_mean, test.ref_program, *inputs)
         functors["torch-view-mean"] = view_mean
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)

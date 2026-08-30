@@ -74,7 +74,6 @@ def test_mhc_pre_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -101,5 +100,4 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        params=locals(),
     )

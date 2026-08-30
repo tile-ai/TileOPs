@@ -94,5 +94,4 @@ def test_moe_gate_up_bench(
         b,
         true_sizes,
         true_offsets,
-        params=locals(),
     )

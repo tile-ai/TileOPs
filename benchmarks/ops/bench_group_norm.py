@@ -65,7 +65,6 @@ def test_group_norm_bench(
         x,
         weight,
         bias,
-        params=locals(),
     )
 
 
@@ -93,5 +92,4 @@ def test_group_norm_no_affine_bench(
             TORCH_COMPILE_TAG: compiled_reference(baseline_no_affine),
         },
         x,
-        params=locals(),
     )

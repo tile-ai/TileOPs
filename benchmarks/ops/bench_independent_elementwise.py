@@ -7,7 +7,6 @@ Each row is timed against torch eager and the same reference through inductor,
 including the two generative ops (alibi, sinusoidal), which take no inputs.
 """
 
-from math import prod
 from typing import Optional
 
 import pytest
@@ -115,7 +114,6 @@ def test_clamp_tensor_bench(
         x,
         t_min,
         t_max,
-        params=locals(),
     )
 
 
@@ -187,8 +185,7 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
             "tileops": op,
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        params=locals(),
+        }
     )
 
 
@@ -206,8 +203,7 @@ def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> Non
             "tileops": op,
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        params=locals(),
+        }
     )
 
 
@@ -268,7 +264,6 @@ class Fp8UnaryIndependentBenchFixture(FixtureBase):
 
 @Fp8UnaryIndependentBenchFixture
 def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> None:
-    n_total = prod(shape)
     op_cls, baseline_fn, extra_kwargs = _FP8_UNARY_OPS[op_name]
     test = Fp8UnaryBenchCase(shape, dtype)
     inputs = test.gen_inputs()
@@ -287,7 +282,6 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
             TORCH_COMPILE_TAG: compiled_reference(baseline),
         },
         *inputs,
-        params=locals(),
     )
 
 
@@ -325,8 +319,6 @@ class Fp8SelectionBenchFixture(FixtureBase):
 
 @Fp8SelectionBenchFixture
 def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> None:
-    n_total = prod(shape)
-
     test = Fp8MaskedFillBenchCase(shape, dtype)
     x, mask = test.gen_inputs()
 
@@ -344,5 +336,4 @@ def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> 
         },
         x,
         mask,
-        params=locals(),
     )

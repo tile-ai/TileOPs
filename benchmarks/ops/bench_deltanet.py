@@ -82,7 +82,7 @@ def test_deltanet_vs_fla_fwd(
 
     functors["fla"] = (fla_fwd, ())
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 # Backward benchmark
@@ -137,4 +137,4 @@ def test_deltanet_vs_fla_bwd(
 
     functors["fla"] = (fla_bwd, ())
 
-    bm.compare(functors, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd, params=locals())
+    bm.compare(functors, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)

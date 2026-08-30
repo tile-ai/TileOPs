@@ -21,6 +21,49 @@ class ReluWorkload(WorkloadBase):
         return torch.relu(x.float()).to(x.dtype)
 
 
+def _numel(shape: tuple[int, ...]) -> int:
+    return prod(shape) if shape else 1
+
+
+def broadcast_kind(
+    input_shape: tuple[int, ...],
+    other_shape: tuple[int, ...],
+    output_shape: tuple[int, ...],
+) -> str:
+    if input_shape == output_shape and other_shape == output_shape:
+        return "same_shape"
+    if _numel(input_shape) == 1 or _numel(other_shape) == 1:
+        return "scalar_broadcast"
+
+    def _one_side_kind(dense_shape: tuple[int, ...], rhs_shape: tuple[int, ...]) -> str | None:
+        if dense_shape != output_shape:
+            return None
+        if (
+            len(output_shape) >= 4
+            and len(rhs_shape) >= 3
+            and rhs_shape[-2:] == (1, 1)
+            and rhs_shape[-3] == output_shape[-3]
+            and all(dim == 1 for dim in rhs_shape[:-3])
+        ):
+            return "channel_broadcast"
+        if (
+            len(output_shape) >= 2
+            and len(rhs_shape) >= 1
+            and rhs_shape[-1] == output_shape[-1]
+            and all(dim == 1 for dim in rhs_shape[:-1])
+        ):
+            return "last_dim_broadcast"
+        return None
+
+    rhs_kind = _one_side_kind(input_shape, other_shape)
+    if rhs_kind is not None:
+        return rhs_kind
+    lhs_kind = _one_side_kind(other_shape, input_shape)
+    if lhs_kind is not None:
+        return "lhs_" + lhs_kind
+    return "broadcast"
+
+
 class BinaryManifestWorkload:
     def __init__(
         self,
@@ -38,6 +81,9 @@ class BinaryManifestWorkload:
         self.b_shape = other_shape
         self.shape = tuple(torch.broadcast_shapes(input_shape, other_shape))
         self.n_total = prod(self.shape)
+        # What kind of broadcast the case exercises, which is the axis its rows
+        # are read along.
+        self.broadcast_kind = broadcast_kind(tuple(input_shape), tuple(other_shape), self.shape)
         self.dtype = dtype
         self.positive = positive
         self.integer = integer

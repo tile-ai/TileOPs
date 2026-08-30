@@ -110,6 +110,19 @@ class BenchmarkBase(Generic[W], ABC):
         """
         return None
 
+    def case_params(self) -> dict:
+        """What distinguishes this case, read off the workload it was built for.
+
+        The workload holds the case: the shapes and the dtype it was built with.
+        Reading them here keeps the row's columns a property of the workload
+        class rather than of which locals a bench function happened to have in
+        scope. Stored fields only — a workload's computed attributes build data
+        (a dequantized weight, say), and a row must not pay to print a column.
+        """
+        return {
+            name: value for name, value in vars(self.workload).items() if not name.startswith("_")
+        }
+
     def profile(self, functor: Any, *inputs: Any) -> dict:
         """Profile a callable and return its structured result."""
         with torch.no_grad():
@@ -297,7 +310,6 @@ class OpBenchmark(BenchmarkBase[W]):
         self,
         functors: dict[str, Any],
         *inputs: Any,
-        params: Optional[dict] = None,
         count_copies: bool = False,
     ) -> dict[str, dict]:
         """Time several implementations forward then reversed, and record them.
@@ -354,8 +366,9 @@ class OpBenchmark(BenchmarkBase[W]):
                 )
             meta[tag] = pass_meta
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
+        params = self.case_params()
         for tag in tags:
-            BenchmarkReport.record(self.op, params or {}, results[tag], tag=tag)
+            BenchmarkReport.record(self.op, params, results[tag], tag=tag)
         return results
 
 
@@ -378,6 +391,20 @@ class ManifestBenchmark(OpBenchmark[Any]):
                 "manifest declares, so a wrapper or a subclass cannot stand in for one"
             )
         self._roofline_cache: Optional[tuple[float, float]] = None
+
+    def case_params(self) -> dict:
+        """The workload's fields, and the parameters the manifest declares for the op.
+
+        A reduce over ``dim=0`` and one over ``dim=-1`` share a workload and are
+        different cases; the manifest says which parameters an op has, and the op
+        holds their values.
+        """
+        params = super().case_params()
+        declared = (load_manifest()[self.op_name].get("signature") or {}).get("params") or {}
+        for name in declared:
+            if hasattr(self.op, name):
+                params[name] = getattr(self.op, name)
+        return params
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:

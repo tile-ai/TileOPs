@@ -447,7 +447,7 @@ def test_gemm_bench(
         )
         functors[FLAGGEMS_TAG] = flaggems_mm
 
-    bm.compare(functors, a, b, params=locals())
+    bm.compare(functors, a, b)
 
 
 @pytest.mark.parametrize(
@@ -518,7 +518,7 @@ def test_gemm_fp8_bench(
                 inputs,
             )
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize(
@@ -571,4 +571,4 @@ def test_gemm_w4a16_bench(
             torch.cuda.synchronize()
             functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
 
-    bm.compare(functors, *inputs, params=locals())
+    bm.compare(functors, *inputs)

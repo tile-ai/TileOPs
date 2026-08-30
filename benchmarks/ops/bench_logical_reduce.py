@@ -70,11 +70,7 @@ def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.bool().any(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare(
-            _functors(op, baseline_fn, inputs, "any_dims", dim, keepdim),
-            *inputs,
-            params=locals(),
-        )
+        bm.compare(_functors(op, baseline_fn, inputs, "any_dims", dim, keepdim), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -102,11 +98,7 @@ def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.bool().all(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare(
-            _functors(op, baseline_fn, inputs, "all_dims", dim, keepdim),
-            *inputs,
-            params=locals(),
-        )
+        bm.compare(_functors(op, baseline_fn, inputs, "all_dims", dim, keepdim), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -133,11 +125,7 @@ def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype, op_params: dict) 
         return torch.count_nonzero(x, dim=dim).to(torch.int64)
 
     try:
-        bm.compare(
-            _functors(op, baseline_fn, inputs),
-            *inputs,
-            params=locals(),
-        )
+        bm.compare(_functors(op, baseline_fn, inputs), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

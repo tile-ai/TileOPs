@@ -93,7 +93,7 @@ def _profile_and_record(
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
     try:
-        bm.compare(functors, *inputs, params=params)
+        bm.compare(functors, *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

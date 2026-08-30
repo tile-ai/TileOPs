@@ -46,18 +46,6 @@ _BASELINE_RTOL = 2e-2
 _BASELINE_ATOL = 2e-2
 
 
-class ConvWorkload:
-    """Minimal shape/dtype descriptor for the convolution family.
-
-    Holds ``shape`` and ``dtype`` so :class:`ManifestBenchmark` can call
-    ``op.eval_roofline()`` after ``forward()`` has bound the dynamic vars.
-    """
-
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-
 @dataclass(frozen=True)
 class ConvCase:
     """One manifest workload row, resolved to concrete convolution arguments."""
@@ -278,11 +266,10 @@ def _profile_conv(
                 **{tag: bind_static_weight(fn) for tag, fn in baselines.items()},
             },
             x,
-            params=params,
         )
         return
 
-    bm.compare({"tileops": op, **baselines}, *inputs, params=params)
+    bm.compare({"tileops": op, **baselines}, *inputs)
 
 
 # Conv1d
@@ -307,7 +294,7 @@ def test_conv1d_bench(case: ConvCase) -> None:
         groups=case.groups,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(op, ConvWorkload(case.input_shape, case.dtype))
+    bm = ManifestBenchmark(op, case)
     _run_conv(op, bm, F.conv1d, case, rank=1, with_bias=case.with_bias, static_weight=True)
 
 
@@ -333,7 +320,7 @@ def test_conv2d_bench(case: ConvCase) -> None:
         groups=case.groups,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(op, ConvWorkload(case.input_shape, case.dtype))
+    bm = ManifestBenchmark(op, case)
     _run_conv(op, bm, F.conv2d, case, rank=2, with_bias=case.with_bias)
 
 
@@ -359,5 +346,5 @@ def test_conv3d_bench(case: ConvCase) -> None:
         groups=case.groups,
         tune=_TUNE,
     )
-    bm = ManifestBenchmark(op, ConvWorkload(case.input_shape, case.dtype))
+    bm = ManifestBenchmark(op, case)
     _run_conv(op, bm, F.conv3d, case, rank=3, with_bias=case.with_bias)

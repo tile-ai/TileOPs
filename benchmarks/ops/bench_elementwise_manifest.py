@@ -8,7 +8,6 @@ Each row is timed against torch eager and the same reference through inductor.
 """
 
 import functools
-from math import prod
 from typing import Callable
 
 import pytest
@@ -93,82 +92,6 @@ def _masked_fill_tensor_args(w: dict, dtype: torch.dtype) -> tuple:
     return (tuple(w["input_shape"]), tuple(w["mask_shape"]), tuple(w["value_shape"]), dtype)
 
 
-def _numel(shape: tuple[int, ...]) -> int:
-    return prod(shape) if shape else 1
-
-
-def _broadcast_kind(
-    input_shape: tuple[int, ...],
-    other_shape: tuple[int, ...],
-    output_shape: tuple[int, ...],
-) -> str:
-    if input_shape == output_shape and other_shape == output_shape:
-        return "same_shape"
-    if _numel(input_shape) == 1 or _numel(other_shape) == 1:
-        return "scalar_broadcast"
-
-    def _one_side_kind(dense_shape: tuple[int, ...], rhs_shape: tuple[int, ...]) -> str | None:
-        if dense_shape != output_shape:
-            return None
-        if (
-            len(output_shape) >= 4
-            and len(rhs_shape) >= 3
-            and rhs_shape[-2:] == (1, 1)
-            and rhs_shape[-3] == output_shape[-3]
-            and all(dim == 1 for dim in rhs_shape[:-3])
-        ):
-            return "channel_broadcast"
-        if (
-            len(output_shape) >= 2
-            and len(rhs_shape) >= 1
-            and rhs_shape[-1] == output_shape[-1]
-            and all(dim == 1 for dim in rhs_shape[:-1])
-        ):
-            return "last_dim_broadcast"
-        return None
-
-    rhs_kind = _one_side_kind(input_shape, other_shape)
-    if rhs_kind is not None:
-        return rhs_kind
-    lhs_kind = _one_side_kind(other_shape, input_shape)
-    if lhs_kind is not None:
-        return "lhs_" + lhs_kind
-    return "broadcast"
-
-
-def _manifest_params(bm: ManifestBenchmark) -> dict:
-    workload = bm.workload
-    params = {}
-    for attr in (
-        "shape",
-        "input_shape",
-        "other_shape",
-        "condition_shape",
-        "mask_shape",
-        "min_shape",
-        "max_shape",
-        "weight_shape",
-        "end_shape",
-        "dtype",
-    ):
-        if hasattr(workload, attr):
-            params[attr] = getattr(workload, attr)
-
-    input_shape = params.get("input_shape")
-    other_shape = params.get("other_shape")
-    if input_shape is not None and other_shape is not None:
-        output_shape = params.get("shape") or tuple(
-            torch.broadcast_shapes(input_shape, other_shape)
-        )
-        params["output_shape"] = output_shape
-        params["broadcast_kind"] = _broadcast_kind(
-            input_shape,
-            other_shape,
-            output_shape,
-        )
-    return params
-
-
 def _record_unary(
     op,
     bm: ManifestBenchmark,
@@ -182,7 +105,6 @@ def _record_unary(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=_manifest_params(bm),
     )
 
 
@@ -199,7 +121,6 @@ def _record_binary(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        params=_manifest_params(bm),
     )
 
 
@@ -409,7 +330,6 @@ def test_prelu_manifest_bench(
         },
         x,
         weight,
-        params=locals(),
     )
 
 
@@ -446,7 +366,6 @@ def test_masked_fill_tensor_manifest_bench(
         x,
         mask,
         value,
-        params=locals(),
         count_copies=True,
     )
 
@@ -476,7 +395,6 @@ def test_masked_fill_scalar_manifest_bench(
         },
         x,
         mask,
-        params=locals(),
         count_copies=True,
     )
 
@@ -809,7 +727,6 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
         cond,
         x,
         other,
-        params=locals(),
     )
 
 
@@ -830,5 +747,4 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
         x,
         end,
         weight,
-        params=locals(),
     )
