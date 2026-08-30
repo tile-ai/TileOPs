@@ -102,6 +102,81 @@ def _logical_out_dtype(op_kind: str, partial: bool) -> str:
     return "float32" if partial else "int64"
 
 
+# The fused pass runs one block per kept column and has no other parallelism, so
+# it takes over only where that alone is enough. Measured on an H200 (lead 4,
+# trail 4096, bool): fused wins from kept 32 up and ties below it.
+_FUSE_MIN_KEPT = 32
+
+
+@functools.lru_cache(maxsize=32)
+def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, dtype: str):
+    """Build an any/all/count_nonzero kernel reducing a leading and a trailing axis.
+
+    One block per kept column, walking the leading axis in serial and reducing
+    each of its contiguous rows. The two-pass form writes ``lead * kept``
+    partials and launches again to fold them; at these sizes that launch is most
+    of the time.
+
+    Args:
+        lead: Extent of the leading axes, already folded into one.
+        kept: Extent of the axis that survives.
+        trail: Extent of the trailing axes, already folded into one.
+        op_kind: One of "any", "all", "count_nonzero".
+        dtype: TileLang dtype string of the input.
+
+    Returns:
+        A TileLang JIT-compiled kernel factory accepting (threads).
+    """
+    trail_padded = align_up(trail, DEFAULT_ALIGNMENT)
+    needs_pad = trail_padded != trail
+    pad_val = _pad_value_for_op(op_kind)
+    out_dtype = _logical_out_dtype(op_kind, partial=False)
+    # any is a max and all is a min over 0/1, so each starts from its identity;
+    # a count sums from zero.
+    init_val = {"any": 0.0, "all": 1.0, "count_nonzero": 0.0}[op_kind]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads):
+        @T.prim_func
+        def main(
+            x: T.Tensor[(lead, kept, trail), dtype],
+            out: T.Tensor[(kept,), out_dtype],
+        ):
+            with T.Kernel(kept, threads=threads) as pid_k:
+                vals = T.alloc_fragment((1, trail_padded), "float32")
+                row = T.alloc_fragment((1,), "float32")
+                acc = T.alloc_fragment((1,), "float32")
+                acc[0] = init_val
+                for lead_idx in T.serial(lead):
+                    for j in T.Parallel(trail_padded):
+                        if needs_pad:
+                            val = T.if_then_else(
+                                j < trail,
+                                T.cast(x[lead_idx, pid_k, j], "float32"),
+                                T.cast(pad_val, "float32"),
+                            )
+                        else:
+                            val = T.cast(x[lead_idx, pid_k, j], "float32")
+                        vals[0, j] = T.if_then_else(val != 0.0, 1.0, 0.0)
+                    if op_kind == "any":
+                        T.reduce_max(vals, row, dim=1)
+                        acc[0] = T.max(acc[0], row[0])
+                    elif op_kind == "all":
+                        T.reduce_min(vals, row, dim=1)
+                        acc[0] = T.min(acc[0], row[0])
+                    else:
+                        T.reduce_sum(vals, row, dim=1)
+                        acc[0] = acc[0] + row[0]
+                if op_kind == "count_nonzero":
+                    out[pid_k] = T.cast(acc[0], out_dtype)
+                else:
+                    out[pid_k] = T.cast(acc[0] > 0.5, out_dtype)
+
+        return main
+
+    return _func
+
+
 @functools.lru_cache(maxsize=32)
 def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bool = False):
     """Build a TileLang any/all/count_nonzero kernel.
@@ -445,6 +520,12 @@ class LogicalReduceKernel(Kernel):
             tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
         )
         dtype_str = self.dtype_to_str(self._kernel_dtype)
+        if kept >= _FUSE_MIN_KEPT and not planner.needs_tiling:
+            fused = _logical_reduce_edge_fused(lead, kept, trail, self.op_kind, dtype_str)
+            counted = fused(cfg["threads"])(x.reshape(lead, kept, trail))
+            if self.op_kind == "count_nonzero":
+                return counted
+            return counted.view(torch.bool)
         if planner.needs_tiling:
             stage = _logical_reduce_kernel_tiled(
                 lead * kept, trail, self.op_kind, dtype_str, cfg["tile_n"], partial=True
