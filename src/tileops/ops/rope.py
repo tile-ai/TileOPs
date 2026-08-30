@@ -679,11 +679,10 @@ class RopeNeoxPositionIdsFwdOp(Op):
             raise ValueError(
                 f"Expected position_ids.dtype int32 or int64, got {position_ids.dtype}"
             )
-        if position_ids.numel() and (
-            bool(torch.any(position_ids < 0).item())
-            or bool(torch.any(position_ids >= self.max_position).item())
-        ):
-            raise ValueError("position_ids must be in [0, max_position)")
+        if position_ids.numel():
+            lowest, highest = torch.stack(torch.aminmax(position_ids)).tolist()
+            if lowest < 0 or highest >= self.max_position:
+                raise ValueError("position_ids must be in [0, max_position)")
         self.kernel = self._get_kernel((x, position_ids), x.device.index)
         return x.contiguous(), position_ids.to(torch.int32).contiguous()
 

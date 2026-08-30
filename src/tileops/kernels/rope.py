@@ -203,11 +203,23 @@ def _make_rope_neox_position_ids_thd(
     threads: int = 256,
     num_per_thread: int = 8,
 ) -> object:
-    """THD neox RoPE kernel with explicit absolute position ids."""
+    """THD neox RoPE kernel with explicit absolute position ids.
+
+    A thread owns the pair ``(c, c + half)`` a neox rotation couples, so ``x`` is
+    read once and both of its outputs leave in the same step: the walked space is
+    the rotated half, not the head. Where ``rotary_dim < head_dim`` a second walk
+    copies the columns past it. The arithmetic stays in the storage dtype, which
+    is what ``GQAPrefillPagedWithKVCacheRopeAppendKernel`` is compared against.
+    """
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
     n_total = num_tokens * token_stride
+    n_pairs = num_tokens * num_heads * half
+    n_tail = num_tokens * num_heads * (head_dim - rotary_dim)
     block_size = threads * num_per_thread
+    # One grid covers both walks, so the copied columns get blocks of their own
+    # where there are more of them than there are rotated pairs.
+    n_walked = max(n_pairs, n_tail)
 
     @tilelang.jit(out_idx=[4])
     def kernel(threads_arg, npt_arg):
@@ -219,29 +231,28 @@ def _make_rope_neox_position_ids_thd(
             position_ids: T.Tensor((num_tokens,), "int32"),
             y: T.Tensor((n_total,), dtype),
         ):
-            with T.Kernel(T.ceildiv(n_total, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(n_walked, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat_idx = (bx * threads_arg + i) * npt_arg + j
-                    if flat_idx < n_total:
-                        token_idx = flat_idx // token_stride
-                        col = flat_idx % head_dim
-                        pos = position_ids[token_idx]
-
-                        freq_idx = col % half
-                        c = cos_table[pos, freq_idx]
-                        s = sin_table[pos, freq_idx]
-                        val = x[flat_idx]
-
-                        paired_col = T.if_then_else(
-                            col < half,
-                            col + half,
-                            T.if_then_else(col < rotary_dim, col - half, col),
-                        )
-                        head_base = flat_idx - col
-                        paired_idx = head_base + paired_col
-                        paired_val = x[paired_idx]
-                        rotated = T.if_then_else(col < half, -paired_val, paired_val)
-                        y[flat_idx] = T.if_then_else(col < rotary_dim, val * c + rotated * s, val)
+                    pair_idx = (bx * threads_arg + i) * npt_arg + j
+                    if pair_idx < n_pairs:
+                        row = pair_idx // half
+                        col = pair_idx % half
+                        pos = position_ids[row // num_heads]
+                        low = row * head_dim + col
+                        x_low = x[low]
+                        x_high = x[low + half]
+                        c = cos_table[pos, col]
+                        s = sin_table[pos, col]
+                        y[low] = x_low * c + (-x_high) * s
+                        y[low + half] = x_high * c + x_low * s
+                if n_tail > 0:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        tail_idx = (bx * threads_arg + i) * npt_arg + j
+                        if tail_idx < n_tail:
+                            row = tail_idx // (head_dim - rotary_dim)
+                            col = tail_idx % (head_dim - rotary_dim)
+                            kept = row * head_dim + rotary_dim + col
+                            y[kept] = x[kept]
 
         return main
 
