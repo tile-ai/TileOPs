@@ -396,8 +396,7 @@ jobs:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [op_test]
     runs-on: ubuntu-latest
-    # Nothing is written to this repository any more: the data goes to
-    # TileOPs-nightly under a token of its own, and GITHUB_TOKEN only reads.
+    # The data goes elsewhere now, under a token of its own.
     permissions:
       contents: read
     steps:
@@ -450,25 +449,22 @@ jobs:
           echo "ok=${ok}" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      # The only place the data is published. `nightly-bench` in this
-      # repository was rewritten every night and held no history; keeping the
-      # history there would cost 314 KB a night packed, 112 MB a year against a
-      # 9 MB repository that everyone clones. TileOPs-nightly carries one
-      # commit per night, and its size is nobody's clone cost.
-      #
-      # Failing here fails the job: this is the publish, not a copy of it.
+      # One commit per run, kept. On a branch of this repository the history
+      # would cost 314 KB a night packed — 112 MB a year against a 9 MB
+      # repository that everyone clones.
       - name: Publish the snapshot to TileOPs-nightly
         if: ${{ steps.assemble.outputs.ok == '1' }}
         uses: peaceiris/actions-gh-pages@v4
         with:
-          # Fine-grained PAT, `contents: write` on tile-ai/TileOPs-nightly and
-          # nothing else. GITHUB_TOKEN cannot reach another repository.
+          # GITHUB_TOKEN cannot reach another repository.
           personal_token: ${{ secrets.BENCH_ARCHIVE_TOKEN }}
           external_repository: tile-ai/TileOPs-nightly
-          publish_branch: main
+          # Not main: that branch is the repository's own. Everything not in
+          # _publish is deleted here, so a stale test_results.xml cannot pass
+          # for tonight's.
+          publish_branch: snapshots
           publish_dir: _publish
-          # Three files, and no fourth: the action writes .nojekyll by default,
-          # which means nothing to a repository that serves no pages.
+          # The action writes .nojekyll otherwise, which means nothing here.
           disable_nojekyll: true
           full_commit_message: "bench: ${{ github.sha }} (run ${{ github.run_id }})"
           user_name: "github-actions[bot]"

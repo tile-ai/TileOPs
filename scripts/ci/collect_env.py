@@ -15,8 +15,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-# What the card was set to, beside what it is: a run at a lower power cap or
-# clock is a different measurement, and nothing else in the snapshot says so.
+# What the card was set to: a run at a lower cap or clock is a different
+# measurement, and nothing else in the snapshot says so.
 _GPU_FIELDS = (
     ("driver", "driver_version"),
     ("power_limit_w", "power.limit"),
@@ -62,8 +62,8 @@ def collect() -> dict:
     image = os.environ.get("TILEOPS_RUNNER_IMAGE", "").strip()
     if image:
         env["image"] = image
-    # A tag can be pushed again; the digest cannot. A container cannot read its
-    # own, so the host passes it in — see .github/runner/README.md.
+    # A tag can be pushed again; the digest cannot. A container cannot read
+    # its own, so the host passes it in.
     digest = os.environ.get("TILEOPS_RUNNER_IMAGE_DIGEST", "").strip()
     if digest:
         env["image_digest"] = digest
