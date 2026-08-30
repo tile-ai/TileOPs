@@ -389,6 +389,17 @@ class _ReduceOpBase(Op):
         """
         return {"device_index": x.device.index}
 
+    def _select_kernel_key(
+        self,
+        x: torch.Tensor,
+        axes: "tuple[int, ...]",
+        m: int,
+        n: int,
+    ) -> str:
+        """Choose the implementation key for this reduce call."""
+
+        return self._kernel_key
+
     def _reduce_axes(self, x: torch.Tensor) -> "tuple[int, ...]":
         """The axes this call reduces, ascending and non-negative.
 
@@ -419,14 +430,15 @@ class _ReduceOpBase(Op):
         m = prod(d for i, d in enumerate(x.shape) if i not in axes)
         self._last_roofline_mn = (m, n)
         extra = self._build_kernel_kwargs(x, axes)
+        selected_key = self._select_kernel_key(x, axes, m, n)
         kernel = self.get_or_build_kernel(
-            self._kernel_key,
+            selected_key,
             (x,),
             # The kernel now owns the permute, so the whole shape decides what it is,
             # not just the row count and width it reduces. The device is in the key
             # because the kernel plans against that device's shared memory.
-            key=(tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index),
-            build=lambda: self.kernel_map[self._kernel_key](
+            key=(selected_key, tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index),
+            build=lambda: self.kernel_map[selected_key](
                 m,
                 n,
                 self._op_kind,

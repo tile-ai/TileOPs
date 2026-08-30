@@ -6,8 +6,19 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
+from tileops.kernels.reduction._primitives import (
+    device_smem_budget,
+    edge_axis_plan,
+    edge_axis_split,
+)
+from tileops.kernels.reduction.call_spec import LogicalReduceCall
+from tileops.kernels.reduction.logical_reduce import (
+    LogicalReduceEdgeFusedKernel,
+    LogicalReduceKernel,
+    storage_dtype_for,
+)
 from tileops.manifest.shape_rules import reduced_shape
+from tileops.utils import get_sm_count, get_sm_version, is_h200
 
 from ._boundary import register_reduction_op
 from ._multidim import EmptyDimPolicy
@@ -16,7 +27,58 @@ from .reduce import _ReduceOpBase
 __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
 
 
-class AllFwdOp(_ReduceOpBase):
+_LOGICAL_REDUCE_KEYS = ("logical_reduce_edge_fused", "logical_reduce")
+
+
+class _LogicalReduceOpBase(_ReduceOpBase):
+    """Shared dispatch for logical reductions."""
+
+    _kernel_key = "logical_reduce"
+    _kernel_cls = LogicalReduceKernel
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "logical_reduce_edge_fused": LogicalReduceEdgeFusedKernel,
+            "logical_reduce": LogicalReduceKernel,
+        }
+
+    def _select_kernel_key(
+        self,
+        x: torch.Tensor,
+        axes: "tuple[int, ...]",
+        m: int,
+        n: int,
+    ) -> str:
+        device_index = x.device.index
+        k, j = edge_axis_split(x.ndim, axes)
+        kept = 0
+        trail_needs_tiling = False
+        if k:
+            kernel_dtype = storage_dtype_for(x.dtype)
+            elem_bytes = torch.tensor([], dtype=kernel_dtype).element_size()
+            smem_budget = device_smem_budget(device_index)
+            _, kept, _, planner, _ = edge_axis_plan(tuple(x.shape), k, j, elem_bytes, smem_budget)
+            trail_needs_tiling = planner.needs_tiling
+        call = LogicalReduceCall(
+            arch=get_sm_version(device_index),
+            h200=is_h200(device_index),
+            sm_count=get_sm_count(device_index),
+            shape=tuple(x.shape),
+            axes=axes,
+            op_kind=self._op_kind,
+            dtype=x.dtype,
+            keepdim=self.keepdim,
+            edge_axes=bool(k),
+            kept=kept,
+            trail_needs_tiling=trail_needs_tiling,
+            reduced_count=n,
+            tune=self.tune,
+        )
+        return self.select_kernel_key(_LOGICAL_REDUCE_KEYS, call)
+
+
+class AllFwdOp(_LogicalReduceOpBase):
     """All reduction along ``dim``, returning bool.
 
     Construction: ``AllFwdOp(dim=None, keepdim=False)``.
@@ -81,7 +143,7 @@ class AllFwdOp(_ReduceOpBase):
         return torch.bool
 
 
-class AnyFwdOp(_ReduceOpBase):
+class AnyFwdOp(_LogicalReduceOpBase):
     """Any reduction along ``dim``, returning bool.
 
     Construction: ``AnyFwdOp(dim=None, keepdim=False)``.
@@ -146,7 +208,7 @@ class AnyFwdOp(_ReduceOpBase):
         return torch.bool
 
 
-class CountNonzeroFwdOp(_ReduceOpBase):
+class CountNonzeroFwdOp(_LogicalReduceOpBase):
     """Count nonzero reduction along ``dim``, returning int64.
 
     Construction: ``CountNonzeroFwdOp(dim=None)``.
