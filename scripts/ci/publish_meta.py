@@ -2,8 +2,7 @@
 """Write the meta.json that captions a published benchmark snapshot.
 
 The docs site reads it for the commit, the run, and the environment the
-benchmark job recorded. A missing environment stays missing.
-"""
+benchmark job recorded. A missing environment stays missing."""
 
 import argparse
 import contextlib

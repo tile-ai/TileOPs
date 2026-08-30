@@ -15,17 +15,46 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _driver() -> str | None:
+# What the card was set to, beside what it is: a run at a lower power cap or
+# clock is a different measurement, and nothing else in the snapshot says so.
+_GPU_FIELDS = (
+    ("driver", "driver_version"),
+    ("power_limit_w", "power.limit"),
+    ("sm_clock_mhz", "clocks.applications.graphics"),
+    ("memory_clock_mhz", "clocks.applications.memory"),
+    ("mig", "mig.mode.current"),
+)
+
+
+def _gpu_state() -> dict:
+    """What nvidia-smi reports for card 0. A field it cannot answer is dropped."""
+    query = ",".join(field for _, field in _GPU_FIELDS)
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits", "-i", "0"],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    return out.stdout.splitlines()[0].strip() if out.returncode == 0 else None
+        return {}
+    if out.returncode != 0 or not out.stdout.strip():
+        return {}
+    values = [v.strip() for v in out.stdout.splitlines()[0].split(",")]
+    if len(values) != len(_GPU_FIELDS):
+        print(
+            f"collect_env: nvidia-smi answered {len(values)} of "
+            f"{len(_GPU_FIELDS)} fields; card state not recorded",
+            file=sys.stderr,
+        )
+        return {}
+    state = {}
+    for (name, _), value in zip(_GPU_FIELDS, values, strict=True):
+        # `[N/A]` — an unset clock, an unsupported field — is not a fact.
+        if not value or value.startswith("[") or value == "N/A":
+            continue
+        state[name] = float(value) if name.endswith(("_w", "_mhz")) else value
+    return state
 
 
 def collect() -> dict:
@@ -33,6 +62,11 @@ def collect() -> dict:
     image = os.environ.get("TILEOPS_RUNNER_IMAGE", "").strip()
     if image:
         env["image"] = image
+    # A tag can be pushed again; the digest cannot. A container cannot read its
+    # own, so the host passes it in — see .github/runner/README.md.
+    digest = os.environ.get("TILEOPS_RUNNER_IMAGE_DIGEST", "").strip()
+    if digest:
+        env["image_digest"] = digest
 
     try:
         import torch
@@ -55,9 +89,7 @@ def collect() -> dict:
     except ImportError:
         pass
 
-    driver = _driver()
-    if driver:
-        env["driver"] = driver
+    env.update(_gpu_state())
 
     # Every installed distribution, not a chosen few: which library matters to
     # a number is the reader's question, and a list written here would answer it
@@ -84,7 +116,9 @@ def main() -> int:
     env = collect()
     json.dump(env, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
-    missing = [k for k in ("image", "gpu", "driver", "cuda", "torch") if k not in env]
+    missing = [
+        k for k in ("image", "image_digest", "gpu", "driver", "cuda", "torch") if k not in env
+    ]
     if missing:
         print("collect_env: not recorded: " + ", ".join(missing), file=sys.stderr)
     return 0

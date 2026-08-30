@@ -48,6 +48,18 @@ docker push "$IMG"
 **Point the runners at the new tag** — a maintainer task outside this repository. Merging a
 TileOPs PR only changes the recipe; the live runners keep their image until this happens.
 
+**Pass the digest to the runner.** The tag is a moving name; the digest is what identifies the
+image a night's numbers were produced on, and a container cannot read its own. The host that
+starts the runner reads it once and passes it in:
+
+```bash
+DIGEST="$(docker image inspect "$IMG" --format '{{index .RepoDigests 0}}')"
+docker run ... -e TILEOPS_RUNNER_IMAGE="$IMG" -e TILEOPS_RUNNER_IMAGE_DIGEST="${DIGEST#*@}" ...
+```
+
+`scripts/ci/collect_env.py` records it, and the published `meta.json` carries it beside the tag.
+Without it the nightly still publishes; the snapshot simply cannot say which image it ran on.
+
 What the flags are for:
 
 - `--user root` — `final` runs as `ci-runner`, which cannot write the editable install's
