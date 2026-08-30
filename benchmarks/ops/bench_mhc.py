@@ -68,7 +68,7 @@ def test_mhc_pre_bench(
         alpha_post=alpha_post,
         alpha_res=alpha_res,
         sinkhorn_repeat=sinkhorn_repeat,
-        eps=_SINKHORN_EPS,
+        sinkhorn_eps=_SINKHORN_EPS,
     )
     inputs = test.gen_inputs()
 

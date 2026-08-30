@@ -139,8 +139,6 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     test = BatchNormFwdWorkload(N, C, spatial, dtype, training)
     bm = ManifestBenchmark(op, test)
 
-    spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
-
     def torch_fn(x, rm, rv, w, b):
         return _torch_bn_fwd(x, w, b, rm, rv)
 
@@ -169,8 +167,6 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
 
     test = BatchNormBwdWorkload(N, C, spatial, dtype)
     bm = ManifestBenchmark(op, test)
-
-    spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
 
     # A reduction this long disagrees with the reference's order past float32's tolerance.
     assert_matches_reference(_aten_bn_bwd, _torch_bn_bwd, *inputs, rtol=1e-3, atol=1e-3)

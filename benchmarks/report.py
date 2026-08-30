@@ -110,7 +110,9 @@ class BenchmarkReport:
                 op — a kernel strategy, a field of library implementations —
                 decides something rather than tracking it, and belongs to
                 ``benchmarks/studies/``, which the nightly sweep does not reach.
-            params: Parameter dict (typically from locals())
+            params: what distinguishes this case, from the benchmark's
+                ``case_params()`` — the workload's fields and the parameters the
+                manifest declares for the op.
             result: Dict with device_busy_ms, latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
         """

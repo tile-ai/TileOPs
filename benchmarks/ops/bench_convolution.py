@@ -15,7 +15,7 @@ inductor.
 """
 
 import functools
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import pytest
@@ -59,9 +59,6 @@ class ConvCase:
     groups: int
     dtype: torch.dtype
     with_bias: bool
-
-    def as_record(self) -> dict:
-        return asdict(self)
 
 
 def _conv_args(w: dict, dtype: torch.dtype, kernel_keys: tuple[str, ...]) -> tuple:
@@ -230,7 +227,6 @@ def _run_conv(
             "torch": baseline,
             TORCH_COMPILE_TAG: compiled_reference(baseline),
         },
-        case.as_record(),
         static_weight=static_weight,
     )
 
@@ -240,7 +236,6 @@ def _profile_conv(
     bm: ManifestBenchmark,
     inputs: tuple[torch.Tensor, ...],
     baselines: dict[str, Callable],
-    params: dict,
     *,
     static_weight: bool = False,
 ) -> None:

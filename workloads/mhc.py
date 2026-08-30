@@ -24,7 +24,7 @@ class MHCPreWorkload(WorkloadBase):
         alpha_post: float | None = None,
         alpha_res: float | None = None,
         sinkhorn_repeat: int = 20,
-        eps: float = 0.02,
+        sinkhorn_eps: float = 0.02,
     ):
         self.batch = batch
         self.n_expand = n_expand
@@ -34,7 +34,7 @@ class MHCPreWorkload(WorkloadBase):
         self.alpha_post = float(torch.randn(())) if alpha_post is None else alpha_post
         self.alpha_res = float(torch.randn(())) if alpha_res is None else alpha_res
         self.sinkhorn_repeat = sinkhorn_repeat
-        self.eps = eps
+        self.sinkhorn_eps = sinkhorn_eps
 
     def gen_inputs(
         self,
@@ -65,7 +65,7 @@ class MHCPreWorkload(WorkloadBase):
             self.alpha_post,
             self.alpha_res,
             self.sinkhorn_repeat,
-            self.eps,
+            self.sinkhorn_eps,
         )
 
     def ref_program(
