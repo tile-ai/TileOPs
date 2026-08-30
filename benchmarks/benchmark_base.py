@@ -307,6 +307,26 @@ class OpBenchmark(BenchmarkBase[W]):
     def __init__(self, op: Any, workload: W):
         super().__init__(workload)
         self.op = op
+        self._roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        """The op's own count of the work, read once.
+
+        Read lazily, because an op whose shapes are dynamic binds its roofline
+        variables during ``forward()``, and every tag is timed before any result
+        is built. An op that models no roofline says so, and its benchmark
+        overrides the two methods below.
+        """
+        if self._roofline_cache is None:
+            flops, mem_bytes = self.op.eval_roofline()
+            self._roofline_cache = (float(flops), float(mem_bytes))
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
 
     def compare(
         self,
@@ -392,7 +412,6 @@ class ManifestBenchmark(OpBenchmark[Any]):
                 f"{self.op_name} is not a manifest op; a benchmark reports under the name the "
                 "manifest declares, so a wrapper or a subclass cannot stand in for one"
             )
-        self._roofline_cache: Optional[tuple[float, float]] = None
 
     def case_params(self) -> dict:
         """The workload's fields, and the parameters the manifest declares for the op.
@@ -407,18 +426,6 @@ class ManifestBenchmark(OpBenchmark[Any]):
             if hasattr(self.op, name):
                 params[name] = getattr(self.op, name)
         return params
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            flops, mem_bytes = self.op.eval_roofline()
-            self._roofline_cache = (float(flops), float(mem_bytes))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
     def compute_roof(self) -> Optional[str]:
         return self.op.compute_roof()

@@ -43,25 +43,6 @@ from workloads.attention.gqa import (
 )
 
 
-class GQAPrefillVarlenFwdBenchmark(OpBenchmark[GQAPrefillVarlenFwdWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        visible = 0
-        for q_len, kv_len in zip(t.q_lens, t.kv_lens, strict=True):
-            visible += q_len * kv_len - q_len * (q_len - 1) / 2 if t.is_causal else q_len * kv_len
-        return 4.0 * t.heads * visible * t.dim
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        query_size = sum(t.q_lens) * t.heads * t.dim
-        kv_size = sum(t.kv_lens) * t.heads_kv * t.dim
-        output_size = query_size
-        cu_seqlens_size = 2 * (t.batch + 1)
-        return (
-            query_size + 2 * kv_size + output_size
-        ) * t.dtype.itemsize + cu_seqlens_size * torch.int32.itemsize
-
-
 def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdWorkload):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
@@ -489,7 +470,7 @@ def test_gqa_prefill_varlen_fwd_bench(
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
         batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
-    bm = GQAPrefillVarlenFwdBenchmark(op, test)
+    bm = OpBenchmark(op, test)
 
     functors = {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}
     fa3_fn = _fa3_gqa_prefill_varlen(test)
