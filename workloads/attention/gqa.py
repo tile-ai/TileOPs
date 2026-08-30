@@ -1,11 +1,69 @@
 """Workload definitions for the GQA attention ops."""
 
 import math
+from itertools import accumulate
 
 import torch
 
 from tileops.ops import GroupedQueryAttentionFwdOp
 from workloads.workload_base import WorkloadBase
+
+
+def make_cu_seqlens(lengths: list[int]) -> torch.Tensor:
+    """Exclusive prefix sum of *lengths*, the packed-varlen offset vector."""
+    return torch.tensor([0, *accumulate(lengths)], device="cuda", dtype=torch.int32)
+
+
+def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Tensor:
+    """Block table whose logical pages sit out of order in physical memory.
+
+    Each request owns a contiguous run of physical pages and reads them
+    even-indices-first, so a kernel that ignores the table and walks physical
+    pages in order produces a different answer than one that honours it.
+    """
+    rows = []
+    for b in range(batch):
+        start = b * max_pages_per_req
+        pages = list(range(start, start + max_pages_per_req))
+        rows.append(pages[::2] + pages[1::2])
+    return torch.tensor(rows, device="cuda", dtype=torch.int32).contiguous()
+
+
+def paged_cache_row(
+    block_table: torch.Tensor, batch_idx: int, logical_pos: int, page_size: int
+) -> int:
+    """Row of the page pool holding logical position *logical_pos* of *batch_idx*."""
+    logical_page = logical_pos // page_size
+    page_offset = logical_pos % page_size
+    physical_page = int(block_table[batch_idx, logical_page].item())
+    return physical_page * page_size + page_offset
+
+
+def make_unit_cache_scales() -> tuple[torch.Tensor, torch.Tensor]:
+    """The K and V dequantisation scales of an unquantised cache."""
+    scale = torch.ones((1,), device="cuda", dtype=torch.float32)
+    return scale, scale.clone()
+
+
+def fill_paged_cache_from_logical(
+    k_pages: torch.Tensor,
+    v_pages: torch.Tensor,
+    k_old: list[torch.Tensor],
+    v_old: list[torch.Tensor],
+    block_table: torch.Tensor,
+    page_size: int,
+) -> None:
+    """Scatter each request's logical cache rows into the pages *block_table* names.
+
+    ``k_old`` and ``v_old`` carry one ``[cache_len, heads_kv, dim]`` tensor per
+    request, in batch order, holding that request's cache in logical position
+    order. ``k_pages`` and ``v_pages`` are written in place.
+    """
+    for b, (k_b, v_b) in enumerate(zip(k_old, v_old, strict=True)):
+        for pos in range(k_b.shape[0]):
+            row = paged_cache_row(block_table, b, pos, page_size)
+            k_pages[row].copy_(k_b[pos])
+            v_pages[row].copy_(v_b[pos])
 
 
 def _compute_gqa_square_lse(
@@ -390,10 +448,11 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
             physical_tokens, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
         ).contiguous()
         v_pages = torch.randn_like(k_pages)
-        cu_seqlens_q = torch.tensor(
-            [0] + torch.tensor(self.q_lens).cumsum(0).tolist(), dtype=torch.int32, device="cuda"
-        )
+        cu_seqlens_q = make_cu_seqlens(self.q_lens)
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device="cuda")
+        # Identity mapping, not make_interleaved_block_table: a timed run reports the
+        # page walk of a cache that was filled in order, and the correctness of the
+        # walk under a permuted table is the test's question.
         block_table = (
             torch.arange(self.batch * self.max_pages_per_req, dtype=torch.int32, device="cuda")
             .reshape(self.batch, self.max_pages_per_req)
