@@ -27,9 +27,8 @@ _TUNE = True
 _SINKHORN_EPS = 0.02
 
 
-_MHC_PRE_OP = "MHCPreFwdOp"
 _MHC_PRE_PARAMS = workload_params(
-    load_workloads(_MHC_PRE_OP),
+    load_workloads(MHCPreFwdOp),
     fields(
         "batch",
         "n_expand",
@@ -58,11 +57,20 @@ def test_mhc_pre_bench(
     alpha_res: float,
     sinkhorn_repeat: int,
 ) -> None:
-    test = MHCPreWorkload(batch, n_expand, c_x, dtype)
-    phi, x, b = test.gen_inputs()[:3]
-    # The shared workload generator draws its own scaling params; the
-    # manifest workload is the authority for them.
-    inputs = (phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, _SINKHORN_EPS)
+    # The manifest workload is the authority for the scaling params, so the case
+    # is built with them rather than with the ones the generator would draw.
+    test = MHCPreWorkload(
+        batch,
+        n_expand,
+        c_x,
+        dtype,
+        alpha_pre=alpha_pre,
+        alpha_post=alpha_post,
+        alpha_res=alpha_res,
+        sinkhorn_repeat=sinkhorn_repeat,
+        sinkhorn_eps=_SINKHORN_EPS,
+    )
+    inputs = test.gen_inputs()
 
     op = MHCPreFwdOp(tune=_TUNE)
     bm = ManifestBenchmark(op, test)
@@ -74,14 +82,11 @@ def test_mhc_pre_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )
 
 
-_MHC_POST_OP = "MHCPostFwdOp"
 _MHC_POST_PARAMS = workload_params(
-    load_workloads(_MHC_POST_OP),
+    load_workloads(MHCPostFwdOp),
     fields("batch", "n_expand", "c_x", "dtype"),
     smoke_first=True,
 )
@@ -102,6 +107,4 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )

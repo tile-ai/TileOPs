@@ -33,9 +33,8 @@ from workloads.topk_selector import TopkSelectorWorkload
 _TUNE = True
 
 
-_TOPK_SELECTOR_OP = "TopkSelectorFwdOp"
 _TOPK_SELECTOR_PARAMS = workload_params(
-    load_workloads(_TOPK_SELECTOR_OP),
+    load_workloads(TopkSelectorFwdOp),
     fields("batch", "seq_len", "seq_len_kv", "kv_group", "topk", "in_dtype", "out_dtype"),
     smoke_first=True,
 )
@@ -109,4 +108,4 @@ def test_topk_selector_bench(
         _assert_selects_same_scores(flashinfer_fn, test.ref_program, *inputs)
         functors[FLASHINFER_TAG] = flashinfer_fn
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

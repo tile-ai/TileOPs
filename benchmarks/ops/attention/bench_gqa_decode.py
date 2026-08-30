@@ -11,8 +11,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionDecodeWorkload
 
-_OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
-
 
 def _fa3_gqa_decode_fwd(test):
     """Return FA3 KV-cache decode baseline callable, or None if not installed."""
@@ -120,7 +118,8 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
 
 
 _GQA_DECODE_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME), then_dtype(gqa_decode_args, tune=True)
+    load_workloads(GroupedQueryAttentionDecodeWithKVCacheFwdOp),
+    then_dtype(gqa_decode_args, tune=True),
 )
 
 
@@ -168,4 +167,4 @@ def test_gqa_decode_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-sdpa"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

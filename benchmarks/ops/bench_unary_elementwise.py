@@ -75,17 +75,12 @@ def _profile_and_record(
     bm: ManifestBenchmark,
     inputs: tuple,
     baseline_fn: Callable,
-    params: dict,
 ) -> None:
     """Profile op and torch baseline against the same inputs and record both.
 
     ``ManifestBenchmark`` is constructed at the call site of each per-op test,
     over the op that test builds. This helper only handles the profile + record
     pair.
-
-    ``params`` is the workload metadata (shape / dtype / n_total) from the
-    caller's scope; passing it explicitly keeps the report rows distinguishable
-    instead of reflecting only this helper's locals.
     """
     functors = {
         "tileops": op,
@@ -93,7 +88,7 @@ def _profile_and_record(
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
     try:
-        bm.compare(functors, *inputs, record_as=op, params=params)
+        bm.compare(functors, *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -103,313 +98,183 @@ def _profile_and_record(
 # Per-op constants and tests — one block per manifest entry, so each op loads
 # its own workloads and records a row of its own.
 
-_EXP_OP = "ExpFwdOp"
 
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_EXP_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ExpFwdOp))
 def test_exp_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = ExpFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.exp, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.exp)
 
 
-_LOG_OP = "LogFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(LogFwdOp))
 def test_log_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
-    n_total = inputs[0].numel()
     op = LogFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.log, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.log)
 
 
-_SQRT_OP = "SqrtFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SQRT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SqrtFwdOp))
 def test_sqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
-    n_total = inputs[0].numel()
     op = SqrtFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.sqrt, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.sqrt)
 
 
-_RSQRT_OP = "RsqrtFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_RSQRT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(RsqrtFwdOp))
 def test_rsqrt_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
-    n_total = inputs[0].numel()
     op = RsqrtFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.rsqrt, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.rsqrt)
 
 
-_ABS_OP = "AbsFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ABS_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(AbsFwdOp))
 def test_abs_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = AbsFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.abs, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.abs)
 
 
-_NEG_OP = "NegFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_NEG_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(NegFwdOp))
 def test_neg_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = NegFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.neg, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.neg)
 
 
-_RECIPROCAL_OP = "ReciprocalFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_RECIPROCAL_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ReciprocalFwdOp))
 def test_reciprocal_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
-    n_total = inputs[0].numel()
     op = ReciprocalFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.reciprocal, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.reciprocal)
 
 
-_SIGN_OP = "SignFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SIGN_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SignFwdOp))
 def test_sign_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = SignFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.sign, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.sign)
 
 
-_SIN_OP = "SinFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SIN_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(SinFwdOp))
 def test_sin_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = SinFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.sin, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.sin)
 
 
-_COS_OP = "CosFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_COS_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(CosFwdOp))
 def test_cos_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = CosFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.cos, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.cos)
 
 
-_FLOOR_OP = "FloorFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_FLOOR_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(FloorFwdOp))
 def test_floor_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = FloorFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.floor, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.floor)
 
 
-_CEIL_OP = "CeilFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CEIL_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(CeilFwdOp))
 def test_ceil_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = CeilFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.ceil, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.ceil)
 
 
-_ROUND_OP = "RoundFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ROUND_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(RoundFwdOp))
 def test_round_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = RoundFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.round, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.round)
 
 
-_TRUNC_OP = "TruncFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_TRUNC_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(TruncFwdOp))
 def test_trunc_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = TruncFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.trunc, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.trunc)
 
 
-_ERF_OP = "ErfFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ERF_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(ErfFwdOp))
 def test_erf_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = ErfFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.erf, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.erf)
 
 
-_LOG1P_OP = "Log1pFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG1P_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(Log1pFwdOp))
 def test_log1p_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_positive_away_from_zero(shape, dtype)
-    n_total = inputs[0].numel()
     op = Log1pFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.log1p, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.log1p)
 
 
-_EXPM1_OP = "Expm1FwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_EXPM1_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(Expm1FwdOp))
 def test_expm1_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_normal(shape, dtype)
-    n_total = inputs[0].numel()
     op = Expm1FwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.expm1, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.expm1)
 
 
 # SigmoidFwdOp / TanhFwdOp are activation ops; their manifest source.bench
 # points to ``benchmarks/ops/bench_elementwise_manifest.py`` and is
 # intentionally out of scope for this file.
 
-_LOGICAL_NOT_OP = "LogicalNotFwdOp"
 
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOGICAL_NOT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(LogicalNotFwdOp))
 def test_logical_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_bool(shape, dtype)
-    n_total = inputs[0].numel()
     op = LogicalNotFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.logical_not, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.logical_not)
 
 
-_BITWISE_NOT_OP = "BitwiseNotFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_BITWISE_NOT_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(BitwiseNotFwdOp))
 def test_bitwise_not_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_int(shape, dtype)
-    n_total = inputs[0].numel()
     op = BitwiseNotFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.bitwise_not, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.bitwise_not)
 
 
-_ISNAN_OP = "IsnanFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ISNAN_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(IsnanFwdOp))
 def test_isnan_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
-    n_total = inputs[0].numel()
     op = IsnanFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.isnan, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.isnan)
 
 
-_ISINF_OP = "IsinfFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ISINF_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(IsinfFwdOp))
 def test_isinf_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
-    n_total = inputs[0].numel()
     op = IsinfFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.isinf, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.isinf)
 
 
-_ISFINITE_OP = "IsfiniteFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ISFINITE_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(IsfiniteFwdOp))
 def test_isfinite_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = draw_special_floats(shape, dtype)
-    n_total = inputs[0].numel()
     op = IsfiniteFwdOp()
     bm = ManifestBenchmark(op, UnaryWorkload(shape, dtype))
-    _profile_and_record(
-        op, bm, inputs, torch.isfinite, {"shape": shape, "dtype": dtype, "n_total": n_total}
-    )
+    _profile_and_record(op, bm, inputs, torch.isfinite)

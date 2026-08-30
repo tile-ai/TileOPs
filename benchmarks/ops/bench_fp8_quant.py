@@ -23,9 +23,8 @@ from workloads.fp8_quant import FP8QuantWorkload
 _TUNE = True
 
 
-_FP8_QUANT_OP = "FP8QuantFwdOp"
 _FP8_QUANT_PARAMS = workload_params(
-    load_workloads(_FP8_QUANT_OP),
+    load_workloads(FP8QuantFwdOp),
     fields("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
     smoke_first=True,
 )
@@ -48,6 +47,4 @@ def test_fp8_quant_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )

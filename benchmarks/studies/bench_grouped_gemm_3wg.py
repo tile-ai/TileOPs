@@ -52,7 +52,7 @@ import torch
 triton = pytest.importorskip("triton")
 tl = pytest.importorskip("triton.language")
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport  # noqa: E402
+from benchmarks.benchmark_base import BenchmarkBase  # noqa: E402
 from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel  # noqa: E402
 from workloads.grouped_gemm import GroupedGemmUniformWorkload  # noqa: E402
 
@@ -72,11 +72,6 @@ pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
     reason="Requires SM90 (Hopper)",
 )
-
-# Fixed report group name: all CASES record under this single op so the nightly
-# report groups them as one op with N configs. Frozen — changing it resets that
-# op's 14-day perf history.
-_REPORT_NAME = "grouped_gemm_3wg_baselines"
 
 
 def _num_sms() -> int:
@@ -599,11 +594,15 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
                 _assert_groups_close(group_c_tma, C_3wg, per, what="triton-tma")
                 records.append(("triton-tma", r))
 
-        # Every baseline completed without hitting the OOM skip path: commit now.
-        # Loop vars are underscore-prefixed so they are filtered out of the
-        # ``locals()`` params (record() would otherwise add a spurious column).
+        # Every baseline completed without hitting the OOM skip path: print the
+        # field now. A study decides something — whether the 3WG kernel still
+        # leads the libraries — rather than tracking an op, so it prints instead
+        # of recording: the report's rows are ops.
+        ours = dict(records).get("tileops", {}).get("device_busy_ms", 0.0)
         for _tag, _rec in records:
-            BenchmarkReport.record(_REPORT_NAME, locals(), _rec, tag=_tag)
+            _ms = _rec.get("device_busy_ms", 0.0)
+            _ratio = f"{ours / _ms:5.2f}x ours" if _ms and _tag != "tileops" else ""
+            print(f"  {label:28s} {_tag:14s} {_ms * 1e3:9.2f}us {_ratio}")
 
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()

@@ -12,8 +12,6 @@ Coverage:
   ``correction_bias_shape``.
 """
 
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -30,34 +28,13 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, workload_params
+from benchmarks.benchmark_base import (
+    ManifestBenchmark,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
 from workloads.moe import FusedMoeWorkload
-
-_OP_NAME = "FusedMoeFwdOp"
-
-
-class FusedMoeBenchmark(BenchmarkBase[FusedMoeWorkload]):
-    """Benchmark wrapper sourcing flops/bytes from the bound op's roofline."""
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-        self._roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        cache = self._roofline_cache
-        if cache is None:
-            cache = self._op.eval_roofline()
-            self._roofline_cache = cache
-        return cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _routed_scaling_factor(w: dict) -> float:
@@ -85,7 +62,7 @@ def _fused_moe_args(w: dict, dtype: torch.dtype) -> tuple:
     )
 
 
-_FWD_PARAMS = workload_params(load_workloads(_OP_NAME), _fused_moe_args)
+_FWD_PARAMS = workload_params(load_workloads(FusedMoeFwdOp), _fused_moe_args)
 
 
 def _run_bench(
@@ -129,7 +106,7 @@ def _run_bench(
 
     # -- TileOPs nopad -----------------------------------------------------
     op = FusedMoeFwdOp(**common_kwargs)
-    bm = FusedMoeBenchmark(test, op)
+    bm = ManifestBenchmark(op, test)
     op(*forward_args_tileops)  # warmup / JIT compile
     torch.cuda.synchronize()
 
@@ -216,7 +193,7 @@ def _run_bench(
             ),
         )
 
-    bm.compare(functors, *forward_args_tileops, record_as=op, params=locals())
+    bm.compare(functors, *forward_args_tileops)
 
 
 @pytest.mark.parametrize(

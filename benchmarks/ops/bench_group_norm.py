@@ -19,8 +19,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
 
-_OP_NAME = "GroupNormFwdOp"
-
 
 def _group_norm_args(w: dict, dtype: torch.dtype) -> tuple:
     n, c, *spatial = w["x_shape"]
@@ -29,7 +27,7 @@ def _group_norm_args(w: dict, dtype: torch.dtype) -> tuple:
     return (n, c, tuple(spatial), w["num_groups"], dtype, False)
 
 
-_WORKLOADS = load_workloads(_OP_NAME)
+_WORKLOADS = load_workloads(GroupNormFwdOp)
 _AFFINE_PARAMS = workload_params([w for w in _WORKLOADS if "weight_shape" in w], _group_norm_args)
 _NO_AFFINE_PARAMS = workload_params(
     [w for w in _WORKLOADS if "weight_shape" not in w], _group_norm_args
@@ -65,8 +63,6 @@ def test_group_norm_bench(
         x,
         weight,
         bias,
-        record_as=op,
-        params=locals(),
     )
 
 
@@ -94,6 +90,4 @@ def test_group_norm_no_affine_bench(
             TORCH_COMPILE_TAG: compiled_reference(baseline_no_affine),
         },
         x,
-        record_as=op,
-        params=locals(),
     )

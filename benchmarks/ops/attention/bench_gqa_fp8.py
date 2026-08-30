@@ -12,8 +12,6 @@ from workloads.gqa_fp8_utils import (
     quantize_q_fa3_gqa_descale,
 )
 
-_OP_NAME = "GroupedQueryAttentionPrefillFwdOp"
-
 
 @dataclass(frozen=True)
 class GQAFp8TensorCoreBenchCase:
@@ -23,7 +21,9 @@ class GQAFp8TensorCoreBenchCase:
     heads_kv: int
     dim: int
     validate_uniform_cu_seqlens: bool
-    out_dtype: torch.dtype
+    # The dtype the case is read under: fp8 in, this out. Named as every other
+    # workload names it, which is what puts it on the row.
+    dtype: torch.dtype
 
 
 def _fp8_case_args(workload: dict, dtype: torch.dtype) -> tuple:
@@ -36,7 +36,7 @@ def _fp8_case_args(workload: dict, dtype: torch.dtype) -> tuple:
             heads_kv=workload["heads_kv"],
             dim=workload["dim"],
             validate_uniform_cu_seqlens=workload.get("validate_uniform_cu_seqlens", True),
-            out_dtype=dtype,
+            dtype=dtype,
         ),
     )
 
@@ -95,9 +95,9 @@ def _torch_sdpa_dequant_fwd(case: GQAFp8TensorCoreBenchCase):
         k_deq = k.float().reshape(batch, seq_len, heads_kv, dim) * k_descale[:, None, :, None]
         v_deq = v.float().reshape(batch, seq_len, heads_kv, dim) * v_descale[:, None, :, None]
         out = torch.nn.functional.scaled_dot_product_attention(
-            q_deq.transpose(1, 2).to(case.out_dtype),
-            k_deq.transpose(1, 2).to(case.out_dtype),
-            v_deq.transpose(1, 2).to(case.out_dtype),
+            q_deq.transpose(1, 2).to(case.dtype),
+            k_deq.transpose(1, 2).to(case.dtype),
+            v_deq.transpose(1, 2).to(case.dtype),
             is_causal=False,
             enable_gqa=True,
         )
@@ -130,7 +130,7 @@ def _fa3_gqa_fp8_fwd(case: GQAFp8TensorCoreBenchCase):
 @pytest.mark.parametrize(
     "case",
     workload_params(
-        [w for w in load_workloads(_OP_NAME) if w.get("backend") == "fp8"],
+        [w for w in load_workloads(GroupedQueryAttentionPrefillFwdOp) if w.get("backend") == "fp8"],
         _fp8_case_args,
     ),
 )
@@ -148,7 +148,7 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
         max_seqlen_q=case.seq_len,
         max_seqlen_kv=case.seq_len,
         is_causal=False,
-        dtype=case.out_dtype,
+        dtype=case.dtype,
         backend="fp8",
         validate_uniform_cu_seqlens=case.validate_uniform_cu_seqlens,
     )
@@ -167,16 +167,4 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
 
-    bm.compare(
-        functors,
-        *inputs,
-        record_as=op,
-        params={
-            "batch": case.batch,
-            "seq_len": case.seq_len,
-            "heads": case.heads,
-            "heads_kv": case.heads_kv,
-            "dim": case.dim,
-            "dtype": case.out_dtype,
-        },
-    )
+    bm.compare(functors, *inputs)

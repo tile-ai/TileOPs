@@ -6,13 +6,10 @@ When FLA is not installed, benchmarks still run using a pure-torch reference
 implementation as baseline, so CI is never blocked by a missing optional dependency.
 """
 
-from typing import Optional
-
 import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     ManifestBenchmark,
     then_dtype,
     workload_params,
@@ -21,8 +18,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GLADecodeFwdOp
 from workloads.linear_attention import GLADecodeWorkload
 from workloads.workload_base import FixtureBase
-
-_OP_NAME = "GLADecodeFwdOp"
 
 
 def gla_decode_torch(
@@ -55,30 +50,12 @@ except ImportError:
     fused_recurrent_gla = None
 
 
-class GLADecodeBenchmark(BenchmarkBase[GLADecodeWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        # One matvec: S @ q_gated -> B*H*DK*DV (multiply + add)
-        # dot product q.k -> B*H*DK
-        # state update: element-wise scale + outer product -> B*H*DK*DV
-        return 2.0 * B * H * (DK * DV + DK * DV + DK)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        # Read: q(DK) + k(DK) + v(DV) + gk(DK) + state(DK*DV)
-        # Write: o(DV) + new_state(DK*DV)
-        return B * H * (3 * DK + DV + 2 * DK * DV + DV) * elem
-
-
 class GLADecodeBenchFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, dim_k, dim_v, scale, dtype, tune",
             workload_params(
-                load_workloads(_OP_NAME),
+                load_workloads(GLADecodeFwdOp),
                 then_dtype(
                     lambda w: (
                         w["q_shape"][0],
@@ -136,4 +113,4 @@ def test_gla_decode_bench(
     functors["torch"] = test.ref_program
     functors[TORCH_COMPILE_TAG] = compiled_reference(test.ref_program)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

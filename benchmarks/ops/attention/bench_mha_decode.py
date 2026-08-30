@@ -11,8 +11,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.mha import MhaDecodeWorkload
 
-_OP_NAME = "MultiHeadAttentionDecodeWithKVCacheFwdOp"
-
 
 def _fa3_mha_decode_fwd(test):
     """Return FA3 forward baseline callable, or None if not installed."""
@@ -62,7 +60,7 @@ def _flashinfer_mha_decode_fwd(test, q, k, v):
 
 
 _MHA_DECODE_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME), then_dtype(mha_decode_args, tune=True)
+    load_workloads(MultiHeadAttentionDecodeWithKVCacheFwdOp), then_dtype(mha_decode_args, tune=True)
 )
 
 
@@ -88,4 +86,4 @@ def test_mha_decode_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-sdpa"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

@@ -18,7 +18,7 @@ Workload is defined once; test and benchmark each reference it but do not depend
 
 - **Workload** (`workloads/`) — `WorkloadBase` subclass, defines `gen_inputs()` and, when named for one op, `ref_program()`
 - **Test** (`tests/ops/`) — inherits `(Workload, TestBase)`, adds tolerances; defines `ref_program()` only on a shape-only workload
-- **Benchmark** (`benchmarks/ops/`) — composes workload via `BenchmarkBase(workload)`
+- **Benchmark** (`benchmarks/ops/`) — composes workload and op via `OpBenchmark(op, workload)`
 
 Rules:
 
@@ -132,8 +132,8 @@ class — so a workload needs nothing beyond the fields its own benchmark reads.
 
 1. **Workload** — import the op's class from `workloads/`. If the op has none, add it there first: a benchmark must not author `gen_inputs`.
 1. **Fixture class** — use `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize` directly.
-1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `BenchmarkBase`, implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
-1. **Benchmark function** — `@YourFixture` decorated, construct workload + benchmark, call `inputs = workload.gen_inputs()`, then `bm.profile(op, *inputs)` and `BenchmarkReport.record(op, locals(), result, tag="tileops")`.
+1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `ManifestBenchmark`, which takes its roofline off the op. Where an op has no roofline to take, subclass `OpBenchmark` and implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
+1. **Benchmark function** — `@YourFixture` decorated, construct the op, then the benchmark over it (`bm = YourBenchmark(op, workload)`), call `inputs = workload.gen_inputs()`, then `bm.compare({...}, *inputs)`. Every row it publishes carries the op the benchmark was built for, and what distinguishes the case is read off that op and its workload rather than passed in.
 1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). Profile the workload's `ref_program` for the torch baseline. Another idiom for the same computation overrides `ref_program` and says why; a different implementation takes its own tag next to it, is asserted against the reference before the case is timed, and raises when unavailable. Never import a baseline from `tests/`.
 1. **Library baselines** — resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): `flaggems_op`, `flashinfer_op` and `vllm_op` for the kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row that has a library kernel for its op times it, so the nightly's ratio is against the strongest implementation available rather than against eager torch alone.
 
@@ -149,6 +149,6 @@ class — so a workload needs nothing beyond the fields its own benchmark reads.
 - Include small, medium, and large representative shapes.
 - Do not cherry-pick favorable shapes; report regressions as-is.
 - Run the targeted correctness suite on the same GPU before reporting benchmark numbers.
-- `BenchmarkReport.record()` first argument may be the Op instance or a string name; stay consistent within a given benchmark file.
+- Every row of the report is one op's measurement: `BenchmarkReport.record()` takes the Op, and the benchmark names it once, at construction. A comparison that measures something else — a kernel strategy, a field of library implementations — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
 - `calculate_flops()` and `calculate_memory()` should return numeric values when the metric is available; return `None` only if the metric is not applicable, in which case it will be omitted from the report.
 - Every benchmark must record at least one non-`"tileops"` baseline. Use existing tags (`"baseline"`, `"torch"`, `"fa3"`, `"fla"`, `"triton"`) and avoid introducing ad-hoc tags without updating downstream consumers.

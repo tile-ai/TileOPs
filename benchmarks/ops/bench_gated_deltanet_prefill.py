@@ -17,7 +17,6 @@ import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
     then_dtype,
     workload_params,
@@ -25,9 +24,6 @@ from benchmarks.benchmark_base import (
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillBHTDFwdOp, GatedDeltaNetPrefillBTHDFwdOp
 from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
-
-_OP_NAME = "GatedDeltaNetPrefillBTHDFwdOp"
-_BHTD_OP_NAME = "GatedDeltaNetPrefillBHTDFwdOp"
 
 
 def _fla_prefill_fwd():
@@ -109,9 +105,11 @@ def _gdn_prefill_args(
     )
 
 
-_BENCH_PARAMS = workload_params(load_workloads(_OP_NAME), then_dtype(_gdn_prefill_args, tune=False))
+_BENCH_PARAMS = workload_params(
+    load_workloads(GatedDeltaNetPrefillBTHDFwdOp), then_dtype(_gdn_prefill_args, tune=False)
+)
 _BHTD_BENCH_PARAMS = workload_params(
-    load_workloads(_BHTD_OP_NAME),
+    load_workloads(GatedDeltaNetPrefillBHTDFwdOp),
     then_dtype(
         functools.partial(_gdn_prefill_args, layout="bhtd"),
         tune=False,
@@ -150,12 +148,7 @@ def test_gated_deltanet_prefill_bhtd_bench(
     op = GatedDeltaNetPrefillBHTDFwdOp(chunk_size=chunk_size, tune=tune)
     bm = ManifestBenchmark(op, test)
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
-    bm.compare(
-        {"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)},
-        *inputs,
-        record_as=op,
-        params=locals(),
-    )
+    bm.compare({"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)}, *inputs)
 
 
 @pytest.mark.parametrize(
@@ -184,10 +177,4 @@ def test_gated_deltanet_prefill_fwd_bench(
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}
 
-    # Recorded by hand: the tileops row carries a derived speedup field.
-    results = bm.compare(functors, *inputs)
-    results["tileops"]["speedup_vs_fla"] = (
-        results["fla"]["latency_ms"] / results["tileops"]["latency_ms"]
-    )
-    BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
-    BenchmarkReport.record(op, locals(), results["fla"], tag="fla")
+    bm.compare(functors, *inputs)

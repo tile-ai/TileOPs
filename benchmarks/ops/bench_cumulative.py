@@ -26,9 +26,6 @@ from benchmarks.benchmark_base import (
 from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 from workloads.reduction import CumulativeWorkload
 
-_CUMSUM_OP = "CumsumFwdOp"
-_CUMPROD_OP = "CumprodFwdOp"
-
 
 class CumulativeBenchmarkWorkload(CumulativeWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -40,7 +37,7 @@ class CumulativeBenchmarkWorkload(CumulativeWorkload):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(CumsumFwdOp))
 def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = CumulativeBenchmarkWorkload(shape, dtype, "cumsum")
     inputs = test.gen_inputs()
@@ -63,12 +60,10 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(CumprodFwdOp))
 def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = CumulativeBenchmarkWorkload(shape, dtype, "cumprod")
     inputs = test.gen_inputs()
@@ -83,6 +78,4 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )

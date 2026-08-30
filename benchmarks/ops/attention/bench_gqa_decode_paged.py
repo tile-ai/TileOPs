@@ -15,8 +15,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionDecodePagedWorkload
 
-_OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
-
 
 class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedWorkload):
     """Times SDPA on the reassembled pages, not an explicit softmax.
@@ -149,7 +147,7 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
 
 
 _GQA_DECODE_PAGED_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME),
+    load_workloads(GroupedQueryAttentionDecodePagedWithKVCacheFwdOp),
     then_dtype(
         gqa_decode_paged_args,
         tune=False,
@@ -204,4 +202,4 @@ def test_gqa_decode_paged_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-ref"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

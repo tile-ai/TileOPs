@@ -9,16 +9,15 @@ from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.normalization import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
 
-_ADA_OP_NAME = "AdaLayerNormFwdOp"
-_ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
-
 
 def _ada_args(w: dict, dtype: torch.dtype) -> tuple:
     m, n = w["x_shape"]
     return (m, n, dtype)
 
 
-@pytest.mark.parametrize("m, n, dtype", workload_params(load_workloads(_ADA_OP_NAME), _ada_args))
+@pytest.mark.parametrize(
+    "m, n, dtype", workload_params(load_workloads(AdaLayerNormFwdOp), _ada_args)
+)
 def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
@@ -38,13 +37,11 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )
 
 
 @pytest.mark.parametrize(
-    "m, n, dtype", workload_params(load_workloads(_ADA_ZERO_OP_NAME), _ada_args)
+    "m, n, dtype", workload_params(load_workloads(AdaLayerNormZeroFwdOp), _ada_args)
 )
 def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroWorkload(m, n, dtype)
@@ -65,6 +62,4 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )

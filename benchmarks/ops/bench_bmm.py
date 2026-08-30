@@ -12,10 +12,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import BmmFp8KNFwdOp, BmmFp8NKFwdOp, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
-_OP_NAME = "BmmFwdOp"
-_FP8_KN_OP_NAME = "BmmFp8KNFwdOp"
-_FP8_NK_OP_NAME = "BmmFp8NKFwdOp"
-
 
 class BmmFp8BenchmarkWorkload(BmmFp8Workload):
     def torch_fp32_bmm_ref(self, *inputs: torch.Tensor) -> torch.Tensor:
@@ -60,7 +56,7 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
 
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
-    workload_params(load_workloads(_OP_NAME), fields("b", "m", "n", "k", dtype_last=True)),
+    workload_params(load_workloads(BmmFwdOp), fields("b", "m", "n", "k", dtype_last=True)),
 )
 def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype: torch.dtype) -> None:
     workload = BmmWorkload(batch, m, n, k, dtype)
@@ -83,14 +79,12 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype: torch.dtype) -> No
         },
         a,
         b,
-        record_as=op,
-        params=locals(),
     )
 
 
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
-    workload_params(load_workloads(_FP8_KN_OP_NAME), fields("b", "m", "n", "k", dtype_last=True)),
+    workload_params(load_workloads(BmmFp8KNFwdOp), fields("b", "m", "n", "k", dtype_last=True)),
 )
 def test_bmm_fp8_kn_bench(
     batch: int,
@@ -122,12 +116,12 @@ def test_bmm_fp8_kn_bench(
     else:
         functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kn, scale_a, scale_b))
 
-    bm.compare(functors, record_as=op, params=locals())
+    bm.compare(functors)
 
 
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
-    workload_params(load_workloads(_FP8_NK_OP_NAME), fields("b", "m", "n", "k", dtype_last=True)),
+    workload_params(load_workloads(BmmFp8NKFwdOp), fields("b", "m", "n", "k", dtype_last=True)),
 )
 def test_bmm_fp8_nk_bench(
     batch: int,
@@ -163,4 +157,4 @@ def test_bmm_fp8_nk_bench(
     else:
         functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kmajor, scale_a, scale_b))
 
-    bm.compare(functors, record_as=op, params=locals())
+    bm.compare(functors)

@@ -16,8 +16,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowFwdOp
 from workloads.attention.gqa import GroupedQueryAttentionSlidingWindowFwdWorkload
 
-_OP_NAME = "GroupedQueryAttentionSlidingWindowFwdOp"
-
 
 def _torch_sliding_window_fwd(test):
     """Torch SDPA forward baseline with explicit sliding window mask."""
@@ -101,7 +99,7 @@ def _flashinfer_sliding_window_fwd(test, q, k, v):
 
 
 _GQA_SLIDING_WINDOW_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME),
+    load_workloads(GroupedQueryAttentionSlidingWindowFwdOp),
     then_dtype(
         gqa_sliding_window_args,
         tune=True,
@@ -162,4 +160,4 @@ def test_gqa_sliding_window_fwd_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch"] = _torch_sliding_window_fwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

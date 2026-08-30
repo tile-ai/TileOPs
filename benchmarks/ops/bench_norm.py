@@ -107,11 +107,8 @@ def _norm_args(w: dict, dtype: torch.dtype) -> tuple:
     return (m, n, dtype, True)
 
 
-_RMS_OP_NAME = "RMSNormFwdOp"
-
-
 @pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(_RMS_OP_NAME), _norm_args)
+    "m, n, dtype, tune", workload_params(load_workloads(RMSNormFwdOp), _norm_args)
 )
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormWorkload(m, n, dtype)
@@ -137,16 +134,11 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )
 
 
-_FUSED_RMS_OP_NAME = "FusedAddRMSNormFwdOp"
-
-
 @pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(_FUSED_RMS_OP_NAME), _norm_args)
+    "m, n, dtype, tune", workload_params(load_workloads(FusedAddRMSNormFwdOp), _norm_args)
 )
 def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormWorkload(m, n, dtype)
@@ -174,14 +166,11 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     functors["torch-ref"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
-
-
-_LN_OP_NAME = "LayerNormFwdOp"
+    bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(_LN_OP_NAME), _norm_args)
+    "m, n, dtype, tune", workload_params(load_workloads(LayerNormFwdOp), _norm_args)
 )
 def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormWorkload(m, n, dtype)
@@ -217,16 +206,11 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )
 
 
-_FUSED_LN_OP_NAME = "FusedAddLayerNormFwdOp"
-
-
 @pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(_FUSED_LN_OP_NAME), _norm_args)
+    "m, n, dtype, tune", workload_params(load_workloads(FusedAddLayerNormFwdOp), _norm_args)
 )
 def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormWorkload(m, n, dtype)
@@ -249,6 +233,4 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
-        params=locals(),
     )

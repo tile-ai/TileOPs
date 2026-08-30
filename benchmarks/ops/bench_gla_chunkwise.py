@@ -23,9 +23,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GLABwdOp, GLAFwdOp
 from workloads.linear_attention import GLAChunkwiseWorkload
 
-_FWD_OP_NAME = "GLAFwdOp"
-_BWD_OP_NAME = "GLABwdOp"
-
 
 def _gla_args(workload: dict) -> tuple[int, int, int, int, int, int, bool]:
     """Constructor arguments for one manifest workload row.
@@ -57,7 +54,7 @@ def _gla_bwd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, has_initial_state, dtype, tune",
-    workload_params(load_workloads(_FWD_OP_NAME), then_dtype(_gla_args, tune=False)),
+    workload_params(load_workloads(GLAFwdOp), then_dtype(_gla_args, tune=False)),
 )
 def test_gla_fwd_bench(
     batch: int,
@@ -89,7 +86,7 @@ def test_gla_fwd_bench(
 
     functors["fla"] = (fla_fwd, ())
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)
 
 
 # Backward benchmark
@@ -102,7 +99,7 @@ def test_gla_fwd_bench(
 )
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(_BWD_OP_NAME), then_dtype(_gla_bwd_args, tune=False)),
+    workload_params(load_workloads(GLABwdOp), then_dtype(_gla_bwd_args, tune=False)),
 )
 def test_gla_bwd_bench(
     batch: int,
@@ -152,7 +149,7 @@ def test_gla_bwd_bench(
 
     functors["fla"] = (fla_bwd, ())
 
-    bm.compare(functors, record_as=bwd_op, params=locals())
+    bm.compare(functors)
 
 
 # Combined fwd+bwd benchmark

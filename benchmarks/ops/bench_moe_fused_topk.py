@@ -21,7 +21,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase
+from benchmarks.benchmark_base import OpBenchmark
 from tileops.ops.moe import FusedTopKOp
 from workloads.moe import FusedTopKWorkload
 from workloads.workload_base import FixtureBase
@@ -50,7 +50,7 @@ def fused_topk_torch(
 # Benchmark class
 
 
-class FusedTopKBenchmark(BenchmarkBase[FusedTopKWorkload]):
+class FusedTopKBenchmark(OpBenchmark[FusedTopKWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         return t.num_tokens * t.num_experts * 2 * (1 + t.top_k)
@@ -91,7 +91,6 @@ def test_fused_topk_bench(
 ) -> None:
     dtype = torch.bfloat16
     test = FusedTopKWorkload(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
-    bm = FusedTopKBenchmark(test)
     (gating_output,) = test.gen_inputs()
 
     # TileOPs
@@ -100,6 +99,7 @@ def test_fused_topk_bench(
         scoring_func=scoring_func,
         renormalize=renormalize,
     )
+    bm = FusedTopKBenchmark(op, test)
     op(gating_output)  # warmup / JIT compile
     torch.cuda.synchronize()
 
@@ -137,4 +137,4 @@ def test_fused_topk_bench(
 
         functors["torch-ref"] = _ref_fn
 
-    bm.compare(functors, gating_output, record_as=op, params=locals())
+    bm.compare(functors, gating_output)

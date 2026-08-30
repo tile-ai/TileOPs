@@ -11,8 +11,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MhaDecodePagedWorkload
 
-_OP_NAME = "MultiHeadAttentionDecodePagedWithKVCacheFwdOp"
-
 
 def _fa3_mha_decode_paged(test, k, v):
     """Set up FA3 paged decode. Returns callable or None.
@@ -84,7 +82,8 @@ def _flashinfer_mha_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
 
 
 _MHA_DECODE_PAGED_BENCH_PARAMS = workload_params(
-    load_workloads(_OP_NAME), then_dtype(mha_decode_paged_args, tune=True)
+    load_workloads(MultiHeadAttentionDecodePagedWithKVCacheFwdOp),
+    then_dtype(mha_decode_paged_args, tune=True),
 )
 
 
@@ -126,4 +125,4 @@ def test_mha_decode_paged_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-ref"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

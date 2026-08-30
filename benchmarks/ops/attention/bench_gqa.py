@@ -6,9 +6,9 @@ from torch.nn import functional as F
 
 from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     BenchmarkReport,
     ManifestBenchmark,
+    OpBenchmark,
     backward_of,
     then_dtype,
     workload_params,
@@ -41,30 +41,6 @@ from workloads.attention.gqa import (
     GroupedQueryAttentionFwdWorkload,
     uniform_packed_prefill_inputs,
 )
-
-_GQA_FWD_OP = "GroupedQueryAttentionFwdOp"
-_GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
-_GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
-_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
-
-
-class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        visible = 0
-        for q_len, kv_len in zip(t.q_lens, t.kv_lens, strict=True):
-            visible += q_len * kv_len - q_len * (q_len - 1) / 2 if t.is_causal else q_len * kv_len
-        return 4.0 * t.heads * visible * t.dim
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        query_size = sum(t.q_lens) * t.heads * t.dim
-        kv_size = sum(t.kv_lens) * t.heads_kv * t.dim
-        output_size = query_size
-        cu_seqlens_size = 2 * (t.batch + 1)
-        return (
-            query_size + 2 * kv_size + output_size
-        ) * t.dtype.itemsize + cu_seqlens_size * torch.int32.itemsize
 
 
 def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdWorkload):
@@ -265,7 +241,7 @@ def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> 
 # B=1-2 reflects typical micro-batch sizes.  No long-context training configs
 # since >90% of pretraining compute is at 4K-8K.
 _GQA_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_GQA_FWD_OP), then_dtype(gqa_qkv_args, tune=True)
+    load_workloads(GroupedQueryAttentionFwdOp), then_dtype(gqa_qkv_args, tune=True)
 )
 
 
@@ -302,14 +278,14 @@ def test_gqa_fwd_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-sdpa"] = _torch_gqa_fwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)
 
 
 # GQA backward benchmark parameters (training only).
 # Backward is only used during training — extract the training subset from
 # _GQA_FWD_BENCH_PARAMS by ID prefix to avoid manual duplication.
 _GQA_BWD_BENCH_PARAMS = workload_params(
-    load_workloads(_GQA_BWD_OP), then_dtype(gqa_qkv_args, tune=True)
+    load_workloads(GroupedQueryAttentionBwdOp), then_dtype(gqa_qkv_args, tune=True)
 )
 
 
@@ -340,14 +316,14 @@ def test_gqa_bwd_bench(
     else:
         functors["torch-sdpa"] = _torch_gqa_bwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
 _GQA_PREFILL_FWD_BENCH_PARAMS = workload_params(
     [
         workload
-        for workload in load_workloads(_GQA_PREFILL_FWD_OP)
+        for workload in load_workloads(GroupedQueryAttentionPrefillFwdOp)
         if workload.get("backend") != "fp8"
     ],
     then_dtype(
@@ -407,7 +383,7 @@ def test_gqa_prefill_fwd_bench(
     if fi_fn is not None:
         functors["flashinfer"] = (fi_fn, (*inputs,))
 
-    bm.compare(functors, *packed_inputs, record_as=op, params=locals())
+    bm.compare(functors, *packed_inputs)
 
 
 def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):
@@ -494,7 +470,7 @@ def test_gqa_prefill_varlen_fwd_bench(
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
         batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
-    bm = GQAPrefillVarlenFwdBenchmark(test)
+    bm = OpBenchmark(op, test)
 
     functors = {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}
     fa3_fn = _fa3_gqa_prefill_varlen(test)
@@ -503,7 +479,7 @@ def test_gqa_prefill_varlen_fwd_bench(
             fa3_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
         )
         functors["fa3"] = fa3_fn
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)
 
 
 def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
@@ -569,7 +545,7 @@ def _fp8_paged_cache_inputs(
 
 
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP),
+    load_workloads(GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp),
     then_dtype(
         gqa_prefill_paged_args,
         tune=False,
@@ -678,8 +654,8 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         #   op builds its own rotary table, nor an fp8 cache, which needs q's dtype.
         # Cleanup: reach those rows too, or a second paged implementation.
         result = bm.profile(op, *inputs)
-        BenchmarkReport.record(op, locals(), result, tag="tileops")
+        BenchmarkReport.record(op, bm.case_params(), result, tag="tileops")
         return
 
     assert_matches_reference(op, fa3_fn, *inputs, **reference_tolerance(dtype))
-    bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs, record_as=op, params=locals())
+    bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs)

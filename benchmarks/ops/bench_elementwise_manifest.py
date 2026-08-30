@@ -8,7 +8,6 @@ Each row is timed against torch eager and the same reference through inductor.
 """
 
 import functools
-from math import prod
 from typing import Callable
 
 import pytest
@@ -93,82 +92,6 @@ def _masked_fill_tensor_args(w: dict, dtype: torch.dtype) -> tuple:
     return (tuple(w["input_shape"]), tuple(w["mask_shape"]), tuple(w["value_shape"]), dtype)
 
 
-def _numel(shape: tuple[int, ...]) -> int:
-    return prod(shape) if shape else 1
-
-
-def _broadcast_kind(
-    input_shape: tuple[int, ...],
-    other_shape: tuple[int, ...],
-    output_shape: tuple[int, ...],
-) -> str:
-    if input_shape == output_shape and other_shape == output_shape:
-        return "same_shape"
-    if _numel(input_shape) == 1 or _numel(other_shape) == 1:
-        return "scalar_broadcast"
-
-    def _one_side_kind(dense_shape: tuple[int, ...], rhs_shape: tuple[int, ...]) -> str | None:
-        if dense_shape != output_shape:
-            return None
-        if (
-            len(output_shape) >= 4
-            and len(rhs_shape) >= 3
-            and rhs_shape[-2:] == (1, 1)
-            and rhs_shape[-3] == output_shape[-3]
-            and all(dim == 1 for dim in rhs_shape[:-3])
-        ):
-            return "channel_broadcast"
-        if (
-            len(output_shape) >= 2
-            and len(rhs_shape) >= 1
-            and rhs_shape[-1] == output_shape[-1]
-            and all(dim == 1 for dim in rhs_shape[:-1])
-        ):
-            return "last_dim_broadcast"
-        return None
-
-    rhs_kind = _one_side_kind(input_shape, other_shape)
-    if rhs_kind is not None:
-        return rhs_kind
-    lhs_kind = _one_side_kind(other_shape, input_shape)
-    if lhs_kind is not None:
-        return "lhs_" + lhs_kind
-    return "broadcast"
-
-
-def _manifest_params(bm: ManifestBenchmark) -> dict:
-    workload = bm.workload
-    params = {}
-    for attr in (
-        "shape",
-        "input_shape",
-        "other_shape",
-        "condition_shape",
-        "mask_shape",
-        "min_shape",
-        "max_shape",
-        "weight_shape",
-        "end_shape",
-        "dtype",
-    ):
-        if hasattr(workload, attr):
-            params[attr] = getattr(workload, attr)
-
-    input_shape = params.get("input_shape")
-    other_shape = params.get("other_shape")
-    if input_shape is not None and other_shape is not None:
-        output_shape = params.get("shape") or tuple(
-            torch.broadcast_shapes(input_shape, other_shape)
-        )
-        params["output_shape"] = output_shape
-        params["broadcast_kind"] = _broadcast_kind(
-            input_shape,
-            other_shape,
-            output_shape,
-        )
-    return params
-
-
 def _record_unary(
     op,
     bm: ManifestBenchmark,
@@ -182,8 +105,6 @@ def _record_unary(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
-        params=_manifest_params(bm),
     )
 
 
@@ -200,30 +121,11 @@ def _record_binary(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
-        params=_manifest_params(bm),
     )
 
 
-_RELU_OP = "ReluFwdOp"
-_GELU_OP = "GeluFwdOp"
-_SILU_OP = "SiluFwdOp"
-_HARDSWISH_OP = "HardswishFwdOp"
-_HARDSIGMOID_OP = "HardsigmoidFwdOp"
-_MISH_OP = "MishFwdOp"
-_SELU_OP = "SeluFwdOp"
-_LEAKY_RELU_OP = "LeakyReluFwdOp"
-_ELU_OP = "EluFwdOp"
-_HARDTANH_OP = "HardtanhFwdOp"
-_SOFTPLUS_OP = "SoftplusFwdOp"
-_SIGMOID_OP = "SigmoidFwdOp"
-_TANH_OP = "TanhFwdOp"
-_CLAMP_SCALAR_OP = "ClampScalarFwdOp"
-_NAN_TO_NUM_OP = "NanToNumFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_RELU_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(ReluFwdOp), _shape_args, marks=_mark)
 )
 def test_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -234,7 +136,7 @@ def test_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_GELU_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(GeluFwdOp), _shape_args, marks=_mark)
 )
 def test_gelu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -245,7 +147,7 @@ def test_gelu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_SILU_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(SiluFwdOp), _shape_args, marks=_mark)
 )
 def test_silu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -256,7 +158,7 @@ def test_silu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_HARDSWISH_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(HardswishFwdOp), _shape_args, marks=_mark)
 )
 def test_hardswish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -267,7 +169,7 @@ def test_hardswish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) ->
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_HARDSIGMOID_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(HardsigmoidFwdOp), _shape_args, marks=_mark)
 )
 def test_hardsigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -278,7 +180,7 @@ def test_hardsigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_MISH_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(MishFwdOp), _shape_args, marks=_mark)
 )
 def test_mish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -289,7 +191,7 @@ def test_mish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_SELU_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(SeluFwdOp), _shape_args, marks=_mark)
 )
 def test_selu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -300,7 +202,7 @@ def test_selu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_LEAKY_RELU_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(LeakyReluFwdOp), _shape_args, marks=_mark)
 )
 def test_leaky_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -311,7 +213,7 @@ def test_leaky_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_ELU_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(EluFwdOp), _shape_args, marks=_mark)
 )
 def test_elu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -322,7 +224,7 @@ def test_elu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_HARDTANH_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(HardtanhFwdOp), _shape_args, marks=_mark)
 )
 def test_hardtanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -333,7 +235,7 @@ def test_hardtanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_SOFTPLUS_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(SoftplusFwdOp), _shape_args, marks=_mark)
 )
 def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -344,7 +246,7 @@ def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_SIGMOID_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(SigmoidFwdOp), _shape_args, marks=_mark)
 )
 def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -355,7 +257,7 @@ def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> N
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_TANH_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(TanhFwdOp), _shape_args, marks=_mark)
 )
 def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -366,7 +268,7 @@ def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_CLAMP_SCALAR_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(ClampScalarFwdOp), _shape_args, marks=_mark)
 )
 def test_clamp_scalar_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -377,7 +279,7 @@ def test_clamp_scalar_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype)
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_NAN_TO_NUM_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(NanToNumFwdOp), _shape_args, marks=_mark)
 )
 def test_nan_to_num_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = ShapedRandnWorkload(shape, dtype)
@@ -387,12 +289,9 @@ def test_nan_to_num_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -
     _record_unary(op, bm, inputs, torch.nan_to_num)
 
 
-_PRELU_OP = "PreluFwdOp"
-
-
 @pytest.mark.parametrize(
     "input_shape, weight_shape, dtype",
-    workload_params(load_workloads(_PRELU_OP), _prelu_args, marks=_mark),
+    workload_params(load_workloads(PreluFwdOp), _prelu_args, marks=_mark),
 )
 def test_prelu_manifest_bench(
     input_shape: tuple[int, ...],
@@ -411,18 +310,12 @@ def test_prelu_manifest_bench(
         },
         x,
         weight,
-        record_as=op,
-        params=locals(),
     )
-
-
-_MASKED_FILL_OP = "MaskedFillFwdOp"
-_MASKED_FILL_SCALAR_OP = "MaskedFillScalarFwdOp"
 
 
 @pytest.mark.parametrize(
     "input_shape, mask_shape, value_shape, dtype",
-    workload_params(load_workloads(_MASKED_FILL_OP), _masked_fill_tensor_args, marks=_mark),
+    workload_params(load_workloads(MaskedFillFwdOp), _masked_fill_tensor_args, marks=_mark),
 )
 def test_masked_fill_tensor_manifest_bench(
     input_shape: tuple[int, ...],
@@ -449,15 +342,13 @@ def test_masked_fill_tensor_manifest_bench(
         x,
         mask,
         value,
-        record_as=op,
-        params=locals(),
         count_copies=True,
     )
 
 
 @pytest.mark.parametrize(
     "shape, dtype",
-    workload_params(load_workloads(_MASKED_FILL_SCALAR_OP), _shape_args, marks=_mark),
+    workload_params(load_workloads(MaskedFillScalarFwdOp), _shape_args, marks=_mark),
 )
 def test_masked_fill_scalar_manifest_bench(
     shape: tuple[int, ...],
@@ -480,27 +371,13 @@ def test_masked_fill_scalar_manifest_bench(
         },
         x,
         mask,
-        record_as=op,
-        params=locals(),
         count_copies=True,
     )
 
 
-_ADD_OP = "AddFwdOp"
-_SUB_OP = "SubFwdOp"
-_MUL_OP = "MulFwdOp"
-_DIV_OP = "DivFwdOp"
-_REMAINDER_OP = "RemainderFwdOp"
-_POW_OP = "PowFwdOp"
-_FLOOR_DIVIDE_OP = "FloorDivideFwdOp"
-_LERP_OP = "LerpFwdOp"
-_MAXIMUM_OP = "MaximumFwdOp"
-_MINIMUM_OP = "MinimumFwdOp"
-
-
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_ADD_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(AddFwdOp), _binary_args, marks=_mark),
 )
 def test_add_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -512,7 +389,7 @@ def test_add_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_SUB_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(SubFwdOp), _binary_args, marks=_mark),
 )
 def test_sub_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -524,7 +401,7 @@ def test_sub_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_MUL_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(MulFwdOp), _binary_args, marks=_mark),
 )
 def test_mul_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -536,7 +413,7 @@ def test_mul_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_DIV_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(DivFwdOp), _binary_args, marks=_mark),
 )
 def test_div_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype, positive=True)
@@ -548,7 +425,7 @@ def test_div_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_REMAINDER_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(RemainderFwdOp), _binary_args, marks=_mark),
 )
 def test_remainder_manifest_bench(
     input_shape: tuple,
@@ -565,7 +442,7 @@ def test_remainder_manifest_bench(
 @pytest.mark.parametrize(
     "input_shape, exponent_shape, dtype",
     workload_params(
-        load_workloads(_POW_OP),
+        load_workloads(PowFwdOp),
         functools.partial(_binary_args, rhs_key="exponent_shape"),
         marks=_mark,
     ),
@@ -584,7 +461,7 @@ def test_pow_manifest_bench(
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_FLOOR_DIVIDE_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(FloorDivideFwdOp), _binary_args, marks=_mark),
 )
 def test_floor_divide_manifest_bench(
     input_shape: tuple,
@@ -601,7 +478,7 @@ def test_floor_divide_manifest_bench(
 @pytest.mark.parametrize(
     "input_shape, end_shape, dtype",
     workload_params(
-        load_workloads(_LERP_OP),
+        load_workloads(LerpFwdOp),
         functools.partial(_binary_args, rhs_key="end_shape"),
         marks=_mark,
     ),
@@ -616,7 +493,7 @@ def test_lerp_manifest_bench(input_shape: tuple, end_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_MAXIMUM_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(MaximumFwdOp), _binary_args, marks=_mark),
 )
 def test_maximum_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -628,7 +505,7 @@ def test_maximum_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: t
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_MINIMUM_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(MinimumFwdOp), _binary_args, marks=_mark),
 )
 def test_minimum_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -638,22 +515,9 @@ def test_minimum_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: t
     _record_binary(op, bm, inputs, torch.minimum)
 
 
-_EQ_OP = "EqFwdOp"
-_NE_OP = "NeFwdOp"
-_GT_OP = "GtFwdOp"
-_LT_OP = "LtFwdOp"
-_GE_OP = "GeFwdOp"
-_LE_OP = "LeFwdOp"
-_LOGICAL_AND_OP = "LogicalAndFwdOp"
-_LOGICAL_OR_OP = "LogicalOrFwdOp"
-_BITWISE_AND_OP = "BitwiseAndFwdOp"
-_BITWISE_OR_OP = "BitwiseOrFwdOp"
-_BITWISE_XOR_OP = "BitwiseXorFwdOp"
-
-
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_EQ_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(EqFwdOp), _binary_args, marks=_mark),
 )
 def test_eq_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -665,7 +529,7 @@ def test_eq_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_NE_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(NeFwdOp), _binary_args, marks=_mark),
 )
 def test_ne_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -677,7 +541,7 @@ def test_ne_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_GT_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(GtFwdOp), _binary_args, marks=_mark),
 )
 def test_gt_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -689,7 +553,7 @@ def test_gt_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_LT_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(LtFwdOp), _binary_args, marks=_mark),
 )
 def test_lt_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -701,7 +565,7 @@ def test_lt_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_GE_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(GeFwdOp), _binary_args, marks=_mark),
 )
 def test_ge_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -713,7 +577,7 @@ def test_ge_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_LE_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(LeFwdOp), _binary_args, marks=_mark),
 )
 def test_le_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.dtype) -> None:
     test = BinaryManifestWorkload(input_shape, other_shape, dtype)
@@ -725,7 +589,7 @@ def test_le_manifest_bench(input_shape: tuple, other_shape: tuple, dtype: torch.
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_LOGICAL_AND_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(LogicalAndFwdOp), _binary_args, marks=_mark),
 )
 def test_logical_and_manifest_bench(
     input_shape: tuple, other_shape: tuple, dtype: torch.dtype
@@ -739,7 +603,7 @@ def test_logical_and_manifest_bench(
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_LOGICAL_OR_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(LogicalOrFwdOp), _binary_args, marks=_mark),
 )
 def test_logical_or_manifest_bench(
     input_shape: tuple, other_shape: tuple, dtype: torch.dtype
@@ -753,7 +617,7 @@ def test_logical_or_manifest_bench(
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_BITWISE_AND_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(BitwiseAndFwdOp), _binary_args, marks=_mark),
 )
 def test_bitwise_and_manifest_bench(
     input_shape: tuple, other_shape: tuple, dtype: torch.dtype
@@ -767,7 +631,7 @@ def test_bitwise_and_manifest_bench(
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_BITWISE_OR_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(BitwiseOrFwdOp), _binary_args, marks=_mark),
 )
 def test_bitwise_or_manifest_bench(
     input_shape: tuple, other_shape: tuple, dtype: torch.dtype
@@ -781,7 +645,7 @@ def test_bitwise_or_manifest_bench(
 
 @pytest.mark.parametrize(
     "input_shape, other_shape, dtype",
-    workload_params(load_workloads(_BITWISE_XOR_OP), _binary_args, marks=_mark),
+    workload_params(load_workloads(BitwiseXorFwdOp), _binary_args, marks=_mark),
 )
 def test_bitwise_xor_manifest_bench(
     input_shape: tuple, other_shape: tuple, dtype: torch.dtype
@@ -793,12 +657,8 @@ def test_bitwise_xor_manifest_bench(
     _record_binary(op, bm, inputs, torch.bitwise_xor)
 
 
-_WHERE_OP = "WhereFwdOp"
-_LERP_TENSOR_OP = "LerpTensorFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_WHERE_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(WhereFwdOp), _shape_args, marks=_mark)
 )
 def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = WhereManifestWorkload(shape, dtype)
@@ -814,13 +674,11 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
         cond,
         x,
         other,
-        record_as=op,
-        params=locals(),
     )
 
 
 @pytest.mark.parametrize(
-    "shape, dtype", workload_params(load_workloads(_LERP_TENSOR_OP), _shape_args, marks=_mark)
+    "shape, dtype", workload_params(load_workloads(LerpTensorFwdOp), _shape_args, marks=_mark)
 )
 def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = LerpTensorManifestWorkload(shape, dtype)
@@ -836,6 +694,4 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
         x,
         end,
         weight,
-        record_as=op,
-        params=locals(),
     )

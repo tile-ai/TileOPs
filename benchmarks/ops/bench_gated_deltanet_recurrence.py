@@ -1,9 +1,6 @@
-from typing import Optional
-
 import torch
 
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     ManifestBenchmark,
     then_dtype,
     workload_params,
@@ -12,8 +9,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetDecodeFwdOp
 from workloads.linear_attention import GatedDeltaNetDecodeWorkload
 from workloads.workload_base import FixtureBase
-
-_OP_NAME = "GatedDeltaNetDecodeFwdOp"
 
 
 def gated_deltanet_decode_torch(
@@ -52,30 +47,12 @@ except ImportError:
     fused_recurrent_gated_delta_rule = None
 
 
-class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        # Two matvecs: S@k and S@q -> 2 * B*H*DK*DV each (multiply + add)
-        # dot product q.k -> B*H*DK
-        # state update outer product -> B*H*DK*DV
-        return 2.0 * B * H * (2 * DK * DV + DK * DV + DK)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        elem = t.dtype.itemsize
-        # Read: q(DK) + k(DK) + v(DV) + g(1) + beta(1) + state(DK*DV)
-        # Write: o(DV) + new_state(DK*DV)
-        return B * H * (2 * DK + DV + 2 + 2 * DK * DV + DV) * elem
-
-
 class GatedDeltaNetDecodeBenchFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, dim_k, dim_v, dtype, tune",
             workload_params(
-                load_workloads(_OP_NAME),
+                load_workloads(GatedDeltaNetDecodeFwdOp),
                 then_dtype(
                     lambda w: (w["q_shape"][0], w["q_shape"][1], w["q_shape"][2], w["v_shape"][2]),
                     tune=False,
@@ -128,4 +105,4 @@ def test_gated_deltanet_decode_bench(
         # --- Torch reference baseline ---
         functors["torch-ref"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

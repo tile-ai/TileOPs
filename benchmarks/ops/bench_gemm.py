@@ -18,9 +18,6 @@ from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
 
-_OP_NAME = "GemmFwdOp"
-_FP8_OP_NAME = "GemmFp8FwdOp"
-_W4A16_OP_NAME = "GemmW4A16FwdOp"
 _W4A16_GROUP_SIZE = 128
 _FP8_BLOCK = 128
 
@@ -408,7 +405,7 @@ def _gemm_w4a16_args(w: dict, dtype: torch.dtype) -> tuple:
 
 @pytest.mark.parametrize(
     "m, n, k, trans_a, trans_b, dtype",
-    workload_params(load_workloads(_OP_NAME), _gemm_args),
+    workload_params(load_workloads(GemmFwdOp), _gemm_args),
 )
 def test_gemm_bench(
     m: int,
@@ -447,12 +444,12 @@ def test_gemm_bench(
         )
         functors[FLAGGEMS_TAG] = flaggems_mm
 
-    bm.compare(functors, a, b, record_as=op, params=locals())
+    bm.compare(functors, a, b)
 
 
 @pytest.mark.parametrize(
     "m, n, k, scale_mode, bias, dtype",
-    workload_params(load_workloads(_FP8_OP_NAME), _gemm_fp8_args),
+    workload_params(load_workloads(GemmFp8FwdOp), _gemm_fp8_args),
 )
 def test_gemm_fp8_bench(
     m: int,
@@ -518,11 +515,11 @@ def test_gemm_fp8_bench(
                 inputs,
             )
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize(
-    "m, n, k, group_size, dtype", workload_params(load_workloads(_W4A16_OP_NAME), _gemm_w4a16_args)
+    "m, n, k, group_size, dtype", workload_params(load_workloads(GemmW4A16FwdOp), _gemm_w4a16_args)
 )
 def test_gemm_w4a16_bench(
     m: int,
@@ -571,4 +568,4 @@ def test_gemm_w4a16_bench(
             torch.cuda.synchronize()
             functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs)

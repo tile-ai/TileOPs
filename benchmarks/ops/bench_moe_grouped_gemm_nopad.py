@@ -17,13 +17,12 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeGroupedGemmNopadFwdOp
 from workloads.moe import MoeGroupedGemmNopadWorkload
 
-_OP_NAME = "MoeGroupedGemmNopadFwdOp"
-
 
 @pytest.mark.parametrize(
     "numel, num_experts, n, k, dtype",
     workload_params(
-        load_workloads(_OP_NAME), fields("numel", "num_experts", "n", "k", dtype_last=True)
+        load_workloads(MoeGroupedGemmNopadFwdOp),
+        fields("numel", "num_experts", "n", "k", dtype_last=True),
     ),
 )
 def test_moe_grouped_gemm_nopad_bench(
@@ -70,6 +69,4 @@ def test_moe_grouped_gemm_nopad_bench(
         b,
         true_sizes,
         true_offsets,
-        record_as=op,
-        params=locals(),
     )

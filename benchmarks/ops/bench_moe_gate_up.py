@@ -25,13 +25,11 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
 from workloads.moe import MoeGroupedGemmNopadWorkload
 
-_OP_NAME = "MoeGateUpFwdOp"
-
 
 @pytest.mark.parametrize(
     "numel, num_experts, ffn, k, dtype",
     workload_params(
-        load_workloads(_OP_NAME), fields("numel", "num_experts", "ffn", "k", dtype_last=True)
+        load_workloads(MoeGateUpFwdOp), fields("numel", "num_experts", "ffn", "k", dtype_last=True)
     ),
 )
 def test_moe_gate_up_bench(
@@ -94,6 +92,4 @@ def test_moe_gate_up_bench(
         b,
         true_sizes,
         true_offsets,
-        record_as=op,
-        params=locals(),
     )

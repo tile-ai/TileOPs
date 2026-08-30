@@ -488,6 +488,24 @@ class Op(ABC):
         """
         return ()
 
+    def run_config(self) -> Optional[dict]:
+        """The configuration the op's kernels were built with, or ``None``.
+
+        An op reports what it ran; a caller reaches it by calling the op, not by
+        reading the attributes of the kernels behind it. An op given a config of
+        its own answers with it; otherwise the kernels it built do, and those
+        share their dtype and op kind for one call, so the first configured one
+        answers for the call.
+        """
+        own = getattr(self, "config", None)
+        if own:
+            return own
+        for kernel in self.iter_kernels():
+            config = getattr(kernel, "config", None)
+            if config:
+                return config
+        return None
+
     def iter_kernels(self) -> Iterator[Kernel]:
         """Yield every kernel the op holds, each one once.
 

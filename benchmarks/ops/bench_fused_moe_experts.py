@@ -61,9 +61,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
 from workloads.moe import MoeExpertsWorkload
 
-_OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
-
-
 # Workload
 
 
@@ -79,7 +76,7 @@ _OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
 @pytest.mark.parametrize(
     "num_tokens, num_experts, num_experts_local, top_k, hidden_size, ffn_size, dtype",
     workload_params(
-        load_workloads(_OP_NAME),
+        load_workloads(FusedMoEExpertsNopadPersistent3WGFwdOp),
         fields(
             "num_tokens",
             "num_experts",
@@ -156,16 +153,7 @@ def test_moe_experts_nopad_bench(
         #   expert table, and vLLM's fused_experts takes the full table, so the
         #   column would time a different amount of work.
         # Cleanup: a baseline that runs the experts this rank owns.
-        bm.compare(
-            functors,
-            hidden,
-            w1,
-            w2,
-            topk_weights,
-            topk_ids,
-            record_as=nopad,
-            params=locals(),
-        )
+        bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids)
         return
 
     # -- vLLM Triton baseline -------------------------------------------------
@@ -220,4 +208,4 @@ def test_moe_experts_nopad_bench(
 
         functors["torch-ref"] = _torch_fn
 
-    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids, record_as=nopad, params=locals())
+    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids)
