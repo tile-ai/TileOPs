@@ -43,6 +43,5 @@ def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         x,
-        record_as=op,
         params=locals(),
     )

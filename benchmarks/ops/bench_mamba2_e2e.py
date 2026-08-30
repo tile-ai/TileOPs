@@ -245,4 +245,4 @@ def test_mamba2_fwd_bench(
     functors["torch-ref"] = (_torch_wrapper, reference_args)
     functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
 
-    bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states, record_as=op, params=locals())
+    bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states, params=locals())

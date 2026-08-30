@@ -170,7 +170,6 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     bm.compare(
         functors,
         *inputs,
-        record_as=op,
         params={
             "batch": case.batch,
             "seq_len": case.seq_len,

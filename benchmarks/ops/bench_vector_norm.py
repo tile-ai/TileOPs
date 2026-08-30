@@ -82,7 +82,6 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         bm.compare(
             _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -122,7 +121,6 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         bm.compare(
             _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -162,7 +160,6 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
         bm.compare(
             _functors(op, baseline_fn, flaggems_fn, inputs, dtype),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:

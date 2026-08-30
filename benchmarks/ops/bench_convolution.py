@@ -278,12 +278,11 @@ def _profile_conv(
                 **{tag: bind_static_weight(fn) for tag, fn in baselines.items()},
             },
             x,
-            record_as=op,
             params=params,
         )
         return
 
-    bm.compare({"tileops": op, **baselines}, *inputs, record_as=op, params=params)
+    bm.compare({"tileops": op, **baselines}, *inputs, params=params)
 
 
 # Conv1d

@@ -97,7 +97,6 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -135,7 +134,6 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -173,7 +171,6 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -206,7 +203,6 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -238,7 +234,6 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -276,7 +271,6 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -314,7 +308,6 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -354,7 +347,6 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
         bm.compare(
             _functors(op, baseline_fn, inputs, dtype, flaggems_fn),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:

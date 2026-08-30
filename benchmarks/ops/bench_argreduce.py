@@ -65,7 +65,6 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     bm.compare(
         _functors(op, baseline_fn, "argmax", dim, inputs),
         *inputs,
-        record_as=op,
         params={"shape": shape, "dtype": dtype, "dim": dim},
     )
 
@@ -89,6 +88,5 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     bm.compare(
         _functors(op, baseline_fn, "argmin", dim, inputs),
         *inputs,
-        record_as=op,
         params={"shape": shape, "dtype": dtype, "dim": dim},
     )

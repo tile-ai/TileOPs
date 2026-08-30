@@ -6,9 +6,9 @@ from torch.nn import functional as F
 
 from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     BenchmarkReport,
     ManifestBenchmark,
+    OpBenchmark,
     backward_of,
     then_dtype,
     workload_params,
@@ -48,7 +48,7 @@ _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
 
 
-class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdWorkload]):
+class GQAPrefillVarlenFwdBenchmark(OpBenchmark[GQAPrefillVarlenFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         visible = 0
@@ -302,7 +302,7 @@ def test_gqa_fwd_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-sdpa"] = _torch_gqa_fwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())
 
 
 # GQA backward benchmark parameters (training only).
@@ -340,7 +340,7 @@ def test_gqa_bwd_bench(
     else:
         functors["torch-sdpa"] = _torch_gqa_bwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
@@ -407,7 +407,7 @@ def test_gqa_prefill_fwd_bench(
     if fi_fn is not None:
         functors["flashinfer"] = (fi_fn, (*inputs,))
 
-    bm.compare(functors, *packed_inputs, record_as=op, params=locals())
+    bm.compare(functors, *packed_inputs, params=locals())
 
 
 def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):
@@ -494,7 +494,7 @@ def test_gqa_prefill_varlen_fwd_bench(
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
         batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
-    bm = GQAPrefillVarlenFwdBenchmark(test)
+    bm = GQAPrefillVarlenFwdBenchmark(op, test)
 
     functors = {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}
     fa3_fn = _fa3_gqa_prefill_varlen(test)
@@ -503,7 +503,7 @@ def test_gqa_prefill_varlen_fwd_bench(
             fa3_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
         )
         functors["fa3"] = fa3_fn
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())
 
 
 def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
@@ -682,4 +682,4 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         return
 
     assert_matches_reference(op, fa3_fn, *inputs, **reference_tolerance(dtype))
-    bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs, record_as=op, params=locals())
+    bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs, params=locals())

@@ -70,7 +70,6 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
                 TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
             },
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -105,7 +104,6 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
                 TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
             },
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -142,7 +140,6 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> N
                 TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
             },
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:

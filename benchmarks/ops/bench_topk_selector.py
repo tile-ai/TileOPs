@@ -109,4 +109,4 @@ def test_topk_selector_bench(
         _assert_selects_same_scores(flashinfer_fn, test.ref_program, *inputs)
         functors[FLASHINFER_TAG] = flashinfer_fn
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

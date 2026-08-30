@@ -75,6 +75,5 @@ def test_instance_norm_bench(
         None,
         weight,
         bias,
-        record_as=op,
         params=locals(),
     )

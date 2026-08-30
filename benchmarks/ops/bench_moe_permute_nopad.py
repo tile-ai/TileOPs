@@ -89,7 +89,6 @@ def test_moe_permute_nopad_bench(
             hidden_states,
             topk_ids,
             expert_map,
-            record_as=op,
             params=locals(),
         )
         return
@@ -144,4 +143,4 @@ def test_moe_permute_nopad_bench(
 
         functors["torch-ref"] = _torch_fn
 
-    bm.compare(functors, hidden_states, topk_ids, record_as=op, params=locals())
+    bm.compare(functors, hidden_states, topk_ids, params=locals())

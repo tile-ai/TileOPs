@@ -73,7 +73,6 @@ def test_any_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, "any_dims", dim, keepdim),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -106,7 +105,6 @@ def test_all_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         bm.compare(
             _functors(op, baseline_fn, inputs, "all_dims", dim, keepdim),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:
@@ -138,7 +136,6 @@ def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype, op_params: dict) 
         bm.compare(
             _functors(op, baseline_fn, inputs),
             *inputs,
-            record_as=op,
             params=locals(),
         )
     except ValueError as exc:

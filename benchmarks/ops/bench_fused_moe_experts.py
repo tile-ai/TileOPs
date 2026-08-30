@@ -163,7 +163,6 @@ def test_moe_experts_nopad_bench(
             w2,
             topk_weights,
             topk_ids,
-            record_as=nopad,
             params=locals(),
         )
         return
@@ -220,4 +219,4 @@ def test_moe_experts_nopad_bench(
 
         functors["torch-ref"] = _torch_fn
 
-    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids, record_as=nopad, params=locals())
+    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids, params=locals())

@@ -38,7 +38,6 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )
 
@@ -65,6 +64,5 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )

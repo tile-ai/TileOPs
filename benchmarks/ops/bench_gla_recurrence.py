@@ -12,8 +12,8 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     ManifestBenchmark,
+    OpBenchmark,
     then_dtype,
     workload_params,
 )
@@ -55,7 +55,7 @@ except ImportError:
     fused_recurrent_gla = None
 
 
-class GLADecodeBenchmark(BenchmarkBase[GLADecodeWorkload]):
+class GLADecodeBenchmark(OpBenchmark[GLADecodeWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
@@ -136,4 +136,4 @@ def test_gla_decode_bench(
     functors["torch"] = test.ref_program
     functors[TORCH_COMPILE_TAG] = compiled_reference(test.ref_program)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

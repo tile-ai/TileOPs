@@ -83,6 +83,5 @@ def test_fp8_lightning_indexer_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )

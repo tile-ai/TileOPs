@@ -142,7 +142,7 @@ def test_mha_fwd_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-sdpa"] = _torch_mha_fwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())
 
 
 _MHA_BWD_BENCH_PARAMS = workload_params(
@@ -167,4 +167,4 @@ def test_mha_bwd_bench(
     else:
         functors["torch-sdpa"] = _torch_mha_bwd(test)
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

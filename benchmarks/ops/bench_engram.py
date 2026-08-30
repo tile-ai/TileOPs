@@ -54,7 +54,6 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )
 
@@ -86,7 +85,6 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
             TORCH_COMPILE_TAG: compiled_reference(ref_with_grad),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )
 
@@ -125,6 +123,5 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )

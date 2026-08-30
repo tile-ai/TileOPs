@@ -107,4 +107,4 @@ def test_grouped_gemm_bench(
         functors["torch"] = grouped_mm_fn
     # Rows are named by the op, with the layout among their params: a row named
     # for the layout leaves the op it measured out of the report.
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

@@ -3,8 +3,8 @@ from typing import Optional
 import torch
 
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     ManifestBenchmark,
+    OpBenchmark,
     then_dtype,
     workload_params,
 )
@@ -52,7 +52,7 @@ except ImportError:
     fused_recurrent_gated_delta_rule = None
 
 
-class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeWorkload]):
+class GatedDeltaNetDecodeBenchmark(OpBenchmark[GatedDeltaNetDecodeWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
@@ -128,4 +128,4 @@ def test_gated_deltanet_decode_bench(
         # --- Torch reference baseline ---
         functors["torch-ref"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

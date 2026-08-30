@@ -34,6 +34,5 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )

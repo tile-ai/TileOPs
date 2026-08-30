@@ -37,6 +37,7 @@ __all__ = [
     "BenchmarkReport",
     "CUPTIError",
     "ManifestBenchmark",
+    "OpBenchmark",
     "backward_of",
     "bench_kernel",
     "fields",
@@ -81,7 +82,12 @@ def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
 
 
 class BenchmarkBase(Generic[W], ABC):
-    """Turns measured latency into the op's roofline-relative metrics."""
+    """Turns measured latency into roofline-relative metrics.
+
+    It times and reports; it does not publish. A row of the report is one op's
+    measurement, and this class holds no op — a benchmark that publishes is an
+    :class:`OpBenchmark`.
+    """
 
     def __init__(self, workload: W):
         self.workload = workload
@@ -108,69 +114,6 @@ class BenchmarkBase(Generic[W], ABC):
         """Profile a callable and return its structured result."""
         with torch.no_grad():
             return self._build_result(bench_kernel(functor, args=inputs))
-
-    def compare(
-        self,
-        functors: dict[str, Any],
-        *inputs: Any,
-        record_as: Any = None,
-        params: Optional[dict] = None,
-        count_copies: bool = False,
-    ) -> dict[str, dict]:
-        """Time several implementations forward then reversed, and record them.
-
-        Timing each one twice in opposite orders keeps drift across the case
-        from landing on whichever ran last. A value is a callable timed on
-        *inputs*, or a ``(callable, args)`` pair. Every callable runs under
-        ``no_grad``: a graph built inside the timed region is host work, and a
-        backward reached through autograd runs where the timer cannot attribute
-        it. A backward baseline is timed by applying its node directly.
-
-        ``count_copies`` puts device-to-device copies into every tag's reading, for a
-        case where an implementation computes part of the result with one. It belongs to
-        the case rather than the tag: reading one side with copies and the other without
-        compares two instruments.
-        """
-        plan = {
-            tag: value if isinstance(value, tuple) else (value, inputs)
-            for tag, value in functors.items()
-        }
-        tags = list(plan)
-        order = tags + tags[::-1]
-        # Split the budget across the two passes rather than spending it twice:
-        # the point is symmetry, not more samples.
-        passes = 2
-        samples: dict[str, list[Sample]] = {tag: [] for tag in tags}
-        meta: dict[str, dict] = {}
-        for tag in order:
-            functor, args = plan[tag]
-            with torch.no_grad():
-                samples[tag].extend(
-                    bench_kernel(
-                        functor,
-                        args=args,
-                        dry_run_ms=DRY_RUN_MS / passes,
-                        repeat_ms=REPEAT_MS / passes,
-                        max_iters=_MAX_ITERS // passes,
-                        min_iters=max(1, _MIN_ITERS // passes),
-                        count_copies=count_copies,
-                    )
-                )
-            pass_meta = _capture_bench_meta()
-            previous = meta.get(tag)
-            if previous is not None and previous["timing"] != pass_meta["timing"]:
-                raise RuntimeError(
-                    f"{tag}: the two passes timed with different methods "
-                    f"({previous['timing']} then {pass_meta['timing']}); pooling "
-                    "them would report one median over two kinds of measurement. "
-                    "Only reachable with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1."
-                )
-            meta[tag] = pass_meta
-        results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
-        if record_as is not None:
-            for tag in tags:
-                BenchmarkReport.record(record_as, params or {}, results[tag], tag=tag)
-        return results
 
     def _build_result(self, samples: list[Sample], meta: Optional[dict] = None) -> dict:
         """Turn per-iteration samples into the row a report records.
@@ -337,7 +280,86 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     return workload_params(rows, build)
 
 
-class ManifestBenchmark(BenchmarkBase[Any]):
+class OpBenchmark(BenchmarkBase[W]):
+    """A benchmark of one op, which is what a row of the report is.
+
+    The op is named once, here, and every row the benchmark publishes carries
+    it. A comparison whose subject is not an op — a kernel strategy, a field of
+    library implementations — decides something rather than tracking it, and
+    stays on :class:`BenchmarkBase`, which cannot record.
+    """
+
+    def __init__(self, op: Any, workload: W):
+        super().__init__(workload)
+        self.op = op
+
+    def compare(
+        self,
+        functors: dict[str, Any],
+        *inputs: Any,
+        params: Optional[dict] = None,
+        count_copies: bool = False,
+    ) -> dict[str, dict]:
+        """Time several implementations forward then reversed, and record them.
+
+        Every tag is recorded under the op this benchmark was built for: the row
+        names what ran, so no call site can put one op's numbers under another's
+        name.
+
+        Timing each one twice in opposite orders keeps drift across the case
+        from landing on whichever ran last. A value is a callable timed on
+        *inputs*, or a ``(callable, args)`` pair. Every callable runs under
+        ``no_grad``: a graph built inside the timed region is host work, and a
+        backward reached through autograd runs where the timer cannot attribute
+        it. A backward baseline is timed by applying its node directly.
+
+        ``count_copies`` puts device-to-device copies into every tag's reading, for a
+        case where an implementation computes part of the result with one. It belongs to
+        the case rather than the tag: reading one side with copies and the other without
+        compares two instruments.
+        """
+        plan = {
+            tag: value if isinstance(value, tuple) else (value, inputs)
+            for tag, value in functors.items()
+        }
+        tags = list(plan)
+        order = tags + tags[::-1]
+        # Split the budget across the two passes rather than spending it twice:
+        # the point is symmetry, not more samples.
+        passes = 2
+        samples: dict[str, list[Sample]] = {tag: [] for tag in tags}
+        meta: dict[str, dict] = {}
+        for tag in order:
+            functor, args = plan[tag]
+            with torch.no_grad():
+                samples[tag].extend(
+                    bench_kernel(
+                        functor,
+                        args=args,
+                        dry_run_ms=DRY_RUN_MS / passes,
+                        repeat_ms=REPEAT_MS / passes,
+                        max_iters=_MAX_ITERS // passes,
+                        min_iters=max(1, _MIN_ITERS // passes),
+                        count_copies=count_copies,
+                    )
+                )
+            pass_meta = _capture_bench_meta()
+            previous = meta.get(tag)
+            if previous is not None and previous["timing"] != pass_meta["timing"]:
+                raise RuntimeError(
+                    f"{tag}: the two passes timed with different methods "
+                    f"({previous['timing']} then {pass_meta['timing']}); pooling "
+                    "them would report one median over two kinds of measurement. "
+                    "Only reachable with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1."
+                )
+            meta[tag] = pass_meta
+        results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
+        for tag in tags:
+            BenchmarkReport.record(self.op, params or {}, results[tag], tag=tag)
+        return results
+
+
+class ManifestBenchmark(OpBenchmark[Any]):
     """Reads the roofline off ``op.eval_roofline()``, never off the workload.
 
     Called lazily while building a result, because a dynamic-shape op binds its
@@ -348,19 +370,18 @@ class ManifestBenchmark(BenchmarkBase[Any]):
     """
 
     def __init__(self, op: Any, workload: Any):
-        super().__init__(workload)
+        super().__init__(op, workload)
         self.op_name = type(op).__name__
         if self.op_name not in load_manifest():
             raise KeyError(
                 f"{self.op_name} is not a manifest op; a benchmark reports under the name the "
                 "manifest declares, so a wrapper or a subclass cannot stand in for one"
             )
-        self._op = op
         self._roofline_cache: Optional[tuple[float, float]] = None
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            flops, mem_bytes = self._op.eval_roofline()
+            flops, mem_bytes = self.op.eval_roofline()
             self._roofline_cache = (float(flops), float(mem_bytes))
         return self._roofline_cache
 
@@ -371,4 +392,4 @@ class ManifestBenchmark(BenchmarkBase[Any]):
         return self._get_roofline()[1]
 
     def compute_roof(self) -> Optional[str]:
-        return self._op.compute_roof()
+        return self.op.compute_roof()

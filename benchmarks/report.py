@@ -19,6 +19,13 @@ _logger = logging.getLogger("tileops.bench")
 _bench_results = threading.local()
 
 
+def _current_case_rows() -> list:
+    """The rows recorded by the case running on this thread."""
+    if not hasattr(_bench_results, "entries"):
+        _bench_results.entries = []
+    return _bench_results.entries
+
+
 def _get_env_metadata() -> list[str]:
     """Collect GPU model, driver version, CUDA version, and torch version."""
     lines = []
@@ -124,24 +131,29 @@ class BenchmarkReport:
     _records: dict = {}
 
     @staticmethod
-    def record(op_or_name, params: dict, result: dict, tag: str = "tileops") -> None:
+    def record(op, params: dict, result: dict, tag: str = "tileops") -> None:
         """Record a benchmark result.
 
         Args:
-            op_or_name: Op instance or benchmark group name string.
-                If an Op instance, class name and module are extracted automatically.
+            op: the Op the row measured. Every row of the report is one op's
+                measurement, which is what lets a consumer group by op and read
+                a name as a manifest entry. A comparison whose subject is not an
+                op — a kernel strategy, a field of library implementations —
+                decides something rather than tracking it, and belongs to
+                ``benchmarks/studies/``, which the nightly sweep does not reach.
             params: Parameter dict (typically from locals())
             result: Dict with device_busy_ms, latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
         """
-        if isinstance(op_or_name, str):
-            name = op_or_name
-            op_module = None
-            op_config = None
-        else:
-            name = op_or_name.__class__.__name__
-            op_module = op_or_name.__class__.__module__
-            op_config = _extract_op_config(op_or_name)
+        if isinstance(op, str):
+            raise TypeError(
+                f"record() takes the Op the row measured, not the name {op!r}. A "
+                "comparison whose subject is not an op belongs in "
+                "benchmarks/studies/, which the nightly does not sweep."
+            )
+        name = op.__class__.__name__
+        op_module = op.__class__.__module__
+        op_config = _extract_op_config(op)
 
         # Filter params to only include serializable benchmark parameters.
         # Tuples of primitives (e.g. ``shape=(4096, 4096)``) are preserved
@@ -162,24 +174,23 @@ class BenchmarkReport:
             and _is_serializable(v)
         }
         record_entry = {
+            "op": name,
+            "tag": tag,
             "params": filtered_params,
             "result": result,
-            "tag": tag,
         }
+        if op_module:
+            record_entry["op_module"] = op_module
         if op_config:
             record_entry["config"] = op_config
-        BenchmarkReport._records.setdefault(name, []).append(record_entry)
-
-        # Accumulate in thread-local for conftest hook.
-        if not hasattr(_bench_results, "entries"):
-            _bench_results.entries = []
-        entry = {"tag": tag, "op": name, **result}
-        if op_module:
-            entry["op_module"] = op_module
         dtype = filtered_params.get("dtype")
         if isinstance(dtype, torch.dtype):
-            entry["dtype"] = str(dtype).removeprefix("torch.")
-        _bench_results.entries.append(entry)
+            record_entry["dtype"] = str(dtype).removeprefix("torch.")
+        BenchmarkReport._records.setdefault(name, []).append(record_entry)
+        # The same row, handed to the pytest hook that turns the running case's
+        # rows into XML properties. One row recorded once: the log and the XML
+        # read it, rather than each getting a copy that can drift from the other.
+        _current_case_rows().append(record_entry)
 
         _logger.info(
             "op=%s module=%s tag=%s device_busy_ms=%.4f tflops=%.2f",

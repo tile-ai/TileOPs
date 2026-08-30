@@ -13,4 +13,4 @@ Two non-negotiable principles cut across every event:
 - [ ] **No correctness gating.** No `assert`, `torch.allclose`, or equivalent inside `benchmarks/`. Numeric mismatches surface through report columns, not exceptions.
 - [ ] **Realistic shapes.** Shape constants reflect real DNN workloads (LLaMA-family or equivalent), annotated with the model/scenario they represent. Arbitrary flat numbers (e.g., 262K, 1M, 4M) are rejected.
 - [ ] **Tag and FLOPs/memory hygiene.** Tags are lowercase hyphen-separated; `"tileops"`-prefixed tags are TileOps entries, all others are baselines. `calculate_flops()` / `calculate_memory()` return numeric or `None` consistently.
-- [ ] **`record()` arg style consistent.** Within one file, `BenchmarkReport.record()` uses Op object (preferred) or string name uniformly — no mid-file flips.
+- [ ] **Rows name their op.** The benchmark takes its op at construction and publishes under it; `BenchmarkReport.record()` takes an Op. A comparison whose subject is not an op asserts, or lives in `benchmarks/studies/`.

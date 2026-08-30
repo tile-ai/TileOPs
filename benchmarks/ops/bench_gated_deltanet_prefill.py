@@ -17,7 +17,6 @@ import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
     then_dtype,
     workload_params,
@@ -153,7 +152,6 @@ def test_gated_deltanet_prefill_bhtd_bench(
     bm.compare(
         {"tileops": op, "fla": (_fla_prefill_fwd(), fla_inputs)},
         *inputs,
-        record_as=op,
         params=locals(),
     )
 
@@ -184,10 +182,4 @@ def test_gated_deltanet_prefill_fwd_bench(
     fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
     functors = {"tileops": op, "fla": (fla_fn, fla_inputs)}
 
-    # Recorded by hand: the tileops row carries a derived speedup field.
-    results = bm.compare(functors, *inputs)
-    results["tileops"]["speedup_vs_fla"] = (
-        results["fla"]["latency_ms"] / results["tileops"]["latency_ms"]
-    )
-    BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
-    BenchmarkReport.record(op, locals(), results["fla"], tag="fla")
+    bm.compare(functors, *inputs, params=locals())

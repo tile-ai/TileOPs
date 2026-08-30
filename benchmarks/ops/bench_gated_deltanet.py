@@ -86,7 +86,7 @@ def test_gated_deltanet_vs_fla_fwd(
     def fla_fwd():
         return chunk_gated_delta_rule(*bthd, scale=1.0)
 
-    bm.compare({"tileops": (op, bthd), "fla": (fla_fwd, ())}, record_as=op, params=locals())
+    bm.compare({"tileops": (op, bthd), "fla": (fla_fwd, ())}, params=locals())
 
 
 @pytest.mark.parametrize(
@@ -114,7 +114,7 @@ def test_gated_deltanet_bhtd_vs_fla_fwd(
     def fla_fwd():
         return chunk_gated_delta_rule(*bthd, scale=1.0)
 
-    bm.compare({"tileops": (op, inputs), "fla": (fla_fwd, ())}, record_as=op, params=locals())
+    bm.compare({"tileops": (op, inputs), "fla": (fla_fwd, ())}, params=locals())
 
 
 # Backward benchmark
@@ -170,4 +170,4 @@ def test_gated_deltanet_vs_fla_bwd(
         return fla_backward(do_fla, None)
 
     functors["fla"] = (fla_bwd, ())
-    bm.compare(functors, do, q, k, v, g, beta, S_fwd, record_as=bwd_op, params=locals())
+    bm.compare(functors, do, q, k, v, g, beta, S_fwd, params=locals())

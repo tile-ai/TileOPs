@@ -16,9 +16,8 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
-    BenchmarkReport,
     ManifestBenchmark,
+    OpBenchmark,
     fields,
     workload_params,
 )
@@ -35,7 +34,6 @@ from tileops.ops.elementwise import (
 from workloads.elementwise import (
     Fp8MaskedFillBenchCase,
     Fp8UnaryBenchCase,
-    Fp8WhereBenchCase,
     ShapedRandnWorkload,
     TensorClampBenchCase,
     _GenerativeWorkload,
@@ -52,7 +50,7 @@ _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 # Benchmark base classes
 
 
-class UnaryBenchmark(BenchmarkBase[ShapedRandnWorkload]):
+class UnaryBenchmark(OpBenchmark[ShapedRandnWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -117,7 +115,6 @@ def test_clamp_tensor_bench(
         x,
         t_min,
         t_max,
-        record_as=op,
         params=locals(),
     )
 
@@ -191,7 +188,6 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
-        record_as=op,
         params=locals(),
     )
 
@@ -211,7 +207,6 @@ def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> Non
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
-        record_as=op,
         params=locals(),
     )
 
@@ -228,7 +223,7 @@ _UNSUPPORTED_FP8_SKIP = pytest.mark.skip(
 )
 
 
-class Fp8UnaryBenchmark(BenchmarkBase[Fp8UnaryBenchCase]):
+class Fp8UnaryBenchmark(OpBenchmark[Fp8UnaryBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -276,10 +271,10 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
     n_total = prod(shape)
     op_cls, baseline_fn, extra_kwargs = _FP8_UNARY_OPS[op_name]
     test = Fp8UnaryBenchCase(shape, dtype)
-    bm = Fp8UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     op = op_cls(**extra_kwargs)
+    bm = Fp8UnaryBenchmark(op, test)
 
     # Baseline: PyTorch fp16 compute then cast back to fp8
     def baseline(x):
@@ -292,24 +287,14 @@ def test_fp8_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dt
             TORCH_COMPILE_TAG: compiled_reference(baseline),
         },
         *inputs,
-        record_as=f"{op_name}_fp8",
         params=locals(),
     )
 
 
-# fp8 where / masked_fill (selection ops - pass fp8 through directly)
+# fp8 masked_fill (a selection op — fp8 passes through)
 
 
-class Fp8WhereBenchmark(BenchmarkBase[Fp8WhereBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        # cond (1B) + fp8 x (1B) + fp8 y (1B) + fp8 out (1B)
-        return self.workload.n_total * 4
-
-
-class Fp8MaskedFillBenchmark(BenchmarkBase[Fp8MaskedFillBenchCase]):
+class Fp8MaskedFillBenchmark(OpBenchmark[Fp8MaskedFillBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -322,13 +307,15 @@ def _fp8_selection_params():
     """Both fp8 dtypes per op at the reference shape; the selection kernels are
     shape-agnostic beyond total element count."""
     ref_shape = _UNARY_SHAPES[0]
+    # ``where`` is absent: WhereFwdOp declares no fp8, so its case could only
+    # time torch against nothing.
     params = []
-    for op_name in ("where", "masked_fill"):
-        for dtype in _FP8_DTYPES:
-            marks = [pytest.mark.smoke if dtype == torch.float8_e4m3fn else pytest.mark.full]
-            if op_name == "masked_fill":
-                marks.append(_UNSUPPORTED_FP8_SKIP)
-            params.append(pytest.param(op_name, ref_shape, dtype, marks=marks))
+    for dtype in _FP8_DTYPES:
+        marks = [
+            pytest.mark.smoke if dtype == torch.float8_e4m3fn else pytest.mark.full,
+            _UNSUPPORTED_FP8_SKIP,
+        ]
+        params.append(pytest.param("masked_fill", ref_shape, dtype, marks=marks))
     return params
 
 
@@ -340,37 +327,22 @@ class Fp8SelectionBenchFixture(FixtureBase):
 def test_fp8_selection_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> None:
     n_total = prod(shape)
 
-    if op_name == "where":
-        # WhereFwdOp declares no fp8 support, so record only the torch
-        # baseline — instantiating it with an fp8 dtype would break the spec.
-        test = Fp8WhereBenchCase(shape, dtype)
-        bm = Fp8WhereBenchmark(test)
-        cond, x, y = test.gen_inputs()
+    test = Fp8MaskedFillBenchCase(shape, dtype)
+    x, mask = test.gen_inputs()
 
-        # torch.where supports fp8 natively (pure selection, no arithmetic)
-        def baseline(cond, x, y):
-            return torch.where(cond, x, y)
+    op = MaskedFillScalarFwdOp(value=-100.0)
+    bm = Fp8MaskedFillBenchmark(op, test)
 
-        result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-ref")
-    else:
-        test = Fp8MaskedFillBenchCase(shape, dtype)
-        bm = Fp8MaskedFillBenchmark(test)
-        x, mask = test.gen_inputs()
+    def baseline(x, mask):
+        return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
-        op = MaskedFillScalarFwdOp(value=-100.0)
-
-        def baseline(x, mask):
-            return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
-
-        bm.compare(
-            {
-                "tileops": op,
-                "torch-ref": baseline,
-                TORCH_COMPILE_TAG: compiled_reference(baseline),
-            },
-            x,
-            mask,
-            record_as=op,
-            params=locals(),
-        )
+    bm.compare(
+        {
+            "tileops": op,
+            "torch-ref": baseline,
+            TORCH_COMPILE_TAG: compiled_reference(baseline),
+        },
+        x,
+        mask,
+        params=locals(),
+    )

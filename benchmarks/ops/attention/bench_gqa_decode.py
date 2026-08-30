@@ -168,4 +168,4 @@ def test_gqa_decode_bench(
     if fa3_fn is None and fi_fn is None:
         functors["torch-sdpa"] = test.ref_program
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

@@ -209,19 +209,6 @@ class Fp8UnaryBenchCase:
         return (x.to(self.dtype),)
 
 
-class Fp8WhereBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        cond = torch.rand(self.shape, device="cuda") > 0.5
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
-        y = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
-        return cond, x, y
-
-
 class Fp8MaskedFillBenchCase:
     def __init__(self, shape: tuple, dtype: torch.dtype):
         self.shape = shape

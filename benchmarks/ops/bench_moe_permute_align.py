@@ -219,4 +219,4 @@ def test_permute_align_bench(
 
         functors["sgl-kernel"] = _sgl_fn
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

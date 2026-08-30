@@ -182,7 +182,6 @@ def _record_unary(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
         params=_manifest_params(bm),
     )
 
@@ -200,7 +199,6 @@ def _record_binary(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         *inputs,
-        record_as=op,
         params=_manifest_params(bm),
     )
 
@@ -411,7 +409,6 @@ def test_prelu_manifest_bench(
         },
         x,
         weight,
-        record_as=op,
         params=locals(),
     )
 
@@ -449,7 +446,6 @@ def test_masked_fill_tensor_manifest_bench(
         x,
         mask,
         value,
-        record_as=op,
         params=locals(),
         count_copies=True,
     )
@@ -480,7 +476,6 @@ def test_masked_fill_scalar_manifest_bench(
         },
         x,
         mask,
-        record_as=op,
         params=locals(),
         count_copies=True,
     )
@@ -814,7 +809,6 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
         cond,
         x,
         other,
-        record_as=op,
         params=locals(),
     )
 
@@ -836,6 +830,5 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
         x,
         end,
         weight,
-        record_as=op,
         params=locals(),
     )

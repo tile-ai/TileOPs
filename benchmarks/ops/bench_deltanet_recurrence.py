@@ -4,8 +4,8 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
-    BenchmarkBase,
     ManifestBenchmark,
+    OpBenchmark,
     then_dtype,
     workload_params,
 )
@@ -43,7 +43,7 @@ def deltanet_decode_torch(
     return o, new_state
 
 
-class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeWorkload]):
+class DeltaNetDecodeBenchmark(OpBenchmark[DeltaNetDecodeWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
@@ -98,6 +98,5 @@ def test_deltanet_decode_bench(
             TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
-        record_as=op,
         params=locals(),
     )

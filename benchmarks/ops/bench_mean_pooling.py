@@ -8,13 +8,13 @@ from benchmarks.baselines import (
     assert_matches_reference,
     compiled_reference,
 )
-from benchmarks.benchmark_base import BenchmarkBase
+from benchmarks.benchmark_base import OpBenchmark
 from tileops.ops import MeanPoolingForwardOp
 from workloads.nsa_utils import prepare_chunk_indices
 from workloads.pool import MeanPoolingWorkload
 
 
-class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingWorkload]):
+class MeanPoolingBenchmark(OpBenchmark[MeanPoolingWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         # Mean pooling: sum chunk_size elements + divide, per output element
@@ -145,10 +145,10 @@ def test_mean_pooling_bench(
         indices=indices,
     )
 
-    bm = MeanPoolingBenchmark(test)
     inputs = test.gen_inputs()
 
     op = MeanPoolingForwardOp(**params)
+    bm = MeanPoolingBenchmark(op, test)
 
     functors = {
         "tileops": op,
@@ -160,4 +160,4 @@ def test_mean_pooling_bench(
         assert_matches_reference(view_mean, test.ref_program, *inputs)
         functors["torch-view-mean"] = view_mean
 
-    bm.compare(functors, *inputs, record_as=op, params=locals())
+    bm.compare(functors, *inputs, params=locals())

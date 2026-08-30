@@ -30,7 +30,10 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, workload_params
+from benchmarks.benchmark_base import (
+    OpBenchmark,
+    workload_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
 from workloads.moe import FusedMoeWorkload
@@ -38,18 +41,17 @@ from workloads.moe import FusedMoeWorkload
 _OP_NAME = "FusedMoeFwdOp"
 
 
-class FusedMoeBenchmark(BenchmarkBase[FusedMoeWorkload]):
+class FusedMoeBenchmark(OpBenchmark[FusedMoeWorkload]):
     """Benchmark wrapper sourcing flops/bytes from the bound op's roofline."""
 
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
+    def __init__(self, op, test):
+        super().__init__(op, test)
         self._roofline_cache: Optional[tuple[float, float]] = None
 
     def _get_roofline(self) -> tuple[float, float]:
         cache = self._roofline_cache
         if cache is None:
-            cache = self._op.eval_roofline()
+            cache = self.op.eval_roofline()
             self._roofline_cache = cache
         return cache
 
@@ -129,7 +131,7 @@ def _run_bench(
 
     # -- TileOPs nopad -----------------------------------------------------
     op = FusedMoeFwdOp(**common_kwargs)
-    bm = FusedMoeBenchmark(test, op)
+    bm = FusedMoeBenchmark(op, test)
     op(*forward_args_tileops)  # warmup / JIT compile
     torch.cuda.synchronize()
 
@@ -216,7 +218,7 @@ def _run_bench(
             ),
         )
 
-    bm.compare(functors, *forward_args_tileops, record_as=op, params=locals())
+    bm.compare(functors, *forward_args_tileops, params=locals())
 
 
 @pytest.mark.parametrize(

@@ -139,7 +139,6 @@ def _profile_rope(
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         x,
-        record_as=op,
         params=params,
     )
 
@@ -285,6 +284,5 @@ def test_rope_neox_position_ids_bench(
         },
         x,
         position_ids,
-        record_as=op,
         params=params,
     )
