@@ -31,7 +31,7 @@ def pytest_make_parametrize_id(config, val, argname):
 
 
 # What a row carries besides its measurements.
-_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "config", "result"})
+_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
 
 
 def _prop(value) -> str:

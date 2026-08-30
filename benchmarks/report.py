@@ -149,7 +149,7 @@ class BenchmarkReport:
         if op_module:
             record_entry["op_module"] = op_module
         if op_config:
-            record_entry["config"] = op_config
+            record_entry["run_config"] = op_config
         dtype = filtered_params.get("dtype")
         if isinstance(dtype, torch.dtype):
             record_entry["dtype"] = str(dtype).removeprefix("torch.")
@@ -216,10 +216,10 @@ class BenchmarkReport:
                 lines.append("")
 
                 param_keys = list(tag_group[0]["params"].keys())
-                has_config = any("config" in e for e in tag_group)
+                has_config = any("run_config" in e for e in tag_group)
                 header_parts = param_keys + result_keys
                 if has_config:
-                    header_parts.append("config")
+                    header_parts.append("run_config")
                 lines.append("| " + " | ".join(header_parts) + " |")
                 lines.append("| " + " | ".join(["---"] * len(header_parts)) + " |")
 
@@ -234,7 +234,7 @@ class BenchmarkReport:
                         else:
                             row.append(str(val))
                     if has_config:
-                        cfg = entry.get("config")
+                        cfg = entry.get("run_config")
                         row.append(str(cfg) if cfg else "")
                     lines.append("| " + " | ".join(row) + " |")
 
