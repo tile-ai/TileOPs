@@ -6,10 +6,7 @@ import pytest
 import torch
 
 from tileops.manifest import load_workloads
-from tileops.ops import (
-    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    RopeNeoxPositionIdsFwdOp,
-)
+from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
 from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 
 _PREFILL_PAGED_TOLERANCE = {
@@ -66,11 +63,30 @@ def _apply_neox_rope_position_ids(
     max_position: int,
     rotary_dim: int | None = None,
 ) -> torch.Tensor:
-    op = RopeNeoxPositionIdsFwdOp(
-        max_position=max_position,
-        rotary_dim=rotary_dim,
-    )
-    return op(x, position_ids)
+    """GPT-NeoX RoPE on ``[tokens, heads, head_dim]``, in torch.
+
+    Args:
+        x: Input of shape ``[tokens, heads, head_dim]``.
+        position_ids: Position of each token, shape ``[tokens]``.
+        max_position: Number of rows in the frequency table.
+        rotary_dim: Rotated width of each head; ``head_dim`` when ``None``.
+
+    Returns:
+        ``x`` with its first ``rotary_dim`` columns rotated.
+    """
+    rotary_dim = x.shape[-1] if rotary_dim is None else rotary_dim
+    half = rotary_dim // 2
+    inv_freq = 1.0 / (10000.0 ** (torch.arange(half, device=x.device, dtype=torch.float32) / half))
+    positions = torch.arange(max_position, device=x.device, dtype=torch.float32)
+    angles = torch.outer(positions, inv_freq)
+    # The kernel reads a table stored in x's dtype and rotates in f32.
+    cos = angles.cos().to(x.dtype)[position_ids].float().unsqueeze(1)
+    sin = angles.sin().to(x.dtype)[position_ids].float().unsqueeze(1)
+
+    low = x[..., :half].float()
+    high = x[..., half:rotary_dim].float()
+    rotated = torch.cat([low * cos - high * sin, high * cos + low * sin], dim=-1)
+    return torch.cat([rotated.to(x.dtype), x[..., rotary_dim:]], dim=-1).contiguous()
 
 
 def _gqa_prefill_paged_ref(
@@ -589,7 +605,10 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         q_start = int(cu_seqlens_q[b].item())
         for i in range(q_len):
             physical_pos = _physical_pos(block_table, b, old_len + i, page_size)
-            torch.testing.assert_close(k_pages[physical_pos], k_new_rot[q_start + i])
+            # The appended k is the fused kernel's rotation against a torch reference.
+            torch.testing.assert_close(
+                k_pages[physical_pos], k_new_rot[q_start + i], atol=5e-3, rtol=1e-5
+            )
             torch.testing.assert_close(v_pages[physical_pos], v_new[q_start + i])
         for pos in range(old_len):
             physical_pos = _physical_pos(block_table, b, pos, page_size)
