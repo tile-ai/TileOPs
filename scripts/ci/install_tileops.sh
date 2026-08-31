@@ -16,7 +16,16 @@ if ! python3 -c "import tilelang" >/dev/null 2>&1; then
   exit 1
 fi
 
-# tileops only; its runtime deps come from the runner image.
-python3 -m pip install -e "${REPO_ROOT}" --no-deps -c "${CONSTRAINTS}"
+if ! python3 -c "import setuptools_scm" >/dev/null 2>&1; then
+  {
+    echo "::error::setuptools-scm is missing; the install below skips build isolation."
+    echo "  The runner image bakes it. Repoint the runner at a newer tag."
+  } >&2
+  exit 1
+fi
+
+# tileops only; its runtime deps come from the runner image. --no-build-isolation: the image bakes
+# the build backend, and an isolated build fetches it from PyPI per run.
+python3 -m pip install -e "${REPO_ROOT}" --no-deps --no-build-isolation -c "${CONSTRAINTS}"
 
 python3 -c "import tileops, tilelang; print('install_tileops: tileops + tilelang import OK')"

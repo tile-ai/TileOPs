@@ -39,9 +39,10 @@ ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
 # minor refuses to load beside this torch, so vllm's pin is met by the extension-free CPU wheel.
 RUN uv pip install "torch==2.13.0+cu132" "torchvision==0.28.0+cu132"
 # tilelang's build backend and runtime deps, so its stage can use --no-build-isolation. The wheel
-# cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22.
+# cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22. setuptools-scm is tileops'
+# backend, baked in for the same reason.
 RUN uv pip install \
-        setuptools wheel ninja scikit-build-core patchelf cmake \
+        setuptools setuptools-scm wheel ninja scikit-build-core patchelf cmake \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 ARG MAX_JOBS=64
@@ -76,17 +77,11 @@ RUN set -e; \
 # Own layer: no wheel for this torch/py, so it builds from source and changes to the bench loop
 # below must not recompile it.
 FROM post-fa3 AS fa2
-# Retried like DeepGEMM below: setup.py takes a prebuilt wheel from GitHub releases, and
-# a dropped download fails a step that would have worked. FLASH_ATTENTION_FORCE_BUILD
-# compiles instead -- slower, and the way out where that download keeps failing.
+# setup.py takes a prebuilt wheel from GitHub releases. FLASH_ATTENTION_FORCE_BUILD compiles
+# instead -- slower, and the way out where that download is unavailable.
 ARG FLASH_ATTENTION_FORCE_BUILD=
-RUN for attempt in 1 2 3 4 5; do \
-        FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
-            uv pip install --no-build-isolation "flash-attn==2.8.3.post1" && break; \
-        echo "WARNING: flash-attn (FA2) install failed (attempt ${attempt}/5)"; \
-        [ "${attempt}" = 5 ] && exit 1; \
-        sleep "$((attempt * 10))"; \
-    done
+RUN FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
+        uv pip install --no-build-isolation "flash-attn==2.8.3.post1"
 
 # This vllm and no other: its apache-tvm-ffi pin (0.1.11) is the one the tilelang commit needs.
 # Versions come from constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
@@ -112,23 +107,10 @@ RUN { mkdir -p /tmp/DeepGEMM \
         && cd /tmp/DeepGEMM \
         && git init -q \
         && git remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
-        && for attempt in 1 2 3 4 5; do \
-            git -c http.version=HTTP/1.1 fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" && break; \
-            status="$?"; \
-            echo "WARNING: DeepGEMM fetch failed (attempt ${attempt}/5, status ${status})"; \
-            if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
-            sleep "$((attempt * 10))"; \
-        done \
+        && git fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" \
         && git checkout -q FETCH_HEAD \
-        && for attempt in 1 2 3 4 5; do \
-            git -c http.version=HTTP/1.1 submodule update --init --depth 1 --jobs 1 \
-                third-party/cutlass third-party/fmt && break; \
-            status="$?"; \
-            echo "WARNING: DeepGEMM submodule fetch failed (attempt ${attempt}/5, status ${status})"; \
-            rm -rf third-party/cutlass third-party/fmt .git/modules/third-party/cutlass .git/modules/third-party/fmt; \
-            if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
-            sleep "$((attempt * 10))"; \
-        done \
+        && git submodule update --init --depth 1 --jobs 1 \
+            third-party/cutlass third-party/fmt \
         && DG_FORCE_BUILD=1 uv pip install --no-build-isolation --no-deps .; } \
     || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
     rm -rf /tmp/DeepGEMM
@@ -141,22 +123,15 @@ ARG TILELANG_GIT_SHA
 ARG TILELANG_VERSION
 # --no-deps: never re-resolve the cu132 stack. --reinstall: a same-version PyPI tilelang must not
 # read as already satisfied. `pip wheel` stays on pip — uv has no equivalent subcommand.
+# cutlass and tvm only: composable_kernel is the ROCm backend's, and this image builds CUDA.
 RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         mkdir -p /tmp/tilelang && cd /tmp/tilelang \
         && git init -q \
         && git remote add origin https://github.com/tile-ai/tilelang.git \
-        && for attempt in 1 2 3 4 5; do \
-            git -c http.version=HTTP/1.1 fetch --depth 1 origin "${TILELANG_GIT_SHA}" && break; \
-            echo "WARNING: tilelang fetch failed (attempt ${attempt}/5)"; \
-            [ "${attempt}" = 5 ] && exit 1; sleep "$((attempt * 10))"; \
-        done \
+        && git fetch --depth 1 origin "${TILELANG_GIT_SHA}" \
         && git checkout -q FETCH_HEAD \
-        && for attempt in 1 2 3 4 5; do \
-            git -c http.version=HTTP/1.1 submodule update --init --depth 1 --recursive --jobs 1 \
-                3rdparty/composable_kernel 3rdparty/cutlass 3rdparty/tvm && break; \
-            echo "WARNING: tilelang submodule fetch failed (attempt ${attempt}/5)"; \
-            [ "${attempt}" = 5 ] && exit 1; sleep "$((attempt * 10))"; \
-        done \
+        && git submodule update --init --depth 1 --recursive --jobs 1 \
+            3rdparty/cutlass 3rdparty/tvm \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
             python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \

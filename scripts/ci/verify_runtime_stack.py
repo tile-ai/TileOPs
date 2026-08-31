@@ -66,6 +66,13 @@ if bindings_pin is not None and not bindings_pin.specifier.contains(
         f"{bindings_pin.specifier}. Install cupti-python with --no-deps."
     )
 
+# install_tileops.sh builds tileops with --no-build-isolation, which resolves no backend itself.
+for dist in ("setuptools", "setuptools-scm", "wheel"):
+    try:
+        md.version(dist)
+    except md.PackageNotFoundError:
+        sys.exit(f"FAIL: {dist} is missing; tileops cannot build with --no-build-isolation.")
+
 # A missing baseline costs the column, not the run, so nothing else notices. FA3 is
 # imported because a returned 0 has meant an installed wrapper with no extension behind
 # it; the rest are checked for presence, since flag_gems and flashinfer want a device.
