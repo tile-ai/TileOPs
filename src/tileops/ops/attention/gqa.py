@@ -133,38 +133,124 @@ def _build_packed_prefill_kernel(
 
 
 class GroupedQueryAttentionDenseFwdOp(Op):
-    r"""Shape-agnostic dense BSHD grouped-query attention for prefill and contiguous decode.
+    r"""Dense BSHD grouped-query attention, inferred from each call.
 
-    Let $g = H / H_{kv}$ and $r(h) = \lfloor h / g \rfloor$ map query head
-    $h$ to its KV head. Rectangular attention aligns the two sequences at
-    the bottom right, placing query row $i$ at key position
+    The logical dimensions $B$, $S_q$, $S_{kv}$, $H$, $H_{kv}$, and $D$,
+    together with the input dtype, are derived from the ``forward`` tensors;
+    no tensor dimension is committed at construction. The constructor fixes
+    only attention semantics such as masking, score scaling, softcap, window,
+    output dtype, and RoPE mode.
+
+    Each call is validated from its tensors, then resolved through
+    `Op.get_or_build_kernel`; one Op instance can therefore serve and cache
+    implementations for multiple input shapes.
+
+    Conceptually, attention computes scores $S=QK^{\mathsf T}$, normalizes
+    them into probabilities $P=\operatorname{softmax}(S)$, then reduces the
+    values as $O=PV$. This op extends that framework by optionally scaling and
+    rotating Q/K before the QK product, and by applying score scale, softcap,
+    and visibility masks before softmax. The detailed equations below use $Z$
+    for the transformed QK score, $L$ for the final softmax logit, and $P$ for
+    the attention probability.
+
+    Public tensor layouts are:
+
+    | Tensor | Shape |
+    | --- | --- |
+    | Q | $[B \times S_q \times H \times D]$ |
+    | K, V | $[B \times S_{kv} \times H_{kv} \times D]$ |
+    | Output | $[B \times S_q \times H \times D]$ |
+
+    Indices are $b$ for batch, $i$ for a query row, $j$ for a KV row, and
+    $h$ for a query head. $H$ must be divisible by $H_{kv}$. With
+    $g = H / H_{kv}$, $r(h) = \lfloor h / g \rfloor$ is the KV head serving
+    query head $h$.
+
+    For rectangular attention, query row $i$ is bottom-right aligned with the
+    KV sequence. Its absolute position in the KV coordinate system is
 
     $$
     p_i = i + S_{kv} - S_q .
     $$
 
-    Causal attention admits key position $j$ when $j \le p_i$; a finite
-    window additionally requires
-    $p_i - \mathrm{left} \le j \le p_i + \mathrm{right}$. Fused RoPE rotates
-    Q at $p_i$ and K at $j$. Causal and fused-RoPE calls therefore require
-    $S_q \le S_{kv}$.
+    Here $p_i$ is a sequence position, not an attention probability. It is used
+    by causal/window masking and by the query-side RoPE transform.
 
-    FP8 inputs are dequantized with per-KV-head scales; each query head uses
-    the scale of its KV group:
+    FP8 inputs use per-KV-head scales; for 16-bit inputs the three scales below
+    are implicitly one:
 
     $$
     \begin{aligned}
-    \hat q_{b,i,h} &= q_{b,i,h} \cdot \mathrm{qscale}_{b,\,r(h)} \\
-    \hat k_{b,j,r} &= k_{b,j,r} \cdot \mathrm{kscale}_{b,\,r} \\
-    \hat v_{b,j,r} &= v_{b,j,r} \cdot \mathrm{vscale}_{b,\,r}
+    \hat Q_{b,i,h} &= Q_{b,i,h} \cdot \mathrm{qscale}_{b,\,r(h)}, \\
+    \hat K_{b,j,r} &= K_{b,j,r} \cdot \mathrm{kscale}_{b,\,r}, \\
+    V'_{b,j,r} &= V_{b,j,r} \cdot \mathrm{vscale}_{b,\,r}.
     \end{aligned}
     $$
 
-    With $\alpha$ = ``sm_scale`` (default $1 / \sqrt{D}$), the raw score is
-    $z = \alpha \, \hat q \cdot \hat k$; with ``softcap`` $c > 0$ it becomes
-    $c \tanh(z / c)$ before masking and softmax. Dot products, softmax, and
-    the weighted V reduction accumulate in FP32; the result is cast to the
-    configured output dtype.
+    With fused RoPE, let $R_x^{(d_r,\,\ell)}$ rotate the first ``rotary_dim``
+    dimensions at sequence position $x$ using ``rope_layout`` $\ell$;
+    otherwise $R$ is the identity:
+
+    $$
+    Q'_{b,i,h} = R_{p_i}^{(d_r,\,\ell)}(\hat Q_{b,i,h}),
+    \qquad
+    K'_{b,j,r} = R_j^{(d_r,\,\ell)}(\hat K_{b,j,r}).
+    $$
+
+    The transformed QK product is
+
+    $$
+    Z_{b,h,i,j} = \alpha\,
+        \langle Q'_{b,i,h}, K'_{b,j,r(h)} \rangle,
+    $$
+
+    where $\alpha$ is ``sm_scale`` (default $1/\sqrt D$). Key $j$ belongs to
+    the visible set $\mathcal V_i$ exactly when
+
+    $$
+    (\neg\mathrm{causal} \;\lor\; j \le p_i)
+    \;\land\; (w_L=-1 \;\lor\; j \ge p_i-w_L)
+    \;\land\; (w_R=-1 \;\lor\; j \le p_i+w_R),
+    $$
+
+    with $w_L=$ ``window_size_left`` and $w_R=$ ``window_size_right``. With
+    $c=$ ``softcap``, softcap and masking produce the final logits
+
+    $$
+    L_{b,h,i,j} =
+        \begin{cases}
+        c\tanh(Z_{b,h,i,j}/c), & j\in\mathcal V_i \text{ and } c>0, \\
+        Z_{b,h,i,j}, & j\in\mathcal V_i \text{ and } c=0, \\
+        -\infty, & j\notin\mathcal V_i.
+        \end{cases}
+    $$
+
+    Finally, softmax and the PV reduction produce
+
+    $$
+    \begin{aligned}
+    P_{b,h,i,j} &=
+        \operatorname{softmax}_{j}(L_{b,h,i,j}), \\
+    O_{b,i,h} &= \sum_j P_{b,h,i,j}\,V'_{b,j,r(h)}.
+    \end{aligned}
+    $$
+
+    Accumulation is FP32 and ``dtype`` selects the output cast. The remaining
+    constructor parameters affect the equations as follows:
+
+    | Parameter | Effect |
+    | --- | --- |
+    | ``is_causal`` | Enables the $j \le p_i$ visibility condition |
+    | ``sm_scale`` | Sets $\alpha$ |
+    | ``softcap`` | Sets $c$ in the logit transform |
+    | ``window_size_left/right`` | Set $w_L$ and $w_R$ in $\mathcal V_i$ |
+    | ``pos_encoding_mode`` | Selects identity or $R_p^{(d_r,\,\ell)}$ |
+    | ``rotary_dim`` | Sets $d_r$; ``None`` means $D$ |
+    | ``rope_layout`` | Sets the NeoX or interleaved pairing $\ell$ |
+    | ``dtype`` | Selects the output cast |
+    | ``target`` | Selects the backend implementation; it does not change the formula |
+
+    Causal and fused-RoPE calls require $S_q \le S_{kv}$.
     """
 
     def __init__(
@@ -181,12 +267,12 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         *,
         target: Target = None,
     ) -> None:
-        r"""Build the op. Tensor shapes arrive with each ``forward`` call.
+        r"""Configure the op. Tensor shapes and input dtype come from each call.
 
         Args:
             is_causal: Apply the causal mask, bottom-right aligned.
             sm_scale: Score scale $\alpha$. ``None`` resolves to
-                $1 / \sqrt{D}$ from the call's head dimension.
+                $1 / \sqrt{D}$ using the current call's head dimension.
             softcap: Positive cap $c$ applying $c \tanh(z / c)$ to raw
                 scores. ``None`` or ``0`` disables capping.
             window_size_left: Keys admitted left of $p_i$; ``-1`` means
@@ -224,8 +310,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         self.is_causal = is_causal
         self.sm_scale = sm_scale
-        # Normalize the shape-independent default now. ``sm_scale`` is resolved
-        # from the current call's D when this Op asks for an implementation.
+        # The default depends on D and is resolved when an implementation is
+        # requested for the current call.
         self.softcap = _score_softcap(softcap)
         if window_size_left < -1:
             raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
