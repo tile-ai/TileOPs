@@ -139,12 +139,19 @@ def _make_rope_non_neox_1d(
 ) -> object:
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
 
-    cos/sin shape: (seq_len, head_dim // 2). Applied with interleaving to match
-    the adjacent-pair pattern.
+    cos/sin shape: (seq_len, head_dim // 2), one entry per pair.
+    The arithmetic is f32 and rounds once.
     """
     half = head_dim // 2
-    N_total = seq_len * head_dim
+    n_pairs = seq_len * half
     block_size = threads * num_per_thread
+    rows_per_block = block_size // head_dim
+    staged = (
+        num_per_thread % 2 == 0
+        and rows_per_block > 0
+        and block_size % head_dim == 0
+        and seq_len % rows_per_block == 0
+    )
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
@@ -155,24 +162,37 @@ def _make_rope_non_neox_1d(
             sin_table: T.Tensor((seq_len, half), dtype),
             y: T.Tensor((seq_len, head_dim), dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat_idx = (bx * threads_arg + i) * npt_arg + j
-                    row = flat_idx // head_dim
-                    col = flat_idx % head_dim
-                    freq_idx = col // 2  # pair index
-                    c = cos_table[row, freq_idx]
-                    s = sin_table[row, freq_idx]
-                    val = x[row, col]
-                    # For even col: paired with x[row, col+1] (negated)
-                    # For odd col: paired with x[row, col-1]
-                    is_even = (col % 2) == 0
-                    rotated = T.if_then_else(
-                        is_even,
-                        -x[row, col + 1],
-                        x[row, col - 1],
-                    )
-                    y[row, col] = val * c + rotated * s
+            if staged:
+                with T.Kernel(seq_len // rows_per_block, threads=threads_arg) as bx:
+                    xs = T.alloc_shared((rows_per_block, head_dim), dtype)
+                    ys = T.alloc_shared((rows_per_block, head_dim), dtype)
+                    row0 = bx * rows_per_block
+                    T.copy(x[row0 : row0 + rows_per_block, :], xs)
+                    for i, j in T.Parallel(threads_arg, npt_arg // 2):
+                        slot = i * npt_arg + j * 2
+                        row = slot // head_dim
+                        col = slot % head_dim
+                        pair = col // 2
+                        c = T.Cast("float32", cos_table[row0 + row, pair])
+                        s = T.Cast("float32", sin_table[row0 + row, pair])
+                        x_even = T.Cast("float32", xs[row, col])
+                        x_odd = T.Cast("float32", xs[row, col + 1])
+                        ys[row, col] = T.Cast(dtype, x_even * c - x_odd * s)
+                        ys[row, col + 1] = T.Cast(dtype, x_odd * c + x_even * s)
+                    T.copy(ys, y[row0 : row0 + rows_per_block, :])
+            else:
+                with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        pair_idx = (bx * threads_arg + i) * npt_arg + j
+                        if pair_idx < n_pairs:
+                            row = pair_idx // half
+                            pair = pair_idx % half
+                            c = T.Cast("float32", cos_table[row, pair])
+                            s = T.Cast("float32", sin_table[row, pair])
+                            x_even = T.Cast("float32", x[row, pair * 2])
+                            x_odd = T.Cast("float32", x[row, pair * 2 + 1])
+                            y[row, pair * 2] = T.Cast(dtype, x_even * c - x_odd * s)
+                            y[row, pair * 2 + 1] = T.Cast(dtype, x_odd * c + x_even * s)
 
         return main
 
@@ -270,44 +290,59 @@ def _make_rope_non_neox_2d(
     threads: int = 256,
     num_per_thread: int = 8,
 ) -> object:
-    """2D non-neox (RoFormer) RoPE kernel: (batch, seq_len, num_heads, head_dim)."""
+    """2D non-neox (RoFormer) RoPE kernel: (batch, seq_len, num_heads, head_dim).
+
+    The arithmetic is f32 and rounds once.
+    """
     half = head_dim // 2
-    N_total = batch * seq_len * num_heads * head_dim
+    n_total = batch * seq_len * num_heads * head_dim
+    n_pairs = n_total // 2
     block_size = threads * num_per_thread
-    stride_b = seq_len * num_heads * head_dim
-    stride_s = num_heads * head_dim
+
+    staged = num_per_thread % 2 == 0 and n_total % block_size == 0 and block_size % head_dim == 0
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
-            x: T.Tensor((N_total,), dtype),
+            x: T.Tensor((n_total,), dtype),
             cos_table: T.Tensor((seq_len, half), dtype),
             sin_table: T.Tensor((seq_len, half), dtype),
-            y: T.Tensor((N_total,), dtype),
+            y: T.Tensor((n_total,), dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat_idx = (bx * threads_arg + i) * npt_arg + j
-                    rem = flat_idx % stride_b
-                    s_idx = rem // stride_s
-                    rem2 = rem % stride_s
-                    col = rem2 % head_dim
-
-                    freq_idx = col // 2
-                    c = cos_table[s_idx, freq_idx]
-                    s = sin_table[s_idx, freq_idx]
-                    val = x[flat_idx]
-
-                    # Adjacent pair: even pairs with next, odd pairs with previous.
-                    # Compute the same pair as a +/-1 flat offset to avoid a
-                    # TileLang 0.1.9 lowering bug for if_then_else-derived indices.
-                    col_parity = col % 2
-                    paired_idx = flat_idx + 1 - 2 * col_parity
-                    paired_val = x[paired_idx]
-
-                    rotated = T.if_then_else(col_parity == 0, -paired_val, paired_val)
-                    y[flat_idx] = val * c + rotated * s
+            if staged:
+                with T.Kernel(T.ceildiv(n_total, block_size), threads=threads_arg) as bx:
+                    xs = T.alloc_shared((block_size,), dtype)
+                    ys = T.alloc_shared((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], xs)
+                    for i, j in T.Parallel(threads_arg, npt_arg // 2):
+                        slot = i * npt_arg + j * 2
+                        idx = bx * block_size + slot
+                        head = idx // head_dim
+                        pair = (idx % head_dim) // 2
+                        s_idx = (head // num_heads) % seq_len
+                        c = T.Cast("float32", cos_table[s_idx, pair])
+                        s = T.Cast("float32", sin_table[s_idx, pair])
+                        x_even = T.Cast("float32", xs[slot])
+                        x_odd = T.Cast("float32", xs[slot + 1])
+                        ys[slot] = T.Cast(dtype, x_even * c - x_odd * s)
+                        ys[slot + 1] = T.Cast(dtype, x_odd * c + x_even * s)
+                    T.copy(ys, y[bx * block_size : (bx + 1) * block_size])
+            else:
+                with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        pair_idx = (bx * threads_arg + i) * npt_arg + j
+                        if pair_idx < n_pairs:
+                            head = pair_idx // (head_dim // 2)
+                            pair = pair_idx % (head_dim // 2)
+                            s_idx = (head // num_heads) % seq_len
+                            even = head * head_dim + pair * 2
+                            c = T.Cast("float32", cos_table[s_idx, pair])
+                            s = T.Cast("float32", sin_table[s_idx, pair])
+                            x_even = T.Cast("float32", x[even])
+                            x_odd = T.Cast("float32", x[even + 1])
+                            y[even] = T.Cast(dtype, x_even * c - x_odd * s)
+                            y[even + 1] = T.Cast(dtype, x_odd * c + x_even * s)
 
         return main
 
@@ -418,7 +453,10 @@ class _RopeKernelBase(Kernel):
 
     @property
     def default_config(self) -> dict:
-        npt = 4 if self.dtype == torch.float32 else 8
+        if self.ROTATION_STYLE == "non_neox":
+            npt = 8 if self.dtype == torch.float32 else 16
+            return {"threads": 128, "num_per_thread": npt}
+        npt = 2 if self.dtype == torch.float32 else 4
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
