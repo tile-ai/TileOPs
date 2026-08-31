@@ -136,21 +136,6 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
 
 
 @pytest.mark.smoke
-def test_moe_unpermute_serves_two_dtypes_from_one_instance():
-    from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
-
-    total_tokens, top_k, hidden = 16, 2, 128
-    numel = total_tokens * top_k
-    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden, padded_batch_sum=numel)
-    fwd_idx = torch.arange(numel, device="cuda", dtype=torch.int32)
-    for dtype in _DTYPES:
-        mm2_pad = torch.randn(numel, hidden, dtype=dtype, device="cuda")
-        weights = torch.rand(total_tokens, top_k, dtype=torch.float32, device="cuda")
-        assert op(mm2_pad, fwd_idx, weights).dtype == dtype
-    _assert_two_entries(op)
-
-
-@pytest.mark.smoke
 def test_cb_producer_serves_two_dtypes_from_one_instance():
     from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 

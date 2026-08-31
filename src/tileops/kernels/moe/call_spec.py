@@ -27,7 +27,7 @@ class PrePermuteCall(CallSpec):
     num_tokens: int = 0
     hidden_size: int = 0
     top_k: int = 0
-    routing_input_kind: str = "topk_ids"
+    routing_input_kind: str = "local_expert_ids"
 
 
 @dataclasses.dataclass(frozen=True)

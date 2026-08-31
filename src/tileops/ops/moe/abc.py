@@ -52,9 +52,8 @@ def _validate_fused_moe_experts_dtypes(
     optional inputs on top. Keeping the common body here avoids drift between
     implementations.
     """
-    allowed = (torch.float16, torch.bfloat16)
-    if op_dtype not in allowed:
-        raise ValueError(f"hidden_states.dtype must be one of {allowed}, got {op_dtype}")
+    if op_dtype is not torch.bfloat16:
+        raise ValueError(f"hidden_states.dtype must be torch.bfloat16, got {op_dtype}")
     for name, t in (
         ("output", output),
         ("hidden_states", hidden_states),
@@ -68,8 +67,8 @@ def _validate_fused_moe_experts_dtypes(
     if topk_ids.dtype != torch.int32:
         raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
     for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
-        if t.dtype not in allowed:
-            raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
+        if t.dtype is not torch.bfloat16:
+            raise ValueError(f"Expected {name}.dtype == torch.bfloat16, got {t.dtype}")
 
 
 @dataclass
@@ -136,7 +135,6 @@ class FusedMoEPrepareAndFinalize(ABC):
         topk_weights: Tensor,  # [T, K] float32
         topk_ids: Tensor,  # [T, K] int32
         num_experts: int,
-        expert_map: Tensor | None,  # [E_global] int32, for EP local filtering
     ) -> PrepareResult:
         """Post-conditions:
         result.hidden_q.shape[1] == H
@@ -200,17 +198,13 @@ class FusedMoEExperts(Op, ABC):
         w_down: Tensor,  # [E_local, H, F]
         topk_weights: Tensor,  # [T', K] float32
         topk_ids: Tensor,  # [T', K] int32
-        expert_map: Tensor | None,  # [E] int32 global-to-local ids; None if all local
         workspace1: Tensor,
         workspace2: Tensor,
-        num_experts: int,
     ) -> None:
         """Write expert computation result to output in-place.
 
-        The number of experts this rank owns is fixed at construction — it sizes
-        the kernels. ``expert_map`` carries the global-to-local ids the kernels
-        read at launch, and its presence is what selects the expert-parallel
-        path.
+        Expert IDs are local IDs in ``[0, num_experts)``.  Global placement and
+        communication belong to EPDispatch before this local compute boundary.
         """
 
 

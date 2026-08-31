@@ -10,11 +10,8 @@ from .abc import (
 )
 from .contracts import (
     ContiguousLayoutSpec,
-    InversePermuteContext,
     MaskedLayoutSpec,
-    MaterializedExpertLayout,
     NoScaleComputeSpec,
-    PrePermuteOutput,
     RoutingEpilogueSpec,
 )
 from .fused_moe import FusedMoe, FusedMoeFwdOp
@@ -25,8 +22,6 @@ from .routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
     MoeGateUpFwdOp,
     MoeGroupedGemmNopadFwdOp,
-    MoePermuteNopadFwdOp,
-    MoeUnpermuteFwdOp,
 )
 from .shared_fused_moe import SharedFusedMoE
 from .staged import (
@@ -45,21 +40,16 @@ __all__ = [
     "FusedMoe",
     "FusedMoeFwdOp",
     "FusedTopKOp",
-    "InversePermuteContext",
     "MaskedLayoutSpec",
-    "MaterializedExpertLayout",
     "MoEPrepareAndFinalizeNoDPEP",
     "MoeExpertMLPFwdOp",
     "MoeGateUpFwdOp",
     "MoeGroupedGemmFwdOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
-    "MoePermuteNopadFwdOp",
     "MoePostPermuteFwdOp",
     "MoePrePermuteFwdOp",
-    "MoeUnpermuteFwdOp",
     "NoScaleComputeSpec",
-    "PrePermuteOutput",
     "PrepareResult",
     "RoutingEpilogueSpec",
     "SharedFusedMoE",

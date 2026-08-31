@@ -46,8 +46,6 @@ class FusedMoe(Op):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        expert_map: Optional[torch.Tensor] = None,
-        num_experts_local: Optional[int] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -65,24 +63,10 @@ class FusedMoe(Op):
             scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
             renormalize: Renormalize top-k weights to sum to 1.
             routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
-            expert_map: [E_global] int32 for Expert Parallel local filtering.
-            num_experts_local: Number of experts this rank owns. Required with
-                `expert_map` and rejected without it: it sizes the expert
-                pipeline's kernels, which are built here, and reading it off the
-                map would mean a device read at construction.
             prepare_finalize: Override the PrepareAndFinalize implementation.
             experts: Override the Experts implementation.
             kernel_map: Override the dispatched kernel map.
         """
-        if (expert_map is None) != (num_experts_local is None):
-            raise ValueError(
-                "expert_map and num_experts_local go together: the map carries the "
-                "global-to-local ids read at launch, the count sizes the kernels "
-                "built here. Got "
-                f"expert_map={'a map' if expert_map is not None else None}, "
-                f"num_experts_local={num_experts_local}."
-            )
-
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
@@ -91,8 +75,6 @@ class FusedMoe(Op):
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.routed_scaling_factor = routed_scaling_factor
-        self.expert_map = expert_map
-        self.num_experts_local = num_experts if num_experts_local is None else num_experts_local
 
         self.dispatch_kernel(kernel_map)
 
@@ -147,7 +129,6 @@ class FusedMoe(Op):
             self._experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
-                num_experts_local=self.num_experts_local,
                 top_k=top_k,
                 hidden_size=hidden_size,
                 ffn_size=ffn_size,
@@ -195,7 +176,6 @@ class FusedMoe(Op):
             topk_weights,
             topk_ids,
             self.num_experts,
-            expert_map=self.expert_map,
         )
 
         T_prime = r.hidden_q.shape[0]
@@ -223,10 +203,8 @@ class FusedMoe(Op):
             w_down,
             r.topk_weights,
             r.topk_ids,
-            expert_map=self.expert_map,
             workspace1=ws1,
             workspace2=ws2,
-            num_experts=self.num_experts,
         )
 
         self._prepare.finalize(
@@ -263,8 +241,6 @@ class FusedMoeFwdOp(FusedMoe):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        expert_map: Optional[torch.Tensor] = None,
-        num_experts_local: Optional[int] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -294,8 +270,6 @@ class FusedMoeFwdOp(FusedMoe):
             scoring_func=scoring_func,
             renormalize=renormalize,
             routed_scaling_factor=routed_scaling_factor,
-            expert_map=expert_map,
-            num_experts_local=num_experts_local,
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,
