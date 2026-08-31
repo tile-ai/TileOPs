@@ -56,8 +56,8 @@ def test_layout_presets_expose_only_supported_semantics() -> None:
     with pytest.raises(ValueError, match="non-negative"):
         MaskedLayoutSpec(max_m=-1)
 
-    with pytest.raises(ValueError, match="num_experts must be positive"):
-        MoePrePermuteFwdOp(physical, num_experts=0)
+    with pytest.raises(ValueError, match="num_local_experts must be positive"):
+        MoePrePermuteFwdOp(physical, num_local_experts=0)
 
 
 def test_default_public_surface_hides_kernel_author_and_metadata_types() -> None:
@@ -239,7 +239,7 @@ def test_compute_and_epilogue_specs_are_minimal_and_frozen() -> None:
     with pytest.raises(TypeError, match="NoScaleComputeSpec"):
         MoeGroupedGemmFwdOp(compute=0)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="RoutingEpilogueSpec"):
-        MoePostPermuteFwdOp(epilogue=0)  # type: ignore[arg-type]
+        MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum(), epilogue=0)  # type: ignore[arg-type]
 
 
 def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None:
@@ -376,7 +376,7 @@ def test_public_ops_build_complete_calls_before_selection() -> None:
     hidden = torch.empty(2, 8, dtype=torch.bfloat16, device="cuda")
     topk_ids = torch.tensor([[0], [1]], dtype=torch.int32, device="cuda")
     pre_call = MoePrePermuteFwdOp(
-        ContiguousLayoutSpec.tight_physical_psum(), num_experts=2
+        ContiguousLayoutSpec.tight_physical_psum(), num_local_experts=2
     ).make_call(hidden, topk_ids)
     assert (
         pre_call.num_experts,
@@ -445,13 +445,13 @@ def test_staged_wiring_builds_all_family_calls_without_an_executable_candidate()
         num_tokens=2,
         top_k=1,
     )
-    post_call = MoePostPermuteFwdOp(RoutingEpilogueSpec()).make_call(
+    post_call = MoePostPermuteFwdOp(layout.layout, RoutingEpilogueSpec()).make_call(
         torch.empty(2, 8, dtype=torch.bfloat16, device=device),
-        context,
         torch.ones(2, 1, dtype=torch.float32, device=device),
+        context.inverse_indices,
     )
     assert post_call.layout_key == "tight_physical_psum"
-    assert (post_call.num_experts, post_call.materialized_rows) == (2, 2)
+    assert post_call.materialized_rows == 2
     assert (post_call.num_tokens, post_call.top_k, post_call.hidden_size) == (2, 1, 8)
 
 
@@ -469,11 +469,11 @@ def test_post_permute_rejects_wrong_masked_geometry_with_same_row_count() -> Non
     )
     wrong_geometry = torch.empty(1, 8, 4, dtype=torch.bfloat16, device=device)
 
-    with pytest.raises(ValueError, match="leading dimensions"):
-        MoePostPermuteFwdOp().make_call(
+    with pytest.raises(ValueError, match="masked expert_output"):
+        MoePostPermuteFwdOp(layout.layout).make_call(
             wrong_geometry,
-            context,
             torch.ones(1, 1, dtype=torch.float32, device=device),
+            context.inverse_indices,
         )
 
 
@@ -509,9 +509,36 @@ def test_expert_mlp_forwards_only_caller_replacements_to_matching_delegates() ->
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
-def test_public_op_without_candidates_fails_explicitly() -> None:
+def test_pre_permute_ships_the_tight_physical_candidate() -> None:
     hidden = torch.empty(1, 4, dtype=torch.bfloat16, device="cuda")
     topk_ids = torch.zeros(1, 1, dtype=torch.int32, device="cuda")
-    op = MoePrePermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum(), num_experts=1)
-    with pytest.raises(ValueError, match="no implementation serves this call"):
-        op(hidden, topk_ids)
+    op = MoePrePermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum(), num_local_experts=1)
+    call = op.make_call(hidden, topk_ids)
+    assert op.select_kernel_key(tuple(op.kernel_map), call) == "tight_physical_psum"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
+def test_staged_tight_pre_post_round_trip() -> None:
+    """The tensor-only staged boundary preserves every routed contribution."""
+    tokens, top_k, experts, hidden = 4, 2, 4, 64
+    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    local_ids = torch.tensor([[0, 1], [2, 3], [0, 2], [1, 3]], dtype=torch.int32, device="cuda")
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    layout = ContiguousLayoutSpec.tight_physical_psum()
+
+    pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
+    expert_input, metadata, inverse = pre(x, local_ids)
+    assert expert_input.shape == (tokens * top_k, hidden)
+    assert metadata.shape == (experts,)
+    assert inverse.shape == (tokens * top_k,)
+
+    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
+
+    post = MoePostPermuteFwdOp(layout)
+    output = post(expert_input, weights, inverse)
+    expected = x.float() * weights.sum(dim=1, keepdim=True)
+    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    assert pre.eval_roofline() == (0, 1616)
+
+    assert post.eval_roofline() == (1024, 1600)

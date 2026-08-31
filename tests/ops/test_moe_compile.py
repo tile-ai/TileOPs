@@ -26,7 +26,12 @@ from tests.compile_contract import (
     register_compile_contract,
     traced_call_targets,
 )
-from tileops.ops.moe import MoePermuteAlignFwdOp
+from tileops.ops.moe import (
+    ContiguousLayoutSpec,
+    MoePermuteAlignFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+)
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
 from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
@@ -88,6 +93,21 @@ def _permute_nopad_case(local: int = _NUM_EXPERTS, with_map: bool = False):
     return make, inputs, (1, 2, 3)
 
 
+def _pre_permute_case():
+    def make():
+        return MoePrePermuteFwdOp(
+            ContiguousLayoutSpec.tight_physical_psum(),
+            num_local_experts=_NUM_EXPERTS,
+        )
+
+    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    local_expert_ids = torch.randint(
+        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda"
+    )
+    # Atomic slot assignment makes expert_input and inverse_indices non-deterministic.
+    return make, (hidden_states, local_expert_ids), (1,)
+
+
 def _gate_up_case():
     numel, ffn, k = 64, 128, 128
 
@@ -109,6 +129,7 @@ def _grouped_gemm_nopad_case():
 _LEAF_CASES = {
     "permute_align": _permute_align_case,
     "permute_nopad": _permute_nopad_case,
+    "pre_permute": _pre_permute_case,
     # Supplying the map keeps the graph inside the same operator: the fake sizes the
     # four per-expert outputs from ``num_experts_local``, a constructor parameter, so
     # the map's contents never reach a traced region.
@@ -164,6 +185,31 @@ def test_unpermute_owns_its_graph_nodes() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
+def test_post_permute_owns_its_graph_nodes() -> None:
+    """The staged allocating and in-place registrations own their graph nodes."""
+    numel = _TOKENS * _TOP_K
+    expert_output = torch.randn(numel, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    inverse_indices = torch.arange(numel, dtype=torch.int32, device="cuda")
+    topk_weights = torch.rand(_TOKENS, _TOP_K, dtype=torch.float32, device="cuda")
+    out = torch.empty(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+
+    def make():
+        return MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+
+    assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices)
+    assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices, out)
+    compiled = _compile_cold(make(), expert_output, topk_weights, inverse_indices)
+    eager = (make()(expert_output, topk_weights, inverse_indices),)
+    _assert_same_layout(compiled, eager)
+    torch.testing.assert_close(compiled[0], eager[0])
+
+    out.zero_()
+    torch.compile(make(), fullgraph=True)(expert_output, topk_weights, inverse_indices, out)
+    torch.testing.assert_close(out, eager[0])
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
 def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     """A composite is not the unit of replacement, so it registers nothing.
 
@@ -211,6 +257,8 @@ for _op_cls in (
     MoePermuteAlignFwdOp,
     MoePermuteNopadFwdOp,
     MoeUnpermuteFwdOp,
+    MoePrePermuteFwdOp,
+    MoePostPermuteFwdOp,
     MoeGateUpFwdOp,
     MoeGroupedGemmNopadFwdOp,
 ):
