@@ -17,6 +17,8 @@ operators and nothing else. ``FusedMoeFwdOp`` is absent because the routing op i
 builds has no boundary yet.
 """
 
+import operator
+
 import pytest
 import torch
 
@@ -239,17 +241,27 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
         hidden_states.new_empty(0),
     )
     kwargs = {"num_experts": num_experts}
+    local_pipeline_leaves = (
+        experts._pre_permute,
+        experts._gate_up,
+        experts._gemm_down,
+        experts._post_permute,
+    )
     owned_by_leaves = {
         operator_overload(name)
-        for leaf in (experts._permute, experts._gate_up, experts._gemm_down, experts._unpermute)
+        for leaf in local_pipeline_leaves
         for name in type(leaf).compile_op_names
     }
 
     calls = traced_call_targets(experts, *args, **kwargs)
 
     assert calls, "the traced graph called nothing"
-    assert calls <= owned_by_leaves, (
-        f"graph holds nodes no leaf op owns: {sorted(str(c) for c in calls - owned_by_leaves)}"
+    # Temporary bridge from staged physical ends to the existing grouped-GEMM
+    # sizes/offsets ABI. These are the only tensor operations allowed outside a leaf.
+    layout_bridge = {torch.cat, operator.sub}
+    assert calls <= owned_by_leaves | layout_bridge, (
+        "graph holds unexpected nodes: "
+        f"{sorted(str(c) for c in calls - owned_by_leaves - layout_bridge)}"
     )
 
 
