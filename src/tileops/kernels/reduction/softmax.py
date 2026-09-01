@@ -581,14 +581,20 @@ def _softmax_fused_split_kernel(M: int, N: int, op_kind: str, dtype: str, seg_n:
                 else:
                     row_scale[0] = row_max[0] + T.log(row_sum[0])
 
+                # Indexed with the expression rather than a name bound to it:
+                # TileLang's parallel-loop verifier does not substitute the
+                # binding, and reads the store as j-independent.
                 for _, j in T.Parallel(1, seg_n):
-                    col = pid_s * seg_n + j
-                    with T.If(col < N):  # noqa: SIM117
+                    with T.If(pid_s * seg_n + j < N):  # noqa: SIM117
                         with T.Then():
                             if op_kind == "softmax":
-                                y[pid_m, col] = T.cast(shifted[0, j] * row_scale[0], dtype)
+                                y[pid_m, pid_s * seg_n + j] = T.cast(
+                                    shifted[0, j] * row_scale[0], dtype
+                                )
                             else:
-                                y[pid_m, col] = T.cast(held[0, j] - row_scale[0], dtype)
+                                y[pid_m, pid_s * seg_n + j] = T.cast(
+                                    held[0, j] - row_scale[0], dtype
+                                )
 
         return main
 
