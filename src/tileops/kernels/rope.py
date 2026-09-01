@@ -50,11 +50,11 @@ def _make_rope_neox_1d(
 ) -> object:
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
 
-    cos/sin are of shape (seq_len, head_dim // 2).
-    The kernel internally constructs full-dim cos/sin by duplication.
+    cos/sin are of shape (seq_len, head_dim // 2), one entry per rotated pair.
+    One thread per pair ``(c, c + half)``; the arithmetic is f32 and rounds once.
     """
     half = head_dim // 2
-    N_total = seq_len * head_dim
+    n_pairs = seq_len * half
     block_size = threads * num_per_thread
 
     @tilelang.jit(out_idx=[3])
@@ -66,24 +66,18 @@ def _make_rope_neox_1d(
             sin_table: T.Tensor((seq_len, half), dtype),
             y: T.Tensor((seq_len, head_dim), dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat_idx = (bx * threads_arg + i) * npt_arg + j
-                    row = flat_idx // head_dim
-                    col = flat_idx % head_dim
-                    # Neox: first half uses cos[col], second half uses cos[col - half]
-                    freq_idx = col % half
-                    c = cos_table[row, freq_idx]
-                    s = sin_table[row, freq_idx]
-                    val = x[row, col]
-                    # rotate_half: if col < half -> paired with x[row, col + half] (negated)
-                    # if col >= half -> paired with x[row, col - half]
-                    rotated = T.if_then_else(
-                        col < half,
-                        -x[row, col + half],
-                        x[row, col - half],
-                    )
-                    y[row, col] = val * c + rotated * s
+                    pair_idx = (bx * threads_arg + i) * npt_arg + j
+                    if pair_idx < n_pairs:
+                        row = pair_idx // half
+                        col = pair_idx % half
+                        c = T.Cast("float32", cos_table[row, col])
+                        s = T.Cast("float32", sin_table[row, col])
+                        x_low = T.Cast("float32", x[row, col])
+                        x_high = T.Cast("float32", x[row, col + half])
+                        y[row, col] = T.Cast(dtype, x_low * c - x_high * s)
+                        y[row, col + half] = T.Cast(dtype, x_high * c + x_low * s)
 
         return main
 
@@ -103,43 +97,36 @@ def _make_rope_neox_2d(
     """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
 
     cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
+    One thread per pair ``(c, c + half)``; the arithmetic is f32 and rounds once.
     """
     half = head_dim // 2
-    N_total = batch * seq_len * num_heads * head_dim
+    n_total = batch * seq_len * num_heads * head_dim
+    n_pairs = batch * seq_len * num_heads * half
     block_size = threads * num_per_thread
-    stride_b = seq_len * num_heads * head_dim
-    stride_s = num_heads * head_dim
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
-            x: T.Tensor((N_total,), dtype),
+            x: T.Tensor((n_total,), dtype),
             cos_table: T.Tensor((seq_len, half), dtype),
             sin_table: T.Tensor((seq_len, half), dtype),
-            y: T.Tensor((N_total,), dtype),
+            y: T.Tensor((n_total,), dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat_idx = (bx * threads_arg + i) * npt_arg + j
-                    rem = flat_idx % stride_b
-                    s_idx = rem // stride_s
-                    rem2 = rem % stride_s
-                    col = rem2 % head_dim
-
-                    freq_idx = col % half
-                    c = cos_table[s_idx, freq_idx]
-                    s = sin_table[s_idx, freq_idx]
-                    val = x[flat_idx]
-
-                    # Compute the paired index for rotate_half
-                    paired_col = T.if_then_else(col < half, col + half, col - half)
-                    head_base = flat_idx - col
-                    paired_idx = head_base + paired_col
-                    paired_val = x[paired_idx]
-
-                    rotated = T.if_then_else(col < half, -paired_val, paired_val)
-                    y[flat_idx] = val * c + rotated * s
+                    pair_idx = (bx * threads_arg + i) * npt_arg + j
+                    if pair_idx < n_pairs:
+                        head = pair_idx // half
+                        col = pair_idx % half
+                        s_idx = (head // num_heads) % seq_len
+                        low = head * head_dim + col
+                        c = T.Cast("float32", cos_table[s_idx, col])
+                        s = T.Cast("float32", sin_table[s_idx, col])
+                        x_low = T.Cast("float32", x[low])
+                        x_high = T.Cast("float32", x[low + half])
+                        y[low] = T.Cast(dtype, x_low * c - x_high * s)
+                        y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
 
         return main
 
