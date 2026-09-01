@@ -8,10 +8,8 @@ from .ops.moe import (
     MoeGroupedGemmFwdOp,
     MoeGroupedGemmNopadFwdOp,
     MoePermuteAlignFwdOp,
-    MoePermuteNopadFwdOp,
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
-    MoeUnpermuteFwdOp,
 )
 
 __all__ = [
@@ -24,6 +22,4 @@ __all__ = [
     "FusedMoeFwdOp",
     "MoeGateUpFwdOp",
     "MoeGroupedGemmNopadFwdOp",
-    "MoePermuteNopadFwdOp",
-    "MoeUnpermuteFwdOp",
 ]
