@@ -28,7 +28,6 @@ class MoEPrepareAndFinalizeNoDPEP(FusedMoEPrepareAndFinalize):
         topk_weights: Tensor,
         topk_ids: Tensor,
         num_experts: int,
-        expert_map: Tensor | None,
     ) -> PrepareResult:
         return PrepareResult(
             hidden_q=hidden,

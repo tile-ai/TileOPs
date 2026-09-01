@@ -12,7 +12,6 @@ import torch
 __all__ = [
     "ContiguousLayoutSpec",
     "ExpertLayoutMetadata",
-    "InversePermuteContext",
     "MGroupedLayoutSpec",
     "MaskedLayoutSpec",
     "MaskedMetadata",
@@ -20,9 +19,7 @@ __all__ = [
     "NoScaleComputeSpec",
     "PerRowExpertMetadata",
     "PhysicalPsumMetadata",
-    "PrePermuteOutput",
     "RoutingEpilogueSpec",
-    "routing_epilogue_reference",
 ]
 
 
@@ -311,116 +308,25 @@ class MaterializedExpertLayout:
 
 
 @dataclasses.dataclass(frozen=True)
-class InversePermuteContext:
-    """Opaque invocation-bound state consumed only by post-permute."""
-
-    inverse_indices: torch.Tensor
-    layout: MGroupedLayoutSpec
-    num_experts: int
-    num_tokens: int
-    top_k: int
-    materialized_rows: int
-    _materialization_token: object = dataclasses.field(
-        default_factory=object,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-
-    def __post_init__(self) -> None:
-        if (
-            self.num_experts < 0
-            or self.num_tokens < 0
-            or self.top_k <= 0
-            or self.materialized_rows < 0
-        ):
-            raise ValueError("invalid inverse-permute dimensions")
-        if isinstance(self.layout, MaskedLayoutSpec):
-            expected_rows = self.num_experts * self.layout.max_m
-            if self.materialized_rows != expected_rows:
-                raise ValueError(
-                    f"masked inverse context requires {expected_rows} rows, "
-                    f"got {self.materialized_rows}"
-                )
-        _validate_metadata_tensor(
-            self.inverse_indices,
-            name="inverse_indices",
-            length=self.num_tokens * self.top_k,
-        )
-
-    @classmethod
-    def for_layout(
-        cls,
-        inverse_indices: torch.Tensor,
-        expert_layout: MaterializedExpertLayout,
-        *,
-        num_tokens: int,
-        top_k: int,
-    ) -> "InversePermuteContext":
-        """Bind inverse indices to one materialized expert layout."""
-        context = cls(
-            inverse_indices=inverse_indices,
-            layout=expert_layout.layout,
-            num_experts=expert_layout.num_experts,
-            num_tokens=num_tokens,
-            top_k=top_k,
-            materialized_rows=expert_layout.materialized_rows,
-        )
-        object.__setattr__(context, "_materialization_token", expert_layout._materialization_token)
-        return context
-
-    @property
-    def selection_key(self) -> str:
-        """Return the concrete specialization key recorded in CallSpecs."""
-        return self.layout.selection_key
-
-    def device_value_guard(self) -> torch.Tensor:
-        """Return an asynchronous guard for local rows and non-local sentinels."""
-        return torch.all(
-            (self.inverse_indices >= -1) & (self.inverse_indices < self.materialized_rows)
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class PrePermuteOutput:
-    """Materialized expert input and state required by later stages."""
-
-    expert_input: torch.Tensor
-    expert_layout: MaterializedExpertLayout
-    inverse_permute_context: InversePermuteContext
-
-    def __post_init__(self) -> None:
-        self.expert_layout.validate_structure(self.expert_input)
-        context = self.inverse_permute_context
-        if context.layout != self.expert_layout.layout:
-            raise ValueError("inverse context and expert layout use different contracts")
-        if context.materialized_rows != self.expert_layout.materialized_rows:
-            raise ValueError("inverse context and expert layout have different row counts")
-        if context.num_experts != self.expert_layout.num_experts:
-            raise ValueError("inverse context and expert layout have different expert counts")
-        if context._materialization_token is not self.expert_layout._materialization_token:
-            raise ValueError("inverse context belongs to a different materialization")
-        if context.inverse_indices.device != self.expert_input.device:
-            raise ValueError("inverse context must be on the expert input device")
-
-
-@dataclasses.dataclass(frozen=True)
 class RoutingEpilogueSpec:
     """Exactly-once local routing epilogue with fixed reduction/cast semantics."""
 
     routed_scaling_factor: float = 1.0
+    output_dtype: torch.dtype | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.routed_scaling_factor) or self.routed_scaling_factor <= 0:
             raise ValueError("routed_scaling_factor must be finite and positive")
+        if self.output_dtype not in (None, torch.bfloat16, torch.float16):
+            raise ValueError("output_dtype must be None, torch.bfloat16, or torch.float16")
 
     @property
     def accumulation_dtype(self) -> torch.dtype:
         return torch.float32
 
-    @property
-    def output_dtype(self) -> torch.dtype:
-        return torch.bfloat16
+    def resolve_output_dtype(self, input_dtype: torch.dtype) -> torch.dtype:
+        """Use an explicit final dtype, or preserve the expert-output dtype."""
+        return input_dtype if self.output_dtype is None else self.output_dtype
 
 
 @dataclasses.dataclass(frozen=True)
@@ -434,45 +340,3 @@ class NoScaleComputeSpec:
     @property
     def output_dtype(self) -> torch.dtype:
         return torch.bfloat16
-
-
-def routing_epilogue_reference(
-    expert_output: torch.Tensor,
-    inverse_permute_context: InversePermuteContext,
-    topk_weights: torch.Tensor,
-    epilogue: RoutingEpilogueSpec,
-) -> torch.Tensor:
-    """Apply inverse permutation and the routing epilogue in declared order."""
-    context = inverse_permute_context
-    if not expert_output.is_contiguous():
-        raise ValueError("expert_output must be contiguous")
-    if expert_output.ndim not in (2, 3):
-        raise ValueError("expert_output must be contiguous rank 2 or masked rank 3")
-    physical_rows = expert_output.numel() // expert_output.shape[-1]
-    if physical_rows != context.materialized_rows:
-        raise ValueError("expert_output must match the inverse context's materialized rows")
-    if tuple(topk_weights.shape) != (context.num_tokens, context.top_k):
-        raise ValueError("topk_weights shape does not match the inverse context")
-    if topk_weights.dtype is not torch.float32:
-        raise TypeError("topk_weights must have dtype torch.float32")
-    if expert_output.device != context.inverse_indices.device:
-        raise ValueError("expert_output and inverse indices must share a device")
-    if expert_output.device != topk_weights.device:
-        raise ValueError("expert_output and topk_weights must share a device")
-
-    flat_indices = context.inverse_indices.to(torch.int64)
-    local = flat_indices >= 0
-    flat_output = expert_output.reshape(context.materialized_rows, expert_output.shape[-1])
-    if context.materialized_rows == 0:
-        gathered = expert_output.new_zeros(
-            (context.num_tokens * context.top_k, expert_output.shape[-1])
-        )
-    else:
-        gathered = flat_output.index_select(0, flat_indices.clamp_min(0))
-    gathered = gathered.reshape(context.num_tokens, context.top_k, -1)
-    local = local.reshape(context.num_tokens, context.top_k, 1)
-    weighted = gathered.to(epilogue.accumulation_dtype) * topk_weights.unsqueeze(-1)
-    weighted = torch.where(local, weighted, torch.zeros_like(weighted))
-    reduced = weighted.sum(dim=1, dtype=epilogue.accumulation_dtype)
-    scaled = reduced * epilogue.routed_scaling_factor
-    return scaled.to(epilogue.output_dtype)

@@ -1,17 +1,17 @@
-"""MoE token unpermute kernel (cutlass path).
+"""Weighted inverse-permute kernel used by staged MoE PostPermute.
 
 Scatters expert outputs back to original token order, applies routing weights,
 and reduces K expert contributions per token.
 
 One block per token (T blocks total):
-  - For each of K expert slots: load mm2_pad[fwd_idx[i*K+k]] (vectorized 128-bit)
+  - For each of K expert slots: load expert_output[inverse_indices[i*K+k]]
   - Multiply by topk_weights[i, k] (float32)
   - Accumulate into float32 thread-local buffer
   - Cast to output dtype and store to output[i]
 
 Inputs:
-  mm2_pad          [padded_batch_sum, H]  bf16/fp16 down-proj output (padded layout)
-  fwd_idx          [T*K]                  int32 forward mapping: flat_idx → padded slot
+  expert_output    [materialized_rows, H] bf16/fp16 expert output
+  inverse_indices  [T*K]                  int32 flat route → materialized row
   topk_weights     [T, K]                 float32 routing weights
 
 Output:
@@ -36,7 +36,7 @@ def _make_unpermute_kernel(
     num_tokens: int,
     top_k: int,
     hidden_size: int,
-    padded_batch_sum: int,
+    materialized_rows: int,
     dtype: str,
     scaling: float = 1.0,
 ):
@@ -65,8 +65,8 @@ def _make_unpermute_kernel(
     def _unpermute():
         @T.prim_func
         def _unpermute_main(
-            mm2_pad: T.Tensor([padded_batch_sum, hidden_size], dtype),
-            fwd_idx: T.Tensor([numel], "int32"),
+            expert_output: T.Tensor([materialized_rows, hidden_size], dtype),
+            inverse_indices: T.Tensor([numel], "int32"),
             topk_weights: T.Tensor([num_tokens, top_k], "float32"),
             output: T.Tensor([num_tokens, hidden_size], dtype),
         ):
@@ -84,15 +84,9 @@ def _make_unpermute_kernel(
                 # Serial fallback when top_k < 2 (pipeline depth > trip count).
                 for k in T.Pipelined(top_k, num_stages=2) if top_k >= 2 else T.serial(top_k):
                     flat_idx = token_idx * T.int32(top_k) + k
-                    raw_slot = fwd_idx[flat_idx]
-                    # EP mode: fwd_idx == -1 marks non-local expert → zero contribution.
-                    # Use slot 0 as a safe dummy read; zero the weight to suppress output.
-                    safe_slot = T.if_then_else(raw_slot >= T.int32(0), raw_slot, T.int32(0))
-                    weight = topk_weights[token_idx, k] * T.Cast(
-                        "float32",
-                        T.if_then_else(raw_slot >= T.int32(0), T.int32(1), T.int32(0)),
-                    )
-                    T.copy(mm2_pad[safe_slot, 0:hidden_size], src)
+                    slot = inverse_indices[flat_idx]
+                    weight = topk_weights[token_idx, k]
+                    T.copy(expert_output[slot, 0:hidden_size], src)
                     for j in T.Parallel(hidden_size):
                         acc[j] = acc[j] + T.Cast("float32", src[j]) * weight
 
@@ -112,19 +106,19 @@ def _make_unpermute_kernel(
 
 
 class MoeUnpermuteKernel(Kernel):
-    """MoE token unpermute kernel (cutlass path).
+    """Weighted inverse-permute kernel for staged PostPermute.
 
-    Scatters padded expert outputs back to original token order with
-    weighted reduction using the forward index mapping from moe_permute.
+    Restores token order from staged inverse indices and applies weighted
+    top-k reduction.
 
     Args:
         num_tokens: Number of input tokens T.
         top_k: Number of experts selected per token K.
         hidden_size: Hidden dimension H.
-        padded_batch_sum: Size of the padded mm2_pad buffer (≥ T*K).
+        materialized_rows: Number of materialized expert-output rows.
         scaling: Scalar multiplied into the reduced output before the cast/store
             (folds ``routed_scaling_factor``). Defaults to 1.0 (no scaling).
-        dtype: Data type of mm2_pad and output (bf16 or fp16).
+        dtype: Data type of expert output and final output (bf16 or fp16).
         config: Optional config dict. This kernel exposes no tunable knobs.
         tune: Whether to autotune. The launch geometry is one block per token
             with a fixed thread count, so ``autotune_configs`` is undefined and
@@ -133,8 +127,8 @@ class MoeUnpermuteKernel(Kernel):
 
     Example:
         ```python linenums="1"
-        kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
-        output = kernel(mm2_pad, fwd_idx, topk_weights)
+        kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, materialized_rows=8)
+        output = kernel(expert_output, inverse_indices, topk_weights)
         ```
     """
 
@@ -145,7 +139,7 @@ class MoeUnpermuteKernel(Kernel):
         num_tokens: int,
         top_k: int,
         hidden_size: int,
-        padded_batch_sum: int,
+        materialized_rows: int,
         scaling: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         config: Optional[dict] = None,
@@ -155,12 +149,12 @@ class MoeUnpermuteKernel(Kernel):
         self.num_tokens = num_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
-        self.padded_batch_sum = padded_batch_sum
+        self.materialized_rows = materialized_rows
         self.dtype = dtype
         self.numel = num_tokens * top_k
 
         self._unpermute_fn = _make_unpermute_kernel(
-            num_tokens, top_k, hidden_size, padded_batch_sum, self.dtype_str, scaling
+            num_tokens, top_k, hidden_size, materialized_rows, self.dtype_str, scaling
         )
 
         self.init_config(config, tune)
@@ -171,16 +165,16 @@ class MoeUnpermuteKernel(Kernel):
 
     def forward(
         self,
-        mm2_pad: torch.Tensor,
-        fwd_idx: torch.Tensor,
+        expert_output: torch.Tensor,
+        inverse_indices: torch.Tensor,
         topk_weights: torch.Tensor,
         out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run moe_unpermute.
 
         Args:
-            mm2_pad: [padded_batch_sum, H] bf16/fp16 down-proj output (padded layout).
-            fwd_idx: [T*K] int32 forward mapping: flat_idx → padded slot.
+            expert_output: [materialized_rows, H] bf16/fp16 expert output.
+            inverse_indices: [T*K] int32 flat route → materialized row.
             topk_weights: [T, K] float32 routing weights.
             out: optional [T, H] output buffer to write into and reuse across
                 calls. Allocated internally with ``torch.empty`` if omitted.
@@ -188,11 +182,11 @@ class MoeUnpermuteKernel(Kernel):
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).
         """
-        assert fwd_idx.dtype == torch.int32
+        assert inverse_indices.dtype == torch.int32
         assert topk_weights.dtype == torch.float32
-        assert mm2_pad.is_cuda
+        assert expert_output.is_cuda
 
-        dev = mm2_pad.device
+        dev = expert_output.device
         if out is None:
             output = torch.empty((self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
         else:
@@ -203,21 +197,21 @@ class MoeUnpermuteKernel(Kernel):
                 )
             if out.dtype != self.dtype:
                 raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
-            # The kernel writes ``out`` on mm2_pad's device as a row-major compact
+            # The kernel writes ``out`` on expert_output's device as a row-major compact
             # tensor; a cross-device or non-contiguous ``out`` would scatter the
             # store to the wrong memory. Reject rather than corrupt silently.
             if out.device != dev:
                 raise ValueError(f"out device must be {dev}, got {out.device}")
             if not out.is_contiguous():
                 raise ValueError("out must be contiguous")
-            # The kernel reads ``mm2_pad`` (gathered per token) while writing
-            # ``out`` concurrently, so an ``out`` overlapping ``mm2_pad`` in
+            # The kernel reads ``expert_output`` while writing
+            # ``out`` concurrently, so an ``out`` overlapping ``expert_output`` in
             # memory races. Disjoint slices of one workspace buffer are allowed.
-            if tensors_overlap(out, mm2_pad):
-                raise ValueError("out must not overlap mm2_pad in memory")
+            if tensors_overlap(out, expert_output):
+                raise ValueError("out must not overlap expert_output in memory")
             output = out
 
         fn = self._unpermute_fn()
-        fn(mm2_pad, fwd_idx, topk_weights, output)
+        fn(expert_output, inverse_indices, topk_weights, output)
 
         return output

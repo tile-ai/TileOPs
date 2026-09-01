@@ -3,7 +3,6 @@
 Covers:
   - Qwen3 config: softmax, renormalize=False/True
   - Kimi K2 config: sigmoid, correction_bias, routed_scaling_factor=2.827
-  - expert_map local filtering (EP simulation without All-to-All)
   - vLLM correctness (optional, skipped when vLLM is not installed)
   - correction_bias routing precision (weights from original sigmoid, not biased)
 """
@@ -436,72 +435,6 @@ def test_fused_moe_kimi(
         ref = ref * routed_scaling_factor
 
     torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
-
-
-# expert_map local filtering test (EP simulation without All-to-All)
-
-
-@pytest.mark.smoke
-def test_expert_map_local_filter() -> None:
-    """Simulate EP=2 on a single GPU: each rank owns half the experts.
-
-    Verification: sum of outputs from rank-0 and rank-1 (with their disjoint
-    expert_maps) equals the output without expert_map.
-    """
-    torch.manual_seed(42)
-    dev = "cuda"
-    T, E, K, H, F = 32, 8, 2, 64, 32
-    dtype = torch.bfloat16
-
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
-
-    # Rank 0 owns experts 0..3, rank 1 owns experts 4..7
-    expert_map_rank0 = torch.full((E,), -1, dtype=torch.int32, device=dev)
-    expert_map_rank0[: E // 2] = torch.arange(E // 2, dtype=torch.int32, device=dev)
-
-    expert_map_rank1 = torch.full((E,), -1, dtype=torch.int32, device=dev)
-    expert_map_rank1[E // 2 :] = torch.arange(E // 2, dtype=torch.int32, device=dev)
-
-    # Full output (no expert_map)
-    op_full = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F,
-    )
-    out_full = op_full(hidden, gating, w_gate_up, w_down)
-
-    # Rank-0 partial output (local experts 0..3)
-    op_r0 = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F,
-        expert_map=expert_map_rank0,
-        num_experts_local=E // 2,
-    )
-    out_r0 = op_r0(hidden, gating, w_gate_up[: E // 2], w_down[: E // 2])
-
-    # Rank-1 partial output (local experts 4..7)
-    op_r1 = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F,
-        expert_map=expert_map_rank1,
-        num_experts_local=E // 2,
-    )
-    out_r1 = op_r1(hidden, gating, w_gate_up[E // 2 :], w_down[E // 2 :])
-
-    # Sum of partial outputs should match full output
-    out_sum = (out_r0.float() + out_r1.float()).to(dtype)
-    torch.testing.assert_close(out_sum.float(), out_full.float(), rtol=1e-2, atol=1e-2)
 
 
 # correction_bias routing precision

@@ -11,7 +11,6 @@ from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, Pre
 from tileops.ops import moe as public_moe
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
-    InversePermuteContext,
     MaskedLayoutSpec,
     MaterializedExpertLayout,
     MoeExpertMLPFwdOp,
@@ -19,14 +18,12 @@ from tileops.ops.moe import (
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
     NoScaleComputeSpec,
-    PrePermuteOutput,
     RoutingEpilogueSpec,
 )
 from tileops.ops.moe.contracts import (
     MaskedMetadata,
     PerRowExpertMetadata,
     PhysicalPsumMetadata,
-    routing_epilogue_reference,
 )
 
 pytestmark = pytest.mark.smoke
@@ -155,83 +152,16 @@ def test_device_value_validation_returns_a_device_guard_without_host_readback() 
     assert guard.shape == ()
 
 
-def test_pre_output_binds_layout_and_inverse_context_to_one_materialization() -> None:
-    layout = _physical_layout()
-    context = InversePermuteContext.for_layout(
-        torch.tensor([0, 1], dtype=torch.int32),
-        layout,
-        num_tokens=2,
-        top_k=1,
-    )
-    output = PrePermuteOutput(torch.empty(2, 8), layout, context)
-    assert output.expert_layout is layout
-
-
-def test_pre_output_rejects_context_from_another_materialization() -> None:
-    layout = _physical_layout(rows=1, experts=1)
-    other = _physical_layout(rows=1, experts=1)
-    context = InversePermuteContext.for_layout(
-        torch.tensor([0], dtype=torch.int32), other, num_tokens=1, top_k=1
-    )
-    with pytest.raises(ValueError, match="different materialization"):
-        PrePermuteOutput(torch.empty(1, 8), layout, context)
-
-
-def test_inverse_context_device_guard_accepts_only_local_rows_or_minus_one() -> None:
-    layout = MaterializedExpertLayout.from_physical_psum(
-        torch.tensor([3], dtype=torch.int32), materialized_rows=3
-    )
-    context = InversePermuteContext.for_layout(
-        torch.tensor([0, -1, 2], dtype=torch.int32), layout, num_tokens=3, top_k=1
-    )
-    assert context.device_value_guard().item()
-    invalid = dataclasses.replace(
-        context, inverse_indices=torch.tensor([0, -2, 3], dtype=torch.int32)
-    )
-    assert not invalid.device_value_guard().item()
-
-
-def test_routing_epilogue_reference_assigns_each_operation_once() -> None:
-    layout = MaterializedExpertLayout.from_physical_psum(
-        torch.tensor([3], dtype=torch.int32), materialized_rows=3
-    )
-    context = InversePermuteContext.for_layout(
-        torch.tensor([2, 0, 1, -1], dtype=torch.int32), layout, num_tokens=2, top_k=2
-    )
-    expert_output = torch.tensor([[1.0], [4.0], [8.0]], dtype=torch.bfloat16)
-    weights = torch.tensor([[0.25, 0.5], [0.75, 100.0]], dtype=torch.float32)
-
-    actual = routing_epilogue_reference(
-        expert_output, context, weights, RoutingEpilogueSpec(routed_scaling_factor=2.0)
-    )
-
-    assert actual.dtype is torch.bfloat16
-    torch.testing.assert_close(actual.float(), torch.tensor([[5.0], [6.0]]))
-
-
-def test_routing_epilogue_handles_empty_local_materialization() -> None:
-    layout = MaterializedExpertLayout.from_physical_psum(
-        torch.empty(0, dtype=torch.int32), materialized_rows=0
-    )
-    context = InversePermuteContext.for_layout(
-        torch.tensor([-1, -1], dtype=torch.int32), layout, num_tokens=1, top_k=2
-    )
-    actual = routing_epilogue_reference(
-        torch.empty(0, 4, dtype=torch.bfloat16),
-        context,
-        torch.ones(1, 2, dtype=torch.float32),
-        RoutingEpilogueSpec(),
-    )
-    torch.testing.assert_close(actual, torch.zeros(1, 4, dtype=torch.bfloat16))
-
-
 def test_compute_and_epilogue_specs_are_minimal_and_frozen() -> None:
     compute = NoScaleComputeSpec()
     epilogue = RoutingEpilogueSpec()
     assert compute.accumulation_dtype is torch.float32
     assert compute.output_dtype is torch.bfloat16
     assert epilogue.accumulation_dtype is torch.float32
-    assert epilogue.output_dtype is torch.bfloat16
+    assert epilogue.output_dtype is None
+    assert epilogue.resolve_output_dtype(torch.bfloat16) is torch.bfloat16
+    assert epilogue.resolve_output_dtype(torch.float16) is torch.float16
+    assert RoutingEpilogueSpec(output_dtype=torch.float16).output_dtype is torch.float16
     with pytest.raises(ValueError, match="finite and positive"):
         RoutingEpilogueSpec(routed_scaling_factor=0.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -439,16 +369,11 @@ def test_staged_wiring_builds_all_family_calls_without_an_executable_candidate()
     assert (gate_call.k, gate_call.n, down_call.k, down_call.n) == (8, 12, 6, 8)
     assert tuple(mlp.kernel_delegates()) == (mlp.gate_up, mlp.activation_op, mlp.down)
 
-    context = InversePermuteContext.for_layout(
-        torch.tensor([0, 1], dtype=torch.int32, device=device),
-        layout,
-        num_tokens=2,
-        top_k=1,
-    )
+    inverse_indices = torch.tensor([0, 1], dtype=torch.int32, device=device)
     post_call = MoePostPermuteFwdOp(layout.layout, RoutingEpilogueSpec()).make_call(
         torch.empty(2, 8, dtype=torch.bfloat16, device=device),
         torch.ones(2, 1, dtype=torch.float32, device=device),
-        context.inverse_indices,
+        inverse_indices,
     )
     assert post_call.layout_key == "tight_physical_psum"
     assert post_call.materialized_rows == 2
@@ -461,19 +386,14 @@ def test_post_permute_rejects_wrong_masked_geometry_with_same_row_count() -> Non
     layout = MaterializedExpertLayout.from_masked_m(
         torch.tensor([2, 1], dtype=torch.int32, device=device), max_m=4
     )
-    context = InversePermuteContext.for_layout(
-        torch.tensor([0], dtype=torch.int32, device=device),
-        layout,
-        num_tokens=1,
-        top_k=1,
-    )
+    inverse_indices = torch.tensor([0], dtype=torch.int32, device=device)
     wrong_geometry = torch.empty(1, 8, 4, dtype=torch.bfloat16, device=device)
 
     with pytest.raises(ValueError, match="masked expert_output"):
         MoePostPermuteFwdOp(layout.layout).make_call(
             wrong_geometry,
             torch.ones(1, 1, dtype=torch.float32, device=device),
-            context.inverse_indices,
+            inverse_indices,
         )
 
 
@@ -518,10 +438,11 @@ def test_pre_permute_ships_the_tight_physical_candidate() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
-def test_staged_tight_pre_post_round_trip() -> None:
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     """The tensor-only staged boundary preserves every routed contribution."""
     tokens, top_k, experts, hidden = 4, 2, 4, 64
-    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
     local_ids = torch.tensor([[0, 1], [2, 3], [0, 2], [1, 3]], dtype=torch.int32, device="cuda")
     weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
     layout = ContiguousLayoutSpec.tight_physical_psum()

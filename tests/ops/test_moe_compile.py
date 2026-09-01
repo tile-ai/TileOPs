@@ -37,8 +37,6 @@ from tileops.ops.moe import (
 from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
 from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
-from tileops.ops.moe.routed_expert.permute_nopad import MoePermuteNopadFwdOp
-from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
 
 _NUM_EXPERTS = 4
 _TOP_K = 2
@@ -79,30 +77,14 @@ def _permute_align_case():
     return make, (topk_ids,), (2,)
 
 
-def _permute_nopad_case(local: int = _NUM_EXPERTS, with_map: bool = False):
-    def make():
-        return MoePermuteNopadFwdOp(num_experts=_NUM_EXPERTS, num_experts_local=local)
-
-    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.randint(0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
-    inputs = (hidden_states, topk_ids)
-    if with_map:
-        expert_map = torch.full((_NUM_EXPERTS,), -1, dtype=torch.int32, device="cuda")
-        expert_map[:local] = torch.arange(local, dtype=torch.int32, device="cuda")
-        inputs += (expert_map,)
-    # The per-expert offsets, sizes and prefix sum are counts. The gathered rows and
-    # the forward map are not: a slot inside an expert is claimed by ``atomic_add``.
-    return make, inputs, (1, 2, 3)
-
-
-def _pre_permute_case():
+def _pre_permute_case(dtype: torch.dtype = torch.bfloat16):
     def make():
         return MoePrePermuteFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(),
             num_local_experts=_NUM_EXPERTS,
         )
 
-    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=dtype, device="cuda")
     local_expert_ids = torch.randint(
         0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda"
     )
@@ -130,12 +112,8 @@ def _grouped_gemm_nopad_case():
 
 _LEAF_CASES = {
     "permute_align": _permute_align_case,
-    "permute_nopad": _permute_nopad_case,
     "pre_permute": _pre_permute_case,
-    # Supplying the map keeps the graph inside the same operator: the fake sizes the
-    # four per-expert outputs from ``num_experts_local``, a constructor parameter, so
-    # the map's contents never reach a traced region.
-    "permute_nopad_with_a_map": lambda: _permute_nopad_case(local=_NUM_EXPERTS // 2, with_map=True),
+    "pre_permute_fp16": lambda: _pre_permute_case(torch.float16),
     "gate_up": _gate_up_case,
     "grouped_gemm_nopad": _grouped_gemm_nopad_case,
 }
@@ -160,40 +138,14 @@ def test_leaf_op_owns_its_graph_nodes(case) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-def test_unpermute_owns_its_graph_nodes() -> None:
-    """Both registrations, because ``out`` picks between them at call time."""
-    numel = _TOKENS * _TOP_K
-    mm2_pad = torch.randn(numel, _HIDDEN, dtype=torch.bfloat16, device="cuda")
-    fwd_idx = torch.arange(numel, dtype=torch.int32, device="cuda")
-    topk_weights = torch.rand(_TOKENS, _TOP_K, dtype=torch.float32, device="cuda")
-    out = torch.empty(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
-
-    def make():
-        return MoeUnpermuteFwdOp(_TOKENS, _TOP_K, _HIDDEN, padded_batch_sum=numel)
-
-    assert_op_owns_graph_nodes(make(), mm2_pad, fwd_idx, topk_weights)
-    assert_op_owns_graph_nodes(make(), mm2_pad, fwd_idx, topk_weights, out)
-    compiled = _compile_cold(make(), mm2_pad, fwd_idx, topk_weights)
-    eager = (make()(mm2_pad, fwd_idx, topk_weights),)
-    _assert_same_layout(compiled, eager)
-    torch.testing.assert_close(compiled[0], eager[0])
-
-    out.zero_()
-    torch.compile(make(), fullgraph=True)(mm2_pad, fwd_idx, topk_weights, out)
-    # The in-place operator declares the mutation, so what the compiled call left in
-    # ``out`` is what the allocating path returns.
-    torch.testing.assert_close(out, make()(mm2_pad, fwd_idx, topk_weights))
-
-
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
-def test_post_permute_owns_its_graph_nodes() -> None:
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_post_permute_owns_its_graph_nodes(dtype: torch.dtype) -> None:
     """The staged allocating and in-place registrations own their graph nodes."""
     numel = _TOKENS * _TOP_K
-    expert_output = torch.randn(numel, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    expert_output = torch.randn(numel, _HIDDEN, dtype=dtype, device="cuda")
     inverse_indices = torch.arange(numel, dtype=torch.int32, device="cuda")
     topk_weights = torch.rand(_TOKENS, _TOP_K, dtype=torch.float32, device="cuda")
-    out = torch.empty(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    out = torch.empty(_TOKENS, _HIDDEN, dtype=dtype, device="cuda")
 
     def make():
         return MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
@@ -222,7 +174,6 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
         num_tokens=tokens,
         num_experts=num_experts,
-        num_experts_local=num_experts,
         top_k=top_k,
         hidden_size=hidden,
         ffn_size=ffn,
@@ -240,7 +191,6 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
         hidden_states.new_empty(0),
         hidden_states.new_empty(0),
     )
-    kwargs = {"num_experts": num_experts}
     local_pipeline_leaves = (
         experts._pre_permute,
         experts._gate_up,
@@ -253,7 +203,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
         for name in type(leaf).compile_op_names
     }
 
-    calls = traced_call_targets(experts, *args, **kwargs)
+    calls = traced_call_targets(experts, *args)
 
     assert calls, "the traced graph called nothing"
     # Temporary bridge from staged physical ends to the existing grouped-GEMM
@@ -267,8 +217,6 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 
 for _op_cls in (
     MoePermuteAlignFwdOp,
-    MoePermuteNopadFwdOp,
-    MoeUnpermuteFwdOp,
     MoePrePermuteFwdOp,
     MoePostPermuteFwdOp,
     MoeGateUpFwdOp,

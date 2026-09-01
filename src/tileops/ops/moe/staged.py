@@ -7,7 +7,7 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe import MoePermuteNopadKernel, MoeUnpermuteKernel
+from tileops.kernels.moe import MoePrePermuteNopadKernel, MoeUnpermuteKernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.compile_boundary import get_instance
 from tileops.ops.op_base import Op
@@ -39,18 +39,21 @@ def _same_device(named_tensors: Mapping[str, torch.Tensor]) -> torch.device:
 
 
 class _TightPhysicalPsumPrePermuteKernel(Kernel):
-    """Adapt the staged tensor contract to the shipped no-pad kernel."""
+    """Tight physical-prefix-sum staged materialization."""
 
     supported_archs = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: PrePermuteCall) -> bool:
-        return call.layout.selection_key == "tight_physical_psum"
+        return call.layout.selection_key == "tight_physical_psum" and call.input_dtype in (
+            torch.bfloat16,
+            torch.float16,
+        )
 
     def __init__(self, call: PrePermuteCall) -> None:
         """Build the no-pad specialization selected by ``call``."""
         super().__init__()
-        self.inner = MoePermuteNopadKernel(
+        self.inner = MoePrePermuteNopadKernel(
             call.num_tokens,
             call.top_k,
             call.num_experts,
@@ -64,10 +67,7 @@ class _TightPhysicalPsumPrePermuteKernel(Kernel):
         local_expert_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return staged expert rows, physical ends, and inverse indices."""
-        perm_h, true_offsets, true_sizes, _, inverse_indices = self.inner(
-            hidden_states, local_expert_ids
-        )
-        return perm_h, true_offsets + true_sizes, inverse_indices
+        return self.inner(hidden_states, local_expert_ids)
 
 
 class _TightPhysicalPsumPostPermuteKernel(Kernel):
@@ -77,7 +77,11 @@ class _TightPhysicalPsumPostPermuteKernel(Kernel):
 
     @classmethod
     def applies(cls, call: PostPermuteCall) -> bool:
-        return call.layout_key == "tight_physical_psum" and call.output_dtype == call.input_dtype
+        return (
+            call.layout_key == "tight_physical_psum"
+            and call.input_dtype in (torch.bfloat16, torch.float16)
+            and call.output_dtype == call.input_dtype
+        )
 
     def __init__(self, call: PostPermuteCall) -> None:
         """Build the weighted no-pad inverse specialization selected by ``call``."""
@@ -207,8 +211,8 @@ class MoePrePermuteFwdOp(_StagedOpBase):
             raise TypeError("local_expert_ids must have dtype torch.int32")
         if not hidden_states.is_contiguous() or not local_expert_ids.is_contiguous():
             raise ValueError("hidden_states and local_expert_ids must be contiguous")
-        if hidden_states.dtype is not torch.bfloat16:
-            raise TypeError("the current staged pre-permute contract accepts BF16 only")
+        if hidden_states.dtype not in (torch.bfloat16, torch.float16):
+            raise TypeError("the current staged pre-permute contract accepts BF16 or FP16 only")
         return PrePermuteCall(
             arch=get_sm_version(device.index),
             layout=self.layout,
@@ -490,14 +494,13 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             raise TypeError("topk_weights must have dtype torch.float32")
         if inverse_indices.dtype is not torch.int32:
             raise TypeError("inverse_indices must have dtype torch.int32")
-        if expert_output.dtype is not torch.bfloat16:
-            raise TypeError("the current staged post-permute contract accepts BF16 only")
+        if expert_output.dtype not in (torch.bfloat16, torch.float16):
+            raise TypeError("the current staged post-permute contract accepts BF16 or FP16 only")
+        output_dtype = self.epilogue.resolve_output_dtype(expert_output.dtype)
         output_shape = (topk_weights.shape[0], expert_output.shape[-1])
         if out is not None and not out.is_contiguous():
             raise ValueError("out must be contiguous")
-        if out is not None and (
-            tuple(out.shape) != output_shape or out.dtype != self.epilogue.output_dtype
-        ):
+        if out is not None and (tuple(out.shape) != output_shape or out.dtype != output_dtype):
             raise ValueError("out shape and dtype must match the routing epilogue output")
         return PostPermuteCall(
             arch=get_sm_version(device.index),
@@ -507,7 +510,7 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             device_type=expert_output.device.type,
             input_dtype=expert_output.dtype,
             routing_weight_dtype=topk_weights.dtype,
-            output_dtype=self.epilogue.output_dtype,
+            output_dtype=output_dtype,
             num_experts=expert_output.shape[0] if isinstance(self.layout, MaskedLayoutSpec) else 0,
             materialized_rows=physical_rows,
             num_tokens=topk_weights.shape[0],
@@ -602,7 +605,13 @@ def _moe_post_permute_fwd_fake(
     topk_weights: torch.Tensor,
     instance_key: str,
 ) -> torch.Tensor:
-    return expert_output.new_empty((topk_weights.shape[0], expert_output.shape[-1]))
+    op = get_instance(instance_key)
+    dtype = op.epilogue.resolve_output_dtype(expert_output.dtype)
+    return torch.empty(
+        (topk_weights.shape[0], expert_output.shape[-1]),
+        dtype=dtype,
+        device=expert_output.device,
+    )
 
 
 @torch.library.custom_op("tileops::moe_post_permute_fwd_inplace", mutates_args=("out",))
