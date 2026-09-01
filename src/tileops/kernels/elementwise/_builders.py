@@ -152,31 +152,61 @@ def _row_broadcast_prim(
         """One full block, read and written a fragment at a time.
 
         An operand at stride 0 is one value for the whole row, so it is read
-        where it is used and never staged.
+        into a register rather than staged across a fragment it would fill with
+        copies of itself. Reading it at the use site instead leaves the load in
+        the element loop, and with it whatever the body wraps around it -- for
+        maximum and minimum that is a NaN test, which is the row's property and
+        not the element's.
         """
         y_reg = T.alloc_fragment((block_cols,), out_dtype)
         col0 = bx * block_cols
         if a_inner:
             a_reg = T.alloc_fragment((block_cols,), dtype)
             T.copy(a[a_base + col0 : a_base + col0 + block_cols], a_reg)
+        else:
+            a_held = T.alloc_local((1,), dtype)
+            a_held[0] = a[a_base]
         if b_inner:
             b_reg = T.alloc_fragment((block_cols,), dtype)
             T.copy(b[b_base + col0 : b_base + col0 + block_cols], b_reg)
+        else:
+            b_held = T.alloc_local((1,), dtype)
+            b_held[0] = b[b_base]
         for i, j in T.Parallel(threads, num_per_thread):
             idx = i * num_per_thread + j
             y_reg[idx] = op_func(
-                a_reg[idx] if a_inner else a[a_base],
-                b_reg[idx] if b_inner else b[b_base],
+                a_reg[idx] if a_inner else a_held[0],
+                b_reg[idx] if b_inner else b_held[0],
             )
         T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
+
+    @T.macro
+    def write_held_block(a, b, y, a_base, b_base, by, bxc):
+        """One full block with the row's stride-0 operand read into a register.
+
+        An operand at stride 0 is one value for the whole row. Left as a
+        subscript it is read again at every element, and so is the arithmetic
+        the body wraps around it -- for maximum and minimum that is a NaN test,
+        which is the row's and not the element's.
+        """
+        held = T.alloc_local((1,), dtype)
+        held[0] = a[a_base] if not a_inner else b[b_base]
+        for i, j in T.Parallel(threads, num_per_thread):
+            col = (bxc * threads + i) * num_per_thread + j
+            if a_inner:
+                y[by * inner + col] = op_func(a[a_base + col * a_inner], held[0])
+            else:
+                y[by * inner + col] = op_func(held[0], b[b_base + col * b_inner])
 
     @T.macro
     def write_full_block(a, b, y, a_base, b_base, by, bxc):
         if stage:
             write_block_staged(a, b, y, a_base, b_base, by, bxc)
-        else:
+        elif a_inner and b_inner:
             for i, j in T.Parallel(threads, num_per_thread):
                 write_col(a, b, y, a_base, b_base, by, (bxc * threads + i) * num_per_thread + j)
+        else:
+            write_held_block(a, b, y, a_base, b_base, by, bxc)
 
     if pack_tail:
 
