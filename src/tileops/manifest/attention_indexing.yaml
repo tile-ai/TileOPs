@@ -2,7 +2,7 @@
 
 FP8LightningIndexerFwdOp:
   ref_api: "none"
-  family: attention_indexing
+  family: attention
   status: implemented
 
   signature:
@@ -51,7 +51,7 @@ FP8LightningIndexerFwdOp:
 
 TopkSelectorFwdOp:
   ref_api: "torch.topk"
-  family: attention_indexing
+  family: attention
   status: implemented
 
   signature:

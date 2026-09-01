@@ -17,22 +17,17 @@ import tileops
 from tileops.manifest import load_manifest
 
 SRC = Path(tileops.__file__).parent
-# Read off the tree, so the tests are driven by what ships rather than by the
-# list in `tileops/__init__.py` — one test compares the two.
+# Off the tree, not off `_FAMILIES` — one test compares the two.
 FAMILIES = sorted(p.stem for p in SRC.glob("*.py") if not p.stem.startswith("_"))
 
-# Public names the manifest does not declare. An addition here needs a reason, so
-# the public surface cannot grow past the spec unnoticed.
+# Public names the manifest does not declare. An addition here needs a reason.
 NOT_IN_MANIFEST = {
-    # Abstract bases a caller subclasses to add an op of their own. The API
-    # reference documents these as template base classes.
+    # Abstract bases a caller subclasses to add an op of their own.
     "UnaryOp",
     "BinaryOp",
     "FusedGatedOp",
     "CumulativeOp",
-    # Marked `UnmanifestedOp` in the tree, and public before the family modules
-    # existed. Each needs either a manifest entry or a deprecation; neither is this
-    # change's business, and dropping them silently would break callers.
+    # Marked `UnmanifestedOp`. Each needs a manifest entry or a deprecation.
     "DeltaNetOp",
     "GatedDeltaNetOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
@@ -96,10 +91,17 @@ def test_family_all_covers_every_import(family: str):
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("family", FAMILIES)
-def test_family_reexports_the_same_objects(family: str):
+def test_family_defines_nothing(family: str):
+    """A family module re-exports; it never defines. A family can draw on more than one
+    implementation module, so this checks where each object came from rather than
+    assuming `tileops.ops.<family>` holds all of them."""
     mod = _family_module(family)
-    impl = importlib.import_module(f"tileops.ops.{family}")
-    assert all(getattr(mod, name) is getattr(impl, name) for name in mod.__all__)
+    foreign = {
+        name: getattr(mod, name).__module__
+        for name in mod.__all__
+        if not getattr(mod, name).__module__.startswith("tileops.ops.")
+    }
+    assert foreign == {}
 
 
 @pytest.mark.smoke

@@ -1,7 +1,4 @@
-"""The mixture-of-experts ops, imported from ``tileops.moe``.
-
-Implemented under ``tileops.ops.moe``; this module is the public path.
-"""
+"""The mixture-of-experts ops, at the public path ``tileops.moe``."""
 
 from .ops.moe import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,

@@ -1,7 +1,4 @@
-"""The linear attention ops, imported from ``tileops.linear_attention``.
-
-Implemented under ``tileops.ops.linear_attention``; this module is the public path.
-"""
+"""The linear attention ops, at the public path ``tileops.linear_attention``."""
 
 from .ops.linear_attention import (
     DeltaNetBwdOp,

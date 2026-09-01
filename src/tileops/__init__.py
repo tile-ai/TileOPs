@@ -31,37 +31,27 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from . import (
         attention,
         convolution,
-        dropout,
         elementwise,
         fft,
-        fp8_lightning_indexer,
-        fp8_quant,
         gemm,
         linear_attention,
         mamba,
         moe,
         norm,
         pool,
+        quantization,
         reduction,
         rope,
         sequence_modeling,
-        topk_selector,
     )
     from .ops.op_base import Op
 
-# One entry per op family, ordered simple to composite as `tileops.ops.__all__` groups
-# them: the pointwise transforms first, the sequence-model kernels last. The docs
-# site's API Reference pages follow this order, but not one page per family: a family
-# holding unrelated algorithms is split across pages, and a single-op family can be a
-# section of a related page. `tests/test_public_api.py` checks the tuple against the
-# tree and against that grouping; the docs site's order is not enforceable from here.
+# One entry per op family, ordered as `tileops.ops.__all__` groups them.
 _FAMILIES = (
     "elementwise",
-    "dropout",
     "reduction",
     "norm",
-    "fp8_quant",
-    "topk_selector",
+    "quantization",
     "gemm",
     "pool",
     "convolution",
@@ -69,7 +59,6 @@ _FAMILIES = (
     "moe",
     "rope",
     "attention",
-    "fp8_lightning_indexer",
     "linear_attention",
     "mamba",
     "sequence_modeling",
@@ -90,7 +79,6 @@ _LAZY = {
         ),
         "tileops.backend",
     ),
-    # The base class every op derives from, for callers writing one of their own.
     "Op": "tileops.ops.op_base",
 }
 
@@ -101,8 +89,7 @@ def __getattr__(name: str) -> Any:
     import importlib
 
     if name in _FAMILIES:
-        # `__package__`, not `__name__`: a tool that loads this file as the module
-        # `tileops.__init__` leaves `__name__` unusable as an import prefix.
+        # `__package__`, not `__name__`: a tool may load this file as `tileops.__init__`.
         value = importlib.import_module(f".{name}", __package__)
     else:
         module = _LAZY.get(name)

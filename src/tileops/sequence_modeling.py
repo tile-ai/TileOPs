@@ -1,7 +1,4 @@
-"""The sequence modeling ops, imported from ``tileops.sequence_modeling``.
-
-Implemented under ``tileops.ops.sequence_modeling``; this module is the public path.
-"""
+"""The sequence modeling ops, at the public path ``tileops.sequence_modeling``."""
 
 from .ops.sequence_modeling import (
     EngramDecodeFwdOp,

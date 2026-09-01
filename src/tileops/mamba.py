@@ -1,7 +1,4 @@
-"""The Mamba ops, imported from ``tileops.mamba``.
-
-Implemented under ``tileops.ops.mamba``; this module is the public path.
-"""
+"""The Mamba ops, at the public path ``tileops.mamba``."""
 
 from .ops.mamba import (
     CBProducerFwdOp,

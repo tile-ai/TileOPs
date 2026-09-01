@@ -1,7 +1,4 @@
-"""The pooling ops, imported from ``tileops.pool``.
-
-Implemented under ``tileops.ops.pool``; this module is the public path.
-"""
+"""The pooling ops, at the public path ``tileops.pool``."""
 
 from .ops.pool import (
     AdaptiveAvgPool2dFwdOp,

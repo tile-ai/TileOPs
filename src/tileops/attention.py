@@ -1,7 +1,4 @@
-"""The attention ops, imported from ``tileops.attention``.
-
-Implemented under ``tileops.ops.attention``; this module is the public path.
-"""
+"""The attention ops, at the public path ``tileops.attention``."""
 
 from .ops.attention import (
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
@@ -24,6 +21,8 @@ from .ops.attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from .ops.topk_selector import TopkSelectorFwdOp
 
 __all__ = [
     "MultiHeadAttentionFwdOp",
@@ -45,4 +44,6 @@ __all__ = [
     "NSATopkVarlenOp",
     "NSAFwdVarlenOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
+    "FP8LightningIndexerFwdOp",
+    "TopkSelectorFwdOp",
 ]

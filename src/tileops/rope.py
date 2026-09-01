@@ -1,7 +1,4 @@
-"""The rotary position embedding ops, imported from ``tileops.rope``.
-
-Implemented under ``tileops.ops.rope``; this module is the public path.
-"""
+"""The rotary position embedding ops, at the public path ``tileops.rope``."""
 
 from .ops.rope import (
     RopeLlama31FwdOp,

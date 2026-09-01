@@ -1,7 +1,4 @@
-"""The convolution ops, imported from ``tileops.convolution``.
-
-Implemented under ``tileops.ops.convolution``; this module is the public path.
-"""
+"""The convolution ops, at the public path ``tileops.convolution``."""
 
 from .ops.convolution import (
     Conv1dFwdOp,

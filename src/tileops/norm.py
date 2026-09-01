@@ -1,7 +1,4 @@
-"""The normalization ops, imported from ``tileops.norm``.
-
-Implemented under ``tileops.ops.norm``; this module is the public path.
-"""
+"""The normalization ops, at the public path ``tileops.norm``."""
 
 from .ops.norm import (
     AdaLayerNormFwdOp,

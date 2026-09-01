@@ -243,10 +243,10 @@ design, calling conventions — live in
 
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
-- **Rule.** Register the class in two `__init__` lists, each with a matching `__all__` entry.
-  Add one `from .<module> import <ClassName>` to `src/tileops/ops/{family}/__init__.py`, under the
-  family's grouping comment. Add one `from .ops.{family} import <ClassName>` to
-  `src/tileops/{family}.py`, the public path `tileops.{family}.<ClassName>`.
+- **Rule.** Two imports, each with a matching `__all__` entry: one
+  `from .<module> import <ClassName>` in `src/tileops/ops/{family}/__init__.py`, under the
+  family's grouping comment, and one `from .ops.{family} import <ClassName>` in
+  `src/tileops/{family}.py`, which is the public path.
 - **Example.**
   ```python
   # src/tileops/ops/reduction/__init__.py
@@ -258,7 +258,7 @@ design, calling conventions — live in
   ```
 - **Common mistakes.** Import placed outside its grouping comment; missing `__all__` entry, which
   silently breaks `import *`; registering only the implementation package, which leaves the op
-  unreachable from `tileops.{family}` and fails `tests/test_public_api.py`.
+  unreachable from `tileops.{family}`.
 
 ### Slot S21: <a id="slot-s21"></a> `_static_axes` class attribute
 

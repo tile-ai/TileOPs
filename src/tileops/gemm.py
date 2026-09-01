@@ -1,7 +1,4 @@
-"""The GEMM ops, imported from ``tileops.gemm``.
-
-Implemented under ``tileops.ops.gemm``; this module is the public path.
-"""
+"""The GEMM ops, at the public path ``tileops.gemm``."""
 
 from .ops.gemm import (
     BmmFp8KNFwdOp,

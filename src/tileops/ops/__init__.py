@@ -133,11 +133,7 @@ from .rope import (
 from .sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
 from .topk_selector import TopkSelectorFwdOp
 
-# Ordered simple to composite, not alphabetically: pointwise transforms, then the
-# axis reductions and the normalizations built on them, then the matmul, then the
-# windowed and spectral transforms, and the sequence-model kernels built on all of
-# the above. Within a group, the base case comes first and its variants follow.
-# mHC sits at the end, outside that progression: it is one algorithm, not a family.
+# Grouped by op family, simple to composite; within a group, base case before variants.
 __all__ = [
     # Base class
     "Op",
@@ -145,7 +141,6 @@ __all__ = [
     "UnaryOp",
     "BinaryOp",
     "FusedGatedOp",
-    # Dropout
     "DropoutFwdOp",
     # Reduction
     "SumFwdOp",
@@ -182,8 +177,6 @@ __all__ = [
     "InstanceNormFwdOp",
     # Quantization
     "FP8QuantFwdOp",
-    # Top-k selection
-    "TopkSelectorFwdOp",
     # GEMM
     "GemmFwdOp",
     "GemmFp8FwdOp",
@@ -246,6 +239,7 @@ __all__ = [
     "NSAFwdVarlenOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "FP8LightningIndexerFwdOp",
+    "TopkSelectorFwdOp",
     # Linear attention
     "DeltaNetOp",
     "DeltaNetFwdOp",
@@ -268,8 +262,7 @@ __all__ = [
     "SSDStatePassingFwdOp",
     "SSDChunkScanFwdOp",
     "SSDDecodeFwdOp",
-    # mHC (Manifold-Constrained Hyper-Connections) — one algorithm, not an op family
-    # like the groups above
+    # mHC (Manifold-Constrained Hyper-Connections)
     "MHCPreFwdOp",
     "MHCPostFwdOp",
 ]

@@ -1,8 +1,6 @@
-"""The elementwise ops, imported from ``tileops.elementwise``.
+"""The elementwise ops, at the public path ``tileops.elementwise``."""
 
-Implemented under ``tileops.ops.elementwise``; this module is the public path.
-"""
-
+from .ops.dropout import DropoutFwdOp
 from .ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -79,6 +77,7 @@ from .ops.elementwise import (
 )
 
 __all__ = [
+    "DropoutFwdOp",
     "UnaryOp",
     "BinaryOp",
     "FusedGatedOp",

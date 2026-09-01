@@ -2,7 +2,7 @@
 
 DropoutFwdOp:
   ref_api: "torch.nn.functional.dropout"
-  family: regularization
+  family: elementwise
   status: implemented
 
   signature:

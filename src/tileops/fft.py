@@ -1,7 +1,4 @@
-"""The FFT ops, imported from ``tileops.fft``.
-
-Implemented under ``tileops.ops.fft``; this module is the public path.
-"""
+"""The FFT ops, at the public path ``tileops.fft``."""
 
 from .ops.fft import (
     FFTC2CFwdOp,

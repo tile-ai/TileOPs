@@ -198,8 +198,7 @@ class MeanPoolingForwardOp(Op):
         offsets_shape: tuple[int, ...],
         indices_shape: tuple[int, ...],
     ) -> Dict[str, tuple[int, ...]]:
-        # Read off the constructor, not off the inputs: the chunk count is what the
-        # caller declared, and for a ragged split the inputs do not determine it.
+        # Off the constructor: a ragged split's chunk count is not in the input shapes.
         return {"output": (self.batch_size, self.chunks_per_batch, self.heads, self.dim)}
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:

@@ -1,7 +1,4 @@
-"""The reduction ops, imported from ``tileops.reduction``.
-
-Implemented under ``tileops.ops.reduction``; this module is the public path.
-"""
+"""The reduction ops, at the public path ``tileops.reduction``."""
 
 from .ops.reduction import (
     AllFwdOp,

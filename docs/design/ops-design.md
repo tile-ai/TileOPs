@@ -273,7 +273,7 @@ Public path, `src/tileops/reduction.py` — this is the one callers import from:
 from .ops.reduction import ExampleCumsumFwdOp
 ```
 
-**Validation.** In the implementation package the import sits under its family's grouping comment block. In both files a matching `__all__` entry is present: without the first, `from tileops.ops.reduction import *` silently drops the op; without the second, `from tileops.reduction import ExampleCumsumFwdOp` fails and the API reference cannot collect the op. `tests/test_public_api.py` fails when a manifest op is missing from its family module.
+**Validation.** The implementation import sits under its family's grouping comment block, and both files carry a matching `__all__` entry — miss the second and the op is unreachable from `tileops.reduction`.
 
 **Reference.** [Slot S20](../../.claude/skills/scaffold-op/slot-rules.md#slot-s20).
 

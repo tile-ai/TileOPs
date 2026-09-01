@@ -24,8 +24,7 @@ from tileops.manifest import load_workloads
 from tileops.ops import MeanPoolingForwardOp
 from workloads.pool import MeanPoolingWorkload
 
-# Autotuning is a bench-run policy, not a workload property; manifest workloads do
-# not carry it.
+# Autotuning is a bench-run policy; manifest workloads do not carry it.
 _TUNE = True
 
 
