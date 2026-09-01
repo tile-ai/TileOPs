@@ -114,8 +114,6 @@ select = [
     # "D",
     # pep8-naming (naming conventions)
     "N",
-    # ruff-specific: sort __all__
-    "RUF022",
     # pydoclint: a documented parameter the signature does not have
     "DOC102",
     # flake8-tidy-imports: banned APIs only. Selected as the exact rule, not the
@@ -162,9 +160,6 @@ known-first-party = ["tileops"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-# __all__ intentionally grouped by category, not alphabetical
-"src/tileops/ops/__init__.py" = ["RUF022"]
-"src/tileops/ops/reduction/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "benchmarks/tests"]
