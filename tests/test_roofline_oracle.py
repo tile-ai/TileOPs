@@ -367,6 +367,7 @@ PENDING = frozenset(
         "MaxPool3dIndicesFwdOp",
         "MaximumFwdOp",
         "MeanFwdOp",
+        "MeanPoolingForwardOp",
         "MinimumFwdOp",
         "MishFwdOp",
         "MoeGateUpFwdOp",

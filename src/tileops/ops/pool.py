@@ -26,7 +26,7 @@ from tileops.kernels.pool import (
 from tileops.kernels.pool.common import pool_output_dim
 
 from .compile_boundary import get_instance
-from .op_base import Op, UnmanifestedOp
+from .op_base import Op
 
 __all__ = [
     "AdaptiveAvgPool2dFwdOp",
@@ -119,7 +119,29 @@ def validate_pool_params(
         raise ValueError("divisor_override must not be zero")
 
 
-class MeanPoolingForwardOp(UnmanifestedOp):
+class MeanPoolingForwardOp(Op):
+    """Chunked mean over the sequence axis of a ``[batch, seq, heads, dim]`` tensor.
+
+    This is not a PyTorch pooling op and has no torch counterpart. The sequence axis
+    is cut into chunks of ``chunk_size`` and each chunk is averaged, giving one output
+    row per chunk. With ``use_offsets=1`` the chunks follow the ragged sequence
+    boundaries ``offsets`` describes instead of a uniform split, and ``indices`` names
+    the ``(sequence, chunk-within-sequence)`` pair each output row belongs to.
+
+    A sequence's last chunk may be shorter than ``chunk_size``. It is divided by the
+    count it actually holds, so no padding is averaged in. On a uniform split that
+    makes the op equal to ``torch.nn.functional.avg_pool1d(kernel_size=chunk_size,
+    stride=chunk_size, ceil_mode=True)`` over a view with the sequence axis last.
+    Chunk sums accumulate in
+    ``accum_dtype`` and are cast back to the input dtype at the boundary, so a
+    ``float16`` input with ``accum_dtype=torch.float32`` does not lose the sum to
+    rounding.
+
+    Every shape is fixed at construction rather than read off the call, and
+    ``chunks_per_batch`` and ``seq_num`` have to agree with what ``offsets`` implies —
+    the kernel does not check.
+    """
+
     def __init__(
         self,
         batch_size: int,
@@ -132,24 +154,55 @@ class MeanPoolingForwardOp(UnmanifestedOp):
         use_offsets: int,
         accum_dtype: torch.dtype,
         tune: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op for one set of shapes.
 
         Args:
+            batch_size: Manifest ``params.batch_size``, ``int`` — ``x.shape[0]``.
+            seq_len: Manifest ``params.seq_len``, ``int`` — ``x.shape[1]``.
+            heads: Manifest ``params.heads``, ``int`` — ``x.shape[2]``.
+            dim: Manifest ``params.dim``, ``int`` — ``x.shape[3]``. The kernel tiles it by
+                a tuned width of at most 128, and a tile that is neither the whole ``dim``
+                nor an exact divisor of it has no valid layout, so ``dim`` is either at
+                most 128 or a multiple of it.
+            chunk_size: Manifest ``params.chunk_size``, ``int``. A warp reduction spans
+                the chunk, so it must be a multiple of 32.
+            chunks_per_batch: Manifest ``params.chunks_per_batch``, ``int`` — the output's
+                chunk axis. For a uniform split that is ``ceil(seq_len / chunk_size)``;
+                for a ragged one, the chunk count summed over the sequences.
+            seq_num: Manifest ``params.seq_num``, ``int`` — how many sequences ``offsets``
+                describes, so ``offsets`` holds ``seq_num + 1`` entries.
+            use_offsets: Manifest ``params.use_offsets``, ``int`` — 1 to take the chunk
+                bounds from ``offsets`` and ``indices``, 0 for a uniform split.
+            accum_dtype: Manifest ``params.accum_dtype``, ``torch.dtype`` — what the chunk
+                sum accumulates in.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Backend target to serve this op, or ``None`` to decide from the input
+                device.
             kernel_map: Optional kernel override dict.
         """
-        params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map")}
+        params = {k: v for k, v in locals().items() if k not in ("self", "kernel_map", "target")}
         for key, value in params.items():
             setattr(self, key, value)
 
         self._kernel_params = params
+        self.target = target
         self.dispatch_kernel(kernel_map)
 
+    def _infer_output_shapes(
+        self,
+        x_shape: tuple[int, ...],
+        offsets_shape: tuple[int, ...],
+        indices_shape: tuple[int, ...],
+    ) -> Dict[str, tuple[int, ...]]:
+        # Read off the constructor, not off the inputs: the chunk count is what the
+        # caller declared, and for a ragged split the inputs do not determine it.
+        return {"output": (self.batch_size, self.chunks_per_batch, self.heads, self.dim)}
+
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        # Takes no ``target=``: this op has no manifest entry, so a target's builder could
-        # not be told what to build. In-tree only until it has one.
         return self.get_or_build_kernel(
             "mean_pooling_fwd_kernel",
             inputs,
@@ -170,7 +223,24 @@ class MeanPoolingForwardOp(UnmanifestedOp):
         offsets: torch.Tensor,
         indices: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on ``x``, ``offsets`` and ``indices``."""
+        """Average each chunk of ``x``'s sequence axis.
+
+        Args:
+            x: Input tensor, ``[batch_size, seq_len, heads, dim]``, dtype ``float16``,
+                ``bfloat16`` or ``float32``.
+            offsets: Sequence boundaries, ``[seq_num + 1]``, dtype ``int32``. Read only
+                when ``use_offsets`` is 1, but required either way.
+            indices: One ``(sequence, chunk-within-sequence)`` pair per output chunk,
+                ``[chunks_per_batch, 2]``, dtype ``int32``. Read only when
+                ``use_offsets`` is 1, but required either way.
+
+        Returns:
+            ``output``, ``[batch_size, chunks_per_batch, heads, dim]``, dtype as ``x``.
+
+        Raises:
+            ValueError: An input's dtype is outside what the manifest declares.
+        """
+        self._validate_dtypes(x, offsets, indices)
         kernel = self._get_kernel((x, offsets, indices), x.dtype)
         out = kernel(x, offsets, indices=indices)
         self.dtype = x.dtype

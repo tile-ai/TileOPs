@@ -32,13 +32,10 @@ NOT_IN_MANIFEST = {
     "CumulativeOp",
     # Marked `UnmanifestedOp` in the tree, and public before the family modules
     # existed. Each needs either a manifest entry or a deprecation; neither is this
-    # change's business, and dropping them silently would break callers. The API
-    # reference documents all but `MeanPoolingForwardOp`, which is in-tree only
-    # until it has a manifest entry.
+    # change's business, and dropping them silently would break callers.
     "DeltaNetOp",
     "GatedDeltaNetOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
-    "MeanPoolingForwardOp",
     "NSACmpFwdVarlenOp",
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",

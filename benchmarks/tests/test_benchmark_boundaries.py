@@ -78,7 +78,6 @@ def test_benchmarks_do_not_author_gen_inputs() -> None:
 _ROOFLINE_OF_ITS_OWN = {
     "FusedGatedBenchmark": "times a kernel strategy rather than an op, and publishes nothing",
     "FusedTopKBenchmark": "FusedTopKOp has no manifest entry",
-    "MeanPoolingBenchmark": "MeanPoolingForwardOp has no manifest entry",
     "SharedFusedMoEBenchmark": "SharedFusedMoE has no manifest entry",
 }
 

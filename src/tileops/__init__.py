@@ -101,7 +101,9 @@ def __getattr__(name: str) -> Any:
     import importlib
 
     if name in _FAMILIES:
-        value = importlib.import_module(f"{__name__}.{name}")
+        # `__package__`, not `__name__`: a tool that loads this file as the module
+        # `tileops.__init__` leaves `__name__` unusable as an import prefix.
+        value = importlib.import_module(f".{name}", __package__)
     else:
         module = _LAZY.get(name)
         if module is None:

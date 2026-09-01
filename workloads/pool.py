@@ -1,5 +1,6 @@
 """Workload definitions for the pool op family."""
 
+from collections.abc import Sequence
 from typing import Callable, Optional
 
 import torch
@@ -336,6 +337,41 @@ class AdaptivePool2dWorkload(WorkloadBase):
         return (x,)
 
 
+def mean_pooling_chunk_index(
+    seq_lens: Sequence[int], chunk_size: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The ``offsets`` and ``indices`` a ragged mean-pooling call takes.
+
+    Args:
+        seq_lens: Length of each sequence, in tokens.
+        chunk_size: Tokens per chunk; a sequence's last chunk may hold fewer.
+
+    Returns:
+        ``offsets``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``indices``,
+        one ``(sequence, chunk-within-sequence)`` pair per chunk.
+    """
+    from workloads.nsa_utils import prepare_chunk_indices
+
+    bounds = [0]
+    for length in seq_lens:
+        bounds.append(bounds[-1] + length)
+    offsets = torch.tensor(bounds, dtype=torch.int32, device="cuda")
+    return offsets, prepare_chunk_indices(offsets, chunk_size)
+
+
+def mean_pooling_uniform_index(
+    batch_size: int, seq_len: int, chunk_size: int, chunks_per_batch: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The two tensors a uniform-split mean-pooling call takes but does not read.
+
+    ``use_offsets=0`` cuts the sequence into equal chunks and reads neither tensor, but
+    both are required arguments, so a caller has to supply something shaped right.
+    """
+    offsets = torch.arange(0, (batch_size + 1) * seq_len, seq_len, dtype=torch.int32, device="cuda")
+    indices = torch.zeros((chunks_per_batch, 2), dtype=torch.int32, device="cuda")
+    return offsets, indices
+
+
 class MeanPoolingWorkload(WorkloadBase):
     def __init__(
         self,
@@ -351,6 +387,7 @@ class MeanPoolingWorkload(WorkloadBase):
         accum_dtype: torch.dtype,
         offsets: Optional[torch.Tensor] = None,
         indices: Optional[torch.Tensor] = None,
+        seq_lens: Optional[Sequence[int]] = None,
     ) -> None:
         self.batch_size = batch_size
         self.seq_len = seq_len
@@ -362,6 +399,12 @@ class MeanPoolingWorkload(WorkloadBase):
         self.use_offsets = use_offsets
         self.dtype = dtype
         self.accum_dtype = accum_dtype
+        if seq_lens is not None:
+            offsets, indices = mean_pooling_chunk_index(seq_lens, chunk_size)
+        elif offsets is None:
+            offsets, indices = mean_pooling_uniform_index(
+                batch_size, seq_len, chunk_size, chunks_per_batch
+            )
         self.offsets = offsets
         self.indices = indices
 
@@ -393,8 +436,10 @@ class MeanPoolingWorkload(WorkloadBase):
             output = torch.empty(
                 batch_size, total_chunks, heads, dim, dtype=x.dtype, device=x.device
             )
-            chunk_idx = 0
             for b in range(batch_size):
+                # Reset per row: `offsets` partitions every batch row the same way, so
+                # each row's chunks fill the same `total_chunks` output slots.
+                chunk_idx = 0
                 for seq_id, chunks_i in enumerate(chunk_counts):
                     seq_start = offsets[seq_id].item()
                     seq_end = offsets[seq_id + 1].item()
