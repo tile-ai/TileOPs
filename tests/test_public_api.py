@@ -66,18 +66,23 @@ def test_families_match_the_tree():
 def test_family_order_follows_the_ops_aggregate():
     """`_FAMILIES` is ordered simple to composite, and the docs nav follows it. The
     order `tileops.ops.__all__` groups its names in is the same statement, so a
-    reordering of either that forgets the other fails here."""
+    reordering of either that forgets the other fails here.
+
+    Grouping means one contiguous run per family, not merely a first appearance in the
+    right order: `elementwise, dropout, elementwise` would satisfy the latter.
+    """
     import tileops.ops as ops
 
     owner = {
         name: family for family in tileops._FAMILIES for name in _family_module(family).__all__
     }
-    seen: list[str] = []
+    runs: list[str] = []
     for name in ops.__all__:
         family = owner.get(name)
-        if family is not None and family not in seen:
-            seen.append(family)
-    assert seen == [f for f in tileops._FAMILIES if f in seen]
+        if family is not None and (not runs or runs[-1] != family):
+            runs.append(family)
+    assert len(runs) == len(set(runs)), f"a family appears in more than one run: {runs}"
+    assert runs == [f for f in tileops._FAMILIES if f in runs]
 
 
 @pytest.mark.smoke
@@ -113,10 +118,23 @@ def test_public_surface_is_the_manifest_plus_the_listed_exceptions():
 
 
 @pytest.mark.smoke
-def test_families_are_reachable_as_attributes():
+def test_families_are_listed():
     assert set(FAMILIES) <= set(tileops.__all__)
     assert set(FAMILIES) <= set(dir(tileops))
-    assert tileops.elementwise.HardtanhFwdOp is not None
+
+
+@pytest.mark.smoke
+def test_a_family_resolves_from_a_bare_import():
+    """`import tileops` then `tileops.<family>` has to work through `__getattr__`.
+
+    In a subprocess because the other tests in this file have already imported every
+    family module, which binds the attribute on the parent package: an in-process
+    assertion would then hold whether `__getattr__` works or not.
+    """
+    code = "import tileops; print(tileops.elementwise.HardtanhFwdOp.__name__)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "HardtanhFwdOp"
 
 
 @pytest.mark.smoke
