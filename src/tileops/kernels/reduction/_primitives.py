@@ -966,13 +966,22 @@ class RowTiledAutotuneMixin:
 
 @dataclass(frozen=True)
 class _LeadingAxisReducePolicy:
-    """Launch heuristics for reductions down contiguous leading axes."""
+    """Launch heuristics for reductions down contiguous leading axes.
 
-    cols_per_thread: int = 8
+    Measured on an H200 over ``(A, B)`` from ``(4, 128)`` to ``(2048, 4096)``,
+    in bf16 and fp32. The column tile ``threads * cols_per_thread`` is what a
+    block reads from one row, and 512 columns is flat across the sweep; how
+    that tile is divided is not. Sixty-four lanes reading eight columns each
+    leaves a block too narrow to cover the read's latency -- on ``(128, 1024)``
+    bf16 it costs 2.88x against 256 lanes reading two, at the same tile, the
+    same split count and the same grid.
+    """
 
-    threads: int = 64
+    cols_per_thread: int = 2
 
-    target_blocks: int = 512
+    threads: int = 256
+
+    target_blocks: int = 256
 
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
