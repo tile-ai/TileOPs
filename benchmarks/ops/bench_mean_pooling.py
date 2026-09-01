@@ -1,9 +1,4 @@
-"""Benchmark for the chunked sequence-mean op.
-
-Workload shapes, chunk sizes and the ragged sequence lengths come from the ops
-manifest; roofline FLOP and byte counts come from the op's ``eval_roofline()`` via
-:class:`ManifestBenchmark`.
-"""
+"""Benchmarks for MeanPoolingForwardOp, the chunked sequence mean."""
 
 from typing import List, Optional
 
