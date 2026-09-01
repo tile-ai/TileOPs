@@ -35,7 +35,7 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
 )
 from tileops.kernels.reduction._split_softmax import (
-    make_split_fold,
+    make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
     split_target_blocks,
@@ -453,12 +453,15 @@ def _softmax_split_finalize_kernel(
 ):
     """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
 
-    The fold reads ``num_segs`` fp32 pairs; staged through shared memory
-    once, every thread then folds redundantly from there rather than each
-    walking global memory.
+    The statistics are folded across the block, and the row's scale -- a
+    reciprocal for softmax, a log for log_softmax -- is taken once before the
+    block walks its segment. Both are what ``_softmax_kernel_single`` already
+    does: a per-thread serial fold costs ``num_segs`` dependent exponentials
+    in every lane, and a divide or a log left inside the element loop is paid
+    once per element.
     """
     num_segs = ceildiv_int(N, seg_n)
-    fold = make_split_fold(num_segs)
+    fold = make_block_split_fold(num_segs, threads)
 
     @tilelang.jit(out_idx=[3])
     def _func():
@@ -470,18 +473,18 @@ def _softmax_split_finalize_kernel(
             y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
-                stat_max = T.alloc_shared((num_segs,), "float32")
-                stat_sum = T.alloc_shared((num_segs,), "float32")
-                row_max = T.alloc_local((1,), "float32")
-                row_sum = T.alloc_local((1,), "float32")
-                held = T.alloc_local((1,), "float32")
+                part_max = T.alloc_fragment((1, threads), "float32")
+                part_sum = T.alloc_fragment((1, threads), "float32")
+                row_max = T.alloc_fragment((1,), "float32")
+                row_sum = T.alloc_fragment((1,), "float32")
+                row_scale = T.alloc_local((1,), "float32")
 
-                for s in T.Parallel(num_segs):
-                    stat_max[s] = seg_max[pid_m * num_segs + s]
-                    stat_sum[s] = seg_sum[pid_m * num_segs + s]
-                T.sync_threads()
+                fold(seg_max, seg_sum, pid_m * num_segs, part_max, part_sum, row_max, row_sum)
 
-                fold(stat_max, stat_sum, 0, row_max, row_sum, held)
+                if op_kind == "softmax":
+                    row_scale[0] = 1.0 / row_sum[0]
+                else:
+                    row_scale[0] = T.log(row_sum[0])
 
                 for _, j in T.Parallel(1, seg_n):
                     col = pid_s * seg_n + j
@@ -490,14 +493,12 @@ def _softmax_split_finalize_kernel(
                             if op_kind == "softmax":
                                 y[pid_m, col] = T.cast(
                                     T.exp(T.cast(x[pid_m, col], "float32") - row_max[0])
-                                    / row_sum[0],
+                                    * row_scale[0],
                                     dtype,
                                 )
                             else:
                                 y[pid_m, col] = T.cast(
-                                    T.cast(x[pid_m, col], "float32")
-                                    - row_max[0]
-                                    - T.log(row_sum[0]),
+                                    T.cast(x[pid_m, col], "float32") - row_max[0] - row_scale[0],
                                     dtype,
                                 )
 
