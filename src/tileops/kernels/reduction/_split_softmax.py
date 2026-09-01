@@ -20,10 +20,13 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     ceildiv_int,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = [
     "edge_split_partials_kernel",
     "edge_split_view",
+    "fused_split_plan",
+    "make_block_split_fold",
     "make_split_fold",
     "softmax_split_partials_kernel",
     "split_seg_n",
@@ -151,6 +154,85 @@ def make_split_fold(num_segs: int):
             )
 
     return fold
+
+
+def make_block_split_fold(num_segs: int, threads: int):
+    """Create the macro folding one row's segment statistics across a whole block.
+
+    Every lane folds a strided share of the ``num_segs`` pairs into a
+    ``(1, threads)`` fragment, and two block reductions close it. Use it where
+    the block goes on to walk the row afterwards: a per-thread serial fold
+    there costs ``num_segs`` dependent exponentials in every lane, and that
+    cost is the block's rather than the data's. :func:`make_split_fold` stays
+    the form for a fold that is a kernel's only work.
+
+    The statistics are read from global at *base*. A few hundred fp32 pairs
+    that every block of one row reads sit in L2, and staging them through
+    shared memory pays a barrier to restate that. The caller allocates
+    *part_max* and *part_sum* as ``(1, threads)`` fp32 fragments and *row_max*
+    and *row_sum* as ``(1,)`` fp32 fragments. Segment semantics match
+    :func:`make_split_fold`: an all--inf segment contributes nothing, and an
+    all--inf row leaves ``(-inf, 0)``.
+    """
+    rounds = ceildiv_int(num_segs, threads)
+    last = num_segs - 1
+
+    def owned(r, t):
+        """The segment lane *t* folds in round *r*, and whether it has one.
+
+        A lane past the last segment reads the last one instead of running off
+        the array; the flag is what keeps its value out of both reductions.
+        """
+        return T.min(r * threads + t, last), r * threads + t <= last
+
+    @T.macro
+    def fold(seg_max, seg_sum, base, part_max, part_sum, row_max, row_sum):
+        for _, t in T.Parallel(1, threads):
+            part_max[0, t] = -T.infinity("float32")
+            for r in T.serial(rounds):
+                s, mine = owned(r, t)
+                part_max[0, t] = T.max(
+                    part_max[0, t],
+                    T.if_then_else(mine, seg_max[base + s], -T.infinity("float32")),
+                )
+        T.fill(row_max, -T.infinity("float32"))
+        T.reduce_max(part_max, row_max, dim=1, clear=False)
+
+        for _, t in T.Parallel(1, threads):
+            part_sum[0, t] = 0.0
+            for r in T.serial(rounds):
+                s, mine = owned(r, t)
+                part_sum[0, t] = part_sum[0, t] + T.if_then_else(
+                    T.And(mine, seg_max[base + s] != -T.infinity("float32")),
+                    seg_sum[base + s] * T.exp(seg_max[base + s] - row_max[0]),
+                    T.cast(0.0, "float32"),
+                )
+        T.reduce_sum(part_sum, row_sum, dim=1)
+
+    return fold
+
+
+def fused_split_plan(M: int, N: int, seg_n: int) -> "int | None":
+    """The thread width a one-kernel split runs at, or None when it cannot.
+
+    A fused split keeps its segment in registers across a grid barrier, so it
+    reads the row once where the two-kernel pair reads it twice. Two conditions
+    bound it. The grid must be co-resident, since a cooperative launch wider
+    than the device holds is refused outright; ``split_seg_n`` already aims at
+    ``split_target_blocks``, and this rejects the shapes where the segment cap
+    pushed it past that. The two fp32 fragments must also fit the same
+    per-thread budget one fragment gets elsewhere, which is what picks the
+    width: the narrowest power of two from ``WARP_LANES`` up that holds them.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+    if num_segs * M > split_target_blocks():
+        return None
+    threads = WARP_LANES
+    while threads <= DEFAULT_THREADS:
+        if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
+            return threads
+        threads *= 2
+    return None
 
 
 def edge_split_view(

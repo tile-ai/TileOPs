@@ -18,6 +18,11 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.reduction._split_softmax import (
+    fused_split_plan,
+    split_seg_n,
+    split_target_blocks,
+)
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
 
@@ -750,6 +755,27 @@ def test_split_rows_survive_fully_masked_segments() -> None:
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1))
     torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
 
+    torch.testing.assert_close(
+        LogSoftmaxFwdOp(dim=-1)(x), F.log_softmax(x, dim=-1), atol=5e-3, rtol=5e-3
+    )
+
     x[0, :] = float("-inf")
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
     torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+
+
+@pytest.mark.smoke
+def test_split_shape_runs_as_one_fused_kernel() -> None:
+    """The manifest's split shape reads its row once, under a grid barrier.
+
+    A fused split is what keeps the row in registers across the fold; without
+    it the pair reads the row a second time. The two shapes below are what
+    ``fused_split_plan`` refuses: a grid wider than a cooperative launch holds,
+    and a segment too wide for two fp32 fragments.
+    """
+    seg_n = split_seg_n(4, 102400, 1, split_target_blocks())
+    assert seg_n
+    assert fused_split_plan(4, 102400, seg_n) is not None
+
+    assert fused_split_plan(1, 10_000_000, 16384) is None
+    assert fused_split_plan(1, 100_000, 16384) is None

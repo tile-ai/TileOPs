@@ -35,7 +35,8 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
 )
 from tileops.kernels.reduction._split_softmax import (
-    make_split_fold,
+    fused_split_plan,
+    make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
     split_target_blocks,
@@ -453,12 +454,15 @@ def _softmax_split_finalize_kernel(
 ):
     """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
 
-    The fold reads ``num_segs`` fp32 pairs; staged through shared memory
-    once, every thread then folds redundantly from there rather than each
-    walking global memory.
+    The statistics are folded across the block, and the row's scale -- a
+    reciprocal for softmax, a log for log_softmax -- is taken once before the
+    block walks its segment. Both are what ``_softmax_kernel_single`` already
+    does: a per-thread serial fold costs ``num_segs`` dependent exponentials
+    in every lane, and a divide or a log left inside the element loop is paid
+    once per element.
     """
     num_segs = ceildiv_int(N, seg_n)
-    fold = make_split_fold(num_segs)
+    fold = make_block_split_fold(num_segs, threads)
 
     @tilelang.jit(out_idx=[3])
     def _func():
@@ -470,18 +474,18 @@ def _softmax_split_finalize_kernel(
             y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
-                stat_max = T.alloc_shared((num_segs,), "float32")
-                stat_sum = T.alloc_shared((num_segs,), "float32")
-                row_max = T.alloc_local((1,), "float32")
-                row_sum = T.alloc_local((1,), "float32")
-                held = T.alloc_local((1,), "float32")
+                part_max = T.alloc_fragment((1, threads), "float32")
+                part_sum = T.alloc_fragment((1, threads), "float32")
+                row_max = T.alloc_fragment((1,), "float32")
+                row_sum = T.alloc_fragment((1,), "float32")
+                row_scale = T.alloc_local((1,), "float32")
 
-                for s in T.Parallel(num_segs):
-                    stat_max[s] = seg_max[pid_m * num_segs + s]
-                    stat_sum[s] = seg_sum[pid_m * num_segs + s]
-                T.sync_threads()
+                fold(seg_max, seg_sum, pid_m * num_segs, part_max, part_sum, row_max, row_sum)
 
-                fold(stat_max, stat_sum, 0, row_max, row_sum, held)
+                if op_kind == "softmax":
+                    row_scale[0] = 1.0 / row_sum[0]
+                else:
+                    row_scale[0] = T.log(row_sum[0])
 
                 for _, j in T.Parallel(1, seg_n):
                     col = pid_s * seg_n + j
@@ -490,15 +494,106 @@ def _softmax_split_finalize_kernel(
                             if op_kind == "softmax":
                                 y[pid_m, col] = T.cast(
                                     T.exp(T.cast(x[pid_m, col], "float32") - row_max[0])
-                                    / row_sum[0],
+                                    * row_scale[0],
                                     dtype,
                                 )
                             else:
                                 y[pid_m, col] = T.cast(
-                                    T.cast(x[pid_m, col], "float32")
-                                    - row_max[0]
-                                    - T.log(row_sum[0]),
+                                    T.cast(x[pid_m, col], "float32") - row_max[0] - row_scale[0],
                                     dtype,
+                                )
+
+        return main
+
+    return _func
+
+
+@functools.lru_cache(maxsize=64)
+def _softmax_fused_split_kernel(M: int, N: int, op_kind: str, dtype: str, seg_n: int, threads: int):
+    """Normalize a few long rows in one kernel, reading each row once.
+
+    The split pair reads the row twice: once for the segment statistics, once
+    to normalize. Here a block keeps its segment in registers across a grid
+    barrier and rescales it in place, so the row moves one read and one write
+    and the launch that separated the two passes goes away. A grid barrier is
+    what makes that legal, and :func:`fused_split_plan` is what says the grid
+    can take one.
+
+    The rescale is the flash-attention identity, ``exp(x - row_max) =
+    exp(x - seg_max) * exp(seg_max - row_max)``, which is why the segment's
+    exponentials survive the fold. A segment of only ``-inf`` holds zeros
+    rather than the NaN ``exp(-inf - -inf)`` would leave, so it contributes
+    nothing; an all--inf row still reads NaN for softmax and -inf for
+    log_softmax, as torch does.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+    fold = make_block_split_fold(num_segs, threads)
+
+    @tilelang.jit(out_idx=[3])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
+            y: T.Tensor[(M, N), dtype],
+        ):
+            with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
+                held = T.alloc_fragment((1, seg_n), "float32")
+                shifted = T.alloc_fragment((1, seg_n), "float32")
+                seg_m = T.alloc_fragment((1,), "float32")
+                seg_s = T.alloc_fragment((1,), "float32")
+                part_max = T.alloc_fragment((1, threads), "float32")
+                part_sum = T.alloc_fragment((1, threads), "float32")
+                row_max = T.alloc_fragment((1,), "float32")
+                row_sum = T.alloc_fragment((1,), "float32")
+                row_scale = T.alloc_local((1,), "float32")
+                shift = T.alloc_local((1,), "float32")
+
+                for _, j in T.Parallel(1, seg_n):
+                    held[0, j] = T.if_then_else(
+                        pid_s * seg_n + j < N,
+                        T.cast(x[pid_m, pid_s * seg_n + j], "float32"),
+                        -T.infinity("float32"),
+                    )
+                T.fill(seg_m, -T.infinity("float32"))
+                T.reduce_max(held, seg_m, dim=1, clear=False)
+                # A segment of only -inf shifts by zero instead of by its own
+                # -inf, which would leave every lane the NaN of exp(-inf - -inf).
+                # Shifting by zero leaves exp(-inf) = 0, so the segment sums to
+                # zero and contributes nothing; the test is the row's, so it is
+                # taken once here rather than at every element.
+                shift[0] = T.if_then_else(
+                    seg_m[0] == -T.infinity("float32"), T.cast(0.0, "float32"), seg_m[0]
+                )
+                for _, j in T.Parallel(1, seg_n):
+                    shifted[0, j] = T.exp(held[0, j] - shift[0])
+                T.reduce_sum(shifted, seg_s, dim=1)
+                seg_max[pid_m * num_segs + pid_s] = seg_m[0]
+                seg_sum[pid_m * num_segs + pid_s] = seg_s[0]
+
+                T.sync_grid()
+
+                fold(seg_max, seg_sum, pid_m * num_segs, part_max, part_sum, row_max, row_sum)
+
+                if op_kind == "softmax":
+                    row_scale[0] = T.exp(seg_m[0] - row_max[0]) / row_sum[0]
+                else:
+                    row_scale[0] = row_max[0] + T.log(row_sum[0])
+
+                # Indexed with the expression rather than a name bound to it:
+                # TileLang's parallel-loop verifier does not substitute the
+                # binding, and reads the store as j-independent.
+                for _, j in T.Parallel(1, seg_n):
+                    with T.If(pid_s * seg_n + j < N):  # noqa: SIM117
+                        with T.Then():
+                            if op_kind == "softmax":
+                                y[pid_m, pid_s * seg_n + j] = T.cast(
+                                    shifted[0, j] * row_scale[0], dtype
+                                )
+                            else:
+                                y[pid_m, pid_s * seg_n + j] = T.cast(
+                                    held[0, j] - row_scale[0], dtype
                                 )
 
         return main
@@ -807,9 +902,10 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
     def _normalize_rows(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize the trailing axis of an ``(M, N)`` buffer.
 
-        The prim_func writes an alignment-padded row; the surplus columns are trimmed
-        here. A handful of long rows goes to the split-row pair instead, which
-        writes exact columns.
+        The prim_func writes an alignment-padded row; the surplus columns are
+        trimmed here. A handful of long rows goes to a split instead, which
+        writes exact columns: one fused kernel where the grid can hold a
+        barrier, and the two-kernel pair where it cannot.
         """
         seg_n = (
             split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
@@ -817,6 +913,13 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
             else 0
         )
         if seg_n:
+            fused_threads = fused_split_plan(self.M, self.N, seg_n)
+            if fused_threads is not None:
+                num_segs = ceildiv_int(self.N, seg_n)
+                stats = torch.empty(2, self.M * num_segs, dtype=torch.float32, device=x.device)
+                return _softmax_fused_split_kernel(
+                    self.M, self.N, self.op_kind, self.dtype_str, seg_n, fused_threads
+                )()(x, stats[0], stats[1])
             # split_seg_n's fragment cap assumes the default width.
             threads = _DEFAULT_TUNE_THREADS
             seg_max, seg_sum = softmax_split_partials_kernel(
