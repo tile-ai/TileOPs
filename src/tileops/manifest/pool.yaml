@@ -1,7 +1,7 @@
 # pool.yaml -- manifest entries for the 'pool' family.
 #
-# Source of truth for pooling op interfaces. These entries are generated from
-# PyTorch functional reference APIs. Each entry's `status` field is the
+# Source of truth for pooling op interfaces. Most entries are generated from a
+# PyTorch functional reference API. Each entry's `status` field is the
 # authority on whether it is implemented.
 
 AvgPool1dFwdOp:
@@ -781,4 +781,69 @@ AdaptiveMaxPool2dIndicesFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
+
+# A chunked mean over the sequence axis, along ragged boundaries when asked. torch
+# has no such API, hence `ref_api: "none"`.
+MeanPoolingForwardOp:
+  ref_api: "none"
+  family: pool
+  status: implemented
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32"}
+      offsets: {dtype: "int32"}
+      indices: {dtype: "int32"}
+    outputs:
+      output: {dtype: "same_as(x)"}
+    params:
+      batch_size: {type: int}
+      seq_len: {type: int}
+      heads: {type: int}
+      dim: {type: int}
+      chunk_size: {type: int}
+      chunks_per_batch: {type: int}
+      seq_num: {type: int}
+      use_offsets: {type: int}
+      accum_dtype: {type: torch.dtype}
+    shape_rules:
+      - "x.shape == (batch_size, seq_len, heads, dim)"
+      - "offsets.shape == (seq_num + 1,)"
+      - "indices.shape == (chunks_per_batch, 2)"
+      - "output.shape == (batch_size, chunks_per_batch, heads, dim)"
+      # A warp reduction spans the chunk, so the chunk must fill whole warps.
+      - "chunk_size > 0 and chunk_size % 32 == 0"
+      # The kernel tiles `dim` by a width of at most 128, and a tile that is neither the
+      # whole `dim` nor an exact divisor of it has no valid layout.
+      - "dim <= 128 or dim % 128 == 0"
+      - "use_offsets in (0, 1)"
+      # The op is handed the chunk count rather than deriving it.
+      - "use_offsets == 1 or chunks_per_batch == -(-seq_len // chunk_size)"
+      # `indices[i]` is (sequence, chunk-within-sequence).
+      - "use_offsets == 0 or seq_num >= 1"
+
+  workloads:
+    # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
+    - {batch_size: 1, seq_len: 8192, heads: 64, dim: 128, chunk_size: 64, chunks_per_batch: 128, seq_num: 1, use_offsets: 0, accum_dtype: float32, seq_lens: null, dtypes: [float16], label: "uniform-8k"}
+    - {batch_size: 2, seq_len: 2048, heads: 64, dim: 128, chunk_size: 64, chunks_per_batch: 32, seq_num: 2, use_offsets: 0, accum_dtype: float32, seq_lens: null, dtypes: [float16], label: "uniform-batched"}
+    # `seq_lens` is what the workload builds `offsets` and `indices` from.
+    - {batch_size: 1, seq_len: 8192, heads: 64, dim: 128, chunk_size: 64, chunks_per_batch: 128, seq_num: 4, use_offsets: 1, accum_dtype: float32, seq_lens: [2048, 2048, 2048, 2048], dtypes: [float16], label: "ragged-even"}
+    - {batch_size: 1, seq_len: 1000, heads: 64, dim: 128, chunk_size: 32, chunks_per_batch: 34, seq_num: 4, use_offsets: 1, accum_dtype: float32, seq_lens: [100, 200, 300, 400], dtypes: [float16], label: "ragged-tail"}
+    - {batch_size: 2, seq_len: 2048, heads: 64, dim: 128, chunk_size: 64, chunks_per_batch: 32, seq_num: 2, use_offsets: 1, accum_dtype: float32, seq_lens: [1024, 1024], dtypes: [float16], label: "ragged-batched"}
+
+  roofline:
+    vars:
+      # Every chunk priced at chunk_size adds, so a ragged split's count is an upper bound.
+      out_elems: "batch_size * chunks_per_batch * heads * dim"
+    flops: "out_elems * chunk_size"
+    bytes: "(batch_size * seq_len * heads * dim + out_elems) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/pool/mean_pooling.py
+    kernel_map:
+      mean_pooling_fwd_kernel: MeanPoolingFwdKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_mean_pooling.py
+    bench: benchmarks/ops/bench_mean_pooling.py
     bench_manifest_driven: true

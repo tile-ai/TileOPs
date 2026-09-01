@@ -258,16 +258,22 @@ class ExampleCumsumFwdOp(Op):
 
 **Input.** The class name (Step 2) and the op's source filename.
 
-**Output (append to `src/tileops/ops/reduction/__init__.py`):**
+**Output.** Two files, both with a matching `__all__` entry.
+
+Implementation package, `src/tileops/ops/reduction/__init__.py`:
 
 ```python
 # --- ExampleCumsumKernel ops ---
 from .example_cumsum import ExampleCumsumFwdOp
 ```
 
-…with a matching entry added to the module's `__all__` list.
+Public path, `src/tileops/reduction.py` — this is the one callers import from:
 
-**Validation.** The import sits under its family's grouping comment block; a matching `__all__` entry is present (otherwise `from tileops.ops.reduction import *` silently drops the op).
+```python
+from .ops.reduction import ExampleCumsumFwdOp
+```
+
+**Validation.** The implementation import sits under its family's grouping comment block, and both files carry a matching `__all__` entry — miss the second and the op is unreachable from `tileops.reduction`.
 
 **Reference.** [Slot S20](../../.claude/skills/scaffold-op/slot-rules.md#slot-s20).
 

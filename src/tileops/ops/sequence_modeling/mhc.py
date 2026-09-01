@@ -13,7 +13,14 @@ __all__ = ["MHCPostFwdOp", "MHCPreFwdOp"]
 
 
 class MHCPreFwdOp(Op):
-    """Layout: BSHD"""
+    """The pre-layer half of Manifold-Constrained Hyper-Connections (mHC).
+
+    Reduces the width-expanded stream to the single tensor a layer consumes, and
+    returns the residual that MHCPostFwdOp mixes the layer output back into. The
+    expansion width is read from the shape of ``phi`` rather than passed in.
+
+    Layout: BSHD
+    """
 
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
@@ -128,7 +135,13 @@ class MHCPreFwdOp(Op):
 
 
 class MHCPostFwdOp(Op):
-    """Layout: BSHD"""
+    """The post-layer half of Manifold-Constrained Hyper-Connections (mHC).
+
+    Mixes a layer's output into the residual MHCPreFwdOp set aside, restoring the
+    width-expanded stream.
+
+    Layout: BSHD
+    """
 
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
         """Build the op. Shapes and dtype are taken from the first call.

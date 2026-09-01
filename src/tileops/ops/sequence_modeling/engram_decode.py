@@ -115,8 +115,8 @@ class EngramDecodeFwdOp(Op):
 
         Returns:
             [y_t, new_conv_state]:
-              y_t:            (B, d) — output to add as residual.
-              new_conv_state: (B, max_conv_len, d) — updated state for next step.
+                y_t:            (B, d) — output to add as residual.
+                new_conv_state: (B, max_conv_len, d) — updated state for next step.
         """
         if not e_t.is_cuda:
             raise ValueError("e_t must be a CUDA tensor")

@@ -57,19 +57,19 @@ graph TD
 
 ### Flow status
 
-| Flow                  | Status  | What works                                                                         | Gap                                                                                |
-| :-------------------- | :------ | :--------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------- |
-| 🟢 **Op Delivery**    | done    | M1 → M2 → M3 → M7 (CI gate)                                                        | —                                                                                  |
-| 🔵 **Perf Tuning**    | partial | M4 produces raw time; roofline formulas + GPU profile loader (`src/tileops/perf/`) | efficiency computation (SOL vs. actual time) missing; optimization loop not closed |
-| 🟠 **HW Calibration** | partial | HBM microbench + GPU profiles                                                      | tensor core calibration missing                                                    |
-| 🟣 **Publish**        | partial | nightly bench data + manifest stats published for TileOPs.github.io                | API reference generation missing                                                   |
+| Flow                  | Status  | What works                                                                           | Gap                             |
+| :-------------------- | :------ | :----------------------------------------------------------------------------------- | :------------------------------ |
+| 🟢 **Op Delivery**    | done    | M1 → M2 → M3 → M7 (CI gate)                                                          | —                               |
+| 🔵 **Perf Tuning**    | partial | M4 produces raw time; M5 turns it into SOL efficiency against the GPU profile        | optimization loop not closed    |
+| 🟠 **HW Calibration** | partial | HBM microbench + GPU profiles                                                        | tensor core calibration missing |
+| 🟣 **Publish**        | done    | API reference, nightly bench data and manifest stats published for TileOPs.github.io | —                               |
 
 ### Module reference
 
 | Module                                       | Responsibility                                                                                                                | Key Artifact                               |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                            | `src/tileops/manifest/`                    |
-| **M2: Kernel + Op**                          | GPU kernel implementations and user-facing Python API                                                                         | `src/tileops/kernels/`, `src/tileops/ops/` |
+| **M2: Kernel + Op**                          | GPU kernel implementations and the user-facing Python API, `tileops.<family>.<Op>`, whose names the manifest declares         | `src/tileops/kernels/`, `src/tileops/ops/` |
 | **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                               | `tests/`                                   |
 | **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                   | `benchmarks/`                              |
 | **M5: Roofline**                             | Hardware efficiency from raw time + formulas + HW profile                                                                     | `src/tileops/perf/`                        |

@@ -1,13 +1,13 @@
-# elementwise_unary_math.yaml -- manifest entries for unary math ops.
+# elementwise_unary_math.yaml -- manifest entries for unary elementwise ops.
 #
-# Single-input single-output elementwise math ops: arithmetic (abs, neg,
-# reciprocal, sign), exponential/log (exp, log, sqrt, rsqrt, log1p, expm1),
-# trigonometric (sin, cos), rounding (floor, ceil, round, trunc), error
-# functions (erf), saturating activations whose primary character is a
-# smooth math function (sigmoid, tanh), bitwise/logical not, and predicate
-# checks (isnan, isinf, isfinite). Source of truth for op interfaces in
-# this family. Loaded and merged with other family files by tileops.manifest
-# at runtime. See docs/design/manifest.md for the full schema.
+# Single-input single-output elementwise ops: arithmetic (abs, neg, reciprocal,
+# sign), exponential/log (exp, log, sqrt, rsqrt, log1p, expm1), trigonometric
+# (sin, cos), rounding (floor, ceil, round, trunc), error functions (erf),
+# saturating activations whose primary character is a smooth math function
+# (sigmoid, tanh), bitwise/logical not, predicate checks (isnan, isinf,
+# isfinite), and stochastic masking (dropout). Source of truth for op
+# interfaces in this family. Loaded and merged with other family files by
+# tileops.manifest at runtime. See docs/design/manifest.md for the full schema.
 
 ExpFwdOp:
   ref_api: "torch.exp"
@@ -814,4 +814,40 @@ IsfiniteFwdOp:
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: true
+
+DropoutFwdOp:
+  ref_api: "torch.nn.functional.dropout"
+  family: elementwise
+  status: implemented
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      p: {type: float, default: 0.5}
+      seed: {type: int, default: 0}
+      training: {type: bool, default: true}
+    shape_rules:
+    - "input.numel() > 0"
+    - "0.0 <= p <= 1.0"
+
+  workloads:
+  # Normal kernel path. p=0, p=1, and training=false are short-circuit paths
+  # and should be tested separately from release-facing roofline workloads.
+  - {input_shape: [1024, 4096], p: 0.5, training: true, dtypes: [float16, float32], label: "tokens-1k-hidden-4k"}
+  - {input_shape: [1024, 10240], p: 0.5, training: true, dtypes: [bfloat16], label: "tokens-1k-hidden-10k"}
+
+  roofline:
+    func: "tileops.perf.formulas.dropout_roofline"
+
+  source:
+    kernel: tileops/kernels/dropout.py
+    kernel_map:
+      dropout: DropoutKernel
+    op: tileops/ops/dropout.py
+    test: tests/ops/test_dropout.py
+    bench: benchmarks/ops/bench_dropout.py
     bench_manifest_driven: true

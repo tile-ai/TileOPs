@@ -163,3 +163,68 @@ def test_mean_pooling_op(
     op = MeanPoolingForwardOp(**params)
     inputs = test.gen_inputs()
     test.check(op, *inputs, atol=1e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_mean_pooling_rejects_a_wrong_offsets_dtype() -> None:
+    """The manifest's dtype contract has to be enforced on the call path.
+
+    `forward` once dispatched a kernel without running the generated validator, so an
+    `int64` offsets tensor reached TileLang instead of being rejected here.
+    """
+    op = MeanPoolingForwardOp(
+        batch_size=1,
+        seq_len=64,
+        heads=1,
+        dim=8,
+        chunk_size=32,
+        chunks_per_batch=2,
+        seq_num=1,
+        use_offsets=0,
+        accum_dtype=torch.float32,
+    )
+    x = torch.randn(1, 64, 1, 8, device="cuda", dtype=torch.float16)
+    offsets = torch.tensor([0, 64], dtype=torch.int64, device="cuda")
+    indices = torch.zeros((2, 2), dtype=torch.int32, device="cuda")
+    with pytest.raises(ValueError, match="offsets"):
+        op(x, offsets, indices)
+
+
+@pytest.mark.parametrize(
+    "dim",
+    [
+        pytest.param(100, marks=pytest.mark.smoke),
+        pytest.param(256, marks=pytest.mark.full),
+    ],
+)
+def test_mean_pooling_dim_not_one_full_tile(dim: int) -> None:
+    """`dim` values the manifest allows but no workload row carries.
+
+    The kernel tiles `dim` by a width of at most 128: 100 is one tile with a short tail,
+    256 is two whole tiles. Between them — 129 through 255 — TileLang finds no layout,
+    which is why the manifest rules out that range rather than the op checking for it.
+    """
+    test = MeanPoolingTest(
+        batch_size=1,
+        seq_len=64,
+        heads=2,
+        dim=dim,
+        chunk_size=32,
+        chunks_per_batch=2,
+        seq_num=1,
+        use_offsets=0,
+        dtype=torch.float16,
+        accum_dtype=torch.float32,
+    )
+    op = MeanPoolingForwardOp(
+        batch_size=1,
+        seq_len=64,
+        heads=2,
+        dim=dim,
+        chunk_size=32,
+        chunks_per_batch=2,
+        seq_num=1,
+        use_offsets=0,
+        accum_dtype=torch.float32,
+    )
+    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-5)
