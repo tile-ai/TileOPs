@@ -49,13 +49,29 @@ class EqBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 
 
 class NeFwdKernel(BinaryKernel):
-    """Element-wise not-equal: y = (a != b)."""
+    """Element-wise not-equal: y = (a != b).
+
+    A half operand is compared in float32, which is where ``!=`` means what
+    IEEE 754 says. CUDA's ``__hne`` is an *ordered* comparison and answers
+    false when either operand is NaN; ``!=`` is the unordered one and answers
+    true, since NaN is unequal to everything, itself included. Widening is
+    exact for float16 and bfloat16, and float32's own ``!=`` already carries
+    the case, so only the half formats pay it.
+
+    The other five comparisons want the ordered answer -- IEEE reads ``<``,
+    ``<=``, ``>``, ``>=`` and ``==`` as false against a NaN -- and take the
+    operator directly. Negating equality does not work here: the simplifier
+    folds ``not (a == b)`` back to ``a != b``, which is the comparison being
+    avoided.
+    """
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
     def op_func(a, b):
+        if str(a.dtype) in ("float16", "bfloat16"):
+            return T.Cast("float32", a) != T.Cast("float32", b)
         return a != b
 
 
