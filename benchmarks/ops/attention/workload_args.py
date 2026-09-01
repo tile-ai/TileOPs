@@ -99,12 +99,6 @@ def gqa_prefill_paged_args(
     )
 
 
-def mha_decode_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int]:
-    batch, seq_len_q, heads, dim = workload["q_shape"]
-    _, seq_len_kv, _, _ = workload["kv_shape"]
-    return batch, heads, seq_len_q, seq_len_kv, dim
-
-
 def mha_decode_paged_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, int, bool]:
     batch, seq_len_q, heads, dim = workload["q_shape"]
     seq_len_kv, _, _ = workload["kv_shape"]
@@ -116,22 +110,6 @@ def mha_decode_paged_args(workload: dict[str, Any]) -> tuple[int, int, int, int,
         dim,
         workload["page_size"],
         workload.get("is_causal", False),
-    )
-
-
-def gqa_decode_args(
-    workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, float | None, float | None]:
-    batch, heads, dim = workload["q_shape"]
-    _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
-    return (
-        batch,
-        heads,
-        heads_kv,
-        seq_len_kv,
-        dim,
-        workload.get("sm_scale"),
-        workload.get("softcap"),
     )
 
 
@@ -149,23 +127,6 @@ def gqa_decode_paged_args(
         workload["page_size"],
         workload.get("sm_scale"),
         workload.get("softcap"),
-    )
-
-
-def gqa_sliding_window_args(
-    workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, bool, int, int]:
-    batch, seq_len, heads, dim = workload["q_shape"]
-    _, _, heads_kv, _ = workload["kv_shape"]
-    return (
-        batch,
-        seq_len,
-        heads,
-        heads_kv,
-        dim,
-        workload.get("is_causal", True),
-        workload.get("window_size_left", -1),
-        workload.get("window_size_right", -1),
     )
 
 

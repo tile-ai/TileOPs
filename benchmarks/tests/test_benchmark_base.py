@@ -77,7 +77,7 @@ def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
 def test_multi_input_op_raises_keyerror():
     """Multi-input ops (q/k/v) raise instead of binding a wrong tensor."""
     with pytest.raises(KeyError, match="exactly one manifest tensor input"):
-        workloads_to_params("GroupedQueryAttentionFwdOp")
+        workloads_to_params("GroupedQueryAttentionDenseFwdOp")
 
 
 def _kernel(start_ns: int, end_ns: int, correlation_id: int = 0) -> dict:

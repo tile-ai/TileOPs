@@ -31,7 +31,7 @@ description: Generate or re-align one `src/tileops/manifest/` entry from a refer
 
 **File to edit**: write the entry into `src/tileops/manifest/<family>.yaml`, where `<family>` is the entry's `family` field. The manifest is split one file per family; do not create new files or move entries between files. Use `ruamel.yaml` for round-trip preservation of comments and key order.
 
-**Caller responsibility**: `op_name` and `ref_url` must point at the same op. The skill does not enforce alignment between them — TileOPs identity may legitimately differ from any reference's naming (e.g., `MultiHeadAttentionFwdOp` ↔ `torch.nn.functional.scaled_dot_product_attention`). Wrong pairing produces a broken manifest entry silently.
+**Caller responsibility**: `op_name` and `ref_url` must point at the same op. The skill does not enforce alignment between them — TileOPs identity may legitimately differ from any reference's naming (e.g., `GroupedQueryAttentionDenseFwdOp` ↔ `torch.nn.functional.scaled_dot_product_attention`). Wrong pairing produces a broken manifest entry silently.
 
 ## Workflow
 

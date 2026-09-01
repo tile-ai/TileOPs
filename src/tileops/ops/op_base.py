@@ -59,16 +59,6 @@ class Op(ABC):
     - Performance profiling
     - Autotuning interface
 
-    Examples:
-        ```python linenums="1"
-        from tileops.attention import MultiHeadAttentionFwdOp
-        op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
-        Q, K, V = op.gen_inputs()
-        output = op(Q, K, V)
-        op.check()  # Verify correctness
-        latency = op.profile()  # Benchmark performance
-        ```
-
     Attributes:
         kernel: single kernel, for ops that hold one; ops that build per
             specialization use ``get_or_build_kernel`` instead
