@@ -108,12 +108,12 @@ class EngramGateConvFwdOp(Op):
 
         Returns:
             List of [Y, vhat, alpha, rrms_h, rrms_k, rrms_v]:
-              Y:      (M, seq_len, d) — output to add as residual to H.
-              vhat:   (M, seq_len, d) — saved for backward.
-              alpha:  (M, seq_len) — scalar gate, saved for backward.
-              rrms_h: (M, seq_len) — RMSNorm reciprocal rms of H.
-              rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
-              rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
+                Y:      (M, seq_len, d) — output to add as residual to H.
+                vhat:   (M, seq_len, d) — saved for backward.
+                alpha:  (M, seq_len) — scalar gate, saved for backward.
+                rrms_h: (M, seq_len) — RMSNorm reciprocal rms of H.
+                rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
+                rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
         if not H.is_cuda:
             raise ValueError("H must be a CUDA tensor")
@@ -246,12 +246,12 @@ class EngramGateConvBwdOp(Op):
 
         Returns:
             List of [dH, dk, dv, drms_w_h, drms_w_v, dconv_w]:
-              dH:       (M, T, d)
-              dk:       (M, T, d)
-              dv:       (M, T, d)
-              drms_w_h: (d,) — fp32
-              drms_w_v: (d,) — fp32
-              dconv_w:  (4, d) — fp32
+                dH:       (M, T, d)
+                dk:       (M, T, d)
+                dv:       (M, T, d)
+                drms_w_h: (d,) — fp32
+                drms_w_v: (d,) — fp32
+                dconv_w:  (4, d) — fp32
         """
         if not dY.is_cuda:
             raise ValueError("dY must be a CUDA tensor")

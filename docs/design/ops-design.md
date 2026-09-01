@@ -258,16 +258,22 @@ class ExampleCumsumFwdOp(Op):
 
 **Input.** The class name (Step 2) and the op's source filename.
 
-**Output (append to `src/tileops/ops/reduction/__init__.py`):**
+**Output.** Two files, both with a matching `__all__` entry.
+
+Implementation package, `src/tileops/ops/reduction/__init__.py`:
 
 ```python
 # --- ExampleCumsumKernel ops ---
 from .example_cumsum import ExampleCumsumFwdOp
 ```
 
-…with a matching entry added to the module's `__all__` list.
+Public path, `src/tileops/reduction.py` — this is the one callers import from:
 
-**Validation.** The import sits under its family's grouping comment block; a matching `__all__` entry is present (otherwise `from tileops.ops.reduction import *` silently drops the op).
+```python
+from .ops.reduction import ExampleCumsumFwdOp
+```
+
+**Validation.** In the implementation package the import sits under its family's grouping comment block. In both files a matching `__all__` entry is present: without the first, `from tileops.ops.reduction import *` silently drops the op; without the second, `from tileops.reduction import ExampleCumsumFwdOp` fails and the API reference cannot collect the op. `tests/test_public_api.py` fails when a manifest op is missing from its family module.
 
 **Reference.** [Slot S20](../../.claude/skills/scaffold-op/slot-rules.md#slot-s20).
 

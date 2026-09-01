@@ -66,17 +66,17 @@ graph TD
 
 ### Module reference
 
-| Module                                       | Responsibility                                                                                                                | Key Artifact                               |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                            | `src/tileops/manifest/`                    |
-| **M2: Kernel + Op**                          | GPU kernel implementations and user-facing Python API                                                                         | `src/tileops/kernels/`, `src/tileops/ops/` |
-| **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                               | `tests/`                                   |
-| **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                   | `benchmarks/`                              |
-| **M5: Roofline**                             | Hardware efficiency from raw time + formulas + HW profile                                                                     | `src/tileops/perf/`                        |
-| **M6: HW Profile**                           | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                                           | `src/tileops/perf/profiles/`               |
-| **M7: CI Gate**                              | Correctness and performance regression guard per PR                                                                           | CI pipeline                                |
-| **M8: Docs**                                 | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content                          | TileOPs.github.io                          |
-| **Workloads** _(shared layer, not a module)_ | Shared input generation + parametrize decorators consumed by M3 and M4. See [trust-model.md](trust-model.md#workloads-layer). | `workloads/`                               |
+| Module                                       | Responsibility                                                                                                                | Key Artifact                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                            | `src/tileops/manifest/`                                               |
+| **M2: Kernel + Op**                          | GPU kernel implementations, the op classes, and the public two-level path `tileops.<family>.<Op>`                             | `src/tileops/kernels/`, `src/tileops/ops/`, `src/tileops/<family>.py` |
+| **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                               | `tests/`                                                              |
+| **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                   | `benchmarks/`                                                         |
+| **M5: Roofline**                             | Hardware efficiency from raw time + formulas + HW profile                                                                     | `src/tileops/perf/`                                                   |
+| **M6: HW Profile**                           | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                                           | `src/tileops/perf/profiles/`                                          |
+| **M7: CI Gate**                              | Correctness and performance regression guard per PR                                                                           | CI pipeline                                                           |
+| **M8: Docs**                                 | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content                          | TileOPs.github.io                                                     |
+| **Workloads** _(shared layer, not a module)_ | Shared input generation + parametrize decorators consumed by M3 and M4. See [trust-model.md](trust-model.md#workloads-layer). | `workloads/`                                                          |
 
 ## Data Contracts
 
@@ -132,4 +132,6 @@ Design documents are authored during development and published alongside auto-ge
 
 ## Directory Structure
 
-The Module reference table above maps each module to its directory (Key Artifact column). Top-level layout: `src/tileops/` (manifest, kernels, ops, perf), `workloads/`, `tests/`, `benchmarks/`, `docs/`, `scripts/`. This doc does not track the file inventory — consult the tree itself.
+The Module reference table above maps each module to its directory (Key Artifact column). Top-level layout: `src/tileops/` (manifest, kernels, ops, perf, and one module per op family), `workloads/`, `tests/`, `benchmarks/`, `docs/`, `scripts/`. This doc does not track the file inventory — consult the tree itself.
+
+Ops are reached at two levels, `tileops.<family>.<Op>`. Each `src/tileops/<family>.py` re-exports its family from `tileops.ops.<family>`, where the classes are implemented. `tileops.ops` is the implementation path the rest of the tree imports from; it is not a path to document. A name is public when the manifest declares it; an exception needs a stated reason.

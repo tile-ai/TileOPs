@@ -26,7 +26,7 @@
 
 ```python
 import torch
-from tileops.ops import GemmFwdOp
+from tileops.gemm import GemmFwdOp
 
 gemm = GemmFwdOp()  # shapes and dtype are inferred at call time
 

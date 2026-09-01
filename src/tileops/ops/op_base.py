@@ -61,7 +61,7 @@ class Op(ABC):
 
     Examples:
         ```python linenums="1"
-        from tileops.ops import MultiHeadAttentionFwdOp
+        from tileops.attention import MultiHeadAttentionFwdOp
         op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
         Q, K, V = op.gen_inputs()
         output = op(Q, K, V)
