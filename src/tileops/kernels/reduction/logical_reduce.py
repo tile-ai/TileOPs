@@ -28,6 +28,7 @@ from tileops.kernels.reduction._primitives import (
     FP32_EXACT_INT_LIMIT,
     BlockConfigPlanner,
     align_up,
+    ceildiv_int,
     device_smem_budget,
     edge_axis_plan,
     edge_axis_split,
@@ -112,6 +113,22 @@ def _logical_out_dtype(op_kind: str, partial: bool) -> str:
     return "float32" if partial else "int64"
 
 
+# Elements a lane folds in the edge-fused pass. One block holds a `trail`-wide
+# fp32 fragment, so this is what fixes its register footprint per lane rather
+# than letting it grow with the row. Measured on an H200 over `lead` 2 to 16 and
+# `trail` 256 to 8192: eight is the flat optimum at every width.
+_FUSED_EDGE_ELEMS_PER_LANE = 8
+_FUSED_EDGE_MIN_THREADS = 64
+_FUSED_EDGE_MAX_THREADS = 1024
+
+
+def fused_edge_threads(trail: int) -> int:
+    """The thread width the edge-fused pass runs a ``trail``-wide row at."""
+    lanes = ceildiv_int(trail, _FUSED_EDGE_ELEMS_PER_LANE)
+    lanes = 1 << max(lanes - 1, 0).bit_length()
+    return max(_FUSED_EDGE_MIN_THREADS, min(lanes, _FUSED_EDGE_MAX_THREADS))
+
+
 @functools.lru_cache(maxsize=32)
 def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, dtype: str):
     """Build an any/all/count_nonzero kernel reducing a leading and a trailing axis.
@@ -136,7 +153,8 @@ def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, d
     pad_val = _pad_value_for_op(op_kind)
     out_dtype = _logical_out_dtype(op_kind, partial=False)
     # any is a max and all is a min over 0/1, so each starts from its identity;
-    # a count sums from zero.
+    # a count sums from zero. The column-wise fold starts from the same value a
+    # padding column carries, since both are that op's identity.
     init_val = {"any": 0.0, "all": 1.0, "count_nonzero": 0.0}[op_kind]
 
     @tilelang.jit(out_idx=[1])
@@ -148,9 +166,14 @@ def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, d
         ):
             with T.Kernel(kept, threads=threads) as pid_k:
                 vals = T.alloc_fragment((1, trail_padded), "float32")
-                row = T.alloc_fragment((1,), "float32")
                 acc = T.alloc_fragment((1,), "float32")
-                acc[0] = init_val
+
+                # The leading axis folds into the fragment column by column, so
+                # the block reduces once at the end rather than once per leading
+                # index: the reduction is a barrier and a tree, and `lead` of
+                # them cost more than the column-wise fold they replace.
+                for j in T.Parallel(trail_padded):
+                    vals[0, j] = init_val
                 for lead_idx in T.serial(lead):
                     for j in T.Parallel(trail_padded):
                         if needs_pad:
@@ -161,16 +184,20 @@ def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, d
                             )
                         else:
                             val = T.cast(x[lead_idx, pid_k, j], "float32")
-                        vals[0, j] = T.if_then_else(val != 0.0, 1.0, 0.0)
-                    if op_kind == "any":
-                        T.reduce_max(vals, row, dim=1)
-                        acc[0] = T.max(acc[0], row[0])
-                    elif op_kind == "all":
-                        T.reduce_min(vals, row, dim=1)
-                        acc[0] = T.min(acc[0], row[0])
-                    else:
-                        T.reduce_sum(vals, row, dim=1)
-                        acc[0] = acc[0] + row[0]
+                        one = T.if_then_else(val != 0.0, 1.0, 0.0)
+                        if op_kind == "any":
+                            vals[0, j] = T.max(vals[0, j], one)
+                        elif op_kind == "all":
+                            vals[0, j] = T.min(vals[0, j], one)
+                        else:
+                            vals[0, j] = vals[0, j] + one
+                if op_kind == "any":
+                    T.reduce_max(vals, acc, dim=1)
+                elif op_kind == "all":
+                    T.reduce_min(vals, acc, dim=1)
+                else:
+                    T.reduce_sum(vals, acc, dim=1)
+
                 if op_kind == "count_nonzero":
                     out[pid_k] = T.cast(acc[0], out_dtype)
                 else:
@@ -610,7 +637,14 @@ class LogicalReduceEdgeFusedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": DEFAULT_THREADS}
+        """No width: it follows ``trail``, which only the call's shape carries.
+
+        One block holds a ``trail``-wide fp32 fragment, so a fixed width hands
+        every lane ``trail / threads`` registers and the occupancy falls as the
+        row grows. ``forward`` reads the row and fills the width in; a caller
+        that states one keeps it.
+        """
+        return {"threads": None}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
@@ -625,7 +659,7 @@ class LogicalReduceEdgeFusedKernel(Kernel):
         )
         if planner.needs_tiling:
             raise ValueError("LogicalReduceEdgeFusedKernel requires an untiled trailing pass")
-        threads = self.config.get("threads", cfg["threads"])
+        threads = self.config.get("threads") or fused_edge_threads(trail)
         dtype_str = self.dtype_to_str(self._kernel_dtype)
         fused = _logical_reduce_edge_fused(lead, kept, trail, self.op_kind, dtype_str)
         counted = fused(threads)(x.reshape(lead, kept, trail))
