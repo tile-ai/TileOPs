@@ -421,29 +421,38 @@ FusedMoeFwdOp:
 MoePrePermuteFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       hidden_states: {dtype: "bfloat16"}
-      topk_ids: {dtype: "int32"}
+      local_expert_ids: {dtype: "int32"}
     outputs:
       expert_input: {dtype: "same_as(hidden_states)"}
+      layout_metadata: {dtype: "int32"}
+      inverse_indices: {dtype: "int32"}
     params:
       layout: {type: MGroupedLayoutSpec}
-      num_experts: {type: int}
-      out: {type: "tensor | None", default: null}
+      num_local_experts: {type: int}
     shape_rules:
     - "hidden_states.ndim == 2"
-    - "topk_ids.ndim == 2"
-    - "topk_ids.shape[0] == hidden_states.shape[0]"
-    - "num_experts > 0"
-  workloads: []
-  roofline: {flops: "0", bytes: "hidden_states.numel() * elem_bytes + topk_ids.numel() * 4"}
+    - "local_expert_ids.ndim == 2"
+    - "local_expert_ids.shape[0] == hidden_states.shape[0]"
+    - "num_local_experts > 0"
+  workloads:
+  - {hidden_states_shape: [32, 128], local_expert_ids_shape: [32, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [bfloat16], label: "small"}
+  - {hidden_states_shape: [512, 128], local_expert_ids_shape: [512, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [bfloat16], label: "prefill"}
+  roofline:
+    flops: "0"
+    bytes: "(hidden_states.numel() + expert_input.numel()) * elem_bytes + (local_expert_ids.numel() + layout_metadata.numel() + inverse_indices.numel()) * 4"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py
     test: tests/ops/test_moe_staged_contracts.py
     bench: benchmarks/ops/bench_moe_staged.py
+    bench_manifest_driven: true
+    kernel_map:
+      tight_physical_psum: _TightPhysicalPsumPrePermuteKernel
 
 MoeGroupedGemmFwdOp:
   ref_api: "none"
@@ -509,25 +518,34 @@ MoeExpertMLPFwdOp:
 MoePostPermuteFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       expert_output: {dtype: "bfloat16"}
       topk_weights: {dtype: "float32"}
+      inverse_indices: {dtype: "int32"}
     outputs:
       output: {dtype: "bfloat16"}
     params:
+      layout: {type: MGroupedLayoutSpec}
       epilogue: {type: "RoutingEpilogueSpec | None", default: null}
-      inverse_permute_context: {type: InversePermuteContext}
       out: {type: "tensor | None", default: null}
     shape_rules:
     - "expert_output.ndim == 2 or expert_output.ndim == 3"
     - "topk_weights.ndim == 2"
     - "output.shape == (topk_weights.shape[0], expert_output.shape[-1])"
-  workloads: []
-  roofline: {flops: "2 * topk_weights.numel() * expert_output.shape[-1]", bytes: "0"}
+  workloads:
+  - {expert_output_shape: [64, 128], topk_weights_shape: [32, 2], inverse_indices_shape: [64], layout: tight_physical_psum, dtypes: [bfloat16], label: "small"}
+  - {expert_output_shape: [1024, 128], topk_weights_shape: [512, 2], inverse_indices_shape: [1024], layout: tight_physical_psum, dtypes: [bfloat16], label: "prefill"}
+  roofline:
+    flops: "2 * topk_weights.numel() * expert_output.shape[-1]"
+    bytes: "(expert_output.numel() + output.numel()) * elem_bytes + (topk_weights.numel() + inverse_indices.numel()) * 4"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py
     test: tests/ops/test_moe_staged_contracts.py
     bench: benchmarks/ops/bench_moe_staged.py
+    bench_manifest_driven: true
+    kernel_map:
+      tight_physical_psum: _TightPhysicalPsumPostPermuteKernel

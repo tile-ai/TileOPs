@@ -119,6 +119,40 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
+    def test_moe_pre_permute_counts_inputs_and_three_outputs(self):
+        from tileops.ops.moe import ContiguousLayoutSpec, MoePrePermuteFwdOp
+
+        tokens, top_k, experts, hidden = 512, 2, 4, 128
+        op = MoePrePermuteFwdOp.__new__(MoePrePermuteFwdOp)
+        op.layout = ContiguousLayoutSpec.tight_physical_psum()
+        op.num_local_experts = experts
+        op.input_shapes = [(tokens, hidden), (tokens, top_k)]
+        op.dtype = torch.bfloat16
+        oracle = _nbytes(
+            ((tokens, hidden), torch.bfloat16),
+            ((tokens, top_k), torch.int32),
+            ((tokens * top_k, hidden), torch.bfloat16),
+            ((experts,), torch.int32),
+            ((tokens * top_k,), torch.int32),
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_moe_post_permute_counts_inputs_and_output(self):
+        from tileops.ops.moe import MoePostPermuteFwdOp
+
+        tokens, top_k, hidden = 512, 2, 128
+        rows = tokens * top_k
+        op = MoePostPermuteFwdOp.__new__(MoePostPermuteFwdOp)
+        op.input_shapes = [(rows, hidden), (tokens, top_k), (rows,)]
+        op.dtype = torch.bfloat16
+        oracle = _nbytes(
+            ((rows, hidden), torch.bfloat16),
+            ((tokens, top_k), torch.float32),
+            ((rows,), torch.int32),
+            ((tokens, hidden), torch.bfloat16),
+        )
+        assert op.eval_roofline()[1] == oracle
+
     def test_w4a16_counts_packed_weights_and_group_metadata(self):
         from tileops.ops.gemm.gemm import GemmW4A16FwdOp
 
@@ -198,6 +232,8 @@ AUDITED = frozenset(
         "GemmFp8FwdOp",
         "GemmW4A16FwdOp",
         "GroupedQueryAttentionPrefillFwdOp",
+        "MoePostPermuteFwdOp",
+        "MoePrePermuteFwdOp",
         "RMSNormFwdOp",
         "VarMeanFwdOp",
     }
