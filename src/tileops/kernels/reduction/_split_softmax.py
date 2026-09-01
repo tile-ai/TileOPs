@@ -20,10 +20,12 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     ceildiv_int,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = [
     "edge_split_partials_kernel",
     "edge_split_view",
+    "fused_split_plan",
     "make_block_split_fold",
     "make_split_fold",
     "softmax_split_partials_kernel",
@@ -208,6 +210,29 @@ def make_block_split_fold(num_segs: int, threads: int):
         T.reduce_sum(part_sum, row_sum, dim=1)
 
     return fold
+
+
+def fused_split_plan(M: int, N: int, seg_n: int) -> "int | None":
+    """The thread width a one-kernel split runs at, or None when it cannot.
+
+    A fused split keeps its segment in registers across a grid barrier, so it
+    reads the row once where the two-kernel pair reads it twice. Two conditions
+    bound it. The grid must be co-resident, since a cooperative launch wider
+    than the device holds is refused outright; ``split_seg_n`` already aims at
+    ``split_target_blocks``, and this rejects the shapes where the segment cap
+    pushed it past that. The two fp32 fragments must also fit the same
+    per-thread budget one fragment gets elsewhere, which is what picks the
+    width: the narrowest power of two from ``WARP_LANES`` up that holds them.
+    """
+    num_segs = ceildiv_int(N, seg_n)
+    if num_segs * M > split_target_blocks():
+        return None
+    threads = WARP_LANES
+    while threads <= DEFAULT_THREADS:
+        if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
+            return threads
+        threads *= 2
+    return None
 
 
 def edge_split_view(
