@@ -410,3 +410,27 @@ def test_comparison_bool_result_per_strategy(strategy: str) -> None:
     out = GtFwdKernel(shape, shape, torch.float16, config={"strategy": strategy}).forward(a, b)
     assert out.dtype == torch.bool
     assert torch.equal(out, torch.gt(a, b))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_comparison_nan_ordering(dtype: torch.dtype) -> None:
+    """``ne`` is the one comparison IEEE 754 reads as true against a NaN.
+
+    ``<``, ``<=``, ``>``, ``>=`` and ``==`` are ordered and answer false when
+    either operand is NaN; ``!=`` is unordered and answers true, NaN against
+    itself included. CUDA's half comparison intrinsics are all ordered, so the
+    half formats are where the two can disagree.
+    """
+    nan = float("nan")
+    a = torch.tensor([nan, nan, 1.0, 1.0, 2.0], device="cuda", dtype=dtype)
+    b = torch.tensor([nan, 1.0, nan, 1.0, 3.0], device="cuda", dtype=dtype)
+    for op_cls, ref_fn in (
+        (EqFwdOp, torch.eq),
+        (NeFwdOp, torch.ne),
+        (LtFwdOp, torch.lt),
+        (LeFwdOp, torch.le),
+        (GtFwdOp, torch.gt),
+        (GeFwdOp, torch.ge),
+    ):
+        assert torch.equal(op_cls()(a, b), ref_fn(a, b)), op_cls.__name__
