@@ -21,6 +21,8 @@ from ..abc import (
     WeightedReduceNoOp,
     _validate_fused_moe_experts_dtypes,
 )
+from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
+from ..staged import MoePostPermuteFwdOp, MoePrePermuteFwdOp
 from .gate_up import MoeGateUpFwdOp
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from .permute_nopad import MoePermuteNopadFwdOp
@@ -32,12 +34,13 @@ __all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
 
-    Internal pipeline: MoePermuteNopadFwdOp -> MoeGateUpFwdOp -> down GEMM ->
-    MoeUnpermuteFwdOp (weighted reduction included). Every stage is built at
-    construction, so ``forward`` resolves nothing and stays traceable.
+    The local non-EP pipeline uses staged PrePermute/PostPermute boundaries
+    around the existing GateUp and down-GEMM stages. The EP compatibility path
+    retains the legacy Permute/Unpermute operators.
 
-    forward() output shape is (T, H): reduction is done internally by
-    MoeUnpermuteFwdOp, so make_weighted_reduce() returns WeightedReduceNoOp.
+    forward() output shape is (T, H): reduction is done internally by the
+    PostPermute/Unpermute stage, so make_weighted_reduce() returns
+    WeightedReduceNoOp.
 
     Example:
         ```python linenums="1"
@@ -105,6 +108,19 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             k=ffn_size,
             kernel_map=kernel_map,
         )
+        layout = ContiguousLayoutSpec.tight_physical_psum()
+        self._pre_permute = MoePrePermuteFwdOp(
+            layout=layout,
+            num_local_experts=num_experts_local,
+            kernel_map=kernel_map,
+        )
+        self._post_permute = MoePostPermuteFwdOp(
+            layout=layout,
+            epilogue=RoutingEpilogueSpec(
+                routed_scaling_factor=routed_scaling_factor,
+            ),
+            kernel_map=kernel_map,
+        )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens,
             top_k=top_k,
@@ -120,7 +136,14 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         )
 
     def kernel_delegates(self) -> tuple[Op, ...]:
-        return (self._permute, self._gate_up, self._gemm_down, self._unpermute)
+        return (
+            self._pre_permute,
+            self._gate_up,
+            self._gemm_down,
+            self._post_permute,
+            self._permute,
+            self._unpermute,
+        )
 
     def eval_roofline(self) -> tuple[int, int]:
         """Manifest ``roofline``: three F x H weight planes per local expert."""
@@ -249,14 +272,34 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             workspace2,
             expert_map=expert_map,
         )
+        if expert_map is None and hidden_states.dtype is torch.bfloat16:
+            expert_input, physical_ends, inverse_indices = self._pre_permute(
+                hidden_states, topk_ids
+            )
+            # Temporary layout bridge to the legacy grouped-GEMM ABI. Keep this
+            # conversion localized so the later ExpertMLP/GroupedGemm migration
+            # can remove it as one block.
+            true_offsets = torch.cat((physical_ends.new_zeros(1), physical_ends[:-1]))
+            true_sizes = physical_ends - true_offsets
+            act = self._gate_up(expert_input, w_gate_up, true_sizes, true_offsets)
+            expert_output = self._gemm_down(act, w_down, true_sizes, true_offsets)
+            self._post_permute(
+                expert_output,
+                topk_weights,
+                inverse_indices,
+                out=output,
+            )
+            return
+
+        # FP16 has no staged production candidate yet, and EP dispatch still
+        # supplies global IDs plus a global-to-local map. Keep both compatibility
+        # cases on the legacy path until their respective staged migrations.
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(
             hidden_states, topk_ids, expert_map
         )
         act = self._gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
-        mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
-        # Unpermute reduces into ``output`` directly and folds
-        # ``routed_scaling_factor`` into its prim_func — no separate copy/scale.
-        self._unpermute(mm2, fwd_idx, topk_weights, out=output)
+        expert_output = self._gemm_down(act, w_down, true_sizes, true_offsets)
+        self._unpermute(expert_output, fwd_idx, topk_weights, out=output)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
