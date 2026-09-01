@@ -3,6 +3,7 @@
 from .ops.moe import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
     FusedMoeFwdOp,
+    FusedTopKOp,
     MoeExpertMLPFwdOp,
     MoeGateUpFwdOp,
     MoeGroupedGemmFwdOp,
@@ -13,6 +14,7 @@ from .ops.moe import (
 )
 
 __all__ = [
+    "FusedTopKOp",
     "MoePrePermuteFwdOp",
     "MoePermuteAlignFwdOp",
     "MoeGroupedGemmFwdOp",

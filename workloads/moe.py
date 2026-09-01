@@ -7,17 +7,31 @@ from workloads.workload_base import WorkloadBase
 
 
 class FusedTopKWorkload(WorkloadBase):
-    def __init__(self, num_tokens, num_experts, top_k, scoring_func, renormalize, dtype):
+    def __init__(
+        self,
+        num_tokens,
+        num_experts,
+        top_k,
+        scoring_func,
+        renormalize,
+        dtype,
+        with_correction_bias=False,
+    ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.dtype = dtype
+        self.with_correction_bias = with_correction_bias
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         torch.manual_seed(42)
-        return (torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda"),)
+        gating = torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
+        if not self.with_correction_bias:
+            return (gating,)
+        bias = torch.randn(self.num_experts, dtype=torch.float32, device="cuda") * 0.1
+        return gating, bias
 
 
 class MoePermuteWorkload(WorkloadBase):

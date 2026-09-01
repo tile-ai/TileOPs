@@ -8,6 +8,37 @@ from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import WorkloadBase
 
 
+def _packed_offsets(
+    seq_lens: "list[int] | None", seq_num: int, c_seq_len: int, min_split: int
+) -> torch.Tensor:
+    """Request boundaries into a packed sequence of ``c_seq_len`` tokens.
+
+    Explicit ``seq_lens`` make the chunk count deterministic; without them the split
+    points are random.
+    """
+    if seq_lens is not None:
+        if sum(seq_lens) != c_seq_len or len(seq_lens) != seq_num:
+            raise ValueError(
+                f"seq_lens must hold {seq_num} lengths summing to {c_seq_len}, "
+                f"got {len(seq_lens)} summing to {sum(seq_lens)}"
+            )
+        bounds = torch.tensor([0, *seq_lens], dtype=torch.long).cumsum(0)
+        return bounds.cuda()
+    splits = torch.arange(min_split, c_seq_len)
+    return (
+        torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long),
+                splits[torch.randperm(len(splits))[: seq_num - 1]],
+                torch.tensor([c_seq_len], dtype=torch.long),
+            ],
+            0,
+        )
+        .cuda()
+        .sort()[0]
+    )
+
+
 class NsaFwdWorkload(WorkloadBase):
     def __init__(
         self,
@@ -22,6 +53,7 @@ class NsaFwdWorkload(WorkloadBase):
         selected_blocks: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
+        seq_lens: "list[int] | None" = None,
     ) -> None:
         self.batch = batch
         self.heads = heads
@@ -34,24 +66,12 @@ class NsaFwdWorkload(WorkloadBase):
         self.selected_blocks = selected_blocks
         self.dtype = dtype
         self.accum_dtype = accum_dtype
+        self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.groups
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        possible_split_points = torch.arange(16, self.c_seq_len)
-        num_splits = self.batch - 1
-        offsets = (
-            torch.cat(
-                [
-                    torch.tensor([0], dtype=torch.long),
-                    possible_split_points[torch.randperm(len(possible_split_points))[:num_splits]],
-                    torch.tensor([self.c_seq_len], dtype=torch.long),
-                ],
-                0,
-            )
-            .cuda()
-            .sort()[0]
-        )
+        offsets = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
 
         perm_q = torch.randperm(self.c_seq_len, device="cuda")
         perm_k = torch.randperm(self.c_seq_len, device="cuda")
@@ -271,6 +291,7 @@ class NsaCmpFwdWorkload(WorkloadBase):
         bs: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
+        seq_lens: "list[int] | None" = None,
     ) -> None:
         self.seq_num = seq_num
         self.c_seq_len = c_seq_len
@@ -283,26 +304,15 @@ class NsaCmpFwdWorkload(WorkloadBase):
         self.bs = bs
         self.dtype = dtype
         self.accum_dtype = accum_dtype
+        self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
         # chunk_num is computed during gen_inputs and stored for later use
         self.chunk_num = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        valid_range = self.c_seq_len - self.bs
-        rand_indices = torch.randperm(valid_range)[: self.seq_num - 1]
-        offsets = (
-            torch.cat(
-                [
-                    torch.tensor([0]),
-                    torch.arange(self.bs, self.c_seq_len)[rand_indices],
-                    torch.tensor([self.c_seq_len]),
-                ],
-                0,
-            )
-            .cuda()
-            .sort()[0]
-            .to(torch.int32)
+        offsets = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, self.bs).to(
+            torch.int32
         )
 
         chunk_offsets = prepare_chunk_offsets(offsets, self.bs).to(torch.int32)
@@ -353,6 +363,7 @@ class NsaTopkWorkload(WorkloadBase):
         bs: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
+        seq_lens: "list[int] | None" = None,
     ) -> None:
         self.seq_num = seq_num
         self.c_seq_len = c_seq_len
@@ -365,26 +376,14 @@ class NsaTopkWorkload(WorkloadBase):
         self.bs = bs
         self.dtype = dtype
         self.accum_dtype = accum_dtype
+        self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
         # chunk_num is computed during gen_inputs and stored for later use
         self.chunk_num = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        possible_split_points = torch.arange(16, self.c_seq_len)
-        num_splits = self.seq_num - 1
-        offsets = (
-            torch.cat(
-                [
-                    torch.tensor([0], dtype=torch.long),
-                    possible_split_points[torch.randperm(len(possible_split_points))[:num_splits]],
-                    torch.tensor([self.c_seq_len], dtype=torch.long),
-                ],
-                0,
-            )
-            .cuda()
-            .sort()[0]
-        )
+        offsets = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, 16)
 
         chunk_offsets = prepare_chunk_offsets(offsets, self.bs)
         token_indices = prepare_token_indices(offsets)

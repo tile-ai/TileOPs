@@ -98,18 +98,11 @@ def test_nsa_varlen_op(
         dtype,
         accum_dtype,
     )
-    params = {
-        "batch": batch,
-        "heads": heads,
-        "c_seq_len": c_seq_len,
-        "dim": dim,
-        "is_causal": is_causal,
-        "scale": scale,
-        "block_size": block_size,
-        "groups": groups,
-        "selected_blocks": selected_blocks,
-        "accum_dtype": accum_dtype,
-        "tune": tune,
-    }
-    op = NSAFwdVarlenOp(**params)
+    op = NSAFwdVarlenOp(
+        is_causal=is_causal,
+        scale=scale,
+        block_size=block_size,
+        accum_dtype=accum_dtype,
+        tune=tune,
+    )
     test.check(op, *test.gen_inputs(), atol=5e-4, rtol=1e-5)

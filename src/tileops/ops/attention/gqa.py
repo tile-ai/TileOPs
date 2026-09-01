@@ -26,7 +26,7 @@ from tileops.kernels.attention import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
-from ..op_base import Op, UnmanifestedOp
+from ..op_base import Op
 from ..rope import base_freqs
 from .selection import (
     DECODE_KEYS,
@@ -1006,7 +1006,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         return tensor_core_roof(recorded if recorded is not None else self.dtype)
 
 
-class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
+class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
     """Packed variable-length GQA prefill. Layout: THD.
 
     ``cu_seqlens_q`` and ``cu_seqlens_kv`` describe packed per-request ranges.
@@ -1017,10 +1017,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
         max_seqlen_q: int,
         max_seqlen_kv: int,
         is_causal: bool = True,
@@ -1033,19 +1029,21 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
+            max_seqlen_q: Longest request in the packed q the op will be called with.
+            max_seqlen_kv: Longest request in the packed kv.
+            is_causal: Whether a query may attend past its own position.
+            sm_scale: Softmax scale; ``None`` takes ``dim ** -0.5`` from the call.
+            softcap: Score softcap, or ``None``.
+            validate_inputs: Whether to read the offsets back and check them.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
-        _validate_gqa_dims(heads, heads_kv, dim)
-        _validate_positive(batch=batch, max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
+        _validate_positive(max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         self.max_seqlen_q = max_seqlen_q
         self.max_seqlen_kv = max_seqlen_kv
         self.is_causal = is_causal
-        self.sm_scale = _attention_scale(dim, sm_scale)
+        # Resolved in `forward`: the default is `dim ** -0.5`, and `dim` comes from the call.
+        self._sm_scale_arg = sm_scale
         self.softcap = _score_softcap(softcap)
         self.validate_inputs = validate_inputs
         self._roofline_kwargs = None
@@ -1053,8 +1051,19 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        cu_seqlens_q_shape: tuple[int, ...],
+        cu_seqlens_kv_shape: tuple[int, ...],
+    ) -> Dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
         _validate_attention_dtype(dtype)
+        key = (self.batch, self.heads, self.heads_kv, self.dim, self.sm_scale, dtype)
 
         def build() -> Kernel:
             return self.kernel_map["gqa_prefill_varlen_fwd_kernel"](
@@ -1072,7 +1081,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
             )
 
         return self.get_or_build_kernel(
-            "gqa_prefill_varlen_fwd_kernel", inputs, key=dtype, build=build
+            "gqa_prefill_varlen_fwd_kernel", inputs, key=key, build=build
         )
 
     @property
@@ -1108,30 +1117,38 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         # q carries the element type; k and v must agree with it.
         _validate_attention_dtype(tensors["q"].dtype)
 
-        expected_tail_shapes = {
-            "q": (self.heads, self.dim),
-            "k": (self.heads_kv, self.dim),
-            "v": (self.heads_kv, self.dim),
-        }
-        for name, expected_tail in expected_tail_shapes.items():
+        if q.ndim != 3:
+            raise ValueError(f"Expected q shape [T, H, D], got {tuple(q.shape)}")
+        heads, dim = q.shape[1], q.shape[2]
+        for name in ("k", "v"):
             tensor = tensors[name]
-            if tensor.ndim != 3 or tuple(tensor.shape[1:]) != expected_tail:
+            if tensor.ndim != 3 or tensor.shape[2] != dim:
                 raise ValueError(
-                    f"Expected {name} shape [T, {expected_tail[0]}, {expected_tail[1]}], "
-                    f"got {tuple(tensor.shape)}"
+                    f"Expected {name} shape [T, H_kv, {dim}], got {tuple(tensor.shape)}"
                 )
-            if tensor.dtype != tensors["q"].dtype:
-                raise ValueError(f"Expected {name}.dtype {tensors['q'].dtype}, got {tensor.dtype}")
+            if tensor.dtype != q.dtype:
+                raise ValueError(f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
+        if k.shape[1] != v.shape[1]:
+            raise ValueError(f"k and v must share H_kv; got {k.shape[1]} and {v.shape[1]}")
+        _validate_gqa_dims(heads, k.shape[1], dim)
 
+        # The batch size is read off this shape, so its rank is checked before that read.
+        if cu_seqlens_q.ndim != 1 or cu_seqlens_q.shape[0] < 2:
+            raise ValueError(
+                f"cu_seqlens_q must be a 1D tensor of at least two bounds; "
+                f"got {tuple(cu_seqlens_q.shape)}"
+            )
+        batch = cu_seqlens_q.shape[0] - 1
         for name in ("cu_seqlens_q", "cu_seqlens_kv"):
             tensor = tensors[name]
-            expected_shape = (self.batch + 1,)
-            if tuple(tensor.shape) != expected_shape:
-                raise ValueError(
-                    f"Expected {name} shape {expected_shape}, got {tuple(tensor.shape)}"
-                )
+            if tuple(tensor.shape) != (batch + 1,):
+                raise ValueError(f"Expected {name} shape {(batch + 1,)}, got {tuple(tensor.shape)}")
             if tensor.dtype != torch.int32:
                 raise ValueError(f"Expected {name}.dtype torch.int32, got {tensor.dtype}")
+        _validate_positive(batch=batch)
+
+        self.batch, self.heads, self.heads_kv, self.dim = batch, heads, k.shape[1], dim
+        self.sm_scale = _attention_scale(dim, self._sm_scale_arg)
 
         if v.shape[0] != k.shape[0]:
             raise ValueError(f"v.shape[0] ({v.shape[0]}) must equal k.shape[0] ({k.shape[0]})")
@@ -1221,6 +1238,10 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(UnmanifestedOp):
         kwargs["q_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_q"))
         kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
         return gqa_prefill_varlen_fwd_roofline(**kwargs)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):

@@ -77,8 +77,8 @@ def test_benchmarks_do_not_author_gen_inputs() -> None:
 # live. Each entry goes when its subject gains a manifest entry to take a roofline from.
 _ROOFLINE_OF_ITS_OWN = {
     "FusedGatedBenchmark": "times a kernel strategy rather than an op, and publishes nothing",
-    "FusedTopKBenchmark": "FusedTopKOp has no manifest entry",
-    "SharedFusedMoEBenchmark": "SharedFusedMoE has no manifest entry",
+    "SharedFusedMoEBenchmark": "SharedFusedMoE has no manifest entry: its first output is "
+    "None when no shared expert is configured, and outputs cannot say that",
 }
 
 

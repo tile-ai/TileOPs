@@ -23,7 +23,7 @@ from benchmarks.benchmark_base import (
     workload_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp
+from tileops.ops import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp
 from workloads.linear_attention import DeltaNetFwdWorkload
 
 
@@ -135,3 +135,32 @@ def test_deltanet_vs_fla_bwd(
     functors["fla"] = (fla_bwd, ())
 
     bm.compare(functors, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
+    workload_params(load_workloads(DeltaNetAutogradOp), then_dtype(_deltanet_args, tune=False)),
+)
+def test_deltanet_vs_fla_autograd(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    dim_v: int,
+    chunk_size: int,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    inputs = test.gen_inputs()
+
+    op = DeltaNetAutogradOp(chunk_size=chunk_size, tune=tune)
+    bm = ManifestBenchmark(op, test)
+
+    scale = dim_k**-0.5
+    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
+
+    def fla_fwd():
+        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=scale)
+
+    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)

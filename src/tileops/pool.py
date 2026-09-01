@@ -13,7 +13,7 @@ from .ops.pool import (
     MaxPool2dIndicesFwdOp,
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
-    MeanPoolingForwardOp,
+    MeanPoolingFwdOp,
 )
 
 __all__ = [
@@ -29,5 +29,5 @@ __all__ = [
     "AdaptiveAvgPool2dFwdOp",
     "AdaptiveMaxPool2dFwdOp",
     "AdaptiveMaxPool2dIndicesFwdOp",
-    "MeanPoolingForwardOp",
+    "MeanPoolingFwdOp",
 ]

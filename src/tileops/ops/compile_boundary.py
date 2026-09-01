@@ -21,21 +21,36 @@ kernel construction and launch belong there.
 
 Two properties are load-bearing. The key is a ``str`` because dynamo treats string operator
 arguments as compile-time constants, while an ``int`` is generalized to an unhashable
-``SymInt``. A key is never reused, not even after its op is collected, because inductor bakes
-the fake's output shape into the artifact.
+``SymInt``. A key must never come back meaning a different instance, in this process or a
+later one, because inductor bakes the fake's output shape into an artifact it caches on
+disk: a key that came back meaning a different instance would resolve to that shape.
 """
 
 import itertools
+import uuid
 import weakref
 
 _OP_REGISTRY: "weakref.WeakValueDictionary[str, object]" = weakref.WeakValueDictionary()
 _KEY_COUNTER = itertools.count()
+# FIXME(staged-rollout): a per-process uuid buys that uniqueness by giving up disk-cache
+# reuse entirely.
+#
+# Broken invariant: the key should be the op's specialization, so that two interchangeable
+#   instances share one artifact. It is an identity instead, so no two ever share, and no
+#   process reuses a previous one's compile.
+# Why: the specialization is `_manifest_params()` digested, but `register_instance` runs
+#   from `dispatch_kernel`, which some ops call as `__init__`'s first statement, before
+#   they have assigned those params.
+# Cleanup: register on first `_instance_key` access and key on the digest, once every op
+#   on this boundary has a param set audited as complete — an incomplete one shares an
+#   artifact silently, so the digest has to refuse a value it cannot hash stably.
+_RUN = uuid.uuid4().hex
 
 
 def register_instance(op: object) -> str:
     """Register ``op`` and return the key its dispatch custom op passes back."""
     # ``#`` cannot appear in a class name, so no two classes can produce the same key.
-    key = f"{type(op).__name__}#{next(_KEY_COUNTER)}"
+    key = f"{type(op).__name__}#{_RUN}-{next(_KEY_COUNTER)}"
     _OP_REGISTRY[key] = op
     return key
 

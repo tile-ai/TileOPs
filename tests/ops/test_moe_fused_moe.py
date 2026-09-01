@@ -205,7 +205,7 @@ def test_fused_moe_qwen3(
     assert out_nopad.dtype == dtype
 
     # Reference using the same FusedTopKOp routing
-    fk = FusedTopKOp(num_tokens, num_experts, top_k, scoring_func, renormalize)
+    fk = FusedTopKOp(top_k, scoring_func, renormalize)
     topk_weights, topk_ids = fk(gating)
     ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
@@ -276,7 +276,7 @@ def test_fused_moe_deterministic(case):
         scoring_func="softmax",
         renormalize=False,
     )
-    fk = FusedTopKOp(nt, ne, tk, "softmax", False)
+    fk = FusedTopKOp(tk, "softmax", False)
     topk_weights, topk_ids = fk(gating)
     ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
@@ -428,7 +428,7 @@ def test_fused_moe_kimi(
     assert out_nopad.dtype == dtype
 
     # Reference using FusedTopKOp for consistent routing
-    fk = FusedTopKOp(num_tokens, num_experts, top_k, "sigmoid", True)
+    fk = FusedTopKOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
     ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
     if routed_scaling_factor != 1.0:
@@ -457,13 +457,7 @@ def test_correction_bias_routing_precision() -> None:
 
     ref_weights, ref_ids = _ref_kimi_routing(logits, bias, K)
 
-    op = FusedTopKOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        scoring_func="sigmoid",
-        renormalize=True,
-    )
+    op = FusedTopKOp(top_k=K, scoring_func="sigmoid", renormalize=True)
     tw, ti = op(logits, bias)
 
     ref_ids_sorted = ref_ids.sort(dim=-1).values
@@ -552,7 +546,7 @@ def test_fused_moe_vs_vllm(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    fk = FusedTopKOp(num_tokens, num_experts, top_k, "sigmoid", True)
+    fk = FusedTopKOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     op = FusedMoeFwdOp(

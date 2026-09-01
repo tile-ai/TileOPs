@@ -347,8 +347,8 @@ def mean_pooling_chunk_index(
         chunk_size: Tokens per chunk; a sequence's last chunk may hold fewer.
 
     Returns:
-        ``offsets``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``indices``,
-        one ``(sequence, chunk-within-sequence)`` pair per chunk.
+        ``offsets``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``indices``, one
+        ``(sequence, chunk-within-sequence)`` pair per chunk.
     """
     from workloads.nsa_utils import prepare_chunk_indices
 
@@ -359,93 +359,69 @@ def mean_pooling_chunk_index(
     return offsets, prepare_chunk_indices(offsets, chunk_size)
 
 
-def mean_pooling_uniform_index(
-    batch_size: int, seq_len: int, chunk_size: int, chunks_per_batch: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The two tensors a uniform-split mean-pooling call takes but does not read.
-
-    ``use_offsets=0`` cuts the sequence into equal chunks and reads neither tensor, but
-    both are required arguments, so a caller has to supply something shaped right.
-    """
-    offsets = torch.arange(0, (batch_size + 1) * seq_len, seq_len, dtype=torch.int32, device="cuda")
-    indices = torch.zeros((chunks_per_batch, 2), dtype=torch.int32, device="cuda")
-    return offsets, indices
-
-
 class MeanPoolingWorkload(WorkloadBase):
+    """One chunked-sequence-mean case: its shape, its dtype, and how it is split.
+
+    ``seq_lens`` selects the ragged split and is what ``offsets`` and ``indices`` are built
+    from; without it the split is uniform and the call passes neither tensor.
+    """
+
     def __init__(
         self,
-        batch_size: int,
+        batch: int,
         seq_len: int,
         heads: int,
         dim: int,
         chunk_size: int,
-        chunks_per_batch: int,
-        seq_num: int,
-        use_offsets: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
         seq_lens: Optional[Sequence[int]] = None,
     ) -> None:
-        self.batch_size = batch_size
+        self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim = dim
         self.chunk_size = chunk_size
-        self.chunks_per_batch = chunks_per_batch
-        self.seq_num = seq_num
-        self.use_offsets = use_offsets
         self.dtype = dtype
         self.accum_dtype = accum_dtype
-        if seq_lens is not None:
-            offsets, indices = mean_pooling_chunk_index(seq_lens, chunk_size)
-        elif offsets is None:
-            offsets, indices = mean_pooling_uniform_index(
-                batch_size, seq_len, chunk_size, chunks_per_batch
-            )
-        self.offsets = offsets
-        self.indices = indices
+        self.seq_lens = None if seq_lens is None else list(seq_lens)
 
-    def gen_inputs(self) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def gen_inputs(self) -> tuple:
         x = torch.randn(
-            self.batch_size, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
+            self.batch, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
         )
-        return x, self.offsets, self.indices
+        if self.seq_lens is None:
+            return (x,)
+        return (x, *mean_pooling_chunk_index(self.seq_lens, self.chunk_size))
 
     def ref_program(
-        self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
+        self,
+        x: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         _ = indices
-        batch_size, seq_len, heads, dim = x.shape
+        batch, seq_len, heads, dim = x.shape
+        if offsets is None:
+            chunks = -(-seq_len // self.chunk_size)
+            output = torch.empty(batch, chunks, heads, dim, dtype=x.dtype, device=x.device)
+            for chunk_id in range(chunks):
+                start = chunk_id * self.chunk_size
+                output[:, chunk_id] = x[:, start : start + self.chunk_size].mean(dim=1)
+            return output
 
-        if self.use_offsets == 0:
-            output = torch.empty(
-                batch_size, self.chunks_per_batch, heads, dim, dtype=x.dtype, device=x.device
-            )
-            for chunk_id in range(self.chunks_per_batch):
-                start_token = chunk_id * self.chunk_size
-                end_token = min(start_token + self.chunk_size, seq_len)
-                output[:, chunk_id] = x[:, start_token:end_token].mean(dim=1)
-        else:
-            offsets = offsets.to(x.device)
-            lengths = offsets[1:] - offsets[:-1]
-            chunk_counts = ((lengths + self.chunk_size - 1) // self.chunk_size).tolist()
-            total_chunks = sum(chunk_counts)
-            output = torch.empty(
-                batch_size, total_chunks, heads, dim, dtype=x.dtype, device=x.device
-            )
-            for b in range(batch_size):
-                # Reset per row: `offsets` partitions every batch row the same way, so
-                # each row's chunks fill the same `total_chunks` output slots.
-                chunk_idx = 0
-                for seq_id, chunks_i in enumerate(chunk_counts):
-                    seq_start = offsets[seq_id].item()
-                    seq_end = offsets[seq_id + 1].item()
-                    for local_chunk_id in range(chunks_i):
-                        chunk_start = seq_start + local_chunk_id * self.chunk_size
-                        chunk_end = min(chunk_start + self.chunk_size, seq_end)
-                        output[b, chunk_idx] = x[b, chunk_start:chunk_end].mean(dim=0)
-                        chunk_idx += 1
+        lengths = (offsets[1:] - offsets[:-1]).tolist()
+        counts = [-(-n // self.chunk_size) for n in lengths]
+        output = torch.empty(batch, sum(counts), heads, dim, dtype=x.dtype, device=x.device)
+        for b in range(batch):
+            # Reset per row: `offsets` partitions every batch row the same way, so each
+            # row's chunks fill the same output slots.
+            chunk_idx = 0
+            for seq_id, chunks_i in enumerate(counts):
+                seq_start, seq_end = int(offsets[seq_id]), int(offsets[seq_id + 1])
+                for local in range(chunks_i):
+                    chunk_start = seq_start + local * self.chunk_size
+                    chunk_end = min(chunk_start + self.chunk_size, seq_end)
+                    output[b, chunk_idx] = x[b, chunk_start:chunk_end].mean(dim=0)
+                    chunk_idx += 1
         return output

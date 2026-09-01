@@ -20,18 +20,6 @@ SRC = Path(tileops.__file__).parent
 # Off the tree, not off `_FAMILIES` — one test compares the two.
 FAMILIES = sorted(p.stem for p in SRC.glob("*.py") if not p.stem.startswith("_"))
 
-# The public surface is the manifest, plus these. Every one is a concrete op marked
-# `UnmanifestedOp` and public before the family modules existed; each needs a manifest
-# entry or a deprecation, not a quiet removal. Abstract bases are not public at all.
-NOT_IN_MANIFEST = {
-    "DeltaNetOp",
-    "GatedDeltaNetOp",
-    "GroupedQueryAttentionPrefillVarlenFwdOp",
-    "NSACmpFwdVarlenOp",
-    "NSAFwdVarlenOp",
-    "NSATopkVarlenOp",
-}
-
 
 def _family_module(family: str):
     return importlib.import_module(f"tileops.{family}")
@@ -110,9 +98,11 @@ def test_each_public_name_has_exactly_one_family():
 
 
 @pytest.mark.smoke
-def test_public_surface_is_the_manifest_plus_the_listed_exceptions():
+def test_public_surface_is_the_manifest():
+    """An op reachable as `tileops.<family>.<Op>` has a manifest entry, and every entry
+    is reachable. Abstract bases are not public at all."""
     public = {name for family in FAMILIES for name in _family_module(family).__all__}
-    assert public == set(load_manifest()) | NOT_IN_MANIFEST
+    assert public == set(load_manifest())
 
 
 @pytest.mark.smoke

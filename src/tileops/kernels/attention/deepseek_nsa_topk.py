@@ -280,9 +280,12 @@ def _(
     threads: int,
     *inputs: tuple[Any],
 ) -> torch.Tensor:
-    _ = (seq_num, dim, chunk_num, group, scale, bc, bs, dtype, accum_dtype, threads)
+    _ = (seq_num, dim, chunk_num, scale, bc, bs, dtype, accum_dtype, threads)
+    # One int32 block id per token, KV head and kept block: the selection is per KV head.
     return torch.empty(
-        [c_seq_len, heads, selected_block_num], dtype=inputs[0].dtype, device=inputs[0].device
+        [c_seq_len, heads // group, selected_block_num],
+        dtype=torch.int32,
+        device=inputs[0].device,
     )
 
 

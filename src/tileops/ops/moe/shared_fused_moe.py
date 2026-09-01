@@ -40,12 +40,11 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoe
-from tileops.ops.op_base import UnmanifestedOp
 
 __all__ = ["SharedFusedMoE"]
 
 
-class SharedFusedMoE(FusedMoe, UnmanifestedOp):
+class SharedFusedMoE(FusedMoe):
     """FusedMoE with shared expert support, optionally TP-aware.
 
     Extends FusedMoe to compute both shared and routed expert outputs.
@@ -146,6 +145,55 @@ class SharedFusedMoE(FusedMoe, UnmanifestedOp):
         self._shared_mlp_shard_ffn = (
             shared_ffn_size // tp_size if shared_ffn_size is not None else None
         )
+
+    def _validate_dtypes(
+        self,
+        hidden_states: torch.Tensor,
+        gating_output: torch.Tensor,
+        w_gate_up: torch.Tensor,
+        w_down: torch.Tensor,
+        correction_bias: Optional[torch.Tensor] = None,
+        shared_w_gate_up: Optional[torch.Tensor] = None,
+        shared_w_down: Optional[torch.Tensor] = None,
+    ) -> None:
+        """``FusedMoeFwdOp``'s dtype contract, extended to the shared expert's weights.
+
+        Hand-written rather than generated from a manifest entry: this op returns
+        ``None`` for its first output when no shared expert is configured, which the
+        manifest's ``outputs`` cannot declare.
+        """
+        if gating_output.dtype != torch.float32:
+            raise ValueError(
+                f"gating_output.dtype must be torch.float32, got {gating_output.dtype}"
+            )
+        if correction_bias is not None and correction_bias.dtype != torch.float32:
+            raise ValueError(
+                f"correction_bias.dtype must be torch.float32, got {correction_bias.dtype}"
+            )
+        dtype = hidden_states.dtype
+        for name, tensor in (
+            ("w_gate_up", w_gate_up),
+            ("w_down", w_down),
+            ("shared_w_gate_up", shared_w_gate_up),
+            ("shared_w_down", shared_w_down),
+        ):
+            if tensor is not None and tensor.dtype != dtype:
+                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """``FusedMoeFwdOp``'s routed cost plus the shared expert's two GEMMs.
+
+        The shared expert runs on this rank's shard, so TP shrinks that half only.
+        """
+        from tileops.perf.formulas import fused_moe_fwd_bytes
+
+        flops, nbytes = fused_moe_fwd_bytes(self)
+        if self._shared_mlp_shard_ffn is not None:
+            elem_bytes = self.dtype.itemsize
+            weights = 3 * self._shared_mlp_shard_ffn * self.hidden_size
+            flops += 2 * self.num_tokens * weights
+            nbytes += (weights + self.num_tokens * self.hidden_size) * elem_bytes
+        return flops, nbytes
 
     def _shared_mlp_kernel_for(
         self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype

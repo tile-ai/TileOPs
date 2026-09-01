@@ -39,15 +39,15 @@ from .gemm import (
     GroupedGemmFwdOp,
 )
 from .linear_attention import (
+    DeltaNetAutogradOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
     DeltaNetFwdOp,
-    DeltaNetOp,
+    GatedDeltaNetAutogradOp,
     GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeFwdOp,
-    GatedDeltaNetOp,
     GatedDeltaNetPrefillBHTDFwdOp,
     GatedDeltaNetPrefillBTHDFwdOp,
     GLABwdOp,
@@ -95,7 +95,7 @@ from .pool import (
     MaxPool2dIndicesFwdOp,
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
-    MeanPoolingForwardOp,
+    MeanPoolingFwdOp,
 )
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
@@ -198,7 +198,7 @@ __all__ = [
     "AdaptiveAvgPool2dFwdOp",
     "AdaptiveMaxPool2dFwdOp",
     "AdaptiveMaxPool2dIndicesFwdOp",
-    "MeanPoolingForwardOp",
+    "MeanPoolingFwdOp",
     # Convolution
     "Conv1dFwdOp",
     "Conv2dFwdOp",
@@ -241,11 +241,11 @@ __all__ = [
     "FP8LightningIndexerFwdOp",
     "TopkSelectorFwdOp",
     # Linear attention
-    "DeltaNetOp",
+    "DeltaNetAutogradOp",
     "DeltaNetFwdOp",
     "DeltaNetBwdOp",
     "DeltaNetDecodeFwdOp",
-    "GatedDeltaNetOp",
+    "GatedDeltaNetAutogradOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetPrefillBTHDFwdOp",

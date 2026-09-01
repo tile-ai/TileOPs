@@ -692,34 +692,3 @@ class Op(ABC):
             for axis, s in enumerate(shape)
             if (i, axis) not in self._static_axes
         )
-
-
-class UnmanifestedOp(Op):
-    """An op the manifest does not name, and what that costs it.
-
-    The three contract methods are derived from a manifest entry — generated for
-    the dtype and roofline, hand-written for the shapes. An op with no entry has
-    nothing to derive them from: no target can be asked to serve it, no benchmark
-    can report a roofline for it, and no compiled caller can be told its output
-    shape. Inheriting this states that, and lists the ops it applies to: grep the
-    class name.
-
-    Every one of them is a gap to close by writing the entry, not by staying here.
-    """
-
-    def _infer_output_shapes(self, *shapes: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
-        raise NotImplementedError(
-            f"{type(self).__name__} has no manifest entry, so its output shapes are "
-            f"not declared anywhere"
-        )
-
-    def _validate_dtypes(self, *args: torch.Tensor) -> None:
-        raise NotImplementedError(
-            f"{type(self).__name__} has no manifest entry, so its dtype contract is "
-            f"not declared anywhere"
-        )
-
-    def eval_roofline(self) -> tuple[int, int]:
-        raise NotImplementedError(
-            f"{type(self).__name__} has no manifest entry, so it has no roofline model"
-        )

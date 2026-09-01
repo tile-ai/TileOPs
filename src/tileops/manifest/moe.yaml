@@ -216,6 +216,57 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
       gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
 
+FusedTopKOp:
+  ref_api: "none"
+  # correction_bias, when passed, is added to sigmoid scores for the selection only;
+  # the returned weights stay the unbiased scores (Kimi K2 routing).
+  family: moe
+  status: implemented
+
+  signature:
+    inputs:
+      gating_output: {dtype: "float16 | bfloat16 | float32"}
+      correction_bias: {dtype: "float32", optional: true}
+    outputs:
+      topk_weights: {dtype: "float32"}
+      topk_ids: {dtype: "int32"}
+    params:
+      top_k: {type: int}
+      scoring_func: {type: str, default: softmax}
+      renormalize: {type: bool, default: false}
+    shape_rules:
+    - "gating_output.shape == (num_tokens, num_experts)"
+    - "correction_bias is None or correction_bias.shape == (num_experts,)"
+    - "topk_weights.shape == (num_tokens, top_k)"
+    - "topk_ids.shape == (num_tokens, top_k)"
+    - "0 < top_k <= num_experts"
+    - "scoring_func in ('softmax', 'sigmoid')"
+    # The bias is added to sigmoid scores; softmax has no such path.
+    - "correction_bias is None or scoring_func == 'sigmoid'"
+
+  workloads:
+    # Kimi K2 routing, then Qwen3-235B-A22B, over the decode-to-prefill token range.
+  - {num_tokens: 32, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: false, dtypes: [bfloat16], label: "kimi-k2-t32"}
+  - {num_tokens: 512, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: false, dtypes: [bfloat16], label: "kimi-k2-t512"}
+  - {num_tokens: 4096, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: false, dtypes: [bfloat16], label: "kimi-k2-t4096"}
+    # Kimi K2 also routes with a per-expert bias, which is a second kernel build.
+  - {num_tokens: 512, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: true, correction_bias_shape: [384], dtypes: [bfloat16], label: "kimi-k2-t512-bias"}
+  - {num_tokens: 32, num_experts: 128, top_k: 8, scoring_func: softmax, renormalize: false, with_correction_bias: false, dtypes: [bfloat16], label: "qwen3-235b-t32"}
+  - {num_tokens: 512, num_experts: 128, top_k: 8, scoring_func: softmax, renormalize: false, with_correction_bias: false, dtypes: [bfloat16], label: "qwen3-235b-t512"}
+  - {num_tokens: 4096, num_experts: 128, top_k: 8, scoring_func: softmax, renormalize: false, with_correction_bias: false, dtypes: [bfloat16], label: "qwen3-235b-t4096"}
+
+  roofline:
+    func: "tileops.perf.formulas.fused_topk_roofline"
+
+  source:
+    kernel: tileops/kernels/moe/fused_topk.py
+    kernel_map:
+      fused_topk_kernel: FusedTopKKernel
+    op: tileops/ops/moe/fused_topk.py
+    test: tests/ops/test_moe_fused_topk.py
+    bench: benchmarks/ops/bench_moe_fused_topk.py
+    bench_manifest_driven: true
+
 FusedMoeFwdOp:
   ref_api: "none"
   # correction_bias, when passed, is added to sigmoid scores for top-k selection

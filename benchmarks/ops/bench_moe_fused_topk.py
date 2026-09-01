@@ -1,8 +1,8 @@
-"""Benchmark for FusedTopKOp.
+"""Benchmark for FusedTopKOp, against vLLM's routing kernels.
 
-Baselines:
-  - vLLM fused_topk (optional): only runs when vllm is installed.
-  - PyTorch reference: torch.softmax/sigmoid + torch.topk.
+vLLM is required, not optional: this file exists to compare against its routers, and a
+torch reference is not a comparison worth recording. `fused_topk` takes no correction
+bias, so a biased row goes to `fused_topk_bias` instead.
 
 Real model configurations:
   Model              E    K  scoring   renorm
@@ -10,88 +10,56 @@ Real model configurations:
   Qwen3-235B-A22B  128   8  softmax   False
 """
 
-from typing import Optional
-
+import pytest
 import torch
+from vllm.model_executor.layers.fused_moe import fused_topk as _vllm_fused_topk
+from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
+    fused_topk_bias as _vllm_fused_topk_bias,
+)
 
-try:
-    from vllm.model_executor.layers.fused_moe import fused_topk as _vllm_fused_topk
-
-    _VLLM_AVAILABLE = True
-except ImportError:
-    _VLLM_AVAILABLE = False
-
-from benchmarks.benchmark_base import OpBenchmark
+from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
+from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedTopKOp
 from workloads.moe import FusedTopKWorkload
-from workloads.workload_base import FixtureBase
-
-
-def fused_topk_torch(
-    gating_output: torch.Tensor,
-    top_k: int,
-    scoring_func: str = "softmax",
-    renormalize: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    logits = gating_output.to(torch.float32)
-    if scoring_func == "softmax":
-        scores = torch.softmax(logits, dim=-1)
-    elif scoring_func == "sigmoid":
-        scores = torch.sigmoid(logits)
-    else:
-        raise ValueError(f"Unknown scoring_func: {scoring_func}")
-
-    topk_weights, topk_ids = torch.topk(scores, top_k, dim=-1, sorted=False)
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-    return topk_weights, topk_ids.int()
-
-
-# Benchmark class
-
-
-class FusedTopKBenchmark(OpBenchmark[FusedTopKWorkload]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return t.num_tokens * t.num_experts * 2 * (1 + t.top_k)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return (
-            t.num_tokens * t.num_experts * 2
-            + t.num_tokens * t.top_k * 4
-            + t.num_tokens * t.top_k * 4
-        )
-
-
-class FusedTopKBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "num_tokens, num_experts, top_k, scoring_func, renormalize",
-            [
-                (1, 384, 8, "sigmoid", True),
-                (32, 384, 8, "sigmoid", True),
-                (512, 384, 8, "sigmoid", True),
-                (4096, 384, 8, "sigmoid", True),
-                (1, 128, 8, "softmax", False),
-                (32, 128, 8, "softmax", False),
-                (512, 128, 8, "softmax", False),
-                (4096, 128, 8, "softmax", False),
-            ],
-        ),
-    ]
-
 
 # Benchmark test
 
 
-@FusedTopKBenchFixture
+@pytest.mark.parametrize(
+    "num_tokens, num_experts, top_k, scoring_func, renormalize, with_correction_bias, dtype",
+    workload_params(
+        load_workloads(FusedTopKOp),
+        fields(
+            "num_tokens",
+            "num_experts",
+            "top_k",
+            "scoring_func",
+            "renormalize",
+            "with_correction_bias",
+            dtype_last=True,
+        ),
+    ),
+)
 def test_fused_topk_bench(
-    num_tokens: int, num_experts: int, top_k: int, scoring_func: str, renormalize: bool
+    num_tokens: int,
+    num_experts: int,
+    top_k: int,
+    scoring_func: str,
+    renormalize: bool,
+    with_correction_bias: bool,
+    dtype: torch.dtype,
 ) -> None:
-    dtype = torch.bfloat16
-    test = FusedTopKWorkload(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
-    (gating_output,) = test.gen_inputs()
+    test = FusedTopKWorkload(
+        num_tokens,
+        num_experts,
+        top_k,
+        scoring_func,
+        renormalize,
+        dtype,
+        with_correction_bias=with_correction_bias,
+    )
+    inputs = test.gen_inputs()
+    gating_output = inputs[0]
 
     # TileOPs
     op = FusedTopKOp(
@@ -99,19 +67,28 @@ def test_fused_topk_bench(
         scoring_func=scoring_func,
         renormalize=renormalize,
     )
-    bm = FusedTopKBenchmark(op, test)
-    op(gating_output)  # warmup / JIT compile
+    bm = ManifestBenchmark(op, test)
+    op(*inputs)  # warmup / JIT compile
     torch.cuda.synchronize()
 
     functors = {"tileops": op}
 
-    # vLLM baseline (optional)
-    has_external = False
-    if _VLLM_AVAILABLE and scoring_func in ("softmax", "sigmoid"):
-        has_external = True
-        hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
+    # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
+    hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
+    if with_correction_bias:
 
-        # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
+        def _vllm_fn(gating_output, correction_bias):
+            return _vllm_fused_topk_bias(
+                hidden_states=hidden_dummy,
+                gating_output=gating_output.float(),
+                scoring_func=scoring_func,
+                e_score_correction_bias=correction_bias,
+                topk=top_k,
+                renormalize=renormalize,
+            )
+
+    else:
+
         def _vllm_fn(gating_output):
             return _vllm_fused_topk(
                 hidden_states=hidden_dummy,
@@ -121,20 +98,8 @@ def test_fused_topk_bench(
                 scoring_func=scoring_func,
             )
 
-        _vllm_fn(gating_output)  # warmup
-        torch.cuda.synchronize()
+    _vllm_fn(*inputs)  # warmup
+    torch.cuda.synchronize()
+    functors["vllm"] = _vllm_fn
 
-        functors["vllm"] = _vllm_fn
-
-    # Fallback: torch reference baseline (only when no external baselines)
-    if not has_external:
-
-        def _ref_fn(gating_output):
-            return fused_topk_torch(gating_output, top_k, scoring_func, renormalize)
-
-        _ref_fn(gating_output)  # warmup
-        torch.cuda.synchronize()
-
-        functors["torch-ref"] = _ref_fn
-
-    bm.compare(functors, gating_output)
+    bm.compare(functors, *inputs)
