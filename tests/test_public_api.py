@@ -20,14 +20,10 @@ SRC = Path(tileops.__file__).parent
 # Off the tree, not off `_FAMILIES` — one test compares the two.
 FAMILIES = sorted(p.stem for p in SRC.glob("*.py") if not p.stem.startswith("_"))
 
-# Public names the manifest does not declare. An addition here needs a reason.
+# The public surface is the manifest, plus these. Every one is a concrete op marked
+# `UnmanifestedOp` and public before the family modules existed; each needs a manifest
+# entry or a deprecation, not a quiet removal. Abstract bases are not public at all.
 NOT_IN_MANIFEST = {
-    # Abstract bases a caller subclasses to add an op of their own.
-    "UnaryOp",
-    "BinaryOp",
-    "FusedGatedOp",
-    "CumulativeOp",
-    # Marked `UnmanifestedOp`. Each needs a manifest entry or a deprecation.
     "DeltaNetOp",
     "GatedDeltaNetOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",

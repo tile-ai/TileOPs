@@ -14,7 +14,7 @@ kernels are implemented.
 from .argreduce import ArgmaxFwdOp, ArgminFwdOp
 
 # --- CumulativeKernel ops ---
-from .cumulative import CumprodFwdOp, CumsumFwdOp, CumulativeOp
+from .cumulative import CumprodFwdOp, CumsumFwdOp
 from .logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
 # --- ReduceKernel ops ---
@@ -56,7 +56,6 @@ __all__: list[str] = [
     "ArgmaxFwdOp",
     "ArgminFwdOp",
     # --- CumulativeKernel ops ---
-    "CumulativeOp",
     "CumsumFwdOp",
     "CumprodFwdOp",
     # --- VectorNormKernel ops ---

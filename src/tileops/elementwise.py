@@ -5,7 +5,6 @@ from .ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
     AlibiFwdOp,
-    BinaryOp,
     BitwiseAndFwdOp,
     BitwiseNotFwdOp,
     BitwiseOrFwdOp,
@@ -22,7 +21,6 @@ from .ops.elementwise import (
     Expm1FwdOp,
     FloorDivideFwdOp,
     FloorFwdOp,
-    FusedGatedOp,
     GeFwdOp,
     GeluAndMulFwdOp,
     GeluFwdOp,
@@ -72,15 +70,11 @@ from .ops.elementwise import (
     SubFwdOp,
     TanhFwdOp,
     TruncFwdOp,
-    UnaryOp,
     WhereFwdOp,
 )
 
 __all__ = [
     "DropoutFwdOp",
-    "UnaryOp",
-    "BinaryOp",
-    "FusedGatedOp",
     "AbsFwdOp",
     "AddFwdOp",
     "AlibiFwdOp",

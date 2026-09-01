@@ -1,4 +1,4 @@
-"""TileOPs: TileLang kernels for efficient LLM inference.
+"""TileOPs: efficient LLM inference built on TileLang.
 
 Ops are reached in two levels, `tileops.<family>.<Op>`:
 

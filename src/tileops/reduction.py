@@ -10,7 +10,6 @@ from .ops.reduction import (
     CountNonzeroFwdOp,
     CumprodFwdOp,
     CumsumFwdOp,
-    CumulativeOp,
     InfNormFwdOp,
     L1NormFwdOp,
     L2NormFwdOp,
@@ -47,5 +46,4 @@ __all__ = [
     "AllFwdOp",
     "AnyFwdOp",
     "CountNonzeroFwdOp",
-    "CumulativeOp",
 ]
