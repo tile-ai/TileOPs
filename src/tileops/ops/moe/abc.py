@@ -136,7 +136,6 @@ class FusedMoEPrepareAndFinalize(ABC):
         topk_weights: Tensor,  # [T, K] float32
         topk_ids: Tensor,  # [T, K] int32
         num_experts: int,
-        expert_map: Tensor | None,  # [E_global] int32, for EP local filtering
     ) -> PrepareResult:
         """Post-conditions:
         result.hidden_q.shape[1] == H
@@ -200,18 +199,10 @@ class FusedMoEExperts(Op, ABC):
         w_down: Tensor,  # [E_local, H, F]
         topk_weights: Tensor,  # [T', K] float32
         topk_ids: Tensor,  # [T', K] int32
-        expert_map: Tensor | None,  # [E] int32 global-to-local ids; None if all local
         workspace1: Tensor,
         workspace2: Tensor,
-        num_experts: int,
     ) -> None:
-        """Write expert computation result to output in-place.
-
-        The number of experts this rank owns is fixed at construction — it sizes
-        the kernels. ``expert_map`` carries the global-to-local ids the kernels
-        read at launch, and its presence is what selects the expert-parallel
-        path.
-        """
+        """Write the local expert-compute result to output in-place."""
 
 
 class FusedMoEExpertsModular(FusedMoEExperts, ABC):

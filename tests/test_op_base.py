@@ -160,14 +160,14 @@ class TestCompositeKernelMapOverride:
     def test_empty_default_with_non_empty_override_stores_override(self):
         Cls = _make_op_subclass()
         op = Cls()
-        override = {"permute_nopad_kernel": object(), "unpermute_kernel": object()}
+        override = {"first": object(), "second": object()}
         op.dispatch_kernel(override)
         assert op.kernel_map == override
 
     def test_empty_default_override_is_copied_not_aliased(self):
         Cls = _make_op_subclass()
         op = Cls()
-        override = {"permute_nopad_kernel": object()}
+        override = {"first": object()}
         op.dispatch_kernel(override)
         override["extra"] = object()
         assert "extra" not in op.kernel_map

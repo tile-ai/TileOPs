@@ -25,8 +25,6 @@ from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
 from ..staged import MoePostPermuteFwdOp, MoePrePermuteFwdOp
 from .gate_up import MoeGateUpFwdOp
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
-from .permute_nopad import MoePermuteNopadFwdOp
-from .unpermute import MoeUnpermuteFwdOp
 
 __all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
 
@@ -34,9 +32,8 @@ __all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
 
-    The local non-EP pipeline uses staged PrePermute/PostPermute boundaries
-    around the existing GateUp and down-GEMM stages. The EP compatibility path
-    retains the legacy Permute/Unpermute operators.
+    The local pipeline uses staged PrePermute/PostPermute boundaries around the
+    existing GateUp and down-GEMM stages.
 
     forward() output shape is (T, H): reduction is done internally by the
     PostPermute/Unpermute stage, so make_weighted_reduce() returns
@@ -45,7 +42,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     Example:
         ```python linenums="1"
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-            num_tokens=512, num_experts=128, num_experts_local=128, top_k=8,
+            num_tokens=512, num_experts=128, top_k=8,
             hidden_size=7168, ffn_size=2048,
         )
         ```
@@ -55,7 +52,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         self,
         num_tokens: int,
         num_experts: int,
-        num_experts_local: int,
         top_k: int,
         hidden_size: int,
         ffn_size: int,
@@ -68,10 +64,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
         Args:
             num_tokens: Number of input tokens T (rows of hidden_states).
-            num_experts: Total number of experts E in the routing table.
-            num_experts_local: Number of those experts this rank owns; the weights
-                and both grouped GEMMs are sized by it. Equal to ``num_experts``
-                outside expert parallelism.
+            num_experts: Number of local compute experts E.
             top_k: Number of experts each token is routed to (K).
             hidden_size: Model hidden dimension H (GEMM contraction dim for
                 gate_up, output dim for down).
@@ -85,7 +78,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens
         self.num_experts = num_experts
-        self.num_experts_local = num_experts_local
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
@@ -95,7 +87,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
         self._gate_up = MoeGateUpFwdOp(
             numel=numel,
-            num_experts=num_experts_local,
+            num_experts=num_experts,
             ffn=ffn_size,
             k=hidden_size,
             activation=activation,
@@ -103,7 +95,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel,
-            num_experts=num_experts_local,
+            num_experts=num_experts,
             n=hidden_size,
             k=ffn_size,
             kernel_map=kernel_map,
@@ -111,7 +103,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         layout = ContiguousLayoutSpec.tight_physical_psum()
         self._pre_permute = MoePrePermuteFwdOp(
             layout=layout,
-            num_local_experts=num_experts_local,
+            num_local_experts=num_experts,
             kernel_map=kernel_map,
         )
         self._post_permute = MoePostPermuteFwdOp(
@@ -121,19 +113,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             ),
             kernel_map=kernel_map,
         )
-        self._unpermute = MoeUnpermuteFwdOp(
-            total_tokens=num_tokens,
-            top_k=top_k,
-            hidden_size=hidden_size,
-            padded_batch_sum=numel,
-            kernel_map=kernel_map,
-            routed_scaling_factor=routed_scaling_factor,
-        )
-        self._permute = MoePermuteNopadFwdOp(
-            num_experts=num_experts,
-            num_experts_local=num_experts_local,
-            kernel_map=kernel_map,
-        )
 
     def kernel_delegates(self) -> tuple[Op, ...]:
         return (
@@ -141,8 +120,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             self._gate_up,
             self._gemm_down,
             self._post_permute,
-            self._permute,
-            self._unpermute,
         )
 
     def eval_roofline(self) -> tuple[int, int]:
@@ -153,7 +130,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             )
         flops = self.num_tokens * self.top_k * 6 * self.ffn_size * self.hidden_size
         nbytes = (
-            self.num_experts_local * 3 * self.ffn_size * self.hidden_size
+            self.num_experts * 3 * self.ffn_size * self.hidden_size
             + 2 * self.num_tokens * self.hidden_size
         ) * self.dtype.itemsize
         return int(flops), int(nbytes)
@@ -168,8 +145,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         topk_ids: Tensor,
         workspace1: Tensor,
         workspace2: Tensor,
-        *,
-        expert_map: Optional[Tensor] = None,
     ) -> None:
         # hidden_states is the dtype anchor: the helper requires output,
         # w_gate_up and w_down to agree with it.
@@ -185,8 +160,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             workspace1,
             workspace2,
         )
-        if expert_map is not None and expert_map.dtype != torch.int32:
-            raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
         self._reject_non_empty_workspaces(workspace1, workspace2)
 
     def _reject_non_empty_workspaces(
@@ -234,7 +207,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         topk_ids_shape: tuple[int, ...],
         workspace1_shape: tuple[int, ...],
         workspace2_shape: tuple[int, ...],
-        expert_map_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: the caller's buffer holds one row per token."""
         return {"output": tuple(hidden_states_shape)}
@@ -249,18 +221,8 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         topk_ids: Tensor,
         workspace1: Tensor,
         workspace2: Tensor,
-        expert_map: Optional[Tensor] = None,
-        *,
-        num_experts: int,
     ) -> None:
-        """Run the expert pipeline, writing the reduced result into ``output``.
-
-        Args:
-            expert_map: [E] int32 global-to-local expert ids under expert
-                parallelism; ``None`` when this rank owns every expert. The
-                permute stage rejects a map that does not cover exactly the
-                local ids.
-        """
+        """Run the local expert pipeline, writing the reduced result into ``output``."""
         self._validate_dtypes(
             output,
             hidden_states,
@@ -270,36 +232,14 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             topk_ids,
             workspace1,
             workspace2,
-            expert_map=expert_map,
         )
-        if expert_map is None and hidden_states.dtype is torch.bfloat16:
-            expert_input, physical_ends, inverse_indices = self._pre_permute(
-                hidden_states, topk_ids
-            )
-            # Temporary layout bridge to the legacy grouped-GEMM ABI. Keep this
-            # conversion localized so the later ExpertMLP/GroupedGemm migration
-            # can remove it as one block.
-            true_offsets = torch.cat((physical_ends.new_zeros(1), physical_ends[:-1]))
-            true_sizes = physical_ends - true_offsets
-            act = self._gate_up(expert_input, w_gate_up, true_sizes, true_offsets)
-            expert_output = self._gemm_down(act, w_down, true_sizes, true_offsets)
-            self._post_permute(
-                expert_output,
-                topk_weights,
-                inverse_indices,
-                out=output,
-            )
-            return
-
-        # FP16 has no staged production candidate yet, and EP dispatch still
-        # supplies global IDs plus a global-to-local map. Keep both compatibility
-        # cases on the legacy path until their respective staged migrations.
-        perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(
-            hidden_states, topk_ids, expert_map
-        )
-        act = self._gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
+        expert_input, physical_ends, inverse_indices = self._pre_permute(hidden_states, topk_ids)
+        # Temporary bridge until GroupedGemm consumes staged layout metadata.
+        true_offsets = torch.cat((physical_ends.new_zeros(1), physical_ends[:-1]))
+        true_sizes = physical_ends - true_offsets
+        act = self._gate_up(expert_input, w_gate_up, true_sizes, true_offsets)
         expert_output = self._gemm_down(act, w_down, true_sizes, true_offsets)
-        self._unpermute(expert_output, fwd_idx, topk_weights, out=output)
+        self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

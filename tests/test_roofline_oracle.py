@@ -372,8 +372,6 @@ PENDING = frozenset(
         "MoeGateUpFwdOp",
         "MoeGroupedGemmNopadFwdOp",
         "MoePermuteAlignFwdOp",
-        "MoePermuteNopadFwdOp",
-        "MoeUnpermuteFwdOp",
         "MulFwdOp",
         "MultiHeadAttentionBwdOp",
         "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
