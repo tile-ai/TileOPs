@@ -72,15 +72,14 @@ def test_the_caption_carries_what_the_run_cannot_be_reproduced_without(tmp_path,
     assert "mig" not in environment
 
 
-def test_the_caption_asks_for_a_clock_field_the_driver_still_answers():
-    """``clocks.applications.*`` is deprecated, and a dropped field reads as absent.
+def test_no_field_is_one_this_driver_answers_in_brackets():
+    """The one thing the test above cannot see: which field names are sent.
 
-    The reader treats a bracketed answer as "no fact", so asking a deprecated
-    field leaves the snapshot silently without a clock rather than with a wrong
-    one -- which is how a card pinned at 1500 MHz went unrecorded for as long
-    as it did.
+    It supplies nvidia-smi's answer, so a field the driver has stopped
+    answering looks the same to it as a card that has no such clock. That is
+    how `clocks.applications.graphics` -- deprecated, answered
+    `[Requested functionality has been deprecated]`, and dropped by the reader
+    as "no fact" -- left every snapshot without a clock.
     """
-    asked = [field for _, field in collect_env._GPU_FIELDS]
-    assert not [f for f in asked if f.startswith("clocks.applications")]
-    assert "clocks.current.graphics" in asked
-    assert "clocks.max.graphics" in asked
+    deprecated = [f for _, f in collect_env._GPU_FIELDS if f.startswith("clocks.applications")]
+    assert not deprecated, f"asking a deprecated field reads as absence: {deprecated}"

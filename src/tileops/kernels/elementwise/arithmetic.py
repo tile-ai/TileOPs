@@ -6,7 +6,6 @@ import tilelang
 import tilelang.language as T
 import torch
 import tvm.tirx as tirx
-from tvm.ir import Op
 
 from ._base import (
     _FLOAT_DTYPES,
@@ -276,13 +275,17 @@ def _propagate_nan(a, b, result):
 
 
 def _nan_intrin(name, a, b):
-    """``a`` against ``b`` through TileLang's NaN-propagating half builtin.
+    """A TileLang NaN-propagating builtin, named the way TileLang names its own.
 
-    One instruction where the guarded form is a compare, an or and a select.
-    fp16 and bf16 only: the builtin lowers to CUDA's ``__hmax_nan`` /
-    ``__hmin_nan``, which the wider floats have no counterpart for.
+    ``tl.max_nan`` and ``tl.min_nan`` lower to CUDA's ``__hmax_nan`` /
+    ``__hmin_nan``: one instruction where the guarded form is a compare, an or
+    and a select. TileLang registers both builtins and wraps neither in Python,
+    so there is nothing to import; naming the op through ``tirx.op.Op.get`` is
+    the line its own ``math_intrinsics`` uses for ``tl.max2`` and the ieee_*
+    family. A ``T.max_nan`` upstream would replace this whole helper, and the
+    two call sites would not change.
     """
-    return tirx.call_intrin(a.dtype, Op.get(name), a, b)
+    return tirx.call_intrin(a.dtype, tirx.op.Op.get(name), a, b)
 
 
 def _nan_max(a, b):
@@ -316,8 +319,7 @@ class MaximumFwdKernel(BinaryKernel):
 
         Both float forms do it: fp32's NaN select, and the half formats' NaN
         builtin, which the vectoriser cannot see through either. Staged, the
-        builtin costs what a plain ``max`` costs -- 14.32 us against 14.31 on
-        cnn-feat-broadcast float16 -- and unstaged it costs 16.27.
+        builtin costs what a plain ``T.max`` costs.
 
         Integer and bool dtypes take ``T.min``/``T.max`` directly, with nothing
         to scalarise them, and follow the base default.
@@ -358,8 +360,7 @@ class MinimumFwdKernel(BinaryKernel):
 
         Both float forms do it: fp32's NaN select, and the half formats' NaN
         builtin, which the vectoriser cannot see through either. Staged, the
-        builtin costs what a plain ``max`` costs -- 14.32 us against 14.31 on
-        cnn-feat-broadcast float16 -- and unstaged it costs 16.27.
+        builtin costs what a plain ``T.max`` costs.
 
         Integer and bool dtypes take ``T.min``/``T.max`` directly, with nothing
         to scalarise them, and follow the base default.
