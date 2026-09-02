@@ -18,6 +18,7 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
+    GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
@@ -328,7 +329,10 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_dense": GQADensePrefillCausalWsKernel}
+        return {
+            "gqa_dense": GQADensePrefillCausalWsKernel,
+            "gqa_dense_sliding_window": GQASlidingWindowFwdWgmmaPipelinedKernel,
+        }
 
     def _infer_output_shapes(
         self,
@@ -454,18 +458,19 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         if rope_cos.shape != rope_sin.shape:
             raise ValueError("rope_cos and rope_sin must have the same shape")
 
-    def _validate_builtin_call(self, q: torch.Tensor) -> None:
-        """Reject features not implemented by the in-tree Dense kernel."""
+    def _validate_builtin_call(self, q: torch.Tensor, k: torch.Tensor) -> None:
+        """Reject features not implemented by the in-tree Dense kernels."""
         if not self.is_causal:
             raise ValueError("Dense GQA currently supports causal attention only")
         if q.shape[-1] != 128:
             raise ValueError("Dense GQA currently requires head dimension 128")
         if q.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError("Dense GQA currently supports float16 and bfloat16 inputs only")
-        if self.window_size_left != -1 or self.window_size_right != -1:
-            raise ValueError("Dense GQA does not yet support sliding windows")
         if self.pos_encoding_mode != "none":
             raise ValueError("Dense GQA does not yet support fused RoPE")
+        uses_window = self.window_size_left != -1 or self.window_size_right != -1
+        if uses_window and q.shape[1] != k.shape[1]:
+            raise ValueError("Dense sliding-window GQA currently requires equal Q and KV lengths")
 
     @staticmethod
     def _canonicalize_inputs(
@@ -492,10 +497,26 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         assert q is not None and k is not None
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape
-        role = "gqa_dense"
+        uses_window = self.window_size_left != -1 or self.window_size_right != -1
+        role = "gqa_dense_sliding_window" if uses_window else "gqa_dense"
 
         def build() -> Kernel:
-            self._validate_builtin_call(q)
+            self._validate_builtin_call(q, k)
+            if uses_window:
+                return self.kernel_map[role](
+                    batch=batch,
+                    heads=heads,
+                    heads_kv=heads_kv,
+                    seq_len=seq_len_q,
+                    dim=dim,
+                    is_causal=self.is_causal,
+                    window_size_left=self.window_size_left,
+                    window_size_right=self.window_size_right,
+                    dtype=q.dtype,
+                    sm_scale=self.sm_scale,
+                    softcap=self.softcap,
+                    device_index=q.device.index,
+                )
             return self.kernel_map[role](
                 batch=batch,
                 heads=heads,

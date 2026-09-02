@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQADensePrefillCausalWsKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
+    GQASlidingWindowFwdWgmmaPipelinedKernel,
 )
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
@@ -101,6 +102,8 @@ def _gqa_prefill_ref(
     is_causal: bool,
     sm_scale: Optional[float] = None,
     softcap: Optional[float] = None,
+    window_size_left: int = -1,
+    window_size_right: int = -1,
 ) -> torch.Tensor:
     batch, seq_len_q, _, dim = q.shape
     seq_len_kv = k.shape[1]
@@ -112,11 +115,17 @@ def _gqa_prefill_ref(
     scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
     if softcap is not None and softcap > 0:
         scores = softcap * torch.tanh(scores / softcap)
+    offset = seq_len_kv - seq_len_q
+    q_pos = torch.arange(seq_len_q, device=q.device)[:, None] + offset
+    k_pos = torch.arange(seq_len_kv, device=q.device)[None, :]
+    mask = torch.ones((seq_len_q, seq_len_kv), device=q.device, dtype=torch.bool)
     if is_causal:
-        offset = seq_len_kv - seq_len_q
-        q_pos = torch.arange(seq_len_q, device=q.device)[:, None] + offset
-        k_pos = torch.arange(seq_len_kv, device=q.device)[None, :]
-        mask = k_pos <= q_pos
+        mask &= k_pos <= q_pos
+    if window_size_left >= 0:
+        mask &= k_pos >= q_pos - window_size_left
+    if window_size_right >= 0:
+        mask &= k_pos <= q_pos + window_size_right
+    if is_causal or window_size_left >= 0 or window_size_right >= 0:
         scores = scores.masked_fill(~mask.view(1, 1, seq_len_q, seq_len_kv), float("-inf"))
     probs = torch.softmax(scores, dim=-1)
     output = torch.matmul(probs, v_bhsd)
@@ -153,6 +162,46 @@ def test_gqa_dense_h200_main_kernel_matches_reference() -> None:
         rtol=1e-5,
     )
     assert isinstance(next(iter(op.iter_kernels())), GQADensePrefillCausalWsKernel)
+
+
+@pytest.mark.smoke
+def test_gqa_dense_h200_sliding_window_kernel_matches_reference() -> None:
+    if not is_h200():
+        pytest.skip("Dense sliding-window prefill is currently supported on H200")
+    batch, seq_len, heads, heads_kv, dim = 1, 256, 8, 2, 128
+    window_size_left = 64
+    sm_scale = 0.125
+    softcap = 2.0
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+
+    op = GroupedQueryAttentionDenseFwdOp(
+        window_size_left=window_size_left,
+        window_size_right=0,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    output = op(q, k, v)
+
+    torch.testing.assert_close(
+        output,
+        _gqa_prefill_ref(
+            q,
+            k,
+            v,
+            heads=heads,
+            heads_kv=heads_kv,
+            is_causal=True,
+            sm_scale=sm_scale,
+            softcap=softcap,
+            window_size_left=window_size_left,
+            window_size_right=0,
+        ),
+        atol=5e-3,
+        rtol=1e-5,
+    )
+    assert isinstance(next(iter(op.iter_kernels())), GQASlidingWindowFwdWgmmaPipelinedKernel)
 
 
 def _gqa_prefill_varlen_ref(
