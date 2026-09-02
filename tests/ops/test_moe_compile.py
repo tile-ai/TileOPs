@@ -92,6 +92,21 @@ def _pre_permute_case(dtype: torch.dtype = torch.bfloat16):
     return make, (hidden_states, local_expert_ids), (1,)
 
 
+def _aligned_pre_permute_case():
+    def make():
+        return MoePrePermuteFwdOp(
+            ContiguousLayoutSpec.aligned_per_row(8),
+            num_local_experts=_NUM_EXPERTS,
+        )
+
+    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    local_expert_ids = torch.randint(
+        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda"
+    )
+    # Per-row metadata is reproducible; atomic slot assignment is not.
+    return make, (hidden_states, local_expert_ids), (1,)
+
+
 def _gate_up_case():
     numel, ffn, k = 64, 128, 128
 
@@ -114,6 +129,7 @@ _LEAF_CASES = {
     "permute_align": _permute_align_case,
     "pre_permute": _pre_permute_case,
     "pre_permute_fp16": lambda: _pre_permute_case(torch.float16),
+    "pre_permute_aligned": _aligned_pre_permute_case,
     "gate_up": _gate_up_case,
     "grouped_gemm_nopad": _grouped_gemm_nopad_case,
 }

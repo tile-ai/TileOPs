@@ -43,13 +43,19 @@ def _physical_layout(rows: int = 2, experts: int = 2) -> MaterializedExpertLayou
 def test_layout_presets_expose_only_supported_semantics() -> None:
     physical = ContiguousLayoutSpec.tight_physical_psum()
     per_row = ContiguousLayoutSpec.tight_per_row()
+    aligned = ContiguousLayoutSpec.aligned_per_row(128)
     masked = MaskedLayoutSpec(max_m=4)
 
     assert physical.selection_key == "tight_physical_psum"
     assert per_row.selection_key == "tight_per_row"
+    assert aligned.selection_key == "aligned_per_row"
+    assert aligned.alignment == 128
     assert masked.selection_key == "masked_predicated"
     assert repr(physical) == "ContiguousLayoutSpec.tight_physical_psum()"
     assert repr(per_row) == "ContiguousLayoutSpec.tight_per_row()"
+    assert repr(aligned) == "ContiguousLayoutSpec.aligned_per_row(128)"
+    with pytest.raises(ValueError, match="alignment > 1"):
+        ContiguousLayoutSpec.aligned_per_row(1)
     with pytest.raises(ValueError, match="non-negative"):
         MaskedLayoutSpec(max_m=-1)
 
@@ -121,6 +127,9 @@ def test_device_value_guards_cover_empty_experts_ordering_and_ranges() -> None:
     assert not gap.device_value_guard(num_experts=2).item()
     resumed = PerRowExpertMetadata(torch.tensor([0, 1, 0], dtype=torch.int32))
     assert not resumed.device_value_guard(num_experts=2).item()
+    sentinel = PerRowExpertMetadata(torch.tensor([0, 1, 2, 2], dtype=torch.int32))
+    assert not sentinel.device_value_guard(num_experts=2).item()
+    assert sentinel.device_value_guard(num_experts=2, allow_capacity_sentinel=True).item()
 
     masked = MaskedMetadata(torch.tensor([0, 4, 5], dtype=torch.int32))
     assert not masked.device_value_guard(max_m=4).item()
@@ -174,6 +183,7 @@ def test_compute_and_epilogue_specs_are_minimal_and_frozen() -> None:
 
 def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None:
     pre = PrePermuteCall(arch=90, layout=ContiguousLayoutSpec.tight_physical_psum())
+    aligned_pre = dataclasses.replace(pre, layout=ContiguousLayoutSpec.aligned_per_row(128))
     gemm = MGroupedGemmCall(arch=90, layout_key="tight_physical_psum")
     post = PostPermuteCall(
         arch=90,
@@ -182,6 +192,8 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         pre.arch = 100
+    assert aligned_pre != pre
+    assert len({pre, aligned_pre}) == 2
     assert gemm.layout_key == post.layout_key
 
 
@@ -429,12 +441,21 @@ def test_expert_mlp_forwards_only_caller_replacements_to_matching_delegates() ->
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
-def test_pre_permute_ships_the_tight_physical_candidate() -> None:
+@pytest.mark.parametrize(
+    "layout",
+    [
+        ContiguousLayoutSpec.tight_physical_psum(),
+        ContiguousLayoutSpec.aligned_per_row(8),
+    ],
+)
+def test_pre_permute_ships_one_contiguous_candidate(
+    layout: ContiguousLayoutSpec,
+) -> None:
     hidden = torch.empty(1, 4, dtype=torch.bfloat16, device="cuda")
     topk_ids = torch.zeros(1, 1, dtype=torch.int32, device="cuda")
-    op = MoePrePermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum(), num_local_experts=1)
+    op = MoePrePermuteFwdOp(layout, num_local_experts=1)
     call = op.make_call(hidden, topk_ids)
-    assert op.select_kernel_key(tuple(op.kernel_map), call) == "tight_physical_psum"
+    assert op.select_kernel_key(tuple(op.kernel_map), call) == "contiguous"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
@@ -463,3 +484,30 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert pre.eval_roofline() == (0, 1616)
 
     assert post.eval_roofline() == (1024, 1600)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
+    tokens, top_k, experts, hidden, alignment = 4, 2, 4, 64, 4
+    x = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
+    local_ids = torch.tensor([[0, 0], [0, 2], [2, 2], [2, 0]], dtype=torch.int32, device="cuda")
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    layout = ContiguousLayoutSpec.aligned_per_row(alignment)
+    capacity = tokens * top_k + experts * (alignment - 1)
+
+    pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
+    expert_input, row_expert_ids, inverse = pre(x, local_ids)
+    assert expert_input.shape == (capacity, hidden)
+    assert row_expert_ids.shape == (capacity,)
+    assert inverse.shape == (tokens * top_k,)
+
+    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
+    assert row_expert_ids.tolist() == [0] * 4 + [2] * 4 + [experts] * (capacity - 8)
+    torch.testing.assert_close(expert_input[8:], torch.zeros_like(expert_input[8:]))
+
+    post = MoePostPermuteFwdOp(layout)
+    output = post(expert_input, weights, inverse)
+    expected = x.float() * weights.sum(dim=1, keepdim=True)
+    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
