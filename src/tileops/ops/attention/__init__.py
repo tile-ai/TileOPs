@@ -8,38 +8,28 @@ from .deepseek_nsa import (
 from .gqa import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
-    GroupedQueryAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
 )
 from .mha import (
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
-    MultiHeadAttentionDecodeWithKVCacheFwdOp,
-    MultiHeadAttentionFwdOp,
 )
 
 __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionDenseFwdOp",
-    "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
-    "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
-    "MultiHeadAttentionDecodeWithKVCacheFwdOp",
-    "MultiHeadAttentionFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "NSACmpFwdVarlenOp",
     "NSAFwdVarlenOp",

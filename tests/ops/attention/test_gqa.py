@@ -1,4 +1,3 @@
-import dataclasses
 import re
 from typing import Optional
 
@@ -14,16 +13,13 @@ from tileops.kernels.attention import (
 )
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
-from tileops.ops.attention.selection import DENSE_PREFILL_KEYS, PACKED_PREFILL_KEYS
-from tileops.ops.op_base import Op
+from tileops.ops.attention.selection import PACKED_PREFILL_KEYS
 from tileops.utils import is_h200
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdWorkload,
-    GroupedQueryAttentionFwdWorkload,
     uniform_packed_prefill_inputs,
 )
 
@@ -91,19 +87,6 @@ class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
 
         output.backward(grad_output)
         return q.grad, k.grad, v.grad
-
-
-class GroupedQueryAttentionFwdTest(GroupedQueryAttentionFwdWorkload, TestBase):
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = k.transpose(1, 2)
-        v_bhsd = v.transpose(1, 2)
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(
-                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True
-            )
-        output = output_bhsd.transpose(1, 2).contiguous()
-        return output
 
 
 def _gqa_prefill_ref(
@@ -191,34 +174,6 @@ def _gqa_prefill_varlen_ref(
     return torch.cat(outputs, dim=0)
 
 
-class GroupedQueryAttentionFwdFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
-            [
-                pytest.param(
-                    1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.smoke
-                ),
-                pytest.param(
-                    1, 1024, 8, 4, 64, False, torch.bfloat16, False, marks=pytest.mark.smoke
-                ),
-                pytest.param(
-                    4, 512, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.smoke
-                ),
-                pytest.param(
-                    4, 512, 64, 4, 128, True, torch.float16, False, marks=pytest.mark.smoke
-                ),
-                pytest.param(
-                    4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full
-                ),
-                pytest.param(
-                    4, 2048, 64, 4, 128, False, torch.bfloat16, False, marks=pytest.mark.full
-                ),
-            ],
-        ),
-    ]
-
-
 class GroupedQueryAttentionBwdFixture(FixtureBase):
     PARAMS = [
         (
@@ -239,40 +194,6 @@ class GroupedQueryAttentionBwdFixture(FixtureBase):
             ],
         ),
     ]
-
-
-@GroupedQueryAttentionFwdFixture
-def test_gqa_fwd(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    causal: bool,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = GroupedQueryAttentionFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
-    test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
-
-
-@pytest.mark.smoke
-def test_gqa_fwd_output_matches_the_declared_shape() -> None:
-    """``H % H_kv`` keeps the validator's mocks away, so assert parity here."""
-    batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, False)
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.randn_like(k)
-
-    o = op(q, k, v)
-
-    assert o.shape == q.shape
-    assert o.dtype == q.dtype
-    assert op._infer_output_shapes(tuple(q.shape), tuple(k.shape), tuple(v.shape)) == {
-        "o": (batch, seq_len, heads, dim),
-    }
 
 
 @pytest.mark.parametrize(
@@ -1068,86 +989,8 @@ def test_gqa_bwd(
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
-# The square BSHD wrapper reaches a dense-prefill kernel by itself: it states
-# its call, selects a key, and builds through the shared step. These pin that
-# it holds no child op, builds once, and passes exactly what the packed op does.
-
-
-def _holds_op(value: object, depth: int = 0) -> bool:
-    """Whether *value* is or reaches an ``Op``, descending the same containers
-    and depth as the L1 kernel walk."""
-    if isinstance(value, Op):
-        return True
-    if depth >= 2:
-        return False
-    if isinstance(value, dict):
-        return any(_holds_op(item, depth + 1) for item in value.values())
-    if isinstance(value, (tuple, list)):
-        return any(_holds_op(item, depth + 1) for item in value)
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return any(
-            _holds_op(getattr(value, field.name), depth + 1) for field in dataclasses.fields(value)
-        )
-    return False
-
-
-def _op_valued_attrs(op: Op) -> list:
-    """Names of *op*'s attributes that are or reach an ``Op``; scans ``dir``
-    so properties and class-bound attributes are covered."""
-    return sorted(
-        name for name in dir(op) if not name.startswith("__") and _holds_op(getattr(op, name, None))
-    )
-
-
-def _record_kernel_builds(op: Op) -> list:
-    """Replace each of *op*'s kernel slots with a recorder of its build call.
-
-    The recorder still answers ``refusal``, delegating to the class it stands
-    in for, so selection runs exactly as it would have.
-
-    Returns the list the recorders append ``(slot, args, kwargs)`` to.
-    """
-    calls: list = []
-
-    def recorder(slot: str, real: type) -> type:
-        class Recorder:
-            supported_archs = real.supported_archs
-            general = real.general
-
-            @classmethod
-            def refusal(cls, call: object) -> "str | None":
-                return real.refusal(call)
-
-            def __new__(cls, *args: object, **kwargs: object) -> str:
-                calls.append((slot, args, kwargs))
-                return f"built:{slot}"
-
-        return Recorder
-
-    for slot in op.kernel_map:
-        op.kernel_map[slot] = recorder(slot, op.kernel_map[slot])
-    return calls
-
-
 @pytest.mark.smoke
-def test_gqa_fwd_bshd_wrapper_ctor_rejects_non_positive_dims() -> None:
-    """Nothing downstream validates; a zero ``heads_kv`` would surface as
-    ``ZeroDivisionError`` at ``heads % heads_kv``."""
-    with pytest.raises(ValueError, match="heads_kv must be positive"):
-        GroupedQueryAttentionFwdOp(1, 8, 0, 64, 64, True)
-    with pytest.raises(ValueError, match="batch must be positive"):
-        GroupedQueryAttentionFwdOp(0, 8, 2, 64, 64, True)
-    with pytest.raises(ValueError, match="seq_len must be positive"):
-        GroupedQueryAttentionFwdOp(1, 8, 2, 0, 64, True)
-
-
-@pytest.mark.smoke
-def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
-    """Every region declines rather than raising, so an unguarded element type
-    would land on the general dense implementation. Both entry points into the
-    dense-prefill build must refuse it instead."""
-    with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
-        GroupedQueryAttentionFwdOp(1, 8, 2, 128, 128, True)._get_kernel((), torch.float32)
+def test_packed_dense_prefill_rejects_unsupported_dtype() -> None:
     with pytest.raises(ValueError, match="float16 or torch.bfloat16"):
         GroupedQueryAttentionPrefillFwdOp(
             batch=1,
@@ -1160,57 +1003,6 @@ def test_dense_prefill_path_rejects_unsupported_dtype() -> None:
             dtype=torch.float32,
             backend="dense",
         )
-
-
-@pytest.mark.smoke
-def test_gqa_fwd_bshd_wrapper_caches_its_own_kernel_and_holds_no_child_op() -> None:
-    """The wrapper builds its kernel once and holds no op to build it for one.
-
-    Two calls leave one entry under the key selection reached: the registry is
-    what "built once" means, so nothing has to count constructor calls.
-    """
-    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
-    q = torch.empty(batch, seq_len, heads, dim, dtype=torch.float16)
-    k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float16)
-    v = torch.empty_like(k)
-    op = GroupedQueryAttentionFwdOp(
-        batch, heads, heads_kv, seq_len, dim, True, kernel_map=_stand_in_prefill_map()
-    )
-
-    assert op(q, k, v).shape == q.shape
-    assert op(q, k, v).shape == q.shape
-
-    assert list(op.built_kernels("gqa_prefill_fwd_kernel")) == [torch.float16]
-    assert _op_valued_attrs(op) == []
-
-
-@pytest.mark.smoke
-def test_gqa_fwd_bshd_wrapper_selects_what_the_packed_op_selects() -> None:
-    """Both reach the same key for the same call, so the wrapper adds no policy.
-
-    Which key each geometry reaches — square, warp-specialized causal, general
-    dense — is the dispatch table's subject; this pins only that the two agree.
-    """
-    batch, seq_len, heads, heads_kv, dim = 4, 512, 32, 8, 128
-    wrapper = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True)
-    packed = GroupedQueryAttentionPrefillFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        max_seqlen_kv=seq_len,
-        is_causal=True,
-        dtype=torch.float16,
-        backend="dense",
-    )
-    # The record states the device, so the pair is compared on one machine's
-    # answer rather than on whichever machine runs the test.
-    stated = dataclasses.replace(wrapper.attention_call(torch.float16), arch=90, h200=True)
-
-    assert wrapper.select_kernel_key(DENSE_PREFILL_KEYS, stated) == packed.select_kernel_key(
-        PACKED_PREFILL_KEYS, stated
-    )
 
 
 @pytest.mark.smoke

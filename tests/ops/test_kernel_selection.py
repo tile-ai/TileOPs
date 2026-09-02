@@ -13,14 +13,10 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
-    GroupedQueryAttentionDecodeWithKVCacheFwdOp,
-    GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
 )
 from tileops.ops.attention.selection import (
-    DECODE_KEYS,
-    DENSE_PREFILL_KEYS,
     PACKED_PREFILL_KEYS,
     PAGED_DECODE_KEYS,
     PAGED_PREFILL_KEYS,
@@ -118,16 +114,6 @@ def test_packed_prefill_dispatch_is_unchanged(ctor: dict, call: dict, expected: 
 
 
 @pytest.mark.smoke
-def test_bshd_wrapper_dispatches_like_the_packed_op() -> None:
-    """The BSHD wrapper reaches the same dense candidate the packed op does."""
-    if not is_h200():
-        pytest.skip("the recorded dispatch table is the H200 one")
-    op = GroupedQueryAttentionFwdOp(4, 32, 8, 512, 128, True)
-    call = op.attention_call(torch.float16)
-    assert op.select_kernel_key(DENSE_PREFILL_KEYS, call) == "gqa_prefill_square_fwd_kernel"
-
-
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("ctor", "call"),
     [
@@ -146,26 +132,6 @@ def test_packed_prefill_rejects_calls_no_candidate_serves(ctor: dict, call: dict
     """A call outside every candidate's region is refused, as it was before."""
     with pytest.raises(ValueError, match="no implementation serves this call"):
         _prefill_key(_prefill_op(**ctor), **call)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("ctor", "dtype", "expected"),
-    [
-        pytest.param({}, torch.float16, "gqa_decode_bs1_kernel", id="bs1-fp16"),
-        pytest.param({}, torch.bfloat16, "gqa_decode_kernel", id="bf16-falls-back"),
-        pytest.param({"batch": 4}, torch.float16, "gqa_decode_kernel", id="batched"),
-        pytest.param({"dim": 64}, torch.float16, "gqa_decode_kernel", id="head-dim"),
-        pytest.param({"softcap": 2.0}, torch.float16, "gqa_decode_kernel", id="softcap"),
-    ],
-)
-def test_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
-    """Contiguous decode keeps its batch-1 fast path and its fallbacks."""
-    kwargs = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
-    kwargs.update(ctor)
-    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(**kwargs)
-    candidate = op.select_kernel_key(DECODE_KEYS, op.attention_call(dtype))
-    assert candidate == expected
 
 
 @pytest.mark.smoke

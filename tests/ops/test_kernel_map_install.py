@@ -27,14 +27,6 @@ def _make_incompatible_arch_list() -> list[int]:
     return incompatible
 
 
-def _decode_op(**kwargs: object):
-    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-
-    defaults = {"batch": 1, "heads": 32, "heads_kv": 4, "seqlen_kv": 8192, "dim": 128}
-    defaults.update(kwargs)
-    return GroupedQueryAttentionDecodeWithKVCacheFwdOp(**defaults)
-
-
 @pytest.mark.smoke
 def test_construction_succeeds_where_the_device_cannot_be_queried(
     monkeypatch: pytest.MonkeyPatch,
@@ -47,6 +39,7 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
     it under another name or probing from elsewhere fails this too.
     """
     import tileops.ops.elementwise as mod
+    from tileops.ops import GemmFwdOp
 
     def unavailable(*args: object, **kwargs: object) -> None:
         raise RuntimeError("no device to query")
@@ -59,7 +52,7 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     try:
         mod.ReluFwdOp()
-        _decode_op()
+        GemmFwdOp()
     finally:
         forget_device_properties()
 
@@ -71,53 +64,41 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     The override is the reason the call was made; falling back to the stock
     kernel would report a result the caller believes came from theirs.
     """
-    from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
+    from tileops.kernels.gemm import GemmKernel
+    from tileops.ops import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleBs1(GQADecodeBs1Kernel):
+    class IncompatibleGemm(GemmKernel):
         supported_archs = incompatible_archs
 
-    class IncompatibleGeneral(GQADecodeKernel):
-        supported_archs = incompatible_archs
-
-    op = _decode_op(
-        kernel_map={
-            "gqa_decode_bs1_kernel": IncompatibleBs1,
-            "gqa_decode_kernel": IncompatibleGeneral,
-        }
-    )
+    op = GemmFwdOp(kernel_map={"gemm_kernel": IncompatibleGemm})
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op._get_kernel((), torch.float16)
+        op._get_kernel((), 128, 128, 128, torch.float16)
 
 
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     """The auto-discovery path is refused at the same point, the same way."""
-    from tileops.kernels.attention import GQADecodeBs1Kernel, GQADecodeKernel
-    from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+    from tileops.kernels.gemm import GemmKernel
+    from tileops.ops import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleBs1(GQADecodeBs1Kernel):
+    class IncompatibleGemm(GemmKernel):
         supported_archs = incompatible_archs
 
-    class IncompatibleGeneral(GQADecodeKernel):
-        supported_archs = incompatible_archs
-
-    class AutoDiscoveredIncompatibleOp(GroupedQueryAttentionDecodeWithKVCacheFwdOp):
+    class AutoDiscoveredIncompatibleOp(GemmFwdOp):
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
-            return {
-                "gqa_decode_bs1_kernel": IncompatibleBs1,
-                "gqa_decode_kernel": IncompatibleGeneral,
-            }
+            defaults = super().default_kernel_map
+            return {**defaults, "gemm_kernel": IncompatibleGemm}
 
-    op = AutoDiscoveredIncompatibleOp(batch=1, heads=32, heads_kv=4, seqlen_kv=8192, dim=128)
+    op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op._get_kernel((), torch.float16)
+        op._get_kernel((), 128, 128, 128, torch.float16)
 
 
 @pytest.mark.smoke

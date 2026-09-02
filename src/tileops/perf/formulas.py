@@ -5,10 +5,7 @@ tuple of ints, matching the ``Op.eval_roofline(self) -> tuple[int, int]``
 shape that codegen emits for ``func`` mode (see ``docs/design/roofline.md`` §4.4.2).
 
 These are referenced from ``src/tileops/manifest/`` via the ``roofline.func``
-field, e.g.::
-
-    roofline:
-      func: "tileops.perf.formulas.mha_fwd_roofline"
+field.
 """
 
 from __future__ import annotations
@@ -49,11 +46,9 @@ __all__ = [
     "gla_decode_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
-    "gqa_decode_roofline",
     "gqa_fwd_roofline",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
-    "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "grouped_gemm_roofline",
     "gt_fwd_roofline",
@@ -68,8 +63,6 @@ __all__ = [
     "maximum_fwd_roofline",
     "mha_bwd_roofline",
     "mha_decode_paged_roofline",
-    "mha_decode_roofline",
-    "mha_fwd_roofline",
     "mean_pooling_fwd_roofline",
     "mhc_post_roofline",
     "mhc_pre_roofline",
@@ -99,29 +92,6 @@ def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
     if isinstance(op, dict):
         return op
     return kwargs
-
-
-def mha_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for multi-head attention forward (prefill)."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-    else:
-        batch, seq_len, heads, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 4 * batch * heads * seq_len * seq_len * dim
-    if is_causal:
-        flops //= 2
-    q_elems = batch * seq_len * heads * dim
-    kv_elems = q_elems
-    return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
 
 
 def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -614,28 +584,6 @@ def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
 # MHA decode
 
 
-def mha_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for MHA decode with KV cache."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seqlen_q, heads, dim = data["q_shape"]
-        _, seqlen_kv, _, _ = data["kv_shape"]
-    else:
-        batch, seqlen_q, heads, seqlen_kv, dim = (
-            data["batch"],
-            data["seqlen_q"],
-            data["heads"],
-            data["seqlen_kv"],
-            data["dim"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 4 * batch * heads * seqlen_q * seqlen_kv * dim
-    q_elems = batch * seqlen_q * heads * dim
-    kv_elems = batch * seqlen_kv * heads * dim
-    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes
-    return int(flops), int(nbytes)
-
-
 def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for paged MHA decode with KV cache."""
     data = _shape_or_attrs(op, kwargs)
@@ -665,28 +613,6 @@ def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
 # GQA decode
 
 
-def gqa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for GQA decode with KV cache."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, heads, dim = data["q_shape"]
-        _, seqlen_kv, heads_kv, _ = data["kv_shape"]
-    else:
-        batch, heads, heads_kv, seqlen_kv, dim = (
-            data["batch"],
-            data["heads"],
-            data["heads_kv"],
-            data["seqlen_kv"],
-            data["dim"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 4 * batch * heads * seqlen_kv * dim
-    q_elems = batch * heads * dim
-    kv_elems = batch * seqlen_kv * heads_kv * dim
-    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes
-    return int(flops), int(nbytes)
-
-
 def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for paged GQA decode with KV cache."""
     data = _shape_or_attrs(op, kwargs)
@@ -708,38 +634,6 @@ def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
     page_size = int(data["page_size"])
     metadata_bytes = batch * 4 + batch * max(1, (seqlen_kv + page_size - 1) // page_size) * 4
     nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
-    return int(flops), int(nbytes)
-
-
-# Sliding window attention
-
-
-def gqa_sliding_window_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for GQA sliding window forward."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-        _, _, heads_kv, _ = data["kv_shape"]
-    else:
-        batch, seq_len, heads, heads_kv, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    wl = int(data.get("window_size_left", -1))
-    wr = int(data.get("window_size_right", -1))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    total_attended = 0
-    for q_idx in range(seq_len):
-        hi = q_idx if is_causal else (min(seq_len - 1, q_idx + wr) if wr >= 0 else seq_len - 1)
-        lo = max(0, q_idx - wl) if wl >= 0 else 0
-        total_attended += hi - lo + 1
-    flops = 4 * batch * heads * total_attended * dim
-    nbytes = 2 * batch * seq_len * (heads + heads_kv) * dim * elem_bytes
     return int(flops), int(nbytes)
 
 
