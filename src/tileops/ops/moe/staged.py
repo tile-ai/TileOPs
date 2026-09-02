@@ -7,7 +7,7 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe import MoePrePermuteNopadKernel, MoeUnpermuteKernel
+from tileops.kernels.moe import MoePrePermuteContiguousKernel, MoeUnpermuteKernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.compile_boundary import get_instance
 from tileops.ops.op_base import Op
@@ -15,6 +15,8 @@ from tileops.utils import get_sm_version
 
 from ..elementwise import SiluAndMulFwdOp
 from .contracts import (
+    ContiguousMetadata,
+    ContiguousPacking,
     MaskedLayoutSpec,
     MaterializedExpertLayout,
     MGroupedLayoutSpec,
@@ -38,47 +40,15 @@ def _same_device(named_tensors: Mapping[str, torch.Tensor]) -> torch.device:
     return next(iter(devices))
 
 
-class _TightPhysicalPsumPrePermuteKernel(Kernel):
-    """Tight physical-prefix-sum staged materialization."""
-
-    supported_archs = [80, 86, 89, 90]
-
-    @classmethod
-    def applies(cls, call: PrePermuteCall) -> bool:
-        return call.layout.selection_key == "tight_physical_psum" and call.input_dtype in (
-            torch.bfloat16,
-            torch.float16,
-        )
-
-    def __init__(self, call: PrePermuteCall) -> None:
-        """Build the no-pad specialization selected by ``call``."""
-        super().__init__()
-        self.inner = MoePrePermuteNopadKernel(
-            call.num_tokens,
-            call.top_k,
-            call.num_experts,
-            call.hidden_size,
-            call.input_dtype,
-        )
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        local_expert_ids: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return staged expert rows, physical ends, and inverse indices."""
-        return self.inner(hidden_states, local_expert_ids)
-
-
-class _TightPhysicalPsumPostPermuteKernel(Kernel):
-    """Adapt staged inverse indices to the shipped weighted unpermute kernel."""
+class _ContiguousPostPermuteKernel(Kernel):
+    """Adapt contiguous staged indices to the shipped weighted unpermute kernel."""
 
     supported_archs = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: PostPermuteCall) -> bool:
         return (
-            call.layout_key == "tight_physical_psum"
+            call.layout_key in ("tight_physical_psum", "aligned_per_row")
             and call.input_dtype in (torch.bfloat16, torch.float16)
             and call.output_dtype == call.input_dtype
         )
@@ -151,7 +121,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
 
     @property
     def default_kernel_map(self) -> dict[str, Kernel]:
-        return {"tight_physical_psum": _TightPhysicalPsumPrePermuteKernel}
+        return {"contiguous": MoePrePermuteContiguousKernel}
 
     def _infer_output_shapes(
         self,
@@ -159,16 +129,29 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         local_expert_ids_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         rows = hidden_states_shape[0] * local_expert_ids_shape[1]
+        layout_key = getattr(self.layout, "selection_key", self.layout)
         if isinstance(self.layout, MaskedLayoutSpec):
             expert_input = (
                 self.num_local_experts,
                 self.layout.max_m,
                 hidden_states_shape[1],
             )
+            metadata_rows = self.num_local_experts
+        elif (
+            getattr(self.layout, "packing", None) is ContiguousPacking.ALIGNED
+            and getattr(self.layout, "metadata_kind", None) is ContiguousMetadata.PER_ROW
+        ):
+            capacity = rows + self.num_local_experts * (self.layout.alignment - 1)
+            expert_input = (capacity, hidden_states_shape[1])
+            metadata_rows = capacity
         else:
             expert_input = (rows, hidden_states_shape[1])
-        layout_key = getattr(self.layout, "selection_key", self.layout)
-        metadata_rows = rows if layout_key == "tight_per_row" else self.num_local_experts
+            metadata_rows = (
+                rows
+                if getattr(self.layout, "metadata_kind", None) is ContiguousMetadata.PER_ROW
+                or layout_key == "tight_per_row"
+                else self.num_local_experts
+            )
         return {
             "expert_input": expert_input,
             "layout_metadata": (metadata_rows,),
@@ -434,7 +417,7 @@ class MoePostPermuteFwdOp(_StagedOpBase):
 
     @property
     def default_kernel_map(self) -> dict[str, Kernel]:
-        return {"tight_physical_psum": _TightPhysicalPsumPostPermuteKernel}
+        return {"contiguous": _ContiguousPostPermuteKernel}
 
     def _infer_output_shapes(
         self,

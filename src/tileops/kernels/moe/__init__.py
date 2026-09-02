@@ -6,7 +6,7 @@ from .moe_grouped_gemm_persistent_3wg_fused_act import (
 )
 from .moe_grouped_gemm_separate_act import MoeGroupedGemmSeparateActKernel
 from .permute_align import MoePermuteAlignKernel
-from .permute_nopad import MoePrePermuteNopadKernel
+from .permute_contiguous import MoePrePermuteContiguousKernel
 from .shared_expert_mlp import SharedExpertMLPKernel
 from .unpermute import MoeUnpermuteKernel
 
@@ -17,7 +17,7 @@ __all__ = [
     "MoeGroupedGemmPersistent3WGFusedActKernel",
     "MoeGroupedGemmSeparateActKernel",
     "MoePermuteAlignKernel",
-    "MoePrePermuteNopadKernel",
+    "MoePrePermuteContiguousKernel",
     "MoeUnpermuteKernel",
     "PostPermuteCall",
     "PrePermuteCall",

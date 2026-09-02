@@ -10,6 +10,8 @@ from typing import TypeAlias
 import torch
 
 __all__ = [
+    "ContiguousMetadata",
+    "ContiguousPacking",
     "ContiguousLayoutSpec",
     "ExpertLayoutMetadata",
     "MGroupedLayoutSpec",
@@ -23,49 +25,63 @@ __all__ = [
 ]
 
 
-class _LayoutKind(str, enum.Enum):
-    """Concrete layout specializations understood by kernel candidates."""
+class ContiguousPacking(str, enum.Enum):
+    """How expert-contiguous rows are physically packed."""
 
-    TIGHT_PHYSICAL_PSUM = "tight_physical_psum"
-    TIGHT_PER_ROW = "tight_per_row"
+    TIGHT = "tight"
+    ALIGNED = "aligned"
+
+
+class ContiguousMetadata(str, enum.Enum):
+    """Metadata ABI that describes expert-contiguous rows."""
+
+    PHYSICAL_PSUM = "physical_psum"
+    PER_ROW = "per_row"
+
+
+class _LayoutKind(str, enum.Enum):
+    """Non-contiguous layout specializations understood by kernel candidates."""
+
     MASKED_PREDICATED = "masked_predicated"
 
 
-@dataclasses.dataclass(frozen=True, init=False)
+@dataclasses.dataclass(frozen=True)
 class ContiguousLayoutSpec:
-    """Requested tight contiguous M-grouped layout semantics.
+    """Compile-time packing and metadata policy for contiguous expert rows."""
 
-    Use a named constructor so callers select one supported semantic instead of
-    assembling alignment, padding, and tile-boundary policies independently.
-    Tight materialization always has alignment one, no padding rows, and
-    requires a boundary-aware consumer.
-    """
+    packing: ContiguousPacking
+    metadata_kind: ContiguousMetadata
+    alignment: int = 1
 
-    _kind: _LayoutKind = dataclasses.field(repr=False)
-
-    def __init__(self, kind: _LayoutKind) -> None:
-        """Initialize one supported contiguous kind; callers should use a named preset."""
-        if kind not in (
-            _LayoutKind.TIGHT_PHYSICAL_PSUM,
-            _LayoutKind.TIGHT_PER_ROW,
-        ):
-            raise ValueError(f"{kind!r} is not a contiguous layout kind")
-        object.__setattr__(self, "_kind", kind)
+    def __post_init__(self) -> None:
+        if not isinstance(self.packing, ContiguousPacking):
+            raise TypeError("packing must be ContiguousPacking")
+        if not isinstance(self.metadata_kind, ContiguousMetadata):
+            raise TypeError("metadata_kind must be ContiguousMetadata")
+        if self.packing is ContiguousPacking.TIGHT and self.alignment != 1:
+            raise ValueError("tight contiguous packing requires alignment == 1")
+        if self.packing is ContiguousPacking.ALIGNED and self.alignment <= 1:
+            raise ValueError("aligned contiguous packing requires alignment > 1")
 
     @classmethod
     def tight_physical_psum(cls) -> "ContiguousLayoutSpec":
         """Use tight rows described by per-expert physical segment ends."""
-        return cls(_LayoutKind.TIGHT_PHYSICAL_PSUM)
+        return cls(ContiguousPacking.TIGHT, ContiguousMetadata.PHYSICAL_PSUM)
 
     @classmethod
     def tight_per_row(cls) -> "ContiguousLayoutSpec":
         """Use tight rows described by one expert ID per materialized row."""
-        return cls(_LayoutKind.TIGHT_PER_ROW)
+        return cls(ContiguousPacking.TIGHT, ContiguousMetadata.PER_ROW)
+
+    @classmethod
+    def aligned_per_row(cls, alignment: int) -> "ContiguousLayoutSpec":
+        """Use aligned expert segments described by one expert ID per row."""
+        return cls(ContiguousPacking.ALIGNED, ContiguousMetadata.PER_ROW, alignment)
 
     @property
     def selection_key(self) -> str:
         """Return the concrete specialization key recorded in CallSpecs."""
-        return self._kind.value
+        return f"{self.packing.value}_{self.metadata_kind.value}"
 
     @property
     def max_m(self) -> None:
@@ -73,11 +89,9 @@ class ContiguousLayoutSpec:
         return None
 
     def __repr__(self) -> str:
-        constructor = {
-            _LayoutKind.TIGHT_PHYSICAL_PSUM: "tight_physical_psum",
-            _LayoutKind.TIGHT_PER_ROW: "tight_per_row",
-        }[self._kind]
-        return f"ContiguousLayoutSpec.{constructor}()"
+        if self.packing is ContiguousPacking.ALIGNED:
+            return f"ContiguousLayoutSpec.aligned_per_row({self.alignment})"
+        return f"ContiguousLayoutSpec.{self.selection_key}()"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -131,7 +145,7 @@ class PhysicalPsumMetadata:
 
 @dataclasses.dataclass(frozen=True)
 class PerRowExpertMetadata:
-    """Expert ID for every tightly materialized contiguous row."""
+    """Expert ID for every materialized contiguous row."""
 
     expert_ids: torch.Tensor
 
@@ -141,10 +155,13 @@ class PerRowExpertMetadata:
         if self.expert_ids.device != device:
             raise ValueError("expert_ids must be on the activation device")
 
-    def device_value_guard(self, *, num_experts: int) -> torch.Tensor:
-        """Guard the expert-ID domain and ordered tight segments."""
+    def device_value_guard(
+        self, *, num_experts: int, allow_capacity_sentinel: bool = False
+    ) -> torch.Tensor:
+        """Guard ordered expert IDs and an optional trailing capacity sentinel."""
         ids = self.expert_ids
-        domain = torch.all((ids >= 0) & (ids < num_experts))
+        upper = num_experts + int(allow_capacity_sentinel)
+        domain = torch.all((ids >= 0) & (ids < upper))
         if ids.numel() == 0:
             return domain
         ordered = torch.all(ids[1:] >= ids[:-1])
@@ -205,9 +222,9 @@ class MaterializedExpertLayout:
                 )
             return
         expected_type = {
-            _LayoutKind.TIGHT_PHYSICAL_PSUM: PhysicalPsumMetadata,
-            _LayoutKind.TIGHT_PER_ROW: PerRowExpertMetadata,
-        }[self.layout._kind]
+            ContiguousMetadata.PHYSICAL_PSUM: PhysicalPsumMetadata,
+            ContiguousMetadata.PER_ROW: PerRowExpertMetadata,
+        }[self.layout.metadata_kind]
         if not isinstance(self.metadata, expected_type):
             raise TypeError(f"{self.layout.selection_key} layout requires {expected_type.__name__}")
         if isinstance(self.metadata, PhysicalPsumMetadata):

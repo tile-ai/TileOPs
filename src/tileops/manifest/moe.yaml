@@ -208,7 +208,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: true
     kernel_map:
-      pre_permute_nopad_kernel: MoePrePermuteNopadKernel
+      contiguous: MoePrePermuteContiguousKernel
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
       moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
       moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
@@ -321,7 +321,7 @@ FusedMoeFwdOp:
     bench_manifest_driven: true
     kernel_map:
       fused_topk_kernel: FusedTopKKernel
-      pre_permute_nopad_kernel: MoePrePermuteNopadKernel
+      contiguous: MoePrePermuteContiguousKernel
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
       moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
       moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
@@ -357,13 +357,13 @@ MoePrePermuteFwdOp:
     flops: "0"
     bytes: "(hidden_states.numel() + expert_input.numel()) * elem_bytes + (local_expert_ids.numel() + layout_metadata.numel() + inverse_indices.numel()) * 4"
   source:
-    kernel: tileops/ops/moe/staged.py
+    kernel: tileops/kernels/moe/permute_contiguous.py
     op: tileops/ops/moe/staged.py
     test: tests/ops/test_moe_staged_contracts.py
     bench: benchmarks/ops/bench_moe_staged.py
     bench_manifest_driven: true
     kernel_map:
-      tight_physical_psum: _TightPhysicalPsumPrePermuteKernel
+      contiguous: MoePrePermuteContiguousKernel
 
 MoeGroupedGemmFwdOp:
   ref_api: "none"
@@ -459,4 +459,4 @@ MoePostPermuteFwdOp:
     bench: benchmarks/ops/bench_moe_staged.py
     bench_manifest_driven: true
     kernel_map:
-      tight_physical_psum: _TightPhysicalPsumPostPermuteKernel
+      contiguous: _ContiguousPostPermuteKernel
