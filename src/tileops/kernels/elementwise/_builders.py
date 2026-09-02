@@ -120,10 +120,9 @@ def _row_broadcast_prim(
     runs once per block, and the inner loop indexes affinely, so it vectorizes.
     The generic path pays that chain per element and every access is a gather.
     A ragged inner extent splits at trace time. Full blocks always run unguarded.
-    Where *num_per_thread* divides the row, the grid indexes vectors instead and
-    there are no leftover columns at all. Otherwise the columns past the full
-    blocks go one of two ways: packed end to end across rows into blocks of their
-    own, or left in place as one guarded block per row -- scalar either way.
+    Where *num_per_thread* divides the row, the grid indexes vectors and leaves no
+    columns over. Otherwise they go one of two ways, scalar either way: packed end
+    to end across rows into blocks of their own, or left as one guarded block per row.
 
     *stage* moves the full blocks through fragments, which keeps the copies wide
     when the body cannot vectorize. It is opt-in because a body that does
@@ -144,18 +143,13 @@ def _row_broadcast_prim(
     body_blocks = full_blocks * rows
     tail_blocks = -(-tail_slots // block_cols)
     pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // _TAIL_PACK_RATIO
-    # A per-row tile is exact only when threads * num_per_thread divides the row.
-    # When it does not, the columns past the last full block go one element per
-    # thread whichever way the tail is placed, and the widest access the body
-    # could have used is lost on them. Indexing vectors rather than rows removes
-    # the boundary they come from: num_per_thread divides the row, so a vector
-    # stays inside one row and the operand offsets remain a property of the row,
-    # computed per thread instead of per block.
+    # Columns past the last full block go one element per thread. Indexing
+    # vectors rather than rows leaves none: num_per_thread divides the row, so a
+    # vector stays inside one row. The staged form writes whole fragments and so
+    # needs every block full; the unstaged one guards its last block.
     vecs_per_row = inner // num_per_thread
     total_vecs = rows * vecs_per_row
     grid_vecs = -(-total_vecs // threads)
-    # The staged form writes whole fragments, so it needs every block full; the
-    # unstaged one guards its last block instead.
     flat_grid = (
         not exact
         and num_per_thread > 1
@@ -245,12 +239,9 @@ def _row_broadcast_prim(
         def write_flat_staged(a, b, y, bx):
             """One block of vectors, read and written a fragment at a time.
 
-            Staging and the flat grid answer different halves of the same block.
-            The copy loops carry no body, so they take the width the row allows
-            even where the body would have scalarised them; the flat grid leaves
-            no column outside a vector for either loop to fall back on. A block
-            spans rows here, so the operand a row broadcasts is one register per
-            thread rather than one per block.
+            The copy loops carry no body, so they keep the full width where the
+            body would have scalarised them. A block spans rows, so the operand
+            a row broadcasts is one register per thread, not one per block.
             """
             y_reg = T.alloc_fragment((block_cols,), out_dtype)
             if a_inner:
