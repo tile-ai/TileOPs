@@ -16,12 +16,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 # What the card was set to: a run at a lower cap or clock is a different
-# measurement, and nothing else in the snapshot says so.
+# measurement, and nothing else in the snapshot says so. The clock it ran at
+# and the one it could have, so a card held below its maximum is visible.
+# Not `clocks.applications.*`: deprecated, answered in brackets, and dropped
+# by the reader below as "no fact".
 _GPU_FIELDS = (
     ("driver", "driver_version"),
     ("power_limit_w", "power.limit"),
-    ("sm_clock_mhz", "clocks.applications.graphics"),
-    ("memory_clock_mhz", "clocks.applications.memory"),
+    ("sm_clock_mhz", "clocks.current.graphics"),
+    ("sm_clock_max_mhz", "clocks.max.graphics"),
+    ("memory_clock_mhz", "clocks.current.memory"),
     ("mig", "mig.mode.current"),
 )
 
@@ -50,7 +54,8 @@ def _gpu_state() -> dict:
         return {}
     state = {}
     for (name, _), value in zip(_GPU_FIELDS, values, strict=True):
-        # `[N/A]` — an unset clock, an unsupported field — is not a fact.
+        # Anything the driver answers in brackets — `[N/A]`, a deprecated
+        # field — is not a fact.
         if not value or value.startswith("[") or value == "N/A":
             continue
         state[name] = float(value) if name.endswith(("_w", "_mhz")) else value

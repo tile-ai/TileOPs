@@ -274,6 +274,28 @@ def _propagate_nan(a, b, result):
     return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)
 
 
+def _nan_intrin(name, a, b):
+    """A TileLang NaN-propagating builtin, named the way TileLang names its own.
+
+    ``tl.max_nan`` and ``tl.min_nan`` lower to CUDA's ``__hmax_nan`` /
+    ``__hmin_nan``: one instruction where the guarded form is a compare, an or
+    and a select. TileLang registers both builtins and wraps neither in Python,
+    so there is nothing to import; naming the op through ``tirx.op.Op.get`` is
+    the line its own ``math_intrinsics`` uses for ``tl.max2`` and the ieee_*
+    family. A ``T.max_nan`` upstream would replace this whole helper, and the
+    two call sites would not change.
+    """
+    return tirx.call_intrin(a.dtype, tirx.op.Op.get(name), a, b)
+
+
+def _nan_max(a, b):
+    return _nan_intrin("tl.max_nan", a, b)
+
+
+def _nan_min(a, b):
+    return _nan_intrin("tl.min_nan", a, b)
+
+
 class MaximumFwdKernel(BinaryKernel):
     """Element-wise maximum: y = max(a, b).
 
@@ -293,20 +315,25 @@ class MaximumFwdKernel(BinaryKernel):
 
     @property
     def stage_broadcast(self) -> bool:
-        """The float body's NaN select scalarises it, so keep the copies off its loop.
+        """The float body scalarises the copies, so keep them off its loop.
 
-        Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
+        Both float forms do it: fp32's NaN select, and the half formats' NaN
+        builtin, which the vectoriser cannot see through either. Staged, the
+        builtin costs what a plain ``T.max`` costs.
+
+        Integer and bool dtypes take ``T.min``/``T.max`` directly, with nothing
         to scalarise them, and follow the base default.
         """
         return self.dtype.is_floating_point or super().stage_broadcast
 
     @staticmethod
     def op_func(a, b):
-        result = T.max(a, b)
         if not _is_float_dtype_str(str(a.dtype)):
             # Integer / bool: no NaN representation, T.max is sufficient.
-            return result
-        return _propagate_nan(a, b, result)
+            return T.max(a, b)
+        if str(a.dtype) in ("float16", "bfloat16"):
+            return _nan_max(a, b)
+        return _propagate_nan(a, b, T.max(a, b))
 
 
 class MinimumFwdKernel(BinaryKernel):
@@ -329,19 +356,24 @@ class MinimumFwdKernel(BinaryKernel):
 
     @property
     def stage_broadcast(self) -> bool:
-        """The float body's NaN select scalarises it, so keep the copies off its loop.
+        """The float body scalarises the copies, so keep them off its loop.
 
-        Integer and bool dtypes take ``T.min``/``T.max`` directly, with no select
+        Both float forms do it: fp32's NaN select, and the half formats' NaN
+        builtin, which the vectoriser cannot see through either. Staged, the
+        builtin costs what a plain ``T.max`` costs.
+
+        Integer and bool dtypes take ``T.min``/``T.max`` directly, with nothing
         to scalarise them, and follow the base default.
         """
         return self.dtype.is_floating_point or super().stage_broadcast
 
     @staticmethod
     def op_func(a, b):
-        result = T.min(a, b)
         if not _is_float_dtype_str(str(a.dtype)):
-            return result
-        return _propagate_nan(a, b, result)
+            return T.min(a, b)
+        if str(a.dtype) in ("float16", "bfloat16"):
+            return _nan_min(a, b)
+        return _propagate_nan(a, b, T.min(a, b))
 
 
 @functools.lru_cache(maxsize=32)
