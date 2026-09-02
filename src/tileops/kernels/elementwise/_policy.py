@@ -7,6 +7,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
+from ._broadcast import row_tile_leaves_tail
 from ._dtype import (
     BOOL_STORAGE_DTYPE,
     _fp8_accum_dtype_str,
@@ -58,7 +59,7 @@ def default_launch_config(
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
     elif _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
-        row_broadcast_inner, threads, npt
+        row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
     ):
         # A narrower result leaves the store short of a vector, so widen to cover it.
         npt *= 2
@@ -73,16 +74,20 @@ def default_launch_config(
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
 
 
-def _tail_dominated(inner: int | None, threads: int, npt: int) -> bool:
+def _tail_dominated(
+    inner: int | None, n_total: int | None, threads: int, npt: int, staged: bool
+) -> bool:
     """Whether doubling the block width pushes more columns onto the guarded tail path.
 
     A row-broadcast block covers columns of one row, and the remainder the width
-    does not cover runs the slower per-lane path.
+    does not cover runs the slower per-lane path. A width that leaves no
+    remainder there has nothing to push onto it.
     """
-    if inner is None:
+    if inner is None or n_total is None:
         return False
-    wide = threads * npt * 2
-    return inner % wide > inner % (threads * npt)
+    if not row_tile_leaves_tail(inner, n_total // inner, threads, npt * 2, staged):
+        return False
+    return inner % (threads * npt * 2) > inner % (threads * npt)
 
 
 def elementwise_autotune_configs(
