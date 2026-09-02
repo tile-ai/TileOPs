@@ -389,7 +389,7 @@ def _conv3d_ndhwc_kernel(
 
     # Unlike the NCDHW kernels above, tl.enable_async_copy stays enabled here:
     # the NDHWC gather vectorises to >=4B accesses, which are cp.async-eligible
-    # inside the pipelined K loop (aspp workload: 0.0413 -> 0.0328 ms).
+    # inside the pipelined K loop.
     @tilelang.jit(
         out_idx=[5],
         compile_flags=["-O3", "-DENABLE_BF16"],

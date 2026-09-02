@@ -103,9 +103,8 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
                     T.gemm(a_smem, b_smem, c_local, policy=T.GemmWarpPolicy.FullRow)
 
                 # Epilogue: stage fp32 accum through SMEM before GMEM store.
-                # 1-19% faster than direct fragment->GMEM — the M/N
-                # tail guard breaks coalescing off the wgmma fragment layout,
-                # but SMEM->GMEM stores stay coalesced under predication.
+                # The M/N tail guard breaks coalescing off the wgmma fragment
+                # layout; SMEM->GMEM stores stay coalesced under predication.
                 T.copy(c_local, c_smem)
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
@@ -652,7 +651,7 @@ class BmmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # 64x64x64, stages=2, 1 warpgroup. Modal winner on H20-3e manifest
+        # 64x64x64, stages=2, one warpgroup: the tile the manifest shapes share.
         block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
         return {
             "block_m": 64,

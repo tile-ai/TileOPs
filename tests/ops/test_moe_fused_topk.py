@@ -216,8 +216,9 @@ def _check(test: FusedTopKWorkload) -> None:
     torch.testing.assert_close(out_w_sorted, ref_w_sorted, rtol=1e-3, atol=1e-3)
 
     # topk_ids must select experts whose scores are valid top-k scores.
-    # When two experts have identical scores (fp32 ties), either is a valid selection;
-    # we verify that each selected weight >= the (K+1)-th largest weight.
+    # When two experts have identical scores (fp32 ties), either is a valid
+    # selection, so the assertion is that each selected weight >= the
+    # (K+1)-th largest weight.
     gating_f32 = gating.to(torch.float32)
     if test.scoring_func == "softmax":
         all_scores = torch.softmax(gating_f32, dim=-1)

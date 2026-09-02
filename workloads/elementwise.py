@@ -627,7 +627,8 @@ def draw_special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]
     return (x,)
 
 
-# Domain名 -> draw。持有映射的是这一层,调用方只给名字,静态可见。
+# Domain name -> draw function. The mapping lives here, so a caller names a
+# domain rather than passing a draw, and the set is statically visible.
 PAIR_DOMAINS = {
     "normal": draw_normal_pair,
     "positive": draw_positive_pair,

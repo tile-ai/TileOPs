@@ -47,9 +47,9 @@ _CUPTI = None
 _COLLECTOR_ACTIVE = False
 _CALLBACKS_REGISTERED = False
 # Whatever CUPTI does with a buffer between handing it back and asking for the next one
-# scales with its size and runs on this thread, inside a timed call. On a three-kernel
-# call whose kernels occupy 19.1 us: 8 MB stalls 23 of 60 iterations past 200 us, 32 MB
-# 30 of 60, 256 KB none. Only latency_ms picks it up; the records are the same.
+# scales with its size and runs on this thread, inside a timed call, so a buffer of a
+# few megabytes stalls iterations of a short call. Only latency_ms picks the stall up;
+# the records are the same either way.
 _BUFFER_BYTES = 256 * 1024
 _BUFFER_ALIGN = 8
 # What the next buffer request answers with. A phase that lost records raises it for

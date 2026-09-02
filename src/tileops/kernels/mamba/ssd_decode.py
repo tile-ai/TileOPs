@@ -51,61 +51,19 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SSDDecodeKernel"]
 
-# Differences vs. the official Mamba-2 step() in mamba_ssm/modules/mamba2.py
-# (https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba2.py)
+# Scope: the SSM state update and output accumulation of one Mamba-2 decode step,
+# as in mamba_ssm/modules/mamba2.py step(). The caller owns the rest of the step.
 #
-# This kernel implements ONLY the SSM state-update + output-accumulation core.
-# The surrounding steps that belong to a complete decode pass are NOT included:
+# Inputs are post-processing: x, B_in, C_in come from in_proj and the causal conv1d
+# (this kernel holds no conv_state); dt is post-softplus with dt_bias already added;
+# A is the pre-computed negative float32 tensor of shape (n_heads, d_head, d_state).
 #
-# 1. in_proj / input splitting
-#    Official: zxbcdt = self.in_proj(hidden_states.squeeze(1))
-#              z0, x0, z, xBC, dt = torch.split(zxbcdt, [...])
-#    Here:     x, B_in, C_in, dt are assumed pre-split and passed in directly.
+# Outputs stop before the epilogue: y_out is (batch, n_heads, d_head) in float32,
+# without the D * x skip connection, the z gate or RMSNormGated, the d_mlp branch,
+# out_proj, or the flatten to (batch, 1, d_model).
 #
-# 2. Causal-conv1d update (produces xBC from conv_state)
-#    Official: conv_state is rolled and convolved with self.conv1d.weight, then
-#              SiLU-activated: xBC = act(conv(conv_state, weight) + bias)
-#              xBC is then split into x, B, C.
-#    Here:     x, B_in, C_in are post-conv inputs; conv_state handling is absent.
-#
-# 3. dt discretization (softplus + dt_bias)
-#    Official: dt = F.softplus(dt + self.dt_bias)   — applied inside step()
-#    Here:     dt is assumed already post-softplus; caller must apply softplus
-#              and add dt_bias before passing dt into this kernel.
-#
-# 4. A parameter derivation
-#    Official: A = -torch.exp(self.A_log.float())   — derived from a log param, then
-#              repeated to (nheads, headdim, d_state) before passing to the triton kernel.
-#    Here:     A is passed directly as a pre-computed (negative) float32 tensor with
-#              shape (n_heads, d_head, d_state), matching the triton path exactly.
-#
-# 5. D skip connection
-#    Official: y = y + rearrange(self.D, "h -> h 1") * x
-#    Here:     NOT applied. Caller must add D * x to y_out after this kernel.
-#
-# 6. Output gate  (two variants in official code)
-#    a) Without RMSNorm:  y = y * self.act(z)   (element-wise SiLU gate)
-#    b) With RMSNorm:     y = self.norm(y, z)   (RMSNormGated)
-#    Here:     Neither variant is applied. Caller must handle gating/norm.
-#
-# 7. Optional MLP branch (d_mlp > 0)
-#    Official: y = torch.cat([F.silu(z0) * x0, y], dim=-1)
-#    Here:     Not present; this kernel has no notion of z0/x0.
-#
-# 8. Output projection
-#    Official: out = self.out_proj(y)   — linear projection back to model dim
-#    Here:     NOT applied. y_out has shape (batch, n_heads, d_head) = (B, H, P).
-#              Official step() returns shape (batch, 1, d_model) after out_proj.
-#
-# 9. Output shape / layout
-#    Official (fallback path): rearrange(y, "b h p -> b (h p)") before out_proj,
-#              final output is (batch, 1, d_model).
-#    Here:     y_out is (batch, n_heads, d_head) in float32, not yet flattened.
-#
-# 10. ngroups == 1 restriction in official fallback
-#     Official fallback (no selective_state_update): asserts ngroups == 1.
-#     Here:     Supports arbitrary ngroups via g = h // HEADS_PER_GROUP indexing,
-#               matching the behaviour of the optimised selective_state_update path.
+# Unlike the official fallback path, ngroups is unrestricted: g = h // HEADS_PER_GROUP
+# indexes B/C the way the optimised selective_state_update does.
 
 
 @functools.lru_cache(maxsize=32)

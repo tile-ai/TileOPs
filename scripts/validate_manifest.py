@@ -4232,9 +4232,8 @@ def validate_manifest(
             out.append(item)
         return out
 
-    # Route strict-parity (C1-C7) failures: in strict mode they are
-    # blocking errors; in advisory mode they downgrade to warnings so
-    # the gate can land before all current main violations are fixed.
+    # Route strict-parity (C1-C7) failures: in strict mode they are blocking
+    # errors; in advisory mode they downgrade to warnings.
     if strict_parity:
         all_errors.extend(strict_errors)
     else:

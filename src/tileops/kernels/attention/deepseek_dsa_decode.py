@@ -264,7 +264,7 @@ def _sparse_mla_kernel(
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -301,7 +301,7 @@ def _sparse_mla_kernel(
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -632,8 +632,6 @@ class SparseMlaKernel(Kernel):
             indices,
         )
 
-    # @property
-    # params unused
     def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generates synthetic data for the kernel program.
@@ -677,7 +675,7 @@ class SparseMlaKernel(Kernel):
 
         return q, kv, indices
 
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:  # Removed supply_prog parameter
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """
         Performs autotuning by evaluating different kernel configurations.
 

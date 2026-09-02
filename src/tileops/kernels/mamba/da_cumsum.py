@@ -380,9 +380,8 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Triton autotune selects one head for the small 780M shape and two for
-        # the larger rows. Match that measured choice while keeping the
-        # analysis-derived ownership kernel structural rather than config-only.
+        # One head per tile on the narrowest shape, two elsewhere: a wider tile
+        # spends threads a single-row batch has no work for.
         block_h = 1 if self.batch == 1 and self.n_heads == 48 else 2
         return {"block_h": block_h, "threads": min(block_h * self.chunk_len, 1024)}
 

@@ -278,9 +278,9 @@ def test_shared_fused_moe_bench(
             ),
         )
     else:
-        # No baseline rather than a misleading one. The per-expert Python loop this used
-        # to time is a correctness reference: it upcasts to fp32 and index_add_s one
-        # expert at a time, so "TileOPs is 30x faster" said nothing about either.
+        # No baseline rather than a misleading one: the per-expert Python loop is a
+        # correctness reference, upcasting to fp32 and index_add_ing one expert at a
+        # time, so timing against it measures neither implementation.
         warnings.warn(
             "vLLM is not installed; recording no baseline for SharedFusedMoE. "
             "Install vllm to compare against fused_topk + fused_experts.",

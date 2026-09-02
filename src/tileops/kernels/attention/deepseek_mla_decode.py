@@ -136,7 +136,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -170,7 +170,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -393,7 +393,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -427,7 +427,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(block_H, dim // 2):

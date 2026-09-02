@@ -15,10 +15,8 @@ import torch
 import tileops.ops.elementwise as elementwise_mod
 from tileops.manifest import load_manifest
 
-# Construction and call signatures, for every op in the family
-#
-# Replaces the five per-op signature tests this file used to carry: the rule is the
-# same for all of them, and it is the one the manifest states.
+# Construction and call signatures, for every op in the family. One rule covers
+# them all, and it is the one the manifest states.
 
 _ELEMENTWISE_OPS = sorted(n for n in elementwise_mod.__all__ if n.endswith("FwdOp"))
 
@@ -131,8 +129,8 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
     inp = torch.randn(input_shape, device="cuda", dtype=dtype)
     mn = torch.randn(min_shape, device="cuda", dtype=dtype) - 0.5
     mx = torch.randn(max_shape, device="cuda", dtype=dtype) + 0.5
-    # Make max >= min where tested ranges overlap; PyTorch clamp tolerates
-    # mismatch but we want a meaningful ref.
+    # Make max >= min where tested ranges overlap: PyTorch clamp tolerates a
+    # mismatch, but the reference is only meaningful without one.
     ref = torch.clamp(inp, mn, mx)
 
     op = ClampFwdOp()

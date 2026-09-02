@@ -58,10 +58,9 @@ def _prefill_key(op: GroupedQueryAttentionPrefillFwdOp, **call_facts: object) ->
     return op.select_kernel_key(PACKED_PREFILL_KEYS, op.attention_call(**facts))
 
 
-# Region -> dispatch key the pre-refactor selectors landed on. One row per
-# capability region the attention ops used to encode: FP8, sliding window, the
-# H200 square causal fast path, warp-specialized causal dense, plain dense,
-# ragged varlen.
+# Region -> dispatch key. One row per capability region of the packed-prefill
+# slot: FP8, sliding window, the H200 square causal fast path, warp-specialized
+# causal dense, plain dense, ragged varlen.
 _PREFILL_DISPATCH = [
     ("square-causal-h200", {}, {}, "gqa_prefill_square_fwd_kernel"),
     ("square-causal-bf16", {"dtype": torch.bfloat16}, {}, "gqa_prefill_square_fwd_kernel"),

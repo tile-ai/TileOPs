@@ -26,7 +26,7 @@ _H_RECURRENCE_BUILDERS = [
 
 @pytest.mark.parametrize("build", _H_RECURRENCE_BUILDERS)
 def test_h_recurrence_rejects_previously_defaulted_narrow_v_tile(build) -> None:
-    # The shape whose default config formerly selected block_v = 8.
+    # A shape whose default config would otherwise reach block_v = 8.
     with pytest.raises(ValueError, match=str(GEMM_MIN_N)):
         build(1, 4, 128, 64, 64, 64, "float16", block_v=8)
 

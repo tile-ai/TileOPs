@@ -44,11 +44,10 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
     E, twoF, _ = w1.shape
     F_dim = twoF // 2
     # gelu_and_mul: PyTorch's F.gelu(x, approximate="none") is exact erf GELU,
-    # which matches GeluAndMulFwdKernel's `x * 0.5 * (1 + erf(x/sqrt(2)))`. We
-    # pass approximate="none" explicitly so this is locked at the test level —
-    # PyTorch's default happens to be "none", but a different default in some
-    # future version would silently switch the reference to tanh approximation
-    # (which is GeluTanhAndMulFwdKernel, a separate registry entry).
+    # which matches GeluAndMulFwdKernel's `x * 0.5 * (1 + erf(x/sqrt(2)))`.
+    # approximate="none" is passed explicitly: PyTorch's default happens to be
+    # "none", but a changed default would silently switch the reference to the
+    # tanh approximation (GeluTanhAndMulFwdKernel, a separate registry entry).
     # Resolve once outside the per-expert loop so an unsupported activation
     # raises immediately rather than silently falling back to a wrong
     # reference value when this helper is extended.

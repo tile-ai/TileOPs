@@ -695,8 +695,7 @@ class FusedGatedStrategyBenchFixture(FixtureBase):
 
 
 # How far behind the fastest strategy the default may sit before the choice is
-# stale. Measured at 1024x4096 fp16, the two are 8.4us and 16.2us apart, so this
-# margin flags a flip without firing on run-to-run spread.
+# stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
 _STRATEGY_MARGIN = 1.25
 
 

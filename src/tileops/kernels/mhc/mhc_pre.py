@@ -59,12 +59,11 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
                         x[bx * block_x_b : (bx + 1) * block_x_b, k * block_C : (k + 1) * block_C],
                         x_shared,
                     )
-                    # TODO: <*important> try to figure out why "T.copy" does not work...
-                    # (probably a mbarrier failure)
-                    # T.copy(phi[k * block_C : (k + 1) * block_C, :], phi_shared)
+                    # Staged element-wise: T.copy on this slice hits an mbarrier
+                    # failure in TileLang.
                     for i, j in T.Parallel(block_C, phi_dim):
                         phi_shared[i, j] = phi[k * block_C + i, j]
-                    # When the batch size is smaller than 16, wgmma cannot be used... :(
+                    # Serial multiply-accumulate: wgmma needs a batch of at least 16.
                     for i, j in T.Parallel(block_x_b, phi_dim):
                         for iter in T.Serial(block_C):
                             acc_x_phi[i, j] += x_shared[i, iter] * phi_shared[iter, j]
@@ -94,7 +93,6 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
             H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
         ):
             with T.Kernel(batch // block_x_b, threads=threads) as (bx):
-                # needs binding
                 h_pre_shared = T.alloc_shared([block_x_b, n_expand], dtype)
                 h_post_shared = T.alloc_shared([block_x_b, n_expand], dtype)
                 h_res_shared = T.alloc_shared([block_x_b, n_expand, n_expand], dtype)
@@ -115,8 +113,8 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
 
                 T.copy(h_res_shared, h_res_frag)
 
-                # move b to shared memory...
-                # TODO: Coalesced Memory Access
+                # Stage b in shared memory.
+                # TODO: coalesce this access.
                 for i in T.Parallel(n_expand * n_expand + 2 * n_expand):
                     b_shared[i] = b[i]
 
@@ -164,8 +162,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
                 h_out_shared = T.alloc_shared([n_expand, n_expand], dtype)
 
                 eps = sinkhorn_eps
-                # exponential function...
-                # get the max value first...
+                # Max-shifted exponential.
                 for i, j in T.Parallel(n_expand, n_expand):
                     h_out_shared[i, j] = H_res_0[bx, i, j]
 
@@ -390,7 +387,7 @@ class MHCPreKernel(Kernel):
     def forward(
         self, phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, sinkhorn_eps=0.02
     ):
-        # H_pre, H_post, H_res_0, H_res are tensors need to be allocated....
+        # H_pre, H_post, H_res_0 and H_res are allocated by the caller.
         r = torch.empty([self.batch], device=x.device, dtype=self.weights_dtype)
         H = torch.empty(
             [self.batch, self.n_expand * self.n_expand + 2 * self.n_expand],

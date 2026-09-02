@@ -167,12 +167,8 @@ def _ssd_chunk_state_fwd_kernel(
                 #
                 #    x_scaled is written directly as dtype (cast in-place):
                 #      x_scaled[ll, pp] = cast(float(x[ll, pp]) * w_tile[ll])
-                #    This eliminates the x_scaled_f32 register fragment
-                #    (block_l * block_p / 32 fp32 regs per thread) and the
-                #    separate T.copy cast step, freeing register budget for
-                #    larger output tiles without changing the shared-memory
-                #    footprint or numerical behavior (the multiply is still
-                #    done in fp32 before truncation to dtype).
+                #    The multiply still runs in fp32, so no fp32 register
+                #    fragment is needed to hold the scaled tile.
                 #
                 #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
                 #           i.e. (block_l x block_p)^T @ (block_l x block_n)
@@ -448,8 +444,7 @@ class SSDChunkStateFwdKernel(Kernel):
         # Grid rationale:
         #   block_n in {64, 128}: 128 covers the full d_state=128 in one tile
         #     and is the default; 64 is retained for d_state<128 shapes.
-        #   block_p in {16, 32, 64}: 16 is the minimum MMA M-atom; 64 only
-        #     viable after the x_scaled_f32 fragment was removed.
+        #   block_p in {16, 32, 64}: 16 is the minimum MMA M-atom.
         #   block_l in {32, 64, 128}: larger K improves GEMM arithmetic
         #     intensity; 32 keeps shared-memory pressure low for small d_head.
         #   threads in {128, 256}: 128 warps = 4, 256 warps = 8; higher thread

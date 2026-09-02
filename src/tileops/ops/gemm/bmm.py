@@ -207,9 +207,8 @@ class BmmFp8KNFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
-        # Shape-signatures for which we've already emitted the "slow path"
-        # warning; keeps a single BmmFp8KNFwdOp from spamming the log on every
-        # forward when a caller consistently passes b in [B,K,N] layout.
+        # Shape-signatures whose "slow path" warning has already been emitted, so a
+        # single BmmFp8KNFwdOp warns once per shape rather than on every forward.
         self._kn_warned: Set[Tuple[int, int, int, int]] = set()
         self.batch: Optional[int] = None
         self.m: Optional[int] = None
