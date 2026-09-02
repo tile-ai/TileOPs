@@ -123,7 +123,9 @@ class _StrategyKernel(_ElementwiseKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return elementwise_autotune_configs(self.dtype, self.strategy, self.BYTES_PER_THREAD)
+        return elementwise_autotune_configs(
+            self.dtype, self.strategy, self.BYTES_PER_THREAD, self.MIN_NUM_PER_THREAD
+        )
 
     def init_config(self, config=None, tune=False) -> None:
         Kernel.init_config(self, config, tune)
