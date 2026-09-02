@@ -12,8 +12,6 @@ from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from workloads.elementwise import LogicalNotWorkload, LogicalWorkload
 
-# Shared helpers
-
 
 def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Exact comparison for boolean outputs."""
@@ -34,9 +32,6 @@ class LogicalTest(LogicalWorkload, TestBase):
         return self.ref_fn(a.bool(), b.bool())
 
 
-# LogicalAnd op
-
-
 class LogicalAndFixture(FixtureBase):
     PARAMS = [
         (
@@ -55,9 +50,6 @@ def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_and)
     op = LogicalAndFwdOp()
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
-
-
-# LogicalOr op
 
 
 class LogicalOrFixture(FixtureBase):
@@ -144,9 +136,6 @@ def test_logical_and_bool_broadcast() -> None:
     with torch.no_grad():
         out = op(a, b)
     _bool_compare(out, ref)
-
-
-# LogicalNot op
 
 
 class LogicalFixture(FixtureBase):

@@ -220,7 +220,6 @@ def main():
         print("Running benchmark (5 runs x 50 reps per ILP, this takes a few minutes) ...\n")
         lines, sampler = _run(binary, args.iters, theo_peak_tflops, args.gpu_index)
 
-    # Print raw output
     for line in lines:
         print(line)
 

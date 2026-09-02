@@ -139,12 +139,6 @@ def _triton_permute_align(
     )
 
 
-# Benchmark class
-
-
-# Manifest-driven parametrize
-
-
 @pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, block_size",
     workload_params(
@@ -159,11 +153,9 @@ def test_permute_align_bench(
     test = MoePermuteAlignWorkload(total_tokens, top_k, num_experts, block_size)
     inputs = test.gen_inputs()
 
-    # TileOPs
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     bm = ManifestBenchmark(op, test)
 
-    # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)
     torch.cuda.synchronize()
 
@@ -185,7 +177,6 @@ def test_permute_align_bench(
         )
         return sorted_ids, expert_ids, num_post_pad
 
-    # Warmup Triton baseline
     _triton_fn(*inputs)
     torch.cuda.synchronize()
 
@@ -211,7 +202,6 @@ def test_permute_align_bench(
             )
             return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
-        # Warmup sgl-kernel baseline
         _sgl_fn(*inputs)
         torch.cuda.synchronize()
 

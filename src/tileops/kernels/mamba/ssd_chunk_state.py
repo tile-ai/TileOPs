@@ -92,7 +92,6 @@ def _ssd_chunk_state_fwd_kernel(
 ) -> Callable:
     accum_dtype = "float"
 
-    # Derived constants
     B = batch
     C = num_chunks
     Q = chunk_len

@@ -11,8 +11,6 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from workloads.elementwise import RandnPairWorkload
 
-# Shared helpers
-
 
 def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Exact comparison for boolean outputs."""
@@ -31,9 +29,6 @@ class ComparisonTest(RandnPairWorkload, TestBase):
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a, b)
-
-
-# Eq op
 
 
 class EqFixture(FixtureBase):
@@ -56,9 +51,6 @@ def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# Ne op
-
-
 class NeFixture(FixtureBase):
     PARAMS = [
         (
@@ -77,9 +69,6 @@ def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ne)
     op = NeFwdOp()
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
-
-
-# Gt op
 
 
 class GtFixture(FixtureBase):
@@ -102,9 +91,6 @@ def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# Lt op
-
-
 class LtFixture(FixtureBase):
     PARAMS = [
         (
@@ -125,9 +111,6 @@ def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# Ge op
-
-
 class GeFixture(FixtureBase):
     PARAMS = [
         (
@@ -146,9 +129,6 @@ def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ge)
     op = GeFwdOp()
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
-
-
-# Le op
 
 
 class LeFixture(FixtureBase):

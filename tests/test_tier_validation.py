@@ -20,8 +20,6 @@ import torch
 
 from tests.conftest import _freeze_value, pytest_collection_modifyitems
 
-# Helpers to build mock pytest.Items
-
 
 def _make_item(
     *,
@@ -92,7 +90,6 @@ class TestSmokeCount:
             _make_item(name="test_op[1]", markers=["smoke"], tune=False),
             _make_item(name="test_op[2]", markers=["full"], tune=False),
         ]
-        # Should not raise
         pytest_collection_modifyitems(items)
 
 

@@ -49,9 +49,6 @@ def _gla_bwd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
     return batch, seq_len, heads, dim_k, workload["v_shape"][3], workload.get("chunk_size", 64)
 
 
-# Forward benchmark
-
-
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, has_initial_state, dtype, tune",
     workload_params(load_workloads(GLAFwdOp), then_dtype(_gla_args, tune=False)),
@@ -87,9 +84,6 @@ def test_gla_fwd_bench(
     functors["fla"] = (fla_fwd, ())
 
     bm.compare(functors, *inputs)
-
-
-# Backward benchmark
 
 
 @pytest.mark.xfail(
@@ -150,6 +144,3 @@ def test_gla_bwd_bench(
     functors["fla"] = (fla_bwd, ())
 
     bm.compare(functors)
-
-
-# Combined fwd+bwd benchmark

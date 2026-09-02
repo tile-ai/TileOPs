@@ -13,8 +13,6 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
 from workloads.reduction import AnyWorkload
 
-# Fixtures
-
 
 class LogicalReduceBasicFixture(FixtureBase):
     PARAMS = [
@@ -130,9 +128,6 @@ class LogicalReduceKeepdimFixture(FixtureBase):
     ]
 
 
-# TestBase helpers — inherit gen_inputs() from workload classes
-
-
 class LogicalReduceTest(AnyWorkload, TestBase):
     """Parameterized test helper for logical reduce ops."""
 
@@ -209,9 +204,6 @@ def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     if dtype == torch.bool:
         return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
     return torch.randn(shape, dtype=dtype, device="cuda")
-
-
-# AnyFwdOp tests
 
 
 @LogicalReduceBasicFixture
@@ -298,9 +290,6 @@ def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     assert torch.equal(y, ref), f"any keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
-# AllFwdOp tests
-
-
 @LogicalReduceBasicFixture
 def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp
@@ -383,9 +372,6 @@ def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     assert y.dtype == torch.bool
     assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.equal(y, ref), f"all keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
-
-
-# CountNonzeroFwdOp tests
 
 
 @LogicalReduceBasicFixture

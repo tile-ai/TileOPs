@@ -105,7 +105,6 @@ def main():
         print("Running benchmark (5 runs x 200 reps, this may take a few minutes) ...\n")
         lines = _run(binary, args.size_mb, theo_peak_gbs)
 
-    # Print raw output
     for line in lines:
         print(line)
 

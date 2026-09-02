@@ -43,9 +43,6 @@ def _functors(op, baseline_fn, flaggems_name: str, dim: int, inputs) -> dict:
     }
 
 
-# Argmax benchmarks
-
-
 @pytest.mark.parametrize(
     "shape, dtype, extra", workloads_to_params(ArgmaxFwdOp, include_extra=True)
 )
@@ -62,9 +59,6 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
         return x.argmax(dim=dim)
 
     bm.compare(_functors(op, baseline_fn, "argmax", dim, inputs), *inputs)
-
-
-# Argmin benchmarks
 
 
 @pytest.mark.parametrize(

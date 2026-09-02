@@ -132,8 +132,6 @@ def mamba2_fwd_ref(
 
 # FLOPS / memory calculators
 
-# Benchmark test
-
 
 def _mamba2_args(workload: dict) -> tuple:
     """Constructor arguments for one manifest workload row."""

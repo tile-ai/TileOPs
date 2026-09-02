@@ -15,8 +15,6 @@ try:
 except ImportError:
     fused_recurrent_gla = None
 
-# Correctness tests
-
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
@@ -120,7 +118,6 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device="cuda", dtype=dtype)
     state = torch.randn(B, H, DK, DV, device="cuda", dtype=dtype) * 0.1
 
-    # TileOPs
     op = GLADecodeFwdOp(scale=scale, tune=tune)
     with torch.no_grad():
         o_tile, s_tile = op(q, k, v, gk, state)

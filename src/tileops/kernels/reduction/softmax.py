@@ -610,9 +610,6 @@ def _compute_padded_cols(N: int, tile_n: int) -> int:
     return num_tiles * tile_n
 
 
-# Kernel class
-
-
 def _elem_bytes(dtype: torch.dtype) -> int:
     """Return bytes per element for the given dtype."""
     return torch.tensor([], dtype=dtype).element_size()

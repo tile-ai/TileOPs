@@ -454,9 +454,6 @@ def _(
     return torch.empty_like(Q)
 
 
-# Kernel class
-
-
 class MHADecodeKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 

@@ -367,7 +367,6 @@ def _gla_decode_fp32_tl(
                 for i in T.Parallel(dim_v):
                     v_shared[i] = v[bid, hid, i]
 
-                # Zero-init fragment accumulator
                 T.fill(sq_frag, 0.0)
 
                 # === Pass 1: Element-wise matvec (full fp32 precision) ===
@@ -379,7 +378,6 @@ def _gla_decode_fp32_tl(
                     for j in T.Parallel(dim_v):
                         sq_frag[j] = sq_frag[j] + q_gated * state[bid, hid, kk, j]
 
-                # q . k dot product
                 qk_dot[0] = 0.0
                 for kk in T.Serial(dim_k):
                     qk_dot[0] += q_shared[kk] * k_shared[kk]
@@ -487,7 +485,6 @@ class GLADecodeFP32Kernel(Kernel):
         else:
             self.init_config(config, tune=False)
 
-        # Cache the JIT-compiled kernel
         self._kernel_fn = _gla_decode_fp32_tl(
             batch,
             head,

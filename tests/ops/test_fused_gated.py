@@ -17,8 +17,6 @@ from tileops.kernels.elementwise import (
 from tileops.ops.elementwise import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
 from workloads.elementwise import GatedRandnWorkload
 
-# SiluAndMul
-
 
 class SiluAndMulFixture(FixtureBase):
     PARAMS = [
@@ -82,9 +80,6 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
         assert (op.M, op.N, op.dtype) == (m, n, torch.float16)
 
 
-# GeluAndMul
-
-
 class GeluAndMulFixture(FixtureBase):
     PARAMS = [
         (
@@ -113,9 +108,6 @@ def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     op = GeluAndMulFwdOp()
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# GeluTanhAndMul
 
 
 class GeluTanhAndMulFixture(FixtureBase):

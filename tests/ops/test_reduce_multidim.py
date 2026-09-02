@@ -13,8 +13,6 @@ import torch
 
 from tests.test_base import FixtureBase
 
-# Fixtures
-
 
 class MultiDimFixture(FixtureBase):
     PARAMS = [
@@ -62,9 +60,6 @@ class MultiDimFixture(FixtureBase):
             ],
         ),
     ]
-
-
-# Helpers
 
 
 def _tol(dtype: torch.dtype) -> dict:

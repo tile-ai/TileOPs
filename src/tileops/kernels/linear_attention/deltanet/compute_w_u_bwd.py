@@ -68,7 +68,6 @@ def compute_w_u_bwd_tl(
             dbeta: T.Tensor([batch, head, seq_len], dtype),
         ):
             with T.Kernel(batch, head, num_chunks, threads=threads) as (bid, hid, by):
-                # --- Shared memory ---
                 Aw_s = T.alloc_shared([block_C, block_C], accum_dtype)
                 Au_s = T.alloc_shared([block_C, block_C], accum_dtype)
                 dw_s = T.alloc_shared([block_C, dim_k], accum_dtype)
@@ -84,7 +83,6 @@ def compute_w_u_bwd_tl(
                 dP_s = T.alloc_shared([block_C, block_C], accum_dtype)
                 dk_partial_s = T.alloc_shared([block_C, dim_k], dtype)
                 dk_corr_s = T.alloc_shared([block_C, dim_k], dtype)
-                # --- Fragments ---
                 dAw_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 dAu_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 d_k_beta_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
@@ -92,7 +90,6 @@ def compute_w_u_bwd_tl(
                 dk_A_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 dw_corr_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
 
-                # Load inputs
                 T.copy(Aw[bid, hid, by * block_C : (by + 1) * block_C, :], Aw_s, disable_tma=True)
                 T.copy(Au[bid, hid, by * block_C : (by + 1) * block_C, :], Au_s, disable_tma=True)
                 T.copy(dw[bid, hid, by * block_C : (by + 1) * block_C, :], dw_s, disable_tma=True)

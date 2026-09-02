@@ -27,8 +27,6 @@ from workloads.reduction import (
     SoftmaxWorkload,
 )
 
-# Op name constants
-
 
 def _flaggems_softmax(name: str, dim: int):
     """Bind a flag_gems softmax entry point to *dim*."""
@@ -38,9 +36,6 @@ def _flaggems_softmax(name: str, dim: int):
         return fn(x, dim)
 
     return baseline_fn
-
-
-# Softmax benchmarks
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(SoftmaxFwdOp))
@@ -73,9 +68,6 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
 
 
-# LogSoftmax benchmarks
-
-
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(LogSoftmaxFwdOp))
 def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = LogSoftmaxWorkload(shape, dtype)
@@ -104,9 +96,6 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-
-
-# LogSumExp benchmarks
 
 
 @pytest.mark.parametrize(

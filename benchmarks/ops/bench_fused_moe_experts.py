@@ -64,15 +64,6 @@ from workloads.moe import MoeExpertsWorkload
 # Workload
 
 
-# Benchmark class
-
-
-# Manifest-driven parametrize
-
-
-# Benchmark test
-
-
 @pytest.mark.parametrize(
     "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
     workload_params(

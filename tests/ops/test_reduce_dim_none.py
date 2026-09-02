@@ -13,8 +13,6 @@ import torch
 
 from tests.test_base import FixtureBase
 
-# Fixtures
-
 
 class DimNoneFixture(FixtureBase):
     PARAMS = [
@@ -57,9 +55,6 @@ class DimNoneFixture(FixtureBase):
             ],
         ),
     ]
-
-
-# Helpers
 
 
 def _tol(dtype: torch.dtype) -> dict:

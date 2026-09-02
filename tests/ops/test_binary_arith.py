@@ -90,9 +90,6 @@ def test_coalesce_broadcast_dims(a_shape, b_shape, expected_ndim) -> None:
     assert len(b_strides) == len(coalesced_shape)
 
 
-# Shared helpers
-
-
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
     if dtype == torch.float32:
         return 1e-5, 1e-5

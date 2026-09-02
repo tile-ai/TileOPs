@@ -81,7 +81,6 @@ def _cb_producer_kernel(
                 B * C * G,  # batch * chunks * groups
                 threads=threads,
             ) as (bl, bs, bcg):
-                # Decode indices
                 bcg_tmp = bcg
                 bb = bcg_tmp // (C * G)
                 cg = bcg_tmp % (C * G)
@@ -94,7 +93,6 @@ def _cb_producer_kernel(
                 # Check causality: only compute if s0 < l0 + block_l
                 # This prunes upper-triangular tiles
                 if s0 < l0 + block_l:
-                    # Allocate shared memory for C and B tiles
                     C_tile = T.alloc_shared((block_l, block_n), dtype)
                     B_tile = T.alloc_shared((block_s, block_n), dtype)
 
@@ -106,11 +104,9 @@ def _cb_producer_kernel(
                         }
                     )
 
-                    # Accumulator for this tile
                     acc = T.alloc_fragment((block_l, block_s), accum_dtype)
                     T.clear(acc)
 
-                    # Blocked GEMM over N dimension
                     for n_blk in T.serial(T.ceildiv(N, block_n)):
                         n0 = n_blk * block_n
 
@@ -153,7 +149,6 @@ def _cb_producer_kernel(
                         l_abs = l0 + ll
                         s_abs = s0 + ss
                         if l_abs < Q and s_abs < Q:
-                            # Causal mask: only write if s <= l
                             if s_abs <= l_abs:
                                 cb[bb, bc, bg, l_abs, s_abs] = T.cast(acc[ll, ss], dtype)
                             else:
@@ -169,9 +164,6 @@ def _cb_producer_kernel(
         return main
 
     return kernel_func
-
-
-# PyTorch custom op registration
 
 
 @torch.library.custom_op("tileops::cb_producer", mutates_args=())
@@ -217,9 +209,6 @@ def _(
             dtype, torch.float16
         ),
     )
-
-
-# High-level Kernel wrapper
 
 
 class CBProducerKernel(Kernel):
@@ -283,7 +272,6 @@ class CBProducerKernel(Kernel):
             for block_s in [32, 64, 128]:
                 for block_n in [32, 64, 128]:
                     for threads in [128, 256]:
-                        # Reasonable constraints
                         if block_l <= self.chunk_len and block_s <= self.chunk_len:
                             configs.append(
                                 {

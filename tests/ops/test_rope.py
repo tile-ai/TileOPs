@@ -23,8 +23,6 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from workloads.rope import RopeWorkload
 
-# Reference implementations (pure PyTorch)
-
 
 def _compute_freqs_cis_base(
     head_dim: int,
@@ -324,9 +322,6 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
         return 1e-3, 1e-3
     else:
         return 1.6e-2, 1.6e-2
-
-
-# Fixtures
 
 
 class RopeBasicFixture(FixtureBase):

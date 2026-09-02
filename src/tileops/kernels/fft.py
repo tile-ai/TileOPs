@@ -205,7 +205,6 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
 
                     T.sync_threads()
 
-                # ---- store ----
                 for i in T.Parallel(threads):
                     if i < smem_per_block:
                         store_complex(

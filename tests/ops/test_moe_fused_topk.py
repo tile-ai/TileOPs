@@ -39,12 +39,6 @@ def fused_topk_torch(
     return topk_weights, topk_ids.int()
 
 
-# Reference implementation
-
-
-# Test fixture
-
-
 class FusedTopKFixture(FixtureBase):
     PARAMS = [
         (
@@ -190,9 +184,6 @@ class FusedTopKFixture(FixtureBase):
             ],
         ),
     ]
-
-
-# Tests
 
 
 def _check(test: FusedTopKWorkload) -> None:

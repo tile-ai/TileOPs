@@ -30,8 +30,6 @@ __all__ = [
     "BatchNormFwdTrainKernel",
 ]
 
-# Config helpers
-
 # L threshold for the persistent (single global read) training path.
 # x_shared uses L * sizeof(dtype) bytes per block:
 #   L=8192, fp16 → 16 KB — well within H100 shared memory limits.
@@ -166,12 +164,10 @@ def _batch_norm_fwd_train_kernel(
                 T.reduce_sum(xsum_frag, sum_result, dim=1)
                 T.reduce_sum(xsq_frag, sq_result, dim=1)
 
-                # Statistics.
                 mean_val = sum_result[0] / T.cast(L, accum_dtype)
                 var_val = sq_result[0] / T.cast(L, accum_dtype) - mean_val * mean_val
                 rstd_val = T.cast(1.0, accum_dtype) / T.sqrt(var_val + T.cast(eps, accum_dtype))
 
-                # Save for backward.
                 mean_out[bc] = mean_val
                 rstd_out[bc] = rstd_val
 
@@ -541,13 +537,11 @@ def _batch_norm_bwd_kernel(
                             do_frag[_i, j] += go_val
                             do_xhat_frag[_i, j] += go_val * x_hat
 
-                # Cross-thread reduction.
                 sum_do = T.alloc_fragment([1], accum_dtype)
                 sum_do_xhat = T.alloc_fragment([1], accum_dtype)
                 T.reduce_sum(do_frag, sum_do, dim=1)
                 T.reduce_sum(do_xhat_frag, sum_do_xhat, dim=1)
 
-                # Write grad_bias and grad_weight.
                 grad_bias[bc] = sum_do[0]
                 grad_weight[bc] = sum_do_xhat[0]
 

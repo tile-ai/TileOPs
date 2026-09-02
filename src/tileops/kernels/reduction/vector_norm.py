@@ -231,9 +231,6 @@ def _inf_merge_kernel(A: int, B: int, out_dtype: str, threads: int):
     return _func
 
 
-# VectorNormKernel class
-
-
 class VectorNormKernel(Kernel):
     """L1 / L2 / Inf norm forward kernel.
 

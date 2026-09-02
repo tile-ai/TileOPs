@@ -124,7 +124,6 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                         for j in T.Parallel(N_padded):
                             x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                # Reduce
                 if op_kind == "sum":
                     T.reduce_sum(x_f32, acc, dim=1)
                 elif op_kind == "mean":
@@ -146,7 +145,6 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                 for i in T.Parallel(block_m):
                     out_local[i] = T.cast(acc[i], out_dtype)
 
-                # Write output
                 T.copy(out_local, out[pid_m * block_m])
 
         return main
@@ -423,7 +421,6 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                             for j in T.Parallel(N_padded):
                                 x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                    # Mean
                     T.reduce_sum(x_f32, row_sum, dim=1)
                     for i in T.Parallel(block_m):
                         mean_val[i] = row_sum[i] / float(N)
@@ -481,7 +478,6 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                             for j in T.Parallel(N_padded):
                                 x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                    # Mean
                     T.reduce_sum(x_f32, row_sum, dim=1)
                     for i in T.Parallel(block_m):
                         mean_val[i] = row_sum[i] / float(N)
@@ -827,9 +823,6 @@ def _welford_merge_kernel(A, B, op_kind, correction, count_per, out_dtype, threa
         return main
 
     return _func
-
-
-# ReduceKernel class
 
 
 class ReduceKernel(Kernel):

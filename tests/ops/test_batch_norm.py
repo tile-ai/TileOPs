@@ -27,9 +27,6 @@ class BatchNormFwdTest(BatchNormFwdWorkload, TestBase):
     pass
 
 
-# Fixtures
-
-
 class BatchNormFwdFixture(FixtureBase):
     """(N, C, *spatial, dtype, training)"""
 
@@ -79,12 +76,6 @@ class BatchNormBwdFixture(FixtureBase):
             ],
         ),
     ]
-
-
-# Test helpers
-
-
-# Test functions
 
 
 @BatchNormFwdFixture

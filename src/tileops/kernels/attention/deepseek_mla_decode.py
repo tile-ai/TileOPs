@@ -114,7 +114,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     T.fill(acc_o_l, 0)
 
                     for i_i in T.serial(T.ceildiv(NI, 2)):
-                        # Buffer 0
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
                         T.clear(acc_s)
@@ -149,7 +148,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_arrive(bar_k_0_free[0])
 
-                        # Buffer 1
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
                         T.clear(acc_s)
@@ -183,7 +181,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_arrive(bar_k_1_free[0])
 
-                    # Rescale
                     for h_i in T.Parallel(block_H):
                         sum_exp_shared[h_i] = sumexp[h_i]
                     for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -200,7 +197,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     T.set_max_nreg(168, 1)
                     T.fill(acc_o_r, 0)
                     for i_i in T.serial(T.ceildiv(NI, 2)):
-                        # Buffer 0
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_wait(bar_sScale_and_sS_ready, ((i_i * 2) & 1))
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -209,7 +205,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.barrier_arrive(bar_k_0_free[0])
                         T.barrier_arrive(bar_sScale_and_sS_free)
 
-                        # Buffer 1
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_wait(bar_sScale_and_sS_ready, ((i_i * 2 + 1) & 1))
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -219,7 +214,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         if i_i != T.ceildiv(NI, 2) - 1:
                             T.barrier_arrive(bar_sScale_and_sS_free)
 
-                    # Rescale
                     for h_i, d_i in T.Parallel(block_H, dim // 2):
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
@@ -232,10 +226,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     )
 
                 elif tx >= 256:
-                    # producer
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(NI, 2)):
-                        # Buffer 0
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             kv_indices = (i_i * 2) * block_N + r * 16 + (tx - 256) // 8
@@ -267,7 +259,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                                     ] = K_pe[bid, kv_indices, cur_kv_head, (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
-                        # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             kv_indices = (i_i * 2 + 1) * block_N + r * 16 + (tx - 256) // 8
@@ -371,7 +362,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     T.fill(acc_o_l, 0)
 
                     for i_i in T.serial(T.ceildiv(NI, 2)):
-                        # Buffer 0
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
                         T.clear(acc_s)
@@ -406,7 +396,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_arrive(bar_k_0_free[0])
 
-                        # Buffer 1
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
                         T.clear(acc_s)
@@ -440,7 +429,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_arrive(bar_k_1_free[0])
 
-                    # Rescale
                     for h_i in T.Parallel(block_H):
                         sum_exp_shared[h_i] = sumexp[h_i]
                     for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -460,7 +448,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     T.set_max_nreg(168, 1)
                     T.fill(acc_o_r, 0)
                     for i_i in T.serial(T.ceildiv(NI, 2)):
-                        # Buffer 0
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_wait(bar_sScale_and_sS_ready, ((i_i * 2) & 1))
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -469,7 +456,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.barrier_arrive(bar_k_0_free[0])
                         T.barrier_arrive(bar_sScale_and_sS_free)
 
-                        # Buffer 1
                         T.barrier_arrive(bar_sScale_and_sS_ready)
                         T.barrier_wait(bar_sScale_and_sS_ready, ((i_i * 2 + 1) & 1))
                         for h_i, d_i in T.Parallel(block_H, dim // 2):
@@ -479,7 +465,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         if i_i != T.ceildiv(NI, 2) - 1:
                             T.barrier_arrive(bar_sScale_and_sS_free)
 
-                    # Rescale
                     for h_i, d_i in T.Parallel(block_H, dim // 2):
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
@@ -492,10 +477,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     )
 
                 elif tx >= 256:
-                    # producer
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(NI, 2)):
-                        # Buffer 0
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             kv_indices = (
@@ -532,7 +515,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                                     ] = K_pe[bid, kv_indices, cur_kv_head, (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
-                        # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             kv_indices = (

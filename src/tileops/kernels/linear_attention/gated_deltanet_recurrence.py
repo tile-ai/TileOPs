@@ -343,7 +343,6 @@ class GatedDeltaNetDecodeKernel(Kernel):
         best_time = float("inf")
         best_config = self.default_config
 
-        # Generate dummy inputs for profiling
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
         torch_dtype = {
             "float32": torch.float32,
@@ -557,7 +556,6 @@ def _gated_deltanet_decode_fp32_tl(
                 alpha = T.exp2(g_val * LOG2E)
                 alpha_beta = alpha * beta_val
 
-                # Zero-init fragment accumulators
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
 
@@ -573,7 +571,6 @@ def _gated_deltanet_decode_fp32_tl(
                         sk_frag[j] = sk_frag[j] + k_val * h_val
                         sq_frag[j] = sq_frag[j] + q_val * h_val
 
-                # q . k dot product
                 qk_dot[0] = 0.0
                 for kk in T.Serial(dim_k):
                     qk_dot[0] += q[bid, hid, kk] * k[bid, hid, kk]

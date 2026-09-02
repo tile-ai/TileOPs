@@ -18,9 +18,6 @@ class GatedDeltaNetDecodeTest(GatedDeltaNetDecodeWorkload, TestBase):
     pass
 
 
-# Correctness tests
-
-
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         # Keep fp32 tolerance aligned with the scalar decode reference path;

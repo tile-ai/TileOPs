@@ -59,9 +59,6 @@ def _fla_autograd_bwd(
     return dq, dk, dv, dg
 
 
-# Backward correctness tests
-
-
 class GLABwdFixture(FixtureBase):
     PARAMS = [
         (

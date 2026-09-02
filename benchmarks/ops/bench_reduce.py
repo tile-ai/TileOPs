@@ -45,8 +45,6 @@ from workloads.reduction import (
     VarWorkload,
 )
 
-# Op name constants
-
 
 def _functors(op, baseline_fn, inputs, dtype: torch.dtype, flaggems_fn=None) -> dict:
     """The op, flag_gems where it has a kernel, and torch eager and compiled."""
@@ -57,9 +55,6 @@ def _functors(op, baseline_fn, inputs, dtype: torch.dtype, flaggems_fn=None) -> 
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
     return functors
-
-
-# Sum benchmarks
 
 
 @pytest.mark.parametrize(
@@ -92,9 +87,6 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         raise
 
 
-# Mean benchmarks
-
-
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
     workloads_to_params(MeanFwdOp, include_extra=True),
@@ -123,9 +115,6 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-
-
-# Amax benchmarks
 
 
 @pytest.mark.parametrize(
@@ -158,9 +147,6 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         raise
 
 
-# Amin benchmarks
-
-
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
     workloads_to_params(AminFwdOp, include_extra=True),
@@ -186,9 +172,6 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         raise
 
 
-# Prod benchmarks
-
-
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(ProdFwdOp))
 def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = ProdWorkload(shape, dtype)
@@ -211,9 +194,6 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-
-
-# Std benchmarks
 
 
 @pytest.mark.parametrize(
@@ -246,9 +226,6 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         raise
 
 
-# Var benchmarks
-
-
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
     workloads_to_params(VarFwdOp, include_extra=True),
@@ -277,9 +254,6 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-
-
-# VarMean benchmarks
 
 
 @pytest.mark.parametrize(

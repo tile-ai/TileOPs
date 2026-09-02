@@ -17,8 +17,6 @@ from tileops.ops.elementwise import (
 )
 from workloads.elementwise import BitwiseNotWorkload, BitwiseWorkload
 
-# Shared helpers
-
 
 def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Exact comparison for integer outputs."""
@@ -36,9 +34,6 @@ class BitwiseTest(BitwiseWorkload, TestBase):
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a, b)
-
-
-# BitwiseAnd op
 
 
 class BitwiseAndFixture(FixtureBase):
@@ -60,9 +55,6 @@ def test_bitwise_and_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# BitwiseOr op
-
-
 class BitwiseOrFixture(FixtureBase):
     PARAMS = [
         (
@@ -80,9 +72,6 @@ def test_bitwise_or_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_or)
     op = BitwiseOrFwdOp()
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
-
-
-# BitwiseXor op
 
 
 class BitwiseXorFixture(FixtureBase):
@@ -195,9 +184,6 @@ def test_bool_bitwise_fast_path(
         out = op(a, b)
     assert out.dtype == torch.bool
     _exact_compare(out, ref)
-
-
-# BitwiseNot op
 
 
 class BitwiseFixture(FixtureBase):

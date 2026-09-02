@@ -25,9 +25,6 @@ def _call(op, x: torch.Tensor) -> torch.Tensor:
     return cast(torch.Tensor, op(x))
 
 
-# Fixtures
-
-
 class ArgreduceBasicFixture(FixtureBase):
     PARAMS = [
         (
@@ -143,9 +140,6 @@ class SpecArgreduceFixture(FixtureBase):
     ]
 
 
-# TestBase helpers — inherit gen_inputs() from workload classes
-
-
 class ArgreduceTest(ArgmaxWorkload, TestBase):
     """Parameterized test helper for argreduce ops."""
 
@@ -172,9 +166,6 @@ def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
         f"  output_ref: {output_ref[:10]}...\n"
         f"  mismatches: {(output != output_ref).sum().item()} / {output.numel()}"
     )
-
-
-# ArgmaxFwdOp tests
 
 
 @ArgreduceBasicFixture
@@ -303,9 +294,6 @@ def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
     assert torch.equal(y, ref), f"spec dim={dim} argmax mismatch: {(y != ref).sum().item()}"
-
-
-# ArgminFwdOp tests
 
 
 @ArgreduceBasicFixture

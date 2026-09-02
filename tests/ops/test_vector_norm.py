@@ -12,8 +12,6 @@ from tests.test_base import FixtureBase, TestBase, allclose_compare
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.reduction import L1NormWorkload
 
-# Fixtures
-
 
 class VectorNormBasicFixture(FixtureBase):
     PARAMS = [
@@ -83,9 +81,6 @@ class VectorNorm1DFixture(FixtureBase):
             ],
         ),
     ]
-
-
-# TestBase helpers — inherit gen_inputs() from workload classes
 
 
 # Map op_kind to the ord parameter for torch.linalg.vector_norm
@@ -164,9 +159,6 @@ def _make_op(
     return cls(dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune)
 
 
-# L1NormFwdOp tests
-
-
 @VectorNormBasicFixture
 def test_l1_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l1")
@@ -216,9 +208,6 @@ def test_l1_1d(n: int, dtype: torch.dtype) -> None:
     allclose_compare(y.view_as(ref), ref, atol=atol, rtol=rtol)
 
 
-# L2NormFwdOp tests
-
-
 @VectorNormBasicFixture
 def test_l2_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l2")
@@ -266,9 +255,6 @@ def test_l2_1d(n: int, dtype: torch.dtype) -> None:
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
     allclose_compare(y.view_as(ref), ref, atol=atol, rtol=rtol)
-
-
-# InfNormFwdOp tests
 
 
 @VectorNormBasicFixture
@@ -427,8 +413,6 @@ def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     atol, rtol = _get_tolerances(dtype)
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
-
-# Dtype smoke tests
 
 _DTYPE_SMOKE_M, _DTYPE_SMOKE_N = 64, 512
 

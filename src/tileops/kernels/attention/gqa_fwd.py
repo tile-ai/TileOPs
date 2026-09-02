@@ -55,9 +55,6 @@ def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_r
     return apply_softcap
 
 
-# GQA
-
-
 @functools.lru_cache(maxsize=32)
 def _gqa_fwd_wgmma_pipelined_kernel(
     batch: int,

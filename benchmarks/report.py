@@ -201,7 +201,6 @@ class BenchmarkReport:
             lines.append(f"## {name}")
             lines.append("")
 
-            # Group by tag
             tag_entries = {}
             for entry in entries:
                 tag_entries.setdefault(entry["tag"], []).append(entry)

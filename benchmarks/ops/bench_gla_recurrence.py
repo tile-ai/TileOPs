@@ -84,7 +84,6 @@ def test_gla_decode_bench(
     test = GLADecodeWorkload(batch, heads, dim_k, dim_v, dtype, scale=scale)
     inputs = test.gen_inputs()
 
-    # --- TileOPs ---
     op = GLADecodeFwdOp(scale=scale, tune=tune)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}

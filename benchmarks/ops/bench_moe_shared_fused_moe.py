@@ -125,9 +125,6 @@ class SharedFusedMoEBenchFixture(FixtureBase):
     ]
 
 
-# Benchmark class
-
-
 class SharedFusedMoEBenchmark(OpBenchmark[SharedFusedMoeWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -158,9 +155,6 @@ class SharedFusedMoEBenchmark(OpBenchmark[SharedFusedMoeWorkload]):
         shared_w = 3 * t.shared_ffn_size * t.hidden_size * elem
         act = t.num_tokens * t.hidden_size * elem * 2
         return routed_w + shared_w + act
-
-
-# Benchmark test
 
 
 @SharedFusedMoEBenchFixture

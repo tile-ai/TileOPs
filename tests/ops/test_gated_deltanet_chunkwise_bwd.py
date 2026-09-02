@@ -61,9 +61,6 @@ def gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, chunk_size):
 # Autograd-based reference: differentiable forward → torch.autograd.grad
 
 
-# Backward correctness tests
-
-
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         return {"atol": 1e-2, "rtol": 1e-2}

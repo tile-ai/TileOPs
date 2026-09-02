@@ -37,9 +37,6 @@ def _to_fla_layout(q, k, v, beta):
     )
 
 
-# Forward benchmark
-
-
 def _deltanet_args(workload: dict) -> tuple[int, int, int, int, int, int]:
     """Constructor arguments for one manifest workload row."""
     batch, heads, seq_len, dim_k = workload["q_shape"]
@@ -80,9 +77,6 @@ def test_deltanet_vs_fla_fwd(
     functors["fla"] = (fla_fwd, ())
 
     bm.compare(functors, *inputs)
-
-
-# Backward benchmark
 
 
 @pytest.mark.parametrize(

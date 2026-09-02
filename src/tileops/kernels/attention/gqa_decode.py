@@ -409,9 +409,6 @@ def _(
     return torch.empty_like(Q)
 
 
-# Kernel class
-
-
 class GQADecodeKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.

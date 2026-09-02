@@ -42,7 +42,6 @@ def _rms_norm_kernel(M, N, eps, dtype):
                 sumsq = T.alloc_fragment((block_m,), "float32")
                 rrms = T.alloc_fragment((block_m,), "float32")
 
-                # Load input row block
                 T.copy(x[pid_m * block_m, 0], shared_buf)
                 T.copy(shared_buf, x_local)
 
@@ -52,7 +51,6 @@ def _rms_norm_kernel(M, N, eps, dtype):
                         x_local[i, j], "float32"
                     )
 
-                # Sum of squares along hidden dim
                 T.reduce_sum(xsq_f32, sumsq, dim=1)
 
                 # rrms = rsqrt(mean(x^2) + eps), using original N (not padded)
@@ -65,7 +63,6 @@ def _rms_norm_kernel(M, N, eps, dtype):
                         T.cast(x_local[i, j], "float32") * rrms[i] * T.cast(weight[j], "float32")
                     )
 
-                # Write output
                 T.copy(x_local, shared_buf)
                 T.copy(shared_buf, y[pid_m * block_m, 0])
 

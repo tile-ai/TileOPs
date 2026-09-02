@@ -349,9 +349,6 @@ def _make_rope_non_neox_2d(
     return kernel
 
 
-# Kernel base class for RoPE
-
-
 class _RopeKernelBase(Kernel):
     """Base class for all RoPE kernel variants.
 

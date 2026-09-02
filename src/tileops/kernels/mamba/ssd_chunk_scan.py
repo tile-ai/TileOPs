@@ -135,7 +135,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 l0 = bl * block_l
                 p0 = bp * block_p
 
-                # output accumulator [block_l, block_p]
                 acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(acc)
 
