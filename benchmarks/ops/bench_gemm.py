@@ -14,6 +14,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from benchmarks.timing import bench_kernel, median_busy_ms
+from tileops.kernels.gemm_fp8_tma import GemmFp8BlockScaled1D2DTMAKMajorScaleKernel
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
@@ -516,6 +517,63 @@ def test_gemm_fp8_bench(
             )
 
     bm.compare(functors, *inputs)
+
+
+@pytest.mark.parametrize(
+    "m,n,k",
+    [
+        pytest.param(128, 2112, 7168, id="ds-v3-decode-gate-up"),
+        pytest.param(128, 7168, 2048, id="ds-v3-decode-down"),
+        pytest.param(4096, 2112, 7168, id="ds-v3-prefill-gate-up"),
+        pytest.param(4096, 7168, 2048, id="ds-v3-prefill-down"),
+        pytest.param(4096, 4096, 7168, id="ds-v3-prefill-attn-proj"),
+        pytest.param(4096, 7168, 16384, id="k-dominant-7168x16384"),
+        pytest.param(4096, 24576, 1536, id="wide-n-24576"),
+    ],
+)
+def test_gemm_fp8_1d2d_bench(m: int, n: int, k: int) -> None:
+    """Fair 1D2D comparison: A 1x128 scales and B 128x128 scales."""
+    from flashinfer.gemm import fp8_blockscale_gemm_sm90
+
+    q = k // 128
+    scale_n = (n + 127) // 128
+    a = (torch.randn(m, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    b = (torch.randn(n, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    scale_a = 0.5 + torch.rand(m, q, device="cuda")
+    scale_a_k_major = scale_a.T.contiguous()
+    scale_a_flashinfer = scale_a_k_major.view_as(scale_a)
+    scale_b = 0.5 + torch.rand(scale_n, q, device="cuda")
+    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+        m, n, k, torch.float8_e4m3fn, torch.bfloat16
+    )
+
+    def reference() -> torch.Tensor:
+        return (
+            (a.float() * scale_a.repeat_interleave(128, dim=1))
+            @ (
+                b.float() * scale_b.repeat_interleave(128, dim=0)[:n].repeat_interleave(128, dim=1)
+            ).T
+        ).to(torch.bfloat16)
+
+    local = kernel(a, b, scale_a_k_major, scale_b)
+    flashinfer = fp8_blockscale_gemm_sm90(
+        a, b, scale_a_flashinfer, scale_b, out_dtype=torch.bfloat16
+    )
+    expected = reference()
+    torch.testing.assert_close(local, expected, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(flashinfer, expected, atol=2e-2, rtol=2e-2)
+    local_ms = median_busy_ms(bench_kernel(lambda: kernel(a, b, scale_a_k_major, scale_b)))
+    flashinfer_ms = median_busy_ms(
+        bench_kernel(
+            lambda: fp8_blockscale_gemm_sm90(
+                a, b, scale_a_flashinfer, scale_b, out_dtype=torch.bfloat16
+            )
+        )
+    )
+    print(
+        f"1D2D m={m} n={n} k={k}: tileops={local_ms:.5f} ms "
+        f"flashinfer={flashinfer_ms:.5f} ms ratio={local_ms / flashinfer_ms:.3f}x"
+    )
 
 
 @pytest.mark.parametrize(

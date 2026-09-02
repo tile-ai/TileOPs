@@ -5,6 +5,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gemm import GemmKernel, SmallBatchGemmKernel
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel
 from tileops.kernels.gemm.heuristics import best_config
+from tileops.kernels.gemm_fp8_tma import GemmFp8BlockScaled1D2DTMAKMajorScaleKernel
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
@@ -511,6 +512,86 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     op = GemmFp8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
     assert op.kernel.__class__.__name__ == "GemmFp8BlockScaledKernel"
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_tma_matches_reference() -> None:
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() != 90:
+        pytest.skip("1D2D FP8 GEMM requires SM90")
+    m, n, k = 128, 256, 256
+    q = k // 128
+    a = (torch.randn(m, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    b = (torch.randn(n, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    scale_a = 0.5 + torch.rand(m, q, device="cuda")
+    scale_b = 0.5 + torch.rand(n // 128, q, device="cuda")
+    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+        m, n, k, torch.float8_e4m3fn, torch.bfloat16
+    )
+    actual = kernel(a, b, scale_a.T.contiguous(), scale_b)
+    expected = (
+        (a.float() * scale_a.repeat_interleave(128, dim=1))
+        @ (b.float() * scale_b.repeat_interleave(128, dim=0).repeat_interleave(128, dim=1)).T
+    ).to(torch.bfloat16)
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_tma_multiwave_preserves_scale_b() -> None:
+    """A third persistent wave must safely reuse the per-K B-scale ring."""
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() != 90:
+        pytest.skip("1D2D FP8 GEMM requires SM90")
+    m, n, k = 512, 8576, 256
+    q = k // 128
+    a = (torch.randn(m, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    b = (torch.randn(n, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    scale_a = 0.5 + torch.rand(m, q, device="cuda")
+    scale_b = 0.5 + torch.rand((n + 127) // 128, q, device="cuda")
+    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+        m, n, k, torch.float8_e4m3fn, torch.bfloat16
+    )
+
+    actual = kernel(a, b, scale_a.T.contiguous(), scale_b)
+    expected = (
+        (a.float() * scale_a.repeat_interleave(128, dim=1))
+        @ (b.float() * scale_b.repeat_interleave(128, dim=0)[:n].repeat_interleave(128, dim=1)).T
+    ).to(torch.bfloat16)
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        (
+            (128, 2112, 7168),
+            {"block_n": 16, "num_stages": 8, "group_size_m": 16, "mainloop_unroll": 8},
+        ),
+        (
+            (128, 7168, 2048),
+            {"block_n": 64, "num_stages": 8, "group_size_m": 16, "mainloop_unroll": 16},
+        ),
+        (
+            (4096, 24576, 1536),
+            {"block_n": 128, "num_stages": 4, "group_size_m": 32, "mainloop_unroll": 12},
+        ),
+    ],
+)
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_tuned_config(shape: tuple[int, int, int], expected: dict) -> None:
+    kernel = object.__new__(GemmFp8BlockScaled1D2DTMAKMajorScaleKernel)
+    kernel.m, kernel.n, kernel.k = shape
+    assert kernel.default_config == expected
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_rejects_small_m() -> None:
+    with pytest.raises(ValueError, match="requires M >= 128"):
+        GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+            1, 7168, 2048, torch.float8_e4m3fn, torch.bfloat16
+        )
 
 
 @pytest.mark.parametrize(
