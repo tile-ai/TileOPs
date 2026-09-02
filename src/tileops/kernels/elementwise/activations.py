@@ -80,6 +80,8 @@ class GeluTanhFwdKernel(FloatUnaryKernel):
 class SiluFwdKernel(FloatUnaryKernel):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
+    MIN_NUM_PER_THREAD = 2
+
     @staticmethod
     def op_func(x):
         """x / (1 + exp2(-x * log2 e)), in fp32.
@@ -494,6 +496,7 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    MIN_NUM_PER_THREAD = 2
 
     @staticmethod
     def activation_func(x):
@@ -511,6 +514,7 @@ class GeluAndMulFwdKernel(FusedGatedKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    MIN_NUM_PER_THREAD = 2
 
     @staticmethod
     def activation_func(x):
@@ -529,6 +533,7 @@ class GeluTanhAndMulFwdKernel(FusedGatedKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    MIN_NUM_PER_THREAD = 2
 
     @staticmethod
     def activation_func(x):
