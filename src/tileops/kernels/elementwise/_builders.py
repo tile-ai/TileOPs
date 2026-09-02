@@ -10,14 +10,14 @@ from ._broadcast import (
     _is_contiguous_same_shape,
     broadcast_plan_for,
     row_broadcast_split,
+    row_tile_leaves_tail,
 )
 from ._op_body import op_func_for
 
 # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
 # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
-# the lane slots one chain is worth. At W // 4 that ratio is 1/3 -- one chain per
-# three idle slots. The workloads sit either side of it: T/W = 0.125 packs and
-# gains, T/W = 0.53 with a single full block per row costs 8.0us -> 14.3us.
+# the lane slots one chain is worth. At W // 4 that ratio is one chain per three
+# idle slots.
 _TAIL_PACK_RATIO = 4
 
 
@@ -144,17 +144,14 @@ def _row_broadcast_prim(
     tail_blocks = -(-tail_slots // block_cols)
     pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // _TAIL_PACK_RATIO
     # Columns past the last full block go one element per thread. Indexing
-    # vectors rather than rows leaves none: num_per_thread divides the row, so a
-    # vector stays inside one row. The staged form writes whole fragments and so
-    # needs every block full; the unstaged one guards its last block.
-    vecs_per_row = inner // num_per_thread
+    # vectors rather than rows leaves none, where a vector stays inside a row.
+    vecs_per_row = inner // num_per_thread if inner % num_per_thread == 0 else 0
     total_vecs = rows * vecs_per_row
     grid_vecs = -(-total_vecs // threads)
     flat_grid = (
         not exact
         and num_per_thread > 1
-        and inner % num_per_thread == 0
-        and (not stage or grid_vecs * threads == total_vecs)
+        and not row_tile_leaves_tail(inner, rows, threads, num_per_thread, stage)
     )
 
     @T.macro

@@ -174,9 +174,8 @@ class GemmW4A16DecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Tuned on H200 over the manifest's four M=1 workloads: 32 rows of N per
-        # CTA still leaves 224 CTAs at the smallest N, and 128 threads keeps the
-        # carried accumulator in registers.
+        # 32 rows of N per CTA still leaves 224 CTAs at the manifest's smallest
+        # N, and 128 threads keeps the carried accumulator in registers.
         return {"block_n": 32, "block_k": 512, "threads": 128, "num_stages": 4}
 
     @property

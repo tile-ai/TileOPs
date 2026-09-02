@@ -115,8 +115,8 @@ def _logical_out_dtype(op_kind: str, partial: bool) -> str:
 
 # Elements a lane folds in the edge-fused pass. One block holds a `trail`-wide
 # fp32 fragment, so this is what fixes its register footprint per lane rather
-# than letting it grow with the row. Measured on an H200 over `lead` 2 to 16 and
-# `trail` 256 to 8192: eight is the flat optimum at every width.
+# than letting it grow with the row. Eight is the flat optimum at every width
+# the manifest asks for.
 _FUSED_EDGE_ELEMS_PER_LANE = 8
 _FUSED_EDGE_MIN_THREADS = 64
 _FUSED_EDGE_MAX_THREADS = 1024

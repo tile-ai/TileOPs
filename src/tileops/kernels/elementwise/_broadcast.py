@@ -79,6 +79,20 @@ def _compute_broadcast_offsets(flat_idx, ndim, divisors, a_strides, b_strides):
     return a_off, b_off
 
 
+def row_tile_leaves_tail(inner, rows, threads, num_per_thread, staged):
+    """Whether a row-broadcast block leaves columns to the one-element-per-thread path.
+
+    A tile that divides the row leaves none. Otherwise the grid indexes vectors,
+    which leaves none either, so long as a vector stays inside a row and, for the
+    staged form, every block is full.
+    """
+    if inner % (threads * num_per_thread) == 0:
+        return False
+    if inner % num_per_thread:
+        return True
+    return bool(staged and (rows * (inner // num_per_thread)) % threads)
+
+
 def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     """Return True when both inputs are contiguous with the same shape (no broadcast)."""
     return (

@@ -968,13 +968,11 @@ class RowTiledAutotuneMixin:
 class _LeadingAxisReducePolicy:
     """Launch heuristics for reductions down contiguous leading axes.
 
-    Measured on an H200 over ``(A, B)`` from ``(4, 128)`` to ``(2048, 4096)``,
-    in bf16 and fp32. The column tile ``threads * cols_per_thread`` is what a
-    block reads from one row, and 512 columns is flat across the sweep; how
-    that tile is divided is not. Sixty-four lanes reading eight columns each
-    leaves a block too narrow to cover the read's latency -- on ``(128, 1024)``
-    bf16 it costs 2.88x against 256 lanes reading two, at the same tile, the
-    same split count and the same grid.
+    The column tile ``threads * cols_per_thread`` is what a block reads from
+    one row, and 512 columns is flat across the shapes this serves; how that
+    tile is divided is not. Sixty-four lanes reading eight columns each leaves
+    a block too narrow to cover the read's latency, and costs several times
+    what 256 lanes reading two costs at the same tile, split count and grid.
     """
 
     cols_per_thread: int = 2
@@ -1109,8 +1107,8 @@ def _down_rows_kernel(
     the buffer is read once in the layout it already has.
 
     The grid is ``(column blocks, splits)``: a leading-axis reduction has only as many
-    output columns as the axes it keeps, and one block per column tile would leave an
-    H200 running four of them.
+    output columns as the axes it keeps, and one block per column tile would leave
+    the device running a handful of them.
 
     Args:
         A: Elements the reduction consumes per output column.

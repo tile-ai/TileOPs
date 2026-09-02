@@ -64,9 +64,9 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
     path is used.
 
     softmax never reads the row again once it has exponentiated, so it goes global to
-    fragment and back with nothing staged in between: measured on H200 at 1024x4096,
-    dropping the shared round trip takes it from 1.76 to 2.27 TB/s in fp16 and 2.75 to
-    3.34 in fp32. log_softmax needs the row a second time, for ``(x - max) - log(sum)``,
+    fragment and back with nothing staged in between, dropping the shared round trip
+    it would otherwise pay. log_softmax needs the row a second time, for
+    ``(x - max) - log(sum)``,
     and shared memory is the cheaper of the two places to keep it -- the alternative is
     a second fragment of row width, which is what pushes a thread's slice into local
     memory.
@@ -746,10 +746,9 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         """Select default block_m based on shared memory budget.
 
         For the single-tile path (tile_n == 0), prefer the *smallest* block_m.
-        Measured on H200 at 1024x4096 fp16, bandwidth falls monotonically as rows are
-        added to a block, from 1.76 TB/s at one row to 0.19 at sixteen: each extra row
-        hands every thread another ``N_padded / threads`` registers until the fragment
-        spills, and the kernel then re-reads its own row through L2 on every pass.
+        Bandwidth falls as rows are added to a block: each extra row hands every
+        thread another ``N_padded / threads`` registers until the fragment spills,
+        and the kernel then re-reads its own row through L2 on every pass.
 
         For the tiled path, prefer the block_m that **minimises the
         number of N-tiles** (i.e. maximises tile_n).  Fewer tiles means

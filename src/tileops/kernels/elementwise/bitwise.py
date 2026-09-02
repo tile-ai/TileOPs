@@ -81,9 +81,8 @@ class BitwiseNotFwdKernel(UnaryKernel):
     vectorized ``int4`` CUDA types.
 
     Takes the base class's looping strategy: one element per thread reads four bytes
-    where the dtype allows sixteen, and measured on H200 at 256M int32 elements that is
-    the difference between 2.5 and 4.3 TB/s. A bool input is still coerced to the scalar
-    path, by the dtype rule in ``UnaryKernel``.
+    where the dtype allows sixteen, which costs most of the read bandwidth. A bool
+    input is still coerced to the scalar path, by the dtype rule in ``UnaryKernel``.
     """
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES

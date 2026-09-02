@@ -36,7 +36,6 @@ _KEY_NAN = 0x7FFFFFFF
 
 # Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
 _KEY_IDENTITY = -(2**31)
-# Row-splitting thresholds are measured defaults.
 # A row shorter than this is a handful of passes; splitting cannot save more
 # than the second pass costs.
 _SPLIT_MIN_N = 32768
@@ -298,8 +297,7 @@ def _argreduce_output_kernel(
     both the store and the walk. Where the whole span is one contiguous run of each
     axis position, it is staged in shared memory first and the walk reads from
     there, which is what lets the global read widen from one element per thread to a
-    vector: measured on the manifest's 3d workload, 2.36 TB/s against 2.09 for
-    walking the axis in global memory.
+    vector.
     """
     elem_bytes = torch_dtype_nbytes(dtype)
 
@@ -374,10 +372,8 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
 
     A row the block can hold in registers is read once into a fragment, and the column
     index each key belongs to is the loop variable over that fragment, so nothing has to
-    carry it. That reads the row a vector at a time and keeps it there: measured on H200
-    at 2048x4096 fp16, 2.21 TB/s against 2.02 for walking it in global, where reading the
-    row alone is bounded at 2.35. The gain widens with the row -- at 256x32768, 2.12
-    against 1.65.
+    carry it. That reads the row a vector at a time and keeps it there, where walking it
+    in global reads one element per thread. The wider the row, the more that is worth.
 
     A row too wide for that is walked in global instead, one element per thread per
     access.
@@ -455,7 +451,7 @@ def _argreduce_multicta_partial_kernel(
     ``ctas_per_row`` is a tuning parameter: the trade between the block's serial
     scan and a wider final pass moves with the shape. The tuner measures this
     stage alone; the final pass grows slowly with the split, so its ranking can
-    differ from the pair's at the margin (measured once, by 0.3%).
+    differ from the pair's at the margin.
     """
 
     @tilelang.jit(out_idx=[1, 2])

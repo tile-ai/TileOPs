@@ -1262,13 +1262,12 @@ def _splitk_pair(
     to us: on the short-mainloop shapes the mainloop drains before the reduce
     is even enqueued. Folding the builder lookup and the ``@tilelang.jit``
     factory call of *both* kernels into one cached resolution keeps that
-    window to the two launches themselves (measured: inter-kernel gap
-    4.6-5.7 us -> 1.7-2.6 us on the m<=128 x 2112 x 7168 family).
+    window to the two launches themselves.
 
     The other host step that used to land in that window is allocating ``C``.
     ``_splitk_reduce_kernel`` therefore takes it as an explicit parameter, and
     both callers allocate it *before* launching the mainloop, which closes the
-    remaining gap to the 1.1 us floor torch measures on the same rows.
+    remaining gap to the floor torch reaches on the same rows.
     """
     if coop2:
         mainloop = _gemm_coop2_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
