@@ -21,7 +21,10 @@ from .gqa_fwd import (
 )
 from .gqa_fwd_fp8 import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
 from .gqa_fwd_ws import GQAFwdWsPersistentCausalKernel, GQAFwdWsPersistentKernel
-from .gqa_prefill_fwd_ws import GQAPrefillFwdWsPersistentCausalKernel
+from .gqa_prefill_fwd_ws import (
+    GQADensePrefillCausalWsKernel,
+    GQAPrefillFwdWsPersistentCausalKernel,
+)
 from .gqa_prefill_varlen_fwd import GQAPrefillVarlenFwdKernel
 from .gqa_sliding_window_fwd import (
     GQASlidingWindowFwdWgmmaPipelinedKernel,
@@ -40,6 +43,7 @@ __all__ = [
     "GQADecodeKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
+    "GQADensePrefillCausalWsKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel",
     "GQAFwdWgmmaPipelinedKernel",
     "GQAFwdWsPersistentCausalKernel",

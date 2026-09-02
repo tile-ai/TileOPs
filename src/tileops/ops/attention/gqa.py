@@ -9,6 +9,7 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
+    GQADensePrefillCausalWsKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAPrefillFwdKernel,
@@ -327,7 +328,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
+        return {"gqa_dense": GQADensePrefillCausalWsKernel}
 
     def _infer_output_shapes(
         self,
@@ -453,6 +454,19 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         if rope_cos.shape != rope_sin.shape:
             raise ValueError("rope_cos and rope_sin must have the same shape")
 
+    def _validate_supported_call(self, q: torch.Tensor) -> None:
+        """Reject features not implemented by the currently installed Dense kernel."""
+        if not self.is_causal:
+            raise ValueError("Dense GQA currently supports causal attention only")
+        if q.shape[-1] != 128:
+            raise ValueError("Dense GQA currently requires head dimension 128")
+        if q.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("Dense GQA currently supports float16 and bfloat16 inputs only")
+        if self.window_size_left != -1 or self.window_size_right != -1:
+            raise ValueError("Dense GQA does not yet support sliding windows")
+        if self.pos_encoding_mode != "none":
+            raise ValueError("Dense GQA does not yet support fused RoPE")
+
     @staticmethod
     def _canonicalize_inputs(
         q: torch.Tensor,
@@ -474,9 +488,28 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Resolve the implementation stored in the Op's single cache layer."""
-        # BUILTIN follow-up: pass a shape/dtype ``key`` and a ``build`` closure
-        # that selects and constructs one concrete kernel on a cache miss.
-        return self.get_or_build_kernel("gqa_dense", inputs)
+        q, k = inputs[:2]
+        assert q is not None and k is not None
+        batch, seq_len_q, heads, dim = q.shape
+        _, seq_len_kv, heads_kv, _ = k.shape
+        role = "gqa_dense"
+
+        def build() -> Kernel:
+            return self.kernel_map[role](
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                seq_len_q=seq_len_q,
+                seq_len_kv=seq_len_kv,
+                dim=dim,
+                dtype=q.dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                device_index=q.device.index,
+            )
+
+        key = (q.dtype, tuple(q.shape), tuple(k.shape))
+        return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(
         self,
@@ -528,6 +561,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 combinations violate the contract above.
         """
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
+        self._validate_supported_call(q)
         inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)
         return kernel(*inputs)

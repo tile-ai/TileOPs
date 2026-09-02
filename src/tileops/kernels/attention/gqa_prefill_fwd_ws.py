@@ -23,6 +23,7 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.constants import LOG2E
 
+from ..kernel_base import Kernel
 from .call_spec import (
     ATTENTION_DTYPES,
     WS_ARCH,
@@ -31,7 +32,10 @@ from .call_spec import (
 )
 from .packed_prefill import PackedPrefillKernel
 
-__all__ = ["GQAPrefillFwdWsPersistentCausalKernel"]
+__all__ = [
+    "GQADensePrefillCausalWsKernel",
+    "GQAPrefillFwdWsPersistentCausalKernel",
+]
 
 BLOCK_M = 128
 BLOCK_N = 128
@@ -495,3 +499,58 @@ class GQAPrefillFwdWsPersistentCausalKernel(PackedPrefillKernel):
     ) -> torch.Tensor:
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
         return self.kernel(q_bshd, k_bshd, v_bshd).reshape(q.shape)
+
+
+class GQADensePrefillCausalWsKernel(Kernel):
+    """H200 causal Dense prefill using the FA3 two-consumer pipeline."""
+
+    supported_archs: list[int] = [WS_ARCH]
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len_q: int,
+        seq_len_kv: int,
+        dim: int,
+        dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.dtype = dtype
+        self.kernel = _gqa_prefill_fwd_fa3_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len_q,
+            seq_len_kv,
+            dim,
+            dim**-0.5 if sm_scale is None else sm_scale,
+            softcap,
+            self.dtype_str,
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {}
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        self._require_cuda(q=q, k=k, v=v)
+        return self.kernel(q, k, v)

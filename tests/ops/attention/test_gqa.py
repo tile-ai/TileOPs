@@ -8,11 +8,13 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
+    GQADensePrefillCausalWsKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAPrefillFwdWsPersistentCausalKernel,
 )
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
@@ -130,6 +132,27 @@ def _ones_prefill_scales(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     q_scale = torch.ones((batch, heads_kv), device=device, dtype=torch.float32)
     return q_scale, torch.ones_like(q_scale), torch.ones_like(q_scale)
+
+
+@pytest.mark.smoke
+def test_gqa_dense_h200_main_kernel_matches_reference() -> None:
+    if not is_h200():
+        pytest.skip("Dense warp-specialized prefill is currently supported on H200")
+    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 96, 150, 8, 2, 128
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+
+    op = GroupedQueryAttentionDenseFwdOp()
+    output = op(q, k, v)
+
+    torch.testing.assert_close(
+        output,
+        _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        atol=5e-3,
+        rtol=1e-5,
+    )
+    assert isinstance(next(iter(op.iter_kernels())), GQADensePrefillCausalWsKernel)
 
 
 def _gqa_prefill_varlen_ref(
