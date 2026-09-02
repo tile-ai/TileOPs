@@ -149,7 +149,7 @@ class UnaryKernel(_StrategyKernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    # Fragment copy is the measured default for float unaries.
+    # Fragment copy is the default for float unaries.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None

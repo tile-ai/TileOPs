@@ -33,9 +33,9 @@ jobs:
   # =========================================================================
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    # Sized for a cold cache: a measured 59-file sweep on an idle H200 takes
-    # 5h07m with nothing cached, and minutes once it is. Must exceed
-    # --total-budget below so the runner, not GitHub, ends the sweep.
+    # Sized for a cold cache: the full sweep takes hours with nothing cached and
+    # minutes once it is. Must exceed --total-budget below so the runner, not
+    # GitHub, ends the sweep.
     timeout-minutes: 380
     runs-on: [self-hosted, tile-ops, bench]
     env:

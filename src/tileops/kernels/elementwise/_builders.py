@@ -16,9 +16,8 @@ from ._op_body import op_func_for
 
 # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
 # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
-# the lane slots one chain is worth. At W // 4 that ratio is 1/3 -- one chain per
-# three idle slots. The workloads sit either side of it: T/W = 0.125 packs and
-# gains, T/W = 0.53 with a single full block per row costs 8.0us -> 14.3us.
+# the lane slots one chain is worth. At W // 4 that ratio is one chain per three
+# idle slots.
 _TAIL_PACK_RATIO = 4
 
 

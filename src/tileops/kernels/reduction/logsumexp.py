@@ -60,10 +60,8 @@ _DEFAULT_TUNE_THREADS = 256
 class StreamingLogSumExpPolicy:
     """Launch shape and eligibility gate of the streaming kernel.
 
-    The launch pair is fixed rather than tuned: measured best at
-    [1024, 32768] bf16 on H200 with the L2 flushed per iteration (the
-    benchmark's metric), and ``eligible`` keeps the kernel on shapes
-    where that pair was measured.
+    The launch pair is fixed rather than tuned, and ``eligible`` keeps the
+    kernel on the shapes that pair suits.
     """
 
     threads: int = 128

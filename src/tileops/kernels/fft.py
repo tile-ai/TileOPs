@@ -87,7 +87,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
         # remaining stages (stride >= smem_per_block) use the LUT
         lut_stage_start = smem_stages
         lut_stage_count = log2n - smem_stages
-        # float32 for complex64 (FP32 throughput 30× > FP64 on H200);
+        # float32 for complex64 (FP32 throughput far exceeds FP64 on Hopper);
         # float64 for complex128 — identical behaviour, no regression.
         accum_dtype = real_dtype
 

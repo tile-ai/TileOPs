@@ -40,8 +40,8 @@ _TUNE = True
 _FLAGGEMS_CONV = {1: "conv1d", 2: "conv2d", 3: "conv3d"}
 
 # Triton and cuDNN sum the same products in a different order, so agreement is
-# relative to the output scale: over the 13 manifest workloads on an H200, flag_gems
-# lands within 0.25 of cuDNN where |ref| reaches 564.
+# relative to the output scale: across the manifest's workloads flag_gems lands
+# within a fraction of cuDNN where the reference reaches the hundreds.
 _BASELINE_RTOL = 2e-2
 _BASELINE_ATOL = 2e-2
 

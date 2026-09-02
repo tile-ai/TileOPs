@@ -6,7 +6,7 @@ src/tileops/perf/profiles/: `calibration` (sustained) and `calibration_burst`.
 The tensor-core counterpart of fma_throughput.py.
 
 Unlike the FMA benchmark, clock locking cannot hold here: a saturating GEMM
-drives an H200 into its power cap, so the SM clock is set by the cap, not the
+drives the device into its power cap, so the SM clock is set by the cap, not the
 lock.  Each dtype gets its own telemetry window, and the sustained factor is
 reported next to the clocks it was taken at; burst is the pre-cap rate.
 

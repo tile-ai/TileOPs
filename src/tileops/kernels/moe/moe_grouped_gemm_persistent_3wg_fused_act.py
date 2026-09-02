@@ -131,9 +131,9 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         """Shapes where fusing the activation into this GEMM is the faster pipeline.
 
         The short-group schedules, where the tiling divides the shape; ``call.n`` is
-        the ffn width. Measured on H200 with bf16, fusing wins 5-35% inside this
-        region and loses 6-10% outside it, and the answer is extrapolated to the
-        other SM90 parts and dtypes that classify the same way.
+        the ffn width. Fusing wins inside this region and loses outside it, and the
+        answer is extrapolated to the other SM90 parts and dtypes that classify the
+        same way.
         """
         if call.activation not in cls.SUPPORTED_ACTIVATIONS:
             return False

@@ -30,9 +30,9 @@ Parameters (all Python ints, baked in at compile time via lru_cache):
   N, K          = output/input feature dimensions
   dtype         = activation dtype string
 
-Performance (E=256, T=4096, block_m=64, H200):
-  old persistent (132×8=1056 CTA): SM util 42%, warp active 12%
-  new (768×8=6144 CTA, ~33% dead): larger grid → better warp occupancy
+The grid is deliberately larger than the device's CTA slots: a persistent grid
+sized to the SM count leaves the warps idle for most of their residency, and the
+occupancy a wider grid buys outweighs the tiles it leaves dead.
 """
 
 import functools

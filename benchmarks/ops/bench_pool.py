@@ -45,8 +45,8 @@ from workloads.pool import (
 # ---------------------------------------------------------------------------
 # Baselines. cuDNN is reached through the v9 backend's Resample node in ctypes, not a binding:
 # nvidia-cudnn-frontend 1.27 exposes 141 graph ops and none of them is resample, and the
-# legacy cudnnPoolingForward rejects bfloat16. Measured on an H200, the legacy entry point
-# reaches the same kernel as the graph API (0.0867 vs 0.0865 ms device-busy).
+# legacy cudnnPoolingForward rejects bfloat16. The legacy entry point reaches the same
+# kernel as the graph API, so neither is faster than the other.
 # ---------------------------------------------------------------------------
 
 # v9 backend data types (cudnn_graph.h; note HALF=2/BF16=9, unlike legacy API).
@@ -333,8 +333,8 @@ def cudnn_pool_fn(
         resample = c.create(_DESC_RESAMPLE)
         c.set(resample, _ATTR_RESAMPLE_MODE, _TYPE_RESAMPLE_MODE, [mode], "mode")
         c.set(resample, _ATTR_RESAMPLE_COMP_TYPE, _TYPE_DATA_TYPE, [_CUDNN_DATA_FLOAT], "comp")
-        # Propagating costs ~19% of the kernel on an H200 max-pool, and torch propagates:
-        # the cheaper mode returns a number where torch returns NaN.
+        # Propagating costs a fifth of the kernel, and torch propagates: the cheaper
+        # mode returns a number where torch returns NaN.
         c.set(resample, _ATTR_RESAMPLE_NAN, _TYPE_NAN, [_PROPAGATE_NAN], "nan")
         c.set(resample, _ATTR_RESAMPLE_PADDING_MODE, _TYPE_PADDING_MODE, [pad_mode], "padmode")
         c.set(resample, _ATTR_RESAMPLE_SPATIAL_DIMS, _TYPE_INT64, [ndim], "spatial")

@@ -427,10 +427,9 @@ class MHADecodePagedWsKernel(Kernel):
     def default_config(self) -> dict:
         """Aim the grid at one wave, then take the tallest tile that fits.
 
-        Measured on H200: the split count that puts roughly ``_TARGET_BLOCKS``
-        blocks on the device wins across all four manifest shapes, and among the
-        tile heights that then cover a split, the tallest is at worst within
-        noise of the best.
+        The split count that puts roughly ``_TARGET_BLOCKS`` blocks on the device
+        wins across the manifest's shapes, and among the tile heights that then
+        cover a split, the tallest is at worst within noise of the best.
         """
         work_items = max(1, self.batch * self.heads)
         num_split = max(1, min(_TARGET_BLOCKS // work_items, self.seqlen_kv))

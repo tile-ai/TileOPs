@@ -38,9 +38,8 @@ def logical_reduce_region(call: LogicalReduceCall) -> bool:
 
 
 # The fused pass runs one block per kept column and has no other parallelism, so
-# it takes over only where that alone is enough. Measured on an H200 with
-# lead=4, trail=4096. Other devices use the general implementation until they
-# have their own measured region.
+# it takes over only where that alone is enough. Other devices use the general
+# implementation until they have a region of their own.
 _EDGE_FUSED_MIN_KEPT_H200 = 32
 
 

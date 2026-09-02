@@ -244,8 +244,8 @@ def test_rope_neox_position_ids_bench(
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
     # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they
-    # agree to one rounding step: over the manifest's rows on an H200, max |Δ| 0.0039
-    # in fp16 and 0.0156 in bf16.
+    # agree to one rounding step of the storage dtype, which is what the default
+    # tolerances allow.
     check_fn, check_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
     torch.testing.assert_close(
         check_fn(*check_args).view(x.shape),

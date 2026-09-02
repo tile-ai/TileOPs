@@ -276,13 +276,6 @@ def _swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     (``swap_ab_grid_underfills``) that advantage is gone and the split-K path
     (which multiplies its own grid by ``split_k``) wins.
 
-    Measured on H200 vs ``min(torch, cuBLASLt-best)`` (per-rep interleaved,
-    fp32-guarded, bf16 NT), best swap_ab config against the path it replaces:
-
-    - ``n=2112`` (33 CTAs): 0.94x at ns=6, against 1.05x for split-K;
-    - ``n=4096`` (64 CTAs): 1.12x at ns=8, against 1.04x for split-K;
-    - ``n=7168`` (112 CTAs): 1.07x at ns=4, against 0.91x for the plain tile.
-
     The stage count falls as the grid grows: with more CTAs resident the device
     already has enough loads in flight, and a deeper ring only costs SMEM. Both
     ends are measured points; the boundary between them is interpolated.
@@ -395,17 +388,16 @@ def gemv_config(k: int) -> dict:
 
     GEMV is HBM-bandwidth bound; the lever is memory-level parallelism per
     output row via ``reduce_threads > 32`` (cross-warp SMEM tree reduction,
-    auto-lowered from ``tvm_thread_allreduce``). Measured on H200 these reach
-    90-102% of the per-shape read-BW ceiling and beat cuBLAS 1.1-2.4x, vs the
-    old ``block_n=8 / reduce_threads=32`` default (0.57-0.87x cuBLAS). Bands:
+    auto-lowered from ``tvm_thread_allreduce``). These bands read at close to the
+    per-shape bandwidth ceiling, where a ``block_n=8 / reduce_threads=32`` default
+    leaves most of it on the table. Bands:
 
     - very deep rows (k >= 12288, e.g. 7168x16384): 2 rows/block, 64
       threads/row — a 128-way reduction tree over a long row costs more than
       the bandwidth it buys, and 2 rows/block improves wave quantization;
     - mid-deep rows (k >= 6144, decode gate-up / attn-proj): a 256-lane
-      reduction still runs >= 3 pipeline iterations and the extra per-row
-      memory-level parallelism beats rt=128 by 9-10% under the cold-read
-      protocol (two independent 30-rep interleaved rounds, H200);
+      reduction still runs >= 3 pipeline iterations, and the extra per-row
+      memory-level parallelism beats rt=128 on a cold read;
     - shorter rows degenerate to ~1 iteration at 256 lanes and stay on
       rt=128, which maximizes per-row MLP to saturate HBM.
     """
@@ -419,13 +411,12 @@ def gemv_config(k: int) -> dict:
 def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     """``SmallBatchGemmKernel`` (m == 2 NT band) config rule.
 
-    Modal best across the dispatched band (H200 per-rep interleaved sweep):
-    one output column per block, a 64-lane reduction over K, 4-deep cp.async
-    ring. One measured exception: when the grid alone fills the device's CTA
-    slots (block_n=1 -> n CTAs vs the 32-per-SM cap) AND the per-thread K
-    loop is long, resident warps already hide the load latency and the deep
-    ring only adds sync overhead — the 2-stage ring is ~9% faster there
-    (attn-family 4096x7168 at m=2).
+    Modal best across the dispatched band: one output column per block, a
+    64-lane reduction over K, 4-deep cp.async ring. One exception: when the
+    grid alone fills the device's CTA slots (block_n=1 -> n CTAs vs the
+    32-per-SM cap) AND the per-thread K loop is long, resident warps already
+    hide the load latency and the deep ring only adds sync overhead, so the
+    2-stage ring wins.
     """
     cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
     k_iters = math.ceil(k / (cfg["reduce_threads"] * 8))

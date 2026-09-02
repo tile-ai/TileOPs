@@ -4,8 +4,8 @@ A grouped GEMM whose groups are shorter than a tile leaves most of that tile idl
 and a schedule with a shorter block wins. Kernels of this family ask which regime
 their shape is in and pick a schedule from the answer.
 
-The boundaries are measured, not derived: on H200 with bf16, a short-group schedule
-gains 4-7% inside them and costs 34-39% above them.
+The boundaries are measured, not derived. A short-group schedule gains inside them
+and loses several times that much above them, so they are set where it stops paying.
 """
 
 __all__ = ["rows_per_group_regime"]
