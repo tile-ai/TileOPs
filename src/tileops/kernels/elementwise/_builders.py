@@ -120,12 +120,13 @@ def _row_broadcast_prim(
     runs once per block, and the inner loop indexes affinely, so it vectorizes.
     The generic path pays that chain per element and every access is a gather.
     A ragged inner extent splits at trace time. Full blocks always run unguarded.
-    The columns past them go one of two ways: packed end to end across rows into
-    blocks of their own, or left in place as one guarded block per row.
+    Where *num_per_thread* divides the row, the grid indexes vectors and leaves no
+    columns over. Otherwise they go one of two ways, scalar either way: packed end
+    to end across rows into blocks of their own, or left as one guarded block per row.
 
     *stage* moves the full blocks through fragments, which keeps the copies wide
     when the body cannot vectorize. It is opt-in because a body that does
-    vectorize is slower for the round trip. Leftover columns stay scalar either way.
+    vectorize is slower for the round trip.
     """
     op_func = op_func_for(op_name)
     ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -142,6 +143,19 @@ def _row_broadcast_prim(
     body_blocks = full_blocks * rows
     tail_blocks = -(-tail_slots // block_cols)
     pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // _TAIL_PACK_RATIO
+    # Columns past the last full block go one element per thread. Indexing
+    # vectors rather than rows leaves none: num_per_thread divides the row, so a
+    # vector stays inside one row. The staged form writes whole fragments and so
+    # needs every block full; the unstaged one guards its last block.
+    vecs_per_row = inner // num_per_thread
+    total_vecs = rows * vecs_per_row
+    grid_vecs = -(-total_vecs // threads)
+    flat_grid = (
+        not exact
+        and num_per_thread > 1
+        and inner % num_per_thread == 0
+        and (not stage or grid_vecs * threads == total_vecs)
+    )
 
     @T.macro
     def write_col(a, b, y, a_base, b_base, by, col):
@@ -207,6 +221,91 @@ def _row_broadcast_prim(
                 write_col(a, b, y, a_base, b_base, by, (bxc * threads + i) * num_per_thread + j)
         else:
             write_held_block(a, b, y, a_base, b_base, by, bxc)
+
+    if flat_grid:
+        exact_grid = grid_vecs * threads == total_vecs
+
+        @T.macro
+        def write_flat_vec(a, b, y, v, j):
+            """The *j*-th column of vector *v*, wherever in the grid that lands."""
+            row = v // vecs_per_row
+            col = (v % vecs_per_row) * num_per_thread + j
+            a_base, b_base = _compute_broadcast_offsets(
+                row * inner, ndim, divisors, a_strides, b_strides
+            )
+            write_col(a, b, y, a_base, b_base, row, col)
+
+        @T.macro
+        def write_flat_staged(a, b, y, bx):
+            """One block of vectors, read and written a fragment at a time.
+
+            The copy loops carry no body, so they keep the full width where the
+            body would have scalarised them. A block spans rows, so the operand
+            a row broadcasts is one register per thread, not one per block.
+            """
+            y_reg = T.alloc_fragment((block_cols,), out_dtype)
+            if a_inner:
+                a_reg = T.alloc_fragment((block_cols,), dtype)
+            else:
+                a_held = T.alloc_fragment((threads,), dtype)
+            if b_inner:
+                b_reg = T.alloc_fragment((block_cols,), dtype)
+            else:
+                b_held = T.alloc_fragment((threads,), dtype)
+            for i, j in T.Parallel(threads, num_per_thread):
+                v = bx * threads + i
+                col = (v % vecs_per_row) * num_per_thread + j
+                a_base, b_base = _compute_broadcast_offsets(
+                    (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
+                )
+                if a_inner:
+                    a_reg[i * num_per_thread + j] = a[a_base + col * a_inner]
+                if b_inner:
+                    b_reg[i * num_per_thread + j] = b[b_base + col * b_inner]
+            for i in T.Parallel(threads):
+                a_base, b_base = _compute_broadcast_offsets(
+                    ((bx * threads + i) // vecs_per_row) * inner,
+                    ndim,
+                    divisors,
+                    a_strides,
+                    b_strides,
+                )
+                if not a_inner:
+                    a_held[i] = a[a_base]
+                if not b_inner:
+                    b_held[i] = b[b_base]
+            for i, j in T.Parallel(threads, num_per_thread):
+                k = i * num_per_thread + j
+                y_reg[k] = op_func(
+                    a_reg[k] if a_inner else a_held[i],
+                    b_reg[k] if b_inner else b_held[i],
+                )
+            for i, j in T.Parallel(threads, num_per_thread):
+                v = bx * threads + i
+                y[(v // vecs_per_row) * inner + (v % vecs_per_row) * num_per_thread + j] = y_reg[
+                    i * num_per_thread + j
+                ]
+
+        @T.prim_func
+        def flat_main(
+            a: T.Tensor((a_numel,), dtype),
+            b: T.Tensor((b_numel,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            with T.Kernel(grid_vecs, threads=threads) as bx:
+                if stage:
+                    write_flat_staged(a, b, y, bx)
+                else:
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        v = bx * threads + i
+                        if exact_grid:
+                            write_flat_vec(a, b, y, v, j)
+                        else:
+                            with T.If(v < total_vecs):  # noqa: SIM117
+                                with T.Then():
+                                    write_flat_vec(a, b, y, v, j)
+
+        return flat_main
 
     if pack_tail:
 
