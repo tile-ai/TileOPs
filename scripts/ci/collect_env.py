@@ -17,11 +17,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # What the card was set to: a run at a lower cap or clock is a different
 # measurement, and nothing else in the snapshot says so.
+#
+# The clock the card ran at, and the one it could have: a card held below its
+# own maximum is the case this has to show, and it does not slow every
+# implementation by the same amount. `clocks.applications.*` used to carry
+# this and now answers "Requested functionality has been deprecated" on the
+# runner's driver -- an answer the reader below drops, so the clock went
+# unrecorded rather than wrong.
 _GPU_FIELDS = (
     ("driver", "driver_version"),
     ("power_limit_w", "power.limit"),
-    ("sm_clock_mhz", "clocks.applications.graphics"),
-    ("memory_clock_mhz", "clocks.applications.memory"),
+    ("sm_clock_mhz", "clocks.current.graphics"),
+    ("sm_clock_max_mhz", "clocks.max.graphics"),
+    ("memory_clock_mhz", "clocks.current.memory"),
     ("mig", "mig.mode.current"),
 )
 
@@ -50,7 +58,8 @@ def _gpu_state() -> dict:
         return {}
     state = {}
     for (name, _), value in zip(_GPU_FIELDS, values, strict=True):
-        # `[N/A]` — an unset clock, an unsupported field — is not a fact.
+        # `[N/A]`, `[Requested functionality has been deprecated]` — anything
+        # the driver answers in brackets is not a fact.
         if not value or value.startswith("[") or value == "N/A":
             continue
         state[name] = float(value) if name.endswith(("_w", "_mhz")) else value
