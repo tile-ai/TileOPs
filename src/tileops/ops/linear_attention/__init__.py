@@ -1,11 +1,11 @@
-from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
+from .deltanet import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp
 from .deltanet_recurrence import DeltaNetDecodeFwdOp
 from .gated_deltanet import (
+    GatedDeltaNetAutogradOp,
     GatedDeltaNetBHTDFwdOp,
     GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeFwdOp,
-    GatedDeltaNetOp,
     GatedDeltaNetPrefillBHTDFwdOp,
     GatedDeltaNetPrefillBTHDFwdOp,
 )
@@ -16,7 +16,7 @@ __all__: list[str] = [
     "DeltaNetBwdOp",
     "DeltaNetDecodeFwdOp",
     "DeltaNetFwdOp",
-    "DeltaNetOp",
+    "DeltaNetAutogradOp",
     "GLABwdOp",
     "GLADecodeFwdOp",
     "GLAFwdOp",
@@ -24,7 +24,7 @@ __all__: list[str] = [
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeFwdOp",
-    "GatedDeltaNetOp",
+    "GatedDeltaNetAutogradOp",
     "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillBTHDFwdOp",
 ]

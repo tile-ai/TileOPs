@@ -169,6 +169,23 @@ def gqa_sliding_window_args(
     )
 
 
+def gqa_prefill_varlen_args(
+    workload: dict[str, Any],
+) -> tuple[int, list[int], list[int], int, int, int, bool]:
+    batch = workload["batch"]
+    q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
+    kv_lens = list(workload.get("kv_lens") or [workload["total_kv"] // batch] * batch)
+    return (
+        batch,
+        q_lens,
+        kv_lens,
+        workload["heads"],
+        workload["heads_kv"],
+        workload["dim"],
+        workload.get("is_causal", True),
+    )
+
+
 def gqa_sliding_window_varlen_args(
     workload: dict[str, Any],
 ) -> tuple[int, list[int], list[int], int, int, int, bool, int, int]:

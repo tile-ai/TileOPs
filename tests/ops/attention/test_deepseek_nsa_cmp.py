@@ -58,18 +58,5 @@ def test_nsa_cmp_fwd_varlen_op(
     )
     inputs = test.gen_inputs()
 
-    op = NSACmpFwdVarlenOp(
-        seq_num=seq_num,
-        c_seq_len=c_seq_len,
-        heads=heads,
-        dim_k=dim_k,
-        dim_v=dim_v,
-        group=group,
-        scale=scale,
-        bc=bc,
-        bs=bs,
-        accum_dtype=accum_dtype,
-        tune=tune,
-        chunk_num=test.chunk_num,
-    )
+    op = NSACmpFwdVarlenOp(scale=scale, bc=bc, bs=bs, accum_dtype=accum_dtype, tune=tune)
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)

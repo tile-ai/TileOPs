@@ -7,12 +7,12 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.fused_topk import FusedTopKKernel
 
-from ..op_base import UnmanifestedOp
+from ..op_base import Op
 
 __all__ = ["FusedTopKOp"]
 
 
-class FusedTopKOp(UnmanifestedOp):
+class FusedTopKOp(Op):
     """MoE top-k routing operator.
 
     Applies scoring (softmax or sigmoid) to router logits and selects the
@@ -29,9 +29,7 @@ class FusedTopKOp(UnmanifestedOp):
 
     def __init__(
         self,
-        num_tokens: Optional[int] = None,
-        num_experts: Optional[int] = None,
-        top_k: Optional[int] = None,
+        top_k: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -40,24 +38,16 @@ class FusedTopKOp(UnmanifestedOp):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            num_tokens: Optional committed number of input tokens T. Preferred
-                API infers it from ``gating_output.shape[0]``.
-            num_experts: Optional committed number of experts E. Preferred API
-                infers it from ``gating_output.shape[1]``.
             top_k: Number of experts to select per token K.
             scoring_func: "softmax" (Qwen3/Qwen2) or "sigmoid" (DeepSeek-V3/GLM-4/Kimi K2).
+                Passing ``correction_bias`` to ``forward`` requires ``"sigmoid"``: the
+                bias is added to sigmoid scores for selection only, and the output
+                weights stay the original scores.
             renormalize: If True, normalize top-k weights to sum to 1.
-            scoring_func: see above. Passing ``correction_bias`` to ``forward``
-                requires ``"sigmoid"``: the bias is added to sigmoid scores for
-                selection only, and the output weights stay the original scores.
             kernel_map: Optional kernel map override.
             config: Optional kernel config dict.
         """
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
         self.top_k = top_k
-        self._committed_num_tokens = num_tokens
-        self._committed_num_experts = num_experts
         self.scoring_func = scoring_func
         self.renormalize = renormalize
 
@@ -68,6 +58,17 @@ class FusedTopKOp(UnmanifestedOp):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fused_topk_kernel": FusedTopKKernel}
 
+    def _infer_output_shapes(
+        self,
+        gating_output_shape: tuple[int, ...],
+        correction_bias_shape: "tuple[int, ...] | None" = None,
+    ) -> Dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: one weight and one expert id per token and kept slot."""
+        return {
+            "topk_weights": (gating_output_shape[0], self.top_k),
+            "topk_ids": (gating_output_shape[0], self.top_k),
+        }
+
     def _get_kernel(
         self,
         inputs: "tuple[torch.Tensor | None, ...]",
@@ -77,7 +78,15 @@ class FusedTopKOp(UnmanifestedOp):
         device_index: int | None,
         with_correction_bias: bool,
     ) -> Kernel:
-        key = (num_tokens, num_experts, top_k, device_index, with_correction_bias)
+        key = (
+            num_tokens,
+            num_experts,
+            top_k,
+            self.scoring_func,
+            self.renormalize,
+            device_index,
+            with_correction_bias,
+        )
         return self.get_or_build_kernel(
             "fused_topk_kernel",
             inputs,
@@ -126,16 +135,8 @@ class FusedTopKOp(UnmanifestedOp):
                 f"torch.bfloat16, or torch.float32, got {gating_output.dtype}"
             )
         num_tokens, num_experts = gating_output.shape
-        if self._committed_num_tokens is not None and num_tokens != self._committed_num_tokens:
-            raise ValueError(f"Expected num_tokens={self._committed_num_tokens}, got {num_tokens}")
-        if self._committed_num_experts is not None and num_experts != self._committed_num_experts:
-            raise ValueError(
-                f"Expected num_experts={self._committed_num_experts}, got {num_experts}"
-            )
-        if self.top_k is None:
-            raise ValueError("top_k must be provided at construction time")
-        if self.top_k > num_experts:
-            raise ValueError(f"top_k={self.top_k} cannot exceed num_experts={num_experts}")
+        if not 0 < self.top_k <= num_experts:
+            raise ValueError(f"top_k={self.top_k} must be in (0, num_experts={num_experts}]")
         if correction_bias is not None:
             if self.scoring_func != "sigmoid":
                 raise ValueError(
@@ -151,8 +152,10 @@ class FusedTopKOp(UnmanifestedOp):
                     f"Expected correction_bias.dtype torch.float32, got {correction_bias.dtype}"
                 )
 
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
+        self.gating_output_shape = tuple(gating_output.shape)
+        self.correction_bias_shape = (
+            None if correction_bias is None else tuple(correction_bias.shape)
+        )
         self.dtype = gating_output.dtype
         kernel = self._get_kernel(
             (gating_output, correction_bias),

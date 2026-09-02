@@ -19,14 +19,14 @@ from tileops.kernels.linear_attention.gated_deltanet_recurrence import (
 from tileops.perf.profile import tensor_core_roof
 
 from .._validation import check_tensor_shape
-from ..op_base import Op, UnmanifestedOp
+from ..op_base import Op
 
 __all__ = [
     "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeFwdOp",
-    "GatedDeltaNetOp",
+    "GatedDeltaNetAutogradOp",
     "GatedDeltaNetPrefillBHTDFwdOp",
     "GatedDeltaNetPrefillBTHDFwdOp",
 ]
@@ -867,7 +867,7 @@ class _GatedDeltaNetFunction(torch.autograd.Function):
         return dq, dk, dv, dg, dbeta, None, None
 
 
-class GatedDeltaNetOp(UnmanifestedOp):
+class GatedDeltaNetAutogradOp(Op):
     """Combined Gated DeltaNet fwd+bwd operator with autograd support.
 
     Wraps ``GatedDeltaNetFwdKernel`` and ``GatedDeltaNetBwdKernel`` in a
@@ -876,7 +876,7 @@ class GatedDeltaNetOp(UnmanifestedOp):
 
     This makes end-to-end benchmarking against FLA straightforward::
 
-        op = GatedDeltaNetOp(chunk_size=chunk_size)
+        op = GatedDeltaNetAutogradOp(chunk_size=chunk_size)
         o = op(q, k, v, g, beta)   # forward
         o.backward(do)              # backward via TileOPs kernels
 
@@ -914,6 +914,17 @@ class GatedDeltaNetOp(UnmanifestedOp):
             "GatedDeltaNetFwdKernel": GatedDeltaNetFwdKernel,
             "GatedDeltaNetBwdKernel": GatedDeltaNetBwdKernel,
         }
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+    ) -> Dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: only ``o``; the chunk buffers stay in the autograd context."""
+        return {"o": tuple(v_shape)}
 
     def _bind_from_inputs(
         self,
@@ -991,8 +1002,13 @@ class GatedDeltaNetOp(UnmanifestedOp):
         Returns:
             Output tensor o [B, H, S, DV] (supports .backward()).
         """
+        self._validate_dtypes(q, k, v, g, beta)
         fwd_kernel, bwd_kernel = self._bind_from_inputs(q, k, v, g, beta)
         return _GatedDeltaNetFunction.apply(q, k, v, g, beta, fwd_kernel, bwd_kernel)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GatedDeltaNetDecodeFwdOp(Op):

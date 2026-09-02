@@ -387,6 +387,73 @@ GatedDeltaNetBwdOp:
     bench: benchmarks/ops/bench_gated_deltanet.py
     bench_manifest_driven: true
 
+GatedDeltaNetAutogradOp:
+  # The autograd wrapper over GatedDeltaNetBHTDFwdOp and GatedDeltaNetBwdOp: one output
+  # rather than the forward's four, because the chunk buffers the backward reads are saved
+  # for it rather than returned.
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, H, S]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+    - "S % chunk_size == 0"
+  workloads:
+  - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], g_shape: [2, 4, 2048], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-autograd-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], g_shape: [2, 4, 8192], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-autograd-b2-s8k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.gated_deltanet_fwd_roofline}
+  source:
+    kernel: tileops/kernels/linear_attention/gated_deltanet/gated_deltanet_fwd.py
+    kernel_map:
+      GatedDeltaNetFwdKernel: GatedDeltaNetFwdKernel
+      GatedDeltaNetBwdKernel: GatedDeltaNetBwdKernel
+    op: tileops/ops/linear_attention/gated_deltanet.py
+    test: tests/ops/test_deltanet_autograd.py
+    bench: benchmarks/ops/bench_gated_deltanet.py
+    bench_manifest_driven: true
+
+DeltaNetAutogradOp:
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+  # The autograd wrapper over DeltaNetFwdOp and DeltaNetBwdOp: one output rather than the
+  # forward's six, because the chunk buffers the backward reads are saved for it rather
+  # than returned.
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+    - "S % chunk_size == 0"
+  workloads:
+  - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-autograd-b2-s2k-h4-d64"}
+  - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-autograd-b2-s8k-h4-d64"}
+  roofline: {func: tileops.perf.formulas.deltanet_fwd_roofline}
+  source:
+    kernel: tileops/kernels/linear_attention/deltanet/deltanet_fwd.py
+    kernel_map:
+      DeltaNetFwdKernel: DeltaNetFwdKernel
+      DeltaNetBwdKernel: DeltaNetBwdKernel
+    op: tileops/ops/linear_attention/deltanet.py
+    test: tests/ops/test_deltanet_autograd.py
+    bench: benchmarks/ops/bench_deltanet.py
+    bench_manifest_driven: true
+
 DeltaNetFwdOp:
   ref_api: "none"
   family: linear_attention

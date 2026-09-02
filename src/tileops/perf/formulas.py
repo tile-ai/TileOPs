@@ -70,6 +70,7 @@ __all__ = [
     "mha_decode_paged_roofline",
     "mha_decode_roofline",
     "mha_fwd_roofline",
+    "mean_pooling_fwd_roofline",
     "mhc_post_roofline",
     "mhc_pre_roofline",
     "minimum_fwd_roofline",
@@ -1026,6 +1027,26 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
 # MoE
 
 
+def fused_topk_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for FusedTopKOp: score every logit, then keep the top k of them.
+
+    Func-mode: the float32 ``correction_bias`` a sigmoid call may pass is read at a
+    different width than the logits, so one ``elem_bytes`` cannot express the total.
+    """
+    num_tokens, num_experts = op.gating_output_shape
+    top_k = int(op.top_k)
+    elem_bytes = _dtype_itemsize(op.dtype)
+
+    flops = num_tokens * num_experts * 2 * (1 + top_k)
+    # Out: one float32 weight and one int32 id per kept slot.
+    nbytes = num_tokens * num_experts * elem_bytes + num_tokens * top_k * 8
+    if _supplied(op, "correction_bias"):
+        # One add per score before the selection reads it, and the bias read itself.
+        flops += num_tokens * num_experts
+        nbytes += num_experts * 4
+    return int(flops), int(nbytes)
+
+
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     """Roofline for FusedMoeFwdOp.
 
@@ -1270,6 +1291,43 @@ def fft_c2c_roofline(op: "Op") -> tuple[int, int]:
     # forward call, the constructed default kernel represents batch=1.
     batch = int(getattr(getattr(op, "kernel", None), "batch_size", 1) or 1)
     return int(batch * 5 * n * math.log2(n)), int(batch * 2 * n * elem)
+
+
+def mean_pooling_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the chunked sequence mean.
+
+    One add per input row and one divide per output element. Counting the adds off the
+    input rather than off ``chunks * chunk_size`` keeps a ragged split's short last chunk
+    from being priced as a full one; ``offsets`` partitions the whole sequence axis, so the
+    row count is the same either way.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    if "x_shape" in data:
+        batch, seq_len, heads, dim = data["x_shape"]
+    else:
+        batch, seq_len, heads, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["dim"],
+        )
+    indices_shape = data.get("indices_shape")
+    if data.get("chunks") is not None:
+        chunks = int(data["chunks"])
+    elif indices_shape is not None:
+        chunks = int(indices_shape[0])
+    else:
+        chunks = -(-int(seq_len) // int(data["chunk_size"]))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    out_elems = int(batch) * chunks * int(heads) * int(dim)
+    in_elems = int(batch) * int(seq_len) * int(heads) * int(dim)
+    nbytes = (in_elems + out_elems) * elem_bytes
+    # A ragged call also reads the int32 pair that describes the split.
+    offsets_shape = data.get("offsets_shape")
+    if offsets_shape is not None:
+        nbytes += (int(offsets_shape[0]) + chunks * 2) * 4
+    return in_elems + out_elems, nbytes
 
 
 def mhc_pre_roofline(op: "Op") -> tuple[int, int]:
@@ -1618,3 +1676,152 @@ def mamba2_fwd_roofline(op: Any) -> tuple[int, int]:
     return _mamba2_fwd_cost(
         op, has_dt_bias=_supplied(op, "dt_bias"), has_initial_states=_supplied(op, "initial_states")
     )
+
+
+def _nsa_request_lens(data: dict[str, Any], c_seq_len: int, seq_num: int) -> list[int]:
+    """Token count per request, read off ``offsets`` when the call supplied it.
+
+    The manifest path has only the aggregate, so it falls back to an even split; the
+    benchmark path has the tensor and gets the lengths that were actually run.
+    """
+    offsets = data.get("offsets")
+    if offsets is not None:
+        values = [int(x) for x in offsets.detach().cpu().tolist()]
+        return [values[i + 1] - values[i] for i in range(len(values) - 1)]
+    return _distribute_total(c_seq_len, seq_num, c_seq_len)
+
+
+def _nsa_ragged_index_bytes(seq_num: int, c_seq_len: int, chunk_offsets: bool = True) -> int:
+    """The int32 metadata every NSA pass reads to walk a packed batch.
+
+    ``offsets`` and ``token_indices`` always; ``chunk_offsets`` for the two passes that
+    index the compressed chunks.
+    """
+    bounds = 2 * (seq_num + 1) if chunk_offsets else seq_num + 1
+    return (bounds + c_seq_len * 2) * 4
+
+
+def _nsa_closed_chunks(length: int, block_size: int) -> int:
+    """``sum(t // block_size for t in range(length))``, in closed form."""
+    full, rest = divmod(length, block_size)
+    return block_size * full * (full - 1) // 2 + rest * full
+
+
+def nsa_cmp_fwd_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the NSA compression forward over a packed batch.
+
+    Each token attends to its own request's closed chunks. In: q and the compressed
+    k/v. Out: the attention output and the lse the top-k pass scores against.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        c_seq_len, heads, dim_k = data["q_shape"]
+        chunk_num, head_kv, _ = data["k_cmp_shape"]
+        dim_v = data["v_cmp_shape"][2]
+        seq_num = data["offsets_shape"][0] - 1
+    else:
+        c_seq_len, heads, dim_k = data["c_seq_len"], data["heads"], data["dim_k"]
+        chunk_num, head_kv = data["chunk_num"], data["head_kv"]
+        dim_v, seq_num = data["dim_v"], data["seq_num"]
+    block_size = int(data["bs"])
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    lens = _nsa_request_lens(data, c_seq_len, seq_num)
+    # The kernel scores `(t + 1) // bs` chunks for the token at position `t`.
+    pairs = sum(_nsa_closed_chunks(length + 1, block_size) for length in lens)
+    flops = 2 * pairs * heads * (dim_k + dim_v)
+    nbytes = (
+        c_seq_len * heads * (dim_k + dim_v + 1) + chunk_num * head_kv * (dim_k + dim_v)
+    ) * elem_bytes
+    nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)
+    return int(flops), int(nbytes)
+
+
+def nsa_topk_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the NSA block selection over a packed batch.
+
+    Two QK passes over the compressed chunks, no PV. Out: one int32 block id per
+    token, KV head and kept block.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        c_seq_len, heads, dim = data["q_shape"]
+        chunk_num, head_kv, _ = data["k_cmp_shape"]
+        seq_num = data["offsets_shape"][0] - 1
+    else:
+        c_seq_len, heads, dim = data["c_seq_len"], data["heads"], data["dim"]
+        chunk_num, head_kv, seq_num = data["chunk_num"], data["head_kv"], data["seq_num"]
+    block_size = int(data["bs"])
+    selected = int(data["selected_block_num"])
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    lens = _nsa_request_lens(data, c_seq_len, seq_num)
+    # Two QK passes over slightly different chunk counts: the lse pass scores
+    # `(t + 1) // bs` chunks for the token at position `t`, the selection pass `t // bs + 1`.
+    pairs = sum(
+        _nsa_closed_chunks(length + 1, block_size) + _nsa_closed_chunks(length, block_size) + length
+        for length in lens
+    )
+    flops = 2 * pairs * heads * dim
+    # FIXME(staged-rollout): `lse_in` is declared and passed but never read.
+    #
+    # Broken invariant: every manifest input is read once, and this one is not counted.
+    # Why: the top-k kernel recomputes the lse itself and discards the argument, so
+    #   charging it would price traffic that does not happen.
+    # Cleanup: drop `lse_in` from the signature, or make the kernel read it.
+    nbytes = (c_seq_len * heads * dim + chunk_num * head_kv * dim) * elem_bytes
+    nbytes += c_seq_len * head_kv * selected * 4
+    nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)
+    return int(flops), int(nbytes)
+
+
+def _nsa_selected_block_loads(
+    data: dict[str, Any], c_seq_len: int, head_kv: int, selected: int, block_size: int
+) -> int:
+    """Block tiles the sparse forward loads, summed over tokens and KV heads.
+
+    The kernel walks ``block_counts`` entries and skips a block starting past the token.
+    The manifest path has only shapes, so it takes the ``selected``-per-token bound.
+    """
+    counts = data.get("block_counts")
+    indices = data.get("block_indices")
+    token_indices = data.get("token_indices")
+    if counts is None or indices is None or token_indices is None:
+        return c_seq_len * head_kv * selected
+
+    # Read as lists, not reduced on device: this module imports where torch does not.
+    kept = counts.reshape(-1).tolist()
+    blocks = indices.reshape(-1, selected).tolist()
+    positions = token_indices[:, 1].tolist()
+    return sum(
+        sum(1 for start in row[:n] if 0 <= start * block_size <= positions[i // head_kv])
+        for i, (n, row) in enumerate(zip(kept, blocks, strict=True))
+    )
+
+
+def nsa_fwd_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the NSA sparse forward over a packed batch.
+
+    Each token attends to the blocks of ``block_size`` tokens its selection kept, so the
+    score count comes from that selection rather than from the sequence length. In: q and
+    the gathered k/v of those blocks, plus the selection. Out: the attention output.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        c_seq_len, heads, dim = data["q_shape"]
+        head_kv = data["k_shape"][1]
+        selected = data["block_indices_shape"][2]
+    else:
+        c_seq_len, heads, dim = data["c_seq_len"], data["heads"], data["dim"]
+        head_kv, selected = data["head_kv"], data["selected_blocks"]
+    block_size = int(data["block_size"])
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    loads = _nsa_selected_block_loads(data, c_seq_len, head_kv, selected, block_size)
+    rows = loads * block_size
+    flops = 4 * rows * (heads // head_kv) * dim
+    nbytes = (2 * c_seq_len * heads * dim + 2 * rows * dim) * elem_bytes
+    nbytes += c_seq_len * head_kv * (selected + 1) * 4
+    batch = int(data["offsets_shape"][0]) - 1 if "q_shape" in data else int(data["batch"])
+    nbytes += _nsa_ragged_index_bytes(batch, c_seq_len, chunk_offsets=False)
+    return int(flops), int(nbytes)

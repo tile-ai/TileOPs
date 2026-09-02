@@ -10,9 +10,9 @@ from tileops.kernels.linear_attention.deltanet import (
 from tileops.perf.profile import tensor_core_roof
 
 from .._validation import check_tensor_shape
-from ..op_base import Op, UnmanifestedOp
+from ..op_base import Op
 
-__all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetOp"]
+__all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetAutogradOp"]
 
 
 class DeltaNetFwdOp(Op):
@@ -162,7 +162,7 @@ class DeltaNetFwdOp(Op):
             beta: Beta tensor [B, H, S].
 
         Returns:
-            Tuple of (o, S, Aw, Au).
+            Tuple of (o, S, Aw, Au, w, u).
         """
         self._bind_from_inputs(q, k, v, beta)
         o, S, Aw, Au, w, u = self.kernel(q, k, v, beta)
@@ -357,7 +357,7 @@ class _DeltaNetFunction(torch.autograd.Function):
         return dq, dk, dv, dbeta, None, None
 
 
-class DeltaNetOp(UnmanifestedOp):
+class DeltaNetAutogradOp(Op):
     """Combined DeltaNet fwd+bwd operator with autograd support (ungated).
 
     Wraps ``DeltaNetFwdKernel`` and ``DeltaNetBwdKernel`` in a
@@ -398,6 +398,16 @@ class DeltaNetOp(UnmanifestedOp):
             "DeltaNetFwdKernel": DeltaNetFwdKernel,
             "DeltaNetBwdKernel": DeltaNetBwdKernel,
         }
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+    ) -> Dict[str, tuple[int, ...]]:
+        """Manifest ``outputs``: only ``o``; the chunk buffers stay in the autograd context."""
+        return {"o": tuple(v_shape)}
 
     def _bind_from_inputs(
         self,
@@ -487,5 +497,10 @@ class DeltaNetOp(UnmanifestedOp):
         Returns:
             Output tensor o [B, H, S, DV] (supports .backward()).
         """
+        self._validate_dtypes(q, k, v, beta)
         fwd_kernel, bwd_kernel = self._bind_from_inputs(q, k, v, beta)
         return _DeltaNetFunction.apply(q, k, v, beta, fwd_kernel, bwd_kernel)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)

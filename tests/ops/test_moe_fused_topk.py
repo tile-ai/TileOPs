@@ -249,14 +249,6 @@ def test_fused_topk(num_tokens, num_experts, top_k, scoring_func, renormalize, d
 
 
 @pytest.mark.smoke
-def test_fused_topk_explicit_shape_mismatch_raises() -> None:
-    gating = torch.randn(4, 8, dtype=torch.float16, device="cuda")
-    op = FusedTopKOp(num_tokens=5, num_experts=8, top_k=2)
-    with pytest.raises(ValueError, match="Expected num_tokens"):
-        op(gating)
-
-
-@pytest.mark.smoke
 def test_fused_topk_cpu_input_raises() -> None:
     gating = torch.randn(4, 8, dtype=torch.float16)
     op = FusedTopKOp(top_k=2)

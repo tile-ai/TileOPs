@@ -664,6 +664,55 @@ GroupedQueryAttentionSlidingWindowFwdOp:
     bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
     bench_manifest_driven: true
 
+GroupedQueryAttentionPrefillVarlenFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      cu_seqlens_q: {dtype: "int32"}
+      cu_seqlens_kv: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      max_seqlen_q: {type: int}
+      max_seqlen_kv: {type: int}
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
+      validate_inputs: {type: bool, default: false}
+    shape_rules:
+      - "q.shape == (total_q, H, D)"
+      - "k.shape == (total_kv, H_kv, D)"
+      - "v.shape == (total_kv, H_kv, D)"
+      - "cu_seqlens_q.shape == (B + 1,)"
+      - "cu_seqlens_kv.shape == (B + 1,)"
+      - "o.shape == (total_q, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Causal prefill aligns each request bottom-right, so a request whose kv run is
+    # longer than its q run is the case the mask has to get right.
+    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-uniform"}
+    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-q-lt-kv"}
+    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel_map:
+      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
+
 GroupedQueryAttentionSlidingWindowVarlenFwdOp:
   ref_api: "none"
   family: attention
@@ -799,4 +848,162 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     op: tileops/ops/attention/deepseek_dsa.py
     test: tests/ops/attention/test_deepseek_dsa_decode.py
     bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
+    bench_manifest_driven: true
+
+# Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
+# keys and values per block, select the blocks each token keeps, then attend to those
+# blocks only. `offsets` carries the request boundaries through all three.
+NSACmpFwdVarlenOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k_cmp: {dtype: "same_as(q)"}
+      v_cmp: {dtype: "same_as(q)"}
+      offsets: {dtype: "int32"}
+      chunk_offsets: {dtype: "int32"}
+      token_indices: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+      lse: {dtype: "same_as(q)"}
+    params:
+      scale: {type: float}
+      bc: {type: int}
+      bs: {type: int}
+      accum_dtype: {type: torch.dtype}
+    shape_rules:
+    - "q.shape == (c_seq_len, heads, dim_k)"
+    - "k_cmp.shape == (chunk_num, head_kv, dim_k)"
+    - "v_cmp.shape == (chunk_num, head_kv, dim_v)"
+    - "offsets.shape == (seq_num + 1,)"
+    - "chunk_offsets.shape == (seq_num + 1,)"
+    - "token_indices.shape == (c_seq_len, 2)"
+    - "o.shape == (c_seq_len, heads, dim_v)"
+    - "lse.shape == (c_seq_len, heads)"
+    # One query group per KV head, and the MMA the group feeds needs 16 rows.
+    - "heads % head_kv == 0"
+    - "heads // head_kv % 16 == 0"
+
+  workloads:
+  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 256, scale: 0.08838834764831845, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s8k-r8-h32-d128"}
+  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 128, scale: 0.08838834764831845, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s4k-r4-h32-d128"}
+
+  roofline:
+    func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/deepseek_nsa_cmp_fwd.py
+    kernel_map:
+      nsa_cmp_fwd_varlen_kernel: NSACmpFwdVarlenKernel
+    op: tileops/ops/attention/deepseek_nsa.py
+    test: tests/ops/attention/test_deepseek_nsa_cmp.py
+    bench: benchmarks/ops/attention/bench_deepseek_nsa.py
+    bench_manifest_driven: true
+
+NSATopkVarlenOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k_cmp: {dtype: "same_as(q)"}
+      # FIXME(staged-rollout): declared and passed, but the kernel discards it.
+      #
+      # Broken invariant: a manifest input is read by the kernel, and this one is not.
+      # Why: the top-k pass recomputes the lse itself; dropping the argument is an op
+      #   signature change the NSA pipeline's callers have to move with.
+      # Cleanup: drop `lse_in` here and from the kernel, or make the kernel read it.
+      lse_in: {dtype: "same_as(q)"}
+      offsets: {dtype: "int32"}
+      chunk_offsets: {dtype: "int32"}
+      token_indices: {dtype: "int32"}
+    outputs:
+      block_indices: {dtype: "int32"}
+    params:
+      scale: {type: float}
+      selected_block_num: {type: int}
+      bc: {type: int}
+      bs: {type: int}
+      accum_dtype: {type: torch.dtype}
+    shape_rules:
+    - "q.shape == (c_seq_len, heads, dim)"
+    - "k_cmp.shape == (chunk_num, head_kv, dim)"
+    - "lse_in.shape == (c_seq_len, heads)"
+    - "offsets.shape == (seq_num + 1,)"
+    - "chunk_offsets.shape == (seq_num + 1,)"
+    - "token_indices.shape == (c_seq_len, 2)"
+    - "block_indices.shape == (c_seq_len, head_kv, selected_block_num)"
+    - "heads % head_kv == 0"
+    - "heads // head_kv % 16 == 0"
+
+  workloads:
+  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim: 128, chunk_num: 256, scale: 1.0, selected_block_num: 16, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s8k-r8-h32-d128"}
+  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim: 128, chunk_num: 128, scale: 1.0, selected_block_num: 16, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s4k-r4-h32-d128"}
+
+  roofline:
+    func: "tileops.perf.formulas.nsa_topk_varlen_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/deepseek_nsa_topk.py
+    kernel_map:
+      nsa_topk_varlen_kernel: NSATopkVarlenKernel
+    op: tileops/ops/attention/deepseek_nsa.py
+    test: tests/ops/attention/test_deepseek_nsa_topk.py
+    bench: benchmarks/ops/attention/bench_deepseek_nsa.py
+    bench_manifest_driven: true
+
+NSAFwdVarlenOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      block_indices: {dtype: "int32"}
+      block_counts: {dtype: "int32"}
+      offsets: {dtype: "int32"}
+      token_indices: {dtype: "int32"}
+    outputs:
+      o_slc: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool}
+      scale: {type: float}
+      block_size: {type: int}
+      accum_dtype: {type: torch.dtype}
+    shape_rules:
+    - "q.shape == (c_seq_len, heads, dim)"
+    - "k.shape == (c_seq_len, head_kv, dim)"
+    - "v.shape == (c_seq_len, head_kv, dim)"
+    - "block_indices.shape == (c_seq_len, head_kv, selected_blocks)"
+    - "block_counts.shape == (c_seq_len, head_kv)"
+    - "offsets.shape == (batch + 1,)"
+    - "token_indices.shape == (c_seq_len, 2)"
+    - "o_slc.shape == (c_seq_len, heads, dim)"
+    - "heads % head_kv == 0"
+    - "heads // head_kv % 16 == 0"
+    # The kernel tiles the head dimension whole; a wider one silently truncates.
+    - "dim <= 128"
+
+  workloads:
+  - {batch: 4, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 1, is_causal: true, scale: 0.1, block_size: 32, accum_dtype: float32, seq_lens: [2048, 2048, 2048, 2048], dtypes: [float16], label: "nsa-slc-s8k-r4-h16-d64-b1"}
+  - {batch: 2, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 4, is_causal: true, scale: 0.1, block_size: 32, accum_dtype: float32, seq_lens: [4096, 4096], dtypes: [float16], label: "nsa-slc-s8k-r2-h16-d64-b4"}
+
+  roofline:
+    func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/deepseek_nsa_fwd.py
+    kernel_map:
+      nsa_fwd_varlen_kernel: NSAFwdVarlenKernel
+    op: tileops/ops/attention/deepseek_nsa.py
+    test: tests/ops/attention/test_deepseek_nsa.py
+    bench: benchmarks/ops/attention/bench_deepseek_nsa.py
     bench_manifest_driven: true

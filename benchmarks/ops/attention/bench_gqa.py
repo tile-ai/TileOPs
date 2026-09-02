@@ -8,7 +8,6 @@ from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
-    OpBenchmark,
     backward_of,
     then_dtype,
     workload_params,
@@ -16,6 +15,7 @@ from benchmarks.benchmark_base import (
 from benchmarks.ops.attention.workload_args import (
     gqa_prefill_args,
     gqa_prefill_paged_args,
+    gqa_prefill_varlen_args,
     gqa_qkv_args,
 )
 from tileops.kernels.attention import (
@@ -409,44 +409,10 @@ def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):
     return _run
 
 
-_GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
-    pytest.param(
-        4,
-        [512, 512, 512, 512],
-        [1024, 1024, 1024, 1024],
-        32,
-        8,
-        128,
-        True,
-        torch.float16,
-        False,
-        id="llama-8b-prefill-varlen-uniform-fp16",
-    ),
-    pytest.param(
-        4,
-        [128, 256, 640, 512],
-        [512, 768, 1280, 1024],
-        32,
-        8,
-        128,
-        True,
-        torch.float16,
-        False,
-        id="llama-8b-prefill-varlen-mixed-fp16",
-    ),
-    pytest.param(
-        2,
-        [512, 512],
-        [1024, 2048],
-        64,
-        8,
-        128,
-        True,
-        torch.bfloat16,
-        False,
-        id="llama-70b-prefill-varlen-q-lt-kv-bf16",
-    ),
-]
+_GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = workload_params(
+    load_workloads(GroupedQueryAttentionPrefillVarlenFwdOp),
+    then_dtype(gqa_prefill_varlen_args, tune=False),
+)
 
 
 @pytest.mark.parametrize(
@@ -468,9 +434,9 @@ def test_gqa_prefill_varlen_fwd_bench(
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
+        test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
-    bm = OpBenchmark(op, test)
+    bm = ManifestBenchmark(op, test)
 
     functors = {"tileops": op, "torch-ref": _torch_gqa_prefill_varlen_ref(test)}
     fa3_fn = _fa3_gqa_prefill_varlen(test)

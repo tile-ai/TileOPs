@@ -1010,7 +1010,7 @@ def test_gqa_prefill_varlen_respects_softcap() -> None:
 @pytest.mark.smoke
 def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
     q_lens, kv_lens = [64, 32], [128, 96]
-    batch, heads, heads_kv, dim = len(q_lens), 8, 2, 64
+    heads, heads_kv, dim = 8, 2, 64
     q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
     k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda", dtype=torch.float16).contiguous()
     v = torch.randn_like(k)
@@ -1022,7 +1022,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
     )
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, validate_inputs=True
+        max(q_lens), max(kv_lens), True, validate_inputs=True
     )
     with pytest.raises(ValueError, match="Expected k shape"):
         op(q, k[:, :, :-1].contiguous(), v, cu_q, cu_kv)
@@ -1030,7 +1030,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         op(q[:-1], k, v, cu_q, cu_kv)
     with pytest.raises(ValueError, match="max_seqlen_q"):
         bad_op = GroupedQueryAttentionPrefillVarlenFwdOp(
-            batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True, validate_inputs=True
+            max(q_lens) - 1, max(kv_lens), True, validate_inputs=True
         )
         bad_op(q, k, v, cu_q, cu_kv)
     bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
@@ -1041,14 +1041,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
 @pytest.mark.smoke
 def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
     """The element type now arrives with the tensors, so the rejection does too."""
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch=1,
-        heads=8,
-        heads_kv=2,
-        dim=64,
-        max_seqlen_q=64,
-        max_seqlen_kv=128,
-    )
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(max_seqlen_q=64, max_seqlen_kv=128)
     kwargs = {"dtype": torch.float32, "device": "cuda"}
     q = torch.randn(64, 8, 64, **kwargs)
     k = torch.randn(128, 2, 64, **kwargs)
