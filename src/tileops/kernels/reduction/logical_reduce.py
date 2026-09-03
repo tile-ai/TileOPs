@@ -42,6 +42,7 @@ from tileops.kernels.reduction.call_spec import (
     logical_edge_fused_region,
     logical_reduce_region,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = [
     "LogicalReduceEdgeFusedKernel",
@@ -299,102 +300,6 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bo
     return _func
 
 
-_PACKED_WORD_BYTES = 4
-_PACKED_VEC = 4
-_PACKED_MAX_THREADS = 128
-
-
-def packed_fold_config(n: int) -> tuple[int, int]:
-    """Threads and words a thread folds, for a row of *n* bools.
-
-    Four words a thread is one 16-byte access. The block covers the row in one
-    step where it can, and stops at 128 threads: the grid is one block a row, so
-    a wider block leaves lanes with nothing to fold.
-    """
-    words = -(-n // _PACKED_WORD_BYTES)
-    threads = min(_PACKED_MAX_THREADS, max(32, align_up(-(-words // _PACKED_VEC), 32)))
-    return threads, _PACKED_VEC
-
-
-def packed_fold_applies(op_kind: str, dtype_str: str, block_m: int, x: torch.Tensor) -> bool:
-    """Whether the rows of *x* can be folded a word at a time.
-
-    Reading four bytes as one word needs them contiguous, a whole number of
-    words to a row, and a storage offset a word boundary -- ``view`` refuses an
-    unaligned one. One block per row keeps the words a block reads adjacent.
-    """
-    return (
-        op_kind in ("any", "all")
-        and dtype_str == "int8"
-        and block_m == 1
-        and x.is_contiguous()
-        and x.storage_offset() % _PACKED_WORD_BYTES == 0
-        and x.shape[-1] % _PACKED_WORD_BYTES == 0
-    )
-
-
-def _packed_term(op_kind: str, w):
-    """What one word contributes to the fold: nonzero where the row's answer turns.
-
-    ``any`` asks whether a byte is set, which the word itself answers. ``all``
-    asks whether one is clear, and ``(w - 0x01010101) & ~w & 0x80808080`` is
-    nonzero exactly when some byte of *w* is zero. Both then fold with ``or``.
-
-    Set means nonzero, not one: a bool tensor may hold any other byte, and both
-    the general path and ``torch.all`` read it as true.
-    """
-    if op_kind == "any":
-        return w
-    ones = T.Cast("uint32", 0x01010101)
-    high = T.Cast("uint32", 0x80808080)
-    # ``w ^ ~0`` rather than ``~w``: CUDA gives the vector types no operator~.
-    flip = T.Cast("uint32", 0xFFFFFFFF)
-    return (w - ones) & (w ^ flip) & high
-
-
-@functools.lru_cache(maxsize=32)
-def _logical_reduce_kernel_packed(m: int, n: int, op_kind: str):
-    """Build an any/all kernel that folds four bools per word.
-
-    One block a row, folding into registers, where the general path stages the
-    row through shared memory and widens every byte to fp32 first.
-    """
-    words = n // _PACKED_WORD_BYTES
-
-    @tilelang.jit(out_idx=[1])
-    def _func(threads: int, vec: int):
-        step = threads * vec
-        steps = words // step
-        exact = steps * step == words
-
-        @T.prim_func
-        def main(x: T.Tensor((m, words), "uint32"), out: T.Tensor((m,), "int8")):
-            with T.Kernel(m, threads=threads) as bm:
-                acc = T.alloc_fragment((threads, vec), "uint32")
-                lane = T.alloc_fragment((threads,), "uint32")
-                red = T.alloc_fragment((1,), "uint32")
-                T.clear(acc)
-                for k in T.serial(steps):
-                    for i, j in T.Parallel(threads, vec):
-                        acc[i, j] = acc[i, j] | _packed_term(
-                            op_kind, x[bm, (k * threads + i) * vec + j]
-                        )
-                if not exact:
-                    for i, j in T.Parallel(threads, vec):
-                        idx = steps * step + i * vec + j
-                        with T.If(idx < words):  # noqa: SIM117
-                            with T.Then():
-                                acc[i, j] = acc[i, j] | _packed_term(op_kind, x[bm, idx])
-                T.reduce_max(acc, lane, dim=1)
-                T.reduce_max(lane, red, dim=0)
-                found = red[0] != T.Cast("uint32", 0)
-                out[bm] = T.Cast("int8", T.Not(found) if op_kind == "all" else found)
-
-        return main
-
-    return _func
-
-
 @functools.lru_cache(maxsize=32)
 def _logical_reduce_kernel_tiled(
     M: int, N: int, op_kind: str, dtype: str, tile_n: int, partial: bool = False
@@ -532,6 +437,106 @@ class LogicalReduceKernel(Kernel):
         tune: Whether to autotune (default False).
         device_index: CUDA device the input lives on, for the shared-memory budget.
     """
+
+    #: A word holds this many bool bytes, and a thread folds a whole vector of
+    #: them at once.
+    _WORD_BYTES = 4
+    _VECTOR_BYTES = 16
+    #: Widest block the packed fold takes. One block owns one row, so a wider
+    #: one only adds lanes with no words left to fold.
+    _PACKED_MAX_THREADS = 128
+
+    def _packed_fold_applies(self, x: torch.Tensor) -> bool:
+        """Whether the rows of *x* can be folded a word at a time.
+
+        Reading four bytes as one word needs them contiguous, a whole number of
+        words to a row, and a storage offset on a word boundary -- ``view``
+        refuses an unaligned one. One block a row keeps a block's words adjacent.
+        """
+        return (
+            self.op_kind in ("any", "all")
+            and self.dtype_to_str(self._kernel_dtype) == "int8"
+            and self.config["block_m"] == 1
+            and x.is_contiguous()
+            and x.storage_offset() % self._WORD_BYTES == 0
+            and x.shape[-1] % self._WORD_BYTES == 0
+        )
+
+    def _packed_fold_launch(self) -> tuple[int, int]:
+        """Threads, and words each folds, for one row of this kernel's shape.
+
+        The block covers the row in one step where it can.
+        """
+        vec = self._VECTOR_BYTES // self._WORD_BYTES
+        words = self.N // self._WORD_BYTES
+        threads = min(
+            self._PACKED_MAX_THREADS,
+            max(WARP_LANES, align_up(ceildiv_int(words, vec), WARP_LANES)),
+        )
+        return threads, vec
+
+    @staticmethod
+    def _packed_word_term(op_kind: str, w):
+        """What one word contributes: nonzero where the row's answer turns.
+
+        ``any`` asks whether a byte is set, which the word itself answers.
+        ``all`` asks whether one is clear, and ``(w - 0x01010101) & ~w &
+        0x80808080`` is nonzero exactly when some byte of *w* is zero. Both then
+        fold with ``or``.
+
+        Set means nonzero, not one: a bool tensor may hold any other byte, and
+        both the general path and ``torch.all`` read it as true.
+        """
+        if op_kind == "any":
+            return w
+        ones = T.Cast("uint32", 0x01010101)
+        high = T.Cast("uint32", 0x80808080)
+        # ``w ^ ~0`` rather than ``~w``: CUDA gives the vector types no operator~.
+        flip = T.Cast("uint32", 0xFFFFFFFF)
+        return (w - ones) & (w ^ flip) & high
+
+    @staticmethod
+    @functools.lru_cache(maxsize=32)
+    def _packed_kernel(m: int, words: int, op_kind: str):
+        """Build an any/all kernel that folds four bools per word.
+
+        One block a row, folding into registers, where the general path stages
+        the row through shared memory and widens every byte to fp32 first.
+        """
+        term = LogicalReduceKernel._packed_word_term
+
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int, vec: int):
+            step = threads * vec
+            steps = words // step
+            exact = steps * step == words
+
+            @T.prim_func
+            def main(x: T.Tensor((m, words), "uint32"), out: T.Tensor((m,), "int8")):
+                with T.Kernel(m, threads=threads) as bm:
+                    acc = T.alloc_fragment((threads, vec), "uint32")
+                    lane = T.alloc_fragment((threads,), "uint32")
+                    red = T.alloc_fragment((1,), "uint32")
+                    T.clear(acc)
+                    for k in T.serial(steps):
+                        for i, j in T.Parallel(threads, vec):
+                            acc[i, j] = acc[i, j] | term(
+                                op_kind, x[bm, (k * threads + i) * vec + j]
+                            )
+                    if not exact:
+                        for i, j in T.Parallel(threads, vec):
+                            idx = steps * step + i * vec + j
+                            with T.If(idx < words):  # noqa: SIM117
+                                with T.Then():
+                                    acc[i, j] = acc[i, j] | term(op_kind, x[bm, idx])
+                    T.reduce_max(acc, lane, dim=1)
+                    T.reduce_max(lane, red, dim=0)
+                    found = red[0] != T.Cast("uint32", 0)
+                    out[bm] = T.Cast("int8", T.Not(found) if op_kind == "all" else found)
+
+            return main
+
+        return _func
 
     supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
@@ -676,10 +681,10 @@ class LogicalReduceKernel(Kernel):
         here.
         """
         dtype_str = self.dtype_to_str(self._kernel_dtype)
-        if packed_fold_applies(self.op_kind, dtype_str, self.config["block_m"], x):
-            threads, vec = packed_fold_config(self.N)
-            program = _logical_reduce_kernel_packed(self.M, self.N, self.op_kind)
-            words = self.N // _PACKED_WORD_BYTES
+        if self._packed_fold_applies(x):
+            words = self.N // self._WORD_BYTES
+            threads, vec = self._packed_fold_launch()
+            program = self._packed_kernel(self.M, words, self.op_kind)
             counted = program(threads, vec)(x.view(torch.uint32).view(self.M, words))
             return counted.view(torch.bool)
         if self._needs_tiling:
@@ -696,11 +701,12 @@ class LogicalReduceKernel(Kernel):
 
 
 class LogicalReduceEdgeFusedKernel(Kernel):
-    """Fused H200 logical reduction for a prefix and suffix axis set.
+    """Fused logical reduction for a prefix and suffix axis set.
 
-    One block reduces one kept column, walking the leading axis serially while
-    reducing each contiguous trailing row. The general logical reducer remains
-    responsible for non-edge layouts and for rows that require N-tiling.
+    ``applies`` states which devices reach it. One block reduces one kept column,
+    walking the leading axis serially while reducing each contiguous trailing
+    row. The general logical reducer remains responsible for non-edge layouts
+    and for rows that require N-tiling.
     """
 
     supported_archs: list[int] = [90]
