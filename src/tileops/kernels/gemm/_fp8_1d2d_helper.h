@@ -41,15 +41,16 @@ __device__ __forceinline__ void fp8_gemm_wgmma_64x128_by_128xN(
   warpgroup_fence_operand(accumulator, BlockN / 2);
 }
 
-TL_DEVICE void fp8_tma_store_2d_ptx(const CUtensorMap& descriptor,
-                                    void const* smem_ptr, int x, int y) {
+// Issue one 2-D TMA store and nothing else.  The caller commits the bulk
+// group (``T.tma_store_arrive``) and waits for it (``T.tma_store_wait``) so the
+// wait can be deferred to the next tile's epilogue and overlap its mainloop.
+TL_DEVICE void fp8_tma_store_2d_issue(const CUtensorMap& descriptor,
+                                      void const* smem_ptr, int x, int y) {
   uint64_t desc = reinterpret_cast<uint64_t>(&descriptor);
   uint32_t src = smem_ptr_to_uint(smem_ptr);
   asm volatile(
       "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group "
       "[%0, {%2, %3}], [%1];" : : "l"(desc), "r"(src), "r"(x), "r"(y) : "memory");
-  asm volatile("cp.async.bulk.commit_group;" ::: "memory");
-  asm volatile("cp.async.bulk.wait_group 0;" ::: "memory");
 }
 
 // Promote one 64xNx128 WGMMA partial directly in its native per-thread
