@@ -35,13 +35,16 @@ def default_launch_config(
     n_total: int | None,
     stores_bool: bool = True,
     bytes_per_thread: int = _BYTES_PER_THREAD,
+    min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
-    *bytes_per_thread* is how much each thread carries; see
-    ``_ElementwiseKernel.BYTES_PER_THREAD``. *row_broadcast_inner* is the row
-    extent a broadcast block walks, or ``None``; see ``_tail_dominated``.
+    *bytes_per_thread* is how much each thread carries and *min_num_per_thread*
+    how few elements the shrink below leaves it; see
+    ``_ElementwiseKernel.BYTES_PER_THREAD`` and ``MIN_NUM_PER_THREAD``.
+    *row_broadcast_inner* is the row extent a broadcast block walks, or
+    ``None``; see ``_tail_dominated``.
     """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
@@ -67,7 +70,7 @@ def default_launch_config(
     while (
         n_total is not None
         and strategy != "direct"
-        and npt > _MIN_NUM_PER_THREAD
+        and npt > min_num_per_thread
         and n_total < threads * npt * _TARGET_BLOCKS
     ):
         npt //= 2
@@ -94,11 +97,13 @@ def elementwise_autotune_configs(
     dtype: torch.dtype,
     strategy: str | None = None,
     bytes_per_thread: int = _BYTES_PER_THREAD,
+    min_num_per_thread: int = _MIN_NUM_PER_THREAD,
 ) -> list[dict]:
     """Return the launch configs to time for one elementwise specialization.
 
     The swept elements-per-thread brackets the default the same *bytes_per_thread*
-    produces, so a kernel can always land back on its shipped config.
+    produces, so a kernel can always land back on its shipped config, and reaches
+    *min_num_per_thread* where a kernel lowers it.
     """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.
@@ -108,7 +113,11 @@ def elementwise_autotune_configs(
         npts = (_FP8_NPT, _FP8_NPT * 2)
     else:
         default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
-        npts = tuple(sorted({max(_MIN_NUM_PER_THREAD, default // 2), default, default * 2}))
+        npts = tuple(
+            sorted(
+                {min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2}
+            )
+        )
     return [{"threads": t, "num_per_thread": n} for t in _AUTOTUNE_THREADS for n in npts]
 
 

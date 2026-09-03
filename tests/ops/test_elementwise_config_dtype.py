@@ -149,14 +149,13 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
 
 
 @pytest.mark.full
-def test_fused_gated_explicit_uses_occupancy_config():
-    """Fused-gated explicit_parallel uses the 128x8 occupancy config for fp16/bf16.
+def test_fused_gated_explicit_config_follows_the_work():
+    """Fused-gated explicit_parallel sizes its block from the work, not the dtype.
 
-    threads=128, npt=8 keeps block_N = 1024 (same tiling as the old 256x4) while
-    raising occupancy/ILP at large M. fp32 falls back to 256/4: npt=4 already
-    saturates the 128-bit load width, so 128/8 would only add register pressure.
-    The direct strategy keeps the dtype-driven npt, and 256 threads: one element
-    per thread makes the thread count the whole block, so 128 would halve it.
+    A row that fills the device keeps the widest thread its dtype allows; one
+    that does not gives width back until the grid reaches the device, and silu
+    stops at two. The direct strategy keeps 256 threads: one element a thread
+    makes the thread count the whole block.
     """
     with (
         patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
@@ -168,41 +167,60 @@ def test_fused_gated_explicit_uses_occupancy_config():
             dtype=torch.float16,
             config={"strategy": "direct"},
         )
-        explicit_fp16 = SiluAndMulFwdKernel(
-            M=32,
-            N=1024,
+        wide_fp16 = SiluAndMulFwdKernel(
+            M=4096,
+            N=14336,
             dtype=torch.float16,
             config={"strategy": "explicit_parallel"},
         )
-        explicit_bf16 = SiluAndMulFwdKernel(
-            M=32,
-            N=1024,
+        wide_bf16 = SiluAndMulFwdKernel(
+            M=4096,
+            N=14336,
             dtype=torch.bfloat16,
             config={"strategy": "explicit_parallel"},
         )
-        explicit_fp32 = SiluAndMulFwdKernel(
-            M=32,
-            N=1024,
+        decode_bf16 = SiluAndMulFwdKernel(
+            M=1,
+            N=14336,
+            dtype=torch.bfloat16,
+            config={"strategy": "explicit_parallel"},
+        )
+        wide_fp32 = SiluAndMulFwdKernel(
+            M=4096,
+            N=14336,
             dtype=torch.float32,
             config={"strategy": "explicit_parallel"},
         )
     assert direct.default_config["num_per_thread"] == 8
     assert direct.default_config["threads"] == 256
-    assert explicit_fp16.default_config == {
+    assert wide_fp16.default_config == {
         "strategy": "explicit_parallel",
         "threads": 128,
         "num_per_thread": 8,
     }
-    assert explicit_bf16.default_config == {
+    assert wide_bf16.default_config == {
         "strategy": "explicit_parallel",
         "threads": 128,
         "num_per_thread": 8,
     }
-    assert explicit_fp32.default_config == {
+    assert decode_bf16.default_config == {
         "strategy": "explicit_parallel",
-        "threads": 256,
+        "threads": 128,
+        "num_per_thread": 2,
+    }
+    # float32 takes the shared thread count, not the 256 this family stated.
+    assert wide_fp32.default_config == {
+        "strategy": "explicit_parallel",
+        "threads": 128,
         "num_per_thread": 4,
     }
+    # A tuned kernel must be able to land back on its shipped config.
+    for kernel in (wide_fp16, wide_bf16, decode_bf16, wide_fp32):
+        cfg = kernel.default_config
+        assert any(
+            c["num_per_thread"] == cfg["num_per_thread"] and c["threads"] == cfg["threads"]
+            for c in kernel.autotune_configs
+        )
 
 
 # Strategy lives in the kernel config dict, not in op/kernel ctor kwargs

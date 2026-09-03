@@ -60,6 +60,9 @@ class _ElementwiseKernel(Kernel):
     # is one vector load. A body the memory pipe waits on sets 32, keeping a
     # second load in flight while the first element's arithmetic runs.
     BYTES_PER_THREAD: int = 16
+    # The floor of the grid-filling shrink. Four keeps a staged copy wide; a body
+    # costing more than its own access lowers it, for the blocks that buys.
+    MIN_NUM_PER_THREAD: int = 4
     # Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
     # Whether bool results are stored through an int8 buffer.
@@ -112,12 +115,15 @@ class _StrategyKernel(_ElementwiseKernel):
             n_total=self.N_total,
             stores_bool=not self._bool_via_int8,
             bytes_per_thread=self.BYTES_PER_THREAD,
+            min_num_per_thread=self.MIN_NUM_PER_THREAD,
             row_broadcast_inner=self.row_broadcast_inner,
         )
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return elementwise_autotune_configs(self.dtype, self.strategy, self.BYTES_PER_THREAD)
+        return elementwise_autotune_configs(
+            self.dtype, self.strategy, self.BYTES_PER_THREAD, self.MIN_NUM_PER_THREAD
+        )
 
     def init_config(self, config=None, tune=False) -> None:
         Kernel.init_config(self, config, tune)
@@ -473,16 +479,12 @@ class FusedGatedKernel(_StrategyKernel):
 
     @property
     def default_config(self) -> dict:
-        if self.strategy == "explicit_parallel":
-            if self.dtype in (torch.float16, torch.bfloat16):
-                return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
-            if self.dtype == torch.float32:
-                return {"strategy": self.strategy, "threads": 256, "num_per_thread": 4}
         return default_launch_config(
             strategy=self.strategy,
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
             n_total=self.M * self.N,
+            min_num_per_thread=self.MIN_NUM_PER_THREAD,
         )
 
     def forward(self, x):
