@@ -23,6 +23,7 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
     torch_dtype_nbytes,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = ["CumulativeKernel"]
 
@@ -120,7 +121,8 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
 
     1. The row is staged in shared memory at its own dtype, one padded row of the tile
        per thread chunk, and each thread scans its chunk into registers in fp32.
-    2. The chunk totals are scanned in shared memory, doubling the stride each step.
+    2. The chunk totals are scanned with shuffles inside each warp, and one barrier
+       carries each warp's total to the warps above it.
     3. Each thread adds the prefix ahead of its chunk and writes the chunk back to the
        staging tile, which returns it to global memory.
 
@@ -140,8 +142,9 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
     """
     chunk_len = N // threads
     pad = row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
-    # Stride-doubling steps to scan `threads` totals.
-    n_steps = threads.bit_length() - 1
+    # Shuffle steps to scan one warp's lanes, and the warps a block holds.
+    n_steps = WARP_LANES.bit_length() - 1
+    n_warps = max(threads // WARP_LANES, 1)
     identity = 0.0 if op_kind == "sum" else 1.0
     combine = (lambda a, b: a + b) if op_kind == "sum" else (lambda a, b: a * b)
 
@@ -155,11 +158,12 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
             with T.Kernel(M, threads=threads) as row:
                 tx = T.get_thread_binding()
                 staged = T.alloc_shared((threads, chunk_len + pad), dtype)
-                totals = T.alloc_shared((threads,), "float32")
+                totals = T.alloc_shared((n_warps,), "float32")
                 chunk = T.alloc_local((chunk_len,), "float32")
                 running = T.alloc_local((1,), "float32")
                 ahead = T.alloc_local((1,), "float32")
                 offset = T.alloc_local((1,), "float32")
+                before = T.alloc_local((1,), "float32")
 
                 for i, j in T.Parallel(threads, chunk_len):
                     staged[i, j] = x[row, i * chunk_len + j]
@@ -169,22 +173,30 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
                 for j in T.serial(chunk_len):
                     running[0] = combine(running[0], T.cast(staged[tx, j], "float32"))
                     chunk[j] = running[0]
-                totals[tx] = running[0]
-                T.sync_threads()
 
                 for step in T.serial(n_steps):
                     stride = T.shift_left(T.int32(1), step)
-                    ahead[0] = T.if_then_else(
-                        tx >= stride, totals[tx - stride], T.cast(identity, "float32")
+                    ahead[0] = T.shfl_up(running[0], stride)
+                    running[0] = T.if_then_else(
+                        tx % WARP_LANES >= stride, combine(running[0], ahead[0]), running[0]
                     )
-                    T.sync_threads()
-                    totals[tx] = combine(totals[tx], ahead[0])
-                    T.sync_threads()
+                if tx % WARP_LANES == WARP_LANES - 1:
+                    totals[tx // WARP_LANES] = running[0]
+                T.sync_threads()
 
-                # T.max keeps the read in range for thread 0, whose branch discards it.
-                offset[0] = T.if_then_else(
-                    tx == 0, T.cast(identity, "float32"), totals[T.max(tx - 1, 0)]
+                # One more shuffle turns the inclusive scan into the exclusive one a
+                # chunk needs. Subtracting the thread's own total would do it for sum
+                # and not for prod; a shuffle holds for any combine.
+                before[0] = T.shfl_up(running[0], 1)
+                before[0] = T.if_then_else(
+                    tx % WARP_LANES == 0, T.cast(identity, "float32"), before[0]
                 )
+                ahead[0] = T.cast(identity, "float32")
+                for w in T.serial(n_warps):
+                    ahead[0] = T.if_then_else(
+                        w < tx // WARP_LANES, combine(ahead[0], totals[w]), ahead[0]
+                    )
+                offset[0] = combine(before[0], ahead[0])
                 for j in T.serial(chunk_len):
                     staged[tx, j] = T.cast(combine(chunk[j], offset[0]), dtype)
                 T.sync_threads()
