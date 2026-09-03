@@ -1099,6 +1099,67 @@ class ReduceKernel(Kernel):
             divisor,
         )
 
+    def _stream_vec(self) -> int:
+        """Elements a thread folds at once: one vector access of them."""
+        return VECTOR_ACCESS_BYTES // self._elem_bytes
+
+    def _stream_fold_applies(self, x: torch.Tensor) -> bool:
+        """Whether the rows can be folded straight into registers.
+
+        The tiled path copies the row into shared memory and widens it to fp32
+        across a fragment as wide as the tile before reducing that. A fold needs
+        neither, and needs only a contiguous row of whole vectors owned by one
+        block.
+        """
+        return (
+            self.strategy == "simple_tiled"
+            and self.op_kind in ("sum", "mean")
+            and self.config["block_m"] == 1
+            and x.is_contiguous()
+            and self.N % self._stream_vec() == 0
+        )
+
+    @staticmethod
+    @functools.lru_cache(maxsize=32)
+    def _stream_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, vec: int):
+        """Build a sum/mean kernel that folds the row into registers as it reads.
+
+        The row is summed in a different order from the tiled path: ``threads *
+        vec`` partial sums, each over a strided subsequence, then a tree over
+        those. A different order, not a stricter one.
+        """
+
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            step = threads * vec
+            steps = n // step
+            exact = steps * step == n
+
+            @T.prim_func
+            def main(x: T.Tensor((m, n), dtype), out: T.Tensor((m,), out_dtype)):
+                with T.Kernel(m, threads=threads) as bm:
+                    acc = T.alloc_fragment((threads, vec), "float32")
+                    lane = T.alloc_fragment((threads,), "float32")
+                    red = T.alloc_fragment((1,), "float32")
+                    T.clear(acc)
+                    for k in T.serial(steps):
+                        for i, j in T.Parallel(threads, vec):
+                            acc[i, j] += T.Cast("float32", x[bm, (k * threads + i) * vec + j])
+                    if not exact:
+                        for i, j in T.Parallel(threads, vec):
+                            col = steps * step + i * vec + j
+                            with T.If(col < n):  # noqa: SIM117
+                                with T.Then():
+                                    acc[i, j] += T.Cast("float32", x[bm, col])
+                    T.reduce_sum(acc, lane, dim=1)
+                    T.reduce_sum(lane, red, dim=0)
+                    total = red[0] / float(n) if op_kind == "mean" else red[0]
+                    out[bm] = T.Cast(out_dtype, total)
+
+            return main
+
+        return _func
+
     def _reduce_rows(self, x: torch.Tensor) -> object:
         """Reduce the trailing axis of an ``(M, N)`` buffer."""
         if self.strategy == "prod":
@@ -1120,6 +1181,16 @@ class ReduceKernel(Kernel):
             if self.op_kind == "var_mean":
                 return results[0], results[1]
             return results
+        if self._stream_fold_applies(x):
+            program = self._stream_kernel(
+                self.M,
+                self.N,
+                self.op_kind,
+                self.dtype_str,
+                self.dtype_str,
+                self._stream_vec(),
+            )
+            return program(threads)(x)
         if self.strategy == "simple_tiled":
             program = _simple_reduce_kernel_tiled(
                 self.M, self.N, self.op_kind, self.dtype_str, self.config["tile_n"]
