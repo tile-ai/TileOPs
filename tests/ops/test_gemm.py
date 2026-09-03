@@ -587,11 +587,25 @@ def test_gemm_fp8_1d2d_tuned_config(shape: tuple[int, int, int], expected: dict)
 
 
 @pytest.mark.smoke
-def test_gemm_fp8_1d2d_rejects_small_m() -> None:
-    with pytest.raises(ValueError, match="requires M >= 128"):
-        GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
-            1, 7168, 2048, torch.float8_e4m3fn, torch.bfloat16
-        )
+def test_gemm_fp8_1d2d_refuses_unaddressable_shapes() -> None:
+    """TMA and the packed epilogue each set a unit; state it, don't die in TileLang.
+
+    One case per offending dimension of ``_shape_refusal``: the small-M band,
+    ``c``'s two-column store, ``a``'s 16-byte K rows, and ``scale_a``'s
+    16-byte M rows.
+    """
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() != 90:
+        pytest.skip("1D2D FP8 GEMM requires SM90")
+    for shape, reason in (
+        ((1, 7168, 2048), "M >= 128"),
+        ((128, 257, 2048), "n=257"),
+        ((128, 256, 264), "k=264"),
+        ((130, 256, 2048), "m=130"),
+    ):
+        with pytest.raises(ValueError, match=reason):
+            GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(*shape, torch.float8_e4m3fn, torch.bfloat16)
 
 
 @pytest.mark.parametrize(
