@@ -11,7 +11,7 @@ from tileops.kernels.moe import MoePrePermuteContiguousKernel, MoeUnpermuteKerne
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.compile_boundary import get_instance
 from tileops.ops.op_base import Op
-from tileops.utils import get_sm_version
+from tileops.utils import get_sm_version, is_h200
 
 from ..elementwise import SiluAndMulFwdOp
 from .contracts import (
@@ -198,6 +198,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
             raise TypeError("the current staged pre-permute contract accepts BF16 or FP16 only")
         return PrePermuteCall(
             arch=get_sm_version(device.index),
+            h200=is_h200(device.index),
             layout=self.layout,
             device_type=hidden_states.device.type,
             input_dtype=hidden_states.dtype,
