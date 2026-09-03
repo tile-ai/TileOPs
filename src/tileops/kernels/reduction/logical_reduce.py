@@ -299,6 +299,93 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bo
     return _func
 
 
+_PACKED_WORD_BYTES = 4
+_PACKED_VEC = 4
+_PACKED_MAX_THREADS = 128
+
+
+def packed_fold_config(n: int) -> tuple[int, int]:
+    """Threads and words a thread folds, for a row of *n* bools.
+
+    Four words a thread is one 16-byte access. The width covers the row in one
+    step where it can, and stops at 128 threads: the grid is one block a row, so
+    a wider block only leaves lanes with nothing to fold.
+    """
+    words = -(-n // _PACKED_WORD_BYTES)
+    threads = min(_PACKED_MAX_THREADS, max(32, align_up(-(-words // _PACKED_VEC), 32)))
+    return threads, _PACKED_VEC
+
+
+def packed_fold_applies(
+    op_kind: str, dtype_str: str, block_m: int, n: int, contiguous: bool
+) -> bool:
+    """Whether a row of *n* bools can be folded a word at a time.
+
+    ``any`` is a byte-wise or and ``all`` a byte-wise and over 0/1 bytes, and
+    both agree with the same operation on the word four of those bytes pack
+    into. That reinterpretation needs a contiguous row of whole words, and one
+    block per row for the words a block reads to be adjacent.
+    """
+    return (
+        op_kind in ("any", "all")
+        and dtype_str == "int8"
+        and block_m == 1
+        and contiguous
+        and n % _PACKED_WORD_BYTES == 0
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _logical_reduce_kernel_packed(m: int, n: int, op_kind: str):
+    """Build an any/all kernel that folds four bools per word.
+
+    One block per row, folding into registers. The general path stages the row
+    through shared memory and widens every byte to fp32 first.
+    """
+    words = n // _PACKED_WORD_BYTES
+    ones = (1 << 32) - 1 if op_kind == "all" else 0
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int, vec: int):
+        step = threads * vec
+        steps = words // step
+        exact = steps * step == words
+
+        @T.prim_func
+        def main(x: T.Tensor((m, words), "uint32"), out: T.Tensor((m,), "int8")):
+            with T.Kernel(m, threads=threads) as bm:
+                acc = T.alloc_fragment((threads, vec), "uint32")
+                lane = T.alloc_fragment((threads,), "uint32")
+                red = T.alloc_fragment((1,), "uint32")
+                if op_kind == "all":
+                    T.fill(acc, ones)
+                else:
+                    T.clear(acc)
+                for k in T.serial(steps):
+                    for i, j in T.Parallel(threads, vec):
+                        w = x[bm, (k * threads + i) * vec + j]
+                        acc[i, j] = acc[i, j] | w if op_kind == "any" else acc[i, j] & w
+                if not exact:
+                    for i, j in T.Parallel(threads, vec):
+                        idx = steps * step + i * vec + j
+                        with T.If(idx < words):  # noqa: SIM117
+                            with T.Then():
+                                w = x[bm, idx]
+                                acc[i, j] = acc[i, j] | w if op_kind == "any" else acc[i, j] & w
+                if op_kind == "all":
+                    T.reduce_min(acc, lane, dim=1)
+                    T.reduce_min(lane, red, dim=0)
+                    out[bm] = T.Cast("int8", red[0] == T.Cast("uint32", 0x01010101))
+                else:
+                    T.reduce_max(acc, lane, dim=1)
+                    T.reduce_max(lane, red, dim=0)
+                    out[bm] = T.Cast("int8", red[0] != T.Cast("uint32", 0))
+
+        return main
+
+    return _func
+
+
 @functools.lru_cache(maxsize=32)
 def _logical_reduce_kernel_tiled(
     M: int, N: int, op_kind: str, dtype: str, tile_n: int, partial: bool = False
@@ -580,6 +667,14 @@ class LogicalReduceKernel(Kernel):
         here.
         """
         dtype_str = self.dtype_to_str(self._kernel_dtype)
+        if packed_fold_applies(
+            self.op_kind, dtype_str, self.config["block_m"], self.N, x.is_contiguous()
+        ):
+            threads, vec = packed_fold_config(self.N)
+            program = _logical_reduce_kernel_packed(self.M, self.N, self.op_kind)
+            words = self.N // _PACKED_WORD_BYTES
+            counted = program(threads, vec)(x.view(torch.uint32).view(self.M, words))
+            return counted.view(torch.bool)
         if self._needs_tiling:
             program = _logical_reduce_kernel_tiled(
                 self.M, self.N, self.op_kind, dtype_str, self.config["tile_n"]
