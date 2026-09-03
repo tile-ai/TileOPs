@@ -155,7 +155,7 @@ def _gemm_fp8_1d2d_kernel(
         if num_stages < 1:
             raise ValueError(f"num_stages must be positive, got {num_stages}")
         wgmma_helper = f"tl::fp8_gemm_wgmma_64x128_by_128x{block_n}"
-        promotion_1d2d_uniform = f"tl::fp8_gemm_1d2d_promote_shared_ab_uniform_64x{block_n}"
+        promotion_helper = f"tl::fp8_gemm_1d2d_promote_64x{block_n}"
         global_store_helper = f"tl::fp8_gemm_raw_acc_store_global_64x{block_n}_v2"
         smem_store_helper = f"tl::fp8_gemm_raw_acc_stsm_bf16_64x{block_n}"
         fragment_regs = (half_m * block_n) // 128
@@ -210,13 +210,25 @@ def _gemm_fp8_1d2d_kernel(
                 )
 
                 full = T.alloc_barrier([1] * num_stages)
-                empty = T.alloc_barrier([256] * num_stages)
+                # One arrival per consumer warp, not per thread: ``wait_wgmma`` is
+                # warp-convergent, so once a lane has passed it every lane of that
+                # warp is done with the stage, and lane 0 can speak for the warp.
+                # Eight arrivals per stage instead of 256.
+                empty = T.alloc_barrier([8] * num_stages)
                 producer_index = T.alloc_var("int32", init=0)
                 consumer_index_0 = T.alloc_var("int32", init=0)
                 consumer_index_1 = T.alloc_var("int32", init=0)
                 mt = T.alloc_local((1,), "int32")
                 nt = T.alloc_local((1,), "int32")
+                # The three scales a consumer thread needs for one K step, read
+                # out of the stage before the WGMMA so the stage can be handed
+                # back to the producer before the promotion runs.
+                scales = T.alloc_local((3,), accum_dtype)
                 tx = T.get_thread_binding()
+                # Rows of this thread's WGMMA accumulator within its 64-row half:
+                # lanes 4i..4i+3 of warp w hold rows w*16 + i and w*16 + i + 8.
+                acc_row0 = ((tx // 32) % 4) * 16 + (tx % 32) // 4
+                acc_row1 = acc_row0 + 8
 
                 if tx < 128:
                     T.dec_max_nreg(24)
@@ -296,6 +308,12 @@ def _gemm_fp8_1d2d_kernel(
                             for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
                                 slot = consumer_index_0 % num_stages
                                 T.barrier_wait(full[slot], (consumer_index_0 // num_stages) & 1)
+                                scales[0] = one_scale_a[slot, acc_row0]
+                                scales[1] = one_scale_a[slot, acc_row1]
+                                if stage_1d2d_b_per_k:
+                                    scales[2] = one_scale_b[slot, 0]
+                                else:
+                                    scales[2] = one_scale_b[0, kk]
                                 T.call_extern(
                                     "handle",
                                     wgmma_helper,
@@ -304,27 +322,20 @@ def _gemm_fp8_1d2d_kernel(
                                     T.address_of(b_shared[slot, 0, 0]),
                                 )
                                 T.wait_wgmma(0)
-                                if stage_1d2d_b_per_k:
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_1d2d_uniform,
-                                        partial_0.data,
-                                        final_0.data,
-                                        T.address_of(one_scale_a[slot, 0]),
-                                        T.address_of(one_scale_b[slot, 0]),
-                                        0,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_1d2d_uniform,
-                                        partial_0.data,
-                                        final_0.data,
-                                        T.address_of(one_scale_a[slot, 0]),
-                                        T.address_of(one_scale_b[0, 0]),
-                                        kk,
-                                    )
-                                T.barrier_arrive(empty[slot])
+                                # The stage's shared memory is no longer read past
+                                # this point: release it before the promotion so the
+                                # producer's next TMA overlaps the multiply-adds.
+                                if tx % 32 == 0:
+                                    T.barrier_arrive(empty[slot])
+                                T.call_extern(
+                                    "handle",
+                                    promotion_helper,
+                                    partial_0.data,
+                                    final_0.data,
+                                    scales[0],
+                                    scales[1],
+                                    scales[2],
+                                )
                                 consumer_index_0 = consumer_index_0 + 1
                             if shared_epilogue:
                                 T.call_extern(
@@ -389,6 +400,12 @@ def _gemm_fp8_1d2d_kernel(
                             for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
                                 slot = consumer_index_1 % num_stages
                                 T.barrier_wait(full[slot], (consumer_index_1 // num_stages) & 1)
+                                scales[0] = one_scale_a[slot, half_m + acc_row0]
+                                scales[1] = one_scale_a[slot, half_m + acc_row1]
+                                if stage_1d2d_b_per_k:
+                                    scales[2] = one_scale_b[slot, 0]
+                                else:
+                                    scales[2] = one_scale_b[0, kk]
                                 T.call_extern(
                                     "handle",
                                     wgmma_helper,
@@ -397,27 +414,20 @@ def _gemm_fp8_1d2d_kernel(
                                     T.address_of(b_shared[slot, 0, 0]),
                                 )
                                 T.wait_wgmma(0)
-                                if stage_1d2d_b_per_k:
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_1d2d_uniform,
-                                        partial_1.data,
-                                        final_1.data,
-                                        T.address_of(one_scale_a[slot, half_m]),
-                                        T.address_of(one_scale_b[slot, 0]),
-                                        0,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_1d2d_uniform,
-                                        partial_1.data,
-                                        final_1.data,
-                                        T.address_of(one_scale_a[slot, half_m]),
-                                        T.address_of(one_scale_b[0, 0]),
-                                        kk,
-                                    )
-                                T.barrier_arrive(empty[slot])
+                                # The stage's shared memory is no longer read past
+                                # this point: release it before the promotion so the
+                                # producer's next TMA overlaps the multiply-adds.
+                                if tx % 32 == 0:
+                                    T.barrier_arrive(empty[slot])
+                                T.call_extern(
+                                    "handle",
+                                    promotion_helper,
+                                    partial_1.data,
+                                    final_1.data,
+                                    scales[0],
+                                    scales[1],
+                                    scales[2],
+                                )
                                 consumer_index_1 = consumer_index_1 + 1
                             if shared_epilogue:
                                 T.call_extern(
