@@ -178,7 +178,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
             if tx < 128:
                 T.set_max_nreg(CONSUMER_S_NREG, 1)
 
-                # Initialize S
                 if use_initial_state:
                     T.copy(
                         h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
@@ -187,19 +186,14 @@ def _build_fused_chunk_gdr_fwd_kernel(
                 else:
                     T.clear(h_fragment)
 
-                # Main Loop
                 for i_s in T.serial(num_iters):
-                    # [STAGE 0]
                     T.barrier_wait(data_is_ready[i_s % 2], (i_s // 2 + 0) % 2)
                     T.barrier_arrive(bar_0)
 
-                    # [STAGE 0] 0
                     T.barrier_wait(bar_0, i_s % 2)
-                    # S4[S] S
                     T.copy(h_fragment, h_shared)
                     T.barrier_arrive(bar_1)
 
-                    # [STAGE 0] 2, 3, 4
                     T.barrier_wait(bar_1, i_s % 2)
                     # S = g_last * S
                     g_last_local[0] = g_exp_shared[block_S - 1]
@@ -207,7 +201,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         h_fragment[j_k, j_v] *= g_last_local[0]
                     T.barrier_arrive(bar_5)
 
-                    # [STAGE 0] 5
                     T.barrier_wait(bar_5, i_s % 2)
                     # S += K^T @ V'
                     T.gemm_v1(
@@ -220,7 +213,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_arrive(data_is_free[i_s % 2])
 
-                # Store final S
                 if need_store_final_state:
                     T.copy(
                         h_fragment,
@@ -241,13 +233,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
             elif tx < 256:
                 T.set_max_nreg(CONSUMER_V_NREG, 1)
 
-                # Main Loop
                 for i_s in T.serial(num_iters):
-                    # [STAGE 0]
                     T.barrier_wait(data_is_ready[i_s % 2], (i_s // 2 + 0) % 2)
                     T.barrier_arrive(bar_0)
 
-                    # [STAGE 0] 0
                     T.barrier_wait(bar_0, i_s % 2)
                     # Precompute g, g_last/g
                     for j_s in T.Parallel(block_S):
@@ -262,7 +251,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         )
                     T.barrier_arrive(bar_1)
 
-                    # [STAGE 0] 1
                     T.barrier_wait(bar_1, i_s % 2)
                     # U = K @ S
                     T.gemm_v1(k_shared[i_s % 2, :, :], h_shared, u_fragment, clear_accum=True)
@@ -273,11 +261,9 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         u_fragment[j_s, j_v] *= -g_exp_shared[j_s]
                     for j_s, j_v in T.Parallel(block_S, block_DV):
                         u_fragment[j_s, j_v] += v_shared[i_s % 2, j_s, j_v]
-                    # S2[V] W
                     for j_s, j_v in T.Parallel(block_S, block_DV):
                         v_shared[i_s % 2, j_s, j_v] = u_fragment[j_s, j_v]
 
-                    # [STAGE 0] 3
                     T.barrier_wait(bar_3, i_s % 2)
                     # Vd = Ag @ W
                     T.gemm_v1(
@@ -286,7 +272,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         v_fragment,
                         clear_accum=True,
                     )
-                    # S2[2] Vd
                     T.copy(v_fragment, vd_shared)
                     T.barrier_arrive(bar_4)
 
@@ -294,7 +279,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     # V' = g_last/g Vd
                     for j_s, j_v in T.Parallel(block_S, block_DV):
                         v_fragment[j_s, j_v] *= g_rev_exp_shared[j_s]
-                    # S2[1] V'
                     T.copy(v_fragment, vn_shared)
                     T.barrier_arrive(bar_5)
 
@@ -305,13 +289,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
             elif tx < 384:
                 T.set_max_nreg(CONSUMER_O_NREG, 1)
 
-                # Main Loop
                 for i_s in T.serial(num_iters):
-                    # [STAGE 0]
                     T.barrier_wait(data_is_ready[i_s % 2], (i_s // 2 + 0) % 2)
                     T.barrier_arrive(bar_0)
 
-                    # [STAGE 0] 0
                     T.barrier_wait(bar_0, i_s % 2)
                     # P = Q K^T
                     T.gemm_v1(
@@ -341,7 +322,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         a_shared[i_s % 2, j_s, j_t] = a_fragment[j_s, j_t]
 
-                    # [STAGE 0] 2
                     T.barrier_wait(bar_1, i_s % 2)
                     # O = Q @ S
                     T.gemm_v1(q_shared[i_s % 2, :, :], h_shared, o_fragment, clear_accum=True)
@@ -350,22 +330,18 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     # Pg = s * G * P
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         p_fragment[j_s, j_t] *= scale * g_fragment[j_s, j_t]
-                    # S1[1] Pg
                     T.copy(p_fragment, p_shared)
                     T.barrier_arrive(bar_3)
                     # O = s * g * O
                     for j_s, j_k in T.Parallel(block_S, DK):
                         o_fragment[j_s, j_k] *= scale * g_exp_shared[j_s]
 
-                    # [STAGE 0] 4
                     T.barrier_wait(bar_4, i_s % 2)
                     # O += Pg @ Vd
                     T.gemm_v1(p_shared, vd_shared, o_fragment, clear_accum=False)
                     T.barrier_arrive(bar_5)
 
-                    # [STAGE 0] 5
                     T.barrier_wait(bar_5, i_s % 2)
-                    # S2[S] O
                     T.copy(o_fragment, o_shared)
 
                     T.barrier_arrive(data_is_free[i_s % 2])
@@ -381,13 +357,11 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
-                        # Load Q
                         T.tma_copy(
                             q[batch_idx, left:right, bhg, 0:DK],
                             q_shared[i_s % 2, :, :],
                             barrier=data_is_ready[i_s % 2],
                         )
-                        # Load K
                         T.tma_copy(
                             k[batch_idx, left:right, bhg, 0:DK],
                             k_shared[i_s % 2, :, :],
@@ -402,7 +376,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
-                        # Load V
                         T.tma_copy(
                             v[
                                 batch_idx,
@@ -413,7 +386,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                             v_shared[i_s % 2, :, :],
                             barrier=data_is_ready[i_s % 2],
                         )
-                        # Load beta
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
                                 b_shared[i_s % 2, j_s] = b[batch_idx, left + j_s, bh]
@@ -432,13 +404,11 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
-                        # Load A
                         T.tma_copy(
                             a[batch_idx, left:right, bh, 0:block_S],
                             a_shared[i_s % 2, :, :],
                             barrier=data_is_ready[i_s % 2],
                         )
-                        # Load gamma
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
                                 g_shared[i_s % 2, j_s] = g[batch_idx, left + j_s, bh]
@@ -459,7 +429,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_0)
 
                         T.barrier_wait(bar_0, i_s % 2)
-                        # Store O
                         if i_s > 0 and store_o:
                             T.copy(
                                 o_shared,
@@ -473,7 +442,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_5)
 
                         T.barrier_wait(bar_1, i_s % 2)
-                        # Store S
                         if store_h:
                             if state_head_first:
                                 T.copy(
@@ -505,7 +473,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_0)
 
                         T.barrier_wait(bar_0, num_unmasked_iters % 2)
-                        # Store O
                         if num_unmasked_iters > 0 and store_o:
                             T.copy(
                                 o_shared,
@@ -519,7 +486,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_5)
 
                         T.barrier_wait(bar_1, num_unmasked_iters % 2)
-                        # Store S
                         if store_h:
                             if state_head_first:
                                 T.copy(
@@ -546,7 +512,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     seq_split_idx = seq_start_idx + (num_iters - 1) * block_S
 
-                    # Store O
                     T.barrier_wait(bar_o, 0)
                     if store_o:
                         for j_s, j_v in T.Parallel(block_S, block_DV):
