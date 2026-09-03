@@ -13,6 +13,7 @@ from .dense import (
     GemmTmaKernel,
     GemvKernel,
 )
+from .fp8_1d2d import GemmFp81D2DKernel
 from .w4a16 import GemmW4A16Kernel
 from .w4a16_repack import W4A16RepackKernel
 
@@ -23,6 +24,7 @@ __all__ = [
     "BmmKernel",
     "BmmPersistentKernel",
     "GemmCpAsyncKernel",
+    "GemmFp81D2DKernel",
     "GemmCall",
     "GemmFp8BlockScaleKernel",
     "GemmFp8TensorScaleKernel",

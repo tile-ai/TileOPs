@@ -22,10 +22,10 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count
 
-__all__ = ["GemmFp8BlockScaled1D2DTMAKMajorScaleKernel"]
+__all__ = ["GemmFp81D2DKernel"]
 
-_FP8_GEMM_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "_fp8_gemm_1d2d_helper.h")
+_FP8_1D2D_HELPER_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "_fp8_1d2d_helper.h")
 )
 
 _TMA_BFLOAT16 = 9
@@ -107,7 +107,7 @@ def _shape_refusal(m: int, n: int, k: int, *, shared_epilogue: bool) -> Optional
 
 
 @functools.lru_cache(maxsize=32)
-def _gemm_fp8_block_scaled_tma_coop_kernel(
+def _gemm_fp8_1d2d_kernel(
     m: int,
     n: int,
     k: int,
@@ -132,7 +132,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
             "--use_fast_math",
             "-DENABLE_BF16",
             "-include",
-            _FP8_GEMM_HELPER_PATH,
+            _FP8_1D2D_HELPER_PATH,
         ],
     )
     def kernel_func(
@@ -447,7 +447,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
     return kernel_func
 
 
-class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
+class GemmFp81D2DKernel(Kernel):
     """SM90 FP8 GEMM with FlashInfer-compatible 1D2D K-major scales.
 
     ``scale_a`` is physically contiguous ``[K // 128, M]`` and ``scale_b``
@@ -508,7 +508,7 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
         if refusal is not None:
             raise ValueError(f"1D2D cooperative TMA GEMM cannot serve m={m} n={n} k={k}: {refusal}")
 
-        self.kernel = _gemm_fp8_block_scaled_tma_coop_kernel(
+        self.kernel = _gemm_fp8_1d2d_kernel(
             m,
             n,
             k,
@@ -553,7 +553,7 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> torch.Tensor:
-        compiled = _gemm_fp8_block_scaled_tma_coop_kernel(
+        compiled = _gemm_fp8_1d2d_kernel(
             self.m,
             self.n,
             self.k,
