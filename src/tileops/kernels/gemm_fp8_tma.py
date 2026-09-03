@@ -511,6 +511,10 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
         config: Kernel config override; unset keys take their default.
         tune: Accepted for interface parity. This kernel declares no
             ``autotune_configs``, so its schedule comes from the measured table.
+        shared_epilogue: Whether to stage the tile through shared memory and
+            store it with TMA. ``None`` takes the measured choice for this
+            shape, which is what a caller wants; state it to compare the two
+            epilogues on a shape the table does not cover.
     """
 
     supported_archs = [90]
@@ -524,6 +528,7 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        shared_epilogue: Optional[bool] = None,
     ) -> None:
         super().__init__()
         if dtype != torch.float8_e4m3fn:
@@ -544,6 +549,8 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
             self.shared_epilogue = bool(tuned["shared_epilogue"])
             if "sm_count" in tuned:
                 self.sm_count = int(tuned["sm_count"])
+        if shared_epilogue is not None:
+            self.shared_epilogue = bool(shared_epilogue)
 
         refusal = _shape_refusal(m, n, k, shared_epilogue=self.shared_epilogue)
         if refusal is not None:
